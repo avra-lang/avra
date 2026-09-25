@@ -1,0 +1,155 @@
+//! THE REFERENCES PASS — fills `Decls`'s references relation: one
+//! row per named USE of a declaration (`Ref`, features/decls.av),
+//! filled per file as that file is resolved and typed, replaced
+//! whole when the file changes. A WHOLE-PROGRAM PASS MUST NOT RUN
+//! INSIDE A RESOLVE — receivers.av's law, held here too: the pass
+//! answers nothing while a resolve is in flight, and runs whole at
+//! the first ask after.
+//!
+//! A ROW'S TARGET IS A DECLARATION, never a local: a param or a
+//! `mut` local is scoped to its own body, so `Code.reads`/
+//! `Code.writes` (features/code.av) answer those with a bounded walk
+//! of their own, no whole-program relation needed — this pass only
+//! ever settles rows keyed by `DeclId`, which is what crosses files.
+//!
+//! TYPE-ANNOTATION-ONLY USES ARE NOT YET SEEN: a declaration named
+//! only in a `let`/param/field's WRITTEN TYPE, never constructed or
+//! read as a value, answers unused here. Recorded as the follow-up
+//! at avra-8sb5.25.9.
+use core.{DeclId, FileId, ExprId, StmtId, At, NodeStore, Nominal, UseParts, touch, fp, fp_list, flatten, some_list}
+use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
+
+impl Workspace {
+    /// THE PASS: every admitted file's own rows, folded into one
+    /// relation.
+    fn references() -> int {
+        if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
+        let k = key(Family.References, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let all_files = self.decls.files.get()
+        let files = [x.id for x in all_files if !self.is_held(x.id)]
+        mut all: List<Ref> = []
+        for f in files {
+            let rows = self.file_refs(f)
+            self.decls.set_file_refs(f, rows)
+            all = all.concat(rows)
+        }
+        self.decls.settle_refs(all)
+        // A HELD FILE IS NOT SURVEYED (no store to walk), so a
+        // workspace carrying one answers an INCOMPLETE relation — a
+        // decl this pass calls unused may be used from inside it.
+        // `Decls.used` reads this before ever answering "no use
+        // anywhere": an unsure answer is never "unused".
+        self.decls.mark_refs_incomplete(files.length < all_files.length)
+        self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in all])]))
+        all.length
+    }
+
+    /// One file's own rows: every expression naming a declaration,
+    /// every assignment's own target, and every `use` line's imports.
+    fn file_refs(f: FileId) -> List<Ref> {
+        let names = self.resolved(f)
+        let facts = self.folded(f)
+        let store = self.decls.store_of(f)
+        let expr_rows = flatten([self.expr_refs(f, names, facts, store, ExprId { index: i }) for i in 0..store.exprs.count()])
+        let write_rows = flatten([self.write_refs(f, names, store, s) for s in store.stmt_ids()])
+        let impl_rows = flatten([self.impl_refs(f, names, d) for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Impl])
+        expr_rows.concat(write_rows).concat(impl_rows).concat(self.import_refs(f))
+    }
+
+    /// An `impl … for` block's own TRAIT, and an impl's own TARGET
+    /// type — both named in the SIGNATURE alone, never as an
+    /// expression, so no expression-level walk sees them. `of`
+    /// (features/decls.av's `DeclFacts`) is captured at admission;
+    /// the target answers once the impl is SIGNED, which `folded(f)`
+    /// (typing, `file_refs`'s own caller) already forced.
+    fn impl_refs(f: FileId, names: NameFacts, d: DeclId) -> List<Ref> {
+        let trait_name = self.decls.facts_of(d)?.of ?? ""
+        let trait_rows = if trait_name.is_empty() { [] } else { some_list(self.named_impl_ref(f, names, d, trait_name)) }
+        let target_rows = flatten([some_list(Ref { decl: t, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read }) for t in some_list(self.decls.target_of(d))])
+        trait_rows.concat(target_rows)
+    }
+
+    fn named_impl_ref(f: FileId, names: NameFacts, d: DeclId, trait_name: string) -> Ref? {
+        let target? = names.names.type_decl(trait_name) else { return null }
+        Ref { decl: target, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read }
+    }
+
+    /// One expression's own use, if it names a declaration — zero or
+    /// one row: a `Call`'s callee and a `MethodCall`'s method are
+    /// NAME fields, not nested expressions, so one expression id
+    /// never contributes twice.
+    fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: NodeStore, e: ExprId) -> List<Ref> {
+        match store.expr(e) {
+            .Call(_, _, _) -> some_list(self.use_of(f, names, e, UseKind.Call)),
+            .MethodCall(subject, name, _) -> some_list(self.method_ref(f, facts, store, e, subject, name.of)),
+            .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _, _, _, _, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Named(_, _) or .Error -> some_list(self.use_of(f, names, e, UseKind.Read)),
+        }
+    }
+
+    /// An expression's own binding, when it names a DECLARATION —
+    /// null for a local (a param, a `mut`, a capture) and for an
+    /// expression naming nothing.
+    fn use_of(f: FileId, names: NameFacts, e: ExprId, kind: UseKind) -> Ref? {
+        let d? = bound_decl_of(names, e) else { return null }
+        Ref { decl: d, file: f, at: At.Expr(e), kind: kind }
+    }
+
+    /// A method call's own target, resolved through the WHOLE-
+    /// PROGRAM method table (`methods(target)`) the same way a
+    /// caller's typed answer is — the subject's STATIC type names
+    /// its declaring type, and the call's own name picks the member.
+    fn method_ref(f: FileId, facts: TypeFacts, store: NodeStore, e: ExprId, subject: ExprId, name: string) -> Ref? {
+        let target? = declaring_decl(self.decls.types.shape_of(facts.type_at(subject))) else { return null }
+        let m? = self.methods(target).find((d: DeclId) -> self.decls.decl(d).name == name) else { return null }
+        Ref { decl: m, file: f, at: At.Expr(e), kind: UseKind.MethodCall }
+    }
+
+    /// A struct literal's own construction: its NAME spells a type
+    /// directly, resolved through the file's namespace — the one
+    /// construction site a name-use scan alone cannot see, since a
+    /// literal's name is a text field, never a nested expression.
+    fn named_type_ref(f: FileId, names: NameFacts, e: ExprId, name: Nominal) -> Ref? {
+        let d? = names.names.type_decl(name.of) else { return null }
+        Ref { decl: d, file: f, at: At.Expr(e), kind: UseKind.Read }
+    }
+
+    /// A statement's own assignment target, when its place is rooted
+    /// in a declaration — rare (a declaration is almost never a
+    /// writable place), kept for the relation's own symmetry.
+    fn write_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+        let t? = store.assign_target(s) else { return [] }
+        let root? = store.place_root(t) else { return [] }
+        some_list(self.use_of(f, names, root, UseKind.Write))
+    }
+
+    /// Every `use` line's own imports, one row per item — the site is
+    /// the `use` STATEMENT: several items on one line share it, since
+    /// no finer position exists yet for an import specifier.
+    fn import_refs(f: FileId) -> List<Ref> {
+        let p = self.parsed(f)
+        flatten([self.one_use_refs(f, p, u) for u in use_lines(p)])
+    }
+
+    fn one_use_refs(f: FileId, p: Parsed, u: UseParts) -> List<Ref> {
+        [Ref { decl: i.decl, file: f, at: At.Stmt(u.stmt), kind: UseKind.Import } for i in self.imported_line(p, u).imports]
+    }
+}
+
+/// One row's own fingerprint — what the pass settles the whole
+/// relation's answer on.
+fn ref_fp(r: Ref) -> int {
+    fp(42, [r.decl.index, r.file.index, kind_ord(r.kind)])
+}
+
+fn kind_ord(k: UseKind) -> int {
+    match k {
+        .Call -> 0,
+        .MethodCall -> 1,
+        .Read -> 2,
+        .Write -> 3,
+        .Import -> 4,
+    }
+}

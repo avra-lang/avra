@@ -1,0 +1,22 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+use @std.meta.{name}
+
+/// `mut` that nothing ever mutates — the reader is told to expect a
+/// change that never comes. `writes()` (features/code.av) already
+/// counts a place written through a call (`x.push(v)`), so this is
+/// stricter than a text scan: a local only ever READ, or handed
+/// where nothing writes back, is caught the same way a bare
+/// assignment's absence is.
+@fixes("fn f() {\n    mut n = 0\n}", "let n = 0")
+@keeps("fn f() {\n    mut n = 0\n    n = n + 1\n}")
+@law("dropping `mut` from a binding nothing ever writes changes no later read — the memory pass opens a cell unique only for a write it will never make, exactly as `type.mut_fn_unused` already reads for a `mut fn`")
+export rule unmutated_mut {
+    quote { ${m} } if m.is_unwritten_mut() -> unmutated_mut_fix(m),
+}
+
+fn unmutated_mut_fix(m: Code) -> Fix {
+    let text = m.text()
+    Fix.Rewrite(name("let " + text.substring(4, text.length)))
+}

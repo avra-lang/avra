@@ -309,6 +309,16 @@ gate — there is no amnesty left to hide in.
       expect a change that never comes; two survived (a type
       registry threaded through a pass, and its test twin).
  GREW 2026-09-04 with the inout seats: a `mut` handed to a call may fill a `mut` seat, and one receiving a method may be a writing method's place — the compiler refuses a `let` at both — so the ratchet counts an argument or a receiver as mutated; the compiler's own laws now judge `mut` more exactly than the grep.
+ RETIRED (avra-8sb5.25.9): PORTED NATIVELY as `let_stmt.unmutated_mut`, a `rule`
+      over THE REFERENCES RELATION (compiler/references.av): a write is an
+      assignment's own place root or a call through a KNOWN-WRITING method (a
+      declared `mut fn`, or a built-in vocabulary row whose effect is
+      Write/Shared), read off the receivers pass's settled answer — strictly
+      tighter than the grep's "any call or bare-argument appearance counts."
+      187 sites on packages/std-avrac where the regex's baseline was empty
+      (0), spot-checked genuine. Carries a `Fix.Rewrite` and a `@law`. Not yet
+      seen: a `mut` handed to a declared `mut` SEAT argument
+      (dead_parameter's own gap, follow-up).
 - style.registry_catchall a match where TWO OR MORE variants answer is a REGISTRY, and
       a registry ending in `_ ->` silently forgets the NEXT variant.
       One answering arm is a PROJECTION and its catch-all is honest:
@@ -382,6 +392,17 @@ gate — there is no amnesty left to hide in.
       and the rule accused a parameter that was never declared. Ten
       hits across std-http and std-sqlite were that, against nineteen
       true ones — the list ends at its MATCHING paren now.
+ RETIRED (avra-8sb5.25.9): PORTED NATIVELY as `fns.dead_parameter`, over
+      `Code.dead_params()` (features/code.av) — a param's own reads/writes,
+      walked over its ENCLOSING declaration alone (a local never crosses a
+      file), resolved through any CAPTURE chain to its root binding, and
+      offset by the method's receiver seat. A hostile self-check against
+      packages/std-avrac's OWN source caught two bugs the first draft had
+      (the capture chain, the seat offset) before landing: 2504 false
+      positives fell to 31 genuine ones, matching sites already carrying
+      `// LICENSED style.dead_parameter`. Contract-bound members and
+      bodiless signatures stay exempt; NO REWRITE (a whole-program edit,
+      not a single node's).
 - I herein note why style.unused_import is MODULE-scoped: bs2 merges a module's
       files into one bundle, so an import in `program.av` serves
       `mod.av`. Per-FILE unused-import analysis is wrong and will
@@ -392,6 +413,19 @@ gate — there is no amnesty left to hide in.
       not export (F3012), but an unused one is silent, so imports
       rot in that one direction — 54 had accumulated, several
       created by the same day's refactors. The matcher reads through the `mut` mark on a seat (2026-09-04): `mut cx: TypeCx` is a parameter named `cx`.
+ RETIRED (avra-8sb5.25.9): PORTED NATIVELY as `modules.unused_import`, over
+      `Code.unused_imports()` (features/code.av) — MODULE-scoped as before,
+      through THE REFERENCES RELATION's `Decls.used(d)` across every file the
+      module admits, plus an `impl … for` block's own TRAIT and TARGET
+      (named in the signature alone, no expression to see —
+      compiler/references.av's `impl_refs`; 112 sites fell to 2 once it
+      landed). A `DeclFacts.instance` import (a `rule`/`component`
+      registration, used by being REACHABLE for a `collect`, never by a
+      read) is exempt. 2 sites remain on packages/std-avrac, both
+      TYPE-ANNOTATION-ONLY uses (a name spelled only in a param/field's
+      WRITTEN TYPE) — the one gap this port does not close, named at the
+      rule's own site. NO REWRITE (a comma-list item delete needs a quote
+      hole this language does not have yet, avra-8sb5.25.16).
 
 - style.wrong_payload_count_pattern RETIRED (2026-09-04): a variant pattern writing the WRONG
       payload count. The bootstrap accepted `.A(_, _)` against a

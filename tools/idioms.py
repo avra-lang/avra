@@ -31,9 +31,10 @@ entry moves to UNRATCHETED, saying so. What stays HERE is what the
 language cannot yet say on its own: whole-file/cross-declaration
 reasoning (Bucket C — style.duplicated_message,
 style.duplicated_literal, style.repeated_projection,
-style.refusal_uncounted_contains, style.unmutated_mut,
-style.dead_parameter, style.unused_import, style.repeated_unwrap,
-grammar.comma_list_open), and rules still needing a language gap
+style.refusal_uncounted_contains, style.repeated_unwrap,
+grammar.comma_list_open — style.unmutated_mut, style.dead_parameter
+and style.unused_import PORTED avra-8sb5.25.9, over THE REFERENCES
+RELATION, compiler/references.av), and rules still needing a language gap
 (Bucket B — avra-8sb5.25.16's own catalog). The same baseline
 ratchets both kinds of finding. A NATIVE finding reads no license of
 its own — every idiom is named by its rule now, so there is no
@@ -163,99 +164,6 @@ def uncounted_refusal(lines):
         if ".report().contains(" in block and not COUNTED.search(block):
             yield i, l.strip()
 
-def unmutated_mut(lines):
-    """`mut` that nothing ever mutates — the reader is told to expect
-    a change that never comes."""
-    for i, l in enumerate(lines):
-        m = re.match(r"\s*mut ([a-z_][a-z_0-9]*)(: [^=]+)? = ", l)
-        if not m:
-            continue
-        name = m.group(1)
-        rest = []
-        for j in range(i + 1, len(lines)):
-            if re.match(r"(export )?(mut )?fn ", lines[j]):
-                break
-            rest.append(lines[j])
-        body = "\n".join(rest)
-        # a `mut` handed to a call may fill a `mut` seat, and one
-        # receiving a method may be a writing method's place — the
-        # compiler refuses a `let` at both, which a grep cannot see
-        # and a PATH is a place: `pr.s.turn(...)` writes through `pr`
-        # exactly as `pr.turn(...)` does, and `pr.buf = x` writes to
-        # it — a rule that reads one segment refuses the `mut` the
-        # compiler demands
-        seg = r"\.[a-z_][a-z_0-9]*"
-        if not (re.search(rf"\b{name}({seg})* *=[^=]", body)
-                or re.search(rf"\b{name}({seg})+\(", body)
-                or re.search(rf"[(,] *{name} *[,)]", body)):
-            yield i, l.strip()
-
-
-def fn_body(lines, start):
-    """The lines of the fn opened at `start`, triple-quoted regions
-    dropped (a template's braces are text, not structure)."""
-    head = lines[start]
-    if head.rstrip().endswith("}"):
-        return [head]
-    # Triple-quoted text is kept for USAGE (a template reads its
-    # params through `${name}`) but never counted for DEPTH, since
-    # its braces are prose.
-    out, depth, in_text = [], 0, False
-    for j in range(start, len(lines)):
-        l = lines[j]
-        out.append(l)
-        if l.count('\"\"\"') % 2 == 1:
-            in_text = not in_text
-            continue
-        if in_text:
-            continue
-        # Braces inside string literals AND comments are prose, not
-        # structure: the lexer compares against "{" as data, and a
-        # doc line may quote a `}`.
-        bare = re.sub(r'"(\\.|[^"\\])*"', '""', l)
-        bare = re.sub(r"//.*$", "", bare)
-        depth += bare.count("{") - bare.count("}")
-        if j > start and depth <= 0:
-            break
-    return out
-
-def balanced(text, at):
-    """What sits between the paren at `at` and the one that closes
-    it, or None when the line does not close it."""
-    depth = 0
-    for j in range(at, len(text)):
-        if text[j] == "(":
-            depth = depth + 1
-        elif text[j] == ")":
-            depth = depth - 1
-            if depth == 0:
-                return text[at + 1:j]
-    return None
-
-def split_seats(seats):
-    """`seats` cut at its TOP-LEVEL commas — a seat's own type may
-    hold one (`fn(A, B) -> C`). AN ARROW'S `>` CLOSES NOTHING: a fn
-    type answering a generic (`fn(A) -> Result<B, C>`) closes its
-    OWN parens at depth 0, and the arrow right after read as a
-    generic-close too, sending depth negative — so the comma inside
-    `Result<B, C>` then read as TOP-LEVEL and split a seat in two.
-    Never witnessed until a seat's fn type started answering a
-    two-argument generic and another seat followed it."""
-    out, depth, start, j = [], 0, 0, 0
-    while j < len(seats):
-        c = seats[j]
-        if seats[j:j + 2] == "->":
-            j += 2
-            continue
-        if c in "(<":
-            depth = depth + 1
-        elif c in ")>":
-            depth = depth - 1
-        elif c == "," and depth == 0:
-            out.append(seats[start:j])
-            start = j + 1
-        j += 1
-    return out + [seats[start:]]
 
 def opening_bracket(text, at):
     """Where the `[` that `text[at]` closes was opened, or None."""
@@ -349,85 +257,10 @@ def bool_comprehension(lines):
                 continue
             yield i, l[at:m.end()][-58:]
 
-def dead_parameter(lines):
-    """A parameter nothing reads — the signature lies about what the
-    fn needs, and every call site carries the lie. Methods count,
-    except under `impl Trait for T` and inside `trait T { }` itself,
-    where the TRAIT owns the signature: a `nothing()` body — an
-    impl's or a default's — cannot drop a parameter."""
-    contract, in_text = False, False
-    for i, l in enumerate(lines):
-        # Template text is prose; its fn heads are not fns.
-        if l.count('\"\"\"') % 2 == 1:
-            in_text = not in_text
-            continue
-        if in_text:
-            continue
-        if re.match(r"(?:export )?(?:impl .+ for \w|trait \w+ \{)", l):
-            contract = True
-        if l == "}":
-            contract = False
-        if contract:
-            continue
-        # A head with no `{` is a trait's signature: nothing reads
-        # its params by design. String contents are not a head.
-        bare = re.sub(r'"(\\.|[^"\\])*"', '""', l)
-        m = re.match(r"\s*(?:export )?(?:mut )?fn ([a-z_]+)\(", bare)
-        if not m or "{" not in bare:
-            continue
-        # THE LIST ENDS AT ITS MATCHING PAREN, never at the line's
-        # last one: a one-line body holding a lambda (`f(x, (q: T) ->
-        # ...)`) put that lambda's seat in the fn's own parameter list
-        # and the rule accused a parameter the fn never declared.
-        seats = balanced(bare, m.end() - 1)
-        if seats is None:
-            continue
-        # a `mut` seat is still a parameter: the mark is not its name
-        params = [p.strip().split(":")[0].strip().removeprefix("mut ")
-                  for p in split_seats(seats) if ":" in p]
-        body = "\n".join(fn_body(lines, i)[1:]) or l[l.index(")") + 1:]
-        for p in params:
-            if p == "self" or p.startswith("_"):
-                continue
-            if not re.search(rf"\b{re.escape(p)}\b", body):
-                yield i, f"{l.strip()[:60]} [{p}]"
-
-# A module's files share one namespace, so an import is judged
-# against its whole MODULE (the directory), never one file — lenient
-# by design. scan() fills this before each file.
-MODULE_BODY = {"text": ""}
 
 # The file under scan, for the one rule whose exemption is a FILE: the
 # emission vocabulary's own body may emit what everyone else speaks.
 CURRENT = {"path": ""}
-
-# A `grammar { … }` block EXPANDS into the grammar's own
-# constructors, so a module that writes one uses these names without
-# ever spelling them. A text scan cannot see an expansion.
-GRAMMAR_BLOCK_NAMES = {
-    "Grammar", "Rule", "Alt", "Seq", "Item", "Prim", "Rep", "Build",
-    "Expect", "Recover",
-}
-
-def unused_import(lines):
-    """A name imported and never used ANYWHERE in its module. The
-    compiler refuses a MISSING import (F3000) and one a module does not
-    export (F3012); an unused one is silent, so this rule keeps that
-    direction."""
-    expands = "grammar {" in MODULE_BODY["text"]
-    for i, l in enumerate(lines):
-        m = re.match(r"^use [a-z@][\w.@]*\.\{(.+)\}$", l.strip())
-        if not m:
-            continue
-        for item in (n.strip() for n in m.group(1).split(",")):
-            if not item:
-                continue
-            # `use a.{X as Y}` binds Y: the LOCAL name is what must be read.
-            name = item.split(" as ")[-1].strip()
-            if expands and name in GRAMMAR_BLOCK_NAMES:
-                continue
-            if not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):
-                yield i, f"{l.strip()[:50]} [{name}]"
 
 # A nullable opened with `!` again and again is a value the code
 # already knows it has. CLAUDE.md's style rule settles it: a `let`
@@ -523,16 +356,8 @@ RULES = {
             "the same projection computed twice on one line — bind it"),
     "style.duplicated_literal": (duplicated(r"[A-Z][a-zA-Z]+ \{ [a-z_]+: [^{}]* \}"),
             "an identical struct literal written twice — name its constructor"),
-    "style.unused_import": (unused_import,
-            "a name imported and never used in its MODULE — the compiler "
-            "refuses a missing one, never an unused one"),
-    "style.dead_parameter": (dead_parameter,
-            "a parameter nothing reads — the signature lies, and every call site "
-            "carries the lie"),
     "style.refusal_uncounted_contains": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
-    "style.unmutated_mut": (unmutated_mut,
-            "a `mut` nothing mutates — say `let`"),
     "grammar.comma_list_open": (comma_list_open,
             "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
     "style.repeated_unwrap": (repeated_unwrap,
@@ -541,6 +366,54 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "style.unmutated_mut": "PORTED NATIVELY (avra-8sb5.25.9): `let_stmt.unmutated_mut`, a `rule`\n"
+           "           in features/let_stmt/idioms.av, over THE REFERENCES RELATION\n"
+           "           (compiler/references.av, `Code.writes()` — features/code.av) — a\n"
+           "           write is an assignment's own place root OR a call through a\n"
+           "           KNOWN-WRITING method (a declared `mut fn`, or a built-in\n"
+           "           vocabulary row whose effect is Write/Shared), read off the\n"
+           "           receivers pass's own settled answer, never re-derived. Strictly\n"
+           "           TIGHTER than the regex's blanket \"any call or bare-argument\n"
+           "           appearance counts\": 187 sites on packages/std-avrac where the\n"
+           "           regex found 0 (an empty baseline) — spot-checked, every one a\n"
+           "           genuine unwritten `mut`. Carries a `Fix.Rewrite` (`mut` -> `let`,\n"
+           "           the rest of the line verbatim) and a `@law`; ratcheted by the\n"
+           "           native-findings phase below. NOT YET SEEN: a `mut` handed as an\n"
+           "           argument to a declared `mut` SEAT (dead_parameter's own gap,\n"
+           "           avra-8sb5.25.9's follow-up)",
+    "style.dead_parameter": "PORTED NATIVELY (avra-8sb5.25.9): `fns.dead_parameter`, a `rule` in\n"
+           "           features/fns/idioms.av, over `Code.dead_params()`\n"
+           "           (features/code.av) — a param's own uses, walked over its\n"
+           "           ENCLOSING declaration's body alone (no whole-program relation\n"
+           "           needed, a local never crosses a file), resolved THROUGH any\n"
+           "           capture chain (a comprehension's own lambda) to its root\n"
+           "           binding, and offset by `seat_base_of` for a method's receiver\n"
+           "           (seat 0) — two bugs the FIRST draft had and a hostile self-check\n"
+           "           against packages/std-avrac caught (2504 false positives ->\n"
+           "           31 genuine, matching sites already carrying\n"
+           "           `// LICENSED style.dead_parameter`). Contract-bound members\n"
+           "           (`impl Trait for`/`trait`) and bodiless signatures are exempt\n"
+           "           the same way the regex's were; NO REWRITE — dropping a\n"
+           "           parameter is a whole-program edit `callers()` could drive, not\n"
+           "           one node's to make; ratcheted by the native-findings phase\n"
+           "           below",
+    "style.unused_import": "PORTED NATIVELY (avra-8sb5.25.9): `modules.unused_import`, a `rule`\n"
+           "           in features/modules/idioms.av, over `Code.unused_imports()`\n"
+           "           (features/code.av) — MODULE-scoped as the regex's was, through\n"
+           "           THE REFERENCES RELATION's `Decls.used(d)` across every file the\n"
+           "           import's own module admits, plus an `impl … for` block's own\n"
+           "           TRAIT and TARGET (named in the signature alone, no expression to\n"
+           "           see — compiler/references.av's `impl_refs`, found the same way:\n"
+           "           112 sites fell to 2 once it landed). A `DeclFacts.instance`\n"
+           "           import (a `rule`/`component` registration, used by being\n"
+           "           REACHABLE for a `collect`, never by a read) is exempt. 2 sites\n"
+           "           remain on packages/std-avrac, both TYPE-ANNOTATION-ONLY uses (a\n"
+           "           name spelled only in a param/field's WRITTEN TYPE) — the one gap\n"
+           "           this port does not close yet, recorded at the rule's own site.\n"
+           "           NO REWRITE: deleting one name from a comma list that may carry\n"
+           "           an `as` alias needs a quote hole over an item list, which does\n"
+           "           not exist yet (avra-8sb5.25.16); ratcheted by the\n"
+           "           native-findings phase below",
     "lists.last_index":  "PORTED NATIVELY (avra-8sb5.25.16): `lists.last_index`, a `rule`\n"
            "           in features/lists/idioms.av — `avra check`/`avra fix` enforce it,\n"
            "           ratcheted here by the native-findings phase below, not by a regex",
@@ -853,17 +726,6 @@ CLEAN = {
         ['        then "k" {', '            a.report().contains("x") && refused_with(src, "x")'],
         ['        then "k" {', '            a.report().contains("x") && refused_n(p, "x", 1)'],
     ],
-    "style.unmutated_mut": [["    mut pr = attacked()?",
-             "    pr.s.turn(ms(20))?"],
-            ["    mut w = held()",
-             "    w.c.buf = grown"]],
-    "style.dead_parameter": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
-            ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
-            ["fn f(a: int) -> int { g(a) with { b: 1 } }"],
-            ["fn f(settle: fn(int) -> Result<int, string>, cross: fn(int) -> int) -> int {",
-             "    settle(1)",
-             "    cross(2)",
-             "}"]],
     "style.bool_comprehension": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
@@ -890,11 +752,6 @@ SPECIMENS = {
             ['            a.diagnostics.length >= 1 && a.report().contains("nope")'],
             ["            p.diagnostics >= 1"],
             ["            p.voices.list.length >= 1 && lets.length == 2"]],
-    "style.unmutated_mut": [["    mut registry = new_type_registry()", "    let n = registry.shapes.length"]],
-    "style.dead_parameter": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
-            ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
-            ["    fn m(self, a: int) -> int { 1 }"]],
-    "style.unused_import": [["use core.{Span}"]],
     "grammar.comma_list_open": [['            stmt = "fn" n:NAME "(" ( ps:NAME ( "," ps:NAME )* )? ")" END -> fn_decl(n, ps)'],
              ['            primary = "[" ( a:expression ( "," a:expression )* )? "]" -> lit(a)']],
     "style.repeated_unwrap": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
@@ -1081,20 +938,9 @@ NATIVE = {"packages": 0}
 
 def scan():
     """Every unlicensed site, as stable fingerprints."""
-    # Module bodies, built once: every sibling's non-import lines.
-    bodies = {}
-    for path in sources():
-        d = os.path.dirname(path)
-        if d not in bodies:
-            bodies[d] = "\n".join(
-                "\n".join(l for l in open(s).read().split("\n")
-                          if not l.strip().startswith("use "))
-                for s in glob.glob(os.path.join(d, "*.av")))
-
     found = {}
     for path in sources():
         rel = os.path.relpath(path, ROOT)
-        MODULE_BODY["text"] = bodies[os.path.dirname(path)]
         CURRENT["path"] = rel
         lines = open(path).read().split("\n")
         for code, (matcher, _) in RULES.items():

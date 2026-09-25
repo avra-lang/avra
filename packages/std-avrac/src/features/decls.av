@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, CollectScope, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, same_file, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation}
+use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, CollectScope, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, same_file, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation, At}
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use core.{Fingerprint, fp, list_cell, map_cell, same_type}
 use @std.path.{stem_of}
@@ -171,6 +171,18 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
 /// receiver and declares nothing about the source.
 fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, is_component: false, span: null, tparams: [], bounds: [], seats: [], host: [], annotated: false, of: "" } }
 
+/// THE REFERENCES RELATION's own row: `decl` is named at `at`, in
+/// `file`, this way — a call, a method call (resolved through
+/// `methods(target)`), a plain read, a write, or the `use` line
+/// that names it. Never about a LOCAL: a param or a `mut` local is
+/// scoped to its own body, which `Code.reads`/`Code.writes`
+/// (features/code.av) answer with a bounded walk of their own —
+/// this relation only ever answers about a `DeclId`, which is what
+/// crosses files.
+export enum UseKind { Call, MethodCall, Read, Write, Import }
+
+export type Ref = { decl: DeclId, file: FileId, at: At, kind: UseKind }
+
 export type Decls = {
     types: TypeRegistry,
     /// OUTER-TABLE GROWTH, SHARED: `mint`/`file_id`/`module_id` run
@@ -278,6 +290,17 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> void>,
+    /// THE REFERENCES RELATION — every file's own rows, dense by
+    /// FileId, replaced whole when `references.av`'s pass re-settles
+    /// that file; and the SAME rows, dense by the DeclId they name,
+    /// folded at settle.
+    refs_by_file: Cell<List<List<Ref>>>,
+    refs_by_decl: Cell<List<List<Ref>>>,
+    /// Whether a HELD file stood in the workspace the last time the
+    /// pass ran — that file was never surveyed, so the relation
+    /// cannot answer "used nowhere" with any confidence.
+    refs_incomplete: Cell<bool>,
+    ensure_refs: Cell<fn() -> void>,
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -297,6 +320,9 @@ fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 
 // LICENSED style.dead_parameter: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
+
+// LICENSED style.dead_parameter: a fn VALUE filling the references-ensure seat — no pass runs before the workspace arms it
+fn no_refs_ensure() {}
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -336,6 +362,8 @@ export fn new_decls() -> Decls {
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
+    let no_refs_by_file: List<List<Ref>> = []
+    let no_refs_by_decl: List<List<Ref>> = []
     Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
@@ -383,6 +411,10 @@ export fn new_decls() -> Decls {
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
+        refs_by_file: Cell.new(no_refs_by_file),
+        refs_by_decl: Cell.new(no_refs_by_decl),
+        refs_incomplete: Cell.new(false),
+        ensure_refs: Cell.new(no_refs_ensure),
     }
 }
 
@@ -1102,6 +1134,79 @@ impl Decls {
     /// The workspace arms the receivers hook once.
     fn arm_writes(ensure: fn(DeclId) -> void) {
         self.ensure_writes.set(ensure)
+    }
+
+    /// Every named USE of `d`, of any kind, across the program —
+    /// asking runs the references pass.
+    fn refs_of(d: DeclId) -> List<Ref> {
+        (self.ensure_refs.get())()
+        let rows = self.refs_by_decl.get()
+        if d.index < rows.length { rows[d.index] } else { [] }
+    }
+
+    /// Every CALL or METHOD CALL naming `d`.
+    fn callers(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if r.kind is .Call || r.kind is .MethodCall]
+    }
+
+    /// Every plain read of `d` — never a call, never a write.
+    fn readers(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if r.kind is .Read]
+    }
+
+    /// Every place that writes `d` — rare: only a decl a program can
+    /// assign to at all answers here.
+    fn writers(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if r.kind is .Write]
+    }
+
+    /// Every use OTHER than the `use` line that named it — whether an
+    /// import is read at all.
+    fn used(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if !(r.kind is .Import)]
+    }
+
+    /// Whether a held file left the relation INCOMPLETE — a decl
+    /// `used(d)` calls unused may be read from inside one, so "no use
+    /// anywhere" is not an answer a caller may give while this holds.
+    fn refs_are_incomplete() -> bool {
+        self.refs_incomplete.get()
+    }
+
+    fn mark_refs_incomplete(incomplete: bool) {
+        self.refs_incomplete.set(incomplete)
+    }
+
+    /// One file's own rows, as `references.av`'s pass wrote them.
+    fn refs_in_file(f: FileId) -> List<Ref> {
+        (self.ensure_refs.get())()
+        let rows = self.refs_by_file.get()
+        if f.index < rows.length { rows[f.index] } else { [] }
+    }
+
+    /// `references.av`'s own write door: one file's rows, replacing
+    /// whatever it held.
+    fn set_file_refs(f: FileId, rows: List<Ref>) {
+        mut cur = self.refs_by_file.get()
+        while cur.length <= f.index { cur.push([]) }
+        cur.set(f.index, rows)
+        self.refs_by_file.set(cur)
+    }
+
+    /// `references.av`'s own settle: every row, folded by the
+    /// declaration it names.
+    fn settle_refs(all: List<Ref>) {
+        let no_row: List<Ref> = []
+        mut idx: List<List<Ref>> = filled(self.decls.get().length, no_row)
+        for r in all {
+            if r.decl.index < idx.length { idx.set(r.decl.index, idx[r.decl.index].concat([r])) }
+        }
+        self.refs_by_decl.set(idx)
+    }
+
+    /// The workspace arms the references hook once.
+    fn arm_references(ensure: fn() -> void) {
+        self.ensure_refs.set(ensure)
     }
 
     fn record_target(impl_decl: DeclId, target: DeclId) {

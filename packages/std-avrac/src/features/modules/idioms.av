@@ -1,0 +1,25 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+
+/// A name imported and never used ANYWHERE in its MODULE — the
+/// compiler refuses a MISSING import (F3000) and one a module does
+/// not export (F3012); an unused one is silent, so this rule keeps
+/// that direction. `unused_imports()` (features/code.av, THE
+/// REFERENCES RELATION) already exempts a component instance
+/// (`DeclFacts.instance`): its use is being REACHABLE for a
+/// `collect`, not being read.
+///
+/// NO REWRITE: the fix is deleting this item from a comma list that
+/// may carry an `as` alias and a trailing comma of its own — a quote
+/// pattern has no hole over a comma-separated item list yet
+/// (avra-8sb5.25.16's own gap), so a safe single-node splice is not
+/// yet expressible. Delete the name by hand until it lands.
+@keeps("1 + 1")
+export rule unused_import {
+    quote { ${u} } if !u.unused_imports().is_empty() -> unused_import_found(u),
+}
+
+fn unused_import_found(u: Code) -> Fix {
+    Fix.Say(said(u.loc(), "imported and never used in this module: ${u.unused_imports().join(", ")}", "this import", null))
+}

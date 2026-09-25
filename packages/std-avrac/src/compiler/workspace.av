@@ -334,6 +334,10 @@ enum Family {
     /// a file parsed under NO sublanguage words — what the block
     /// pre-scan reads of a provider, depending on its source alone
     Plain
+    /// THE REFERENCES RELATION — one key, the whole program: every
+    /// named use of a declaration, folded from every file's own rows
+    /// (compiler/references.av).
+    References
 }
 
 fn key(f: Family, arg: int) -> Key {
@@ -361,6 +365,7 @@ fn ordinal(f: Family) -> int {
         .Receivers -> 16,
         .Expanded -> 17,
         .Plain -> 18,
+        .References -> 19,
     }
 }
 
@@ -386,6 +391,7 @@ fn families() -> List<Family> {
         Family.Receivers,
         Family.Expanded,
         Family.Plain,
+        Family.References,
     ]
     all
 }
@@ -506,6 +512,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_references(() -> ws.refs_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
@@ -562,6 +569,10 @@ impl Workspace {
 
     fn writes_ensured() {
         let _ = self.receivers()
+    }
+
+    fn refs_ensured() {
+        let _ = self.references()
     }
 
     fn marks_ensured(d: DeclId) {
@@ -631,6 +642,7 @@ impl Workspace {
             .Receivers -> touch(self.receivers()),
             .Expanded -> touch(self.expanded(file_at(arg))),
             .Plain -> touch(self.plain_parsed(file_at(arg))),
+            .References -> touch(self.references()),
         }
         self.db.changed_at(key(f, arg))
     }
