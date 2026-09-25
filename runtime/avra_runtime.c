@@ -428,10 +428,21 @@ static size_t box_bytes(Header* h) {
     }
 }
 
+static size_t block_size(Header* h);
+
+// A sized box files by its BLOCK's class, never its LENGTH's — a box
+// grown large and later truncated keeps the class it can actually
+// serve, so a big block is never buried under a smaller one that no
+// future request its size will ask the free lists for.
+static size_t free_class(Header* h, size_t bytes) {
+    if (h->kind == KIND_STR || h->kind == KIND_BYTES) return class_of(block_size(h) - sizeof(Header));
+    return class_of(bytes);
+}
+
 static void box_free(void* p) {
     Header* h = (Header*)p - 1;
     size_t bytes = box_bytes(h);
-    size_t cls = class_of(bytes);
+    size_t cls = free_class(h, bytes);
     acc_box(h->kind, -(int64_t)(sizeof(Header) + bytes));
     h->tag = 0;
     if (cls && g_free_len[cls] < LIST_LIMIT) {
@@ -610,7 +621,9 @@ static size_t block_size(Header* h) {
 // The content bytes a sized box can hold, its NUL's byte spared. A
 // classed box holds its class; a bigger one what its block holds. The
 // class is read from the LENGTH, so a box shrunk in place answers the
-// smaller class — under its block, never over it.
+// smaller class — cheap, and an UNDER-report only, never over: the
+// slow path in `sized_moved` asks the block itself before it moves
+// anything, so this stays the fast check every append pays.
 static size_t sized_capacity(Header* h) {
     size_t cls = class_of((size_t)h->len + 1);
     if (cls) return cls * CLASS_BYTES - 1;
@@ -631,6 +644,12 @@ static void sized_resized(Header* h, size_t n) {
 __attribute__((noinline))
 static char* sized_moved(char* p, size_t need) {
     Header* h = (Header*)p - 1;
+    // The CLASS check that sent us here reads the LENGTH, which
+    // truncation can shrink well under the block's real size — ask
+    // the allocator once, here on the already-slow path, rather than
+    // on every append's fast check, before paying for a move the
+    // block never needed.
+    if (!rc_guarded() && block_size(h) - sizeof(Header) - 1 >= need) return p;
     size_t n = h->len;
     size_t room = need < 2 * n ? 2 * n : need;
     if (room + 1 <= CLASS_MAX || class_of(n + 1) != 0 || rc_guarded()) {
