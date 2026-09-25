@@ -243,6 +243,8 @@ impl LowerCx {
             .Box(_) -> self.static_read(r, name, boxes),
             // a whole nullable scalar is a pair, built by `meta_pair`
             .Absent -> self.defect("an absent scalar reached a register whole — `meta_pair` builds the pair"),
+            // no crossing value is a fn — `static_fn_box` lays this slot out directly
+            .Code(_) -> self.defect("a code address reached the meta-value crossing, which builds none"),
         }
         r
     }
@@ -559,7 +561,9 @@ impl LowerCx {
     // A closure or boxed fn is a slot array: the CODE ADDRESS at slot
     // 0, captures after. Every call rides CallPtr with the box at seat
     // 0 — the env is `self` by another name. The lanes are this
-    // file's business alone.
+    // file's business alone. A box with no captures holds nothing a
+    // caller could vary, so it is laid out ONCE, as static data —
+    // `static_fn_box` — never rebuilt per read.
     /// The box, minted: the code address first, the captures in lane
     /// order — the lifted body reads them back by `capture_lane`.
     mut fn fn_box(sh: Type, size: Reg, sym: string, caps: List<Reg>) -> Reg {
@@ -569,6 +573,18 @@ impl LowerCx {
         self.push_slot(dst, ad)
         for r in caps { self.push_slot(dst, r) }
         dst
+    }
+
+    /// A CAPTURE-FREE box: the code address alone, laid out once as
+    /// immortal static data (CLAUDE.md "A SETTLED AGGREGATE IS STATIC
+    /// DATA") — every use reads the same address, no allocation and
+    /// no count owed. A lambda with captures keeps `fn_box`'s box,
+    /// since each evaluation's captures differ; a bare symbol never
+    /// varies, so a NAMED fn used as a value takes this path always.
+    mut fn static_fn_box(sh: Type, sym: string) -> Reg {
+        let r = self.mint_shape(sh)
+        self.static_read(r, "fn\$${sym}", [StaticBox.Slots([Slot.Code(sym)])])
+        r
     }
 
     /// The call THROUGH a box: slot 0 is the code, the box rides seat
