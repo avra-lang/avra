@@ -109,9 +109,33 @@ fn generated(t: Type) -> Decls {
 }
 
 // ── Refusals — a self-explaining name, the way core/identity_derive.av
-// answers a payload type it has no row for; @std/db has no Diagnostic
-// channel open to a List<Directive>-returning derive (raised with
-// ERRORS, unresolved — noted at the campaign's tracker). ──
+// answers a payload type it has no row for. `@std/meta`'s annotation
+// effects are exhaustive and mutually exclusive by answer type alone
+// (`List<Diagnostic>` validates, `List<Directive>` generates —
+// features/annotations/check.av's `effect_of`): a Declares-effect
+// derive answers ONE of the two, never both, so `@model` — a plain
+// `List<Directive>` fn — has no `Diagnostic` of its own to raise.
+//
+// A NAME HERE IS NEVER SEEN UNLESS IT IS A MEMBER. These three are
+// bare fns, not `impl ${t} { }` members, so a real call through any
+// generated method name (`create_table`, `insert`, ...) meets the
+// TYPE's own missing-member refusal first and never reaches this
+// name at all — probed for all three refusals with a realistic call
+// (`create_table`): an enum answers "no variant `create_table`"
+// naming its real variants, a record answers "is a record, not an
+// enum" with a help suggesting a struct literal. The self-explaining name
+// is a fact for a reader of the generated tree, not a diagnostic a
+// user's build will ever show.
+//
+// The two-annotation split — a `List<Diagnostic>` validator stacked
+// beside this `List<Directive>` generator, e.g. `@model_shape @model
+// type User = {...}` — raises a real, correctly-placed refusal today
+// with no compiler change (annotations on one declaration run
+// independently; features/tests/crossing_test.av's `Shape`/`plainly`
+// pair is exactly this shape, generate and validate side by side).
+// Not taken here: it taxes every CORRECT model with a second written
+// word to cover the rare broken one, which a single annotation
+// answering both a Diagnostic and a Directive would not. ──
 
 fn broken_kind() -> Decls {
     quote { fn model_only_derives_over_a_record_never_an_enum() {} }
