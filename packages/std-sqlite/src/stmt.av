@@ -14,11 +14,12 @@
 //! and an out-of-memory — so a read that tests the POINTER cannot tell
 //! them apart. `int_at` asks `column_type` before it reads, and a cell
 //! of the wrong class is a `Mismatch` rather than a coerced zero.
+use @std.errors.{Loc}
 use error.{Cause, Storage, SqlError, refused, barred, defect, cause_of}
 use boundary.{transient, static_bytes}
 use open.{Db, closed_fault}
 use script.{statements}
-use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
+use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_column_name, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_error_offset, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
 
 /// A compiled statement. BOTH FIELDS ARE CELLS because both are
 /// shared state: the handle so finalizing twice finalizes once, and
@@ -56,11 +57,11 @@ export fn prepare(db: Db, sql: string) -> Result<Stmt, SqlError> {
 /// is reached only after one — so a closed connection is named once,
 /// where the caller can act on it, rather than arriving as SQLite's
 /// SQLITE_MISUSE with the driver's name on it.
-fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
+export fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
     mut handle: ptr? = null // LICENSED I4: an out-parameter cell C fills
     mut tail: ptr? = null // LICENSED I4: an out-parameter cell C fills
     let rc = sqlite3_prepare_v3(db.raw.get(), sql.bytes(), sql.length, 0, handle, tail)
-    if rc != 0 { fail failed(rc, sql) }
+    if rc != 0 { fail failed_at(db, rc, sql) }
     // rc = SQLITE_OK WITH A NULL STATEMENT is SQLite's "nothing to run"
     // — the text was a comment, or blank (T37). The splitter does NOT
     // judge this and deliberately so: it divides text into segments and
@@ -140,7 +141,10 @@ export fn run(db: Db, sql: string) -> Result<int, SqlError> {
     n
 }
 
-fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
+/// A statement that has ALREADY been bound, drained to its change count.
+/// `run`'s tail, and the face's own `Sql`-carrying `run` shares it rather
+/// than re-spelling the row-discard guard.
+export fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
     if sqlite3_column_count(s.raw.get()) > 0 { fail refused(Cause.RowsDiscarded, "this statement answers rows and this verb answers a count — read it instead") }
     let more = step(s)?
     if more { fail refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
@@ -211,11 +215,24 @@ export fn bind_text(s: Stmt, index: int, value: string) -> Result<int, SqlError>
     judged(sqlite3_bind_text(s.raw.get(), i, value.bytes(), value.length, transient()))
 }
 
-/// Bytes bound into the Nth hole, COPIED. A zero-length blob is a real
-/// value and stays distinct from NULL.
+/// A string's bytes bound into the Nth hole, COPIED. A zero-length blob
+/// is a real value and stays distinct from NULL.
+///
+/// THE VALUE IS A `string`, SO IT IS ALWAYS UTF-8 — an arbitrary octet
+/// run is `bind_blob_bytes`'s to bind. This verb exists for the common
+/// case where the blob's bytes happen to be a string a caller already
+/// holds, sparing them a `.bytes()` at every call site.
 export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
     let i = in_slots(s, index)?
     judged(sqlite3_bind_blob(s.raw.get(), i, value.bytes(), value.length, transient()))
+}
+
+/// Arbitrary octets bound into the Nth hole, COPIED — `bind_blob`'s
+/// `Bytes`-taking twin, for a value that is not (or is not known to be)
+/// valid UTF-8.
+export fn bind_blob_bytes(s: Stmt, index: int, value: Bytes) -> Result<int, SqlError> {
+    let i = in_slots(s, index)?
+    judged(sqlite3_bind_blob(s.raw.get(), i, value, value.length, transient()))
 }
 
 /// Text bound WITHOUT a copy — the named hatch (P8).
@@ -349,6 +366,10 @@ export fn real_at(s: Stmt, col: int) -> Result<float, SqlError> {
 
 extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 
+/// A borrowed, NUL-terminated buffer's length in bytes — this package's
+/// own C, for the one wall answer with no paired length function.
+extern fn avra_sqlite_cstr_len(p: ptr) -> int
+
 /// A cell's octets, copied. The CLASS has already said a value is
 /// there; what remains is a pointer that may be absent because the
 /// value is empty, and a length that must be true.
@@ -380,6 +401,21 @@ export fn blob_at(s: Stmt, col: int) -> Result<Bytes, SqlError> {
     if !(class is .Blob) { fail wrong_class(col, Storage.Blob, class) }
     let p: ptr? = sqlite3_column_blob(s.raw.get(), col)
     taken(p, sqlite3_column_bytes(s.raw.get(), col), col)
+}
+
+/// The column's name in the result set — the `AS` alias where there is
+/// one — copied. `sqlite3_column_name` has no companion length function
+/// the way `column_text`/`column_blob` pair with `column_bytes`, so its
+/// bytes are measured by their NUL: SQLite's own words for it are "a
+/// zero-terminated UTF-8 string", and a name is never the cell data a
+/// foreign row could hand back un-measured.
+export fn column_name(s: Stmt, col: int) -> Result<string, SqlError> {
+    let _ = in_row(s, col)?
+    let p: ptr? = sqlite3_column_name(s.raw.get(), col)
+    let held? = p else { fail defect(no_name_words(col)) }
+    let bytes = avra_bytes_adopted(held, avra_sqlite_cstr_len(held))
+    let word? = bytes.text() else { fail defect(not_utf8_name_words(col)) }
+    word
 }
 
 /// A cell's class, or a `NoColumn` when the index is outside the row.
@@ -436,6 +472,20 @@ fn failed(rc: int, sql: string?) -> SqlError {
     SqlError { cause: cause_of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
 }
 
+/// `failed`, plus the span a PARSE failure carries — `sqlite3_error_offset`
+/// answers -1 for a code with no token to blame, and `at` is absent
+/// exactly then. Only a connection-holding failure can ask; `step`'s
+/// failures stay spanless, since `Stmt` carries no connection back to it.
+fn failed_at(db: Db, rc: int, sql: string?) -> SqlError {
+    failed(rc, sql) with { at: offset_of(db) }
+}
+
+fn offset_of(db: Db) -> Loc? {
+    let n = sqlite3_error_offset(db.raw.get())
+    if n < 0 { return null }
+    Loc { file: null, lo: n, hi: n }
+}
+
 fn negative_length_words(col: int, n: int) -> string {
     "column ${col} answered a length of ${n} — a buffer cannot be shorter than nothing"
 }
@@ -444,7 +494,18 @@ fn not_utf8_words(col: int) -> string {
     "column ${col} is TEXT that is not valid UTF-8 — read it as a blob"
 }
 
-fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
+fn no_name_words(col: int) -> string {
+    "SQLite answered no name for column ${col} — out of memory reading it"
+}
+
+fn not_utf8_name_words(col: int) -> string {
+    "column ${col}'s name is not valid UTF-8"
+}
+
+/// A cell's class named against the class a read wanted — `Row`'s own
+/// indexed reads reuse this too, since a materialized value's mismatch
+/// is the same sentence over a different receiver.
+export fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
     refused(Cause.Mismatch(col, wanted, found), "column ${col} holds ${class_word(found)} and the read asked for ${class_word(wanted)}")
 }
 

@@ -1,0 +1,219 @@
+// The red team's record for the ERGONOMIC FACE (`sql.av`) — the values
+// that cross it, rather than the wall's own protocol (already covered
+// by the statement/connection adversarial suites).
+use @std.sqlite.open.{Db, memory}
+use @std.sqlite.error.{SqlError}
+use @std.sqlite.sql.{sql, Row, SqlValue}
+
+fn fadv_db() -> Result<Db, SqlError> {
+    let db = memory()?
+    db.run(sql("create table t (v)"))?
+    db
+}
+
+fn fadv_kind<T>(r: Result<T, SqlError>) -> string {
+    match r {
+        .Ok(_) -> "",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+spec "std/sqlite face adversarial" {
+    given "the empty triple, written through BIND rather than a literal" {
+        // The pending face suite proves this reading LITERAL SQL
+        // (`''`, `x''`, `null`); a bound `.Text("")`/`.Blob(...)`/`.Null`
+        // is a DIFFERENT code path (`bind_text`/`bind_blob_bytes`/
+        // `bind_null`) and the empty-value law says to write the empty
+        // case first for every representation that crosses.
+        then "a bound null reads back as null" { fadv_class_via_bind(.Null) == "null" }
+        then "a bound empty string reads back as text, not absence" { fadv_class_via_bind(.Text("")) == "text" }
+        then "a bound empty blob reads back as a blob, not absence" { fadv_class_via_bind(.Blob("".bytes())) == "blob" }
+    }
+    given "a blob that is not valid UTF-8, bound and read back" {
+
+        // `bind_blob_bytes` exists precisely because a face taking `string`
+        // could never carry this: 0xFF is not a UTF-8 lead byte anywhere.
+        then "its octets round-trip exactly" { fadv_blob_length([255, 254, 0, 128]) == 4 }
+        then "reading it as text refuses by class, not by decoding" { fadv_read_as_text([255, 254]) == "sqlite.mismatch" }
+    }
+    given "text with multi-byte UTF-8, bound and read back" {
+
+        then "an emoji's bytes and its .length agree" { fadv_text_round_trip("héllo 🎉 wörld") }
+    }
+    given "a Sql's argument count against the statement's slots" {
+
+        // `Cause.Unfilled` exists for exactly this and was unused until
+        // this face; a bind loop that ran anyway would bind past the end
+        // or leave slots NULL by accident, silently.
+        then "too few arguments are refused before anything binds" { fadv_run_kind("update t set v = ? where v = ?", []) == "sqlite.unfilled" }
+        then "too many arguments are refused the same way" { fadv_run_kind("insert into t (v) values (?)", [.Int(1), .Int(2)]) == "sqlite.unfilled" }
+        then "the right count runs clean" { fadv_run_kind("insert into t (v) values (?)", [.Int(1)]) == "" }
+    }
+    given "a column index outside the row, asked through the face" {
+
+        then "a negative index is refused, not read as the last column" { fadv_kind(fadv_row_int(-1)) == "sqlite.out_of_row" }
+        then "a negative index into text is refused the same way" { fadv_kind(fadv_row_text(-1)) == "sqlite.out_of_row" }
+    }
+    given "a Row, after the statement that made it moves on" {
+
+        // `Row` is documented as a copy taken before the statement steps,
+        // resets or finalizes again — this is the claim, exercised.
+        then "its values survive the statement finalizing" { fadv_row_survives_finalize() == "7|seven" }
+        then "its values survive an unrelated later query on the same db" { fadv_row_survives_reuse() == "7|seven" }
+    }
+    given "a query answering no rows, through every multi-row verb" {
+
+        then "`all` answers the empty list, not a refusal" { fadv_all_count("select v from t where 0") == 0 }
+        then "`first` answers absence, not a refusal" { fadv_first_absent("select v from t where 0") }
+    }
+    given "one `Sql` value, run more than once" {
+
+        // Binding is a property of the CALL (`prepared` re-binds fresh
+        // every time), never of the `Sql` value — so the same value runs
+        // twice with no "already bound" state to trip over.
+        then "the same Sql value runs clean twice in a row" { fadv_run_twice() == "1|1" }
+    }
+}
+
+fn fadv_class_via_bind(v: SqlValue) -> string {
+    fadv_class_of(fadv_written(v))
+}
+
+fn fadv_written(v: SqlValue) -> Result<Row, SqlError> {
+    let db = fadv_db()?
+    db.run(sql("insert into t (v) values (?)").args([v]))?
+    db.one(sql("select v from t"))
+}
+
+fn fadv_class_of(r: Result<Row, SqlError>) -> string {
+    match r {
+        .Err(e) -> e.cause.kind(),
+        .Ok(row) -> row.class().name(),
+    }
+}
+
+fn fadv_blob_length(octets: List<int>) -> int {
+    match fadv_blob_row(octets) {
+        .Err(_) -> 0 - 1,
+        .Ok(row) -> fadv_blob_len_of(row),
+    }
+}
+
+fn fadv_blob_len_of(row: Row) -> int {
+    match row.values[0] {
+        .Blob(b) -> b.length,
+        _ -> 0 - 1,
+    }
+}
+
+fn fadv_blob_row(octets: List<int>) -> Result<Row, SqlError> {
+    let db = fadv_db()?
+    db.run(sql("insert into t (v) values (?)").args([.Blob(octets.bytes()!)]))?
+    db.one(sql("select v from t"))
+}
+
+fn fadv_read_as_text(octets: List<int>) -> string {
+    fadv_kind(fadv_text_of_blob(octets))
+}
+
+fn fadv_text_of_blob(octets: List<int>) -> Result<string, SqlError> {
+    (fadv_blob_row(octets)?).text(0)
+}
+
+fn fadv_text_round_trip(s: string) -> bool {
+    (fadv_text_read_back(s) catch "") == s
+}
+
+fn fadv_text_read_back(s: string) -> Result<string, SqlError> {
+    let db = fadv_db()?
+    db.run(sql("insert into t (v) values (?)").args([.Text(s)]))?
+    (db.one(sql("select v from t"))?).text(0)
+}
+
+fn fadv_run_kind(text: string, args: List<SqlValue>) -> string {
+    fadv_kind(fadv_run_with(text, args))
+}
+
+fn fadv_run_with(text: string, args: List<SqlValue>) -> Result<int, SqlError> {
+    (fadv_db()?).run(sql(text).args(args))
+}
+
+fn fadv_row_int(i: int) -> Result<int, SqlError> {
+    (fadv_one_row("select v from t")?).int(i)
+}
+
+fn fadv_row_text(i: int) -> Result<string, SqlError> {
+    (fadv_one_row("select v from t")?).text(i)
+}
+
+fn fadv_one_row(text: string) -> Result<Row, SqlError> {
+    let db = fadv_db()?
+    db.run(sql("insert into t (v) values (7)"))?
+    db.one(sql(text))
+}
+
+fn fadv_row_survives_finalize() -> string {
+    match fadv_seeded_row() {
+        .Err(_) -> "?",
+        .Ok(row) -> fadv_row_words(row),
+    }
+}
+
+fn fadv_seeded_row() -> Result<Row, SqlError> {
+    let db = fadv_db()?
+    db.run(sql("create table u (n integer, w text)"))?
+    db.run(sql("insert into u (n, w) values (?, ?)").args([.Int(7), .Text("seven")]))?
+    db.one(sql("select n, w from u"))
+}
+
+fn fadv_row_words(row: Row) -> string {
+    let n = row.int(0) catch 0 - 1
+    let w = row.text(1) catch "?"
+    "${n}|${w}"
+}
+
+fn fadv_row_survives_reuse() -> string {
+    match fadv_seeded_row_and_db() {
+        .Err(_) -> "?",
+        .Ok(row) -> fadv_row_words(row),
+    }
+}
+
+fn fadv_seeded_row_and_db() -> Result<Row, SqlError> {
+    let db = fadv_db()?
+    db.run(sql("create table u (n integer, w text)"))?
+    db.run(sql("insert into u (n, w) values (?, ?)").args([.Int(7), .Text("seven")]))?
+    let row = db.one(sql("select n, w from u"))?
+    db.run(sql("create table other (z)"))?
+    let _ = db.run(sql("insert into other (z) values (1)"))?
+    row
+}
+
+fn fadv_all_count(text: string) -> int {
+    match fadv_all_rows(text) {
+        .Err(_) -> 0 - 1,
+        .Ok(rows) -> rows.length,
+    }
+}
+
+fn fadv_all_rows(text: string) -> Result<List<Row>, SqlError> {
+    (fadv_db()?).all(sql(text))
+}
+
+fn fadv_first_absent(text: string) -> bool {
+    (fadv_first_row(text) catch null) == null
+}
+
+fn fadv_first_row(text: string) -> Result<Row?, SqlError> {
+    (fadv_db()?).first(sql(text))
+}
+
+fn fadv_run_twice() -> string { fadv_twice() catch "?" }
+
+fn fadv_twice() -> Result<string, SqlError> {
+    let db = fadv_db()?
+    let statement = sql("insert into t (v) values (1)")
+    let first = db.run(statement)?
+    let second = db.run(statement)?
+    "${first}|${second}"
+}
