@@ -4,7 +4,8 @@
 //! tools the package you stand in declares, each resolved where it
 //! stands today, printed before anything runs.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{avra, Program}
+use @std.avrac.compiler.{avra, Program, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.store.{Store, store_at}
 use @std.avrac.diagnostics.{DiagCode, Diag, new_source_file, render}
 use @std.path.{joined_path}
 use @std.process.{Tool, tool, tool_from_env, ProcessError}
@@ -99,9 +100,35 @@ fn explained_annotation(name: string) -> int {
 /// `///` doc and `@name(args)` annotations, the fallback every other
 /// form of the command misses through. The package is the directory
 /// the command stands in, as every other form here reads it.
+///
+/// THE FAST PATH: a row this package's own db already holds, once its
+/// witnesses still hold, answers with no program built at all — the
+/// whole point of a durable `Db` (compiler/db.av). A miss falls back
+/// to today's derivation and remembers what it found for the process
+/// after this one.
 fn explained_decl(name: string) -> int {
+    let root = here()
+    let store = store_at(build_cache_root(root_workspace(root)))
+    mut d = db()
+    let cached? = d.decl(store, db_qualified(root, name)) else { return derived_decl(d, store, root, name) }
+    println(cached.answer)
+    0
+}
+
+fn derived_decl(mut d: Db, store: Store, root: string, name: string) -> int {
     let p? = clean_program() else { return 1 }
-    answered(p.explain_doc(name), "nothing registered under `${name}` — no diagnostic code, kind, or declared fn/type/enum/trait/const wears it")
+    let found? = p.explain_doc(name) else {
+        eprintln("avra: nothing registered under `${name}` — no diagnostic code, kind, or declared fn/type/enum/trait/const wears it")
+        return 1
+    }
+    d.insert_decl(store, db_qualified(root, name), DocFacts {
+        root: root,
+        answer: found.text,
+        listing_digest: current_listing_digest(root),
+        files: [FileWitness { path: f, digest: current_file_digest(f) } for f in found.files],
+    })
+    println(found.text)
+    0
 }
 
 /// `avra docs repr <type>` — the runtime REPRESENTATION the

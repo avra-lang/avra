@@ -58,6 +58,10 @@ export type Parsed = {
     voices: Voices,
 }
 
+/// `explain_doc`'s answer: the rendered text, and the files it read to
+/// say so — a durable cache of it needs both (compiler/db.av).
+export type DocAnswer = { text: string, files: List<string> }
+
 export fn new_dispatch() -> Dispatch {
     let enumpats: dyn PatSemantics = EnumPatSemantics {}
     let formatpats: dyn PatSemantics = FormatPatSemantics {}
@@ -271,21 +275,32 @@ impl Program {
     /// TWO modules both declare — legal, since each namespaces on its
     /// own — is named as a collision rather than silently answered
     /// from whichever one the compiler happened to reach first.
-    fn explain_doc(name: string) -> string? {
+    ///
+    /// The FILES an answer read ride along too — never the answer's own
+    /// business, but exactly what a durable cache of this answer needs
+    /// to know is still true (compiler/db.av's `DocFacts`).
+    fn explain_doc(name: string) -> DocAnswer? {
         let decls = self.ws.decls
         let matches = [d for d in decls.decls.get() if d.name == name]
-        if matches.length > 1 { return self.collision_text(decls, name, matches) }
+        if matches.length > 1 { return self.collision_answer(decls, name, matches) }
         let decl? = matches.first() else { return null }
         let doc = decls.doc_of(decl.id) ?? []
         let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
         let lines = doc.concat(anns)
-        if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+        let text = if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+        DocAnswer { text: text, files: [decls.file(decl.file).path] }
     }
 
-    /// `name` names more than one declaration — never guessed at.
-    fn collision_text(decls: Decls, name: string, matches: List<Decl>) -> string {
+    /// `name` names more than one declaration — never guessed at. Every
+    /// matching declaration's own file backs the answer: a new module
+    /// declaring the same name changes it just as much as an edit to
+    /// one already listed.
+    fn collision_answer(decls: Decls, name: string, matches: List<Decl>) -> DocAnswer {
         let qualified = [decls.module_of(d.id) + "." + name for d in matches].join(", ")
-        "`${name}` names more than one declaration in this package — qualify it: ${qualified}"
+        DocAnswer {
+            text: "`${name}` names more than one declaration in this package — qualify it: ${qualified}",
+            files: [decls.file(d.file).path for d in matches],
+        }
     }
 
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s
