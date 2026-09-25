@@ -243,6 +243,8 @@ impl LowerCx {
             .Box(_) -> self.static_read(r, name, boxes),
             // a whole nullable scalar is a pair, built by `meta_pair`
             .Absent -> self.defect("an absent scalar reached a register whole — `meta_pair` builds the pair"),
+            // no crossing value is a fn — `static_fn_box` lays this slot out directly
+            .Code(_) -> self.defect("a code address reached the meta-value crossing, which builds none"),
         }
         r
     }
@@ -281,7 +283,7 @@ impl LowerCx {
             .Int -> self.int_text(Type.Str, v),
             .Float -> self.float_text(Type.Str, v),
             .Bool -> self.bool_text(Type.Str, v),
-            .Ptr or .Bytes or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> v,
+            .Ptr or .Bytes or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) -> v,
         }
     }
 
@@ -385,7 +387,7 @@ impl LowerCx {
             .Str -> self.streq(Type.Bool, a, b),
             .Bytes -> self.bytes_eq(Type.Bool, a, b),
             .Opt(_) -> self.same_through(a, ty, b, ty),
-            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Struct(_, _) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .EmptyMap or .Error or .Void -> self.bin(Type.Bool, BinOp.Eq, a, b),
+            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Struct(_, _) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void -> self.bin(Type.Bool, BinOp.Eq, a, b),
         }
     }
 
@@ -540,14 +542,25 @@ impl LowerCx {
     /// A FAILURE LEAVING under the enclosing fn's own Result: the value
     /// itself when both Results are laid out alike — a box moves by its
     /// pointer, a value's Err tag and word mean the same — else its
-    /// error wrapped again in the fn's layout.
+    /// error wrapped again in the fn's layout. TWO RESULTS AGREE ON
+    /// THEIR ERR SIDE'S BITS when the types are identical, or when
+    /// BOTH are unions: a union box's discriminant is the live
+    /// member's own global type id, so which union claims it never
+    /// changes what the box holds — a narrower union widens into a
+    /// wider one by pointer move, same as a plain box does today. A
+    /// PLAIN member meeting a UNION promise is the one real
+    /// mismatch — it has no discriminant of its own, so it is LIFTED
+    /// into the union's own tagged box, never moved raw.
     mut fn propagated(r: Reg) -> Reg {
         let ret? = self.enclosing_ret() else { return r }
         let into = self.concrete(ret)
         let from = self.out.type_of_reg(r)
-        if self.valued(from) == self.valued(into) { return r }
-        let sides? = self.view.types.res_parts(from) else { return r }
-        self.failed(into, self.payload_of(r, sides.err))
+        let fsides? = self.view.types.res_parts(from) else { return r }
+        let isides? = self.view.types.res_parts(into) else { return r }
+        let agrees = same_type(fsides.err, isides.err) || self.view.types.shape_of(fsides.err) is .Union && self.view.types.shape_of(isides.err) is .Union
+        if agrees && self.valued(from) == self.valued(into) { return r }
+        let payload = self.payload_of(r, fsides.err)
+        self.failed(into, if agrees { payload } else { self.tagged_value(self.view.types.shape_of(isides.err), fsides.err.index, [payload]) })
     }
 
     /// Is the result an ANSWER — its tag read against Ok's, as an i1.
@@ -559,7 +572,9 @@ impl LowerCx {
     // A closure or boxed fn is a slot array: the CODE ADDRESS at slot
     // 0, captures after. Every call rides CallPtr with the box at seat
     // 0 — the env is `self` by another name. The lanes are this
-    // file's business alone.
+    // file's business alone. A box with no captures holds nothing a
+    // caller could vary, so it is laid out ONCE, as static data —
+    // `static_fn_box` — never rebuilt per read.
     /// The box, minted: the code address first, the captures in lane
     /// order — the lifted body reads them back by `capture_lane`.
     mut fn fn_box(sh: Type, size: Reg, sym: string, caps: List<Reg>) -> Reg {
@@ -569,6 +584,18 @@ impl LowerCx {
         self.push_slot(dst, ad)
         for r in caps { self.push_slot(dst, r) }
         dst
+    }
+
+    /// A CAPTURE-FREE box: the code address alone, laid out once as
+    /// immortal static data (CLAUDE.md "A SETTLED AGGREGATE IS STATIC
+    /// DATA") — every use reads the same address, no allocation and
+    /// no count owed. A lambda with captures keeps `fn_box`'s box,
+    /// since each evaluation's captures differ; a bare symbol never
+    /// varies, so a NAMED fn used as a value takes this path always.
+    mut fn static_fn_box(sh: Type, sym: string) -> Reg {
+        let r = self.mint_shape(sh)
+        self.static_read(r, "fn\$${sym}", [StaticBox.Slots([Slot.Code(sym)])])
+        r
     }
 
     /// The call THROUGH a box: slot 0 is the code, the box rides seat

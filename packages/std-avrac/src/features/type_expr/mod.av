@@ -23,6 +23,7 @@ export fn type_expr() -> LanguageFeature {
         "applied_type"     | build_applied_type
         "opt_type"         | build_opt_type
         "plain_type"       | build_plain_type
+        "union_type"       | build_union_type
     }
     let codes = table<DiagCode> {
         kind           | summary
@@ -30,12 +31,13 @@ export fn type_expr() -> LanguageFeature {
     }
     LanguageFeature type_expr {
         gram: grammar {
-            type = "dyn" n:NAME "?" -> dyn_opt_type(n)
-            type = "dyn" n:NAME -> dyn_type(n)
-            type = n:NAME "<" a:type ( "," a:type )* ","? ">" "?" -> applied_opt_type(n, a)
-            type = n:NAME "<" a:type ( "," a:type )* ","? ">" -> applied_type(n, a)
-            type = n:NAME "?" -> opt_type(n)
-            type = n:NAME -> plain_type(n)
+            type = t:type_atom ( "or" a:type_atom )* -> union_type(t, a)
+            type_atom = "dyn" n:NAME "?" -> dyn_opt_type(n)
+            type_atom = "dyn" n:NAME -> dyn_type(n)
+            type_atom = n:NAME "<" a:type ( "," a:type )* ","? ">" "?" -> applied_opt_type(n, a)
+            type_atom = n:NAME "<" a:type ( "," a:type )* ","? ">" -> applied_type(n, a)
+            type_atom = n:NAME "?" -> opt_type(n)
+            type_atom = n:NAME -> plain_type(n)
         }
         builders: rows
         diags: codes

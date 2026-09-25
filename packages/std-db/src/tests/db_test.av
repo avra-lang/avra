@@ -1,0 +1,157 @@
+use @std.db.{model_shape, model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model_shape
+@model
+type User = {
+    id: int = 0,
+    @unique email: string,
+    name: string,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    User.create_table(db)?
+    db
+}
+
+fn inserted(mut db: Db, email: string, name: string) -> Result<User, ModelError> {
+    User { id: 0, email: email, name: name }.insert(db)
+}
+
+fn row_count(db: Db) -> Result<int, SqlError> {
+    (db.scalar(sql("select count(*) from User"))?).int()
+}
+
+fn email_of(db: Db, id: int) -> Result<string, SqlError> {
+    (db.scalar(sql("select email from User where id = ?").args([.Int(id)]))?).text()
+}
+
+fn name_of(db: Db, id: int) -> Result<string, SqlError> {
+    (db.scalar(sql("select name from User where id = ?").args([.Int(id)]))?).text()
+}
+
+fn round_trip() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let u = inserted(db, "ada@example.com", "Ada")?
+    "${u.id}|${modeled(email_of(db, u.id))?}|${modeled(name_of(db, u.id))?}"
+}
+
+fn updates() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let u = inserted(db, "a@x.com", "A")?
+    let changed = u with { name: "B" }
+    changed.update(db)?
+    modeled(name_of(db, u.id))
+}
+
+fn deletes() -> Result<int, ModelError> {
+    mut db = modeled(seeded())?
+    let u = inserted(db, "a@x.com", "A")?
+    modeled(u.delete(db))?
+    modeled(row_count(db))
+}
+
+fn version_of(db: Db, id: int) -> Result<int, SqlError> {
+    (db.scalar(sql("select \"__avra_version__\" from User where id = ?").args([.Int(id)]))?).int()
+}
+
+fn version_bumps_on_update() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let u = inserted(db, "v@x.com", "V")?
+    let before = modeled(version_of(db, u.id))?
+    let changed = u with { name: "V2" }
+    changed.update(db)?
+    let after = modeled(version_of(db, u.id))?
+    "${before}|${after}"
+}
+
+fn dup_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = inserted(db, "a@x.com", "A")?
+    let _ = inserted(db, "a@x.com", "B")?
+    0
+}
+
+fn unique_violation_own_kind() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn unique_violation_message() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn unique_violation_cause_kind() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> match e.cause() {
+            c? -> c.describe().kind
+            null -> "no cause"
+        },
+    }
+}
+
+fn found() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let u = inserted(db, "ada@example.com", "Ada")?
+    let f = modeled(User.find(db, u.id))?
+    match f {
+        u2? -> "${u2.id}|${u2.email}|${u2.name}"
+        null -> "not found"
+    }
+}
+
+fn not_found() -> Result<bool, SqlError> {
+    mut db = seeded()?
+    let f = User.find(db, 999)?
+    f == null
+}
+
+spec "std/db @model" {
+    given "a model's own generated SQL" {
+        then "the table name is the type's own name" { User.table_name() == "User" }
+        then "the create-table DDL names the primary key and the unique column" {
+            User.create_table_sql() == "CREATE TABLE IF NOT EXISTS \"User\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"email\" TEXT UNIQUE, \"name\" TEXT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1)"
+        }
+    }
+    given "a row inserted" {
+
+        then "it lands with a real id and the right columns" { (round_trip() catch "?") == "1|ada@example.com|Ada" }
+    }
+    given "find() over an id that exists" {
+
+        then "it reconstructs the row through the generic constructor" { (found() catch "?") == "1|ada@example.com|Ada" }
+    }
+    given "find() over an id that does not exist" {
+
+        then "it answers null, not an error" { (not_found() catch false) == true }
+    }
+    given "a found row, changed and updated" {
+
+        then "the update is visible on a fresh read" { (updates() catch "?") == "B" }
+    }
+    given "a row deleted" {
+
+        then "the table is empty" { (deletes() catch 0 - 1) == 0 }
+    }
+    given "the hidden version column" {
+
+        then "it starts at 1 and bumps to 2 on update" { (version_bumps_on_update() catch "?") == "1|2" }
+    }
+    given "a unique column violated" {
+
+        then "its own kind names it a model constraint violation" { unique_violation_own_kind() == "db.constraint.unique" }
+        then "the message names the violated field and its @unique declaration" {
+            unique_violation_message().contains("`email`") && unique_violation_message().contains("`User.email`")
+        }
+        then "the underlying SqlError stays reachable via .cause(), kind intact" { unique_violation_cause_kind() == "sqlite.constraint.unique" }
+    }
+}

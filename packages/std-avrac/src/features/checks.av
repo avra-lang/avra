@@ -272,7 +272,21 @@ impl TypeCx {
             self.widen(e, want)
             return true
         }
+        if self.union_accepts(got, want) {
+            self.widen(e, want)
+            return true
+        }
         self.res_accepts(e, got, want)
+    }
+
+    /// A member (or a narrower union) LIFTS into its union — the
+    /// sixth form at the one widening edge (nullable, auto-Ok,
+    /// empty-list, dyn, `Fix`): `got`'s member set inside `want`'s.
+    /// The runtime tag is the member's own global type id, minted at
+    /// `compiler/lower/walk.av`'s `widened`, never here — `accepts`
+    /// only records that the lift is owed.
+    fn union_accepts(got: TypeId, want: TypeId) -> bool {
+        self.view.types.shape_of(want) is .Union && self.view.types.covers(want, got)
     }
 
     /// A generated template LIFTS into a rule's `Fix` — the fifth form
@@ -1249,7 +1263,7 @@ export fn this_is(n: string) -> string {
 export fn comparable(sh: Type) -> bool {
     match sh {
         .Int or .Float or .Bool or .Str or .Bytes -> true,
-        .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
+        .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Union(_) or .Error -> false,
     }
 }
 

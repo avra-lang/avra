@@ -540,7 +540,10 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 
 /// `spliced` marks a type that came through a template's HOLE: it
 /// names a type where it lands, never where the template was written.
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false }
+/// A non-empty `alternatives` makes this ref a UNION — `A or B` — and
+/// every other field is unused: the 2+ members are ordinary written
+/// types in their own right, each resolved the usual way.
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -565,6 +568,7 @@ export fn plain(t: TypeRef) -> TypeRef {
 
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
+    if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
     let base = when {
         t.arrow -> spelled_arrow(t)
         t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
@@ -954,6 +958,7 @@ fn type_fp(t: TypeRef?) -> int {
         flagged(written.spliced),
         fp_list([mark_fp(m) for m in written.marks]),
         fp_list([type_fp(a) for a in written.args]),
+        fp_list([type_fp(a) for a in written.alternatives]),
     ])
 }
 
