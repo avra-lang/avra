@@ -716,18 +716,19 @@ fn component_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: str
 }
 
 /// A path's TEXT projection — the generic fields every kind answers:
-/// name, module, file, the `///` doc's first paragraph joined. `doc`
-/// reads `own_doc_of`, NEVER `doc_of`: a collect gathers many
-/// declarations from one file, so the file's `//!` is not any single
-/// one's doc to inherit — an UNDOCUMENTED entry answers "", not the
-/// file header every sibling would then share.
+/// name, module, file, the `///` doc's first paragraph joined. `doc_of`
+/// (features/decls.av) carries no file fallback, which is what this
+/// wants: a collect gathers many declarations from one file, so the
+/// file's `//!` is not any single one's doc to inherit — an
+/// UNDOCUMENTED entry answers "", not the file header every sibling
+/// would then share.
 fn collect_field_text(a: Analysis, d: Decl, path: List<Plain>) -> string {
     if path.length != 1 { return "" }
     let word = path[0].of
     if word == "name" { return d.name }
     if word == "module" { return a.view.decls.short_module_of(d.id) }
     if word == "file" { return a.view.decls.file(d.file).path }
-    if word == "doc" { return joined(doc_first_paragraph(a.view.decls.own_doc_of(d.id) ?? []), " ") }
+    if word == "doc" { return joined(doc_first_paragraph(a.view.decls.doc_of(d.id) ?? []), " ") }
     if is_root_kind_path(path) { return "${component_root_kind(a.view.decls, d)}" }
     ""
 }
