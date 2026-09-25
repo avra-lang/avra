@@ -342,6 +342,20 @@ gate — there is no amnesty left to hide in.
       `// LICENSED style.registry_catchall` is the exit left for it. A spelling that
       covers most cases does not get to close the escape hatch for
       the rest (P8).
+      RETIRED (avra-8sb5.25.16): the regex found ZERO sites at the
+      moment of retirement — no baseline debt, no `// LICENSED
+      style.registry_catchall` comment anywhere in the tree — which is
+      what "the old law fired at 191 sites and none was the defect it
+      names" already predicted: once `rest ->`'s spelling and F2040's
+      (now `type.registry_hole`'s) own count took over, the grep's
+      SYNTACTIC net over `_ ->` text did no work a TYPED count over
+      the declared enum's own variants was not already doing more
+      precisely — and doing it for every package `avra check` touches,
+      not only the ones this tool's own sweep reached. Not ported as a
+      `rule`: the enforcement was never idioms.py's to hand off, it
+      already lived in the type checker. `registry_forgets`/
+      `registry_forgets_bound` (features/enums/check.av) are the live
+      voices; a NEW catch-all still refuses there, gate or no gate.
 
 - style.dead_parameter a PARAMETER nothing reads: the signature lies about what the
       fn needs and every call site carries the lie (`declare` threaded

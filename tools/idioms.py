@@ -208,32 +208,6 @@ def unmutated_mut(lines):
                 or re.search(rf"[(,] *{name} *[,)]", body)):
             yield i, l.strip()
 
-def registry_catchall(lines):
-    """A match where TWO OR MORE variants answer is a REGISTRY, and a
-    registry ending in `_ ->` silently forgets the NEXT variant —
-    exactly how `let_name` dropped For's counter. One answering arm is
-    a PROJECTION: its contract pins the answer for variants that do
-    not exist yet, and the catch-all is honest there."""
-    for i, l in enumerate(lines):
-        if not re.search(r"match .+\{\s*$", l):
-            continue
-        depth = len(l) - len(l.lstrip())
-        arms, catch = 0, False
-        for j in range(i + 1, min(len(lines), i + 40)):
-            s = lines[j]
-            # the match's own close, a let-else's `} else {` included
-            if s.strip().startswith("}") and len(s) - len(s.lstrip()) == depth:
-                break
-            # Only THIS match's arms count: a nested `when`'s own
-            # catch-all sits deeper and is not this match's business.
-            if len(s) - len(s.lstrip()) != depth + 4:
-                continue
-            if re.match(r"\.[A-Za-z]", s.strip()):
-                arms += 1
-            if s.strip().startswith("_ ->"):
-                catch = True
-        if catch and arms >= 2:
-            yield i, l.strip()
 
 def fn_body(lines, start):
     """The lines of the fn opened at `start`, triple-quoted regions
@@ -582,10 +556,6 @@ RULES = {
     "style.dead_parameter": (dead_parameter,
             "a parameter nothing reads — the signature lies, and every call site "
             "carries the lie"),
-    "style.registry_catchall": (registry_catchall,
-            "2+ variants answer, so this is a REGISTRY — a catch-all here forgets "
-            "the NEXT variant; spell the arms (or-runs keep it affordable), or "
-            "write `rest ->` to say the remainder is deliberate"),
     "style.refusal_uncounted_contains": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
     "style.unmutated_mut": (unmutated_mut,
@@ -660,6 +630,14 @@ UNRATCHETED = {
            "           findings phase below. WIDER than the regex (structural, not a\n"
            "           single-line text match); NO REWRITE (the alternatives-bind\n"
            "           question, F2039, is a typing fact this rule-side scan lacks)",
+    "style.registry_catchall": "RETIRED (avra-8sb5.25.16): the regex found ZERO sites at\n"
+           "           retirement (no baseline debt, no `// LICENSED style.registry_catchall`\n"
+           "           comment anywhere) — the compiler's own typed diagnostic\n"
+           "           (`registry_forgets`/`registry_forgets_bound`, features/enums/check.av,\n"
+           "           F2040's successor) already counts answering arms against the\n"
+           "           DECLARED ENUM's own variants, for every package `avra check` touches,\n"
+           "           more precisely than a syntactic `_ ->` grep ever could. Not ported as\n"
+           "           a `rule`: the enforcement was never idioms.py's to hand off",
     "compiler.raw_rt_call": "PORTED NATIVELY (avra-8sb5.25.16): `raw_rt_call`/`raw_rt_call_void`\n"
            "           (compiler/idioms.av) — a fixed-arity `quote` over `Ins.CallRt`/\n"
            "           `Ins.CallRtVoid`, guarded by the bound name hole's own TEXT\n"
@@ -881,22 +859,6 @@ UNRATCHETED = {
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
-    # a let-else's match ends at `} else {`, and the scan must stop there
-    # rather than count the next fn's projection as this match's arms
-    "style.registry_catchall": [["    fn f() -> int? {",
-             "        let at? = match v {",
-             "            .I(j) -> j,",
-             "            rest -> null,",
-             "        } else { return null }",
-             "        at",
-             "    }",
-             "",
-             "    fn g(v: V) -> int {",
-             "        match v {",
-             "            .A(x) -> x,",
-             "            _ -> 0,",
-             "        }",
-             "    }"]],
     "style.refusal_uncounted_contains": [
         ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
@@ -938,7 +900,6 @@ SPECIMENS = {
             ["            p.diagnostics >= 1"],
             ["            p.voices.list.length >= 1 && lets.length == 2"]],
     "style.unmutated_mut": [["    mut registry = new_type_registry()", "    let n = registry.shapes.length"]],
-    "style.registry_catchall": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
     "style.dead_parameter": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
