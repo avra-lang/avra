@@ -50,6 +50,20 @@ spec "features/impls/statics" {
             refused_with("trait T {\n    static fn make() -> int\n}\ntype P = { x: int }\nimpl T for P {\n}\n1", "`impl T for P` must answer `make`")
         }
     }
+    given "a bodied associated fn — the trait's own name is a receiver too" {
+        then "a Self-free one is called through the trait's own name" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\nFoo.make(41)") == "42"
+        }
+        then "two on one trait are both reachable that way" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n    static fn make2(n: int) -> int { n + 2 }\n}\nFoo.make(1) + Foo.make2(1)") == "5"
+        }
+        then "reachable from inside another trait's own default body" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\ntrait Bar {\n    fn go(n: int) -> int { Foo.make(n) }\n}\ntype P = { x: int }\nimpl Bar for P {}\nP { x: 0 }.go(9)") == "10"
+        }
+        then "an abstract one has no single body to answer through the trait" {
+            refused_with("trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\nShow.lifted(3)", "`Show.lifted` has no one body — each signatory answers its own")
+        }
+    }
     given "a call that does not fit" {
         then "the arity refusal names no `self`" {
             refused_with("type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(1, 2).x", "`P.of` takes 1 argument, found 2")

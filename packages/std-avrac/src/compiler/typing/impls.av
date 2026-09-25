@@ -14,7 +14,8 @@ impl TypeCx {
     /// signatory's method answers with its own type.
     fn declare_trait_sig(f: StmtId) {
         let fp? = self.view.store.fn_parts(f) else { return }
-        let contract: DeclId = self.view.decls.decl(self.decl_of(f)).parent!
+        let m = self.decl_of(f)
+        let contract: DeclId = self.view.decls.decl(m).parent!
         // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
         // scope for it, so a signature naming `Self` does not resolve.
         if self.view.store.is_static(f) {
@@ -23,6 +24,12 @@ impl TypeCx {
                 params: self.annotated_params(f, fp),
                 ret: self.answer_type(f, fp.name, fp.ret),
             }))
+            // A BODIED ASSOCIATED FN IS ONE DEFINITION FOR THE WHOLE
+            // TRAIT, never per-signatory, so it is a method of the
+            // trait's OWN name — `Foo.make(…)`, no implementor in
+            // sight. An abstract one (no body) answers only through a
+            // concrete signatory's table, which files its own answer.
+            if self.view.decls.has_body(m) { self.view.decls.declare_method(contract, m) }
             return
         }
         self.record_receiver_word(f, [plain_mark])
