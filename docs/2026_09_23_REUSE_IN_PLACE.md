@@ -1436,3 +1436,106 @@ What I wanted from the language while doing this: nothing new — this
 slice never touched Avra source, only the C wrapper around one LLVM
 pass-builder option, which is the whole point of a boundary that
 lets a backend concern stay a backend concern.
+## §30 As built — R15a, a Result side rides bool and float too — and a live landmine found, not disarmed
+
+**D36. A Result side's word widens past int and a word enum to a bool
+and a float.** Neither rides a pointer, so `side_word` (core/types.av)
+answers `0` for both, exactly as it already did for `int`: `Result<bool,
+E>`/`Result<float, E>` join `Result<int, E>` as value enums the moment
+their OTHER side is one word too (`judge_result`, unchanged). The
+LLVM backend's word slot was already an i64 whichever payload it
+carries (`ll_type_of`'s `wide_ll_type([word, word])`, D28); packing a
+bool into it used to go through the generic `avra_llvm_cast_to_type`,
+which REFUSES to widen an integer without the caller naming a sign —
+right for an ambiguous width, wrong for a bool, which has none. Routed
+through `worded` instead (llvm_emit.av's `pack_value`), the SAME table
+`rt_arg`'s I64 seats already use (`SlotForm.Widened` -> zext,
+`.Reinterpreted` -> bitcast, `.Word` -> identity) — a THIRD caller of
+an existing door, not a new one (GENERALIZE BEFORE ADDING). Extracting
+the word back never needed a change: the aggregate slot is always i64,
+so every direction out of it is a narrow or a same-width reinterpret,
+which `avra_llvm_cast_to_type` already handled — the float
+(int64<->double) branch there is real for the first time and no
+longer "unreachable today" (backend/llvm_wrapper.c's own comment,
+corrected). The rest of the machinery — `StaticBuild.slot_of`'s
+`.Float`/`.Bool` arms, `slot_value`/`slot_mark` in llvm.av,
+`slot_val` in interp.av, `is_managed`'s `counted_mask == 0` check —
+was already generic over the payload's own shape and needed nothing:
+built for `int` and never narrowed to it.
+
+**Scoped to the Result side alone, on purpose — NOT the value-enum
+payload law (`payload_word`, features/decls.av).** Widening
+`payload_word` the same way (a DECLARED enum's own bool/float-carrying
+variant becoming a word) reproduces cleanly and is provably the
+narrower change: `side_word` alone (Result sides) rebuilds and
+`avra test packages/std-avrac` runs clean end to end, twice, from a
+saved pre-slice binary; `payload_word` alone (enum payloads, `side_word`
+held back) traps `avra test packages/std-avrac` mid-suite with `index 0
+is out of bounds (length 0)` inside `features/annotations` — declaration
+generation, an annotation fn's `@traced` — and *with both widened
+together* the same package instead SEGFAULTS inside the allocator's
+free list (`array_made`, corrupted class bucket; `bt` bottoms out
+through `avra_slot_unique`/`array_clone` from `spelled_static`, a
+`once fn`'s own settlement). Isolated by A/B rebuild from
+`build/avra.pre` each time (never mixed generations), not guessed.
+
+**The implicated type, found by elimination, not proven to the
+line:** `features/worklist.av`'s `MetaVal` — `Int(int) | Float(int) |
+Text(string) | Bool(bool) | Absent | Gone | Node(int) | Map(int) |
+Octets(List<int>)`, the ONE currency every compile-time value crosses
+through (`literal_meta`, `Settled.answer`, annotation lift results) —
+is the only enum among the compiler's own meta types with NO
+disqualifying multi-field variant once `Bool` counts: `Kind` and
+`Node` (`@std.meta`) both stay boxed regardless (a `Template`/`Interp`/
+`Map`/`Result` variant already carries more than one field, and
+`Kind`'s own `List(Kind)`/`Cell(Kind)`/`Opt(Kind)` self-reference is
+refused by `same_decl`'s guard independently), so `MetaVal` is the
+first enum in the tree this change makes eligible with no other
+excuse. `MetaVal`'s own crossing code (`MetaHeap.slots`/`.node`/
+`.adopt`, `val_of`/`meta_of` in interp.av, `StaticBuild.slot_of`'s
+`.Enum`/`.Res` arms) reads as fully generic under inspection — ordinary
+matches, no hand-rolled slot arithmetic found — so the defect was not
+isolated to a line in the time this slice had. NAMED FOR THE NEXT
+SESSION, not fixed: widen `payload_word` to admit `.Float or .Bool`
+(mirroring this slice's `side_word` edit, comment already there at the
+site), then chase the trap with `AVRA_QTRACE=1`/a debug build of
+`array_reclaim`/`box_free` rather than blind bisection — this slice's
+bisection (four A/B rebuilds, ~30 min each) found WHICH half breaks,
+not WHERE.
+
+**Red team.** A standalone probe (`Holder { r: Result<bool, string> }`,
+no `use`) built and run under `AVRA_RC_GUARD=1`/`AVRA_MEM_STATS=1`:
+a record field copied then written through the copy, `with`, a `Cell`
+seat, a `dyn Shows` door, a generic `through<T>` door, a scalar `const`
+Result and a `const List<Result<float, string>>`, 2000 loop turns —
+eval == native, 0 MB live in every category at exit. The empty-value
+law: `parse("f")` (an Ok `false`) and `Result<bool, E>?` both round-trip
+present, never absent (`features/results/tests/scalar_results`, eval ==
+native == expected — `avra test packages/std-avrac` end to end). The
+program test pins float bit patterns directly, never through the
+default print (`${x}` collapses `-0.0`, `0.0` and a subnormal alike):
+`-0.0` via `0.0 * -1.0` checked by `1.0 / x < 0.0`, `NaN` via `x != x`,
+`+inf`/`-inf` via `x == x / 2.0` at each sign, a subnormal via 1074
+halvings of `1.0` compared against a FRESH independent call to the
+same builder (a bit-exact equality, not a printed string). `@std/sqlite`'s
+`Stmt.step() -> Result<bool, SqlError>` (the ticket's own motivating
+site — `SqlError` is a multi-field record, one counted pointer word) —
+`check packages/std-sqlite` clean; its native suite needs `make libs`
+(a local `sqlite3`), not run this slice.
+
+**Numbers** (Mac, `/usr/bin/time -l`, interleaved, 3 rounds, a
+`-> Result<bool, string>` fn called 5,000,000 times in a loop, against
+the exact pre-slice source and compiler):
+
+| | before | after |
+|---|---|---|
+| instructions/call | 105.4 | 81.4 (−22.7%) |
+| `build/avra` | 7,433,344 B | 7,431,904 B (−1,440 B) |
+
+What I wanted from the language while doing this: a way to ask the
+type registry "what does this declared enum's layout depend on" —
+this slice spent real time manually re-deriving, per candidate type,
+whether a multi-field variant or a self-reference already disqualified
+it, exactly the kind of question `avra explain repr` answers for ONE
+type but not for "which types does widening THIS rule move".
+

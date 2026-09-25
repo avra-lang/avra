@@ -347,19 +347,20 @@ impl TypeRegistry {
         }
     }
 
-    /// A Result side's word: 0 an int or a word enum, 1 a counted
-    /// pointer, absent when it is not one word or its declaration has
-    /// not settled what it is — a flat record stays out, since a `mut`
-    /// seat may still box it.
+    /// A Result side's word: 0 an int, a bool, a float, or a word
+    /// enum — none of them ride a pointer, so none is counted — 1 a
+    /// counted pointer, absent when it is not one word or its
+    /// declaration has not settled what it is — a flat record stays
+    /// out, since a `mut` seat may still box it.
     fn side_word(t: TypeId) -> int? {
         match self.shape_of(t) {
-            .Int -> 0,
+            .Int or .Float or .Bool -> 0,
             .Enum(_, _) -> if !self.reps.get()[t.index].settled || self.is_valued(t) { null } else if self.is_flat(t) { 0 } else { 1 },
             .Struct(_, _) -> if self.reps.get()[t.index].settled && !self.is_flat(t) { 1 } else { null },
             .Res(_, _) -> if self.is_valued(t) { null } else { 1 },
             .Opt(inner) -> if self.valued_carrier(inner) || !self.opt_rides_pointer(inner) { null } else { 1 },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Dyn(_, _) or .Fn(_, _, _) or .App(_, _, _) -> 1,
-            .Float or .Bool or .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
+            .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
         }
     }
 
