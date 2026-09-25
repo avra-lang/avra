@@ -50,6 +50,35 @@ fn solo_create_twice() -> Result<int, SqlError> {
     s.id
 }
 
+fn solo_find() -> Result<bool, SqlError> {
+    mut db = solo_db()?
+    let s = Solo { id: 0 }.insert(db)?
+    let f = Solo.find(db, s.id)?
+    f != null
+}
+
+fn solo_find_missing() -> Result<bool, SqlError> {
+    mut db = solo_db()?
+    let f = Solo.find(db, 999)?
+    f == null
+}
+
+fn wide_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Wide.create_table(db)?
+    db
+}
+
+fn wide_find() -> Result<string, SqlError> {
+    mut db = wide_db()?
+    let w = Wide { id: 0, a: "1", b: "2", c: "3", d: "4", e: "5" }.insert(db)?
+    let f = Wide.find(db, w.id)?
+    match f {
+        null -> "not found"
+        w2? -> "${w2.a}|${w2.b}|${w2.c}|${w2.d}|${w2.e}"
+    }
+}
+
 fn reserved_db() -> Result<Db, SqlError> {
     mut db = Db.memory()?
     Reserved.create_table(db)?
@@ -60,6 +89,16 @@ fn reserved_round_trip() -> Result<int, SqlError> {
     mut db = reserved_db()?
     let r = Reserved { id: 0, order: "x", group: "y" }.insert(db)?
     r.id
+}
+
+fn reserved_find() -> Result<string, SqlError> {
+    mut db = reserved_db()?
+    let r = Reserved { id: 0, order: "x", group: "y" }.insert(db)?
+    let f = Reserved.find(db, r.id)?
+    match f {
+        null -> "not found"
+        r2? -> "${r2.order}|${r2.group}"
+    }
 }
 
 fn update_nonexistent_id() -> Result<int, SqlError> {
@@ -125,14 +164,18 @@ spec "std/db @model adversarial" {
         then "insert still works" { (solo_insert() catch (0 - 1)) == 1 }
         then "update still works despite an empty SET clause risk" { (solo_update() catch (0 - 1)) == 1 }
         then "a second create_table is a harmless no-op" { (solo_create_twice() catch (0 - 1)) == 1 }
+        then "find reconstructs the one-field row through the narrowest row_ctor arm" { (solo_find() catch false) == true }
+        then "find on a missing id answers null, not an error" { (solo_find_missing() catch false) == true }
     }
 
     given "a field or column name that collides with a SQL keyword" {
         then "the generated DDL and DML still work" { (reserved_round_trip() catch (0 - 1)) == 1 }
+        then "find reads the keyword-named columns back correctly" { (reserved_find() catch "?") == "x|y" }
     }
 
     given "a model at exactly the arity cap" {
         then "it still compiles and its table name is right" { Wide.table_name() == "Wide" }
+        then "find reconstructs all six fields through the widest row_ctor arm" { (wide_find() catch "?") == "1|2|3|4|5" }
     }
 
     given "update or delete against an id nothing has" {
@@ -191,6 +234,26 @@ fn false_stores_as_zero() -> Result<int, SqlError> {
     (db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)]))?).int()
 }
 
+fn mixed_find_round_trip() -> Result<string, SqlError> {
+    mut db = mixed_db()?
+    let m = Mixed { id: 0, active: true, score: 3.5, tag: "x" }.insert(db)?
+    let f = Mixed.find(db, m.id)?
+    match f {
+        null -> "not found"
+        m2? -> "${m2.active}|${m2.score}|${m2.tag}"
+    }
+}
+
+fn mixed_find_false_is_false_not_absent() -> Result<bool, SqlError> {
+    mut db = mixed_db()?
+    let m = Mixed { id: 0, active: false, score: 0.0, tag: "y" }.insert(db)?
+    let f = Mixed.find(db, m.id)?
+    match f {
+        null -> false
+        m2? -> m2.active == false
+    }
+}
+
 /// SQLite's own `length()` SQL function undercounts a TEXT value
 /// holding a NUL (a SQLite quirk, confirmed independent of this
 /// derive) — so the survival check reads the value back through
@@ -208,6 +271,11 @@ spec "std/db @model adversarial 2" {
     given "bool and float fields, round-tripped through insert and raw SQL" {
         then "true stores as 1 and the float survives exactly" { (bool_and_float_round_trip() catch "?") == "1|3.5" }
         then "false stores as 0, not absence" { (false_stores_as_zero() catch (0 - 1)) == 0 }
+    }
+
+    given "bool and float fields, round-tripped through find" {
+        then "find's own read_at path reconstructs both correctly" { (mixed_find_round_trip() catch "?") == "true|3.5|x" }
+        then "a false bool read through find is false, never absent" { (mixed_find_false_is_false_not_absent() catch false) == true }
     }
 
     given "a text value holding a NUL byte" {

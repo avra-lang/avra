@@ -66,11 +66,21 @@ fn dup_insert() -> Result<int, SqlError> {
     0
 }
 
-// PENDING avra-8sb5.44.3: `User.find(db, id)` refuses to compile until
-// a cross-package derive can build a full struct literal of its own
-// annotated type — see db.av's row_ctor. Every other verb is provable
-// without it (row_count/email_of/name_of read the same table raw); a
-// `find` case joins this file the day that fix lands.
+fn found() -> Result<string, SqlError> {
+    mut db = seeded()?
+    let u = inserted(db, "ada@example.com", "Ada")?
+    let f = User.find(db, u.id)?
+    match f {
+        u2? -> "${u2.id}|${u2.email}|${u2.name}"
+        null -> "not found"
+    }
+}
+
+fn not_found() -> Result<bool, SqlError> {
+    mut db = seeded()?
+    let f = User.find(db, 999)?
+    f == null
+}
 
 spec "std/db @model" {
     given "a model's own generated SQL" {
@@ -82,6 +92,14 @@ spec "std/db @model" {
     given "a row inserted" {
 
         then "it lands with a real id and the right columns" { (round_trip() catch "?") == "1|ada@example.com|Ada" }
+    }
+    given "find() over an id that exists" {
+
+        then "it reconstructs the row through the generic constructor" { (found() catch "?") == "1|ada@example.com|Ada" }
+    }
+    given "find() over an id that does not exist" {
+
+        then "it answers null, not an error" { (not_found() catch false) == true }
     }
     given "a found row, changed and updated" {
 

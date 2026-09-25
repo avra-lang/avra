@@ -21,7 +21,7 @@
 //! — the file that types this trait must not also carry code the
 //! annotated file's own names could shadow.
 use @std.meta.{Type, Field, Kind, Directive, Code, Decls, literal}
-use @std.sqlite.{Db, SqlValue, sql}
+use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 
 export trait Model {
@@ -66,10 +66,10 @@ fn generated(t: Type) -> Decls {
 
             static fn create_table(mut db: Db) -> Result<int, SqlError> {
                 db.run(sql(${literal(claim_registry_sql())}))?
-                let claim = db.first(sql(${literal(claim_select_sql())}).args([.Text(${literal(table_name_of(t))})]))?
+                let claim = db.first(sql(${literal(claim_select_sql())}, [.Text(${literal(table_name_of(t))})]))?
                 match claim {
                     null -> {
-                        let _ = db.run(sql(${literal(claim_insert_sql())}).args([.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))})]))?
+                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))})]))?
                     }
                     row? -> {
                         let claimed_by = row.text(0)?
@@ -84,23 +84,25 @@ fn generated(t: Type) -> Decls {
             fn insert(mut db: Db) -> Result<${t}, SqlError> {
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in non_id_fields(t)]}
-                db.run(sql(${literal(insert_sql_of(t))}).args(args))?
+                db.run(sql(${literal(insert_sql_of(t))}, args))?
                 self with { id: db.last_insert_rowid() }
             }
 
             static fn find(db: Db, id: int) -> Result<${t}?, SqlError> {
-                fail SqlError.defect("@model's find() needs avra-8sb5.44.3 fixed first")
+                let s = prepared(db, sql(${literal(select_by_id_sql_of(t))}, [.Int(id)]))?
+                defer s.reset()
+                if s.step()? { ${row_ctor(t)} } else { null }
             }
 
             fn update(mut db: Db) -> Result<int, SqlError> {
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in non_id_fields(t)]}
                 args.push(.Int(self.id))
-                db.run(sql(${literal(update_sql_of(t))}).args(args))
+                db.run(sql(${literal(update_sql_of(t))}, args))
             }
 
             fn delete(mut db: Db) -> Result<int, SqlError> {
-                db.run(sql(${literal(delete_sql_of(t))}).args([.Int(self.id)]))
+                db.run(sql(${literal(delete_sql_of(t))}, [.Int(self.id)]))
             }
         }
     }
@@ -238,12 +240,16 @@ fn push_bound(f: Field) -> Code {
     quote { args.push(${bound(f)}) }
 }
 
+/// A column read straight off the STANDING statement — never through
+/// `Row`/`SqlValue`, which `first_as` (std-sqlite's `sql.av`) is what
+/// buys this: a found row costs no values list, no per-cell box, and
+/// no `Row` record, only the scalars the struct literal actually holds.
 fn read_at(f: Field, i: int) -> Code {
     match f.kind {
-        .Int -> quote { r.int(${i})? },
-        .Bool -> quote { r.int(${i})? != 0 },
-        .Float -> quote { r.real(${i})? },
-        .Str -> quote { r.text(${i})? },
+        .Int -> quote { s.int_at(${i})? },
+        .Bool -> quote { s.int_at(${i})? != 0 },
+        .Float -> quote { s.real_at(${i})? },
+        .Str -> quote { s.text_at(${i})? },
         rest -> quote { a_model_field_kind_this_derive_does_not_read_yet() },
     }
 }
@@ -251,8 +257,7 @@ fn read_at(f: Field, i: int) -> Code {
 /// The one place a struct literal's field list needs its whole arity
 /// known at the file's OWN parse time — hand-spelled per count, same
 /// law and same remedy as `core/rebuild_derive.av`'s constructor arms.
-/// Not yet wired into `find` (avra-8sb5.44.3, above) — ready the
-/// moment it is.
+/// Wired into `find`, above.
 fn row_ctor(t: Type) -> Code {
     let fs = t.fields
     match fs.length {
