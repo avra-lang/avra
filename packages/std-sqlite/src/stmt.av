@@ -19,15 +19,26 @@ use error.{Cause, Storage, SqlError, barred}
 use boundary.{transient, static_bytes}
 use open.{Db}
 use script.{statements}
-use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_column_name, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_error_offset, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
+use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_column_name, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_errmsg, sqlite3_error_offset, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
 
-/// A compiled statement. BOTH FIELDS ARE CELLS because both are
-/// shared state: the handle so finalizing twice finalizes once, and
-/// the DONE mark so a statement that answered its last row says so
-/// through every copy. The two fail differently and that is the
-/// reason for the second one — a lost handle traps, a lost mark
-/// silently re-runs the statement (`step`).
-export type Stmt = { raw: Cell<ptr?>, done: Cell<bool> = Cell.new(false) }
+/// A compiled statement. EVERY FIELD IS A CELL because all three are
+/// shared state: the handle so finalizing twice finalizes once, the
+/// DONE mark so a statement that answered its last row says so
+/// through every copy, and the name cache so every copy of a reused
+/// statement pays for `column_name`'s C round trip once, not per
+/// row. The first two fail differently and that is the reason for
+/// the DONE mark — a lost handle traps, a lost mark silently re-runs
+/// the statement (`step`). `conn` is a borrowed copy of the owning
+/// connection's own handle — never closed or freed through it — kept
+/// so a failing `step` can read `sqlite3_errmsg`'s connection-specific
+/// text instead of `sqlite3_errstr`'s code-keyed one; `Stmt` has no
+/// other way back to the connection that made it.
+export type Stmt = {
+    raw: Cell<ptr?>,
+    done: Cell<bool> = Cell.new(false),
+    name_cache: Cell<List<string>?> = Cell.new(null),
+    conn: Cell<ptr?> = Cell.new(null),
+}
 
 /// The result codes this driver reads by name rather than by number.
 const row_code: int = 100
@@ -73,7 +84,7 @@ impl Db {
         // statement the answer is a refusal; a script verb skips the
         // segment instead. Same fact, two verbs, opposite answers.
         if handle == null { fail SqlError.refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
-        Stmt { raw: Cell.new(handle) }
+        Stmt { raw: Cell.new(handle), conn: Cell.new(self.raw.get()) }
     }
 }
 
@@ -108,7 +119,7 @@ impl Stmt {
             self.done.set(true)
             return false
         }
-        fail failed(rc, null)
+        fail step_failed(self.conn.get(), rc)
     }
 
     /// The statement rewound, its bindings kept — and the DONE mark
@@ -376,6 +387,16 @@ impl Stmt {
         word
     }
 
+    /// Every column's name, in order — INVARIANT for the statement's
+    /// whole life (fixed at prepare time, `AS` aliases included), so
+    /// it is read from SQLite once and cached: `snapshot` (sql.av)
+    /// calls this at every row, and only the first call after this
+    /// statement was prepared pays `column_name`'s C round trip per
+    /// column — a cached statement's every later row reuses the list.
+    fn names() -> Result<List<string>, SqlError> {
+        self.name_cache.get() ?? freshly_named(self)?
+    }
+
     /// The refusal for a statement that was finalized, or absence when it
     /// still stands. `finalize` NULLS the handle, so the null test IS the
     /// question — `closed_fault`'s twin one level down, and every verb
@@ -462,6 +483,14 @@ fn taken(p: ptr?, n: int, col: int) -> Result<Bytes, SqlError> {
     avra_bytes_adopted(held, n)
 }
 
+/// `names`'s cache miss: every column's name read once and kept.
+fn freshly_named(s: Stmt) -> Result<List<string>, SqlError> {
+    let n = s.width()
+    let names = [s.column_name(i)? for i in 0..n]
+    s.name_cache.set(names)
+    names
+}
+
 /// A cell's class, or a `NoColumn` when the index is outside the row.
 /// The WIDTH is the witness: `data_count` is zero with no row standing,
 /// so one guard refuses both "column 7 of 4" and "read before step".
@@ -493,6 +522,24 @@ const statement_finalized: SqlError = SqlError.refused(Cause.Finalized, "this st
 
 fn failed(rc: int, sql: string?) -> SqlError {
     SqlError { cause: Cause.of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
+}
+
+/// `step`'s own failure, enriched with `sqlite3_errmsg`'s
+/// connection-specific text when the statement still names its
+/// connection — SQLite's own words for the row a constraint named,
+/// which `sqlite3_errstr`'s code-keyed text alone never carries.
+fn step_failed(conn: ptr?, rc: int) -> SqlError {
+    failed(rc, null) with { message: errmsg_or(conn, rc) }
+}
+
+/// `sqlite3_errmsg`'s text for `conn`, copied before the next call on
+/// it can overwrite the buffer SQLite still owns; `sqlite3_errstr`'s
+/// code-keyed text when there is no connection to ask, or the answer
+/// is absent or not UTF-8.
+fn errmsg_or(conn: ptr?, rc: int) -> string {
+    let c? = conn else { return sqlite3_errstr(rc) }
+    let p = sqlite3_errmsg(c)
+    avra_bytes_adopted(p, avra_sqlite_cstr_len(p)).text() ?? sqlite3_errstr(rc)
 }
 
 fn negative_length_words(col: int, n: int) -> string {

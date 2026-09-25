@@ -1826,3 +1826,85 @@ the last one). A declared-marks record that derives its own
 interner-key encoding from its own field list, rather than a hand-kept
 letter table one commit behind the type, would turn "did I remember
 every site" from a code-review question into a compiler-enforced one.
+## §30 As built — R9, a capture-free closure is static data
+
+**The waste.** `xs.all(it > 3)`, a named fn passed as a value
+(`xs.any(big)`), and a capture-free `defer` body all minted a fresh
+`avra_array_sized(1)` + `Ins.FnAddr` + `push` box on EVERY read —
+allocation and a header for one word (a code address) that never
+varies. `fn_value_reg`'s box is ALWAYS captureless (the caller
+supplies no captures for a bare name), so every named-fn-as-value
+read paid this in full.
+
+**D28. A box with no captures holds nothing a caller could vary, so
+it is laid out once, as a `Static`** (the D26 mechanism — `Slot`
+gains `Code(sym)`, a box's own code-address slot, alongside `Int`,
+`Text`, `Box`). `values.av`'s `static_fn_box(sh, sym)` mints a
+one-box `Static` (`StaticBox.Slots([Slot.Code(sym)])`) and emits
+`Ins.StaticAddr` — the SAME array shape a dynamic closure box wears
+(header, `AvraArray`, one cell), so `slot_read(box, 0, …)` and
+`called_through` need not know which kind of box they hold. A
+lambda WITH captures keeps `fn_box`'s dynamic path (its captures
+differ per read); a capture-free lambda (`lambda_reg`, checked via
+`caps.is_empty()`) and a named fn as a value (`fn_value_reg`,
+`collect_fn_reg` — always captureless) take the static one, always.
+
+**The backend's other half.** `slot_mark` answers `Code` as mark 0
+(a plain word, never counted — matching `push_slot`'s own dynamic
+code-address slot, which is `Type.Int` and never retained). LLVM's
+`slot_value` answers the function's own `LLVMValueRef` — no cast
+needed, since `avra_llvm_static_array`'s C side already `ptrtoint`s
+any pointer-shaped cell. The evaluator's `slot_val` answers
+`self.fn_addr_val(sym)`, the same body-index lookup `Ins.FnAddr`
+already used.
+
+**THE MODULE-SPLIT TRAP, found by the second build compiling
+itself.** A split module's `declare_user` runs only for bodies
+`refs_of` marks reachable, and `refs_of` scanned INSTRUCTIONS
+(`body_symbol`) for a callee's name — never a `Static`'s own boxes.
+A wrapper referenced ONLY through its `Slot.Code` (no `Ins.FnAddr`
+anywhere once the box went static) was never declared in the module
+that laid its static out, and `avra_llvm_get_named_function` answered
+NULL — `avra_llvm_static_array`'s `LLVMTypeOf(NULL)` segfaulted
+compiling `packages/cli` with itself, gen-2. THE LAW: a static that
+names a code address is a body reference as real as an instruction's,
+and `refs_of` must read both. Fixed by folding each module's OWN
+statics' `Slot.Code` symbols into its reachable-bodies set
+(`core.static_code_syms`, one definition `refs_of` and the tests
+both call — the third-copy law paid before a second copy could
+exist). Isolated by tracing: `avra ir` on the same source, twice,
+byte-identical — proving lowering was never the culprit — before
+`avra_llvm_static_array`'s frame named the actual NULL.
+
+**Guards witnessed.** A capture-free lambda: called from a loop, a
+list, a record field COPIED then written through (`mut copy = x`)
+and `with`, crossing a `dyn` door, a named fn through a generic
+call, recursion through a fn-typed parameter, an early `return`
+reading the box after — `features/tests/static_fn_box`, eval ==
+native == expected, the empty case (`() -> 0`) first. Native under
+`AVRA_RC_GUARD=1` + `AVRA_MEM_STATS=1`: 0 MB live at exit, every
+category. A 100 000-iteration loop through a named fn value: 0 MB
+peak — the static box is read, never built.
+
+**Numbers.** A 2 000 000-iteration loop building `[1, 2, 3, 4, 5]`
+(already static, D26) and calling `.any(it > 3)`: 605M → 210M
+instructions retired (~198/iteration), `avra_array_sized` in the
+loop body 1 → 0. `check packages/std-avrac`: no new idiom debt (one
+STALE baseline site pruned by the same run, unrelated to this
+slice — `lists_test.av`, `make idioms-accept`). Fixed point: three
+successive `make avra`, byte-identical, `.avra-cache` cleared before
+each (a first, uncleared comparison chain read as unstable and was
+not — the lesson is CLAUDE.md's own: clear the cache before any
+before/after, always).
+
+What I wanted from the language while doing this: `Slot`'s three
+new consumers (`slot_mark`, `slot_value`, `slot_val`) are each a
+five-line exhaustive match with one answering arm added — the
+REGISTRY law working exactly as designed, catching every site at
+compile time. What I wanted was for the FIRST of the three
+(`llvm.av`'s `slot_mark`) to have told me the other two existed
+before I found them one crash and one test failure at a time; a
+`rule` that groups a NEW variant's every consumer into one
+worklist (today: `make idioms`/`avra check` name them one at a
+time, in whatever order the build happens to fail) would have
+turned three discoveries into one.

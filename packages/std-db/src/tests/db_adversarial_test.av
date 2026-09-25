@@ -1,0 +1,653 @@
+use @std.io.{remove}
+use @std.text.{repeat, from_codepoint}
+use @std.db.{model_shape, model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model_shape
+@model
+type Solo = {
+    id: int = 0,
+}
+
+@model_shape
+@model
+type Reserved = {
+    id: int = 0,
+    order: string,
+    group: string,
+}
+
+@model_shape
+@model
+type Wide = {
+    id: int = 0,
+    a: string,
+    b: string,
+    c: string,
+    d: string,
+    e: string,
+}
+
+fn solo_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Solo.create_table(db)?
+    db
+}
+
+fn solo_insert() -> Result<int, ModelError> {
+    mut db = modeled(solo_db())?
+    let s = Solo { id: 0 }.insert(db)?
+    s.id
+}
+
+fn solo_update() -> Result<int, ModelError> {
+    mut db = modeled(solo_db())?
+    let s = Solo { id: 0 }.insert(db)?
+    s.update(db)
+}
+
+fn solo_create_twice() -> Result<int, ModelError> {
+    mut db = modeled(solo_db())?
+    modeled(Solo.create_table(db))?
+    let s = Solo { id: 0 }.insert(db)?
+    s.id
+}
+
+fn solo_find() -> Result<bool, ModelError> {
+    mut db = modeled(solo_db())?
+    let s = Solo { id: 0 }.insert(db)?
+    let f = modeled(Solo.find(db, s.id))?
+    f != null
+}
+
+fn solo_find_missing() -> Result<bool, SqlError> {
+    mut db = solo_db()?
+    let f = Solo.find(db, 999)?
+    f == null
+}
+
+fn solo_version_of(db: Db, id: int) -> Result<int, SqlError> {
+    (db.scalar(sql("select \"__avra_version__\" from Solo where id = ?").args([.Int(id)]))?).int()
+}
+
+fn solo_version_bumps() -> Result<string, ModelError> {
+    mut db = modeled(solo_db())?
+    let s = Solo { id: 0 }.insert(db)?
+    let before = modeled(solo_version_of(db, s.id))?
+    s.update(db)?
+    let after = modeled(solo_version_of(db, s.id))?
+    "${before}|${after}"
+}
+
+fn wide_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Wide.create_table(db)?
+    db
+}
+
+fn wide_find() -> Result<string, ModelError> {
+    mut db = modeled(wide_db())?
+    let w = Wide { id: 0, a: "1", b: "2", c: "3", d: "4", e: "5" }.insert(db)?
+    let f = modeled(Wide.find(db, w.id))?
+    match f {
+        w2? -> "${w2.a}|${w2.b}|${w2.c}|${w2.d}|${w2.e}"
+        null -> "not found"
+    }
+}
+
+fn reserved_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Reserved.create_table(db)?
+    db
+}
+
+fn reserved_round_trip() -> Result<int, ModelError> {
+    mut db = modeled(reserved_db())?
+    let r = Reserved { id: 0, order: "x", group: "y" }.insert(db)?
+    r.id
+}
+
+fn reserved_find() -> Result<string, ModelError> {
+    mut db = modeled(reserved_db())?
+    let r = Reserved { id: 0, order: "x", group: "y" }.insert(db)?
+    let f = modeled(Reserved.find(db, r.id))?
+    match f {
+        r2? -> "${r2.order}|${r2.group}"
+        null -> "not found"
+    }
+}
+
+fn update_nonexistent_id() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let ghost = User { id: 999999, email: "z@z.com", name: "Z" }
+    ghost.update(db)
+}
+
+fn delete_nonexistent_id() -> Result<int, SqlError> {
+    mut db = seeded_user()?
+    let ghost = User { id: 999999, email: "z@z.com", name: "Z" }
+    ghost.delete(db)
+}
+
+fn seeded_user() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    User.create_table(db)?
+    db
+}
+
+fn manual_id_ignored() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let u = User { id: 8675309, email: "a@x.com", name: "A" }.insert(db)?
+    u.id
+}
+
+fn quote_in_value() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
+    let u = User { id: 0, email: "a@x.com", name: "O'Brien; DROP TABLE User;--" }.insert(db)?
+    let v = modeled(db.scalar(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    modeled(v.text())
+}
+
+fn table_survives_injection_attempt() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let _ = User { id: 0, email: "a@x.com", name: "'; DROP TABLE User; --" }.insert(db)?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
+}
+
+fn double_insert_same_row_value() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
+    let a = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    let b = User { id: 0, email: "b@x.com", name: "B" }.insert(db)?
+    "${a.id}|${b.id}"
+}
+
+fn insert_after_delete_id_advances() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
+    let a = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    modeled(a.delete(db))?
+    let b = User { id: 0, email: "b@x.com", name: "B" }.insert(db)?
+    "${a.id}|${b.id}"
+}
+
+fn update_is_idempotent() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    let _ = u.update(db)?
+    u.update(db)
+}
+
+spec "std/db @model adversarial" {
+    given "a model with zero non-id fields" {
+        then "insert still works" { (solo_insert() catch 0 - 1) == 1 }
+        then "update still works despite an empty SET clause risk" { (solo_update() catch 0 - 1) == 1 }
+        then "a second create_table is a harmless no-op" { (solo_create_twice() catch 0 - 1) == 1 }
+        then "find reconstructs the one-field row through the narrowest row_ctor arm" { (solo_find() catch false) == true }
+        then "find on a missing id answers null, not an error" { (solo_find_missing() catch false) == true }
+        then "the hidden version column still bumps on an all-id update" { (solo_version_bumps() catch "?") == "1|2" }
+    }
+    given "a field or column name that collides with a SQL keyword" {
+
+        then "the generated DDL and DML still work" { (reserved_round_trip() catch 0 - 1) == 1 }
+        then "find reads the keyword-named columns back correctly" { (reserved_find() catch "?") == "x|y" }
+    }
+    given "a model at exactly the arity cap" {
+
+        then "it still compiles and its table name is right" { Wide.table_name() == "Wide" }
+        then "find reconstructs all six fields through the widest row_ctor arm" { (wide_find() catch "?") == "1|2|3|4|5" }
+    }
+    given "update or delete against an id nothing has" {
+
+        then "update answers zero rows, not an error" { (update_nonexistent_id() catch 0 - 1) == 0 }
+        then "delete answers zero rows, not an error" { (delete_nonexistent_id() catch 0 - 1) == 0 }
+    }
+    given "a caller-supplied id on a fresh insert" {
+
+        then "the database's own id wins, not the caller's" { (manual_id_ignored() catch 0 - 1) != 8675309 }
+    }
+    given "a value containing quotes and SQL syntax" {
+
+        then "it round-trips as inert text, never as executed SQL" { (quote_in_value() catch "?") == "O'Brien; DROP TABLE User;--" }
+        then "the table itself survives a DROP TABLE attempt in a value" { (table_survives_injection_attempt() catch 0 - 1) == 1 }
+    }
+    given "two inserts in the same session" {
+
+        then "each gets its own distinct, increasing id" { (double_insert_same_row_value() catch "?") == "1|2" }
+    }
+    given "an insert after a delete" {
+
+        then "the id sequence keeps advancing, never reusing a deleted id" { (insert_after_delete_id_advances() catch "?") == "1|2" }
+    }
+    given "the same update applied twice" {
+
+        then "the second application still reports one row affected" { (update_is_idempotent() catch 0 - 1) == 1 }
+    }
+
+}
+
+@model_shape
+@model
+type Mixed = {
+    id: int = 0,
+    active: bool,
+    score: float,
+    tag: string,
+}
+
+fn mixed_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Mixed.create_table(db)?
+    db
+}
+
+fn bool_and_float_round_trip() -> Result<string, ModelError> {
+    mut db = modeled(mixed_db())?
+    let m = Mixed { id: 0, active: true, score: 3.5, tag: "x" }.insert(db)?
+    let av = modeled(db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)])))?
+    let active = modeled(av.int())?
+    let sv = modeled(db.scalar(sql("select score from Mixed where id = ?").args([.Int(m.id)])))?
+    let score = modeled(sv.real())?
+    "${active}|${score}"
+}
+
+fn false_stores_as_zero() -> Result<int, ModelError> {
+    mut db = modeled(mixed_db())?
+    let m = Mixed { id: 0, active: false, score: 0.0, tag: "y" }.insert(db)?
+    let v = modeled(db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)])))?
+    modeled(v.int())
+}
+
+fn mixed_find_round_trip() -> Result<string, ModelError> {
+    mut db = modeled(mixed_db())?
+    let m = Mixed { id: 0, active: true, score: 3.5, tag: "x" }.insert(db)?
+    let f = modeled(Mixed.find(db, m.id))?
+    match f {
+        m2? -> "${m2.active}|${m2.score}|${m2.tag}"
+        null -> "not found"
+    }
+}
+
+fn mixed_find_false_is_false_not_absent() -> Result<bool, ModelError> {
+    mut db = modeled(mixed_db())?
+    let m = Mixed { id: 0, active: false, score: 0.0, tag: "y" }.insert(db)?
+    let f = modeled(Mixed.find(db, m.id))?
+    match f {
+        m2? -> m2.active == false
+        null -> false
+    }
+}
+
+/// SQLite's own `length()` SQL function undercounts a TEXT value
+/// holding a NUL (a SQLite quirk, confirmed independent of this
+/// derive) — so the survival check reads the value back through
+/// Avra's own `.text()`/`.length`, the same path `find`'s row reader
+/// will use, never through a SQL-side length function.
+fn nul_byte_in_text_survives() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let odd = "a" + from_codepoint(0) + "b"
+    let u = User { id: 0, email: "nul@x.com", name: odd }.insert(db)?
+    let row = modeled(db.one(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    (modeled(row.text(0))?).length
+}
+
+spec "std/db @model adversarial 2" {
+    given "bool and float fields, round-tripped through insert and raw SQL" {
+        then "true stores as 1 and the float survives exactly" { (bool_and_float_round_trip() catch "?") == "1|3.5" }
+        then "false stores as 0, not absence" { (false_stores_as_zero() catch 0 - 1) == 0 }
+    }
+    given "bool and float fields, round-tripped through find" {
+
+        then "find's own read_at path reconstructs both correctly" { (mixed_find_round_trip() catch "?") == "true|3.5|x" }
+        then "a false bool read through find is false, never absent" { (mixed_find_false_is_false_not_absent() catch false) == true }
+    }
+    given "a text value holding a NUL byte" {
+
+        then "the full length crosses, not truncated at the NUL" { (nul_byte_in_text_survives() catch 0 - 1) == 3 }
+    }
+}
+
+fn rollback_undoes_model_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
+    let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    modeled(db.rollback())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
+}
+
+fn commit_keeps_model_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
+    let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    modeled(db.commit())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
+}
+
+fn rollback_undoes_model_update() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
+    let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    modeled(db.begin())?
+    let changed = u with { name: "B" }
+    changed.update(db)?
+    modeled(db.rollback())?
+    let v = modeled(db.scalar(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    modeled(v.text())
+}
+
+fn rollback_undoes_model_delete() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    modeled(db.begin())?
+    modeled(u.delete(db))?
+    modeled(db.rollback())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
+}
+
+fn mixed_model_and_raw_sql_in_one_transaction() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
+    let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    modeled(db.run(sql("insert into User (email, name) values ('b@x.com', 'B')")))?
+    modeled(db.commit())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
+}
+
+// A ModelError wrapping a UNIQUE-constraint SqlError carries no
+// "rollback this transaction now" mark of its own — unlike Postgres, a
+// SQLite constraint failure aborts only the ONE statement that raised
+// it (SQLite's default conflict resolution is ABORT, not the whole
+// transaction), so the transaction is still perfectly usable after
+// catching one and can go on to commit.
+fn continue_after_unique_failure_inside_tx() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
+    let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    let attempted = User { id: 0, email: "a@x.com", name: "B" }.insert(db)
+    let _ = User { id: 0, email: "c@x.com", name: "C" }.insert(db)?
+    modeled(db.commit())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
+}
+
+spec "std/db @model transactions" {
+    given "a model insert inside an explicit transaction" {
+        then "rollback undoes it completely" { (rollback_undoes_model_insert() catch 0 - 1) == 0 }
+        then "commit keeps it" { (commit_keeps_model_insert() catch 0 - 1) == 1 }
+    }
+    given "a model update inside an explicit transaction" {
+
+        then "rollback restores the prior value" { (rollback_undoes_model_update() catch "?") == "A" }
+    }
+    given "a model delete inside an explicit transaction" {
+
+        then "rollback restores the deleted row" { (rollback_undoes_model_delete() catch 0 - 1) == 1 }
+    }
+    given "generated @model calls and hand-written SQL sharing one transaction" {
+
+        then "both commit together, consistently" { (mixed_model_and_raw_sql_in_one_transaction() catch 0 - 1) == 2 }
+    }
+    given "a ModelError caught mid-transaction from a @unique violation" {
+
+        then "the transaction is still open and can commit its other work" { (continue_after_unique_failure_inside_tx() catch 0 - 1) == 2 }
+    }
+}
+
+@model_shape
+@model
+type MultiUnique = {
+    id: int = 0,
+    @unique email: string,
+    @unique username: string,
+}
+
+fn multi_unique_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    MultiUnique.create_table(db)?
+    db
+}
+
+fn update_causes_unique_violation() -> string {
+    match update_violation_attempt() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn update_violation_attempt_message() -> string {
+    match update_violation_attempt() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn update_violation_attempt() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
+    let _ = MultiUnique { id: 0, email: "a@x.com", username: "alice" }.insert(db)?
+    let b = MultiUnique { id: 0, email: "b@x.com", username: "bob" }.insert(db)?
+    let clashing = b with { username: "alice" }
+    clashing.update(db)
+}
+
+fn version_unchanged_after_failed_update() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
+    let _ = MultiUnique { id: 0, email: "a@x.com", username: "alice" }.insert(db)?
+    let b = MultiUnique { id: 0, email: "b@x.com", username: "bob" }.insert(db)?
+    let clashing = b with { username: "alice" }
+    let _ = clashing.update(db) catch 0 - 1
+    let v = modeled(db.scalar(sql("select \"__avra_version__\" from MultiUnique where id = ?").args([.Int(b.id)])))?
+    modeled(v.int())
+}
+
+fn second_unique_field_also_enforced() -> string {
+    match dup_username() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn dup_username_message() -> string {
+    match dup_username() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn dup_username() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
+    let _ = MultiUnique { id: 0, email: "a@x.com", username: "alice" }.insert(db)?
+    let _ = MultiUnique { id: 0, email: "different@x.com", username: "alice" }.insert(db)?
+    0
+}
+
+fn dup_email_message() -> string {
+    match dup_email() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn dup_email() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
+    let _ = MultiUnique { id: 0, email: "same@x.com", username: "alice" }.insert(db)?
+    let _ = MultiUnique { id: 0, email: "same@x.com", username: "different" }.insert(db)?
+    0
+}
+
+fn operating_on_a_closed_db() -> string {
+    match closed_db_insert() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn closed_db_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    db.close()
+    let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
+    u.id
+}
+
+fn huge_string_survives() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    let big = repeat("x", 500000)
+    let u = User { id: 0, email: "big@x.com", name: big }.insert(db)?
+    let row = modeled(db.one(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    (modeled(row.text(0))?).length
+}
+
+fn empty_string_is_not_null() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
+    let u = User { id: 0, email: "e@x.com", name: "" }.insert(db)?
+    let row = modeled(db.one(sql("select typeof(name), length(name) from User where id = ?").args([.Int(u.id)])))?
+    "${modeled(row.text(0))?}|${modeled(row.int(1))?}"
+}
+
+spec "std/db @model more adversarial" {
+    given "two independently unique fields on one model" {
+        then "the second field's uniqueness is enforced on insert too" { second_unique_field_also_enforced() == "db.constraint.unique" }
+        then "a duplicate username names that exact field, never the other" { dup_username_message().contains("`username`") && dup_username_message().contains("`MultiUnique.username`") && !dup_username_message().contains("`email`") }
+        then "a duplicate email names that exact field, never the other" { dup_email_message().contains("`email`") && dup_email_message().contains("`MultiUnique.email`") && !dup_email_message().contains("`username`") }
+        then "an update that collides with another row's unique field is refused" { update_causes_unique_violation() == "db.constraint.unique" }
+        then "the update collision names the field it collided on" { update_violation_attempt_message().contains("`username`") && update_violation_attempt_message().contains("`MultiUnique.username`") }
+        then "a refused update leaves the hidden version column unbumped" { (version_unchanged_after_failed_update() catch 0 - 1) == 1 }
+    }
+    given "a model operation on a closed connection" {
+
+        then "it refuses cleanly, never a crash" { operating_on_a_closed_db() == "sqlite.closed" }
+    }
+    given "a very large text value" {
+
+        then "the full half-megabyte survives the round trip" { (huge_string_survives() catch 0 - 1) == 500000 }
+    }
+    given "an explicit empty string" {
+
+        then "it stores as empty text, never as SQL NULL" { (empty_string_is_not_null() catch "?") == "text|0" }
+    }
+}
+
+@model_shape
+@model
+type FullyUnique = {
+    id: int = 0,
+    @unique a: string,
+    @unique b: string,
+    @unique c: string,
+    @unique d: string,
+    @unique e: string,
+}
+
+fn fully_unique_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    FullyUnique.create_table(db)?
+    db
+}
+
+fn fully_unique_clash_message(field_index: int) -> string {
+    match fully_unique_clash(field_index) {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn fully_unique_clash(field_index: int) -> Result<int, ModelError> {
+    mut db = modeled(fully_unique_db())?
+    let _ = FullyUnique { id: 0, a: "a1", b: "b1", c: "c1", d: "d1", e: "e1" }.insert(db)?
+    mut row = FullyUnique { id: 0, a: "a2", b: "b2", c: "c2", d: "d2", e: "e2" }
+    row = match field_index {
+        0 -> row with { a: "a1" },
+        1 -> row with { b: "b1" },
+        2 -> row with { c: "c1" },
+        3 -> row with { d: "d1" },
+        rest -> row with { e: "e1" },
+    }
+    row.insert(db)?
+    0
+}
+
+spec "std/db @model at the @unique field cap" {
+    given "a model with all five non-id fields marked @unique — the arity dispatch's own top boundary" {
+        then "a clash on the first field names the first field, not a neighbor" {
+            fully_unique_clash_message(0).contains("`a`") && !fully_unique_clash_message(0).contains("`b`")
+        }
+        then "a clash on the last field names the last field, not a neighbor" {
+            fully_unique_clash_message(4).contains("`e`") && !fully_unique_clash_message(4).contains("`d`")
+        }
+        then "a clash on a middle field names that exact field" { fully_unique_clash_message(2).contains("`c`") }
+    }
+}
+
+// Every @model field is declared non-nullable at the Avra type level,
+// but the DDL puts no `NOT NULL` on an ordinary column (only on the
+// hidden version column) — so raw SQL, a hand-written migration, or an
+// older row can still put a SQL NULL where `find`'s generated reader
+// assumes a scalar.
+fn find_over_sql_null_column() -> string {
+    match find_after_raw_null_insert() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn find_after_raw_null_insert() -> Result<User?, SqlError> {
+    mut db = seeded_user()?
+    db.run(sql("insert into User (id, email, name) values (1, null, null)"))?
+    User.find(db, 1)
+}
+
+spec "std/db @model reading a SQL NULL in a column the type declares non-nullable" {
+    given "a row inserted through raw SQL, bypassing the model's own insert" {
+
+        then "find refuses cleanly with a class mismatch, never a crash or a wrong value" { find_over_sql_null_column() == "sqlite.mismatch" }
+    }
+}
+
+// The version column's "bumped or rolled back atomically" property
+// rests on SQLite's own single-statement atomicity, not on anything
+// this derive does specially for @unique — so it must hold for ANY
+// failure kind, not only the one kind that happens to be tested
+// elsewhere. SQLITE_BUSY from a second connection holding the write
+// lock is a failure with nothing to do with a constraint at all.
+fn busy_probe_path() -> string { "/tmp/avra-db-busy-adversarial-test.db" }
+
+fn user_version_of(db: Db, id: int) -> Result<int, SqlError> {
+    (db.scalar(sql("select \"__avra_version__\" from User where id = ?").args([.Int(id)]))?).int()
+}
+
+fn version_unchanged_after_busy_failure() -> Result<string, ModelError> {
+    let _ = remove(busy_probe_path()) catch ""
+    mut a = modeled(Db.open(busy_probe_path()))?
+    modeled(User.create_table(a))?
+    let u = User { id: 0, email: "busy@x.com", name: "A" }.insert(a)?
+    let before = modeled(user_version_of(a, u.id))?
+
+    mut b = modeled(Db.open(busy_probe_path()))?
+    modeled(b.begin())?
+
+    let changed = u with { name: "B" }
+    let attempt = changed.update(a)
+    let kind = match attempt {
+        .Ok(_) -> "unexpected ok",
+        .Err(e) -> e.describe().kind,
+    }
+
+    modeled(b.rollback())?
+    let after = modeled(user_version_of(a, u.id))?
+    let _ = a.close()
+    let _ = b.close()
+    let _ = remove(busy_probe_path()) catch ""
+    "${kind}|${before}|${after}"
+}
+
+spec "std/db @model version column under a NON-unique failure" {
+    given "an update refused for a reason with nothing to do with @unique — SQLITE_BUSY from a concurrent writer" {
+
+        then "it wraps as an ordinary ModelError, and the version stays exactly as unbumped as the unique-violation case" {
+            (version_unchanged_after_busy_failure() catch "?") == "sqlite.busy|1|1"
+        }
+    }
+}
