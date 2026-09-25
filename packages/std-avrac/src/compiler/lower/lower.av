@@ -716,7 +716,12 @@ fn component_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: str
 }
 
 /// A path's TEXT projection — the generic fields every kind answers:
-/// name, module, file, the `///` doc's first paragraph joined.
+/// name, module, file, the `///` doc's first paragraph joined. `doc_of`
+/// (features/decls.av) carries no file fallback, which is what this
+/// wants: a collect gathers many declarations from one file, so the
+/// file's `//!` is not any single one's doc to inherit — an
+/// UNDOCUMENTED entry answers "", not the file header every sibling
+/// would then share.
 fn collect_field_text(a: Analysis, d: Decl, path: List<Plain>) -> string {
     if path.length != 1 { return "" }
     let word = path[0].of
@@ -738,8 +743,7 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
         let held: Arrow? = lo.view.decls.types.arrow_parts(fnty)
         lo.jobs.wraps.push(Wrap { target: symbol, seats: held?.seats ?? [], ret: held?.answer ?? lo.view.decls.types.intern(Type.Error), name: wname })
     }
-    let size = lo.box_size(1)
-    lo.fn_box(lo.view.types.shape_of(fnty), size, wname, [])
+    lo.static_fn_box(lo.view.types.shape_of(fnty), wname)
 }
 
 /// A file's run-time statements as a body under `name` — `main` for

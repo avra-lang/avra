@@ -342,6 +342,20 @@ gate — there is no amnesty left to hide in.
       `// LICENSED style.registry_catchall` is the exit left for it. A spelling that
       covers most cases does not get to close the escape hatch for
       the rest (P8).
+      RETIRED (avra-8sb5.25.16): the regex found ZERO sites at the
+      moment of retirement — no baseline debt, no `// LICENSED
+      style.registry_catchall` comment anywhere in the tree — which is
+      what "the old law fired at 191 sites and none was the defect it
+      names" already predicted: once `rest ->`'s spelling and F2040's
+      (now `type.registry_hole`'s) own count took over, the grep's
+      SYNTACTIC net over `_ ->` text did no work a TYPED count over
+      the declared enum's own variants was not already doing more
+      precisely — and doing it for every package `avra check` touches,
+      not only the ones this tool's own sweep reached. Not ported as a
+      `rule`: the enforcement was never idioms.py's to hand off, it
+      already lived in the type checker. `registry_forgets`/
+      `registry_forgets_bound` (features/enums/check.av) are the live
+      voices; a NEW catch-all still refuses there, gate or no gate.
 
 - style.dead_parameter a PARAMETER nothing reads: the signature lies about what the
       fn needs and every call site carries the lie (`declare` threaded
@@ -1009,7 +1023,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       that has a declaration of its own, which is a field with a
       default.
 
-- style.raw_rt_call (ratcheted) A RUNTIME ROW NAMED BY A BARE STRING —
+- compiler.raw_rt_call (ratcheted) A RUNTIME ROW NAMED BY A BARE STRING —
       `cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))` — where a
       generated method carries the row instead: `cx.array_sized(sh,
       size)`. `rt_sigs()` projects into one `LowerCx` method per row
@@ -1046,8 +1060,17 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       ALREADY-LOWERED instruction's string field (the owned-twin
       substitution) — neither reads a row through `LowerCx`.
       Ratcheted (`raw_rt_call`).
+      PORTED NATIVELY (avra-8sb5.25.16): `raw_rt_call`/`raw_rt_call_void`
+      (compiler/idioms.av) — a fixed-arity `quote` over `Ins.CallRt`/
+      `Ins.CallRtVoid` needs no hole this idiom hadn't already earned;
+      the string guard reads a bound hole's OWN TEXT (`starts_with`),
+      the same door `str_grown_quadratically` reads a name through.
+      Two sites (`settle_test.av`'s reach-law probes, which construct
+      a raw row on purpose to test the reach mechanism itself) join
+      the baseline as accepted debt — a native finding carries no
+      license of its own.
 
-- style.one_body_arms (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
+- compiler.one_body_arms (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
       `.Struct(d, _) -> d` then `.Enum(d, _) -> d` — are one arm:
       `.Struct(d, _) or .Enum(d, _) -> d`. An `or` arm BINDS when every
       alternative binds the same names at the same types, by name, in
@@ -1058,12 +1081,37 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       gap. LICENSED at the site when the names bind at DIFFERENT types
       (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
       a block body is its own sentence. Ratcheted (`one_body_arms`).
-- style.stmt_index_walk (ratcheted) A WALK OVER A STORE'S STATEMENTS HANDS THE IDS —
+      PORTED NATIVELY (avra-8sb5.25.16): `one_body_arms`
+      (compiler/idioms.av) — a bare-hole root guarded RULE-SIDE over a
+      new `Code.arms()` (features/code.av; `Expr.Match` has no fixed
+      arm count a quote pattern can spell), two sibling arms agreeing
+      when neither carries a guard and their VALUE Codes are text-
+      equal. WIDER than the retired regex (reads any adjacent pair
+      structurally, not only a single-line `->` text match): six real
+      sites swept in the same commit (compiler/expand.av,
+      compiler/typing/declare.av, core/exact_derive.av,
+      features/unify.av, grammar/validate.av — one pair each, joined
+      with `or`), and five already-licensed sites (core/parts.av x2,
+      core/shape.av x2, structs/idioms.av's own `index_compared`
+      rule matching its OWN two `quote{}` arms — a rule's arms are
+      match arms too) join the baseline as accepted debt, since a
+      native finding carries no license of its own. NO REWRITE: the
+      join is sound only when the alternatives-bind question (F2039)
+      agrees, a typing fact this rule-side text scan does not carry.
+- compiler.stmt_index_walk (ratcheted) A WALK OVER A STORE'S STATEMENTS HANDS THE IDS —
       `for s in store.stmt_ids()`, never `for i in 0..store.stmts.count()`
       and a `StmtId { index: i }` built inside. Four sites spelled the
       index walk (a `while` among them); the ids are what every one read.
       LICENSED at the site when the index keys something else too (the
       mint loop's side table). Ratcheted (`for i in 0..…stmts.count()`).
+      PORTED NATIVELY (avra-8sb5.25.16): `stmt_index_walk`
+      (compiler/idioms.av), reading `Code.for_range()` the same
+      workaround `loops.index_walk` already reads its own range head
+      through — no new shape.av capability. `core/store.av` is
+      exempt structurally (its own `stmt_ids()` IS this walk); the
+      one genuine license (`decls_mint.av`, the index keys a side
+      table too) has no comment a native finding can read, so it
+      joins the baseline as accepted debt instead.
 - style.mutable_slot_not_cell (unratcheted) A MUTABLE SLOT IS A `Cell`, NEVER A ONE-ELEMENT
       LIST. `ensure: List<fn(DeclId)>` written `self.ensure.set(0, f)`
       and read `self.ensure[0]` is a Cell spelled as a list: its writes
@@ -1074,7 +1122,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       Not ratcheted: no grep tells a one-slot list from a list whose
       first element is written.
 
-- style.raw_mint_emit (ratcheted) A REGISTER MINTED THEN DEFINED BY A RAW `emit` —
+- compiler.raw_mint_emit (ratcheted) A REGISTER MINTED THEN DEFINED BY A RAW `emit` —
       `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —
       where a vocabulary verb mints and emits in ONE call
       (`cx.bin(sh, op, a, b)`, features/emit.av): the mint law ("a
@@ -1101,6 +1149,20 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       itself be a NAMED bool type (`hollow_of`, values.av), a fn-box
       call minted at the walk's own element type rather than a node's
       (`turn_call`, lists/walks.av). Ratcheted (`raw_mint_emit`).
+      PORTED NATIVELY (avra-8sb5.25.16): nine sibling rules, one per
+      covered `Ins` variant (`raw_mint_emit_bin` … `raw_mint_emit_load`,
+      compiler/idioms.av) — the let's own binder is a NAME hole, the
+      emit's argument an ordinary VALUE hole, agreed by TEXT (the two
+      kinds of seat compare under incompatible rules, so one binder
+      index cannot serve both). NARROWER THAN THE REGEX: the root is
+      a BLOCK, and an `if`/`while`/`for` body is a flat statement list
+      on its own node, never a nested `Block` — so `hollow_of`'s two
+      sites (a pair inside an `if`) are outside this pattern's reach,
+      the same limit `bracket_ritual`/`seen_accumulator` already
+      carry, and stay licensed by comment for a human reader alone.
+      `field_slot` and `turn_call` DO reach (both sit at a fn's own
+      top-level body) and join the baseline as accepted debt — a
+      native finding carries no license of its own.
 
 - nullable.nullable_flag_local (ratcheted) A `mut` LOCAL SEEDED `null` WITH AN EXPLICIT
       NULLABLE TYPE — `mut best: T? = null` — is a flag standing in

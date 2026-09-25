@@ -115,6 +115,15 @@ export enum Type {
     /// is ever minted wearing it.
     Var(decl: DeclId, ordinal: int, name: string)
 
+    /// `A or B` — a CLOSED set of declared types, any one of which a
+    /// value may be. Structural, like `List`/`Map`/`Res`: interned by
+    /// its members, SORTED and DEDUPED so `A or B` and `B or A` are
+    /// one type. `union_of` is the only door — a member list built any
+    /// other way may fail to be canonical. Always boxed: a value's
+    /// own member is not enough to tell it apart at runtime, so it
+    /// carries a discriminant no bare member does.
+    Union(members: List<TypeId>)
+
     /// The absorber: laws already spoke; downstream stays quiet.
     Error
 }
@@ -174,7 +183,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> true,
+        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
     }
 }
@@ -209,7 +218,48 @@ impl TypeRegistry {
             .Dyn(decl, _) -> "14:${decl.index}",
             .Fn(params, marks, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${mark_words(marks)}:${ret.index}",
             .Void -> "16",
+            // members arrive pre-sorted from `union_of`, the only door
+            .Union(members) -> "20:${joined(["${m.index}" for m in members], ".")}",
         }
+    }
+
+    /// A union of these members — FLATTENED (a `Union` absorbed
+    /// rather than nested, so `(A or B) or C` interns as `A or B or C`)
+    /// and DEDUPED, SORTED by id so the set is order-independent:
+    /// `A or B` and `B or A` intern identically. A single surviving member is not
+    /// a union at all — the constructor answers it directly, so
+    /// `Result<T, E>` for a plain `E` costs nothing new. THE ONLY
+    /// DOOR that mints a `Type.Union`.
+    fn union_of(parts: List<TypeId>) -> TypeId {
+        let members = sorted_distinct_ids(flatten([self.union_members(p) for p in parts]))
+        if members.length == 1 { return members[0] }
+        self.intern(Type.Union(members))
+    }
+
+    /// A type's own member set — a `Union`'s members, or itself
+    /// alone. `union_of`'s flattening reads through this.
+    fn union_members(id: TypeId) -> List<TypeId> {
+        match self.shape_of(id) {
+            .Union(members) -> members,
+            _ -> [id],
+        }
+    }
+
+    /// `sub`'s member set inside `sup`'s — a plain type is its own
+    /// one-element set, so a value's exact type into itself, a member
+    /// into its union, and a narrower union into a wider one are this
+    /// ONE question. THE WIDENING LAW every union-typed slot obeys.
+    fn covers(sup: TypeId, sub: TypeId) -> bool {
+        let superset = self.union_members(sup)
+        self.union_members(sub).all((m) -> superset.any(same_type(it, m)))
+    }
+
+    /// `sup`'s members minus `removed` — a selective catch's
+    /// remaining error side, raw: the caller re-interns through
+    /// `union_of`, which answers a plain type when one member
+    /// survives.
+    fn subtracted(sup: TypeId, removed: List<TypeId>) -> List<TypeId> {
+        [m for m in self.union_members(sup) if !removed.any(same_type(it, m))]
     }
 
     /// The id for a shape, minted on first sight — one map probe.
@@ -360,7 +410,7 @@ impl TypeRegistry {
             .Res(_, _) -> if self.is_valued(t) { null } else { 1 },
             .Opt(inner) -> if self.valued_carrier(inner) || !self.opt_rides_pointer(inner) { null } else { 1 },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Dyn(_, _) or .Fn(_, _, _) or .App(_, _, _) -> 1,
-            .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
+            .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void or .Union(_) -> null,
         }
     }
 
@@ -673,6 +723,7 @@ impl TypeRegistry {
             .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args), self.substituted(err, target, args))),
             .App(decl, name, aa) -> self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
             .Fn(ps, marks, ret) -> self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks, self.substituted(ret, target, args))),
+            .Union(members) -> self.union_of([self.substituted(m, target, args) for m in members]),
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> ty,
         }
     }
@@ -685,6 +736,7 @@ impl TypeRegistry {
             .Map(k, v) or .Res(k, v) -> self.open(k) || self.open(v),
             .App(_, _, aa) -> [a for a in aa if self.open(a)].length > 0,
             .Fn(ps, _, ret) -> self.open(ret) || [p for p in ps if self.open(p)].length > 0,
+            .Union(members) -> members.any((m) -> self.open(m)),
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> false,
         }
     }
@@ -716,6 +768,7 @@ impl TypeRegistry {
             .EmptyList -> "[]",
             .Map(k, v) -> "Map<${self.name_of(k)}, ${self.name_of(v)}>",
             .EmptyMap -> "{}",
+            .Union(members) -> joined([self.name_of(m) for m in members], " or "),
             .Error -> "<error>",
         }
     }
@@ -756,7 +809,7 @@ impl TypeRegistry {
             .List(t) or .Cell(t) or .Task(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> [],
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks or .Union(_) -> [],
         }
     }
 
@@ -897,3 +950,27 @@ export fn no_marks(n: int) -> List<SeatMark> {
 fn nothing_sealed() {}
 
 fn nothing_judged() {}
+
+/// `ids`, ascending by index, first appearance kept — a union's
+/// canon key needs this order-independence and nothing else in the
+/// registry has members that commute.
+// LICENSED I4: a sort; the subset has no sort_by
+fn sorted_distinct_ids(ids: List<TypeId>) -> List<TypeId> {
+    mut remaining = ids
+    mut out: List<TypeId> = []
+    while !remaining.is_empty() {
+        let m = lowest_id_index(remaining)
+        let id = remaining[m]
+        remaining = remaining.slice(0, m).concat(remaining.slice(m + 1, remaining.length))
+        if !out.any(same_type(it, id)) { out.push(id) }
+    }
+    out
+}
+
+fn lowest_id_index(ids: List<TypeId>) -> int {
+    mut best = 0
+    for i, id in ids {
+        if id.index < ids[best].index { best = i }
+    }
+    best
+}

@@ -208,32 +208,6 @@ def unmutated_mut(lines):
                 or re.search(rf"[(,] *{name} *[,)]", body)):
             yield i, l.strip()
 
-def registry_catchall(lines):
-    """A match where TWO OR MORE variants answer is a REGISTRY, and a
-    registry ending in `_ ->` silently forgets the NEXT variant —
-    exactly how `let_name` dropped For's counter. One answering arm is
-    a PROJECTION: its contract pins the answer for variants that do
-    not exist yet, and the catch-all is honest there."""
-    for i, l in enumerate(lines):
-        if not re.search(r"match .+\{\s*$", l):
-            continue
-        depth = len(l) - len(l.lstrip())
-        arms, catch = 0, False
-        for j in range(i + 1, min(len(lines), i + 40)):
-            s = lines[j]
-            # the match's own close, a let-else's `} else {` included
-            if s.strip().startswith("}") and len(s) - len(s.lstrip()) == depth:
-                break
-            # Only THIS match's arms count: a nested `when`'s own
-            # catch-all sits deeper and is not this match's business.
-            if len(s) - len(s.lstrip()) != depth + 4:
-                continue
-            if re.match(r"\.[A-Za-z]", s.strip()):
-                arms += 1
-            if s.strip().startswith("_ ->"):
-                catch = True
-        if catch and arms >= 2:
-            yield i, l.strip()
 
 def fn_body(lines, start):
     """The lines of the fn opened at `start`, triple-quoted regions
@@ -500,90 +474,6 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
-RAW_RT_CALL = re.compile(r'Ins\.CallRt(?:Void)?\(.*"avra_')
-
-def raw_rt_call(lines):
-    """A runtime row named by a bare string — `Ins.CallRt(dst,
-    "avra_x", args)` — instead of through its generated method
-    (`cx.x(sh, args)`, features/rt.av, from core/rt_namespace.av). A
-    row's method carries the row's own arity in its signature, so a
-    misspelled row is the ordinary "no method" refusal at typing and
-    a wrong seat count the ordinary fn-arity refusal; a bare string
-    reopens both holes a typo can hide behind. `features/emit.av`
-    speaks the one door (`call`/`call_at`/`call_void`) every
-    generated method calls through, and two sites still spell the
-    string by design: `compiler/suite_entry.av` builds the TEST
-    BINARY's entry from its own separate row table (not `rt_sigs()`,
-    a different builder), and `compiler/memory/memory.av` rewrites an
-    ALREADY-LOWERED instruction's string field (the owned-twin
-    substitution) — neither reads a row through `LowerCx` (style.raw_rt_call)."""
-    if CURRENT["path"].endswith((
-        "features/emit.av", "compiler/suite_entry.av", "compiler/memory/memory.av",
-    )):
-        return
-    for i, l in enumerate(lines):
-        if RAW_RT_CALL.search(l):
-            yield i, l.strip()
-
-MINT_LET = re.compile(r"let (\w+)\s*=\s*(?:self|cx)\.(?:mint_shape|mint_ty|mint_like|result)\(")
-RAW_EMIT = re.compile(r"(?:self|cx)\.emit\(Ins\.(\w+)\((\w+)")
-
-# The variants a vocabulary verb covers under SOME mint (a fixed
-# shape, an explicit TypeId, or a node's own answer type) — `CallRt`/
-# `CallRtVoid` are style.raw_rt_call's concern, never this one's; `FnAddr`,
-# `ConstFloat` and a bare `Alloca` have no covering verb in ANY form,
-# so there is nothing here for the ratchet to measure yet.
-COVERED_VARIANTS = {"Bin", "Un", "Pack", "Call", "CallPtr", "ConstInt", "ConstBool", "ConstStr", "Load"}
-
-def raw_mint_emit(lines):
-    """A register minted, then defined by a raw `emit(Ins...)` a few
-    lines later, outside the emission vocabulary itself —
-    `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —
-    where a vocabulary verb mints and emits in ONE call
-    (`cx.bin(sh, op, a, b)`, features/emit.av). THE MINT LAW ("a
-    register is defined in the order it was minted") holds by
-    CONSTRUCTION once the mint and the emit are one call; split
-    across two statements, a refactor can separate them and the
-    register defines out of order with nothing to catch it. A site
-    whose one minted register is read across several branches — a
-    match arm per literal kind, a defect arm answering the same
-    register the success arm defines, a mint at neither a fixed shape
-    nor the node's own type — cannot collapse to one call and is
-    licensed at the site (style.raw_mint_emit)."""
-    if CURRENT["path"].endswith("features/emit.av"):
-        return
-    for i, l in enumerate(lines):
-        m = MINT_LET.search(l)
-        if not m:
-            continue
-        name = m.group(1)
-        for j in range(i, min(i + 8, len(lines))):
-            m2 = RAW_EMIT.search(lines[j])
-            if m2 and m2.group(2) == name:
-                if m2.group(1) in COVERED_VARIANTS:
-                    yield i, l.strip()
-                break
-
-ARM_LINE = re.compile(r"^(\s*)(\.[A-Z]\w*.*?)\s->\s(.+?),?\s*$")
-
-def one_body_arms(lines):
-    """Two ADJACENT variant arms answering ONE body are one arm: an
-    `or` joins their patterns, and since the alternatives may bind
-    (every one binding the same names at the same types, F2039's law),
-    `.Struct(d, _) -> d` and `.Enum(d, _) -> d` are `.Struct(d, _) or
-    .Enum(d, _) -> d`. Single-line arms only — a block body is a
-    different sentence each time. A pair whose names bind at
-    DIFFERENT types (`.F(v)`, a float, beside `.B(v)`, a bool) cannot
-    join and is licensed at the site (style.one_body_arms)."""
-    for i in range(1, len(lines)):
-        a, b = ARM_LINE.match(lines[i - 1]), ARM_LINE.match(lines[i])
-        if not a or not b or a.group(1) != b.group(1):
-            continue
-        body = a.group(3)
-        if body.endswith("{") or body != b.group(3):
-            continue
-        yield i, lines[i].strip()
-
 COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
 
 def comma_list_open(lines):
@@ -666,32 +556,12 @@ RULES = {
     "style.dead_parameter": (dead_parameter,
             "a parameter nothing reads — the signature lies, and every call site "
             "carries the lie"),
-    "style.registry_catchall": (registry_catchall,
-            "2+ variants answer, so this is a REGISTRY — a catch-all here forgets "
-            "the NEXT variant; spell the arms (or-runs keep it affordable), or "
-            "write `rest ->` to say the remainder is deliberate"),
     "style.refusal_uncounted_contains": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
     "style.unmutated_mut": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
     "grammar.comma_list_open": (comma_list_open,
             "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
-    "style.one_body_arms": (one_body_arms,
-            "two adjacent arms answer one body — join their patterns with `or`; the "
-            "alternatives may bind, each binding the same names at the same types"),
-    "style.raw_rt_call": (raw_rt_call,
-            "a runtime row named by a bare string — `Ins.CallRt(dst, \"avra_x\", args)` — "
-            "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
-            "a misspelled row or a wrong seat count then refuses at typing instead of "
-            "waiting for a typo nothing catches"),
-    "style.stmt_index_walk": (line_rx(r"for i in 0\.\.[\w.]*stmts\.count\(\)"),
-            "an index walk over a store's statements — `for s in store.stmt_ids()` "
-            "hands the ids themselves"),
-    "style.raw_mint_emit": (raw_mint_emit,
-            "a register minted, then defined by a raw `emit(Ins...)` — that is a vocabulary "
-            "verb (`cx.bin(sh, op, a, b)`, `cx.call_decl_at(e, callee, args)`, …, "
-            "features/emit.av), which mints and emits in ONE call so the mint law holds by "
-            "construction; a site whose one register answers several branches is licensed"),
     "style.repeated_unwrap": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -748,6 +618,39 @@ UNRATCHETED = {
            "           fact column sized from an arena's count, `filled(...count())`)\n"
            "           has no structural shape a rule can hold yet and stays\n"
            "           `style.filled_by_arena_count`'s own regex",
+    "compiler.stmt_index_walk": "PORTED NATIVELY (avra-8sb5.25.16): `stmt_index_walk`\n"
+           "           (compiler/idioms.av) — reads `Code.for_range()`, the same\n"
+           "           workaround `loops.index_walk` already reads its own range head\n"
+           "           through; `core/store.av` is exempt structurally (its own\n"
+           "           `stmt_ids()` IS this walk); ratcheted by the native-findings\n"
+           "           phase below",
+    "compiler.one_body_arms": "PORTED NATIVELY (avra-8sb5.25.16): `one_body_arms`\n"
+           "           (compiler/idioms.av) — a bare-hole root guarded rule-side over a\n"
+           "           new `Code.arms()` (features/code.av); ratcheted by the native-\n"
+           "           findings phase below. WIDER than the regex (structural, not a\n"
+           "           single-line text match); NO REWRITE (the alternatives-bind\n"
+           "           question, F2039, is a typing fact this rule-side scan lacks)",
+    "style.registry_catchall": "RETIRED (avra-8sb5.25.16): the regex found ZERO sites at\n"
+           "           retirement (no baseline debt, no `// LICENSED style.registry_catchall`\n"
+           "           comment anywhere) — the compiler's own typed diagnostic\n"
+           "           (`registry_forgets`/`registry_forgets_bound`, features/enums/check.av,\n"
+           "           F2040's successor) already counts answering arms against the\n"
+           "           DECLARED ENUM's own variants, for every package `avra check` touches,\n"
+           "           more precisely than a syntactic `_ ->` grep ever could. Not ported as\n"
+           "           a `rule`: the enforcement was never idioms.py's to hand off",
+    "compiler.raw_rt_call": "PORTED NATIVELY (avra-8sb5.25.16): `raw_rt_call`/`raw_rt_call_void`\n"
+           "           (compiler/idioms.av) — a fixed-arity `quote` over `Ins.CallRt`/\n"
+           "           `Ins.CallRtVoid`, guarded by the bound name hole's own TEXT\n"
+           "           (`starts_with(\"\\\"avra_\")`); ratcheted by the native-findings\n"
+           "           phase below",
+    "compiler.raw_mint_emit": "PORTED NATIVELY (avra-8sb5.25.16): nine sibling rules, one per\n"
+           "           covered `Ins` variant (`raw_mint_emit_bin` … `raw_mint_emit_load`,\n"
+           "           compiler/idioms.av) — the let's own NAME hole and the emit's own\n"
+           "           VALUE hole agreed by text; ratcheted by the native-findings phase\n"
+           "           below. NARROWER than the regex: a pair inside an `if`/`while`/`for`\n"
+           "           body is outside this pattern's reach (that body is a flat statement\n"
+           "           list, never a nested `Block`) — `hollow_of`'s two sites (values.av)\n"
+           "           stay licensed by comment for a human reader, unseen by the rule",
     "nullable.if_null_ternary": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
@@ -956,26 +859,6 @@ UNRATCHETED = {
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
-    "style.one_body_arms": [["        .Struct(d, _) or .Enum(d, _) -> d,",
-             "        .Var(_, _, n) -> n,"],
-            ["        .A(x) -> {",
-             "        .B(x) -> {"]],
-    # a let-else's match ends at `} else {`, and the scan must stop there
-    # rather than count the next fn's projection as this match's arms
-    "style.registry_catchall": [["    fn f() -> int? {",
-             "        let at? = match v {",
-             "            .I(j) -> j,",
-             "            rest -> null,",
-             "        } else { return null }",
-             "        at",
-             "    }",
-             "",
-             "    fn g(v: V) -> int {",
-             "        match v {",
-             "            .A(x) -> x,",
-             "            _ -> 0,",
-             "        }",
-             "    }"]],
     "style.refusal_uncounted_contains": [
         ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
@@ -993,14 +876,6 @@ CLEAN = {
     "style.bool_comprehension": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
-    "style.raw_rt_call": [['    cx.array_sized(sh, size)'],
-            ['    self.array_push(box, v)'],
-            ['        cx.map_get(sh, m, k)']],
-    "style.stmt_index_walk": [['    for s in store.stmt_ids() {'],
-            ['    flatten([some_list(self.use_parts(s)) for s in self.stmt_ids()])']],
-    "style.raw_mint_emit": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
-            ['    self.un(present)'],
-            ['        cx.pack(ty, [present, value])']],
 }
 
 SPECIMENS = {
@@ -1025,7 +900,6 @@ SPECIMENS = {
             ["            p.diagnostics >= 1"],
             ["            p.voices.list.length >= 1 && lets.length == 2"]],
     "style.unmutated_mut": [["    mut registry = new_type_registry()", "    let n = registry.shapes.length"]],
-    "style.registry_catchall": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
     "style.dead_parameter": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
@@ -1039,21 +913,6 @@ SPECIMENS = {
     "style.free_state_verb": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
-    "style.one_body_arms": [["        .Struct(d, _) -> d,",
-             "        .Enum(d, _) -> d,"],
-            ["            .Ok(.Eof) -> false,",
-             "            .Ok(.Pending) -> false,"]],
-    "style.raw_rt_call": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
-            ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
-            ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
-    "style.stmt_index_walk": [["    for i in 0..store.stmts.count() {"],
-            ["        for i in 0..self.stmts.count() {"]],
-    "style.raw_mint_emit": [["    let dst = cx.mint_shape(Type.Bool)",
-             "    cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))"],
-            ["    let dst = self.mint_shape(Type.Bool)",
-             "    self.emit(Ins.Un(dst, UnOp.Not, present))"],
-            ["        let dst = cx.mint_ty(ty)",
-             "        cx.emit(Ins.Pack(dst, [present, value]))"]],
     "style.filled_by_arena_count": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }

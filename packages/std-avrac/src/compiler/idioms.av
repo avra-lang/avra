@@ -7,7 +7,7 @@
 //! before the language grew able to say them; a sibling shape not
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
-use features.{Code, Fix, rule, said}
+use features.{ArmInfo, Code, Fix, rule, said}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -307,6 +307,84 @@ fn hand_sized(e: Code, k: Code) -> Fix {
     Fix.Say(said(e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
 }
 
+/// A walk over a NodeStore's own statements BY INDEX — `for i in
+/// 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()`
+/// hands the ids themselves, the thing every such walk actually
+/// wants. A BARE-HOLE ROOT, structural GUARD (`Code.for_range`,
+/// features/code.av, the same shape `loops.index_walk` reads its own
+/// range head off): the bound is `${owner}.stmts.count()` here
+/// rather than a list's `.length`. `core/store.av` is exempt — its
+/// own `stmt_ids()` IS this walk, the one place it is allowed to be
+/// spelled out.
+///
+/// NO REWRITE: the body may read `i` as a plain int (a map key, an
+/// offset into a side table) as freely as it may use it to look a
+/// statement up by id — only a human reading the body can tell
+/// which, and `decls_mint.av`'s own walk needs the int (a `by_stmt`
+/// map key), not the id.
+@keeps("for i in 0..xs.length { log(i) }")
+export rule stmt_index_walk {
+    quote { ${lit} } if stmt_index_walked(lit) -> stmt_index_walk_found(lit),
+}
+
+fn stmt_index_walked(lit: Code) -> bool {
+    if lit.of.view.source.file.ends_with("core/store.av") { return false }
+    let r? = lit.for_range() else { return false }
+    r.from.text() == "0" && r.to.text().ends_with(".stmts.count()")
+}
+
+fn stmt_index_walk_found(lit: Code) -> Fix {
+    let r = lit.for_range()!
+    Fix.Say(said(r.to.loc(), "an index walk over a store's statements — `for s in store.stmt_ids()` hands the ids themselves", "this loop", null))
+}
+
+/// A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x",
+/// args)` / `Ins.CallRtVoid("avra_x", args)` — instead of through its
+/// GENERATED method (`cx.x(sh, args)`, features/rt.av, minted from
+/// `core/rt_namespace.av`'s projection of `rt_sigs()`). A row's
+/// method carries the row's own arity in its signature, so a
+/// misspelled row is the ordinary "no method" refusal at typing and
+/// a wrong seat count the ordinary fn-arity refusal; a bare string
+/// reopens both holes a typo can hide behind. Two files spell the
+/// string BY DESIGN and are exempt: `compiler/suite_entry.av` builds
+/// the TEST BINARY's own entry from its own separate row table, never
+/// `rt_sigs()`; `compiler/memory/memory.av` rewrites an
+/// ALREADY-LOWERED instruction's string field (the owned-twin
+/// substitution) — neither reads a row through `LowerCx`.
+///
+/// NO REWRITE, but not for the reason it looks: the generated
+/// method's own NAME is a MECHANICAL string transform on the row name
+/// (`short_name`, core/rt_namespace.av — strip the five-character
+/// `avra_` prefix, nothing else). What this pattern cannot mechanize
+/// is the SHAPE: the generated method MINTS the destination itself
+/// (`self.call(sh, …)`), so a sound rewrite folds in the `dst`'s own
+/// mint call too, and that mint sits in an EARLIER statement this
+/// bare `Ins.CallRt(…)` expression never binds — the same
+/// position-shift hazard `raw_mint_emit`'s own family carries (moving
+/// a mint across `${..mid}` statements can reorder side effects), and
+/// the reason that family names `CallRt`/`CallRtVoid` as its
+/// EXCLUSION rather than a tenth sibling.
+@keeps("cx.array_sized(sh, size)")
+export rule raw_rt_call {
+    quote { Ins.CallRt(${dst}, ${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
+}
+
+/// The void twin — no `dst` to bind.
+@keeps("self.array_push(box, v)")
+export rule raw_rt_call_void {
+    quote { Ins.CallRtVoid(${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
+}
+
+fn is_rt_string(name: Code) -> bool {
+    if !name.text().starts_with("\"avra_") { return false }
+    let f = name.of.view.source.file
+    !f.ends_with("compiler/suite_entry.av") && !f.ends_with("compiler/memory/memory.av")
+}
+
+fn raw_rt_call_found(name: Code) -> Fix {
+    Fix.Say(said(name.loc(), "a runtime row named by a bare string, ${name.text()} — the generated method carries the row's own arity (`cx.<name>(sh, args)`, features/rt.av), so a misspelled row or a wrong seat count refuses at typing instead of waiting for a typo nothing catches", "this call", null))
+}
+
 /// A `mut` list built to answer "have I seen this before" — a
 /// POSITION law once the whole list is already in hand: the first
 /// index a value occurs at is decided by `.index_of`, compared
@@ -398,6 +476,176 @@ fn popped(rest: List<Code>, name: string) -> bool {
 
 fn bracket_ritual_found(v: Code, x: Code) -> Fix {
     Fix.Say(said(v.loc(), "`${v.text()}.push(${x.text()})` held open across a stretch of work until a later `${v.text()}.pop()` — a bracket fn taking a thunk owns the pop on every path out, not just the one written", "this push", null))
+}
+
+/// A register MINTED, then DEFINED by a raw `emit(Ins...)` a few
+/// statements later, outside the emission vocabulary itself — where
+/// a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a,
+/// b)`, features/emit.av). THE MINT LAW ("a register is defined in
+/// the order it was minted") holds by CONSTRUCTION once the mint and
+/// the emit are one call; split across two statements, a refactor
+/// can separate them and the register defines out of order with
+/// nothing to catch it. `features/emit.av` is exempt — it IS the
+/// vocabulary these verbs collapse into, so its own bodies mint then
+/// emit by hand once, on purpose. Nine sibling rules, one per Ins
+/// variant a vocabulary verb covers (`CallRt`/`CallRtVoid` are
+/// `raw_rt_call`'s concern, never this one's; `FnAddr`, `ConstFloat`
+/// and a bare `Alloca` have no covering verb in any form, so there is
+/// nothing for a rule to measure there yet).
+///
+/// TWO SEPARATE HOLES, `${dst}`/`${dst2}`, checked by TEXT: the let's
+/// own binder is a NAME seat (`own_name_at`'s catalog), the emit's
+/// argument an ordinary VALUE seat, and the matcher compares the two
+/// kinds of seat under incompatible rules — reusing one binder index
+/// across both can never hit (avra-8sb5.25.45).
+///
+/// NO REWRITE: a site whose one minted register is read across
+/// several branches (a match arm per literal kind, a defect arm
+/// answering the same register the success arm defines) cannot
+/// collapse to one call, and telling that shape apart from the
+/// ordinary case needs more than this pattern's two statements hold.
+///
+/// NARROWER THAN THE RETIRED REGEX, structurally: the ROOT is a
+/// BLOCK — `if`/`while`/`for` bodies are flat statement lists on
+/// their OWN node (core/nodes.av's `IfStmt`, `While`, `For`), never a
+/// nested `Block`, so a pair sitting inside one (`hollow_of`'s two
+/// `ConstBool`/`ConstFloat` sites, values.av) is outside this
+/// pattern's reach — the same shape `bracket_ritual`/
+/// `seen_accumulator` already carry. Both stay licensed by comment
+/// for a human reader; a native finding never reaches them to ask.
+fn is_mint_call(mint: Code) -> bool {
+    if mint.of.view.source.file.ends_with("features/emit.av") { return false }
+    let t = mint.text()
+    [
+        "self.mint_shape(",
+        "cx.mint_shape(",
+        "self.mint_ty(",
+        "cx.mint_ty(",
+        "self.mint_like(",
+        "cx.mint_like(",
+        "self.result(",
+        "cx.result(",
+    ].any((p) -> t.starts_with(p))
+}
+
+fn raw_mint_emit_found(dst: Code, variant: string) -> Fix {
+    Fix.Say(said(dst.loc(), "`${dst.text()}` minted, then defined by a raw `emit(Ins.${variant}(…))` a few statements later — a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a, b)`, …, features/emit.av), which holds the mint law by construction", "this mint", null))
+}
+
+export rule raw_mint_emit_bin {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Bin(${dst2}, ${op}, ${a}, ${b}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Bin"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+export rule raw_mint_emit_un {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Un(${dst2}, ${op}, ${src}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Un"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_pack {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Pack(${dst2}, ${elems}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Pack"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_call {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Call(${dst2}, ${callee}, ${args}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Call"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_call_ptr {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.CallPtr(${dst2}, ${f}, ${args}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "CallPtr"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Int)\n    log(dst)\n}")
+export rule raw_mint_emit_const_int {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstInt(${dst2}, ${v}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstInt"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+export rule raw_mint_emit_const_bool {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstBool(${dst2}, ${v}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstBool"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Str)\n    log(dst)\n}")
+export rule raw_mint_emit_const_str {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstStr(${dst2}, ${s}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstStr"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_load {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Load(${dst2}, ${slot}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Load"),
 }
 
 /// A struct literal copying every other field from ONE subject — that
@@ -496,3 +744,76 @@ fn field_list(fields: List<Code>) -> string {
 }
 
 fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
+
+/// Two ADJACENT `match` arms answering one IDENTICAL body — `or`
+/// joins their patterns (`.Struct(d, _) -> d`, `.Enum(d, _) -> d` is
+/// `.Struct(d, _) or .Enum(d, _) -> d`), since the alternatives may
+/// bind (every one binding the same names at the same types, F2039's
+/// law). GUARDED RULE-SIDE over `Code.arms()` (`Expr.Match` has no
+/// fixed arm count a quote pattern can spell): two sibling arms agree
+/// when neither carries a guard and their VALUE Codes are text-equal
+/// — wider than the retired regex, which read single-line arms only.
+///
+/// THE REWRITE TRUSTS THE PROOF, NOT THE GUARD: whether the join is
+/// SOUND is the alternatives-bind question — do the two patterns bind
+/// the same names at the same types (F2039)? — a TYPING fact this
+/// rule-side text scan does not carry, so the rewrite does not answer
+/// it either. `ir_proved` does: it lowers the AFTER text and writes
+/// nothing unless the result both TYPECHECKS and answers the SAME IR
+/// — a mismatched bind either refuses to typecheck (F2039) or lowers
+/// to a different program, and either way the join stays SHOWN, not
+/// applied, the same door `modified_copy_literal`'s `with` collapse
+/// already stands behind.
+@fixes("match k { .Struct(d, _) -> d, .Enum(d, _) -> d }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
+@keeps("match k { .A -> 1, .B -> 2 }")
+export rule one_body_arms {
+    quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit),
+}
+
+/// The second arm's own INDEX of the first adjacent, unguarded,
+/// same-body pair — absent when `lit` is not a `match`, or none of
+/// its sibling arms agree. `.arms()` also answers for a `rule {}`
+/// declaration's own arm list (the SAME shape internally), which
+/// carries no real `match SUBJECT { … }` text for the rewrite to
+/// splice a subject into — `lit.text()` starting with the keyword is
+/// what tells a genuine match expression from that borrowed shape.
+fn merge_index(lit: Code) -> int? {
+    if !lit.text().starts_with("match ") { return null }
+    let arms? = lit.arms() else { return null }
+    for i in 1..arms.length {
+        let a = arms[i - 1]
+        let b = arms[i]
+        if a.guard == null && b.guard == null && a.value.text() == b.value.text() { return i }
+    }
+    null
+}
+
+/// The rewrite: every OTHER arm re-spliced as it already reads, the
+/// merged pair's own pattern LISTS concatenated (an already-`or`
+/// sibling's own alternatives ride along whole) under the shared
+/// body, subject to `merge_index`'s own text-equal answer alone.
+fn one_body_arms_fix(lit: Code) -> Fix {
+    let i = merge_index(lit)!
+    let arms = lit.arms()!
+    let subj = lit.kids().first()!.text()
+    Fix.Rewrite(name("match ${subj} { ${merged_arms_text(arms, i)} }"))
+}
+
+fn merged_arms_text(arms: List<ArmInfo>, i: int) -> string {
+    let merged = arm_text(ArmInfo { pats: arms[i - 1].pats.concat(arms[i].pats), guard: null, value: arms[i - 1].value })
+    let before = [arm_text(arms[k]) for k in 0..i - 1]
+    let after = [arm_text(arms[k]) for k in i + 1..arms.length]
+    before.concat([merged]).concat(after).join(", ")
+}
+
+/// One arm, re-spelled: its own patterns joined by `or`, its guard
+/// when it carries one, its value — the same text `avra fmt` would
+/// already print for an untouched arm.
+fn arm_text(a: ArmInfo) -> string {
+    let pats = [p.text() for p in a.pats].join(" or ")
+    let guard = match a.guard {
+        g? -> " if " + g.text()
+        null -> ""
+    }
+    pats + guard + " -> " + a.value.text()
+}

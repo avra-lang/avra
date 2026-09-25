@@ -267,19 +267,23 @@ impl Program {
     fn rule_listing() -> List<RuleEntry> { rules }
 
     /// An annotation fn's signature, which IS its effect — `avra
-    /// explain @name`. Null when no declared fn wears the name.
+    /// explain @name`. Null when no declared fn wears the name. Asks
+    /// `file_doc_of` explicitly for an undocumented fn: this names ONE
+    /// declaration, the `avra docs <name>` shape `doc_of`'s fallback
+    /// once carried — `explain_doc` shares the same door.
     fn explain_annotation(name: string) -> string? {
         let decls = self.ws.decls
         let decl? = decls.decls.get().find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else { return null }
         let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
         let holes = [decls.types.name_of(pt) for pt in sig.params]
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
-        let doc = decls.doc_of(decl.id)
+        let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file)
         if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
     }
 
-    /// A declaration's `///` doc and its own `@name(args)` annotations,
-    /// off the one door every declaration's parse facts answer through —
+    /// A declaration's `///` doc — or, absent one, its FILE's `//!`
+    /// header, asked for explicitly (`doc_of`'s door carries no such
+    /// fallback of its own) — and its own `@name(args)` annotations.
     /// `avra docs <name>`'s general form. Null for a name no declared
     /// fn, type, enum, trait or const of this package wears. A name
     /// TWO modules both declare — legal, since each namespaces on its
@@ -294,7 +298,7 @@ impl Program {
         let matches = [d for d in decls.decls.get() if d.name == name]
         if matches.length > 1 { return self.collision_answer(decls, name, matches) }
         let decl? = matches.first() else { return null }
-        let doc = decls.doc_of(decl.id) ?? []
+        let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file) ?? []
         let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
         let lines = doc.concat(anns)
         let text = if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
@@ -319,8 +323,11 @@ impl Program {
     /// collide in one array the way a single-name lookup would refuse.
     /// `Builtin` is excluded: the LANGUAGE declares it, not this
     /// package — every package would otherwise repeat the same rows
-    /// for `int`/`List`/`Task`/…, and it carries no file of its own
-    /// for `doc_of`'s fallback to mean anything about.
+    /// for `int`/`List`/`Task`/…. Each row's `prose_lines` is its OWN
+    /// `///` alone (`doc_of` carries no file fallback): dump lists
+    /// every exported symbol in a package at once, so an undocumented
+    /// one inheriting whatever `//!` its file happens to open with is
+    /// the same borrowed-paragraph hazard the rule listing had.
     fn dumped_decls(package: string) -> List<DocRow> {
         let decls = self.ws.decls
         [self.dump_row(decls, d, package) for d in decls.decls.get() if d.exported && !(d.kind is .Builtin)]

@@ -328,6 +328,26 @@ fn same_at(a: At, b: At) -> bool {
     }
 }
 
+/// Two subtrees, EXACTLY — never `subtree_fp` alone. `fp`/`fp_str`
+/// are un-keyed rolling hashes (core/fp.av) and two different
+/// subtrees can share one (`same_ins_list`'s sibling law, core/ir.av)
+/// — a repeated binder's REPEAT occurrence trusts this, the
+/// fingerprint only as its fast pre-filter. `@derive(Exact)`
+/// (core/exact_derive.av) walks every field of the dereferenced node,
+/// never a fold, so two subtrees agree here only when they ARE the
+/// same code.
+fn same_subtree(store: NodeStore, a: At, b: At) -> bool {
+    match a {
+        .Expr(x) -> match b { .Expr(y) -> store.exact_expr(store.expr(x), store.expr(y)), rest -> false },
+        .Stmt(x) -> match b { .Stmt(y) -> store.exact_stmt(store.stmt(x), store.stmt(y)), rest -> false },
+        .Pat(x) -> match b { .Pat(y) -> store.exact_pat(store.pat(x), store.pat(y)), rest -> false },
+        .Field(ox, ix) -> match b {
+            .Field(oy, iy) -> field_name_of(store, ox, ix) == field_name_of(store, oy, iy) && store.exact_expr(store.expr(field_value_of(store, ox, ix)), store.expr(field_value_of(store, oy, iy))),
+            rest -> false,
+        },
+    }
+}
+
 /// `at`'s first position in `holes`, or absence — a placeholder
 /// listed twice binds once, at its first position.
 fn hole_index(holes: List<At>, at: At) -> int? {
@@ -421,7 +441,7 @@ fn bound_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) ->
         next.set(hole, [subject])
         return next
     }
-    if store.subtree_fp(seen![0]) == store.subtree_fp(subject) { acc } else { null }
+    if store.subtree_fp(seen![0]) == store.subtree_fp(subject) && same_subtree(store, seen![0], subject) { acc } else { null }
 }
 
 /// A NAME binder seat: the FIRST occurrence records the subject; a
@@ -454,7 +474,7 @@ fn bound_run(store: NodeStore, ats: List<At>, hole: int, acc: List<List<At>?>) -
 }
 
 fn same_run(store: NodeStore, a: List<At>, b: List<At>) -> bool {
-    a.length == b.length && [j for j in 0..a.length].all((k) -> store.subtree_fp(a[k]) == store.subtree_fp(b[k]))
+    a.length == b.length && [j for j in 0..a.length].all((k) -> store.subtree_fp(a[k]) == store.subtree_fp(b[k]) && same_subtree(store, a[k], b[k]))
 }
 
 /// One recursive step: `subject` against `shape`, given the binds

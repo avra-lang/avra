@@ -150,8 +150,7 @@ fn propagate_res_type(mut cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
     let promised = ret!
     if cx.errored_ty(promised) { return cx.error_type }
     let rsides? = cx.view.types.res_parts(promised) else { return failure_unpromised(cx, v, promised, sides) }
-    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-    if rsides.err.index != sides.err.index { return failures_disagree(cx, v, sides, rsides) }
+    if !cx.view.types.covers(rsides.err, sides.err) { return failures_disagree(cx, v, sides, rsides) }
     sides.ok
 }
 
@@ -245,5 +244,5 @@ fn failure_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId, sides: ResSid
 }
 
 fn failures_disagree(mut cx: TypeCx, v: ExprId, sides: ResSides, promised: ResSides) -> TypeId {
-    cx.spoken(refusal("type.propagate", cx.loc_of(v), "the failures disagree: this raises `${cx.view.types.name_of(sides.err)}`, the fn promises `${cx.view.types.name_of(promised.err)}`", "propagates here", "error unions arrive later — today the channels must carry the same type"))
+    cx.spoken(refusal("type.propagate", cx.loc_of(v), "the failures disagree: this raises `${cx.view.types.name_of(sides.err)}`, the fn promises `${cx.view.types.name_of(promised.err)}`", "propagates here", "the promise must COVER what this raises — widen it to a union, or `catch` what does not fit"))
 }

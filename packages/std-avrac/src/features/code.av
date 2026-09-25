@@ -7,7 +7,7 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at}
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at, Arm}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, AnnotationFact}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
@@ -25,6 +25,10 @@ export type Code = { of: Analysed, at: At }
 /// A range `for` loop's own head, `for_range`'s answer: the loop
 /// variable's own text, its bound and its body, each still Code.
 export type ForRange = { name: string, from: Code, to: Code, body: List<Code> }
+
+/// One `match` arm, `arms`'s answer: its patterns, its guard (absent
+/// for an unguarded arm) and its value, each still Code.
+export type ArmInfo = { pats: List<Code>, guard: Code?, value: Code }
 
 /// A RUN binder's whole match, wrapped: every `At` it captured
 /// carries this Code's own facts — `quote_pat_binds`' (features/
@@ -110,6 +114,28 @@ impl Code {
                     to: Code { of: self.of, at: At.Expr(to) },
                     body: [Code { of: self.of, at: At.Stmt(s) } for s in stmts],
                 },
+                _ -> null,
+            },
+            _ -> null,
+        }
+    }
+
+    /// This node's own `match` ARMS — absent for every other shape. A
+    /// quote pattern pins a `match`'s ARITY (`Expr.Match` has no
+    /// fixed arm count it can spell), so a rule reading arm-to-arm
+    /// facts (two siblings' bodies, an arm count) reads them
+    /// structurally instead, off the declaration's own `arms` field.
+    fn arms() -> List<ArmInfo>? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Match(_, arms) -> [ArmInfo {
+                    pats: [Code { of: self.of, at: At.Pat(p) } for p in a.pats],
+                    guard: match a.guard {
+                        g? -> Code { of: self.of, at: At.Expr(g) }
+                        null -> null
+                    },
+                    value: Code { of: self.of, at: At.Expr(a.value) },
+                } for a in arms],
                 _ -> null,
             },
             _ -> null,

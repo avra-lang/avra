@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Reg, body_symbol, hosted_symbol, static_symbol, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file}
+use core.{Reg, body_symbol, hosted_symbol, static_symbol, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file, static_code_syms}
 use features.{nothing}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
@@ -108,8 +108,10 @@ fn owns(b: Body, f: FileId) -> bool {
 export fn home_of(b: Body) -> FileId? { b.file }
 
 /// What these bodies NAME, and their own names with it: a module declares a
-/// body it owns as much as one it only calls.
-fn refs_of(bodies: List<Body>) -> Refs {
+/// body it owns as much as one it only calls. A STATIC this module lays out
+/// names too — a capture-free closure's `Slot.Code` is a body reference as
+/// real as an instruction's, just not one an `Ins` scan would ever see.
+fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
     mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
     // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
     // `carries` asks membership per body, per static and per runtime row. The lists this
@@ -124,6 +126,11 @@ fn refs_of(bodies: List<Body>) -> Refs {
             if host != null { r.hosted.set(host!, true) }
             let st = static_symbol(i)
             if st != null { r.statics.set(st!, true) }
+        }
+    }
+    for st in statics {
+        if r.statics.get(st.name) != null {
+            for sym in static_code_syms(st.boxes) { r.bodies.set(sym, true) }
         }
     }
     r
@@ -175,7 +182,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
     let own = [bd for bd in l.fns if which.defines(bd)]
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned) }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
@@ -255,7 +262,9 @@ fn slot_mark(c: Slot) -> int {
     match c {
         .Text(_) or .Box(_) or .Null -> 1,
         .Absent -> 2,
-        .Int(_) or .Float(_) or .Bool(_) -> 0,
+        // a code address is a raw word, never a header — `push_slot`
+        // treats a dynamic closure's own code slot the same way
+        .Int(_) or .Float(_) or .Bool(_) or .Code(_) -> 0,
     }
 }
 
@@ -270,6 +279,9 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
         .Box(at) -> avra_llvm_global_payload(m, box_name(st, at)),
         .Null -> avra_llvm_const_pointer_null(avra_llvm_pointer_type(lc)),
         .Absent -> avra_llvm_const_int(avra_llvm_int64_type(lc), 0, 0),
+        // the function's own address, a pointer constant like `.Box` —
+        // `avra_llvm_static_array` ptrtoints any pointer-shaped cell
+        .Code(sym) -> avra_llvm_get_named_function(m, mangled(sym)),
     }
 }
 
@@ -442,7 +454,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
+        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) -> avra_llvm_pointer_type(lc),
     }
 }
 

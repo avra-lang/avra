@@ -1,0 +1,76 @@
+// `Type.Union`'s own laws: order-independent interning, flattening,
+// the one-member collapse, and the set operations `catch`/widening
+// read (`covers`, `subtracted`). Pure registry calls — no source, no
+// parsing — since the shape's contract lives entirely in
+// `TypeRegistry`.
+use @std.avrac.core.{new_type_registry, Type, DeclId}
+
+fn decl(n: int) -> DeclId { DeclId { index: n } }
+
+spec "core/types: Union" {
+    given "a union of members" {
+        then "order does not matter — A|B and B|A intern identically" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let b = r.intern(Type.Struct(decl(1), "B"))
+            r.union_of([a, b]).index == r.union_of([b, a]).index
+        }
+        then "a union absorbs a union — (A|B)|C and A|B|C intern alike" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let b = r.intern(Type.Struct(decl(1), "B"))
+            let c = r.intern(Type.Struct(decl(2), "C"))
+            let nested = r.union_of([r.union_of([a, b]), c])
+            let flat = r.union_of([a, b, c])
+            nested.index == flat.index
+        }
+        then "a repeated member dedupes to one" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            r.union_of([a, a]).index == a.index
+        }
+        then "a one-member union is not a union at all" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let one = r.union_of([a])
+            !(r.shape_of(one) is .Union) && one.index == a.index
+        }
+    }
+    given "covers — the subset law every widen and `catch` reads" {
+        then "a member is covered by its union, a union by a wider one, a type by itself" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let b = r.intern(Type.Struct(decl(1), "B"))
+            let c = r.intern(Type.Struct(decl(2), "C"))
+            let ab = r.union_of([a, b])
+            let abc = r.union_of([a, b, c])
+            r.covers(ab, a) && r.covers(abc, ab) && r.covers(a, a)
+        }
+        then "a stranger is not covered" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let b = r.intern(Type.Struct(decl(1), "B"))
+            let c = r.intern(Type.Struct(decl(2), "C"))
+            !r.covers(r.union_of([a, b]), c)
+        }
+    }
+    given "subtracted — a selective catch's remaining set" {
+        then "the named members leave, the rest survive" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let b = r.intern(Type.Struct(decl(1), "B"))
+            let c = r.intern(Type.Struct(decl(2), "C"))
+            let abc = r.union_of([a, b, c])
+            let remaining = r.union_of(r.subtracted(abc, [a]))
+            r.covers(remaining, b) && r.covers(remaining, c) && !r.covers(remaining, a)
+        }
+        then "one member left is a plain type, not a union" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            let b = r.intern(Type.Struct(decl(1), "B"))
+            let ab = r.union_of([a, b])
+            let remaining = r.union_of(r.subtracted(ab, [a]))
+            !(r.shape_of(remaining) is .Union) && remaining.index == b.index
+        }
+    }
+}

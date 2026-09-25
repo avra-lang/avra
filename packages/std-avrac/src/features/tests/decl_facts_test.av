@@ -5,7 +5,8 @@
 // holds. `compiler/tests/facts_block_test.av` proves the record
 // codec; this proves the door reads what the parse wrote, and that a
 // held declaration (no store at all) answers identically.
-use @std.avrac.compiler.{analyze_source, Analysis}
+use @std.avrac.compiler.{analyze_source, Analysis, avra, new_workspace, Program}
+use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.features.{Decl, Decls, new_decls, DeclFacts, AnnotationFact}
 use @std.avrac.core.{DeclId, ExprId, FileId, DeclKind, no_stmt, At}
 
@@ -19,6 +20,22 @@ fn doc_of(a: Analysis, name: string) -> List<string>? {
 
 fn annotations_of(a: Analysis, name: string) -> List<AnnotationFact> {
     a.view.decls.annotations_of(decl_named(a, name))
+}
+
+/// A REAL package's entry analysis — `analyze_source`'s `lone_workspace`
+/// shortcut does not align a builtin's hard-coded `FileId { index: 0 }`
+/// (features/decls.av's `admit_builtin`) with any real file's store the
+/// same way a genuine multi-file build does, so the builtin case below
+/// needs the actual door: `new_workspace`/`memory_host`, `rule_proof_test.av`'s
+/// own pattern.
+fn workspace_analysis(main: string) -> Analysis {
+    mut ws = new_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w", avra())
+    mut p: Program = ws.program("/w/src/main.av")
+    p.entry_file()!
+}
+
+fn first_builtin(a: Analysis) -> DeclId {
+    a.view.decls.decls.get().find((d: Decl) -> d.kind is .Builtin)!.id
 }
 
 /// The first statement's own fn body, when it has one — a named
@@ -75,6 +92,12 @@ spec "declaration facts — one door, every declaration" {
             let a = analyze_source("/// documented\nfn f() -> int {\n    1\n}\nf()")
             let c = a.code_at(At.Expr(first_body(a)!))
             c.doc() == null && c.annotations().is_empty()
+        }
+    }
+    given "a builtin — every one minted at FileId { index: 0 } (features/decls.av's `admit_builtin`), with no `///` of its own" {
+        then "its doc is null, never whatever `//!` header a REAL package's own file 0 opens with" {
+            let a = workspace_analysis("//! What this file is for.\nfn f() -> int {\n    1\n}\nf()\n")
+            a.view.decls.doc_of(first_builtin(a)) == null
         }
     }
     given "a held declaration — adopted straight from a record, with no store behind it" {

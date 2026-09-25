@@ -168,21 +168,11 @@ fn model_missing(t: Type) -> Diagnostic {
 }
 
 fn enum_not_supported(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "enum_not_supported",
-        t.at,
-        "`@model` derives a table from a record's fields — `${t.name}` is an enum, with none",
-        "declare `${t.name}` as a record: `type ${t.name} = { id: int = 0, ... }`",
-    )
+    refuse_as_at("enum_not_supported", t.at, "`@model` derives a table from a record's fields — `${t.name}` is an enum, with none", "declare `${t.name}` as a record: `type ${t.name} = { id: int = 0, ... }`")
 }
 
 fn no_id_field(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "no_id_field",
-        t.at,
-        "every `@model`'s first field is `id: int = 0` — the primary key SQLite mints — and `${t.name}` ${first_field_words(t)}",
-        "add `id: int = 0` as `${t.name}`'s first field",
-    )
+    refuse_as_at("no_id_field", t.at, "every `@model`'s first field is `id: int = 0` — the primary key SQLite mints — and `${t.name}` ${first_field_words(t)}", "add `id: int = 0` as `${t.name}`'s first field")
 }
 
 fn first_field_words(t: Type) -> string {
@@ -191,12 +181,7 @@ fn first_field_words(t: Type) -> string {
 }
 
 fn too_many_fields(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "too_many_fields",
-        t.at,
-        "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
-        "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields",
-    )
+    refuse_as_at("too_many_fields", t.at, "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}", "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields")
 }
 
 // ── The DDL, built once from the fields — plain string assembly at
@@ -252,13 +237,13 @@ fn unique_suffix(f: Field) -> string {
 fn unique_fields_code(t: Type) -> Code {
     let fs = [f for f in non_id_fields(t) if is_unique(f)]
     match fs.length {
-        0 -> quote { [] }
-        1 -> quote { [${unique_field_code(fs[0])}] }
-        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] }
-        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] }
-        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] }
-        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] }
-        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() }
+        0 -> quote { [] },
+        1 -> quote { [${unique_field_code(fs[0])}] },
+        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] },
+        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] },
+        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] },
+        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] },
+        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() },
     }
 }
 
@@ -268,15 +253,15 @@ fn unique_field_code(f: Field) -> Code {
 
 fn loc_code(at: Loc?) -> Code {
     match at {
-        null -> quote { null }
         loc? -> quote { Loc { file: ${loc_file_code(loc.file)}, lo: ${loc.lo}, hi: ${loc.hi} } }
+        null -> quote { null }
     }
 }
 
 fn loc_file_code(file: string?) -> Code {
     match file {
-        null -> quote { null }
         f? -> quote { ${literal(f)} }
+        null -> quote { null }
     }
 }
 
@@ -347,7 +332,8 @@ fn claim_insert_sql() -> string {
 fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
 
 fn collision_message(t: Type) -> string {
-    "table \"${table_name_of(t)}\" is already claimed by a @model declared at " }
+    "table \"${table_name_of(t)}\" is already claimed by a @model declared at "
+}
 
 // ── Binding a field OUT (a value crossing to SQLite) and reading one
 // IN (a column crossing back) — one exhaustive dispatch each way. ──
