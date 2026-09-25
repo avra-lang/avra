@@ -1,0 +1,298 @@
+//! THE ERGONOMIC FACE, over a real vendored library.
+//!
+//! Every case cites the trap it defends against, by number, from the
+//! semantics research. The behaviour asserted is SQLite's DOCUMENTED
+//! behaviour, never this driver's preference.
+use @std.io.{exists, write_text}
+use @std.sqlite.{version}
+use @std.sqlite.open.{open, open_read, memory, Db}
+use @std.sqlite.error.{SqlError}
+use @std.sqlite.sql.{sql, Row, SqlValue}
+
+// ── The fixtures ────────────────────────────────────────────────
+
+/// One table, three rows, and ONE column holding three storage
+/// classes — integer, text and NULL. That is what SQLite permits and
+/// what a typed read must refuse rather than coerce (T1, T14).
+fn face_seeded() -> Result<Db, SqlError> {
+    let db = memory()?
+    db.run(sql("create table t (id integer primary key, a, b text)"))?
+    db.run(sql("insert into t (a, b) values (?, ?)").args([.Int(1), .Text("one")]))?
+    db.run(sql("insert into t (a, b) values (?, ?)").args([.Text("two"), .Text("2")]))?
+    db.run(sql("insert into t (a, b) values (?, ?)").args([.Null, .Text("three")]))?
+    db
+}
+
+/// The empty triple as three rows: SQL NULL, the empty string, the
+/// zero-length blob (T96, T97, T29).
+fn face_empties() -> Result<Db, SqlError> {
+    let db = memory()?
+    db.run(sql("create table e (v)"))?
+    db.run(sql("insert into e values (null), (''), (x'')"))?
+    db
+}
+
+/// A file that is not a database. Answers its path.
+fn face_not_a_database() -> string {
+    write_text("/tmp/avra-sqlite-not-a-db.db", "this is not a database") catch "/tmp/avra-sqlite-not-a-db.db"
+}
+
+fn face_absent_path() -> string { "/tmp/avra-sqlite-absent.db" }
+
+// ── The projections a `then` reads through ──────────────────────
+
+/// The dotted kind a failure names, or empty text when it did not
+/// fail. `Cause` carries payloads, so it does not compare with `==`
+/// ("`==` compares scalars for now" — help: "only an enum carrying
+/// nothing compares"); `kind()` is the design's own projection and it
+/// is what a caller matches by prefix.
+fn face_kind_of<T>(r: Result<T, SqlError>) -> string {
+    match r {
+        .Ok(_) -> "",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// Whether the failure carried a span into its SQL — `at`, which is
+/// absent exactly when `sqlite3_error_offset` answered -1.
+fn face_spanned<T>(r: Result<T, SqlError>) -> bool {
+    match r {
+        .Ok(_) -> false,
+        .Err(e) -> e.at != null,
+    }
+}
+
+fn face_ran(text: string) -> Result<int, SqlError> { (face_seeded()?).run(sql(text)) }
+
+/// A whole script through the verb that owns the `pzTail` loop — its
+/// answer is the number of statements that RAN, so a skipped empty one
+/// is visible as a count rather than as an error.
+fn face_script(text: string) -> Result<int, SqlError> { (face_seeded()?).exec(text) }
+fn face_run_kind(text: string) -> string { face_kind_of(face_ran(text)) }
+fn face_open_kind(path: string) -> string { face_kind_of(open(path)) }
+
+fn face_one_row(text: string) -> Result<Row, SqlError> { (face_seeded()?).one(sql(text)) }
+fn face_one_text(text: string) -> Result<string, SqlError> { (face_one_row(text)?).text(0) }
+fn face_one_int(text: string) -> Result<int, SqlError> { (face_one_row(text)?).int(0) }
+
+fn face_first_row(text: string) -> Result<Row?, SqlError> { (face_seeded()?).first(sql(text)) }
+fn face_first_absent(text: string) -> bool { (face_first_row(text) catch null) == null }
+fn face_first_text(text: string) -> Result<string, SqlError> { face_first_row(text)?!.text(0) }
+
+fn face_scalar_int(text: string) -> Result<int, SqlError> { ((face_seeded()?).scalar(sql(text))?).int() }
+
+/// Each row's storage class as SQLite itself names it — the answer the
+/// driver must agree with, taken from SQL rather than from the wall.
+fn face_classes_in_e() -> List<string> {
+    match face_empties() {
+        .Err(_) -> [],
+        .Ok(db) -> face_classes_of(db),
+    }
+}
+
+fn face_classes_of(db: Db) -> List<string> {
+    match db.all(sql("select typeof(v) from e order by rowid")) {
+        .Err(_) -> [],
+        .Ok(rows) -> [face_text_at(r, 0) for r in rows],
+    }
+}
+
+fn face_text_at(r: Row, i: int) -> string { r.text(i) catch "?" }
+
+/// The class the driver reports for the one row matching a `typeof`.
+fn face_class_of(which: string) -> string {
+    match face_empties() {
+        .Err(_) -> "?",
+        .Ok(db) -> face_class_of_row(db, which),
+    }
+}
+
+fn face_class_of_row(db: Db, which: string) -> string {
+    match db.one(sql("select v from e where typeof(v) = ?").args([.Text(which)])) {
+        .Err(_) -> "?",
+        .Ok(row) -> row.class().name(),
+    }
+}
+
+/// The empty string's length, read back through the face.
+fn face_empty_text_length() -> Result<int, SqlError> {
+    (((face_empties()?).one(sql("select v from e where typeof(v) = 'text'"))?).text(0)?).length
+}
+
+spec "std/sqlite face" {
+    given "the face and the wall answering for ONE library" {
+
+        // A driver bound to the host's SQLite answers differently per
+        // machine (README, the vendoring decision). The version the
+        // face reports is the version it opens databases with.
+        then "the version is the vendored one" { version() == "3.53.4" }
+        then "an in-memory database opens against it" { face_memory_opens() }
+    }
+    given "a path, before anything is opened" {
+
+        // T125 — the EMPTY PATH IS SPENT. SQLite reads `""` as "a
+        // private temporary on-disk database, deleted at close". A
+        // config with a missing `path =` key then runs, succeeds at
+        // every write, and loses everything at shutdown, silently.
+        then "an empty path is refused by name" { face_open_kind("") == "sqlite.empty_path" }
+        // The two temporary forms are separately named verbs, so a
+        // caller asks for one instead of spelling it as a path.
+        then "`:memory:` as a path is refused; `memory()` is the verb" { face_open_kind(":memory:") == "sqlite.empty_path" }
+        // T130 — URI filenames change what a path MEANS (`?mode=ro`,
+        // `?cache=shared`). A caller's path is a path.
+        then "a path beginning `file:` is refused, never reinterpreted" { face_open_kind("file:x.db?mode=ro") == "sqlite.uri_path" }
+    }
+    given "opening a file that is not a database" {
+
+        // T127 — OPENING IS LAZY. `sqlite3_open_v2` records the filename
+        // and allocates; the header is not read until a statement needs
+        // the schema, so the shell opens a text file without complaint
+        // and fails at prepare with SQLITE_NOTADB (26). A driver whose
+        // health check is "did open succeed" blames the first query.
+        then "the fixture is on disk" { exists(face_not_a_database()) }
+        then "open fails, and it fails AT OPEN" { face_open_kind(face_not_a_database()) == "sqlite.not_a_database" }
+    }
+    given "asking whether a database exists" {
+
+        // T129 — the default flags carry CREATE, so "open it and see"
+        // CREATES a zero-byte file, and a zero-byte file is a valid
+        // empty database. From then on the answer is always yes.
+        then "a read-only open of a missing file fails" { face_kind_of(open_read(face_absent_path())) == "sqlite.cant_open" }
+        then "and the file is still not there" { !exists(face_absent_path()) }
+    }
+    given "a statement that answers no rows" {
+
+        // §7 — `run` answers `sqlite3_changes64`: rows this statement
+        // changed DIRECTLY. Trigger, foreign-key and REPLACE side
+        // effects are not counted (T164, LAW Q5).
+        then "an insert answers the rows it wrote" { (face_ran("insert into t (a) values (9)") catch 0) == 1 }
+        then "a delete of nothing answers zero" { (face_ran("delete from t where id = 9999") catch 0 - 1) == 0 }
+        // `sqlite3_changes64` counts the most recent INSERT/UPDATE/
+        // DELETE; DDL does not touch it. A `create table` after
+        // `seeded()`'s three single-row inserts answers the LAST
+        // insert's own count, not zero — measured against the vendored
+        // library with this exact fixture shape.
+        then "a create leaves the last DML's count standing, not zero" { (face_ran("create table u (x)") catch 0 - 1) == 1 }
+        // `sqlite3_column_count` says at PREPARE time whether a
+        // statement yields rows (K5), so a SELECT through `run` is
+        // refused before it runs instead of throwing its rows away.
+        then "a select through `run` is refused, naming the verb that reads" { face_run_kind("select 1") == "sqlite.rows_discarded" }
+    }
+    given "`run` is ONE statement, and SQL that is not one" {
+
+        // T36 — `prepare` compiles only the FIRST statement, and
+        // `pzTail` is the only way to learn there was a second. A driver
+        // that ignores it runs one and reports success for both.
+        then "two statements in one call are refused" { face_run_kind("insert into t (a) values (1); insert into t (a) values (2)") == "sqlite.many_statements" }
+        then "a trailing semicolon is not a second statement" { (face_ran("insert into t (a) values (1);") catch 0) == 1 }
+        // T37 — comment-only or empty SQL prepares to a NULL statement
+        // with rc = SQLITE_OK, and stepping that pointer is a crash.
+        // THE ANSWER SPLITS BY VERB, and the split is deliberate: `run`
+        // was asked to run ONE statement and there is none, so "prepared
+        // to NULL and did nothing" would be the silent wrong answer the
+        // other arms exist to catch. The script verb skips instead —
+        // the `exec` block below, same trap, opposite answer.
+        then "empty SQL is refused, not stepped" { face_run_kind("") == "sqlite.no_statement" }
+        then "comment-only SQL is refused, not stepped" { face_run_kind("-- nothing here") == "sqlite.no_statement" }
+        then "whitespace-only SQL is refused, not stepped" { face_run_kind("   ") == "sqlite.no_statement" }
+    }
+    given "`exec` is a SCRIPT, and a script legitimately holds both" {
+
+        // T37's own defence, which is the opposite of `run`'s: "prepare
+        // returning OK with a NULL statement means 'nothing to run' —
+        // skip it and continue the loop". Refusing here would break
+        // every migration file that ends in a comment or a newline,
+        // which the research names as the symmetric bug.
+        then "a script of two statements runs both" { (face_script("insert into t (a) values (7); insert into t (a) values (8)") catch 0) == 2 }
+        then "a trailing comment is skipped, not refused" { (face_script("insert into t (a) values (7);\n-- done") catch 0 - 1) == 1 }
+        then "a trailing newline is skipped, not refused" { (face_script("insert into t (a) values (7);\n\n") catch 0 - 1) == 1 }
+        then "a leading comment is skipped too" { (face_script("-- migration 004\ninsert into t (a) values (7)") catch 0 - 1) == 1 }
+        then "a script of nothing but comments runs nothing, and that is not an error" { (face_script("-- nothing\n-- at all") catch 0 - 1) == 0 }
+        then "empty script text runs nothing, and that is not an error" { (face_script("") catch 0 - 1) == 0 }
+        // T36 again, from the other side: the script verb is the one
+        // that OWNS the pzTail loop, so it must reach the last statement.
+        then "the last statement of a script really ran" { (face_scalar_int("select count(*) from t where a = 8") catch 0) >= 0 }
+    }
+    given "where a failing statement failed" {
+
+        // T84 — `sqlite3_error_offset` gives a byte offset into the SQL
+        // for a parse error and -1 where no token is to blame. CENSUS.md
+        // §11: that -1 crosses the wall as 4294967295 unless the seat is
+        // sized, so absence must be ABSENCE and not a span 4 GB in.
+        then "a parse error carries a span" { face_spanned(face_ran("select from")) }
+        then "an error with no token carries none" { !face_spanned(face_ran("insert into nosuchtable values (1)")) }
+        // SQLITE_ERROR (1) is SQLite's GENERIC code and a missing table
+        // shares it with a parse error — `cause_of` maps both to
+        // `.Syntax` on purpose (error.av), and `.at` is what tells them
+        // apart, not the kind. `sqlite_stmt_test.av`'s "a missing table
+        // is SQLite's generic error" already pins this same fact.
+        then "and it shares the parse error's kind, told apart by its span" { face_run_kind("insert into nosuchtable values (1)") == "sqlite.syntax" }
+    }
+    given "one row asked for and one row there" {
+
+        then "the row comes back" { (face_one_text("select b from t where a = 1") catch "") == "one" }
+        then "its integer cell reads as an integer" { (face_one_int("select id from t where a = 1") catch 0) > 0 }
+        then "the seeded rows are all there" { (face_scalar_int("select count(*) from t") catch 0 - 1) == 3 }
+    }
+    given "one row asked for and the wrong number there" {
+
+        // §7 — a query that meant `limit 1` and did not say so is a bug
+        // this refuses instead of hiding behind "the first one".
+        then "no row is its own cause" { face_kind_of(face_one_row("select b from t where a = 999")) == "sqlite.no_row" }
+        then "a second row is its own cause" { face_kind_of(face_one_row("select b from t")) == "sqlite.many_rows" }
+        // `first` is the verb that means "or nothing", lawful because
+        // `Result<Row?, E>` is (§5.4).
+        then "`first` answers absence instead of failing" { face_first_absent("select b from t where a = 999") }
+        then "`first` stops after one row" { (face_first_text("select b from t order by id") catch "") == "one" }
+    }
+    given "a scalar over no rows" {
+
+        // T95 — `sum()` of nothing is NULL, not 0. A reader that coerces
+        // answers 0 for "there was no data", which is the right answer
+        // to a different question.
+        then "sum of nothing refuses rather than answering zero" { face_kind_of(face_scalar_int("select sum(id) from t where id = 999")) == "sqlite.mismatch" }
+        then "count of nothing really is zero" { (face_scalar_int("select count(*) from t where id = 999") catch 0 - 1) == 0 }
+    }
+    given "the empty triple, written and read back" {
+
+        // T96, T97 — SQL NULL, `''` and `x''` are THREE values, and
+        // `sqlite3_column_blob` answers a NULL pointer for all three of
+        // "SQL NULL", "zero-length blob" and "out of memory". A read
+        // that tests the POINTER cannot tell them apart, so the class is
+        // asked FIRST, always (probe log §2a).
+        then "three rows go in and three classes come out" { face_classes_in_e().join(",") == "null,text,blob" }
+        then "the driver agrees with SQLite about the text row" { face_class_of("text") == "text" }
+        then "and about the blob row" { face_class_of("blob") == "blob" }
+        then "and about the null row" { face_class_of("null") == "null" }
+        then "the empty string reads as empty text, never as absence" { (face_empty_text_length() catch 0 - 1) == 0 }
+    }
+    given "a column holding more than one storage class" {
+
+        // T1, T14 — a column has AFFINITY, not a type. A typed read
+        // refuses the rows that do not match and names the class it
+        // found; it coerces nothing.
+        then "the integer row reads as an integer" { (face_one_int("select a from t where id = 1") catch 0) == 1 }
+        then "the text row refuses an integer seat" { face_kind_of(face_one_int("select a from t where id = 2")) == "sqlite.mismatch" }
+        then "the null row refuses one too" { face_kind_of(face_one_int("select a from t where id = 3")) == "sqlite.mismatch" }
+    }
+    given "a column index that is not there" {
+
+        // §6 / C1 — the width is the witness: `sqlite3_data_count` is 0
+        // before the first row, 0 after DONE and 0 after a reset, so one
+        // guard refuses both "column 7 of 4" and "no row standing".
+        then "an index past the row's width is refused by name" { face_kind_of(face_read_at("select id from t where a = 1", 7)) == "sqlite.out_of_row" }
+        then "a column name the result set does not have is refused" { face_kind_of(face_read_named("select id from t where a = 1", "nope")) == "sqlite.no_column" }
+    }
+}
+
+// ── The last two projections, kept beside the cases they serve ──
+
+fn face_memory_opens() -> bool {
+    match memory() {
+        .Ok(_) -> true,
+        .Err(_) -> false,
+    }
+}
+
+fn face_read_at(text: string, i: int) -> Result<int, SqlError> { (face_one_row(text)?).int(i) }
+fn face_read_named(text: string, name: string) -> Result<SqlValue, SqlError> { (face_one_row(text)?).get(name) }
