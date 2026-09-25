@@ -1238,7 +1238,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       one a human must remember not to increment. Ratcheted
       (`nullable_flag_local`).
 
-- style.impl_method_equals_default (unratcheted) AN IMPL METHOD WHOSE BODY IS EQUIVALENT TO ITS
+- impls.default_override (ratcheted) AN IMPL METHOD WHOSE BODY IS EQUIVALENT TO ITS
       TRAIT'S DEFAULT BODY — INCLUDING THROUGH A NO-OP LIKE `nothing()`
       — IS A COPY OF THE DEFAULT; DELETE IT. `nothing()` (or whatever
       no-op form applies) is TRANSPARENT to the comparison: a body that
@@ -1253,6 +1253,35 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       body equality against the trait's default — a native rule over
       the declaration's Code (the formatter's rule engine), not a text
       matcher.
+      LANDED (avra-8sb5.25.47), NAMED BY ITS RULE: `impls/idioms.av`'s
+      `default_override`, reached by `impls/mod.av` — the guard reads
+      a CROSS-DECLARATION fact (`Decls.trait_named`/`default_member`,
+      the impl's own trait member of the same name, the RUNTIME
+      dispatch's own fallback table), never a text match, then
+      compares each side's kept statements by `NodeStore`'s own
+      span-blind `stmt_fingerprint`, `nothing()`-only ones dropped.
+      THE CITED INSTANCE HAD ALREADY GONE BY THEN, undiscovered by
+      name: `ConstSemantics.lower_stmt` carries no override at all in
+      the tree this rule was written against — fixed separately,
+      untied to this entry, sometime after it was written. The sweep
+      this rule ran (`avra check` over every package under
+      `packages/`) found the family's one SURVIVING member instead:
+      `CollectStmtSemantics.lower_stmt`, the identical `nothing();
+      null` shape, in `features/collects/semantics.av`. Zero
+      elsewhere — the entry's OWN "26 identical sites" sweep had
+      already caught the rest by hand; this rule exists for the next
+      straggler, not a backlog. THE FIX HAS NO `@fixes` EXAMPLE: the
+      rewrite answers no code at all (a deletion), and
+      `same_fingerprint` reads a rewrite's rendered text as a program
+      to pull a root from — an empty one parses to no statements and
+      has none. `avra fix` applies it through `@law` alone
+      (`an impl method identical to its trait's default answers the
+      same as the default`), and TODAY'S REWRITE MACHINERY EDITS ONE
+      SPAN, NOT A WHOLE DECLARATION'S SUPPORTING TEXT: applying it by
+      hand at the one live site left the method's now-orphaned `///`
+      doc comment and its now-dead imports (`Reg`, `LowerCx`,
+      `nothing`) behind, cleaned up by hand alongside it. Ratcheted
+      (`default_override`).
 
 ## Lowering: MINT IN EMISSION ORDER
 
