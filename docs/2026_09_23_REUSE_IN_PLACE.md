@@ -810,3 +810,98 @@ and width). `./build/avra fmt` unchanged on every touched file.
 postponed; the ROADMAP's sugar/IR backlog is where it belongs if a
 future measurement finds the registration-table lever insufficient on
 its own.
+## §26 As built — tail, Framing as a value record
+
+**D34. A FLAT record's field list widens past `int`: a `bool`, and a
+WORD ENUM (one whose own declaration carries no payload anywhere, so
+its tag is its whole value) are scalar fields too** — asked of a
+field's own declaration through `carries_nothing`, never of the type
+registry's marks, so the answer never depends on which of the two was
+declared first (the law `payload_word` already keeps for an enum
+payload). `Decls.scalar_field` is the one predicate; `flatten`
+(decls.av) calls it in place of the old `is .Int` check. Nothing else
+moved: `slot_width`, `ll_type_of`, `packed_struct`, `leaves`/
+`unboxed_at` and the crossing's `inline_slots` were already generic
+over a field's OWN shape (built for R4b's nested value records and
+R11's enum payloads) — a bool lands as an i1 register, a word enum's
+tag as an int64, exactly as `ll_type_of`/`machine_shape` already
+answered them standalone.
+
+**A nullable enum stays OUT, on purpose.** `Opt(WordEnum)` still
+rides a pointer (`opt_rides_pointer`'s "a flat record has no spare
+value" law, unchanged) — giving a nullable enum its own spare-tag
+register (mirroring D31's valued-enum niche) is a real generalization
+and a wider one: it would move EVERY `<Enum>?` in the tree, not one
+record's field, and `is_managed`'s `flat_managed` (memory.av) has
+never been exercised for a record carrying a MANAGED field — the
+backend's `retained`/`released` pass a `.Struct` register straight to
+`avra_rc_retain`, sound only because every flat record today is
+unmanaged. Left as the next scalar-field width; a record that wants a
+`T?` field avoids the box by carrying a `bool` + `T` pair instead
+(`@std/http`'s own fix, below).
+
+**§26a `@std/http`'s `Framing` (frame.av), applied.** `why: Refusal?`
+was the one field blocking `flatten`: a nullable enum. Split into
+`refused: bool` and `why: Refusal` (the `.LineEnd` default is a
+placeholder, unread while `refused` is false) — the {bool, value}
+pair D34 declined to give nullable enums for free, spelled by hand at
+the one call site that needed it.
+
+Fixed by the SAME move: a `mut` seat keeps its box (types.av's
+`unflatten`), so `noted`/`broke`/`took_length`/`took_codings`/
+`took_host`/`took_connection`/`took_expectation` had to stop taking
+`mut fr: Framing` and start taking `fr: Framing`, answering the next
+`Framing` — `with` in place of a field write. A record threaded
+through a `mut` HELPER PARAMETER can never be a value record
+regardless of its fields: the write needs an address, and a value
+record's whole point is that it has none. `framing_of`'s own `mut fr`
+stays a `mut` LOCAL (a local is opened, not sealed), so the fold reads
+exactly as before, one field at a time.
+
+Attacks: `features/tests/scalar_fields` (a bool and a word-enum field
+through a `Cell`, a `mut` seat, a `match` on the field itself, a
+capture taken before a later write, `Result`, `dyn`, a `Map`, a fold
+through `with` across a loop — `Framing`'s own shape — a nested wide
+field, a generic `Box<T>`, a static list, `is`, `pop`) — eval ==
+native under `AVRA_RC_GUARD=1`, 0 boxes live at exit. `@std/http`'s
+own suite (468 unit tests, 4 programs, every named `Refusal` already
+pinned by `frame_test.av`) passed unchanged — the restructuring
+touched no LAW, only the fold's shape.
+
+**Numbers** (tools/bench/request, Mac, 5,000,000 requests,
+`/usr/bin/time -l`, interleaved, several rounds averaged):
+
+| | before | after |
+|---|---|---|
+| instructions/request | 11,966 | 11,385 (-4.9%) |
+| boxes/request | 8 | 7 |
+
+`framing_of`'s own allocation site is gone; the other seven (the
+field list, `Head`, `Request`, three inside `written`, `Response`)
+are unmoved — R14 (the response written into the connection's own
+buffer) and net's last box (R11d, below) are what is left.
+`check packages/cli`: 162.3B -> 162.0B instructions (-0.2%, inside
+the documented ±0.7% noise floor), binary 8.573 -> 8.572 MB.
+
+**Measured and not landed — R11d, `Result<Read, NetError>`.**
+`judge_result`/`side_word` require BOTH sides at most one word;
+`Read` (`@std/net`) is itself a value enum (`Data(Bytes) | Eof |
+Pending`, tag+word, TWO words already), so `side_word(Read)` is null
+by its OWN rule (`is_valued(t) -> null`) and the Result stays boxed.
+Fitting it would widen a Result carrying a valued-enum side to THREE
+registers (the Result's own tag, the side's tag, the side's word) — a
+real change to `judge_result`'s "one word per side" invariant, on the
+type every body in the compiler and every std package spells.
+Reconnaissance only this slice, deliberately: Framing's fix stayed
+inside one record's own field list and one `mut`-seat law; this one
+moves a load-bearing assumption under `Result<T, E>` itself. Left for
+its own ticket (avra-8sb5.34.22), with a red team sized to match.
+
+**Measured and not landed — the framer's own scans (candidate 3).**
+`crlf_only` and `request_line`/`field_lines` each re-scan the same
+head bytes (a blank-line search, a CRLF-well-formedness pass, then a
+class-table pass per token) — real waste, named "23% the framer's own
+scans" at §23's profile. Every one of those three passes is a LAW
+against request smuggling (frame.av's own opening comment), so
+merging them needs the SAME red-team weight as the framer's original
+landing, not an afternoon's. Not attempted this slice.
