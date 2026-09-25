@@ -7,7 +7,7 @@
 //! would copy — and the callee is called by name at every exit, its
 //! answer settled by the frame it stands in like any value the frame
 //! never reads again.
-use core.{StmtId, ExprId, Reg, Type, TypeId, is_literal}
+use core.{StmtId, ExprId, Reg, Type, TypeId, DeclId, is_literal}
 use features.{LowerCx, DirectCall, bound_decl_of}
 
 fn lower_defer(mut cx: LowerCx, s: StmtId) -> Reg? {
@@ -25,8 +25,8 @@ fn lower_defer(mut cx: LowerCx, s: StmtId) -> Reg? {
 /// The deferred body as a call with its arguments in hand — null when
 /// the body needs its box.
 fn direct_call(mut cx: LowerCx, s: StmtId) -> DirectCall? {
-    let lam? = cx.view.store.stmt_value(s) else { return null }
-    let body? = cx.view.store.lambda_parts(lam)?.body else { return null }
+    let lam = cx.view.store.stmt_value(s)?
+    let body = cx.view.store.lambda_parts(lam)?.body?
     direct_free_call(cx, lam, body) ?? direct_method_call(cx, lam, body)
 }
 
@@ -37,8 +37,8 @@ fn direct_free_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
     let call = cx.view.store.call_parts(body)?
     if !call.args.all(fixed_early(cx, it)) { return null }
     let d = bound_decl_of(cx.names, body)?
-    let seats = cx.view.decls.sig(d)?.fn_sig()?.params?
-    if seats.length != call.args.length { return null }
+    let seats = seats_of(cx, d)?
+    if skips_a_default(seats, call.args, false) { return null }
     let host: string? = cx.extern_callee(body)
     if host != null && !(cx.shape_at(body) is .Void) { return null }
     let captured = cx.capture_regs(lam)
@@ -54,12 +54,26 @@ fn direct_method_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall?
     if cx.facts.wants_alias_copy(call.subject) || cx.facts.wants_thaw(call.subject) { return null }
     let j = captured_at(cx, call.subject)?
     if !call.args.all(fixed_early(cx, it)) { return null }
-    let subj_ty = cx.type_at(call.subject)
-    let m = cx.method_of(subj_ty, call.name)?
-    let seats = cx.view.decls.sig(m)?.fn_sig()?.params?
-    if seats.length != 1 + call.args.length { return null }
+    let recv_ty = cx.type_at(call.subject)
+    let m = cx.method_of(recv_ty, call.name)?
+    let seats = seats_of(cx, m)?
+    if skips_a_default(seats, call.args, true) { return null }
     let captured = cx.capture_regs(lam)
-    built(cx, cx.method_symbol(m, body, subj_ty), false, captured, captured[j], call.args, cx.type_at(body))
+    built(cx, cx.method_symbol(m, body, recv_ty), false, captured, captured[j], call.args, cx.type_at(body))
+}
+
+/// A declared fn or method's seat types — the impl table's `self`
+/// included, when `d` is one.
+fn seats_of(cx: LowerCx, d: DeclId) -> List<TypeId>? {
+    cx.view.decls.sig(d)?.fn_sig()?.params
+}
+
+/// Whether the declared seats outnumber the written arguments — a
+/// seat this path leaves for its DEFAULT, which it has no default
+/// value to fill; `self_seat` counts the receiver this call also
+/// writes, though never in the argument list.
+fn skips_a_default(seats: List<TypeId>, args: List<ExprId>, self_seat: bool) -> bool {
+    seats.length != args.length + (if self_seat { 1 } else { 0 })
 }
 
 /// The tail free and method calls share: a resolved callee, its
@@ -87,8 +101,7 @@ fn fixed_early(cx: LowerCx, a: ExprId) -> bool {
 
 /// The capture an argument reads, by its place in the lambda's list.
 fn captured_at(cx: LowerCx, a: ExprId) -> int? {
-    let b? = cx.names.binding(a) else { return null }
-    match b {
+    match cx.names.binding(a)? {
         .Capture(_, j) -> j,
         _ -> null,
     }
