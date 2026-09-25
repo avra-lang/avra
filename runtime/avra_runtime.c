@@ -610,11 +610,22 @@ static size_t block_size(Header* h) {
 // The content bytes a sized box can hold, its NUL's byte spared. A
 // classed box holds its class; a bigger one what its block holds. The
 // class is read from the LENGTH, so a box shrunk in place answers the
-// smaller class — under its block, never over it.
+// smaller class — cheap, and an UNDER-report only, never over: the
+// slow path in `sized_moved` asks the block itself before it moves
+// anything, so this stays the fast check every append pays.
 static size_t sized_capacity(Header* h) {
     size_t cls = class_of((size_t)h->len + 1);
     if (cls) return cls * CLASS_BYTES - 1;
     return block_size(h) - sizeof(Header) - 1;
+}
+
+// Whether a sized box can hold `need` content bytes without moving:
+// its block has the room, and the class its new length files under
+// when freed is no bigger than the block.
+static int in_place_fits(Header* h, size_t need) {
+    size_t payload = block_size(h) - sizeof(Header);
+    size_t cls = class_of(need + 1);
+    return need + 1 <= payload && (cls == 0 || cls * CLASS_BYTES <= payload);
 }
 
 // A sized box's length moved to `n`, its terminator written.
@@ -631,6 +642,16 @@ static void sized_resized(Header* h, size_t n) {
 __attribute__((noinline))
 static char* sized_moved(char* p, size_t need) {
     Header* h = (Header*)p - 1;
+    // The CLASS check that sent us here reads the LENGTH, which
+    // truncation can shrink well under the block's real size — ask
+    // the allocator once, here on the already-slow path, rather than
+    // on every append's fast check, before paying for a move the
+    // block never needed. `box_free` files a box by its LENGTH's
+    // class, so growing in place is sound only while that class
+    // still fits the block: an allocator may round a block past its
+    // class (glibc does, by 8), and a box grown into that slack would
+    // be handed out later as a bigger class than its block holds.
+    if (!rc_guarded() && in_place_fits(h, need)) return p;
     size_t n = h->len;
     size_t room = need < 2 * n ? 2 * n : need;
     if (room + 1 <= CLASS_MAX || class_of(n + 1) != 0 || rc_guarded()) {
@@ -732,7 +753,10 @@ void avra_puts(const char* s) {
 // first: unequal lengths are unequal text in O(1), where `strcmp`
 // scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
-    if (a == NULL || b == NULL) return a == b;
+    // one box is one text: a literal compared at its own call site is
+    // the same static box every time
+    if (a == b) return 1;
+    if (a == NULL || b == NULL) return 0;
     size_t la = str_len(a);
     return la == str_len(b) && memcmp(a, b, la) == 0;
 }
@@ -1982,6 +2006,7 @@ int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
 
 // Equality is the reason the kind exists: lengths, then every byte.
 int64_t avra_bytes_eq(const char* a, const char* b) {
+    if (a == b) return 1;
     size_t n = bytes_len(a);
     return n == bytes_len(b) && memcmp(a, b, n) == 0;
 }
