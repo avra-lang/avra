@@ -175,7 +175,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // so it is held across the call. The indirect call wears the
             // same convention.
             .Call(_, _, _) or .CallPtr(_, _, _) -> {
-                let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) && !standing[ar.index] && !owned_open(open_scopes, ar)]
+                let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) && !standing[ar.index] && !owned_open(open_scopes, ar) && root_handed(life, i, ar)]
                 // LICENSED rule.loops.push_loop: the pass's OUTPUT accumulates
                 for r in lent { out.push(Ins.Retain(r)) }
                 manages(types, reg_types, open_scopes, i)
@@ -413,6 +413,42 @@ fn view_of(i: Ins) -> Reg? {
         .CallRt(d, callee, _) -> if rt_owns(callee) { null } else { d },
         rest -> viewed_dst(i),
     }
+}
+
+/// THE INVERSE OF `view_of`: the register a view was taken FROM —
+/// Extract's subject, or a lending row's first seat, the same
+/// subject `read_outlives` judges by.
+fn view_source(i: Ins) -> Reg? {
+    extract_source(i) ?? lending_source(i)
+}
+
+fn extract_source(i: Ins) -> Reg? {
+    match i {
+        .Extract(_, src, _) -> src,
+        rest -> null,
+    }
+}
+
+fn lending_source(i: Ins) -> Reg? {
+    match i {
+        .CallRt(_, callee, args) if !rt_owns(callee) -> args.first(),
+        rest -> null,
+    }
+}
+
+/// WHETHER THIS CALL IS HANDED `ar`'s ROOT: a write only ever lands
+/// through a seat the call itself receives (THE ROOT OF A PATH
+/// DECIDES WHERE A WRITE LANDS), so a view whose root never reaches
+/// this call cannot be written through here, let alone emptied — no
+/// defensive retain is owed. Conservative at the root itself: `ar`
+/// with no view behind it roots at `ar`, which is always among its
+/// own call's seats, so it keeps its guard — and conservative at a
+/// LOAD too, where `root_of` answers absent and this call is read as
+/// reaching it whether or not that is literally the register it was
+/// handed.
+fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
+    let root? = life.root_of(ar) else { return true }
+    lent_args(i).any(same_reg(it, root))
 }
 
 /// Everything EVERY open scope owes at an early exit, innermost
@@ -686,6 +722,23 @@ impl Lives {
             j = j + 1
         }
         [v for v in family if !same_reg(v, r)]
+    }
+
+    /// `views`' inverse: the register `r`'s view chain was ultimately
+    /// taken from, walked back through Extract and a lending row's own
+    /// view to whatever defines its reference outright — `r` itself
+    /// when it does. ABSENT AT A LOAD, ON PURPOSE: a `mut` cell may be
+    /// loaded more than once, each load its own register for the SAME
+    /// box, so register identity alone cannot say the call already
+    /// holds it — `emptied`'s own witness (features/fns/tests/
+    /// borrowed_params) is a second load, thawed for the `mut` seat,
+    /// naming the box a first load's view already rides.
+    fn root_of(r: Reg) -> Reg? {
+        let d = self.defs[r.index]
+        if d < 0 { return r }
+        if self.ins[d] is .Load { return null }
+        let src? = view_source(self.ins[d]) else { return r }
+        self.root_of(src)
     }
 
     /// THE CELL `r` WAS BORROWED FROM, when handing its reference over is

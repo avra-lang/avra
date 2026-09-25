@@ -1260,3 +1260,129 @@ feature marking one fn as answerable by ANY feature, distinct from
 both `export` (crosses packages) and package-private — would have
 let `defers` ask the real `callee_of` instead of keeping a second,
 narrower copy of its `.Declared` arm in sync by hand.
+
+## §30 As built — R5, count elision at the call-crossing retain
+
+**The target.** §6 named it: "R3 consuming params... params are
+borrowed, so a `with` on a param can never reuse." R5's own slot
+(avra-8sb5.34.7) narrowed further after two rounds of measurement —
+static literals and value enums, not stack placement — to "no
+retain/release on a box that never escapes the fn that made it."
+Escape analysis for STACK PLACEMENT was already tried and shelved
+(2026-09-24 comments on the ticket: only 1 of 10 request boxes never
+escape its fn). This slice is a DIFFERENT elision at the same
+doctrine: not "does the box ever leave," but "does THIS call ever
+reach it."
+
+**D15. A view crossing a user call is guarded only when the call is
+ALSO handed its root.** `Call`/`CallPtr`'s defensive retain (memory.av
+§ THE CALLER KEEPS ITS ARGUMENTS STANDING) protects a VIEW — a struct
+field read, a lending row's answer — against "the callee may empty
+the box it looks into." But a callee can only empty a box it holds a
+SEAT on (THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS, CLAUDE.md):
+Avra has no ambient mutable state, so a call that never receives a
+view's root — walked back through Extract and a lending row's own
+view, `Lives.root_of` — cannot reach it, let alone write through it.
+`root_handed` asks `lent_args(i).any(same_reg(it, life.root_of(ar)))`
+per lent arg; the guard stays for every arg whose root the call
+itself also receives, or that has no view behind it at all (`ar`
+roots at `ar`, trivially among its own call's seats).
+
+**D16. `root_of` answers ABSENT at a Load, on purpose.** A `mut`
+binding's cell can be read by more than one `Load`, each its own
+SSA register for the SAME box — register identity cannot say a later
+argument is "the same" root when it arrived through a second load.
+The first draft compared registers all the way down and broke
+`features/fns/tests/borrowed_params`' `emptied` fn: `emptied(b,
+b.rows[0])` reads `b` once (`avra_cell_thawed`, for the `mut` seat)
+and again (`load`, to walk `.rows[0]`) — TWO DIFFERENT REGISTERS for
+one box. `root_of(b.rows[0])` walked to the second load's register;
+the call's own arg was the first; `same_reg` said no; the retain was
+elided; `b.rows = []` inside `emptied` freed the list `row` still
+pointed at; native answered `2` where eval and `.expected` both say
+`s1`. `root_of` now returns absent the moment its walk meets ANY
+`.Load`, and `root_handed` reads absence as "reachable" — conservative,
+never wrong. `features/fns/tests/borrowed_params` caught this on the
+FIRST run of the full suite, exactly as its own header promises
+("each rule witnessed failing without it").
+
+**Why the upstream owned-twin mostly already covers same-call
+co-occurrence, and why that is not a proof.** For a LENDING CallRt
+view (`avra_array_get`, `avra_map_get`), `read_outlives`/
+`borrow_outlives` already walks forward from the read and — because
+its "did the slot change" scan (`leaves_or_changes`) treats ANY later
+instruction reading the SAME register as a possible change — upgrades
+the read to its owned twin the moment the call ALSO reads that exact
+register. Every hand-built same-call-co-occurrence case
+(`viewed_seat_with_root`, §below) is intercepted there, before
+`root_handed` ever runs. `emptied`'s witness is the case that
+mechanism cannot see: the register the call receives (`b`, thawed for
+the `mut` seat) and the register the view's chain passes through
+(`b` reloaded) are DIFFERENT SSA names for the same box, and
+`changes_cell`'s scan is register-identity, not box-identity. D16 is
+what closes that gap; it is also why `root_handed`'s guard-still-owed
+branch is a genuine SAFETY NET more than a frequently-taken one under
+today's lowering — proven necessary by one real defect, not by a
+dense trace of daily hits.
+
+**Guards witnessed failing.** `python3` was not used; the guard was
+removed literally, by reverting D16 to `Reg` (as first written), and
+`build/avra test packages/std-avrac` was run: `borrowed_params`
+failed exactly as described. Restoring D16 turned it back to
+`s1`/green.
+
+**Red team**, native under `AVRA_RC_GUARD=1`, matched against
+eval and (where noise-free) against the baseline compiler's own
+identical memory report:
+| attack | shape | result |
+|---|---|---|
+| nested view chain, `mut` seat clears the parent | `type Inner`/`Outer`, `peek(mut o, o.inner.xs)` | `z0 cleared` both engines; unguarded mem stats byte-identical to baseline |
+| same hazard through a `Cell`, not a seat | `Cell<Bag>`, `clear(c)` after `c.get().xs` | `c` both engines |
+| loop-carried root, view read each turn, root never passed | `for i in 0..5 { total + width(r.cells) }` | `15` both |
+| recursion, a view of a param passed down, never the param | `sum_from`/`peek`, param vs. view forms | `30` both |
+| `defer` writing a `mut` seat after a view of its old value | `run(mut s)`, `defer { s.items = [...] }` | refused by the language itself (a capture is a copy) — not a shape this door reaches |
+| `?` propagation crossing a call with a view alongside the record | `read(d: Doc)`, `first_line(d.lines)?` | `x/2` both |
+| a view stored past its originating call, into a list, each loop turn | `saved.push(keep(r.xs))` | `9` both |
+| two captured fns, the SAME lane read twice | `let a = () -> 1; let b = () -> a() + a()` | both `callptr` seats unretained, `avra_array_get` (not `_owned`) on both reads |
+
+Every attack is also in `packages/std-avrac/src/compiler/tests/
+lower_test.av`'s "the ownership roles read as behavior" / "calls
+through boxes wear the callee's type" — `no_callptr_seat_retained`,
+`viewed_seat` (elided) and `viewed_seat_with_root` (still guarded,
+via the owned-twin) replace the three assertions this slice made
+false by making the IR strictly BETTER than they expected.
+
+**Numbers.** Fixed point: three successive `make avra` after the
+final change gave byte-identical binaries (`cmp` on cache-forced
+rebuilds, .avra-cache moved aside each time). Instructions retired,
+`/usr/bin/time -l`, interleaved, 3 rounds, `.avra-cache` moved aside
+before every `check` round:
+
+| | before (main 94619dd) | after |
+|---|---|---|
+| tools/bench/request, 5,000,000 requests | 54.63B instr (avg) | 53.95B instr (avg) — −1.2% |
+| `check packages/cli` | 173.8B instr (avg) | 166.6B instr (avg) — −4.1% |
+
+Consistent in every round both ways (request: 54.51/54.73/54.64 →
+54.01/53.93/53.92; cli: 173.09/173.76/174.53 → 166.47/166.90/166.46).
+The compiler's own source is the better witness: `self`-and-a-field
+crossing a method call is the common shape this door reaches (an
+OOP-heavy tree), where the request bench's remaining allocations are
+mostly records and lists that never cross a call as a view at all
+(§6's own finding, unchanged). Diagnostics identical between old and
+new (122 warnings, same lines) — behavior unchanged, only the count
+lower. `make census` was not run: it drives `./avra` through
+`tools/watch.sh`, which this campaign's standing order (AGENT_RULES)
+forbids; instructions retired is this tree's own preferred proof for
+exactly that reason.
+
+What I wanted from the language while doing this: a way to assert
+"these two SSA registers are loads of the same untouched cell"
+directly, rather than by absence. `root_of` answering `Reg?` and
+treating `null` as "conservative" reads right, but the same shape
+(a value that MAY alias across more than one register, and a pass
+that must answer soundly without knowing) will recur anywhere a `mut`
+seat and a plain read of the same binding meet — a `same_box`
+predicate over `Lives`, keyed on the CELL rather than the register,
+would let a pass answer the sharper question instead of falling back
+to "unknown, so guard."
