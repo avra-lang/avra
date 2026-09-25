@@ -305,7 +305,7 @@ type Frame = { label: string, loc: Loc? }
 enum Severity { Error Warning }
 type Diag = { kind: string, severity: Severity, primary: Frame, secondary: List<Frame>, message: string, help: string?, suggestions: List<Suggestion> }
 type DiagCode = { kind: string, id: string, summary: string }                 // the F-code is the registry's projection
-fn refusal(kind, at: Loc?, message, label, help: string?) -> Diag             // THE one voice shape (I28)
+fn refusal(kind, at: Loc?, message, label, help: string?) -> Diag             // THE one voice shape (rule.compiler.refusal_assembled)
 fn error_at(kind, loc, message) -> Diag   fn defect_at(loc, message) -> Diag   fn pointed(d, label) -> Diag
 fn loc_at(file: string?, s: Span?) -> Loc?   fn by_position(ds) -> List<Diag>   fn code_for(codes, kind) -> string?
 fn render(d, codes, src) -> string   fn render_among(d, codes, sources: List<SourceFile>) -> string

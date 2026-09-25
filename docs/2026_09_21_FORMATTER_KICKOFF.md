@@ -99,8 +99,8 @@ owner only where the design says OWNER'S CALL.
    its spec (CLAUDE.md, "A LINT COUNTS WHAT ITS DOCTRINE COUNTS"). Run each
    new rule tree-wide and read a sample before it may FIX.
 8. **Names.** Every match over your own enum is a registry or a projection
-   — count the answering arms (I22, F2040). A pass entry keeps the standard
-   signature; everything else on a state struct is a method (I39).
+   — count the answering arms (style.registry_catchall, F2040). A pass entry keeps the standard
+   signature; everything else on a state struct is a method (style.free_state_verb).
 
 ## The slice protocol, for every agent (paste verbatim)
 

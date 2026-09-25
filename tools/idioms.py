@@ -12,31 +12,36 @@ Three laws make backsliding structurally impossible:
      path was "edit the pinned number", which is how a ratchet
      becomes theatre.
   3. A LICENSE LIVES AT THE SITE. Genuinely-idiomatic-impossible
-     code carries `// LICENSED I3: a stack, not a map` on or just
-     above the line. Reviewers see the reason where the code is,
-     forever — not as an integer in a file nobody reads.
+     code carries `// LICENSED style.push_loop: a stack, not a map`
+     on or just above the line. Reviewers see the reason where the
+     code is, forever — not as an integer in a file nobody reads.
 
 So a new violation has exactly two honest exits: write the
 idiomatic form, or annotate it with a reason.
 
-A FOURTH law keeps the rules from rotting: every I-code in
+A FOURTH law keeps the rules from rotting: every idiom named in
 DOGFOODING.md must have a matcher here or an entry in UNRATCHETED
 with its reason. The registry can never again outrun the ratchet.
 
 FIFTH: an idiom the LANGUAGE can now state is a `rule` declaration
 (the formatter, docs/2026_09_21_FORMATTER_DESIGN.md), never a regex
 racing it — `avra check` finds it, this tool reads the finding, not
-the source (`native_findings()`). Its code is ported and its I-number
-moves to UNRATCHETED, saying so. What stays HERE is what the language
-cannot yet say on its own: whole-file/cross-declaration reasoning
-(Bucket C — I11, I12, I13, I20, I21, I23, I24, I26, I38), and rules
-still needing a language gap (Bucket B — avra-8sb5.25.16's own
-catalog). The same baseline ratchets both kinds of finding. A native
-finding still HONOURS a `// LICENSED I<n>` comment written under the
-PREDECESSOR code its regex was retired under (NATIVE_PREDECESSOR) —
-a human's prior review is not re-litigated the day enforcement
-changes hands — but reads no license of its own: what is not already
-licensed under the retired code becomes baseline debt.
+the source (`native_findings()`). Its regex is ported and its RULES
+entry moves to UNRATCHETED, saying so. What stays HERE is what the
+language cannot yet say on its own: whole-file/cross-declaration
+reasoning (Bucket C — style.duplicated_message,
+style.duplicated_literal, style.repeated_projection,
+style.refusal_uncounted_contains, style.unmutated_mut,
+style.dead_parameter, style.unused_import, style.repeated_unwrap,
+grammar.comma_list_open), and rules still needing a language gap
+(Bucket B — avra-8sb5.25.16's own catalog). The same baseline
+ratchets both kinds of finding. A NATIVE finding reads no license of
+its own — every idiom is named by its rule now, so there is no
+predecessor identity for a native finding to inherit a site's
+license through; what a human already reviewed under the tree's old
+numbering was folded into the baseline directly the day the numbers
+went (avra-8sb5.25.49), and any new native debt joins it the same
+way, reviewed at adoption and every time after.
 """
 import collections, os, re, subprocess, sys, glob
 
@@ -53,7 +58,7 @@ SKIP = ("spec_test",)
 # lines — the old single-line greps caught the rare shape and
 # reported success. ──
 
-# I43: a fact column sized from an arena's count — a hand-kept side
+# style.filled_by_arena_count: a fact column sized from an arena's count — a hand-kept side
 # table's half of the smell that is not yet a `rule`: the sibling
 # half (an id read through a hand offset, `${e}.index - ${k}`) is
 # `hand_sized_index` now, native (compiler/idioms.av) — its own regex
@@ -61,7 +66,7 @@ SKIP = ("spec_test",)
 HAND_SIZED = re.compile(r"filled[<(][^;]*\.count\(\)")
 
 def hand_sized_column(lines):
-    """A column sized by an arena's count (I43, the half still
+    """A column sized by an arena's count (style.filled_by_arena_count, the half still
     needing a type-seat hole — .25.10). A COMMENT IS NOT A SITE: the
     loops suite quotes the old spelling to say what once trapped."""
     for i, l in enumerate(lines):
@@ -116,7 +121,7 @@ def emit_then_error(lines):
                     break
 
 def bracket_ritual(lines):
-    """push … work … pop on ONE name: that is a bracket fn (I15)."""
+    """push … work … pop on ONE name: that is a bracket fn (style.bracket_ritual)."""
     for i, l in enumerate(lines):
         m = re.match(r"\s*([a-z_]+)\.push\(", l)
         if not m:
@@ -129,7 +134,7 @@ def bracket_ritual(lines):
 
 def seen_accumulator(lines):
     """`mut seen` + contains + push: duplicate detection that is a
-    POSITION law when the list is already in hand (I16)."""
+    POSITION law when the list is already in hand (style.seen_accumulator)."""
     for i, l in enumerate(lines):
         if re.match(r"\s*mut seen\b", l):
             window = "\n".join(lines[i:i + 14])
@@ -150,7 +155,7 @@ def index_walk(lines):
             yield i, l.strip()
 
 # A REAL count pins a number: `== n`, or the testing verbs that pin
-# it for you. `>= 1` is not a count — it is I30's smell.
+# it for you. `>= 1` is not a count — it is style.uncounted_refusal's smell.
 #
 # EVERY VERB THE TESTING MODULE EXPORTS BELONGS HERE. `refused_in` pins
 # the count at one (it IS `refused_n(p, phrase, 1)`) and was missing
@@ -335,7 +340,7 @@ def let_shadowed(scope_text, name):
 
 def let_else_guard(lines):
     """`let x = E` then an immediate absence-exit — `let x? = E else
-    { … }` (I55)."""
+    { … }` (rule.nullable.let_else_guard)."""
     for i in range(len(lines) - 1):
         m = LET_GUARD.match(lines[i])
         if not m:
@@ -511,7 +516,7 @@ def raw_rt_call(lines):
     BINARY's entry from its own separate row table (not `rt_sigs()`,
     a different builder), and `compiler/memory/memory.av` rewrites an
     ALREADY-LOWERED instruction's string field (the owned-twin
-    substitution) — neither reads a row through `LowerCx` (I58)."""
+    substitution) — neither reads a row through `LowerCx` (style.raw_rt_call)."""
     if CURRENT["path"].endswith((
         "features/emit.av", "compiler/suite_entry.av", "compiler/memory/memory.av",
     )):
@@ -525,7 +530,7 @@ RAW_EMIT = re.compile(r"(?:self|cx)\.emit\(Ins\.(\w+)\((\w+)")
 
 # The variants a vocabulary verb covers under SOME mint (a fixed
 # shape, an explicit TypeId, or a node's own answer type) — `CallRt`/
-# `CallRtVoid` are I58's concern, never this one's; `FnAddr`,
+# `CallRtVoid` are style.raw_rt_call's concern, never this one's; `FnAddr`,
 # `ConstFloat` and a bare `Alloca` have no covering verb in ANY form,
 # so there is nothing here for the ratchet to measure yet.
 COVERED_VARIANTS = {"Bin", "Un", "Pack", "Call", "CallPtr", "ConstInt", "ConstBool", "ConstStr", "Load"}
@@ -544,7 +549,7 @@ def raw_mint_emit(lines):
     match arm per literal kind, a defect arm answering the same
     register the success arm defines, a mint at neither a fixed shape
     nor the node's own type — cannot collapse to one call and is
-    licensed at the site (I60)."""
+    licensed at the site (style.raw_mint_emit)."""
     if CURRENT["path"].endswith("features/emit.av"):
         return
     for i, l in enumerate(lines):
@@ -569,7 +574,7 @@ def one_body_arms(lines):
     .Enum(d, _) -> d`. Single-line arms only — a block body is a
     different sentence each time. A pair whose names bind at
     DIFFERENT types (`.F(v)`, a float, beside `.B(v)`, a bool) cannot
-    join and is licensed at the site (I59)."""
+    join and is licensed at the site (style.one_body_arms)."""
     for i in range(1, len(lines)):
         a, b = ARM_LINE.match(lines[i - 1]), ARM_LINE.match(lines[i])
         if not a or not b or a.group(1) != b.group(1):
@@ -608,7 +613,7 @@ PASS_FILES = re.compile(r"packages/std-avrac/src/(features|compiler)/[^/]+\.av$"
 
 def state_verb(lines):
     """A vocabulary verb written as a free fn taking a pass state
-    first — the state's impl is where it belongs (I39)."""
+    first — the state's impl is where it belongs (style.free_state_verb)."""
     if CURRENT["path"] and not PASS_FILES.search(CURRENT["path"]):
         return
     for i, l in enumerate(lines):
@@ -643,152 +648,155 @@ def duplicated(pattern, minimum=2):
 # Rules restricted to product code, with the reason. A test may
 # violate any OTHER rule as freely as product code can.
 PRODUCT_ONLY = {
-    "I11": "a repeated fixture in a test is not a message that can drift",
-    "I12": "a fixture built twice in a test is the test being explicit",
+    "style.duplicated_message": "a repeated fixture in a test is not a message that can drift",
+    "style.duplicated_literal": "a fixture built twice in a test is the test being explicit",
 }
-TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
+TESTS_ONLY = {"style.refusal_uncounted_contains": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
-    "I11": (duplicated(r'"[a-z][^"]{20,}"'),
+    "style.duplicated_message": (duplicated(r'"[a-z][^"]{20,}"'),
             "a long string duplicated in one file — shared messages are fns"),
-    "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
+    "style.repeated_projection": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
             "the same projection computed twice on one line — bind it"),
-    "I12": (duplicated(r"[A-Z][a-zA-Z]+ \{ [a-z_]+: [^{}]* \}"),
+    "style.duplicated_literal": (duplicated(r"[A-Z][a-zA-Z]+ \{ [a-z_]+: [^{}]* \}"),
             "an identical struct literal written twice — name its constructor"),
-    "I24": (unused_import,
+    "style.unused_import": (unused_import,
             "a name imported and never used in its MODULE — the compiler "
             "refuses a missing one, never an unused one"),
-    "I23": (dead_parameter,
+    "style.dead_parameter": (dead_parameter,
             "a parameter nothing reads — the signature lies, and every call site "
             "carries the lie"),
-    "I22": (registry_catchall,
+    "style.registry_catchall": (registry_catchall,
             "2+ variants answer, so this is a REGISTRY — a catch-all here forgets "
             "the NEXT variant; spell the arms (or-runs keep it affordable), or "
             "write `rest ->` to say the remainder is deliberate"),
-    "I20": (uncounted_refusal,
+    "style.refusal_uncounted_contains": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
-    "I21": (unmutated_mut,
+    "style.unmutated_mut": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
-    "I38": (comma_list_open,
+    "grammar.comma_list_open": (comma_list_open,
             "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
-    "I59": (one_body_arms,
+    "style.one_body_arms": (one_body_arms,
             "two adjacent arms answer one body — join their patterns with `or`; the "
             "alternatives may bind, each binding the same names at the same types"),
-    "I58": (raw_rt_call,
+    "style.raw_rt_call": (raw_rt_call,
             "a runtime row named by a bare string — `Ins.CallRt(dst, \"avra_x\", args)` — "
             "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
             "a misspelled row or a wrong seat count then refuses at typing instead of "
             "waiting for a typo nothing catches"),
-    "I62": (line_rx(r"for i in 0\.\.[\w.]*stmts\.count\(\)"),
+    "style.stmt_index_walk": (line_rx(r"for i in 0\.\.[\w.]*stmts\.count\(\)"),
             "an index walk over a store's statements — `for s in store.stmt_ids()` "
             "hands the ids themselves"),
-    "I60": (raw_mint_emit,
+    "style.raw_mint_emit": (raw_mint_emit,
             "a register minted, then defined by a raw `emit(Ins...)` — that is a vocabulary "
             "verb (`cx.bin(sh, op, a, b)`, `cx.call_decl_at(e, callee, args)`, …, "
             "features/emit.av), which mints and emits in ONE call so the mint law holds by "
             "construction; a site whose one register answers several branches is licensed"),
-    "I26": (repeated_unwrap,
+    "style.repeated_unwrap": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
-    "I39": (state_verb,
+    "style.free_state_verb": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
-    "I43": (hand_sized_column,
+    "style.filled_by_arena_count": (hand_sized_column,
             "a fact column sized from an arena's count — `SideTable<V>` states "
             "the window, the growth and the out-of-window defect once: "
             "`side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`"),
 }
 
 UNRATCHETED = {
-    "I7":  "PORTED NATIVELY (avra-8sb5.25.16): `lists.last_index`, a `rule`\n"
+    "rule.lists.last_index":  "PORTED NATIVELY (avra-8sb5.25.16): `lists.last_index`, a `rule`\n"
            "           in features/lists/idioms.av — `avra check`/`avra fix` enforce it,\n"
            "           ratcheted here by the native-findings phase below, not by a regex",
-    "I9":  "PORTED NATIVELY: `structs.index_compared` (features/structs/idioms.av)\n"
+    "type.index_compared":  "PORTED NATIVELY: `structs.index_compared` (features/structs/idioms.av)\n"
            "           — a `rule`, ratcheted by the native-findings phase below",
-    "I18": "PORTED NATIVELY: all six protocol projections as siblings\n"
+    "style.protocol_defaulted": "PORTED NATIVELY: all six protocol projections as siblings\n"
            "           (`bool_of_defaulted` … `pairs_of_defaulted`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "I28": "PORTED NATIVELY: `refusal_assembled` (compiler/idioms.av) — ratcheted\n"
+    "rule.compiler.refusal_assembled": "PORTED NATIVELY: `refusal_assembled` (compiler/idioms.av) — ratcheted\n"
            "           by the native-findings phase below",
-    "I30": "PORTED NATIVELY: all four receiver shapes as siblings\n"
+    "style.uncounted_refusal": "PORTED NATIVELY: all four receiver shapes as siblings\n"
            "           (`uncounted_refusal` … `voices_uncounted`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "I33": "PORTED NATIVELY: all six `Ins` variants as siblings (`if_start_raw`\n"
+    "style.raw_region": "PORTED NATIVELY: all six `Ins` variants as siblings (`if_start_raw`\n"
            "           … `loop_end_raw`, compiler/idioms.av) — ratcheted by the\n"
            "           native-findings phase below",
-    "I35": "PORTED NATIVELY: both scope brackets as siblings (`scope_enter_raw`,\n"
+    "style.raw_scope": "PORTED NATIVELY: both scope brackets as siblings (`scope_enter_raw`,\n"
            "           `scope_exit_raw`, compiler/idioms.av) — ratcheted by the\n"
            "           native-findings phase below",
-    "I36": "PORTED NATIVELY: `str_grown_quadratically` (compiler/idioms.av) —\n"
+    "style.quadratic_growth": "PORTED NATIVELY: `str_grown_quadratically` (compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "I40": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
+    "style.interned_by_hand": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
            "           (`interned_int` … `interned_res`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "I3":  "PORTED NATIVELY: `push_loop` (features/loops/idioms.av) — a NAME hole\n"
+    "rule.loops.push_loop":  "PORTED NATIVELY: `push_loop` (features/loops/idioms.av) — a NAME hole\n"
            "           (avra-8sb5.25.6) holds the loop's own binder open; ratcheted\n"
            "           by the native-findings phase below",
-    "I48": "PORTED NATIVELY: `bool_comprehension_list`/`_range`\n"
+    "style.bool_comprehension": "PORTED NATIVELY: `bool_comprehension_list`/`_range`\n"
            "           (features/lists/idioms.av) — a NAME hole holds the comprehension's\n"
            "           own element binder open; ratcheted by the native-findings phase\n"
            "           below. A comprehension with its own `if` filter is not yet\n"
            "           reached (the subset today)",
-    "I16": "PORTED NATIVELY: `seen_accumulator` (compiler/idioms.av) — a RUN hole\n"
+    "style.seen_accumulator": "PORTED NATIVELY: `seen_accumulator` (compiler/idioms.av) — a RUN hole\n"
            "           (avra-8sb5.25.10) holds the rest of the enclosing block open so the\n"
            "           accumulator's own `.contains`/`.push` calls are found wherever they\n"
            "           sit, not only in the first 14 lines; ratcheted by the native-\n"
            "           findings phase below",
-    "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
+    "rule.nullable.if_null_ternary": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
-    "I55": "PORTED NATIVELY: `let_else_guard` (features/nullable/idioms.av) — a NAME\n"
+    "rule.nullable.let_else_guard": "PORTED NATIVELY: `let_else_guard` (features/nullable/idioms.av) — a NAME\n"
            "           hole (avra-8sb5.25.6) and two run holes (avra-8sb5.25.10) hold the\n"
            "           `let`'s binder and the enclosing block's head/tail open; ratcheted\n"
            "           by the native-findings phase below. Narrower than the retired\n"
            "           regex: an annotated `let` never matches (no type-seat hole yet,\n"
            "           avra-8sb5.25.10), and shadowing is approximated by a text scan for\n"
            "           `name!` in the tail rather than a real binding check",
-    "I14": "PORTED NATIVELY: `emit_then_error` (compiler/idioms.av) — two run holes\n"
+    "style.emit_then_error": "PORTED NATIVELY: `emit_then_error` (compiler/idioms.av) — two run holes\n"
            "           hold the enclosing block's head/tail open so the pair is found\n"
            "           adjacent anywhere in it, not only within a fixed line window;\n"
            "           ratcheted by the native-findings phase below",
-    "I15": "PORTED NATIVELY: `bracket_ritual` (compiler/idioms.av) — a run hole\n"
+    "style.bracket_ritual": "PORTED NATIVELY: `bracket_ritual` (compiler/idioms.av) — a run hole\n"
            "           holds the rest of the enclosing block open and a guard scans it by\n"
            "           TEXT for a matching `.pop()`, never the fixed 14-line window;\n"
            "           ratcheted by the native-findings phase below. Narrower than the\n"
            "           retired regex on purpose: the push and the pop must sit in the SAME\n"
            "           block (siblings), so a stack held open ACROSS match arms (the\n"
-           "           `// LICENSED I15: this IS the bracket` sites) never even reaches\n"
+           "           `// LICENSED style.bracket_ritual: this IS the bracket` sites) never even reaches\n"
            "           the shape, let alone the license check",
-    "I19": "PORTED NATIVELY: `index_walk` (features/loops/idioms.av) — a run hole\n"
+    "style.index_walk": "PORTED NATIVELY: `index_walk` (features/loops/idioms.av) — a run hole\n"
            "           holds the loop body open and a guard scans it by TEXT for\n"
            "           `xs[j]`; ratcheted by the native-findings phase below. Narrower\n"
            "           than the retired regex on purpose: the pattern roots at a\n"
            "           STATEMENT `for` loop, so a comprehension's own `for` clause\n"
            "           (`[… for j in 0..xs.length]`) never matches — a different shape,\n"
            "           not yet its own rule",
-    "I50": "PORTED NATIVELY: `pronoun_lambda` (features/closures/idioms.av) — a\n"
+    "rule.closures.pronoun_lambda": "PORTED NATIVELY: `pronoun_lambda` (features/closures/idioms.av) — a\n"
            "           NAME hole on the lambda's OWN param (avra-8sb5.25.10's Lambda\n"
            "           own-name-at case) plus a structural `call_args()` walk that\n"
            "           refuses a param handed to a nested call's own arguments;\n"
            "           ratcheted by the native-findings phase below",
-    "I63": "PORTED NATIVELY: `nullable_flag_local` (features/nullable/idioms.av)\n"
+    "style.nullable_flag_local": "PORTED NATIVELY: `nullable_flag_local` (features/nullable/idioms.av)\n"
            "           — no TYPE hole (a quote pattern has none in type position yet,\n"
            "           avra-8sb5.25.10): a bare-hole root guarded\n"
            "           `lit.is_nullable_flag_mut()` reads the `mut` declaration's own\n"
            "           `ty`/value fields structurally instead of binding them; ratcheted\n"
            "           by the native-findings phase below.\n"
-           "           RENUMBERED FROM \"I4\": the RULES dict's own regex was ALREADY\n"
-           "           filed as \"I4\" before this port, colliding with DOGFOODING.md's\n"
-           "           REAL \"I4\" (\"hand-rolled scans that ARE find/index_of/any\") — a\n"
-           "           DIFFERENT idiom, and the collision was live: `decls_mint.av`'s\n"
-           "           `// LICENSED I4: a min-scan keeps the SMALLEST holder, not a\n"
+           "           UNDER THE TREE'S OLD NUMBERING THIS IDIOM WAS FILED \"style.hand_rolled_scan\", a number\n"
+           "           the RULES dict's own regex had ALREADY claimed for a DIFFERENT\n"
+           "           idiom (\"hand-rolled scans that ARE find/index_of/any\",\n"
+           "           `style.hand_rolled_scan` today) — a live collision: `decls_mint.av`'s\n"
+           "           `// LICENSED style.hand_rolled_scan: a min-scan keeps the SMALLEST holder, not a\n"
            "           membership` was written for THAT idiom, and honouring it as this\n"
            "           one's predecessor would have SILENTLY suppressed a genuine\n"
-           "           nullable-flag-local finding under someone else's review. No\n"
-           "           NATIVE_PREDECESSOR carries forward for the same reason — every\n"
-           "           `// LICENSED I4:` comment in the tree was written for the OTHER\n"
-           "           idiom, never this one.",
-    "I54": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
+           "           nullable-flag-local finding under someone else's review. This\n"
+           "           idiom was renumbered to style.nullable_flag_local to break the collision, and now carries\n"
+           "           `style.nullable_flag_local` permanently — a name chosen once, never\n"
+           "           mechanically incremented, so the same accident cannot recur the\n"
+           "           same way; every `// LICENSED style.hand_rolled_scan:` comment the tree ever carried\n"
+           "           was written for the OTHER idiom, never this one, and none of them\n"
+           "           was ever honoured as this idiom's predecessor.",
+    "rule.if_expr.when_ladder": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
            "           pattern's own three parts (`if`, `else if`, `else`) are the\n"
            "           floor a chain of any length recurses past, one nested match at a\n"
            "           time, rather than one pattern spanning every depth; ratcheted by\n"
@@ -800,12 +808,12 @@ UNRATCHETED = {
            "           for its value structurally cannot be the statement form; a 4+-arm\n"
            "           chain is found once at each nesting level it appears at, a known\n"
            "           duplicate the Fix.Say tier does not need suppressed",
-    "I51": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
+    "rule.enums.bool_variant_match": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
            "           (features/enums/idioms.av) — no guard needed: the pattern's own\n"
            "           WILDCARD seat (a literal `_`, never an `or`-run) already refuses\n"
            "           a registry's remaining variants structurally, before any is\n"
            "           asked; ratcheted by the native-findings phase below",
-    "I53": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
+    "rule.compiler.modified_copy_literal": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
            "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
            "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
            "           ratcheted by the native-findings phase below. Narrower than the\n"
@@ -813,20 +821,20 @@ UNRATCHETED = {
            "           coincidental `x.field` name match is accused too, and the copy\n"
            "           test is STRUCTURAL (a `Prop` whose own name agrees), never a text\n"
            "           suffix guess",
-    "I57": "telling \"this branch answers what a DIFFERENT arm already\n"
+    "style.arm_duplicates_sibling_answer": "telling \"this branch answers what a DIFFERENT arm already\n"
            "           answers\" needs reading every other arm's own answer and judging\n"
            "           whether they are the same computation — and, when the target is a\n"
            "           payload-blind or-run, whether widening it to the guarded variant's\n"
            "           own pattern is honest at that site. No grep links two arms as\n"
            "           answering the same thing",
-    "I56": "no grep tells a representation-bearing named-type check from an\n"
+    "style.named_type_representation_check": "no grep tells a representation-bearing named-type check from an\n"
            "           ordinary string comparison — the shape is identical either way,\n"
            "           and only the DOMAIN (a closed, named set of the tree's own free\n"
            "           wrappers) tells them apart. The keeper is the doc comment beside\n"
            "           `flat_named` and this entry: the next named type the check must\n"
            "           widen for is the trigger to give `Kind` a representation bit,\n"
            "           not to grow the list",
-    "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
+    "style.span_anchor_incomplete": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
            "           are whatever the grammar can put in the range, so a helper taking\n"
            "           `List<Token>` of names reads identically whether or not the span\n"
            "           between them holds members of another kind. The keeper is the\n"
@@ -834,90 +842,91 @@ UNRATCHETED = {
            "           with another group following, and read it back through the\n"
            "           printer (annotations_adversarial_test.av, \"payload marks —\n"
            "           alignment\")",
-    "I46": "no grep tells a question about a STATEMENT from a question about the\n"
+    "style.per_decl_walk_asks_stmt": "no grep tells a question about a STATEMENT from a question about the\n"
            "           DECLARATION in hand — both read `decl(d).stmt`, and which one a\n"
            "           law is asking is semantic. The keeper is a test that pins the\n"
            "           COUNT over a member carrying a declaration of its own: a record\n"
            "           field with a DEFAULT is minted on its owner's statement, so a\n"
            "           per-decl walk asks its owner's question a second time",
-    "I61": "no grep tells a one-element list used as a slot from a list whose\n"
+    "style.mutable_slot_not_cell": "no grep tells a one-element list used as a slot from a list whose\n"
            "           first element is written; the keeper is the review round",
-    "I64": "needs body equality against the trait's default — a native rule\n"
+    "style.impl_method_equals_default": "needs body equality against the trait's default — a native rule\n"
            "           over the declaration's Code (the formatter's rule engine), not a\n"
            "           text matcher. `nothing()` (or whatever no-op form applies) is\n"
            "           transparent to the comparison: a body that wraps the default in\n"
            "           one still answers exactly what the default answers",
-    "I45": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
+    "style.derive_file_not_alone": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
            "           file with a trait in it — the shape that breaks it is whatever\n"
            "           ELSE the file holds. The keeper is the law in CLAUDE.md and the\n"
            "           first build that tries: the annotated file loses its methods and\n"
            "           every caller is blamed",
-    "I44": "no grep tells a BOUNDARY registry from any other list of rows, and a\n"
+    "style.positional_boundary_unspelled": "no grep tells a BOUNDARY registry from any other list of rows, and a\n"
            "           reader that spells slot names or a writer that spells literal tags\n"
            "           reads as ordinary code. The keeper is the boundary check itself:\n"
            "           crossing_test.av moves each crossed shape and demands the refusal\n"
            "           name the one that moved",
-    "I49": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
+    "style.pack_unpack_one_table": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
            "           learning a category its unpack has not. The keeper is `make\n"
            "           vocab`: both directions are named as consumers of the SAME\n"
            "           registry enum, and a catch-all or an `is` test inside either\n"
            "           fails the gate whichever direction grew the hole",
-    "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
+    "style.seen_shape_vs_seat_shape": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
            "           one and a defect at the other, and both spellings live beside each\n"
            "           other in the same file. The keeper is the adversarial suite:\n"
            "           named_adversarial_test.av reaches every vocabulary a name can\n"
            "           stand over, and a row reading the wrong door fails there",
-    "I41": "an unwritable spelling as a key is a NAMING choice — the smell is\n"
+    "style.unwritable_spelling_key": "an unwritable spelling as a key is a NAMING choice — the smell is\n"
            "           an in-band tag a program could write, which no grep tells from\n"
            "           an honest name; the review round hunts it",
-    "I27": "RETIRED: a string's `.length` is a load — the header carries the\n"
+    "style.restrlen_loop": "RETIRED: a string's `.length` is a load — the header carries the\n"
            "           length — so a re-measure in a loop condition costs nothing and\n"
            "           the hoists that stand are harmless",
-    "I25": "RETIRED: the compiler refuses a wrong payload count (F2015) on\n"
+    "style.wrong_payload_count_pattern": "RETIRED: the compiler refuses a wrong payload count (F2015) on\n"
            "           patterns and constructions, one-line enums included — a\n"
            "           law now, and a matcher would only repeat it",
-    "I32": "a whole-table scan for a keyed subset and a legitimate one-shot walk\n"
+    "style.whole_table_scan": "a whole-table scan for a keyed subset and a legitimate one-shot walk\n"
            "           over the same table are the same text; what makes the scan a smell\n"
            "           is being asked per query, which only a profile can see. `sample`\n"
            "           hunts it — it found the two that named the rule",
-    "I31": "a stolen doc and a legitimate multi-paragraph header are the SAME\n"
+    "style.doc_run_stolen": "a stolen doc and a legitimate multi-paragraph header are the SAME\n"
            "           shape: a sentence ends, the next line opens with `A`/`The`. The\n"
            "           difference is whether the second paragraph ELABORATES the one\n"
            "           definition or DEFINES another — semantic, not syntactic. A first\n"
            "           matcher printed 78 hits; the two inspected split one real\n"
            "           (workspace's `shown`) and one legitimate (`full_type`). The\n"
            "           review round hunts it, as it did the five that named the rule",
-    "I1":  "the accumulator DECLARATION is a weak proxy: stacks, folds, range\n"
-           "           fills and enumerate walks all declare one. I3 matches the real\n"
+    "style.accumulator_declaration":  "the accumulator DECLARATION is a weak proxy: stacks, folds, range\n"
+           "           fills and enumerate walks all declare one. rule.loops.push_loop matches the real\n"
            "           smell — a loop whose whole body is one push — and catches every\n"
-           "           map I1 did, without 42 false positives",
-    "I2":  "the evaluated-payload chain died with the eval collapse; no sites can exist",
-    "I8":  "the spelled ritual and the only legitimate way to USE stmt_value are\n"
+           "           map style.accumulator_declaration did, without 42 false positives",
+    "style.evaluated_payload_chain":  "the evaluated-payload chain died with the eval collapse; no sites can exist",
+    "style.statement_value_ritual":  "the spelled ritual and the only legitimate way to USE stmt_value are\n"
            "           textually identical — every hit was the verb's own body or a\n"
            "           site needing the id afterward. The review round hunts it",
-    "I5":  "the remaining folds are duplicate DETECTION (they emit on the dup)",
-    "I4":  "SWEPT — every hand-rolled scan that is a bare find/index_of was\n"
-           "           already converted; the number was found live as tools/idioms.py's\n"
-           "           OWN regex key for a DIFFERENT idiom (nullable_flag_local,\n"
-           "           renumbered to I63) rather than this one, which has had no matcher\n"
-           "           of its own since the sweep",
-    "I37": "a matcher cannot see whether a predicate has EFFECTS — `all` would\n"
+    "style.dedupe_union_fold":  "the remaining folds are duplicate DETECTION (they emit on the dup)",
+    "style.hand_rolled_scan":  "SWEPT — every hand-rolled scan that is a bare find/index_of was\n"
+           "           already converted; under the tree's old numbering this idiom's\n"
+           "           number was found claimed live as tools/idioms.py's OWN regex key\n"
+           "           for a DIFFERENT idiom (`style.nullable_flag_local`, filed under a\n"
+           "           different number to break the collision) rather than this one,\n"
+           "           which has had no matcher of its own since the sweep",
+    "style.fold_as_flag": "a matcher cannot see whether a predicate has EFFECTS — `all` would\n"
            "           short-circuit past a binding the fold must perform, and only a\n"
            "           human can tell that from a pure test",
-    "I6":  "head-plus-tail builds are subsumed by I1 and I3",
-    "I10": "name->value if-ladders are too varied to grep — the review round hunts them",
-    "I17": "a name serving two masters is semantic — no text pattern can see it",
-    "I29": "mint order is STRUCTURE, not a greppable string: whether a\n"
+    "style.head_plus_tail_build":  "head-plus-tail builds are subsumed by style.accumulator_declaration and rule.loops.push_loop",
+    "style.value_if_ladder": "name->value if-ladders are too varied to grep — the review round hunts them",
+    "style.name_generalization": "a name serving two masters is semantic — no text pattern can see it",
+    "style.early_answer_mint": "mint order is STRUCTURE, not a greppable string: whether a\n"
     "        verb's answer register mints before or after its scratch\n"
     "        registers needs the emission sequence, not a pattern",
-    "I34": "the matcher needs the enclosing fn's scope (a read of the\n"
+    "style.same_scope_borrow": "the matcher needs the enclosing fn's scope (a read of the\n"
            "           field BEFORE the write) — the read-then-write scan lives\n"
            "           in lane C's S4c-2 landing; liveness (S3) retires the idiom",
 }
 
 # A rule that cannot fire is worse than no rule: it reports success
 # forever. Every matcher must catch its own specimen, checked on every
-# run — this caught I18 shipping with a regex that could not span a
+# run — this caught style.protocol_defaulted shipping with a regex that could not span a
 # nested call.
 # WHAT A RULE MUST *NOT* FIRE ON — THE KEEPER'S OTHER SURFACE, in one
 # table. Making a rule fail exercises only what it refuses; every
@@ -926,24 +935,24 @@ UNRATCHETED = {
 # rule is working and nobody looks. Two kinds of entry, one concept:
 # an HONEST SPELLING a matcher must permit (a dead alternative widens
 # the rule — `refused_n(` was one), and a CLEAN SHAPE it must not
-# accuse (both I21 entries were live accusations against code the
+# accuse (both style.unmutated_mut entries were live accusations against code the
 # compiler requires).
 #
 # THEY WERE TWO TABLES, `ACCEPTED` and `CLEAN`, AND THE SECOND KILLED
 # THE FIRST: two `CLEAN = {…}` bindings landed in one file a week
-# apart, Python kept the later, and the I21, I23 and I48 fixtures of
+# apart, Python kept the later, and the style.unmutated_mut, style.dead_parameter and style.bool_comprehension fixtures of
 # the earlier one stopped being checked with nothing to see. That is
 # this file's own duplicate-number hazard one level up — the guard
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
-    "I59": [["        .Struct(d, _) or .Enum(d, _) -> d,",
+    "style.one_body_arms": [["        .Struct(d, _) or .Enum(d, _) -> d,",
              "        .Var(_, _, n) -> n,"],
             ["        .A(x) -> {",
              "        .B(x) -> {"]],
     # a let-else's match ends at `} else {`, and the scan must stop there
     # rather than count the next fn's projection as this match's arms
-    "I22": [["    fn f() -> int? {",
+    "style.registry_catchall": [["    fn f() -> int? {",
              "        let at? = match v {",
              "            .I(j) -> j,",
              "            rest -> null,",
@@ -957,111 +966,92 @@ CLEAN = {
              "            _ -> 0,",
              "        }",
              "    }"]],
-    "I20": [
+    "style.refusal_uncounted_contains": [
         ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && refusals(src) == 1'],
         ['        then "k" {', '            a.report().contains("x") && refused_with(src, "x")'],
         ['        then "k" {', '            a.report().contains("x") && refused_n(p, "x", 1)'],
     ],
-    "I21": [["    mut pr = attacked()?",
+    "style.unmutated_mut": [["    mut pr = attacked()?",
              "    pr.s.turn(ms(20))?"],
             ["    mut w = held()",
              "    w.c.buf = grown"]],
-    "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
+    "style.dead_parameter": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
-    "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
+    "style.bool_comprehension": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
-    "I58": [['    cx.array_sized(sh, size)'],
+    "style.raw_rt_call": [['    cx.array_sized(sh, size)'],
             ['    self.array_push(box, v)'],
             ['        cx.map_get(sh, m, k)']],
-    "I62": [['    for s in store.stmt_ids() {'],
+    "style.stmt_index_walk": [['    for s in store.stmt_ids() {'],
             ['    flatten([some_list(self.use_parts(s)) for s in self.stmt_ids()])']],
-    "I60": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
+    "style.raw_mint_emit": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
             ['    self.un(present)'],
             ['        cx.pack(ty, [present, value])']],
 }
 
 SPECIMENS = {
-    "I3":  [["for x in xs {", "    out.push(x)", "}"],
+    "rule.loops.push_loop":  [["for x in xs {", "    out.push(x)", "}"],
             ["    for x in xs { out.push(x) }"],
             ["    for (j, x) in xs.enumerate() { out.push(x) }"]],
-    "I11": [['    let a = "a message long enough to be shared"',
+    "style.duplicated_message": [['    let a = "a message long enough to be shared"',
              '    let b = "a message long enough to be shared"']],
-    "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
-    "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
-    "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
+    "style.duplicated_literal": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
+    "style.repeated_projection": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "style.bool_comprehension": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
-    "I16": [["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"]],
-    "I20": [['        then "it refuses" {', '            let a = analyze_source("x")',
+    "style.seen_accumulator": [["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"]],
+    "style.refusal_uncounted_contains": [['        then "it refuses" {', '            let a = analyze_source("x")',
              '            a.report().contains("nope")', "        }"],
             ['        then "it refuses" {', '            let a = analyze_source("x")',
              '            a.diagnostics.length >= 1 && a.report().contains("nope")', "        }"]],
-    "I30": [['            refusals("x") >= 1'],
+    "style.uncounted_refusal": [['            refusals("x") >= 1'],
             ['            refusals(src) >= 1'],
             ['            a.diagnostics.length >= 1 && a.report().contains("nope")'],
             ["            p.diagnostics >= 1"],
             ["            p.voices.list.length >= 1 && lets.length == 2"]],
-    "I21": [["    mut registry = new_type_registry()", "    let n = registry.shapes.length"]],
-    "I22": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
-    "I23": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
+    "style.unmutated_mut": [["    mut registry = new_type_registry()", "    let n = registry.shapes.length"]],
+    "style.registry_catchall": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
+    "style.dead_parameter": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
-    "I24": [["use core.{Span}"]],
-    "I38": [['            stmt = "fn" n:NAME "(" ( ps:NAME ( "," ps:NAME )* )? ")" END -> fn_decl(n, ps)'],
+    "style.unused_import": [["use core.{Span}"]],
+    "grammar.comma_list_open": [['            stmt = "fn" n:NAME "(" ( ps:NAME ( "," ps:NAME )* )? ")" END -> fn_decl(n, ps)'],
              ['            primary = "[" ( a:expression ( "," a:expression )* )? "]" -> lit(a)']],
-    "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
+    "style.repeated_unwrap": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"],
             ["    mut fn m(x: int?) -> int {", "        if x == null { return 0 }",
              "        x! + x! + x!", "    }"]],
-    "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
+    "style.free_state_verb": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
-    "I59": [["        .Struct(d, _) -> d,",
+    "style.one_body_arms": [["        .Struct(d, _) -> d,",
              "        .Enum(d, _) -> d,"],
             ["            .Ok(.Eof) -> false,",
              "            .Ok(.Pending) -> false,"]],
-    "I58": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
+    "style.raw_rt_call": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
             ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
             ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
-    "I62": [["    for i in 0..store.stmts.count() {"],
+    "style.stmt_index_walk": [["    for i in 0..store.stmts.count() {"],
             ["        for i in 0..self.stmts.count() {"]],
-    "I60": [["    let dst = cx.mint_shape(Type.Bool)",
+    "style.raw_mint_emit": [["    let dst = cx.mint_shape(Type.Bool)",
              "    cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))"],
             ["    let dst = self.mint_shape(Type.Bool)",
              "    self.emit(Ins.Un(dst, UnOp.Not, present))"],
             ["        let dst = cx.mint_ty(ty)",
              "        cx.emit(Ins.Pack(dst, [present, value]))"]],
-    "I43": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
+    "style.filled_by_arena_count": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }
 
-def next_free_code():
-    """The next free I-number, from this file's own text and from
-    DOGFOODING's registry — the sources `duplicate_numbers` reads.
-
-    NOBODY SHOULD HAVE TO GREP FOR THIS. A registry that refuses a
-    repeat while staying silent about what is FREE makes every author
-    work the answer out alone, and two lanes working it out the same
-    day is exactly how I33 landed twice. The keeper knows; it says so.
-    AND IT TAKES THE EXTREME, NEVER A GAP: highest-plus-one is robust
-    to an instrument that under-reports the middle of a list, which a
-    literal search over a computed spelling always is.
-    """
-    seen = set(_CODE.findall(open(__file__).read()))
-    reg = os.path.join(ROOT, "DOGFOODING.md")
-    if os.path.exists(reg):
-        seen |= set(_CODE.findall(open(reg).read()))
-    return max((int(n) for n in seen), default=0) + 1
-
-_CODE = re.compile(r"\bI(\d+)\b")
-
-def duplicate_numbers():
-    """A number claimed twice in any table, read from this file's own
-    text — the dict has already dropped the loser by the time it runs."""
+def duplicate_names():
+    """A dotted name claimed twice in any table, read from this file's
+    own text — the dict has already dropped the loser by the time it
+    runs."""
     text = open(__file__).read()
     out = []
     # A TABLE DEFINED TWICE IS THE SAME HAZARD ONE LEVEL UP: the later
@@ -1076,12 +1066,12 @@ def duplicate_numbers():
         if start < 0:
             continue
         body = text[start:text.index("\n}", start)]
-        claimed = re.findall(r'^\s{4}"(I\d+)"\s*:', body, re.M)
+        claimed = re.findall(r'^\s{4}"([a-z][a-z_]*(?:\.[a-z][a-z_]*)+)"\s*:', body, re.M)
         for code in sorted(set(claimed)):
             if claimed.count(code) > 1:
                 out.append(code + " is claimed " + str(claimed.count(code)) + " times in " + table + " — the later one silently wins")
     # and the REGISTRY, which is the spec this tool implements: a
-    # number claimed twice there sends every `LICENSED I<n>` at those
+    # name claimed twice there sends every `LICENSED <name>` at those
     # sites to whichever rule the reader happens to scroll to first.
     entries = registry_entries()
     for code in sorted(set(entries)):
@@ -1094,18 +1084,23 @@ def selftest():
 
     One specimen proves a matcher is alive; it does not prove its
     REACH. Four rules shipped blind spots that a single specimen
-    passed straight over — I7 could not see a dotted receiver, I3
-    could not see a one-line loop, I4 could not see a generic with
-    two parameters, and I26 counted field unwraps as locals. A rule
-    claims a SHAPE, so every spelling of that shape belongs here.
+    passed straight over — `rule.lists.last_index` could not see a
+    dotted receiver, `rule.loops.push_loop` could not see a one-line
+    loop, `style.hand_rolled_scan` could not see a generic with two
+    parameters, and `style.repeated_unwrap` counted field unwraps as
+    locals. A rule claims a SHAPE, so every spelling of that shape
+    belongs here.
 
-    It also refuses a REPEATED NUMBER. Two lanes numbered a new idiom
-    the same day and both landed I33: a duplicate key in a dict
-    literal is legal Python, the later one wins, and the earlier rule
-    vanishes — the emission law went unenforced for a whole window
-    while this tool reported success. A collapsed dict cannot see its
-    own duplicates, so the check reads the SOURCE."""
-    dead = duplicate_numbers()
+    It also refuses a REPEATED NAME. Under the tree's old numbering,
+    two lanes numbered a new idiom the same day and both landed style.raw_region:
+    a duplicate key in a dict literal is legal Python, the later one
+    wins, and the earlier rule vanishes — the emission law went
+    unenforced for a whole window while this tool reported success.
+    A NAME does not remove that hazard by itself — two lanes can
+    still coin the same descriptive name for two different smells the
+    same day — so the check still reads the SOURCE rather than the
+    collapsed dict, which cannot see its own duplicates."""
+    dead = duplicate_names()
     # WARN_RE's own reach: a real header (matched) and a fixture that
     # merely QUOTES the same words inside a string, never at column 0
     # (not matched — the adversarial test's own trap, restated here).
@@ -1156,45 +1151,6 @@ def licensed(lines, i, code):
 # adversarial test's report() assertion QUOTES this exact shape).
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
-# A native kind's PREDECESSOR I-number — the ratchet a site already
-# passed, under the regex this rule replaced. A `// LICENSED I<n>`
-# comment written for that regex is real, reviewed acceptance; a
-# native rule reading none of its own must not re-litigate it.
-NATIVE_PREDECESSOR = {
-    "rule.lists.last_index": "I7",
-    "type.index_compared": "I9",
-    "style.protocol_defaulted": "I18",
-    "style.refusal_assembled": "I28",
-    "rule.compiler.refusal_assembled": "I28",
-    "style.uncounted_refusal": "I30",
-    "style.raw_region": "I33",
-    "style.raw_scope": "I35",
-    "style.quadratic_growth": "I36",
-    "style.interned_by_hand": "I40",
-    "rule.compiler.interned_int": "I40",
-    "rule.compiler.interned_str": "I40",
-    "style.hand_sized_column": "I43",
-    "style.push_loop": "I3",
-    "rule.loops.push_loop": "I3",
-    "style.bool_comprehension": "I48",
-    "rule.lists.bool_comprehension_list": "I48",
-    "style.seen_accumulator": "I16",
-    "style.let_else_guard": "I55",
-    "rule.nullable.let_else_guard": "I55",
-    "style.emit_then_error": "I14",
-    "style.bracket_ritual": "I15",
-    "style.index_walk": "I19",
-    "style.modified_copy_literal": "I53",
-    "rule.compiler.modified_copy_literal": "I53",
-    "style.pronoun_lambda": "I50",
-    "rule.closures.pronoun_lambda": "I50",
-    "style.bool_variant_match": "I51",
-    "rule.enums.bool_variant_match": "I51",
-    "rule.enums.bool_variant_match_negated": "I51",
-    "style.when_ladder": "I54",
-    "rule.if_expr.when_ladder": "I54",
-}
-
 def native_findings():
     """Every finding `avra check` reports on its own — a Bucket-A idiom
     ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
@@ -1203,16 +1159,14 @@ def native_findings():
     kind is always dotted (`style.x`, `type.x`, `rule.module.name`),
     which is the whole filter.
 
-    A site the OLD regex already ratcheted carries `// LICENSED
-    I<n>: reason` under that regex's own number (NATIVE_PREDECESSOR)
-    — read here too, so a human's already-reviewed acceptance is not
-    re-litigated the moment its enforcement changes hands. A NEW
-    native finding (no predecessor comment) has no license window of
-    its own: a rule reads no comment when it matches, so what is not
-    already licensed under the code it replaced becomes baseline
-    debt, reviewed once at adoption (avra-8sb5.25.16) and every time
-    after — never re-licensed under a code the rule was never filed
-    as.
+    A NATIVE finding reads no license at its site, ever — a rule
+    carries no comment of its own, so a native finding either gets
+    fixed or joins the baseline as accepted debt, reviewed once at
+    adoption and every time after. There is no predecessor identity
+    to honour a site comment under: every idiom is named by its rule,
+    the same name for as long as the rule exists, so a `// LICENSED`
+    comment beside a native finding is documentation for the reader,
+    never a suppression the tool reads back.
 
     Fingerprinted the same way a matcher's finding is: by the site's
     own TEXT, never a line number, so an edit above a site does not
@@ -1242,9 +1196,6 @@ def native_findings():
     found = {}
     for kind, rel, line in sorted(sites):
         src_lines = open(os.path.join(ROOT, rel)).read().split("\n")
-        predecessor = NATIVE_PREDECESSOR.get(kind)
-        if predecessor and licensed(src_lines, line - 1, predecessor):
-            continue
         code = "native:" + kind
         text = src_lines[line - 1].strip() if 0 < line <= len(src_lines) else ""
         n = 0
@@ -1305,39 +1256,35 @@ def save(fps):
     with open(BASELINE, "w") as f:
         f.write("# KNOWN idiom debt, one site per line. This file only ever\n")
         f.write("# SHRINKS: no tool path adds to it. A finding is fixed in the\n")
-        f.write("# code, or annotated `// LICENSED I<n>: reason` at the site —\n")
-        f.write("# a `native:` finding honours a license under its PREDECESSOR\n")
-        f.write("# code too (NATIVE_PREDECESSOR, tools/idioms.py), so a site a\n")
-        f.write("# human already reviewed under the retired regex is not\n")
-        f.write("# re-litigated the day the rule that replaced it starts\n")
-        f.write("# enforcing on its own. What sits below has no license under\n")
-        f.write("# either code: a `native:` site is either a RULE MATCHING\n")
-        f.write("# ITS OWN QUOTE PATTERN (compiler/idioms.av's declarations —\n")
-        f.write("# a structural artifact, since a pattern necessarily spells\n")
-        f.write("# the shape it detects) or genuinely unreviewed debt.\n")
+        f.write("# code, or annotated `// LICENSED <name>: reason` at the site —\n")
+        f.write("# a `native:` finding reads no license of its own (a rule\n")
+        f.write("# carries no comment of its own), so a `// LICENSED` comment\n")
+        f.write("# beside one is the reader's documentation, never a\n")
+        f.write("# suppression this tool honours: what sits below is either a\n")
+        f.write("# RULE MATCHING ITS OWN QUOTE PATTERN (compiler/idioms.av's\n")
+        f.write("# declarations — a structural artifact, since a pattern\n")
+        f.write("# necessarily spells the shape it detects) or genuinely\n")
+        f.write("# accepted debt, reviewed at adoption and every time after.\n")
         f.write("# `make idioms-accept` prunes what is gone. Burn it down.\n")
         for fp in sorted(fps):
             f.write(fp + "\n")
 
 def registry_entries():
-    """Every number the registry CLAIMS, in order, duplicates kept. The
-    number must be followed by space or `(` — prose about a rule
-    ("- I7's matcher was BLIND to…") is commentary, not an entry."""
+    """Every name the registry CLAIMS, in order, duplicates kept. The
+    name must be followed by space or `(` — prose about a rule
+    ("- rule.lists.last_index's matcher was BLIND to…") is
+    commentary, not an entry."""
     doc = os.path.join(ROOT, "DOGFOODING.md")
-    return re.findall(r"^- (I\d+)(?=[\s(])", open(doc).read(), re.M)
+    return re.findall(r"^- ([a-z][a-z_]*(?:\.[a-z_]+)+)(?=[\s(])", open(doc).read(), re.M)
 
 def registry_codes():
     return set(registry_entries())
 
-def numbered(codes):
-    """Idiom codes in numeric order."""
-    return sorted(codes, key=lambda c: int(c[1:]))
-
 def main():
     accept = "--accept" in sys.argv
     if "--rules" in sys.argv:
-        print("ratcheted:", " ".join(numbered(RULES)))
-        print("unratcheted:", " ".join(numbered(UNRATCHETED)))
+        print("ratcheted:", " ".join(sorted(RULES)))
+        print("unratcheted:", " ".join(sorted(UNRATCHETED)))
         return 0
     # LAW 4: the registry may never outrun the ratchet.
     missing = registry_codes() - set(RULES) - set(UNRATCHETED)
@@ -1347,9 +1294,9 @@ def main():
         return 1
 
     # LAW 4, THE OTHER DIRECTION: a rule the tool enforces but the
-    # rulebook never states. I3 was ratcheted and licensed at 53 sites
-    # with no registry entry at all, so every one of those licenses
-    # pointed at nothing.
+    # rulebook never states. `rule.loops.push_loop` was ratcheted and
+    # licensed at 53 sites with no registry entry at all, so every one
+    # of those licenses pointed at nothing.
     unstated = (set(RULES) | set(UNRATCHETED)) - registry_codes()
     if unstated:
         print(f"idioms: {', '.join(sorted(unstated))} enforced with no entry in DOGFOODING.md")
@@ -1398,7 +1345,7 @@ def main():
     files = list(sources())
     print(f"idioms: no new violations. debt {len(base) - len(gone)} ({tally}){note}"
           f" — {len(files)} file(s) in {len(SRC)} package(s) scanned, "
-          f"{NATIVE['packages']} native-checked, next free I{next_free_code()}")
+          f"{NATIVE['packages']} native-checked")
     return 0
 
 sys.exit(main())
