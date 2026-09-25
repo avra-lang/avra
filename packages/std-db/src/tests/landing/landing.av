@@ -1,0 +1,59 @@
+// proves: @std/db against a REAL FILE, never `:memory:` — a @model
+// type's table created on disk, a row inserted, found by id, updated,
+// the connection CLOSED, the SAME PATH REOPENED, and the updated value
+// read back through the new connection to prove it survived the close
+// — then the row deleted and its absence confirmed. Native only:
+// sqlite is FFI.
+use @std.io.{remove}
+use @std.db.{model}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Account = {
+    id: int = 0,
+    @unique email: string,
+    balance: int,
+}
+
+fn path() -> string { "/tmp/avra-db-landing-test.db" }
+
+fn word(f: Account?) -> string {
+    match f {
+        row? -> "${row.email}|${row.balance}"
+        null -> "not found"
+    }
+}
+
+fn story() -> Result<string, SqlError> {
+    let _ = remove(path()) catch ""
+    mut db = Db.open(path())?
+    Account.create_table(db)?
+    let a = Account { id: 0, email: "ada@example.com", balance: 100 }.insert(db)?
+    let inserted = word(Account.find(db, a.id)?)
+    let changed = a with { balance: 250 }
+    changed.update(db)?
+    let updated = word(Account.find(db, a.id)?)
+    let rc = db.close()
+
+    mut reopened = Db.open(path())?
+    let survived = word(Account.find(reopened, a.id)?)
+    let found = Account.find(reopened, a.id)?
+    let deleted = match found {
+        row? -> row.delete(reopened)?
+        null -> 0 - 1
+    }
+    let after_delete = word(Account.find(reopened, a.id)?)
+    let rc2 = reopened.close()
+    let _ = remove(path()) catch ""
+    "inserted ${inserted}\nupdated ${updated}\nsurvived reopen ${survived}\ndeleted ${deleted} row(s)\nafter delete ${after_delete}\nclose1 ${rc}, close2 ${rc2}"
+}
+
+fn told() -> string {
+    match story() {
+        .Ok(s) -> s,
+        .Err(e) -> "FAILED ${e.cause.kind()}: ${e.message}",
+    }
+}
+
+told()
