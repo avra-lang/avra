@@ -2,7 +2,7 @@
 //! (`core/holes.av`'s `fits`, the one registry), and the quote answers
 //! the meta kind its body parsed as — both judged HERE, in the file
 //! that wrote the template, with no user of it.
-use core.{ExprId, TypeId, PatId, DeclId, StmtId, Type, BodyParts, HoleKind, QuoteHole, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_reached, quote_pat_is_text, quote_pat_mixed, quote_pat_is_run, quote_pat_run_mixed, quote_pat_adjacent_runs, is_run_kid}
+use core.{ExprId, TypeId, PatId, DeclId, StmtId, Type, BodyParts, HoleKind, QuoteHole, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_reached, quote_pat_is_text, quote_pat_mixed, quote_pat_is_run, quote_pat_run_mixed, quote_pat_is_type, quote_pat_adjacent_runs, is_run_kid}
 use features.{TypeCx, Decls, this_is}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
@@ -169,22 +169,26 @@ fn subject_types(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHo
     let d? = cx.view.decls.avrac_named("Code") else { return no_avrac(cx, p) }
     let code_ty = cx.view.decls.self_type_of(d)
     if cx.types_disagree(expected, code_ty) { return wrong_subject(cx, p, cx.view.types.name_of(expected)) }
+    let td? = cx.view.decls.avrac_named("TypeRef") else { return no_avrac(cx, p) }
     let string_ty = cx.type(string)
     let run_ty = cx.type(List<code_ty>)
-    [binder_type(holes, n, string_ty, run_ty, code_ty) for n in names]
+    let type_ty = cx.view.decls.self_type_of(td)
+    [binder_type(holes, n, string_ty, run_ty, type_ty, code_ty) for n in names]
 }
 
 /// One binder's answer: its own written text, a `List<Code>` for a
-/// run, or `Code` — the three shapes a quote pattern's binder wears.
-fn binder_type(holes: List<QuoteHole>, n: string, string_ty: TypeId, run_ty: TypeId, code_ty: TypeId) -> TypeId {
+/// run, its own written `TypeRef`, or `Code` — the four shapes a
+/// quote pattern's binder wears.
+fn binder_type(holes: List<QuoteHole>, n: string, string_ty: TypeId, run_ty: TypeId, type_ty: TypeId, code_ty: TypeId) -> TypeId {
     if quote_pat_is_text(holes, n) { return string_ty }
     if quote_pat_is_run(holes, n) { return run_ty }
+    if quote_pat_is_type(holes, n) { return type_ty }
     code_ty
 }
 
 fn hole_seat_refused(mut cx: TypeCx, p: PatId, bad: QuoteHole) -> List<TypeId> {
     match bad.kind {
-        .Type -> type_seat(cx, p),
+        .Type -> unheld_type(cx, p),
         .Arm -> unheld_seat(cx, p, bad.kind),
         .Name or .Binder -> unheld_name(cx, p),
         .Expression or .Statement or .Run -> not_bare(cx, p),
@@ -208,8 +212,8 @@ fn bad_shape(mut cx: TypeCx, p: PatId) -> List<TypeId> {
     []
 }
 
-fn type_seat(mut cx: TypeCx, p: PatId) -> List<TypeId> {
-    cx.emit(refusal("type.quote_pat_type", cx.pat_loc(p), "a hole in type position takes no code yet", "this pattern", "write the type literally — a hole cannot bind one yet"))
+fn unheld_type(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx.emit(refusal("type.quote_pat_type", cx.pat_loc(p), "a hole in type position binds only its WHOLE field — a lone `\${T}`, nothing around it — at a `let`/`mut`/`const`'s own annotation, a call's one pinned type argument, or a param's own type", "this pattern", "write `\${T}` alone at one of those seats, or write the type out"))
     []
 }
 

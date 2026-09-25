@@ -58,24 +58,6 @@ SKIP = ("spec_test",)
 # lines — the old single-line greps caught the rare shape and
 # reported success. ──
 
-# style.filled_by_arena_count: a fact column sized from an arena's count — a hand-kept side
-# table's half of the smell that is not yet a `rule`: the sibling
-# half (an id read through a hand offset, `${e}.index - ${k}`) is
-# `hand_sized_index` now, native (compiler/idioms.av) — its own regex
-# would double-report a site this tool has already ceded.
-HAND_SIZED = re.compile(r"filled[<(][^;]*\.count\(\)")
-
-def hand_sized_column(lines):
-    """A column sized by an arena's count (style.filled_by_arena_count, the half still
-    needing a type-seat hole — .25.10). A COMMENT IS NOT A SITE: the
-    loops suite quotes the old spelling to say what once trapped."""
-    for i, l in enumerate(lines):
-        s = l.strip()
-        if s.startswith("//"):
-            continue
-        if HAND_SIZED.search(l):
-            yield i, s
-
 def line_rx(pattern):
     p = re.compile(pattern)
     def f(lines):
@@ -490,26 +472,6 @@ def comma_list_open(lines):
             if not l[m.end():].lstrip().startswith('","?'):
                 yield i, l.strip()[:60] + " … " + m.group(0)[:40]
 
-# THE PASS STATES: the structs whose impl IS their vocabulary. A verb
-# over one is a method (`cx.open_region(c)`), never a free fn taking
-# the state first (`open_region(cx, c)`) — the rule reaches the pass's
-# own files (features/*.av, compiler/**.av), where the shared
-# vocabularies live; a feature dir's rule bodies dispatch on the
-# state and stay free. A new state struct joins here when its impl
-# becomes its vocabulary.
-STATES = r"TypeCx|LowerCx|ResolveCx|Survey|Workspace|Decls|Builder|Body|Scope"
-STATE_VERB = re.compile(r"^(?:export )?fn \w+\((?:mut )?\w+: (?:" + STATES + r")\b")
-PASS_FILES = re.compile(r"packages/std-avrac/src/(features|compiler)/[^/]+\.av$")
-
-def state_verb(lines):
-    """A vocabulary verb written as a free fn taking a pass state
-    first — the state's impl is where it belongs (style.free_state_verb)."""
-    if CURRENT["path"] and not PASS_FILES.search(CURRENT["path"]):
-        return
-    for i, l in enumerate(lines):
-        if STATE_VERB.match(l):
-            yield i, l.strip()
-
 def restrlen(lines):
     """A loop condition that re-measures a STRING's length. Hoist it:
     `let n = s.length` before the loop, then test `i < n`."""
@@ -565,13 +527,6 @@ RULES = {
     "style.repeated_unwrap": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
-    "style.free_state_verb": (state_verb,
-            "a vocabulary verb as a free fn taking a pass state first — the state's "
-            "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
-    "style.filled_by_arena_count": (hand_sized_column,
-            "a fact column sized from an arena's count — `SideTable<V>` states "
-            "the window, the growth and the out-of-window defect once: "
-            "`side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`"),
 }
 
 UNRATCHETED = {
@@ -616,8 +571,29 @@ UNRATCHETED = {
            "           through a hand offset, `${e}.index - ${k}`; ratcheted by the\n"
            "           native-findings phase below. The sibling half of this idiom (a\n"
            "           fact column sized from an arena's count, `filled(...count())`)\n"
-           "           has no structural shape a rule can hold yet and stays\n"
-           "           `style.filled_by_arena_count`'s own regex",
+           "           is `compiler.filled_by_arena_count` now, also native (avra-8sb5.25.10)",
+    "compiler.filled_by_arena_count": "PORTED NATIVELY (avra-8sb5.25.10): `filled_by_arena_count`\n"
+           "           (compiler/idioms.av) — two `quote` arms, `filled(...)` and\n"
+           "           `filled<T>(...)`, the pinned type argument a TYPE-seat hole\n"
+           "           (`Shape.TypedNode`/`Open.Type`, core/shape.av) held open only so\n"
+           "           the second arm's message can quote it back; ratcheted by the\n"
+           "           native-findings phase below",
+    "compiler.free_state_verb": "PORTED NATIVELY (avra-8sb5.25.10): `free_state_verb`\n"
+           "           (compiler/idioms.av) — a bare-hole root guarded rule-side over a\n"
+           "           new `Code.fn_params()`/`Code.decl_type()` (features/code.av,\n"
+           "           the TYPE-seat door): a param list has no fixed arity a `quote`\n"
+           "           pattern can spell, so the first param's own written type is read\n"
+           "           structurally, never bound through the pattern; ratcheted by the\n"
+           "           native-findings phase below. Narrower than the retired regex by\n"
+           "           file reach (one path segment under `features/`/`compiler/`,\n"
+           "           matching `PASS_FILES`) and by nesting (a trait's/an impl's own\n"
+           "           method is excluded structurally, where the regex's column-zero\n"
+           "           anchor excluded it by indentation) — 36 sites found tree-wide,\n"
+           "           every one already `// LICENSED style.free_state_verb`'d by a\n"
+           "           prior human review; the other 11 of 47 such comments name a site\n"
+           "           the regex itself would never have matched either (a nested\n"
+           "           feature file, or a first param that is not one of `state_types`)\n"
+           "           — stale documentation, not a finding this rule missed",
     "compiler.stmt_index_walk": "PORTED NATIVELY (avra-8sb5.25.16): `stmt_index_walk`\n"
            "           (compiler/idioms.av) — reads `Code.for_range()`, the same\n"
            "           workaround `loops.index_walk` already reads its own range head\n"
@@ -910,11 +886,6 @@ SPECIMENS = {
              "    x! + x! + x!", "}"],
             ["    mut fn m(x: int?) -> int {", "        if x == null { return 0 }",
              "        x! + x! + x!", "    }"]],
-    "style.free_state_verb": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
-            ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
-            ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
-    "style.filled_by_arena_count": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
-            ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }
 
 def duplicate_names():

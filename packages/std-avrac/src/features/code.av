@@ -7,7 +7,7 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at, Arm}
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at, own_type_at, Arm}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, AnnotationFact}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
@@ -51,13 +51,39 @@ impl Code {
         [Code { of: self.of, at: k } for k in self.of.view.store.kids_at(self.at)]
     }
 
-    /// An ident's own text; a struct literal FIELD's own name — null
-    /// for every other seat.
+    /// An ident's own text; a struct literal FIELD's or a fn PARAM's
+    /// own name — null for every other seat.
     fn name() -> string? {
         match self.at {
             .Expr(id) -> self.of.view.store.ident_name(id),
-            .Field(_, _) -> own_name_at(self.of.view.store, self.at),
+            .Field(_, _) or .Param(_, _) -> own_name_at(self.of.view.store, self.at),
             .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// This node's own WRITTEN TYPE — a `let`/`mut`/`const`'s own
+    /// annotation, a call's one pinned type argument, a param's own
+    /// type — null for every other seat, and for one that carries
+    /// none (an unannotated `let`, an untyped param).
+    fn decl_type() -> TypeRef? {
+        own_type_at(self.of.view.store, self.at)
+    }
+
+    /// This node's own PARAMETER LIST — a free `fn` declaration's or
+    /// an `extern fn`'s params, each still Code — absent for every
+    /// other shape. A quote pattern pins a param list at a FIXED
+    /// count it cannot spell (no run holds one yet), so a rule
+    /// reading param-to-param facts (a fn's whole signature, its
+    /// arity) reads them structurally instead, off the declaration's
+    /// own `params` field — `Code.arms`/`Code.kids` read a `match`'s
+    /// arms and a struct literal's fields the same way.
+    fn fn_params() -> List<Code>? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> [Code { of: self.of, at: At.Param(id, i) } for i in 0..params.length],
+                _ -> null,
+            },
+            _ -> null,
         }
     }
 
@@ -67,7 +93,7 @@ impl Code {
     fn is_struct_lit() -> bool {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) { .StructLit(_, _, _) -> true, _ -> false },
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
 
@@ -75,14 +101,16 @@ impl Code {
     fn is_block() -> bool {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) { .Block(_, _) -> true, _ -> false },
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
 
     /// Whether this node is a `mut` LOCAL declared with an explicit
-    /// nullable type, seeded `null` — `mut best: T? = null`. No hole
-    /// binds the TYPE (a quote pattern has none in type position
-    /// yet, avra-8sb5.25.10) — read structurally instead, off the
+    /// nullable type, seeded `null` — `mut best: T? = null`. A TYPE
+    /// hole binds a BARE written type (`let ${x}: ${T} = …`), never a
+    /// nullable one — `?` is decoration a lone hole cannot carry, the
+    /// same law a NAME hole's `l${x}_y` is refused under — so the
+    /// OPTIONALITY itself still reads structurally, off the
     /// declaration's own `ty` field.
     fn is_nullable_flag_mut() -> bool {
         match self.at {
@@ -148,7 +176,7 @@ impl Code {
     fn prop_name() -> string? {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) { .Prop(_, name) -> name.of, _ -> null },
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
 
@@ -164,7 +192,7 @@ impl Code {
                 .MethodCall(_, _, _) or .CallValue(_, _) -> self.kids().slice(1, self.kids().length),
                 .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Named(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) -> [],
             },
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> [],
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
     }
 
@@ -173,7 +201,7 @@ impl Code {
     fn binding() -> Binding? {
         match self.at {
             .Expr(id) -> self.of.names.binding(id),
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
 
@@ -182,7 +210,7 @@ impl Code {
     fn type() -> Ty? {
         match self.at {
             .Expr(id) -> Ty { types: self.of.view.types, id: self.of.facts.type_at(id) },
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
 
@@ -213,7 +241,7 @@ impl Code {
     fn pure() -> bool {
         match self.at {
             .Expr(id) -> pure_at(self.of, id),
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
 
@@ -226,7 +254,7 @@ impl Code {
                 .Match(_, arms) -> answering_arms(self.of.view.store, arms),
                 _ -> null,
             },
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
 
@@ -264,7 +292,7 @@ impl Code {
     fn declaring() -> DeclId? {
         match self.at {
             .Stmt(id) -> self.of.view.decls.decl_of(self.of.view.file, id),
-            .Expr(_) or .Pat(_) or .Field(_, _) -> null,
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
 
@@ -283,7 +311,7 @@ impl Code {
     fn atomic() -> bool {
         match self.at {
             .Expr(id) -> atomic_at(self.of.view.store.expr(id)),
-            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
 }
@@ -396,7 +424,7 @@ fn pure_at(of: Analysed, id: ExprId) -> bool {
 fn pure_of(of: Analysed, at: At) -> bool {
     match at {
         .Expr(id) -> pure_at(of, id),
-        .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+        .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
     }
 }
 
