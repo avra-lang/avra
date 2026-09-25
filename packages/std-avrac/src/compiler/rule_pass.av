@@ -1,8 +1,10 @@
-//! THE RULES PASS: every node a file's own declarations hold, every
-//! table's rule tried at it. `rule_candidates` is the ONE walk —
-//! `avra check`'s findings (`rule_findings`) and `avra fix`'s proof
-//! both read it, so a rewrite `check` shows is the exact one `fix`
-//! proves or refuses, never a second derivation that could disagree.
+//! THE RULES PASS: every node a file's own declarations hold, the
+//! table's rules tried where their root-kind index admits (or
+//! carries `any_root`) — design §5: nodes touched, never nodes ×
+//! rules. `rule_candidates` is the ONE walk — `avra check`'s findings
+//! (`rule_findings`) and `avra fix`'s proof both read it, so a
+//! rewrite `check` shows is the exact one `fix` proves or refuses,
+//! never a second derivation that could disagree.
 use core.{At, StmtId, NodeStore, flatten}
 use features.{Code, Fix, Analysed}
 use diagnostics.{Diag, warning}
@@ -13,8 +15,9 @@ use compiler.backend.{trimmed}
 export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
 
 /// Every rule hit under these statements — each walked from its own
-/// root, expressions and nested statements alike (`every_at`), every
-/// table's rule tried at every node.
+/// root, expressions and nested statements alike (`every_at`), the
+/// table's rules tried at every node whose root-kind index admits
+/// it.
 export fn rule_candidates(a: Analysed, stmts: List<StmtId>) -> List<Candidate> {
     let entries = rules
     flatten([stmt_candidates(a, entries, s) for s in stmts])
@@ -32,7 +35,8 @@ fn every_at(store: NodeStore, root: At) -> List<At> {
 }
 
 fn node_candidates(a: Analysed, entries: List<RuleEntry>, at: At) -> List<Candidate> {
-    flatten([one_candidate(a, at, r) for r in entries])
+    let shallow = a.view.store.shallow_at(at)
+    flatten([one_candidate(a, at, r) for r in rules_at(entries, shallow)])
 }
 
 fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {

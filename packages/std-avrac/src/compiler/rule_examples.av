@@ -10,8 +10,9 @@
 //! reads them (features/components/lower.av's `augmented`), never a
 //! second read of the declaration's own annotations.
 use core.{root_of, flatten}
-use features.{Code, Fix}
+use features.{Code, Fix, Decl, Decls}
 use compiler.{analyze_source, Analysis}
+use compiler.lower.{component_root_kind}
 
 /// The first hit `applied` finds at `root` or under it, depth-first,
 /// or absence when nothing in the whole subtree fires.
@@ -73,13 +74,23 @@ export type ExampleCheck = { label: string, ok: bool }
 fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
 
 impl Workspace {
-    /// Every rule's `@fixes`/`@keeps`, proved against its live `run`.
+    /// Every rule's synthesised entry, proved against its live
+    /// declaration: the root-kind index `lower_collect` baked in,
+    /// recomputed fresh (`compiler.lower.component_root_kind`), and
+    /// every `@fixes`/`@keeps` the entry itself carries.
     fn rules_checked() -> List<ExampleCheck> {
         self.admit_package(self.packages()[0])
-        flatten([entry_checked(r) for r in rules])
+        let found = self.decls.decls_of_word("rule")
+        flatten([self.decls.entry_checked(found, r) for r in rules])
     }
 }
 
-fn entry_checked(r: RuleEntry) -> List<ExampleCheck> {
-    [checked("${rule_id(r)} @fixes", checks_fixes(r.run, f.before, f.after)) for f in r.fixes].concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
+impl Decls {
+    fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
+        let d? = found.find(named(r, it)) else { return [] }
+        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", component_root_kind(self, d) == r.root)
+        [root_check].concat([checked("${rule_id(r)} @fixes", checks_fixes(r.run, f.before, f.after)) for f in r.fixes]).concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
+    }
 }
+
+fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
