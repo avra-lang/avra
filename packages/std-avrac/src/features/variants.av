@@ -108,11 +108,23 @@ impl TypeCx {
 // ── The voices ──
 
 impl TypeCx {
-    /// A type name that names no enum: a GRAMMAR is told about its
-    /// doors, every other record about records.
+    /// A type name that names no enum: a TRAIT is told about its own
+    /// associated fns, a GRAMMAR about its doors, every other record
+    /// about records.
     mut fn no_variants_here(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+        if self.view.decls.is_trait(decl) { return self.no_trait_static(e, decl, tname, name) }
         if self.view.decls.grammar_of(decl) == null { return self.not_an_enum(e, tname) }
         self.no_such_door(e, tname, name)
+    }
+
+    /// A trait's bare name answers only an associated fn with ONE
+    /// body of its own — a signatory's answer lives under the
+    /// signatory's name instead.
+    mut fn no_trait_static(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+        if self.view.decls.trait_member(decl, name) != null {
+            return self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}.${name}` has no one body — each signatory answers its own", "built here", "call it through the implementing type: `<Type>.${name}(…)`"))
+        }
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` has no associated fn `${name}`", "built here", "declare it — `static fn ${name}(…) -> … { … }` inside the trait"))
     }
 
     mut fn no_such_door(e: ExprId, tname: string, name: string) -> TypeId {

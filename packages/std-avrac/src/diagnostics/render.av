@@ -55,6 +55,14 @@ fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
 
 const cause_chain_cap = 16
 
+/// A hop's own lines, indented past the first — so a multi-line cause
+/// (a pre-rendered report, several diagnostics of its own) never lets
+/// a later line's `error[...]:` read as an unrelated, top-level one.
+fn continued(msg: string) -> string {
+    let lines = msg.split("\n")
+    joined([lines[0]].concat(["  ${l}" for l in lines.slice(1, lines.length)]), "\n")
+}
+
 /// Every deeper cause, one `caused by:` line per hop, until none
 /// remain or the cap — a `cause()` answering itself must not recurse
 /// the renderer forever, and a cut that stops silently would read as
@@ -63,9 +71,9 @@ fn causes_of(e: dyn Error?, depth: int = cause_chain_cap) -> List<string> {
     let cur? = e else { return [] }
     let msg = cur.describe().message
     if depth <= 1 && cur.cause() != null {
-        return ["caused by: ${msg} — the chain continues past ${cause_chain_cap}; an error answering itself as its own cause?"]
+        return ["caused by: ${continued(msg)} — the chain continues past ${cause_chain_cap}; an error answering itself as its own cause?"]
     }
-    ["caused by: ${msg}"].concat(causes_of(cur.cause(), depth - 1))
+    ["caused by: ${continued(msg)}"].concat(causes_of(cur.cause(), depth - 1))
 }
 
 /// The whole diagnostic as terminal text. The F-code is the
