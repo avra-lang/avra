@@ -1,0 +1,73 @@
+// Two DIFFERENT modules, each with their own unrelated @model type
+// that happens to share both a bare name AND a field shape with the
+// other — found while red-teaming, and dangerous precisely because it
+// produces no error at all without the claim registry: two unrelated
+// features silently sharing one physical table. See db.av's
+// claim_registry_sql/claim_select_sql/claim_insert_sql/declared_at_of.
+use tests.collide_a.{Shared as SharedA}
+use tests.collide_b.{Shared as SharedB}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+fn same_type_recreate_is_fine() -> Result<int, SqlError> {
+    mut db = Db.memory()?
+    SharedA.create_table(db)?
+    SharedA.create_table(db)?
+    let a = SharedA { id: 0, email: "a@x.com" }.insert(db)?
+    a.id
+}
+
+fn colliding_types_refuse() -> string {
+    match colliding_create() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn colliding_create() -> Result<int, SqlError> {
+    mut db = Db.memory()?
+    SharedA.create_table(db)?
+    SharedB.create_table(db)?
+    0
+}
+
+fn colliding_types_never_silently_merge_data() -> Result<int, SqlError> {
+    mut db = Db.memory()?
+    SharedA.create_table(db)?
+    let _ = SharedA { id: 0, email: "a@x.com" }.insert(db)?
+    // SharedB's create_table refuses before touching the real table —
+    // this insert must never run, and the count below proves it didn't.
+    let attempted = colliding_second_insert(db)
+    (db.scalar(sql("select count(*) from Shared"))?).int()
+}
+
+fn colliding_second_insert(mut db: Db) -> Result<int, SqlError> {
+    SharedB.create_table(db)?
+    let b = SharedB { id: 0, email: "b@x.com" }.insert(db)?
+    b.id
+}
+
+fn independent_databases_never_collide() -> Result<string, SqlError> {
+    mut db1 = Db.memory()?
+    mut db2 = Db.memory()?
+    SharedA.create_table(db1)?
+    SharedB.create_table(db2)?
+    let a = SharedA { id: 0, email: "a@x.com" }.insert(db1)?
+    let b = SharedB { id: 0, email: "b@x.com" }.insert(db2)?
+    "${a.id}|${b.id}"
+}
+
+spec "std/db @model table-name collisions" {
+    given "the same type's create_table called more than once" {
+        then "it stays a harmless no-op, never a false collision" { (same_type_recreate_is_fine() catch (0 - 1)) == 1 }
+    }
+
+    given "two unrelated types in different modules sharing a bare name and shape" {
+        then "the second create_table refuses, loudly, naming the first claimant" { colliding_types_refuse() == "sqlite.defect" }
+        then "the table never ends up holding both types' rows" { (colliding_types_never_silently_merge_data() catch (0 - 1)) == 1 }
+    }
+
+    given "the same colliding names in genuinely separate databases" {
+        then "no claim registry crosses a database boundary" { (independent_databases_never_collide() catch "?") == "1|1" }
+    }
+}

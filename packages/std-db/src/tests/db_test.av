@@ -1,0 +1,98 @@
+use @std.db.{model}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type User = {
+    id: int = 0,
+    @unique email: string,
+    name: string,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    User.create_table(db)?
+    db
+}
+
+fn inserted(mut db: Db, email: string, name: string) -> Result<User, SqlError> {
+    User { id: 0, email: email, name: name }.insert(db)
+}
+
+fn row_count(db: Db) -> Result<int, SqlError> {
+    (db.scalar(sql("select count(*) from User"))?).int()
+}
+
+fn email_of(db: Db, id: int) -> Result<string, SqlError> {
+    (db.scalar(sql("select email from User where id = ?").args([.Int(id)]))?).text()
+}
+
+fn name_of(db: Db, id: int) -> Result<string, SqlError> {
+    (db.scalar(sql("select name from User where id = ?").args([.Int(id)]))?).text()
+}
+
+fn round_trip() -> Result<string, SqlError> {
+    mut db = seeded()?
+    let u = inserted(db, "ada@example.com", "Ada")?
+    "${u.id}|${email_of(db, u.id)?}|${name_of(db, u.id)?}"
+}
+
+fn updates() -> Result<string, SqlError> {
+    mut db = seeded()?
+    let u = inserted(db, "a@x.com", "A")?
+    let changed = u with { name: "B" }
+    changed.update(db)?
+    name_of(db, u.id)
+}
+
+fn deletes() -> Result<int, SqlError> {
+    mut db = seeded()?
+    let u = inserted(db, "a@x.com", "A")?
+    u.delete(db)?
+    row_count(db)
+}
+
+fn unique_violation() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn dup_insert() -> Result<int, SqlError> {
+    mut db = seeded()?
+    let _ = inserted(db, "a@x.com", "A")?
+    let _ = inserted(db, "a@x.com", "B")?
+    0
+}
+
+// PENDING avra-8sb5.44.3: `User.find(db, id)` refuses to compile until
+// a cross-package derive can build a full struct literal of its own
+// annotated type — see db.av's row_ctor. Every other verb is provable
+// without it (row_count/email_of/name_of read the same table raw); a
+// `find` case joins this file the day that fix lands.
+
+spec "std/db @model" {
+    given "a model's own generated SQL" {
+        then "the table name is the type's own name" { User.table_name() == "User" }
+        then "the create-table DDL names the primary key and the unique column" {
+            User.create_table_sql() == "CREATE TABLE IF NOT EXISTS \"User\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"email\" TEXT UNIQUE, \"name\" TEXT)"
+        }
+    }
+    given "a row inserted" {
+
+        then "it lands with a real id and the right columns" { (round_trip() catch "?") == "1|ada@example.com|Ada" }
+    }
+    given "a found row, changed and updated" {
+
+        then "the update is visible on a fresh read" { (updates() catch "?") == "B" }
+    }
+    given "a row deleted" {
+
+        then "the table is empty" { (deletes() catch 0 - 1) == 0 }
+    }
+    given "a unique column violated" {
+
+        then "the constraint failure is a real SqlError, not a silent success" { unique_violation() == "sqlite.constraint.unique" }
+    }
+}
