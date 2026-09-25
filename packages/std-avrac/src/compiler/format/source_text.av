@@ -160,6 +160,20 @@ impl SourceText {
         self.trivia_before(self.trivia.last()!.at + 1, depth)
     }
 
+    /// A raw body's OWN span, walked past without printing anything:
+    /// a `quote { … }` (or any other raw-captured body) is copied
+    /// verbatim from its own parts, so a blank line or a `//` inside
+    /// it is ALREADY in that text — the file-wide lexer still recorded
+    /// it as an ordinary remark, same as any other byte range, and
+    /// left uncollected it sits until whatever drains next (the
+    /// enclosing scope's own closing brace) prints it there A SECOND
+    /// TIME. `trivia_before` would print it; this only advances past it.
+    mut fn skip_trivia_within(hi: int) {
+        while self.next < self.trivia.length && self.trivia[self.next].at < hi {
+            self.next = self.next + 1
+        }
+    }
+
     /// A trailing comment sharing the line just finished, as text to
     /// APPEND — never its own line. The forward-only cursor is what
     /// makes this a peek-and-take: whatever remark stands next, right
@@ -657,7 +671,11 @@ impl SourceText {
             .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth), atom_tier, parent),
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
             .Prop(subject, name) -> grouped("${self.chain_subject(subject, depth)}.${source_name(name.of)}", postfix_tier, parent),
-            .Body(word, parts, holes, _) -> grouped(self.body_text(word, parts, holes, depth), atom_tier, parent),
+            .Body(word, parts, holes, _) -> {
+                let text = self.body_text(word, parts, holes, depth)
+                self.skip_trivia_within(end_of(self.store.expr_span(id)))
+                grouped(text, atom_tier, parent)
+            },
             .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth), atom_tier, parent),

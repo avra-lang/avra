@@ -27,7 +27,14 @@ fn build_sublang(b: Builder) -> Result<LangNode, string> {
     let expansion: ExprId? = expanded(b, w.text, body, holes)
     let parts = runs(b.text, body.span.lo, body.span.hi, begins, ends)
     let view = if expansion == null { BodyView.None } else { BodyView.Expanded(expansion!) }
-    let e = b.store.alloc_expr(Expr.Body(w.text, parts, holes, view), b.span)
+    // A HOLE'S TOKENS ARE DEFERRED to after the block's own `Body`
+    // token in the stream (grammar/lexer.av), so `b.span` (the
+    // branch's consumed range) covers only up to the LAST hole when
+    // one exists — short of `body`'s own closing brace whenever a
+    // `${…}` sits inside it. `w`/`body` are read straight off the
+    // source and stay in text order regardless (quote/builders.av's
+    // `build_quote` carries the identical law).
+    let e = b.store.alloc_expr(Expr.Body(w.text, parts, holes, view), w.span.cover(body.span))
     b.store.mark_sublang(e, body.span.lo)
     .Ok(LangNode.NExpr(e))
 }
