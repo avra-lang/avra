@@ -1091,7 +1091,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       Not ratcheted: no grep tells a one-slot list from a list whose
       first element is written.
 
-- style.raw_mint_emit (ratcheted) A REGISTER MINTED THEN DEFINED BY A RAW `emit` —
+- compiler.raw_mint_emit (ratcheted) A REGISTER MINTED THEN DEFINED BY A RAW `emit` —
       `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —
       where a vocabulary verb mints and emits in ONE call
       (`cx.bin(sh, op, a, b)`, features/emit.av): the mint law ("a
@@ -1118,6 +1118,20 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       itself be a NAMED bool type (`hollow_of`, values.av), a fn-box
       call minted at the walk's own element type rather than a node's
       (`turn_call`, lists/walks.av). Ratcheted (`raw_mint_emit`).
+      PORTED NATIVELY (avra-8sb5.25.16): nine sibling rules, one per
+      covered `Ins` variant (`raw_mint_emit_bin` … `raw_mint_emit_load`,
+      compiler/idioms.av) — the let's own binder is a NAME hole, the
+      emit's argument an ordinary VALUE hole, agreed by TEXT (the two
+      kinds of seat compare under incompatible rules, so one binder
+      index cannot serve both). NARROWER THAN THE REGEX: the root is
+      a BLOCK, and an `if`/`while`/`for` body is a flat statement list
+      on its own node, never a nested `Block` — so `hollow_of`'s two
+      sites (a pair inside an `if`) are outside this pattern's reach,
+      the same limit `bracket_ritual`/`seen_accumulator` already
+      carry, and stay licensed by comment for a human reader alone.
+      `field_slot` and `turn_call` DO reach (both sit at a fn's own
+      top-level body) and join the baseline as accepted debt — a
+      native finding carries no license of its own.
 
 - nullable.nullable_flag_local (ratcheted) A `mut` LOCAL SEEDED `null` WITH AN EXPLICIT
       NULLABLE TYPE — `mut best: T? = null` — is a flag standing in

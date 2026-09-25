@@ -500,45 +500,6 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
-MINT_LET = re.compile(r"let (\w+)\s*=\s*(?:self|cx)\.(?:mint_shape|mint_ty|mint_like|result)\(")
-RAW_EMIT = re.compile(r"(?:self|cx)\.emit\(Ins\.(\w+)\((\w+)")
-
-# The variants a vocabulary verb covers under SOME mint (a fixed
-# shape, an explicit TypeId, or a node's own answer type) — `CallRt`/
-# `CallRtVoid` are style.raw_rt_call's concern, never this one's; `FnAddr`,
-# `ConstFloat` and a bare `Alloca` have no covering verb in ANY form,
-# so there is nothing here for the ratchet to measure yet.
-COVERED_VARIANTS = {"Bin", "Un", "Pack", "Call", "CallPtr", "ConstInt", "ConstBool", "ConstStr", "Load"}
-
-def raw_mint_emit(lines):
-    """A register minted, then defined by a raw `emit(Ins...)` a few
-    lines later, outside the emission vocabulary itself —
-    `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —
-    where a vocabulary verb mints and emits in ONE call
-    (`cx.bin(sh, op, a, b)`, features/emit.av). THE MINT LAW ("a
-    register is defined in the order it was minted") holds by
-    CONSTRUCTION once the mint and the emit are one call; split
-    across two statements, a refactor can separate them and the
-    register defines out of order with nothing to catch it. A site
-    whose one minted register is read across several branches — a
-    match arm per literal kind, a defect arm answering the same
-    register the success arm defines, a mint at neither a fixed shape
-    nor the node's own type — cannot collapse to one call and is
-    licensed at the site (style.raw_mint_emit)."""
-    if CURRENT["path"].endswith("features/emit.av"):
-        return
-    for i, l in enumerate(lines):
-        m = MINT_LET.search(l)
-        if not m:
-            continue
-        name = m.group(1)
-        for j in range(i, min(i + 8, len(lines))):
-            m2 = RAW_EMIT.search(lines[j])
-            if m2 and m2.group(2) == name:
-                if m2.group(1) in COVERED_VARIANTS:
-                    yield i, l.strip()
-                break
-
 ARM_LINE = re.compile(r"^(\s*)(\.[A-Z]\w*.*?)\s->\s(.+?),?\s*$")
 
 def one_body_arms(lines):
@@ -654,11 +615,6 @@ RULES = {
     "style.one_body_arms": (one_body_arms,
             "two adjacent arms answer one body — join their patterns with `or`; the "
             "alternatives may bind, each binding the same names at the same types"),
-    "style.raw_mint_emit": (raw_mint_emit,
-            "a register minted, then defined by a raw `emit(Ins...)` — that is a vocabulary "
-            "verb (`cx.bin(sh, op, a, b)`, `cx.call_decl_at(e, callee, args)`, …, "
-            "features/emit.av), which mints and emits in ONE call so the mint law holds by "
-            "construction; a site whose one register answers several branches is licensed"),
     "style.repeated_unwrap": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -726,6 +682,14 @@ UNRATCHETED = {
            "           `Ins.CallRtVoid`, guarded by the bound name hole's own TEXT\n"
            "           (`starts_with(\"\\\"avra_\")`); ratcheted by the native-findings\n"
            "           phase below",
+    "compiler.raw_mint_emit": "PORTED NATIVELY (avra-8sb5.25.16): nine sibling rules, one per\n"
+           "           covered `Ins` variant (`raw_mint_emit_bin` … `raw_mint_emit_load`,\n"
+           "           compiler/idioms.av) — the let's own NAME hole and the emit's own\n"
+           "           VALUE hole agreed by text; ratcheted by the native-findings phase\n"
+           "           below. NARROWER than the regex: a pair inside an `if`/`while`/`for`\n"
+           "           body is outside this pattern's reach (that body is a flat statement\n"
+           "           list, never a nested `Block`) — `hollow_of`'s two sites (values.av)\n"
+           "           stay licensed by comment for a human reader, unseen by the rule",
     "nullable.if_null_ternary": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
@@ -971,9 +935,6 @@ CLEAN = {
     "style.bool_comprehension": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
-    "style.raw_mint_emit": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
-            ['    self.un(present)'],
-            ['        cx.pack(ty, [present, value])']],
 }
 
 SPECIMENS = {
@@ -1016,12 +977,6 @@ SPECIMENS = {
              "        .Enum(d, _) -> d,"],
             ["            .Ok(.Eof) -> false,",
              "            .Ok(.Pending) -> false,"]],
-    "style.raw_mint_emit": [["    let dst = cx.mint_shape(Type.Bool)",
-             "    cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))"],
-            ["    let dst = self.mint_shape(Type.Bool)",
-             "    self.emit(Ins.Un(dst, UnOp.Not, present))"],
-            ["        let dst = cx.mint_ty(ty)",
-             "        cx.emit(Ins.Pack(dst, [present, value]))"]],
     "style.filled_by_arena_count": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }

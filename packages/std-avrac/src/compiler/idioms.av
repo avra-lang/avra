@@ -469,6 +469,176 @@ fn bracket_ritual_found(v: Code, x: Code) -> Fix {
     Fix.Say(said(v.loc(), "`${v.text()}.push(${x.text()})` held open across a stretch of work until a later `${v.text()}.pop()` — a bracket fn taking a thunk owns the pop on every path out, not just the one written", "this push", null))
 }
 
+/// A register MINTED, then DEFINED by a raw `emit(Ins...)` a few
+/// statements later, outside the emission vocabulary itself — where
+/// a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a,
+/// b)`, features/emit.av). THE MINT LAW ("a register is defined in
+/// the order it was minted") holds by CONSTRUCTION once the mint and
+/// the emit are one call; split across two statements, a refactor
+/// can separate them and the register defines out of order with
+/// nothing to catch it. `features/emit.av` is exempt — it IS the
+/// vocabulary these verbs collapse into, so its own bodies mint then
+/// emit by hand once, on purpose. Nine sibling rules, one per Ins
+/// variant a vocabulary verb covers (`CallRt`/`CallRtVoid` are
+/// `raw_rt_call`'s concern, never this one's; `FnAddr`, `ConstFloat`
+/// and a bare `Alloca` have no covering verb in any form, so there is
+/// nothing for a rule to measure there yet).
+///
+/// TWO SEPARATE HOLES, `${dst}`/`${dst2}`, checked by TEXT: the let's
+/// own binder is a NAME seat (`own_name_at`'s catalog), the emit's
+/// argument an ordinary VALUE seat, and the matcher compares the two
+/// kinds of seat under incompatible rules — reusing one binder index
+/// across both can never hit (avra-8sb5.25.45).
+///
+/// NO REWRITE: a site whose one minted register is read across
+/// several branches (a match arm per literal kind, a defect arm
+/// answering the same register the success arm defines) cannot
+/// collapse to one call, and telling that shape apart from the
+/// ordinary case needs more than this pattern's two statements hold.
+///
+/// NARROWER THAN THE RETIRED REGEX, structurally: the ROOT is a
+/// BLOCK — `if`/`while`/`for` bodies are flat statement lists on
+/// their OWN node (core/nodes.av's `IfStmt`, `While`, `For`), never a
+/// nested `Block`, so a pair sitting inside one (`hollow_of`'s two
+/// `ConstBool`/`ConstFloat` sites, values.av) is outside this
+/// pattern's reach — the same shape `bracket_ritual`/
+/// `seen_accumulator` already carry. Both stay licensed by comment
+/// for a human reader; a native finding never reaches them to ask.
+fn is_mint_call(mint: Code) -> bool {
+    if mint.of.view.source.file.ends_with("features/emit.av") { return false }
+    let t = mint.text()
+    [
+        "self.mint_shape(",
+        "cx.mint_shape(",
+        "self.mint_ty(",
+        "cx.mint_ty(",
+        "self.mint_like(",
+        "cx.mint_like(",
+        "self.result(",
+        "cx.result(",
+    ].any((p) -> t.starts_with(p))
+}
+
+fn raw_mint_emit_found(dst: Code, variant: string) -> Fix {
+    Fix.Say(said(dst.loc(), "`${dst.text()}` minted, then defined by a raw `emit(Ins.${variant}(…))` a few statements later — a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a, b)`, …, features/emit.av), which holds the mint law by construction", "this mint", null))
+}
+
+export rule raw_mint_emit_bin {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Bin(${dst2}, ${op}, ${a}, ${b}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Bin"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+export rule raw_mint_emit_un {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Un(${dst2}, ${op}, ${src}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Un"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_pack {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Pack(${dst2}, ${elems}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Pack"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_call {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Call(${dst2}, ${callee}, ${args}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Call"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_call_ptr {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.CallPtr(${dst2}, ${f}, ${args}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "CallPtr"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Int)\n    log(dst)\n}")
+export rule raw_mint_emit_const_int {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstInt(${dst2}, ${v}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstInt"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+export rule raw_mint_emit_const_bool {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstBool(${dst2}, ${v}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstBool"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Str)\n    log(dst)\n}")
+export rule raw_mint_emit_const_str {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstStr(${dst2}, ${s}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstStr"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_load {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Load(${dst2}, ${slot}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Load"),
+}
+
 /// A struct literal copying every other field from ONE subject — that
 /// is `with`. Guarded RULE-SIDE over `kids()` (`Expr.StructLit` has no
 /// fixed field count a quote pattern can spell): a field COPIES when
