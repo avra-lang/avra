@@ -1,0 +1,78 @@
+// proves: a `defer`/`errdefer` of ONE method call on a captured,
+// managed receiver runs exactly as a boxed one would — the receiver
+// read AT the `defer` (a reassignment after it is not seen), several
+// in one scope last-registered first, on every exit (fall-through,
+// `return`, `fail`/`?`), and a non-void answer is dropped.
+extern fn avra_puts(s: string)
+
+type Stmt = { label: string, code: int }
+
+impl Stmt {
+    fn reset() -> int {
+        avra_puts("reset ${self.label}")
+        self.code
+    }
+    fn close() {
+        avra_puts("close ${self.label}")
+    }
+}
+
+fn reassigns() -> int {
+    mut s = Stmt { label: "a", code: 1 }
+    defer s.reset()
+    s = Stmt { label: "b", code: 2 }
+    avra_puts("live ${s.label}")
+    0
+}
+
+fn ordered() -> int {
+    let s = Stmt { label: "x", code: 9 }
+    defer s.reset()
+    defer s.close()
+    0
+}
+
+fn early(n: int) -> int {
+    let s = Stmt { label: "early", code: 5 }
+    defer s.reset()
+    if n > 0 {
+        return 1
+    }
+    0
+}
+
+fn maybe_fail(fails: bool) -> Result<int, string> {
+    let s = Stmt { label: "maybe", code: 3 }
+    defer s.reset()
+    if fails {
+        fail "no"
+    }
+    1
+}
+
+fn through_question(fails: bool) -> Result<int, string> {
+    let v = maybe_fail(fails)?
+    v
+}
+
+fn logged(tag: string) -> Result<int, string> {
+    let s = Stmt { label: "err", code: 8 }
+    errdefer s.close()
+    defer avra_puts(tag)
+    fail "bad"
+}
+
+fn told(r: Result<int, string>) -> string {
+    match r {
+        .Ok(v) -> "${v}",
+        .Err(e) -> e,
+    }
+}
+
+let r1 = reassigns()
+let r2 = ordered()
+let e1 = early(1)
+let e0 = early(0)
+let q = told(through_question(true))
+let l = told(logged("hi"))
+"${r1} ${r2} ${e1} ${e0} ${q} ${l}"
