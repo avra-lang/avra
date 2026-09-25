@@ -610,7 +610,9 @@ static size_t block_size(Header* h) {
 // The content bytes a sized box can hold, its NUL's byte spared. A
 // classed box holds its class; a bigger one what its block holds. The
 // class is read from the LENGTH, so a box shrunk in place answers the
-// smaller class — under its block, never over it.
+// smaller class — cheap, and an UNDER-report only, never over: the
+// slow path in `sized_moved` asks the block itself before it moves
+// anything, so this stays the fast check every append pays.
 static size_t sized_capacity(Header* h) {
     size_t cls = class_of((size_t)h->len + 1);
     if (cls) return cls * CLASS_BYTES - 1;
@@ -631,6 +633,12 @@ static void sized_resized(Header* h, size_t n) {
 __attribute__((noinline))
 static char* sized_moved(char* p, size_t need) {
     Header* h = (Header*)p - 1;
+    // The CLASS check that sent us here reads the LENGTH, which
+    // truncation can shrink well under the block's real size — ask
+    // the allocator once, here on the already-slow path, rather than
+    // on every append's fast check, before paying for a move the
+    // block never needed.
+    if (!rc_guarded() && block_size(h) - sizeof(Header) - 1 >= need) return p;
     size_t n = h->len;
     size_t room = need < 2 * n ? 2 * n : need;
     if (room + 1 <= CLASS_MAX || class_of(n + 1) != 0 || rc_guarded()) {
