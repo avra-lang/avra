@@ -81,40 +81,61 @@ neither of them thought about at all, because "highest + 1" is a race
 with no semantic content to disagree over. Removing the number removes
 the only thing that was ever actually racing.
 
-**Make the qualifier structural, not conventional.** Today's kind strings
-are hand-prefixed by CATEGORY (`"type."`, `"resolve."`, `"io."`) — a
-convention, not a guarantee, so two unrelated features could in
-principle both reach for `"type.mismatch"`. Every kind is declared
-inside exactly one `LanguageFeature`'s own `codes: table<DiagCode>`
-(`features/enums/mod.av`, `features/results/mod.av`, etc.) or one
-package's own file — the compiler already knows, at assembly time,
-*which feature or package owns every row it is registering*. So: a
-feature writes only its LOCAL tag (`"catch"`, `"fail"`, `"enum_decl"`),
-and the registry assembler prepends the owning feature's own name
-automatically — `results.catch`, `results.fail`, `enums.enum_decl` —
-the same way `user_code()` already qualifies a package's kind with its
-package name (`"pkg:E1"`) for third-party diagnostics (Tier 3, §
-"How a diagnostic kind becomes an F-code" in the survey this doc is
-built on). Two features literally cannot collide this way — feature
-names are already the one ordered, unique list
-(`language_features()`, "feature order is language order"). A collision
-inside ONE feature's own table (two rows both tagged `"catch"`) is a
-real, tiny, easy-to-explain bug, and `code_defects()`'s existing check
-catches it exactly as it does today — no new mechanism needed there.
+**RETRACTED (2026-09-25), the auto-prepend-the-feature-name mechanism
+below — a migration-size investigation for avra-8sb5.40.13 found the
+premise wrong before any code moved.** Measured, not assumed: of 169
+feature-owned kinds, 140 (83%) already share a CATEGORY prefix
+(`type.`, `resolve.`, `manifest.`) across MANY different owning
+features on purpose — `type.mismatch` alone is emitted as a literal
+string from 14 different files across 13 features via shared,
+feature-agnostic helpers (`features/checks.av` and siblings) that have
+no "current feature" to qualify from even in principle. These are not
+mis-named strays to correct; they are genuinely shared concepts (a
+type mismatch is not owned by whichever feature happened to trigger
+it). Forcing every kind into `<owning-feature>.<tag>` would have meant
+inventing an arbitrary owner for a dozen-plus shared diagnostics and
+rewriting roughly 420 emission call sites for a category that was
+never actually at risk.
 
-**Migration cost is low, not high, because most of the string doesn't
-change.** The kind string itself is untouched for anything already
-namespaced sensibly (`io.not_found` stays `io.not_found`); only the
-NUMBER disappears, and any kind whose prefix collides across features
-in principle (rare — `code_defects()` would already have caught a real
-instance) gets its prefix corrected to the owning feature's name as part
-of the same pass. `avra explain <kind>` already accepts a kind directly
-(`q.contains(":")`), so nothing about the lookup path changes; only the
-numeric alternative goes away. Rendering drops `F2029` and shows the
-kind alone: `error[results.catch]: …` — more meaningful to a reader AND
-to a model reading the output (P1, P11), which is the whole reason a
-dotted string beats an opaque incrementing integer for this compiler
+**It was never at risk, which is what makes the mechanism unnecessary
+rather than merely expensive.** `code_defects()` (features/coherence.av)
+already refuses a duplicate `kind` tree-wide at assembly time, and
+always has — for every one of the 185 rows, category-prefixed or not.
+Two lanes cannot collide on a *string* they both had to type out and
+think about; they collide on a *number* neither of them thought about
+at all, because "highest + 1" is a race with no semantic content to
+disagree over. Removing the number removes the only thing that was
+ever actually racing — no auto-qualification mechanism is needed to
+finish the job, because the job was already done by an existing check.
+A feature (or a user's own package — same check, same guarantee, no
+separate scheme to learn) picks whatever kind string fits its domain,
+same as today, and `code_defects()` catches a real accidental
+duplicate exactly as it always has.
+
+**Migration is small and mechanical because NO kind string changes.**
+Every one of the 185 existing kinds keeps its exact spelling — this
+was the actual point of retracting the rename: it turns a ~420-call-site
+rewrite into three bounded, scriptable pieces: (1) drop `DiagCode.id`
+and the two `id`-only lookup paths that ride it (the diagnostics
+witness table, 83 rows keyed by number; `avra explain`'s numeric
+argument), rekeying both to the kind string each row already carries;
+(2) update the ~52 test goldens that assert a rendered `error[F1234]:`
+string to assert the kind instead, a 1:1 substitution from the current
+registry; (3) `avra explain <kind>` already accepts a kind directly, so
+only the numeric alternative is deleted, nothing about the kind lookup
+path changes. `docs/DIAGNOSTICS.md` regenerates itself (`make
+witnesses`) and needs no manual edit. Rendering drops `F2029` and shows
+the kind alone: `error[results.catch]: …` — more meaningful to a reader
+AND to a model reading the output (P1, P11), which is the whole reason
+a dotted string beats an opaque incrementing integer for this compiler
 specifically.
+
+Tier 3 (a user package's own `@scope/name:E1` kind) already rides the
+same `id`-as-derived-echo-of-`kind` pattern (`kind.replace(":", ": ")`)
+— dropping the concept of a separate numeric identity reaches it too,
+for free, with no new mechanism a package author has to adopt: a
+package's own kind was already namespaced by its own name, the same
+way a feature's already was.
 
 **Same law for idiom I-numbers, confirmed with IDIOMS** (leads the
 formatter/idiom engine, mid-migration to a component architecture for
