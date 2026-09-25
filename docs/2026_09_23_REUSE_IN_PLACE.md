@@ -905,3 +905,133 @@ scans" at §23's profile. Every one of those three passes is a LAW
 against request smuggling (frame.av's own opening comment), so
 merging them needs the SAME red-team weight as the framer's original
 landing, not an afternoon's. Not attempted this slice.
+
+## §27 As built — R11e, a nullable word enum spends the spare tag
+
+**D35. A nullable WORD ENUM (every variant carries nothing, so its
+value IS its tag — R8) rides ONE register, the spare tag -1 its
+absence** — D31's own trick (`Repr.Tagged`), generalized from
+`is_valued` to `is_word_enum` rather than given a second mechanism
+(the GENERALIZE-BEFORE-ADDING law). `TypeRegistry.word_carrier`
+answers the tag's register for either type that names it — the enum
+itself or its nullable — the way `valued_carrier` already does for a
+value enum's Opt; `opt_rides_pointer` refuses the pointer only a flat
+RECORD needs (a word enum's tag has its own spare value, unlike a
+flat record's fields, so it never boxes). `inner_repr_of` files a
+word enum's Opt under `Tagged` beside a value enum's; `absent_tagged`
+splits the two payload widths apart (one register, the tag alone, for
+a word enum — tag-and-word for a value enum, D31's original shape).
+`Decls.scalar_field` widens to admit a WORD ENUM'S OWN NULLABLE
+alongside D34's `int`/`bool`/word-enum trio, so a record carrying one
+(`@std/http`'s `Framing`) is flat again, asked of the field's
+declaration exactly as D34 requires.
+
+**Every consumer D31 already taught to read a Tagged repr reads this
+one the same way, because it IS the same repr**: `tag_of`/
+`presence_of`/`carried_of`/`insisted_tagged` (values.av) already
+switch on `repr_of`, not on `is_valued` directly, so word-enum
+nullables fell through unaided the moment `inner_repr_of` answered
+`Tagged` for them. Four consumers needed their OWN widening because
+they read a register's SHAPE rather than asking `repr_of`: `memory.av`'s
+`is_managed` (a word-enum Opt never boxes, so it is never counted, the
+same law flat records already hold); `llvm.av`'s `opt_ll_type` (the
+nullable's LLVM type is the WORD's, no wrapping aggregate); `llvm_emit.av`'s
+`bare_value` (renamed from `flat_value` — a nullable word enum has no
+LLVM aggregate either, so `extract_value`/`pack_value` treat it as
+identity, a `cast_to_type` guarding the one case a flat record's
+identity pack never needed: a present value ADOPTED into the
+nullable, per `adopted`'s `.Tagged -> r` branch, arrives typed as the
+BARE enum and is cast into the `Opt` register's own LLVM type at the
+door rather than re-minted); and `interp.av`'s `bare_reg` (the
+interpreter's mirror, no LLVM types to cast, just the same identity
+question).
+
+**Two companion fixes a Tagged nullable's OWN absence exposed, not
+new to word enums but never exercised until this slice's tests wrote
+a `match … { null -> …, v? -> … }` and an `x == null` over one**:
+`pat_reg`'s bare `null` arm used to compare the subject against
+`reg_of(the null literal)` by VALUE (`same_value`) — sound for a
+NICHE nullable, where a null literal's register IS the pointer zero,
+and wrong for a TAGGED one, where a null literal's register carries
+no repr of its own until an adopting edge gives it one (the niche's
+own law, `adopted`'s comment) — so the comparison read a Tagged
+subject's spare tag against an unrelated raw zero. `literal_pat_reg`
+asks the subject's own PRESENCE directly instead, never through
+equality; `nullable_eq_reg` gets the same fix for `x == null` and
+`null == x`. Both are `repr_of`-general, not word-enum-specific — no
+regression test for `match v { null -> …, x? -> … }` existed over a
+nullable VALUE enum before this slice, so whether D31 carried the
+same latent gap is unconfirmed; worth a probe before the next Tagged
+consumer is added.
+
+**`@std/http`'s `Framing` restored to `why: Refusal?`** (D34 had
+split it into `refused: bool` + `why: Refusal = .LineEnd`, a
+placeholder default unread while `refused` was false, spelled by
+hand at the one call site D34 declined to give nullable enums for
+free). `noted`/`broke`/`settled`/`settled_reply` read `fr.why != null`
+in place of `fr.refused`, matching the file's own established idiom
+two lines below (`let broken: Refusal? = body_refusal(fr, limits); if
+broken != null { return .Refused(broken!) }`) rather than a new one.
+
+**Red team.** `features/enums/tests/nullable_word_enums` (`??`, `?.`,
+`match` with `v?`/`null` arms, a record field, `List<E?>`, a `Map`
+value, a `Cell`, a fn param/answer, a generic `T?` over a word-enum
+`T`, and `E??` nested through a generic — the spare tag never
+collapses a present-null into absent) plus
+`nullable_word_enums_adversarial_test.av` (aliasing: a record field
+copied then written through the copy, a `Cell` seat, `with`, a list
+element by index; crossing: `dyn`, a generic seat, a `Box<T>`-shaped
+field; static data: a top-level const and a const `List<E?>`; the tag
+boundary at 64 variants; equality both directions and `!=`; a
+single-variant word enum; a managed STRING field beside the nullable
+word enum in the same flat record; `Result<E?, string>` through `?`
+— stays boxed, correctly, since `payload_word`'s `.Opt` case still
+asks for a pointer-riding nullable and a word-enum one is not one, so
+this is left on the table rather than a defect; a `for` loop and
+recursion over `List<E?>`; and a `match` arm that leaves the fn
+merging beside both a present and an absent companion, `hollow_of`'s
+fallback path) — eval == native under `AVRA_RC_GUARD=1` (two small
+standalone probes built and run directly under the guard, per the
+doctrine that the guard is for small programs, never a whole-package
+compiler self-host: one exercising the enum feature's own aliasing/
+dyn/generic/list/map/cell shapes across 2,000 loop turns, one calling
+`@std/http`'s `framed()` 3,000 times across three request shapes
+including two distinct `Refusal` reasons; `AVRA_MEM_STATS=1` read 0
+MB live in every category at exit on both).
+
+**A genuine finding along the way, not a defect in this slice**: the
+red team's first pass wrote `if k < 0 { return "early" } else {
+Dir.N }` as a merge attack and hit F2000 "an `if`'s branches
+disagree: `string` vs `Dir`". Control-probed with a bare `int` in
+place of the enum — identical refusal, so plain `if`/`else` has never
+exempted a diverging arm from the branch-type join (`if_expr/
+check.av`'s `branch_type` compares both arms directly and never calls
+`checks.av`'s `stays()`, the filter `match` arms and other N-ary
+joins already use). Orthogonal to this ticket's representation
+change; filed as avra-8sb5.47. The attack was rewritten as a `match`
+(whose join already exempts a leaving arm) to keep testing what it
+meant to test — `hollow_of`'s fallback merging beside a present AND
+an absent companion — and passes clean.
+
+**Numbers** (tools/bench/request, Mac, 5,000,000 requests,
+`/usr/bin/time -l`, interleaved, 4 rounds averaged, against the exact
+pre-slice source and compiler — old `frame.av` built by the saved
+pre-change binary, new `frame.av` built by the post-slice one):
+
+| | before | after |
+|---|---|---|
+| instructions/request | 11,412 | 11,410 (−0.01%, noise) |
+| boxes/request | 7 | 7 (unchanged) |
+| bench binary | 379,448 B | 379,368 B (−80 B) |
+| `build/avra` | 7,366,128 B | 7,348,688 B (−17,440 B, −0.24%) |
+
+No measurable request-path win — expected: `Framing` was already a
+flat value record after the tail slice (D34's `bool` workaround), so
+this slice removes a field and a write far too small to clear the
+±0.7% floor, not a new allocation site. What R11e buys is real
+elsewhere: the honest `Refusal?` field back in `Framing` (D34's own
+"stays out, on purpose" now paid), and — the larger claim — the
+representation itself, generalized once at the type-registry level
+rather than re-solved per call site, ready for the next record
+anywhere in the tree that wants a nullable payload-free enum field
+without boxing.

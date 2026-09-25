@@ -43,6 +43,9 @@ impl StaticBuild {
         if v is .Gone { return Slot.Absent }
         // a value enum's absence crosses a slot as the null pointer
         if self.decls.types.is_valued(self.decls.types.machine_type(inner)) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
+        // a WORD ENUM's absence is the spare tag — no box, its own
+        // tag slot doubles as the sentinel
+        if self.decls.types.is_word_enum(inner) { return if v is .Absent { Slot.Int(absent_tag) } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.rides_pointer(inner) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.is_flat(inner) { return if v is .Absent { Slot.Null } else { self.array_slot(heap.slots(v), heap, [inner]) } }
         if v is .Absent { return Slot.Absent }

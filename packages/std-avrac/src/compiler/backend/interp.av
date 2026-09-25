@@ -616,20 +616,28 @@ impl Machine {
 
     /// A packed value rides the same table an aggregate does — the
     /// interpreter's bookkeeping, not the machine's layout.
-    /// A FLAT record IS its one field — the pack is the value itself;
-    /// every other aggregate is a fresh array. The backend renders the
-    /// same instruction the same way.
+    /// A BARE register IS its one element — the pack is the value
+    /// itself; every other aggregate is a fresh array. The backend
+    /// renders the same instruction the same way.
     fn pack_val(b: Body, d: Reg, elems: List<Reg>) -> Val {
-        if self.flat_reg(b, d) { return self.value(elems[0]) }
+        if self.bare_reg(b, d) { return self.value(elems[0]) }
         self.fresh_array([self.value(r) for r in elems])
     }
 
-    fn flat_reg(b: Body, r: Reg) -> bool {
-        self.l.types.is_flat(b.reg_types[r.index]) && !self.l.types.is_wide(b.reg_types[r.index])
+    /// Whether a register holds a value with no aggregate behind it: a
+    /// FLAT record of one field, which IS its field, or a nullable
+    /// WORD ENUM, whose own tag doubles as the absent sentinel.
+    fn bare_reg(b: Body, r: Reg) -> bool {
+        let ty = b.reg_types[r.index]
+        if self.l.types.is_flat(ty) && !self.l.types.is_wide(ty) { return true }
+        match self.l.types.shape_of(ty) {
+            .Opt(inner) -> self.l.types.is_word_enum(inner),
+            rest -> false,
+        }
     }
 
     fn extract_val(b: Body, src: Reg, at: int) -> Val {
-        if self.flat_reg(b, src) { return self.value(src) }
+        if self.bare_reg(b, src) { return self.value(src) }
         let id: int? = match self.value(src) {
             .A(x) -> x,
             _ -> null,
