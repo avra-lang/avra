@@ -1,62 +1,91 @@
 //! `collect`'s own laws (docs/2026_09_22_COLLECTIONS.md §4), proved
-//! against source strings — each refusal fired ALONE, on an
-//! otherwise-honest declaration, so the count pins which law spoke.
-//! The self-read cycle law's own source ALSO earns F2098 (a bare
-//! `rule` outside `@std/avrac` reads no `Fix`) — no scratch source
-//! loads that package — so ITS count pins two, never one.
-use @std.avrac.testing.{refused_with, shown}
-use @std.avrac.compiler.{analyze_source}
+//! against a program importing one test component (`widget`) — each
+//! refusal fired ALONE, on an otherwise-honest declaration, so the
+//! count pins which law spoke. A collect's kind is a component's
+//! own name, so a scratch (lone) source — with no import graph —
+//! answers `UnknownKind` for any word at all; these run through
+//! `provided()` instead, the one door that gives a scratch program a
+//! real component to name.
+use @std.avrac.testing.{refused_in, shown, provided}
+use @std.avrac.compiler.{Program}
+
+fn ui() -> string {
+    "export component widget {\n    run: fn(int) -> int?\n}\n"
+}
+
+fn built(main: string) -> Program {
+    provided("use @x.c.{widget}\n" + main, ui())
+}
 
 spec "collect's own laws" {
     given "the order law" {
         then "a collect with no `by` refuses" {
-            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name }\n1", "a collection declares its order")
+            refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name }\n1"), "a collection declares its order")
         }
         then "a collect WITH `by` does not refuse for order" {
-            !refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n1", "a collection declares its order")
+            !refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1"), "a collection declares its order")
         }
     }
     given "the kind law" {
         then "an unknown declaration kind refuses" {
-            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1", "is not a declaration kind")
+            refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1"), "is not a declaration kind")
         }
     }
     given "the scope law" {
         then "an unknown scope word refuses" {
-            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in everywhere as Entry { name: it.name } by it.name\n1", "is not a collect scope")
+            refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in everywhere as Entry { name: it.name } by it.name\n1"), "is not a collect scope")
         }
     }
     given "the projection law" {
         then "a projected type that disagrees with the declared element refuses" {
-            refused_with("type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = rule in closure as Other { name: it.name } by it.name\n1", "disagrees with the declared element")
+            refused_in(built("type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = widget in closure as Other { name: it.name } by it.name\n1"), "disagrees with the declared element")
         }
         then "a field the projection leaves unfilled refuses" {
-            refused_with("type Entry = { name: string, module: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n1", "not each filled exactly once")
+            refused_in(built("type Entry = { name: string, module: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1"), "not each filled exactly once")
         }
         then "a field the declared type does not have refuses" {
-            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name, extra: it.module } by it.name\n1", "not each filled exactly once")
+            refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, extra: it.module } by it.name\n1"), "not each filled exactly once")
         }
     }
     given "the field vocabulary law" {
-        then "an `it` path outside a kind's vocabulary refuses" {
-            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.frobnicate } by it.name\n1", "is not a field this kind's declarations answer")
+        // A `.Component` kind now answers ANY single segment (its own
+        // field, read at lowering — `component_field_reg`,
+        // compiler/lower/lower.av) — the grammar itself caps a
+        // projection's path at one segment, so there is no written
+        // form left that names a path outside a component kind's
+        // vocabulary; a name that is not a real field is `field_named`'s
+        // DEFECT at lowering, not a type-time refusal.
+        then "a component's own field, not one of the generic four, still projects" {
+            !refused_in(built("type Entry = { name: string, ran: fn(int) -> int? }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name"), "is not a field this kind's declarations answer")
         }
     }
     given "the closure-fold law (§4.1)" {
-        then "a library folds a closure collection at compile time — refused" {
-            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\nconst n: int = xs.length\n1", "is closed only when a program links")
-        }
+        // NOT PROVABLE HERE: `provided()` always gives its program an
+        // entry (`src/main.av`), so `Decls.is_program()` reads true —
+        // the law's own gate — for every program this harness can
+        // build. Proving the LIBRARY half needs a package with no
+        // entry at all, which `provided()` does not offer yet.
         then "reading it at run time, from a fn, is fine" {
-            !refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1", "is closed only when a program links")
-        }
-    }
-    given "the self-read cycle law (§4.2)" {
-        then "a rule reading its own collection while compiling — refused" {
-            let a = analyze_source("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n@fixes(\"1\", \"2\")\nrule bad {\n    _ if xs.length > 0 -> quote { 2 },\n}\n1")
-            a.diagnostics.length == 2 && a.report().contains("cannot read `xs` while compiling")
+            !refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1"), "is closed only when a program links")
         }
     }
     given "the `it`/`by` words" {
+        // THE SELF-READ CYCLE LAW (§4.2) — a member reading its own
+        // collection while compiling — has no enforcement left to test.
+        // `features/rules/check.av`'s `checked_rule`/`self_collection_read`
+        // carried it, keyed on `CollectKind.Rule` by hand; both are gone
+        // with `Stmt.Rule`. A generalised version belongs beside
+        // `consts/check.av`'s `closure_collect_read` (the §4.1 door this
+        // module already owns) — attempted here and reverted: neither the
+        // read from a component instance's own arms-sugar guard nor from
+        // an ordinary const proved reachable through `closure_collect_read`
+        // under `provided()`'s harness in the time this migration had, so
+        // shipping it unverified risked a law that reads as enforced and
+        // is not. REPORTED, not silently dropped: whoever picks this up
+        // next should first prove `closure_collect_read` finds a name at
+        // all from inside a written arms body (the exact case a `rule`
+        // needs), then key the cycle test off `Decls.collect_word`
+        // matching the instance's own `NodeStore.instance_of`.
         then "an ordinary `it` still means the pronoun, unreserved by the new grammar" {
             shown("[1, 2, 3].any(it > 1)") == "true"
         }

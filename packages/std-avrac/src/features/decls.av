@@ -420,7 +420,6 @@ export fn kind_word(k: DeclKind) -> string {
         .Main -> "main",
         .Case -> "case",
         .Const -> "const",
-        .Rule -> "rule",
         .Collect -> "collect",
         .Builtin -> "builtin",
     }
@@ -592,14 +591,13 @@ impl Decls {
         IndexedWord { word: w, id: d.id }
     }
 
-    /// The word a declaration answers `collect` under: `rule` for a
-    /// `DeclKind.Rule`; for a `Const` (the ONLY kind a named instance
-    /// promotes to, `NodeStore.declared_instance`) the component its
-    /// own statement instances (`NodeStore.instance_of`) — absent for
-    /// everything else, a `Builtin`'s sentinel file and stmt among
-    /// them, which no store carries.
+    /// The word a declaration answers `collect` under: for a `Const`
+    /// (the ONLY kind a named instance promotes to,
+    /// `NodeStore.declared_instance`) the component its own statement
+    /// instances (`NodeStore.instance_of`, `rule` among them) —
+    /// absent for everything else, a `Builtin`'s sentinel file and
+    /// stmt among them, which no store carries.
     fn collect_word(d: Decl) -> string? {
-        if d.kind is .Rule { return "rule" }
         if !(d.kind is .Const) { return null }
         self.store_of(d.file).instance_of(d.stmt)
     }
@@ -896,7 +894,7 @@ impl Decls {
         let m = self.types.machine_type(t)
         match self.types.shape_of(m) {
             .Int -> 0,
-            .Enum(e, _) -> if e.index != d.index && self.carries_nothing(e) { 0 } else { null },
+            .Enum(e, _) -> if !same_decl(e, d) && self.carries_nothing(e) { 0 } else { null },
             .Struct(_, _) -> if self.types.travels_wide(m) { null } else { 1 },
             .Opt(inner) -> if self.types.opt_rides_pointer(inner) { 1 } else { null },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> 1,
@@ -1180,16 +1178,17 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Record or .Named or .Alias or .Enum or .Builtin -> x.name,
-            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule or .Collect -> null,
+            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
         }
     }
 
-    /// A fn's name — free fns, methods, and rules (a rule IS a fn of
-    /// one synthetic seat).
+    /// A fn's name — free fns and methods; a named component
+    /// instance (a `rule` among them) is a `Const`, read as its own
+    /// built value, never called by symbol.
     fn fn_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Fn or .Method or .Rule -> x.name,
+            .Fn or .Method -> x.name,
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> null,
         }
     }
@@ -1268,7 +1267,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
-            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Rule or .Collect -> x.name,
+            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

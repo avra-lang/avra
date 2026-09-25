@@ -136,10 +136,27 @@ impl Workspace {
     }
 
     /// THE CLOSURE LAW FOR A COLLECT WHOSE MEMBERS ARE NEVER
-    /// `use`-REACHED: `pkg` is force-admitted WHOLE — a member (a
-    /// `rule`, a named instance in a feature dir nothing imports)
-    /// exists to be discovered, not read in through the ordinary
-    /// import graph, so import-reachability alone would find none.
+    /// `use`-REACHED, AND THE ONE DOOR EVERY ADMISSION WALKS THROUGH
+    /// (`admit_scope`'s eager pre-resolve pass, `collect_admit_from`'s
+    /// lazy lowering-time hook — both call this, nothing else force-
+    /// admits a package). `pkg` is force-admitted WHOLE because a
+    /// member (`rule`'s own instances, a feature's idioms.av among
+    /// them — `packages/std-avrac/src/features/*/idioms.av` today,
+    /// each one importing nothing and imported by nothing) EXISTS TO
+    /// BE DISCOVERED, not read in through the ordinary import graph —
+    /// that is the whole point of writing a rule in the feature dir
+    /// it documents, with no registration anywhere else. Import
+    /// reachability alone finds none of them, so this is not a gap
+    /// closed by growing the closure differently: it IS the closure a
+    /// `package`/`closure`-scoped collect declares, by design (the
+    /// `self` scope needs no force-admission at all — its own file is
+    /// already parsed by the time a collect reads it). The rows a
+    /// collect reads are `Decls`' own table (`collect_word`, indexed
+    /// by the ONE word a declaration answers under, extended past
+    /// everything minted since it was last read) — an ordinary insert
+    /// as a file is admitted, and an ordinary keyed read; this fn is
+    /// the only place that decides WHICH FILES get inserted for a
+    /// package-or-wider collect, never a second admission path.
     /// `/tests/` is excluded — `is_test_path`'s law: a fixture is a
     /// standalone PROGRAM, never a module of the build admitting it,
     /// and the entry law (`outside_entry`) refuses one that runs
@@ -296,7 +313,7 @@ impl Workspace {
 fn is_type_decl(x: Decl) -> bool {
     match x.kind {
         .Record or .Named or .Alias or .Enum or .Builtin -> true,
-        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule or .Collect -> false,
+        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
     }
 }
 
@@ -307,7 +324,6 @@ fn is_type_decl(x: Decl) -> bool {
 /// admit — `check_collect` already refused it.
 fn collect_word_of(kind: CollectKind) -> string? {
     match kind {
-        .Rule -> "rule",
         .Component(w) -> w,
         .UnknownKind(_) -> null,
     }

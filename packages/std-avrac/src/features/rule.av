@@ -1,0 +1,36 @@
+//! `rule` — the formatter's own rewrite, dogfooded as a component:
+//! `export rule name { pattern -> value, ... }` is an instance of
+//! `component rule` below, its arms filling `run`
+//! (features/components/builders.av's arms sugar, the implicit
+//! `_ -> null` tail included — a rule's answer is always `Fix?`),
+//! its own `///` filling `doc`, and its `@fixes`/`@keeps`
+//! annotations filling `fixes`/`keeps`
+//! (features/components/lower.av's `augmented`). `check` judges only
+//! what it can without running the compiler — whether the rule
+//! proves itself against anything at all; the examples themselves
+//! run in `avra test`'s own suite (compiler/rule_examples.av).
+use features.{Code, Fix}
+use @std.meta.{Diagnostic, refuse}
+
+/// One `@fixes("before", "after")` example: code the rule rewrites,
+/// and the rewrite it proves.
+export type Fixes = { before: string, after: string }
+
+export component rule {
+    run: fn(Code) -> Fix?
+    doc: string = ""
+    fixes: List<Fixes> = []
+    keeps: List<string> = []
+
+    fn check() -> List<Diagnostic> {
+        if self.fixes.is_empty() && self.keeps.is_empty() { return [refuse("a rule with no `@fixes` or `@keeps` has nothing to prove itself against")] }
+        []
+    }
+}
+
+/// Whether an annotation's NAME is one `rule`'s instance reads
+/// itself, never resolved as an ordinary call — there is no `fn
+/// fixes`, no `fn keeps`.
+export fn example_marks(name: string) -> bool {
+    name == "fixes" || name == "keeps"
+}

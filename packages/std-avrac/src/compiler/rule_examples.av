@@ -1,15 +1,28 @@
 //! A rule's own proof: each `@fixes`/`@keeps` example, checked
 //! exactly as `avra check` would read it — the before-text analysed,
-//! the rule's nearest hit found (`features/rules/apply.av`'s
-//! `nearest_fix` — a rule fires at a node, an example names a
-//! program), a rewrite's rendered text re-parsed and compared by
-//! fingerprint (span-blind; text equality is too strict), a keep
-//! answered by absence alone. `avra test` (`suite.av`) runs one of
-//! these per example, for every rule the package under test declares.
-use core.{root_of, root_kind_of, flatten, DeclKind}
-use features.{Code, Fix, Decl}
-use features.rules.{nearest_fix, examples_of, Example}
+//! the rule's nearest hit found (`nearest_fix` — a rule fires at a
+//! node, an example names a program), a rewrite's rendered text
+//! re-parsed and compared by fingerprint (span-blind; text equality
+//! is too strict), a keep answered by absence alone. `avra test`
+//! (`suite.av`) runs one of these per example, for every rule the
+//! package under test declares — the examples themselves are
+//! `RuleEntry.fixes`/`.keeps`, already typed values by the time this
+//! reads them (features/components/lower.av's `augmented`), never a
+//! second read of the declaration's own annotations.
+use core.{root_of, flatten}
+use features.{Code, Fix}
 use compiler.{analyze_source, Analysis}
+
+/// The first hit `applied` finds at `root` or under it, depth-first,
+/// or absence when nothing in the whole subtree fires.
+export fn nearest_fix(applied: fn(Code) -> Fix?, root: Code) -> Fix? {
+    applied(root) ?? first_of(applied, root.kids())
+}
+
+fn first_of(applied: fn(Code) -> Fix?, cs: List<Code>) -> Fix? {
+    let hit? = cs.first() else { return null }
+    nearest_fix(applied, hit) ?? first_of(applied, cs.slice(1, cs.length))
+}
 
 /// The example's own root: an expression statement stands as its
 /// expression (the same reduction a rule's own pattern root takes,
@@ -51,9 +64,8 @@ fn same_fingerprint(rendered: string, after: string) -> bool {
 // `rules`' rows are SYNTHESISED, at lowering, from these same
 // declarations (compiler/lower/lower.av's `lower_collect`) — there
 // is no restated list left to hold a row against. What stays worth
-// proving is that the SYNTHESIS agrees with a FRESH read of the
-// same declaration (the root-kind index) and that the rule's own
-// LOGIC does what its `@fixes`/`@keeps` claim.
+// proving is that the rule's own LOGIC does what its
+// `@fixes`/`@keeps` claim.
 
 /// One example, checked — a line iff it failed.
 export type ExampleCheck = { label: string, ok: bool }
@@ -61,31 +73,13 @@ export type ExampleCheck = { label: string, ok: bool }
 fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
 
 impl Workspace {
-    /// Every rule's synthesised entry, proved against its live
-    /// declaration: the root-kind index `lower_collect` baked in,
-    /// recomputed fresh — and every `@fixes`/`@keeps` the declaration
-    /// itself carries.
+    /// Every rule's `@fixes`/`@keeps`, proved against its live `run`.
     fn rules_checked() -> List<ExampleCheck> {
         self.admit_package(self.packages()[0])
-        let found = self.decls.decls_of_word("rule")
-        flatten([self.entry_checked(found, r) for r in rules])
-    }
-
-    fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
-        let d? = found.find(named(r, it)) else { return [] }
-        let store = self.decls.store_of(d.file)
-        let parts? = store.rule_parts(d.stmt) else { return [checked("${rule_id(r)}'s declaration carries no rule body", false)] }
-        // LICENSED I18: any_root is root_kind_of's documented absence case, not a papered-over default
-        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", root_kind_of(store, parts.arms) ?? any_root == r.root)
-        [root_check].concat([example_checked(rule_id(r), r.run, e) for e in examples_of(store, d.stmt)])
+        flatten([entry_checked(r) for r in rules])
     }
 }
 
-fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
-
-fn example_checked(id: string, applied: fn(Code) -> Fix?, e: Example) -> ExampleCheck {
-    match e {
-        .Fixes(before, after) -> checked("${id} @fixes", checks_fixes(applied, before, after)),
-        .Keeps(before) -> checked("${id} @keeps", checks_keeps(applied, before)),
-    }
+fn entry_checked(r: RuleEntry) -> List<ExampleCheck> {
+    [checked("${rule_id(r)} @fixes", checks_fixes(r.run, f.before, f.after)) for f in r.fixes].concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
 }
