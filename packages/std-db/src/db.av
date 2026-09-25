@@ -77,7 +77,18 @@ fn has_id_field(t: Type) -> bool {
 /// wants a construct the language lacks," names this site too.
 const MAX_FIELDS: int = 6
 
+/// The same question `model_shape` answers as diagnostics, asked here
+/// as a bool: `generated` builds NOTHING over a shape this fails,
+/// rather than an `impl` whose every method mistypes against a shape
+/// it was never built for. `@model_shape` is what SPEAKS the refusal;
+/// this is what stops a second, silent, unrelated pile of errors from
+/// speaking over it.
+fn shape_ok(t: Type) -> bool {
+    t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
+}
+
 fn generated(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
     quote {
         impl ${t} {
             static fn table_name() -> string { ${literal(table_name_of(t))} }
