@@ -1260,3 +1260,179 @@ feature marking one fn as answerable by ANY feature, distinct from
 both `export` (crosses packages) and package-private — would have
 let `defers` ask the real `callee_of` instead of keeping a second,
 narrower copy of its `.Declared` arm in sync by hand.
+
+## §30 As built — R13, identical monomorphic copies merged
+
+**The mechanism.** `object_written` (backend/llvm_wrapper.c) already
+ran `default<O%d>` through `LLVMRunPasses` per emitted module; it now
+calls `LLVMPassBuilderOptionsSetMergeFunctions(opts, 1)` first — the
+same C-API knob clang's `-fmerge-functions` sets, folding a duplicate
+body into a THUNK (a tail call/branch to the one it kept) rather than
+a raw pass-string splice. One line, no new pipeline text.
+
+**Why a thunk never merges an ADDRESS.** MergeFunctions has two
+shapes: replace every USE of the duplicate with the canonical
+function's value (legal only when the duplicate's address is not
+itself observable — `unnamed_addr`), or leave the duplicate's own
+symbol standing and rewrite its BODY to jump into the canonical one.
+Avra's backend never marks a function `unnamed_addr` (grepped: the
+only `LLVMSetUnnamedAddress` call in llvm_wrapper.c is on two STRING
+globals, never a function), so every merge here takes the second
+shape by construction — proved first in isolation
+(`opt -passes='default<O2>,mergefunc'` on hand-written IR: an
+external-linkage pair thunks with both addresses intact;
+`unnamed_addr` on the same pair is what lets the optimizer
+substitute one address for the other in a THIRD function that reads
+`ptr @a`/`ptr @b` — confirming the property is exactly the mark's,
+not a hope). Then proved on Avra itself: `pick_a`/`pick_b`, two
+non-generic fns over different single-field managed structs
+(`{v: string}`, `{v: List<int>}`), each passed as a VALUE into a
+higher-order `via_a`/`via_b` (forcing `FnAddr` + an indirect call,
+never a direct one) — `_av_pick_b` compiles to `b 0x…<_av_pick_a>`
+(4 bytes, its OWN symbol, a live jump into the real body) while
+`_av_pick_a` keeps its full ~208-byte implementation; both `via_a`
+and `via_b` compute the right answer through the indirect call
+(`eval == native`, `none/one|-1/2`), and `atos` on both addresses
+still answers `av_pick_a`/`av_pick_b` by name. Avra also has no
+channel that could notice a difference: `Type.Fn` is `false` under
+`comparable()` (features/checks.av) — `==` on two fn values is F2000
+before this ever reaches codegen — so the one operation that would
+actually observe two merged fns sharing behavior is refused at the
+type checker, independent of this change.
+
+**The corpse that isn't reachable.** One pair — a private, non-generic,
+single-call-site `first_of_a`/`first_of_b` (called directly, never
+passed as a value) — merged into `b println+0x14`: a mid-function
+OFFSET inside an unrelated fn. Alarming until traced: both call sites
+get inlined by the ordinary O2 inliner, leaving the standalone bodies
+with zero uses ANYWHERE in the module (confirmed: grepped the whole
+binary's disassembly for their symbol names — no `bl`/`b` references
+outside their own label), yet External linkage means LLVM cannot
+delete them outright, so MergeFunctions is free to fold their
+now-meaningless shells into whatever fits — the folded target's
+CONTENT is irrelevant because nothing ever branches there. Avra's own
+surface can't construct a caller for it either: no raw external
+linkage crosses into an Avra program, and the only way to make a
+private fn's address observable is the `$w`/`FnAddr` wrapper path,
+which is exactly the path `pick_a`/`pick_b` proved safe above. Kept
+as a finding, not a defect — it explains why a THUNK's target can
+look nonsensical under `nm` without meaning anything is wrong.
+
+**Numbers.** `build/avra.pre` (main 94619dd, unmodified) against the
+rebuilt `build/avra`, fixed point proven (three successive
+`make avra` byte-identical, `cmp` clean, confirmed twice after an
+unrelated stale intermediate binary was caught and re-derived —
+see the working-discipline note below):
+
+| | before | after |
+|---|---|---|
+| `build/avra` (whole file) | 7,435,344 B | 7,256,160 B (−179,184, −2.41%) |
+| `__text` | 5,205,556 B | 5,089,432 B (−116,124, −2.23%) |
+| defined text symbols (`nm`) | 14,197 | 14,138 (−59) |
+
+The symbol count barely moves because a thunk KEEPS its symbol —
+almost every byte saved is a duplicate's BODY shrinking to 4 bytes,
+not a symbol disappearing (`tools/symsize.py`'s per-symbol diff is
+noisy here for the same reason: a merge into a fresh `private` shared
+body, which `nm` never lists by name, misattributes its bytes to
+whatever named symbol sorts next to it — read the TOTAL, not the
+per-symbol rows, for this change).
+
+Speed, `/usr/bin/time -l` "instructions retired", `.avra-cache`
+cleared before every run compared (not only the first — the doctrine
+line earns its keep here, see below), interleaved:
+
+| | old | new | delta |
+|---|---|---|---|
+| `check packages/cli` ×3, avg | 173,389,501,232 | 173,484,953,394 | +0.055% (noise) |
+| `build packages/cli` (full, incl. link) | 468,364,646,333 | 469,334,844,037 | +0.21% |
+
+Speed is neutral within measurement noise for a check, and the one
+real cost — running one more module pass at emit time — is 0.2% on
+a full build of the compiler's own largest package, for a 2.4%
+smaller binary. `make avra`'s WALL time swung 47s–70s across these
+runs with other lanes' builds sharing the same 8 cores; instructions
+retired is why that swing is not in this table.
+
+**Cross-unit duplication, measured rather than guessed.** Per-file
+splitting (`Owned.File`, `EMIT_WIDTH=4` workers) means MergeFunctions
+only ever sees one file's own module — a `List<A>` and `List<B>`
+walker homed to two different files never meet. Measured directly:
+disassembled `build/avra.pre` and the rebuilt `build/avra` whole,
+normalized every defined fn's instruction text (mnemonics + register
+operands, immediates masked), hashed, and grouped the BASELINE's
+duplicate-body clusters by declaring file (the mangled name's own
+`~/path/to/file.av~N` suffix, or the declaring module when a
+callsite-local fn carries none). 459 duplicate-body groups, 2048
+participating symbols; of those, 146 are now thunks and 1425 are
+still full duplicate bodies post-merge — most of the survivors sit in
+groups this pass could never have reached (164 groups, an estimated
+~21,500 duplicated instructions, ~86 KB, are cross-file). That is
+real and roughly the same ORDER as what per-module merging already
+captured (116 KB), not a multiple of it — a residual worth a future
+ticket, not a reason to hold this one. `ld64` (this platform's
+linker) has no identical-code-folding flag at all (`man ld`: nothing
+answers to icf/fold/identical beyond `-dead_strip`, which is
+unrelated); `lld` (which has `--icf=all`/`safe` for exactly this) is
+not installed here and switching linkers is out of scope for this
+slice per its own brief — reported, not applied.
+
+**Red team.** `AVRA_RC_GUARD=1` and `AVRA_MEM_STATS=1` on small,
+standalone programs only (never a guarded whole-package run):
+`packages/std-avrac/src/compiler/tests/merge_functions` (two
+per-file-homed generic instantiations over different pointer-shaped
+managed structs, direct calls, empty-list case written first) and a
+scratch probe pairing the same shape with indirect/address-taken
+dispatch through a higher-order fn (`pick_a`/`pick_b`/`via_a`/`via_b`
+above) — both 0 MB live in every category at exit, no trap, `eval ==
+native == expected` on both. `atos` resolves every merged/thunked
+symbol by its OWN name in both probes (a tail-call thunk never
+touches `x30`, so a caller's return address still names the caller
+correctly — traceability is unaffected for anything reachable, and
+unreachable code, by definition, never traps to be misread). Attacks
+covered: aliasing across the merge (two distinct callers of a shared
+thunk seeing independently-owned data), a fn value stored and called
+through a parameter (the address-taken case), a pointer-shaped
+generic crossing two unrelated struct types, static/const list
+literals as the argument, and the empty-input path first in both
+probes. `python3 tools/idioms.py` (no new violations, debt unchanged
+at 99), `make cited` (235/43 resolve, 10 licensed) both clean — no
+`.av` source touched, so `avra fmt` does not apply.
+
+**Critical checks.** `build/avra test packages/std-avrac`: every
+program `eval == native == expected`, 113 examples proved as cases,
+clean. `build/avra test packages/std-http`: 468/468 unit tests, 4
+programs proved. `build/avra test packages/std-sqlite`: 505/505 unit
+tests, 2 programs proved. `make runtime-tests`: box sizes, cores,
+fibers, vtasks — 0 failed across all four. `avra ir` is unreachable
+by this change by construction: nothing in core/compiler/typing or
+lower.av moved, only the OBJECT-EMISSION pass list, so there is no
+IR golden this ticket owns.
+
+**A measurement lesson paid in this slice, not just cited.** The
+first pass at the speed numbers used the pre-existing `build/avra`
+this worktree started with as the "before" baseline and found `check
+packages/cli` costing 60–170× MORE instructions after this change —
+alarming, and wrong. That binary's own symbol table embedded a
+DIFFERENT worktree's absolute path (`avra-reuse`, not `avra-r13`):
+same commit in principle, but it failed outright on the CURRENT
+source (`no fn verdict_of defined`, `no fn println defined` —
+packages/cli/src/stage.av) on the very re-run that would have caught
+it, then SUCCEEDED cleanly on a later, otherwise-identical re-run,
+never reproducing the failure again across a dozen further
+invocations. Read as "WHICH TREE" and "WHICH VERSION" (CLAUDE.md,
+Working discipline): the saved `build/avra.pre` this worktree's own
+AGENT_RULES already prescribes is the right baseline precisely
+because it is a copy of THIS tree's own standing binary, not a
+binary carried in from somewhere else — switching to it collapsed
+the "60–170×" finding into the +0.055%/+0.21% table above. The one
+non-reproducing failure is recorded, not explained; a transient
+build failure on a shared 8-core machine running several other
+lanes' compiles at once is exactly the shape CLAUDE.md's resource-
+exhaustion entry describes, and it never recurred once isolated to
+this worktree's own binaries.
+
+What I wanted from the language while doing this: nothing new — this
+slice never touched Avra source, only the C wrapper around one LLVM
+pass-builder option, which is the whole point of a boundary that
+lets a backend concern stay a backend concern.
