@@ -7,7 +7,7 @@
 //! would copy — and the callee is called by name at every exit, its
 //! answer settled by the frame it stands in like any value the frame
 //! never reads again.
-use core.{StmtId, ExprId, Reg, Type, TypeId, DeclId, is_literal}
+use core.{StmtId, ExprId, Reg, Type, TypeId, is_literal}
 use features.{LowerCx, DirectCall, bound_decl_of}
 
 fn lower_defer(mut cx: LowerCx, s: StmtId) -> Reg? {
@@ -34,54 +34,45 @@ fn direct_call(mut cx: LowerCx, s: StmtId) -> DirectCall? {
 /// void answer (its row's the only shape `run_direct` calls void),
 /// a declared one free to answer anything — dropped either way.
 fn direct_free_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
-    let call? = cx.view.store.call_parts(body) else { return null }
+    let call = cx.view.store.call_parts(body)?
     if !call.args.all(fixed_early(cx, it)) { return null }
-    let d? = bound_decl_of(cx.names, body) else { return null }
-    let seats? = cx.view.decls.sig(d)?.fn_sig()?.params else { return null }
+    let d = bound_decl_of(cx.names, body)?
+    let seats = cx.view.decls.sig(d)?.fn_sig()?.params?
     if seats.length != call.args.length { return null }
     let host: string? = cx.extern_callee(body)
     if host != null && !(cx.shape_at(body) is .Void) { return null }
     let captured = cx.capture_regs(lam)
-    DirectCall { callee: host ?? cx.callee_of(body, call.callee), host: host != null, args: [fixed_now(cx, captured, a) for a in call.args], ret: cx.type_at(body) }
+    built(cx, host ?? cx.callee_of(body, call.callee), host != null, captured, null, call.args, cx.type_at(body))
 }
 
-/// A METHOD call on the impl table: the receiver a capture, every
-/// argument fixed early, its seats — self included — an exact match
-/// with the written call, so no default seat is silently skipped.
+/// A METHOD call on the impl table — a callee whose first argument is
+/// its receiver: the receiver a capture, every argument fixed early,
+/// its seats — self included — an exact match with the written call,
+/// so no default seat is silently skipped.
 fn direct_method_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
-    let call? = cx.view.store.method_parts(body) else { return null }
+    let call = cx.method_at(body)?
     if cx.facts.wants_alias_copy(call.subject) || cx.facts.wants_thaw(call.subject) { return null }
-    let j? = captured_at(cx, call.subject) else { return null }
+    let j = captured_at(cx, call.subject)?
     if !call.args.all(fixed_early(cx, it)) { return null }
-    let m? = declared_method(cx, cx.type_at(call.subject), call.name) else { return null }
-    let seats? = cx.view.decls.sig(m)?.fn_sig()?.params else { return null }
+    let subj_ty = cx.type_at(call.subject)
+    let m = cx.method_of(subj_ty, call.name)?
+    let seats = cx.view.decls.sig(m)?.fn_sig()?.params?
     if seats.length != 1 + call.args.length { return null }
     let captured = cx.capture_regs(lam)
-    DirectCall { callee: cx.method_symbol(m, body, cx.type_at(call.subject)), host: false, args: [captured[j]].concat([fixed_now(cx, captured, a) for a in call.args]), ret: cx.type_at(body) }
+    built(cx, cx.method_symbol(m, body, subj_ty), false, captured, captured[j], call.args, cx.type_at(body))
 }
 
-/// The impl table's method for a concrete receiver — a struct, enum
-/// or generic instance — provided no fn-typed FIELD of the same name
-/// answers first. A feature cannot reach across for `impls/callee.av`'s
-/// own `declared`/`fn_field`, so their one precedence a struct
-/// receiver can hit is held here too.
-fn declared_method(cx: LowerCx, ty: TypeId, name: string) -> DeclId? {
-    let d? = declaring_decl(cx.view.types.shape_of(ty)) else { return null }
-    if fn_typed_field(cx, ty, name) { return null }
-    cx.view.decls.method(d, name)
-}
-
-fn declaring_decl(sh: Type) -> DeclId? {
-    match sh {
-        .Struct(d, _) or .Enum(d, _) or .App(d, _, _) -> d,
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
+/// The tail free and method calls share: a resolved callee, its
+/// arguments already captured, the receiver riding seat 0 when there
+/// is one.
+fn built(mut cx: LowerCx, callee: string, host: bool, captured: List<Reg>, recv: Reg?, args: List<ExprId>, ret: TypeId) -> DirectCall {
+    let seated: List<Reg> = if recv != null { [recv!] } else { [] }
+    DirectCall {
+        callee: callee,
+        host: host,
+        args: seated.concat([fixed_now(cx, captured, a) for a in args]),
+        ret: ret,
     }
-}
-
-fn fn_typed_field(cx: LowerCx, ty: TypeId, name: string) -> bool {
-    let sig? = cx.view.decls.fields_of_type(ty) else { return false }
-    let slot? = sig.slot_of(name) else { return false }
-    cx.view.types.shape_of(sig.types[slot]) is .Fn
 }
 
 /// An argument read the same at the `defer` as at the exit: a

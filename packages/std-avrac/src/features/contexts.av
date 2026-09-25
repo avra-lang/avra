@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef, joined, flatten}
+use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, MethodParts, same_stmt, same_expr, same_decl, TypeRef, joined, flatten}
 use diagnostics.{Diag, Voices, refusal}
 use @std.errors.{Loc, Frame}
 
@@ -157,6 +157,17 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     match b {
         .Decl(d) -> d,
         .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+    }
+}
+
+/// A type's OWN declaration, when its shape declares the impl table
+/// a receiver of it answers through — a struct, an enum, a generic
+/// instance. Null for everything else (a name, a bound parameter, a
+/// contract, a scalar): `method_of` stops there rather than guess.
+fn declaring_decl(sh: Type) -> DeclId? {
+    match sh {
+        .Struct(d, _) or .Enum(d, _) or .App(d, _, _) -> d,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
     }
 }
 
@@ -526,6 +537,27 @@ impl LowerCx {
     fn fields_of(ty: TypeId) -> StructSig? { self.view.decls.fields_of_type(ty) }
     fn variants_at(e: ExprId) -> EnumSig? { self.view.decls.variants_of_type(self.type_at(e)) }
     fn variants_of(ty: TypeId) -> EnumSig? { self.view.decls.variants_of_type(ty) }
+    /// A method call's pieces, when the expression is one.
+    fn method_at(e: ExprId) -> MethodParts? { self.view.store.method_parts(e) }
+    /// The impl table's method a concrete receiver (a struct, enum or
+    /// generic instance) answers by name — the one arm of
+    /// `impls/callee.av`'s dispatch precedence a receiver of this
+    /// shape can still reach (a fn-typed FIELD of the same name wins
+    /// there first); a caller that needs the WHOLE precedence — a
+    /// variant, a contract, a bounded parameter — asks `impls`
+    /// itself, which this narrow reader is not.
+    fn method_of(ty: TypeId, name: string) -> DeclId? {
+        let d? = declaring_decl(self.view.types.shape_of(ty)) else { return null }
+        if self.fn_typed_field(ty, name) { return null }
+        self.view.decls.method(d, name)
+    }
+    /// A fn-typed FIELD of this name — the impl table's one
+    /// competitor for a struct/enum receiver.
+    fn fn_typed_field(ty: TypeId, name: string) -> bool {
+        let sig? = self.fields_of(ty) else { return false }
+        let slot? = sig.slot_of(name) else { return false }
+        self.view.types.shape_of(sig.types[slot]) is .Fn
+    }
     fn bind_patterns(v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
     /// The registers a pattern's TEST produced, for its BINDS to read.
     fn test_regs_of(p: PatId) -> List<Reg> { self.body.test_regs_of(p) }
