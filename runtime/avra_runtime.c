@@ -753,7 +753,10 @@ void avra_puts(const char* s) {
 // first: unequal lengths are unequal text in O(1), where `strcmp`
 // scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
-    if (a == NULL || b == NULL) return a == b;
+    // one box is one text: a literal compared at its own call site is
+    // the same static box every time
+    if (a == b) return 1;
+    if (a == NULL || b == NULL) return 0;
     size_t la = str_len(a);
     return la == str_len(b) && memcmp(a, b, la) == 0;
 }
@@ -2003,6 +2006,7 @@ int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
 
 // Equality is the reason the kind exists: lengths, then every byte.
 int64_t avra_bytes_eq(const char* a, const char* b) {
+    if (a == b) return 1;
     size_t n = bytes_len(a);
     return n == bytes_len(b) && memcmp(a, b, n) == 0;
 }
