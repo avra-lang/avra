@@ -250,11 +250,6 @@ export type Decls = {
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
-    // the workspace's collect-gathering hook: force-admits a
-    // closure-scoped collect's own SCOPE whole, by the word it
-    // gathers (a member's file is never `use`-reached — it exists to
-    // be discovered)
-    ensure_collect: Cell<fn(FileId, string) -> void>,
     // whether THIS compilation is a program (has an entry) or a
     // library — the closure-fold law's door (features/consts/check.av)
     ensure_entry: Cell<fn() -> bool>,
@@ -294,9 +289,6 @@ fn no_store(f: FileId) {}
 
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
-
-// LICENSED I23: a fn VALUE filling the collect-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
-fn no_collect_ensure(f: FileId, word: string) {}
 
 // LICENSED I23: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
@@ -376,7 +368,6 @@ export fn new_decls() -> Decls {
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
-        ensure_collect: Cell.new(no_collect_ensure),
         ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
         builtins: list_cell(),
@@ -727,7 +718,6 @@ impl Decls {
     fn disarm() {
         self.ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
-        self.ensure_collect.set(no_collect_ensure)
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_ensure)
@@ -744,9 +734,6 @@ impl Decls {
 
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
 
-    /// The workspace arms the collect-gathering hook once.
-    fn arm_collect(ensure: fn(FileId, string) -> void) { self.ensure_collect.set(ensure) }
-
     /// The workspace arms the entry hook once.
     fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
 
@@ -754,15 +741,16 @@ impl Decls {
     /// workspace will run — or a library, read at run time only.
     fn is_program() -> bool { (self.ensure_entry.get())() }
 
-    /// Every declaration `word` names WITHIN `scope`, `owner`'s SCOPE
-    /// force-admitted whole first (the hook) — the closure law for a
-    /// collect whose members are never `use`-reached. Read through
-    /// the collect index, so a second ask over the same word rescans
-    /// nothing new; the SCOPE still filters every ask, since
-    /// admission and membership answer different questions — the
-    /// index may already hold more than `self`/`package` claims.
+    /// Every declaration `word` names WITHIN `scope` — a member is
+    /// found the way any declaration is, by import reachability
+    /// (docs/2026_09_22_COLLECTIONS.md §5: contributions merge
+    /// exactly where imports merge). Read through the collect index,
+    /// so a second ask over the same word rescans nothing new; the
+    /// SCOPE FILTERS what is already reached, it never widens it —
+    /// `closure` answers everything the program links, `package`
+    /// narrows to the owner's own package, `self` to the owner's own
+    /// file.
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
-        (self.ensure_collect.get())(owner, word)
         [d for d in self.decls_of_word(word) if self.in_scope(d, scope, owner)]
     }
 

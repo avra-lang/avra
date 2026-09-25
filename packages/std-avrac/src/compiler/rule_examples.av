@@ -79,7 +79,13 @@ impl Workspace {
     /// recomputed fresh (`compiler.lower.component_root_kind`), and
     /// every `@fixes`/`@keeps` the entry itself carries.
     fn rules_checked() -> List<ExampleCheck> {
-        self.admit_package(self.packages()[0])
+        // The suite proves the WHOLE package it is testing — same
+        // walk `avra check`'s own root-package analysis always does
+        // (root_files() over the package under test), not a
+        // collect-specific admission: a self-test examines everything
+        // it can reach as its own package, the way any package-scope
+        // check does.
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
         let found = self.decls.decls_of_word("rule")
         flatten([self.decls.entry_checked(found, r) for r in rules])
     }

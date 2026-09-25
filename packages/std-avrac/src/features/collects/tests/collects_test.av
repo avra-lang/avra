@@ -6,8 +6,9 @@
 //! answers `UnknownKind` for any word at all; these run through
 //! `provided()` instead, the one door that gives a scratch program a
 //! real component to name.
-use @std.avrac.testing.{refused_in, shown, provided}
-use @std.avrac.compiler.{Program}
+use @std.avrac.testing.{refused_in, shown, provided, vendored_meta, vendored_meta_paths}
+use @std.avrac.compiler.{Program, new_workspace, avra}
+use @std.avrac.compiler.host.{memory_host}
 
 fn ui() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\n"
@@ -23,6 +24,28 @@ fn ui2() -> string {
 
 fn built2(main: string) -> Program {
     provided("use @x.c.{widget, gadget}\n" + main, ui2())
+}
+
+/// A second dependency package, `@y/d`, whose `orphan` module (never
+/// `d.av` itself) instances `widget` — `app` names `@y/d` as a
+/// dependency regardless, so this is a witness of FILE reachability,
+/// never of PACKAGE linkage.
+fn cross_package(import_orphan: bool) -> string? {
+    let files = vendored_meta({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+        "/w/src/main.av": "use @x.c.{widget}\n" + (if import_orphan { "use @y.d.orphan.{marker}\n" } else { "" }) + "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nxs.length",
+        "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+        "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+        "/w/vendor/d/src/d.av": "export const marker0: int = 0\n",
+        "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport const marker: int = 1\nexport widget orphaned { n -> null }\n",
+    })
+    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av", "/w/vendor/d/avra.toml", "/w/vendor/d/src/d.av", "/w/vendor/d/src/orphan/orphan.av"]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() {
+        .Ok(v) -> v,
+        .Err(_) -> null,
+    }
 }
 
 spec "collect's own laws" {
@@ -96,6 +119,21 @@ spec "collect's own laws" {
         }
         then "an ordinary const naming no component reads any collect clean" {
             !refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1"), "collected into")
+        }
+    }
+    given "collected means reachable (docs/2026_09_22_COLLECTIONS.md §5)" {
+        // A CROSS-PACKAGE witness: `@y/d`'s `orphan` module (a
+        // second file, never `d.av`'s own) instances a `widget` —
+        // gathered under `closure` scope only once `app` actually
+        // imports something from it. `@y/d` is a real dependency
+        // package either way (app's own avra.toml names it), so this
+        // is never about LINKING the package — only about reaching
+        // the one FILE the instance sits in.
+        then "an unimported module's instance is not collected" {
+            cross_package(false) == "0"
+        }
+        then "importing that module's own name collects its instance" {
+            cross_package(true) == "1"
         }
     }
     given "the `it`/`by` words" {
