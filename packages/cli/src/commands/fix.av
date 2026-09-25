@@ -37,7 +37,8 @@ fn fixed(p: Program, args: CliResult) -> Result<int, string> {
     let only = if named == "" { null } else { named }
     let json = args.has_flag("json")
     let path = a.view.source.file
-    let apps = p.fix_applications(path, analysed(a), only).concat(p.suggestion_applications(path, analysed(a), a.diagnostics, only))
+    let an = analysed(a)
+    let apps = p.fix_applications(path, an, only).concat(p.suggestion_applications(path, an, a.diagnostics, only))
     let text = a.view.source.text
     report(text, apps, json)
     if apps.is_empty() { return 0 }
@@ -111,7 +112,13 @@ fn application_lines(apps: List<Application>) -> List<string> {
 
 fn application_line(ap: Application) -> string {
     let tier = if ap.proved { "proved" } else { "shown, not applied" }
-    "${ap.kind} (${tier}): ${joined([e.replacement for e in ap.edits], ", ")}"
+    "${ap.kind} (${tier}): ${joined([edit_summary(e) for e in ap.edits], ", ")}"
+}
+
+/// A deleting edit answers "" — named, never a bare empty slot in
+/// the joined list.
+fn edit_summary(e: Edit) -> string {
+    if e.replacement.is_empty() { "(removed)" } else { e.replacement }
 }
 
 /// A whole-file before/after, printed plainly — enough to review a

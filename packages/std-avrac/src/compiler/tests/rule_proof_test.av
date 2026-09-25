@@ -147,37 +147,36 @@ spec "the generalized edit proof" {
     }
 }
 
-// ADVERSARIAL: `same_ir` never compares raw IR — only `same_fps`'s
-// per-instruction FINGERPRINTS, and `fp_str` is a 131-multiplier
-// rolling hash over a ~1e9 modulus (core/fp.av), with no fallback to
-// exact comparison anywhere on this path. That is a HASH, not an
-// EQUALITY, and a hash this narrow collides on ordinary 8-letter
-// strings within a few hundred thousand tries — found by brute
-// force, no adversarial intent required to reach in production
-// (any spell-check or wording suggestion that ever touches a string
-// literal is a candidate). `aihhotaz`/`eepturoq` are the found pair;
-// re-probe with tools/scratch if `fp` ever changes shape.
-spec "the fp_str collision — a real false-positive proof" {
+// `fp_str` is a 131-multiplier rolling hash over a ~1e9 modulus
+// (core/fp.av), narrow enough to collide on ordinary 8-letter strings
+// within a few hundred thousand tries — found by brute force, no
+// adversarial intent required to reach in production (any spell-check
+// or wording suggestion that ever touches a string literal is a
+// candidate). `same_ir` never trusts the hash alone: `same_fps` is a
+// pre-filter, `same_ins_list` is the actual proof, over the same
+// renamed values the hash folded. `aihhotaz`/`eepturoq` are the found
+// colliding pair; re-probe with tools/scratch if `fp` ever changes shape.
+spec "the fp_str collision does not defeat the proof" {
     given "two distinct strings found by brute force over fp_str's own hash space" {
         then "they hash-collide" {
             fp_str("aihhotaz") == fp_str("eepturoq")
         }
     }
     given "a Suggestion that swaps one colliding string for the other, changing the program's own answer" {
-        then "edits_proved WRONGLY says PROVED — a soundness violation, not a refusal-quality one" {
+        then "edits_proved correctly REFUSES — the hash agreeing is not enough" {
             let text = "fn word() -> string {\n    \"aihhotaz\"\n}\n0\n"
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            p.edits_proved("/w/src/main.av", analysed_of(a), [edit_over(text, "aihhotaz", "eepturoq")])
+            !p.edits_proved("/w/src/main.av", analysed_of(a), [edit_over(text, "aihhotaz", "eepturoq")])
         }
     }
     given "the SAME collision reached through a rule's own At, not through edits_proved" {
-        then "ir_proved ALSO wrongly says PROVED — decl_ir_proved is the shared comparison, so BOTH doors carry this, pre-dating this ticket" {
+        then "ir_proved ALSO correctly refuses — decl_ir_proved is the shared comparison, so both doors carry the same guard" {
             mut ws = proof_ws_of("fn word() -> string {\n    \"aihhotaz\"\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn word() -> string {\n    \"eepturoq\"\n}\n0\n")
+            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn word() -> string {\n    \"eepturoq\"\n}\n0\n")
         }
     }
 }

@@ -266,6 +266,25 @@ spec "the general Suggestion channel's own motivating diagnostics are unreachabl
     }
 }
 
+// THE COUNTEREXAMPLE: `type.coalesce_never` is a real WARNING (never
+// blocks `p.clean()`) built far from any rule's Candidate, carrying a
+// real Suggestion over `a.diagnostics` — the first non-rule diagnostic
+// to actually reach `avra fix`'s apply path end to end, not merely a
+// forward-looking one.
+spec "a real WARNING-severity Suggestion reaching avra fix's own apply path" {
+    given "`n ?? 4` where `n`'s type says it is never absent" {
+        then "the program stays clean, and its own Suggestion PROVES and applies through the general channel" {
+            let text = "fn f() -> int {\n    let n = 3\n    n ?? 4\n}\n0\n"
+            mut ws = fix_ws_of(text)
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            let apps = p.suggestion_applications("/w/src/main.av", analysed(a), a.diagnostics, null)
+            p.clean() && apps.length == 1 && apps[0].kind == "type.coalesce_never" && apps[0].proved &&
+                fix_applied(text, apps) == "fn f() -> int {\n    let n = 3\n    n\n}\n0\n"
+        }
+    }
+}
+
 fn overlapping_apps() -> List<Application> {
     [
         Application { kind: "a.b", edits: [edit_at(0, 3, "x")], proved: true },
