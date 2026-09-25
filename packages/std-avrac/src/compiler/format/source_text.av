@@ -371,11 +371,21 @@ impl SourceText {
     /// block's), so a bare-value body — which mints no Block node —
     /// still knows whether its braces were on one line.
     mut fn block(body: ExprId, one_line: bool, depth: int) -> string {
-        let sp = self.store.expr_span(body)
+        let end = self.block_end(body)
         match self.store.expr(body) {
-            .Block(stmts, value) -> self.braced("", stmts, value, end_of(sp), one_line, depth),
-            rest -> self.braced("", [], body, end_of(sp), one_line, depth),
+            .Block(stmts, value) -> self.braced("", stmts, value, end, one_line, depth),
+            rest -> self.braced("", [], body, end, one_line, depth),
         }
+    }
+
+    /// A written `{ … }`'s own closing brace, as the printer's trailing-
+    /// trivia boundary — `tail_scoped` (core/store.av) narrows a
+    /// one-statement scope's SPAN to its lone value's, for a diagnostic
+    /// pointing at the answer, and keeps the brace's real offset beside
+    /// it (`written_close`) exactly for this: a comment sitting between
+    /// the value and `}` still reads as inside the scope that holds it.
+    fn block_end(id: ExprId) -> int {
+        self.store.written_close(id) ?? end_of(self.store.expr_span(id))
     }
 
     /// A braced body: its statements, its value, and the remarks that
@@ -800,8 +810,7 @@ impl SourceText {
 
     /// A block EXPRESSION's braces, its written form and its end.
     mut fn block_expr(stmts: List<StmtId>, value: ExprId?, id: ExprId, depth: int) -> string {
-        let sp = self.store.expr_span(id)
-        self.braced("", stmts, value, end_of(sp), self.span_flat(sp), depth)
+        self.braced("", stmts, value, self.block_end(id), self.span_flat(self.store.expr_span(id)), depth)
     }
 
     mut fn binary(op: BinOp, left: ExprId, right: ExprId, parent: int, depth: int) -> string {
@@ -1052,9 +1061,10 @@ impl SourceText {
         let arms? = self.arms_sugar_body(params, body) else {
             let head = self.trailing_head(params, depth)
             let one = self.span_flat(self.store.expr_span(id))
+            let end = self.block_end(body)
             return match self.store.expr(body) {
-                .Block(stmts, value) -> self.braced(head, stmts, value, end_of(self.store.expr_span(body)), one, depth),
-                rest -> self.braced(head, [], body, end_of(self.store.expr_span(body)), one, depth),
+                .Block(stmts, value) -> self.braced(head, stmts, value, end, one, depth),
+                rest -> self.braced(head, [], body, end, one, depth),
             }
         }
         self.arms_braced(arms, body, depth)

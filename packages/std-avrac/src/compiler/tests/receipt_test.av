@@ -1,0 +1,44 @@
+// The lossless receipt (compiler/format/receipt.av): two texts that
+// lex to the same tokens, remarks and doc groups, in the same order,
+// can still disagree — a remark that crossed a closing brace carries
+// the same text at the same position in the list and belongs to a
+// different scope.
+use compiler.format.{lossless_defect, remarks_and_docs_defect}
+
+spec "the lossless receipt's brace-nesting check" {
+    given "a comment written before a scope's closing brace" {
+        then "the same text, same order, standing AFTER the brace instead — refused" {
+            let before = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
+            let after = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n}\n// the bitwise three\n"
+            lossless_defect(before, after) != null
+        }
+        then "kept exactly where it was written — accepted" {
+            let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
+            lossless_defect(src, src) == null
+        }
+        then "the canon door (remarks_and_docs_defect alone) refuses the same crossing" {
+            let before = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
+            let after = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n}\n// the bitwise three\n"
+            remarks_and_docs_defect(before, after) != null
+        }
+    }
+    given "a comment moving OUT to IN — the opposite crossing" {
+        then "a top-level comment pulled inside the brace it now precedes — refused" {
+            let before = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n}\n// the bitwise three\n"
+            let after = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
+            lossless_defect(before, after) != null
+        }
+    }
+    given "a nested brace two levels deep" {
+        then "an ordinary reflow (a two-line body collapsed to one) leaves a same-depth comment accepted — the check is about crossing a brace, never about a layout change" {
+            let before = "fn f() {\n    if true {\n        // a\n        1\n    }\n}\n"
+            let after = "fn f() {\n    if true { 1\n        // a\n    }\n}\n"
+            lossless_defect(before, after) == null
+        }
+        then "a comment that climbs out of the inner `if` into the outer fn — refused" {
+            let before = "fn f() {\n    if true {\n        // a\n    }\n}\n"
+            let after = "fn f() {\n    if true {\n    }\n    // a\n}\n"
+            lossless_defect(before, after) != null
+        }
+    }
+}
