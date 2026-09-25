@@ -968,7 +968,8 @@ impl SourceText {
             match chained! {
                 .MethodCall(receiver, name, args) -> {
                     if self.store.ident_name(receiver) == chained_binder {
-                        return grouped("${self.expression(subject, postfix_tier, depth)}?.${source_name(name.of)}(${self.args(args, depth)})", postfix_tier, parent)
+                        let tail = self.type_lit_tail(present, name, args) ?? "${source_name(name.of)}(${self.args(args, depth)})"
+                        return grouped("${self.expression(subject, postfix_tier, depth)}?.${tail}", postfix_tier, parent)
                     }
                 },
                 rest -> { let _ = 0 },
@@ -1096,11 +1097,20 @@ impl SourceText {
     /// read back to its own words when it reverses cleanly, an
     /// ordinary method call otherwise.
     mut fn method_call(id: ExprId, subject: ExprId, name: Plain, args: List<ExprId>, parent: int, depth: int) -> string {
-        if name.of == "interned" && args.length == 1 && self.store.is_type_lit(id) {
-            let ty? = self.type_lit_spelling(args[0]) else { return self.plain_method_call(subject, name, args, parent, depth) }
-            return grouped("${self.chain_subject(subject, depth)}.type(${ty})", postfix_tier, parent)
-        }
-        self.plain_method_call(subject, name, args, parent, depth)
+        let tail? = self.type_lit_tail(id, name, args) else { return self.plain_method_call(subject, name, args, parent, depth) }
+        grouped("${self.chain_subject(subject, depth)}.${tail}", postfix_tier, parent)
+    }
+
+    /// `.type(T)`'s own tail, `type(T)` with no receiver — absent when
+    /// `id`'s call is not that sugar, or its argument does not reverse
+    /// (`type_lit_spelling`). The one detector a plain method call and
+    /// a `?.`-propagated one (match_optional's chained_binder
+    /// shortcut, which prints its own receiver as `subject?`) share,
+    /// so both read the sugar back the same way for the same reason.
+    fn type_lit_tail(id: ExprId, name: Plain, args: List<ExprId>) -> string? {
+        if name.of != "interned" || args.length != 1 || !self.store.is_type_lit(id) { return null }
+        let ty? = self.type_lit_spelling(args[0]) else { return null }
+        "type(${ty})"
     }
 
     mut fn plain_method_call(subject: ExprId, name: Plain, args: List<ExprId>, parent: int, depth: int) -> string {
