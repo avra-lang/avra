@@ -1,7 +1,8 @@
-//! `avra explain` — what a diagnostic code means, from the
-//! assembled registry; and `avra explain process` — the tools the
-//! package you stand in declares, each resolved where it stands
-//! today, printed before anything runs.
+//! `avra docs` — one address space: what a diagnostic code means, a
+//! declared symbol's own `///` doc, an annotation's signature, a
+//! type's representation, a write-flow chain, or `process` — the
+//! tools the package you stand in declares, each resolved where it
+//! stands today, printed before anything runs.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.avrac.compiler.{avra}
 use @std.avrac.diagnostics.{DiagCode, Diag, new_source_file, render}
@@ -11,11 +12,11 @@ use @std.io.{read_text, exists}
 use @std.avrac.compiler.dev.{shown_code}
 use @std.avrac.compiler.host.{ToolRow, read_manifest}
 
-type ExplainCmd = {}
+type DocsCmd = {}
 
-impl Runnable for ExplainCmd {
+impl Runnable for DocsCmd {
     fn run(args: CliResult) -> int {
-        let q = args.arg("code")
+        let q = args.arg("address")
         if q == "process" { return explained_process(args.arg("at")) }
         if q == "repr" { return explained_repr(args.arg("at")) }
         if q == "writes" { return explained_writes(args.arg("at")) }
@@ -45,7 +46,7 @@ fn shown_witness(id: string) {
     println(shown.rendered)
 }
 
-/// `avra explain @scope/name:E1` — a PACKAGE's diagnostic kind, from
+/// `avra docs @scope/name:E1` — a PACKAGE's diagnostic kind, from
 /// the annotation fns the package you stand in reaches: registered by
 /// spelling the kind as a literal in `refuse_as`.
 fn explained_kind(q: string) -> int {
@@ -61,9 +62,9 @@ fn explained_kind(q: string) -> int {
     0
 }
 
-/// `avra explain @name` — the annotation fn's signature, which IS
+/// `avra docs @name` — the annotation fn's signature, which IS
 /// its effect (§3.3 of the comptime design). The package is the
-/// directory the command stands in, as `explain process` reads its
+/// directory the command stands in, as `docs process` reads its
 /// manifest.
 fn explained_annotation(name: string) -> int {
     mut p = root_program(here())
@@ -80,7 +81,7 @@ fn explained_annotation(name: string) -> int {
     0
 }
 
-/// `avra explain <name>` — a declared fn/type/enum/trait/const's own
+/// `avra docs <name>` — a declared fn/type/enum/trait/const's own
 /// `///` doc and `@name(args)` annotations, the fallback every other
 /// form of the command misses through. The package is the directory
 /// the command stands in, as every other form here reads it.
@@ -99,11 +100,11 @@ fn explained_decl(name: string) -> int {
     0
 }
 
-/// `avra explain repr <type>` — the runtime REPRESENTATION the
+/// `avra docs repr <type>` — the runtime REPRESENTATION the
 /// compiler chose for a type expression (features/values.av's
 /// `repr_word`): flat, boxed, niche, or a one-slot box. A declared
 /// name (`Id?`) resolves against the package the command stands in,
-/// as `explain @name` reads it.
+/// as `docs @name` reads it.
 fn explained_repr(type_text: string) -> int {
     mut p = root_program(here())
     if !p.clean() {
@@ -119,7 +120,7 @@ fn explained_repr(type_text: string) -> int {
     0
 }
 
-/// `avra explain writes <fn>` — the WRITE-FLOW CHAIN the seats pass
+/// `avra docs writes <fn>` — the WRITE-FLOW CHAIN the seats pass
 /// (compiler/receivers.av) found for `fn`'s seat 0 (a method's
 /// receiver, a free fn's first parameter): the fn names, in call
 /// order, from `fn` to the one whose declaration or body writes it
@@ -146,7 +147,7 @@ fn explained_writes(fn_name: string) -> int {
 fn explained_process(at: string) -> int {
     let manifest = joined_path(if at.length == 0 { here() } else { at }, "avra.toml")
     if !exists(manifest) {
-        eprintln("avra: no ${manifest} — `explain process` reads a package's manifest")
+        eprintln("avra: no ${manifest} — `docs process` reads a package's manifest")
         return 1
     }
     let src = new_source_file(manifest, read_text(manifest) catch "")
@@ -197,12 +198,12 @@ fn terminator_text(t: string?) -> string {
     "options end at `${t!}`"
 }
 
-export command explain {
-    description: "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain"
-    arg code {
-        description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, `repr`, or `writes`"
+export command docs {
+    description: "One address space: an F-code, a kind, a declared symbol's own doc, an annotation's signature, a package kind (`@scope/name:E1`), `process`, `repr <type>`, or `writes <fn>`"
+    arg address {
+        description: "an F-code, a kind, a declared name, `@name`, a package kind (`@scope/name:E1`), `process`, `repr`, or `writes`"
         required: true
     }
     arg at { description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`); for `writes`: a fn name" }
-    run: ExplainCmd {}
+    run: DocsCmd {}
 }
