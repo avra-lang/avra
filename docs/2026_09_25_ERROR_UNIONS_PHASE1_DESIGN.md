@@ -103,7 +103,37 @@ Union operation is what avra-8sb5.9.29 (catch-chain narrowing) needs;
 this ticket builds the operation, that ticket wires it into chained
 `.catch`.
 
-## 5. Runtime layout — FOR PERF'S REVIEW
+## 5. Runtime layout — boxed by default, register optimization deferred
+
+**Simplified, 2026-09-25: no blocking dependency.** `Union`'s
+`side_word` answers "not one word" unconditionally — the same
+conservative fallback every non-word-sized type already gets today.
+`Result<T, A|B>` therefore boxes exactly like `Result<T, SomeStruct>`
+already does, with zero new runtime code. This makes Phase 1 fully
+buildable now, independent of `r15a`/avra-8sb5.34.26 landing.
+
+**A real trap this does NOT dodge on its own, caught by PERF**: a
+boxed union value needs its own discriminant (which member it actually
+is — `catch`/match must be able to tell an `A` from a `B` at runtime),
+so a boxed `Union` value is NOT bit-identical to a bare boxed `A`.
+`features/values.av`'s `propagated` passes a value through unchanged
+whenever `valued(from) == valued(into)` — both `false` for two boxed
+Results, so today's guard would hand a `?`-widened `Result<T, A>` into
+`Result<T, A|B>` straight through as an unwrapped `A` where the caller
+expects a tagged union box. Silent wrong read, no diagnostic. Phase 1's
+`propagated` change must be "same Result TYPE" (not "both boxed"), and
+route every real mismatch — including box-to-box — through an explicit
+lift that constructs the union's own tagged box from the plain value.
+Add a program test pinning this exactly: `fn f() -> Result<int, A>`
+failing, `fn g() -> Result<int, A|B> { f()? }`, match the `A` arm in
+`g`'s own caller, eval == native.
+
+The generalized-tag-space idea below (extending `Result`'s own tag
+space to `1+N` so a union whose members all fit in a word stays in
+registers) is a real, worthwhile follow-up — filed separately so it
+doesn't block correctness. Kept below for whoever picks that up.
+
+### Deferred optimization — FOR PERF'S REVIEW, not blocking
 
 Per the existing layout law (`side_word`/`judge_result`, `docs/
 2026_09_23_REUSE_IN_PLACE.md` §19–23): a `Result` rides `{tag, word}`
