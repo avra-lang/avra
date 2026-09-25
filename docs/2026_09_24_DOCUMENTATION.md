@@ -261,11 +261,27 @@ P6 says a forced trade-off means the model is wrong.
 This is the constraint every subsection below serves, stated once so it
 does not have to be re-argued per surface.
 
-**The relation.** One schema, shaped the same way any other `@model` in
-this compiler would be — dogfooding the ORM's own query engine on the
-compiler's own tooling before it carries user-facing weight:
+**Correction, made while implementing step 2 of the ladder (§12): `@model`
+does not exist in this tree yet.** A grep for `@model` across every
+package returns nothing — the ORM work (`2026_09_24_ORM.md`) is a design
+document, uncommitted, with no derive, no query engine, and no `Db` type
+behind it. The `@model type DocAtom = { ... }` shape below is the *target*
+shape, to migrate to the day that derive is real (§10.1) — it is not
+buildable today. **What is buildable today, in the same spirit and with
+the same discipline, is a plain Avra registry** — exactly the pattern
+`rt_sigs()` and `pass_codes()` already use elsewhere in this compiler: a
+`List<DocAtom>` (or `table<DocAtom>` if the rows end up short and aligned),
+queried with ordinary `.find`/`.filter`, never a second hand-rolled lookup
+per command. The word "query" in every table below means *that ordinary
+function call*, not literal SQL, until the ORM lands.
+
+**The relation, target shape:**
 
 ```avra
+// TARGET SHAPE — not buildable until @model exists (see correction
+// above). Today: a plain `type DocAtom = { ... }` and a
+// `doc_atoms() -> List<DocAtom>` fn, assembled once, queried with
+// `.find`/`.filter` like every other registry in this compiler.
 @model
 type DocAtom = {
     address: string,       // "std.text.split", "F2013"→its kind string, "lang.enums"
@@ -293,6 +309,35 @@ type is duplicated into `DocAtom` — `subject: SubjectRef` is a foreign key
 into the compiler's existing tables (`Decls`, `NodeStore`), read live, not
 copied.
 
+**A second correction, also found while implementing: the relation is not
+uniformly cheap, and pretending it is would re-hide a cost this repo's own
+prior design already knew about.** Renaming `avra explain` to `avra docs`
+(§6, done) surfaces the fact directly — its seven arms split into two
+tiers with a real cost difference between them, not seven equally-thin
+lookups:
+
+- **Registry arms — free, answerable from `avra()`'s once-per-process
+  assembly**: a feature's own doc, a diagnostic code/kind, a method row.
+  These *can* be a real `DocAtom` list today, built once, queried with
+  `.find`.
+- **Package arms — cost a live compile**: a declared symbol's own doc
+  (`explain_doc`), an annotation's signature (`explain_annotation`), a
+  type's representation (`explain_repr`), a write-flow chain
+  (`explain_writes`), a package's own declared diagnostic kind
+  (`kind_rows`), and the package's declared tools (`process`). Every one
+  of these needs `root_program(here())` — a whole-package parse and type
+  check — before it can answer anything.
+
+So "one query" does not mean "one flat table scan ahead of time." It means
+**one `DocAtom`-shaped answer, however it was produced** — the registry
+arms build theirs from a list already sitting in memory; the package arms
+build theirs by paying for a compile and shaping the result the same way.
+`rendered()` (below) does not know or care which tier produced the atom it
+is formatting. This is exactly the asymmetry the original vision document
+(before this consolidation) called out for `avra doc <symbol>` — *"a
+symbol costs a compile"* — and it is preserved here rather than designed
+away, because it is a real cost, not an implementation accident.
+
 **The one render query.**
 
 ```avra
@@ -308,9 +353,13 @@ dedent algorithm (§4.5), a claim states only what its program shows (§4.5)
 how a `DocAtom` becomes text. A second implementation of any formatting
 rule anywhere else is the defect this section exists to prevent.
 
-**Every surface is a query, never a renderer.**
+**Every surface is a query, never a renderer.** The `SELECT`/`JOIN` spelling
+below is the target shape once `DocAtom` is real (either as a plain
+registry or, later, as `@model`, per the correction above) — read it as
+"a `.find`/`.filter` over the same list," not as literal SQL that compiles
+today.
 
-| surface | query |
+| surface | query (target shape) |
 |---|---|
 | `avra docs <address>` | `SELECT * FROM DocAtom WHERE address = ?` → `rendered(atom)` |
 | LSP hover | the same query, same `rendered`, different sink |
@@ -322,14 +371,20 @@ rule anywhere else is the defect this section exists to prevent.
 | a future tool schema | `SELECT address, subject.signature FROM DocAtom` mapped into a fixed schema shape — a field mapping, not per-symbol logic |
 | `make docs`'s keepers (§7) | joins and comparisons over the same two tables — never a call to `rendered` to *check* something, only to *show* it |
 
-**What this kills, concretely.** `packages/cli/src/commands/explain.av`
-today dispatches by hand across seven different sources — `avra().features`,
-`avra().rows.codes`, `avra().rows.methods`, a package's `kind_rows()`,
-`explain_annotation`, `explain_doc` — each with its own lookup and its own
-`println` formatting. That is exactly "custom shit per projection," seven
-times over, in one file. Once every one of those sources is a row in
-`DocAtom`, the resolver in §6 is one query with an `ORDER BY` for tie-break
-priority, not seven branches.
+**What is done and what is not.** The *name* collapsed (§6): `avra
+explain` no longer exists, `avra docs <address>` answers all seven forms,
+verified against the real compiler (`avra docs F2013` renders its live
+witness; `avra explain` answers "unknown command"). **The internal dispatch
+did not** — `commands/docs.av` still branches by hand across the same
+seven sources (`avra().features`, `avra().rows.codes`,
+`avra().rows.methods`, a package's `kind_rows()`, `explain_annotation`,
+`explain_doc`, `explain_repr`, `explain_writes`), each with its own
+`println`. That is still "custom shit per projection," seven times over,
+under the new name. Building the registry side (§4.0's tiering) so those
+branches collapse into `doc_atoms().find(...)` → `rendered(atom)` is the
+next real piece of this ladder (§12, step 2) — the rename was the cheap,
+safe, verifiable-in-one-sitting part; the unification is the part that
+needs the registry designed and built.
 
 ### 4.1 Where doc text enters the compiler — BUILT
 
@@ -716,47 +771,53 @@ spent goes to examples instead.
 
 ## 6. The command surface — `avra docs`, one address space
 
-**`avra explain` and `avra doc` collapse into one command: `avra docs
-<address>`.** This corrects the standing design (which kept them separate,
-`avra doc` for symbols and `avra explain` for diagnostics) against what the
-tree actually already built: `explain.av` already resolves seven different
-address shapes through one `run(args)` dispatch, and most of them are
-already doc lookups in every sense that matters — they just live under the
-wrong name.
+**DONE: `avra explain` and `avra doc` are one command, `avra docs
+<address>`.** `explain.av` already resolved seven different address shapes
+through one `run(args)` dispatch, and most of them were already doc lookups
+in every sense that matters — they only lived under the wrong name. The
+rename shipped: `packages/cli/src/commands/explain.av` → `docs.av`,
+`ExplainCmd` → `DocsCmd`, the arg renamed `code` → `address`, every embedded
+`avra explain` reference in the compiler's own comments/help/hints updated
+to `avra docs`, `avra explain` now answers "unknown command." Verified:
+`packages/cli` (63/63) and `packages/std-avrac` (188 program proofs)
+unchanged; `avra docs F2013` renders its live witness end to end.
 
-**What `avra explain` already does, verified against `packages/cli/src/
-commands/explain.av`:**
+**What `avra docs` resolves, today, verified against `packages/cli/src/
+commands/docs.av`:**
 
-| today's form | resolves to |
+| form | resolves to |
 |---|---|
-| `avra explain process` | the tools the package you stand in declares |
-| `avra explain repr <type>` | a type's runtime representation |
-| `avra explain writes` | (mut/write analysis, package-scoped) |
-| `avra explain <scope/name>:<kind>` | a package's own declared diagnostic kind |
-| `avra explain @name` | an annotation fn's signature, which *is* its effect |
-| `avra explain <code-or-kind>` | a registered `DiagCode` row, with its live witness rendered — the actual source that triggers it and the compiler's own words over it |
-| `avra explain <name>` (fallback) | **a declared fn/type/enum/trait/const's own `///` doc and `@name(args)` annotations** — `Program.explain_doc`, already built and tested |
+| `avra docs process` | the tools the package you stand in declares |
+| `avra docs repr <type>` | a type's runtime representation |
+| `avra docs writes <fn>` | its write-flow chain (package-scoped) |
+| `avra docs <scope/name>:<kind>` | a package's own declared diagnostic kind |
+| `avra docs @name` | an annotation fn's signature, which *is* its effect |
+| `avra docs <code-or-kind>` | a registered `DiagCode` row, with its live witness rendered |
+| `avra docs <name>` (fallback) | a declared fn/type/enum/trait/const's own `///` doc and `@name(args)` annotations — `Program.explain_doc` |
 
-That last arm is, today, under the wrong command name, most of `avra doc
-<symbol>`. **The rename is not "move the file" — it is "replace the
-if-ladder with the one query" (§4.0):**
+**NOT YET DONE: the internal dispatch is still the same seven-branch
+if-ladder, only renamed.** Replacing it with the one-query shape (§4.0) is
+the next real step:
 
-1. Every source `explain.av` currently reaches by hand — feature table,
+1. Every source `docs.av` currently reaches by hand — feature table,
    diagnostic registry, method table, a package's own `kind_rows()`,
-   annotation signatures, declaration docs — becomes rows in `DocAtom`
+   annotation signatures, declaration docs — becomes `DocAtom`-shaped
    (§4.0), written once by whichever pass already produces that fact
-   today. Nothing about those passes changes; only where their output
-   *lands* changes.
-2. The command becomes `avra docs <address>`:
-   `SELECT * FROM DocAtom WHERE address = ? ORDER BY kind_priority LIMIT 1`,
-   then `rendered(atom)` (§4.0). A miss still names what was searched — the
-   query's own `kind` enumeration — exactly as `explained_decl`'s current
-   fallback does, which is the highest-value line in the file for a cold
-   reader.
+   today, split into the two tiers §4.0 found (registry vs. package-cost).
+   Nothing about those passes changes; only where their output *lands*
+   changes.
+2. The registry-tier arms (feature, diagnostic, method) collapse into
+   `doc_atoms().find(it.address == q)` → `rendered(atom)` first — they need
+   no compile and no design beyond the registry itself. The package-tier
+   arms keep calling `root_program(here())` but shape their answer as a
+   `DocAtom` too, so `rendered()` is still the only formatter for either
+   tier.
 3. Resolution order (the old-tree spec's, corrected for what this repo now
-   knows) becomes an `ORDER BY`, not an if-chain: project symbol →
-   language feature → diagnostic kind string (never an F-code, §4.6) →
-   grammar/keyword → capability query (§8, D15) → fuzzy fallback.
+   knows): project symbol → language feature → diagnostic kind string
+   (never an F-code, §4.6) → grammar/keyword → capability query (§8, D15)
+   → fuzzy fallback. A miss still names what was searched — the highest-
+   value line in the file for a cold reader, kept from the current
+   fallback.
 4. **No F-code addressing, anywhere, ever, even transitionally.** Today's
    diagnostics redesign (`2026_09_24_DIAGNOSTICS_ARCHITECTURE.md`) is
    deleting F-codes as identities in favor of a dotted kind string
@@ -766,12 +827,13 @@ if-ladder with the one query" (§4.0):**
    second addressing scheme only to delete it when that redesign lands —
    `address` is a kind string from the first row ever written.
 5. Cross-package, definer-keyed resolution and the capability index (§8,
-   D15) are new `WHERE`/`JOIN` clauses over the same table, not new
-   commands and not new renderers.
+   D15) are new selection logic over the same registry, not new commands
+   and not new renderers.
 
-**`avra explain` as a name should not survive as an alias.** A second name
-for the same resolver is a second thing to keep straight; the whole point
-of the collapse is that there was only ever one address space.
+**`avra explain` does not survive as an alias.** Confirmed by the rename
+that already shipped — a second name for the same resolver is a second
+thing to keep straight, and the whole point of the collapse is that there
+was only ever one address space.
 
 ---
 
@@ -849,12 +911,12 @@ two things a keeper is allowed to do are compare columns and count rows.
 
 | Piece | State |
 |---|---|
-| One-relation architecture — `DocAtom`/`ShownReceipt`, one `rendered()` query, thin per-surface reads (§4.0) | **Proposed here, not built** — supersedes treating `docs`/`shown` as bespoke query families with a renderer per command |
+| One-relation architecture — `DocAtom`/`ShownReceipt`, one `rendered()` query, thin per-surface reads (§4.0) | **Proposed here, not built** — supersedes treating `docs`/`shown` as bespoke query families with a renderer per command. `@model` does not exist in this tree; the near-term shape is a plain registry (§4.0's correction), not literal SQL |
 | Lexer captures `///`/`//!`, attaches to the next statement | **Built** — `grammar/lexer.av:101`, `compiler/program.av:206-228` |
 | Attachment law (blank-line detach, member runs, marked-variant non-bleed, nested-declaration ownership) | **Built and red-teamed** — `compiler/tests/docs_adversarial_test.av` |
 | Doc text folds into the statement's own fingerprint (source-level staleness) | **Built**, simpler than the design proposed — `core/store.av:583` |
 | Per-declaration doc/annotation query, within one package | **Built** — `Decls.doc_of`/`annotations_of`, exercised by `Program.explain_doc`/`explain_annotation` |
-| A resolver exposing the above by address | **Built, under the wrong name** — `avra explain <name>` (§6) |
+| A resolver exposing the above by address, under one command | **Built** — `avra docs <name>` (§6); its internal dispatch is still 7 hand-written branches, not yet a `DocAtom` registry |
 | `@shows`/`@answers`/`@refuses`/`@compiles`/`@traps` tag parsing | **Designed, not built** |
 | Cross-file/cross-package resolution, definer-keyed | **Designed, not built** — a `WHERE subject.file = ...` clause over `DocAtom` (§4.0), not a separate mechanism |
 | Coverage diagnostic (`F0910`-shaped) | **Not started** — intentionally gated on §5 |
@@ -863,19 +925,20 @@ two things a keeper is allowed to do are compare columns and count rows.
 | `lang/subset/` verified negative-space corpus | **Not committed, but proven** — a hand-run 63-entry version verified in 2.3s and caught real rot the same day |
 | A real, uncontaminated cold-start number | **Blocked** — needs an out-of-repo API subject (§5) |
 | `avra docs --brief` / assembly with the completeness invariant | **Partially built, not shipped** — the completeness-invariant logic (budget-counts-examples, round-robin selection) exists and is tested; no committed CLI surface uses it, and the one hand-rolled generator that skipped it produced a measured regression |
-| `avra explain`/`avra docs` collapse (§6) | **Proposed here, not yet done** |
-| `LanguageFeature.docs: string = ""` legacy field | **Stale** — owner ordered it cut 2026-09-06; still present at `features/mod.av:143` |
+| `avra explain`/`avra docs` collapse (§6) | **Done** — command renamed, resolver arms unchanged, verified against the rebuilt compiler |
+| `LanguageFeature.docs: string = ""` legacy field | **Done** — removed from the component and its 37 call sites; verified against the rebuilt compiler |
 
 ---
 
 ## 9. Open decisions for the owner
 
-1. **Ratify the `avra explain` → `avra docs` collapse (§6).** No behavior
-   change for existing arms; changes the command name and the resolution
-   order going forward.
+1. ~~Ratify the `avra explain` → `avra docs` collapse (§6).~~ **Done** —
+   shipped on `lane/docs`, verified, not yet on `main`.
 2. **Ratify the one-relation architecture (§4.0).** `DocAtom` +
-   `ShownReceipt`, one `rendered()` query, every surface a thin read. This
-   is the decision every other rung in §12 now assumes.
+   `ShownReceipt` as a plain registry today (`@model` does not exist yet
+   — §4.0's correction), migrating to `@model` once it does; one
+   `rendered()` query, every surface a thin read. This is the decision
+   every other rung in §12 now assumes.
 3. **Confirm kind-string-only addressing** (§4.6, §6) once the diagnostics
    redesign lands — no F-code fallback, even transitional.
 4. **Coverage: report before gate.** Run even a crude cold-start
@@ -885,9 +948,8 @@ two things a keeper is allowed to do are compare columns and count rows.
 5. **Fund the real cold-start subject** — an API call from outside this
    repository's context. The single blocking dependency on the owner's own
    top-ranked priority.
-6. **Remove `features/mod.av`'s `docs: string` field.** Trivial, already
-   decided, purely overdue — should ship with whatever change next touches
-   that file.
+6. ~~Remove `features/mod.av`'s `docs: string` field.~~ **Done** — shipped
+   on `lane/docs`, verified, not yet on `main`.
 7. **Member-doc addressing** (enum variants, struct fields) is out of
    scope for the next rung; flagged so it isn't rediscovered as a surprise.
 
@@ -1004,24 +1066,31 @@ Reflects where the tree actually stands (§8), not where the campaign left
 it three weeks ago — most of D1 shipped already, for a different reason,
 and the cheap, well-specified rungs after it are the ones nobody picked up.
 
-1. **Remove `features/mod.av`'s `docs: string` field.** Trivial, overdue.
-2. **Stand up the relation (§4.0): `DocAtom`, `ShownReceipt`, and the one
-   `rendered()` query.** Seed `DocAtom` from what already exists —
-   `Decls.doc_of`/`annotations_of` (§4.1), the feature table, the
-   diagnostic registry, the method table. This is the prerequisite for
-   every step below; nothing else in this ladder should be built against
-   a bespoke query shape that the relation would otherwise replace.
-3. **Collapse `avra explain` into `avra docs`** (§6) on top of the
-   relation from step 2 — replace the seven-branch if-ladder with one
-   `SELECT ... ORDER BY kind_priority` query. Corrects the addressing
-   scheme (kind strings, never F-codes) at the same time, before any new
-   surface is built on top of the old one.
+1. ~~Remove `features/mod.av`'s `docs: string` field.~~ **Done**, verified
+   against the rebuilt compiler (`lane/docs`, not yet on `main`).
+2. ~~Collapse `avra explain` into `avra docs` (§6).~~ **Done, partially** —
+   the *name* is one command now, resolving all seven forms, verified end
+   to end. **The sequencing in this ladder's first draft was wrong**: it
+   assumed the rename depended on the relation existing first. It does
+   not — the rename is a mechanical, relation-independent move, and doing
+   it first is what surfaced §4.0's cost-asymmetry correction (registry
+   arms vs. package-compile arms) before any registry code was written
+   against a false assumption.
+3. **Stand up the relation (§4.0): `DocAtom` as a plain registry (not
+   `@model` — it doesn't exist yet), `ShownReceipt`, and the one
+   `rendered()` query.** Seed the registry tier from what already exists —
+   the feature table, the diagnostic registry, the method table — and give
+   the package-compile tier (`Decls.doc_of`/`annotations_of`, §4.1, and
+   `docs.av`'s remaining four arms) a `DocAtom`-shaped answer too, so
+   `rendered()` is the only formatter either tier uses. This is what
+   actually collapses `docs.av`'s seven branches into one lookup; the
+   rename in step 2 did not do this by itself.
 4. **Fund and build the real cold-start harness.** The owner's top
    priority, unmoved for three weeks because it needs an API call from
    outside this repository's context. Everything downstream of §7's K1/K8
    depends on having one honest number.
 5. **`@shows`/`@answers`/`@refuses`/`@compiles`/`@traps` tag parsing**,
-   populating `DocAtom.tags` (step 2) and `ShownReceipt` (step 2). The row
+   populating `DocAtom.tags` (step 3) and `ShownReceipt` (step 3). The row
    shape and the false-positive rate are already proven (§4.3); this is
    implementation, not design.
 6. **Commit `lang/subset/`.** The format is proven by hand (63 entries,
@@ -1029,13 +1098,14 @@ and the cheap, well-specified rungs after it are the ones nobody picked up.
    the already-validated shape, not new design. Each entry is a `DocAtom`
    row like any other, not a parallel corpus format.
 7. **Wire `corpus/` and `@std`'s `then` cases into `avra docs --brief`** —
-   a `SELECT ... GROUP BY feature ORDER BY surprise LIMIT` over `DocAtom`
-   (§4.0), never a new hand-rolled generator. The one generator that
+   a query over the registry (§4.0), grouped by feature and ordered by
+   surprise, never a new hand-rolled generator. The one generator that
    skipped the completeness invariant produced a measured regression.
 8. **Coverage diagnostic (`F0910`)** — only after step 4 gives a real
    number to check it against.
 9. **The extensions in §10**, roughly in order of leverage: 10.1 (`DocAtom`
-   as a real `@model`) and 10.5 (LSP) are cheap wins off the relation once
-   it exists; 10.2/10.3 depend on the diagnostics and autonomous-systems
-   designs landing first; 10.4/10.6/10.7/10.8 are new surface area and
-   should wait until the core ladder above is real.
+   migrating to a real `@model`, once that derive exists) and 10.5 (LSP)
+   are cheap wins off the relation once it exists; 10.2/10.3 depend on the
+   diagnostics and autonomous-systems designs landing first; 10.4/10.6/
+   10.7/10.8 are new surface area and should wait until the core ladder
+   above is real.
