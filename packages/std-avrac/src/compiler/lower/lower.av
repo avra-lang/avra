@@ -10,7 +10,7 @@
 use @std.meta.{derive}
 use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, doc_first_paragraph, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind, body_symbol}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, AnnotationFact}
+use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, AnnotationFact, Lifted, MetaVal, new_meta_heap}
 use features.collects.{generic_words}
 use compiler.{Analysis, any_root}
 
@@ -169,7 +169,7 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>,
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
     let externs = a.view.decls.extern_names()
-    a.view.decls.union([a], 0, false, false, [], (w: Wanted) -> lower_unit(a, externs, w, no_settle), (_f: FileId) -> false)
+    a.view.decls.union([a], 0, false, false, [], (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross), (_f: FileId) -> false)
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -185,7 +185,7 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, st
 /// program's extern symbols, gathered once per program by the
 /// workspace: every body's emitter refuses a callee it does not
 /// know against it.
-export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Unit {
+export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> Unit {
     // a `collect` carries no body of its own — SYNTHESISED, never
     // parsed (`is_collect_decl`) — so it is exempt from the guard a
     // bodyless ordinary declaration trips.
@@ -195,10 +195,10 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
     let first = when {
-        w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle)
-        w.decl == null -> lower_main(a, w.name, externs, settle)
-        is_collect_decl(a, w.decl!) -> lower_collect(a, a.view.decls.decl(w.decl!), w.name, externs, settle)
-        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle)
+        w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle, cross)
+        w.decl == null -> lower_main(a, w.name, externs, settle, cross)
+        is_collect_decl(a, w.decl!) -> lower_collect(a, a.view.decls.decl(w.decl!), w.name, externs, settle, cross)
+        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle, cross)
     }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
@@ -213,10 +213,10 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
             let wj = wraps.pop()
             if wrapped.get(wj.name) == null {
                 wrapped.set(wj.name, true)
-                bodies.push(if wj.unboxes == null { wrapped_body(a, wj) } else { unboxing_body(a, wj, wj.unboxes!, externs, settle) })
+                bodies.push(if wj.unboxes == null { wrapped_body(a, wj) } else { unboxing_body(a, wj, wj.unboxes!, externs, settle, cross) })
             }
         } else {
-            let lf = lower_lambda(a, lifts.pop(), externs, settle)
+            let lf = lower_lambda(a, lifts.pop(), externs, settle, cross)
             bodies.push(lf.body)
             spoken = spoken.concat(lf.voices.list)
             wants = wants.concat(lf.jobs.pending)
@@ -491,14 +491,14 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
-fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
     let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
-    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle))
+    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross))
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
@@ -518,13 +518,13 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
 /// lambda's own fn type — a pointer, managed, released by the
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
-fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle))
+    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross))
     // register 0 is the env box, 1..N the seats
     let _ = lo.mint_ty(lam_ty)
     for pt in seats { let _ = lo.mint_ty(pt) }
@@ -568,8 +568,8 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 
 /// A `dyn` entry for a VALUE RECORD receiver: seat 0 is the box the
 /// `dyn` slot holds, read back into the receiver the method takes.
-fn unboxing_body(a: Analysis, w: Wrap, recv: TypeId, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Body {
-    mut lo = new_lower_cx(a, w.ret, null, [], [], new_jobs(externs, settle))
+fn unboxing_body(a: Analysis, w: Wrap, recv: TypeId, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> Body {
+    mut lo = new_lower_cx(a, w.ret, null, [], [], new_jobs(externs, settle, cross))
     for st in w.seats { let _ = lo.mint_ty(st) }
     lo.seeded()
     lo.seats_enter()
@@ -595,10 +595,10 @@ fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
 /// every collect's own scope admitted before any body lowers;
 /// `Decls.gathered` re-asks the same door lazily, from `x.file`, for
 /// any this misses.
-fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
     let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a.view.decls.types.intern(Type.Error)
-    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle))
+    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross))
     lo.out.seeded()
     lo.seats_enter()
     let r = collect_table_reg(lo, a, rt, p, x.file)
@@ -660,18 +660,32 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
     lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
 }
 
-/// One field's register: the declaration ITSELF (a fn value) for a
-/// bare `it`; an `.Annotated` kind's matched mark, for `it.mark`; a
-/// component's OWN field, read off its instance's built value, for
-/// a named path that is not one of the generic words; else the
-/// GENERIC text projection, const.
+/// One field's register: the declaration crossed WHOLE as the
+/// `@std/meta` value its seat names (`Fn`/`Type`/`Named`/`Trait`) for
+/// a bare `it` whose seat asks for one — the declaration ITSELF (a
+/// callable fn value) for a bare `it` that asks for anything else;
+/// an `.Annotated` kind's matched mark, for `it.mark`; a component's
+/// OWN field, read off its instance's built value, for a named path
+/// that is not one of the generic words; else the GENERIC text
+/// projection, const.
 fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg {
     if path.is_empty() {
         let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
+        if a.view.decls.takes_a_decl(fnty) { return decl_crossed_reg(lo, fnty, d.id) }
         return collect_fn_reg(lo, d.id, fnty)
     }
     if is_root_kind_path(path) { return lo.const_int(component_root_kind(a.view.decls, d)) }
     mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(lo, a, entry_ty, name, path, kind, d) ?? lo.const_str(collect_field_text(a, d, path))
+}
+
+/// A declaration crossed WHOLE as the meta value `want` names — the
+/// same crossing an annotation's own receiver seat gets
+/// (`Workspace.crossed_decl_of`), materialized here as a settled
+/// value's are (`materialized`, features/values.av): a compile-time
+/// fact about the declaration, laid out once as static data.
+fn decl_crossed_reg(mut lo: LowerCx, want: TypeId, d: DeclId) -> Reg {
+    let crossed = lo.jobs.cross(d, want)
+    lo.materialized(crossed.answer, crossed.heap, want, "crossed\$${d.index}\$${want.index}")
 }
 
 /// `root_kind` — the one kind-typed (non-string) field a
@@ -792,9 +806,9 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
 /// bracket, the answer after it settles. The evaluator runs it to
 /// settle the value; a program never calls it — a settled value is
 /// spelled or laid out at its reads.
-fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
-    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle))
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross))
     lo.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
     // `const` seat as its called value, so the settlement computes on
@@ -819,8 +833,15 @@ fn no_settle(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Sett
     .Err(Unsettled.Trap("nothing here evaluates a const"))
 }
 
-fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
-    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle))
+/// `no_settle`'s twin: where no workspace stands behind the
+/// lowering, no declaration crosses as a meta value either.
+// LICENSED style.dead_parameter: a fn VALUE filling the cross seat — its parameters are the seat's contract, and the answer needs none of them
+fn no_cross(d: DeclId, want: TypeId) -> Lifted {
+    Lifted { answer: MetaVal.Absent, heap: new_meta_heap() }
+}
+
+fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
+    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross))
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
@@ -858,7 +879,7 @@ fn empty_main(types: TypeRegistry) -> LoweredBody {
     LoweredBody {
         body: Body { name: "main", params: [], ret: types.type(int), gives: null, ins: ins, reg_types: [] },
         voices: no_voices(),
-        jobs: new_jobs([], no_settle),
+        jobs: new_jobs([], no_settle, no_cross),
     }
 }
 
