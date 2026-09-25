@@ -10,7 +10,7 @@
 use @std.meta.{derive}
 use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, doc_first_paragraph, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind, body_symbol}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
+use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, AnnotationFact}
 use features.collects.{generic_words}
 use compiler.{Analysis, any_root}
 
@@ -631,11 +631,15 @@ fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<
 /// `CollectKind`: the next kind (fn, case) answers here, never a
 /// string compare. Every component's instances read the SAME index,
 /// by the SAME word (`Decls.collect_word`), filtered to `scope` by
-/// `Decls.gathered`. `UnknownKind` was already refused at
-/// `check_collect` — it gathers nothing, honestly.
+/// `Decls.gathered`; an `.Annotated` kind's declarations read the
+/// mark twin (`Decls.gathered_by_mark`), same filter, keyed on every
+/// `@name` a declaration wears rather than a component's one word.
+/// `UnknownKind` was already refused at `check_collect` — it
+/// gathers nothing, honestly.
 fn collect_members(a: Analysis, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
     match kind {
         .Component(w) -> a.view.decls.gathered(w, scope, owner),
+        .Annotated(w) -> a.view.decls.gathered_by_mark(w, scope, owner),
         .UnknownKind(_) -> [],
     }
 }
@@ -657,17 +661,17 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
 }
 
 /// One field's register: the declaration ITSELF (a fn value) for a
-/// bare `it`; a component's OWN field, read off its instance's
-/// built value, for a named path that is not one of the generic
-/// words; else the GENERIC text projection, const.
+/// bare `it`; an `.Annotated` kind's matched mark, for `it.mark`; a
+/// component's OWN field, read off its instance's built value, for
+/// a named path that is not one of the generic words; else the
+/// GENERIC text projection, const.
 fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg {
     if path.is_empty() {
         let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
         return collect_fn_reg(lo, d.id, fnty)
     }
     if is_root_kind_path(path) { return lo.const_int(component_root_kind(a.view.decls, d)) }
-    let own? = component_field_reg(lo, a, entry_ty, name, path, kind, d) else { return lo.const_str(collect_field_text(a, d, path)) }
-    own
+    mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(lo, a, entry_ty, name, path, kind, d) ?? lo.const_str(collect_field_text(a, d, path))
 }
 
 /// `root_kind` — the one kind-typed (non-string) field a
@@ -694,6 +698,41 @@ export fn component_root_kind(decls: Decls, d: Decl) -> int {
     let parts? = store.lambda_parts(block) else { return any_root }
     let arms? = match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null } else { return any_root }
     root_kind_of(store, arms) ?? any_root
+}
+
+/// `mark` — the one field an `.Annotated` kind's declarations may
+/// answer past the four generic ones: the annotation that GATHERED
+/// this member, packed into the projected field's own record type —
+/// its `name` and its literal `args`. Never the declaration's whole
+/// annotation list: `collect`'s kind already named the one that
+/// matched, and that is the one a member's own body sees again.
+fn is_mark_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "mark"
+}
+
+fn mark_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg? {
+    if !is_mark_path(path) { return null }
+    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
+    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
+    let matched? = a.view.decls.annotations_of(d.id).find(it.name == word) else { return lo.mint_ty(field_ty) }
+    let sig? = lo.fields_of(field_ty) else { return lo.mint_ty(field_ty) }
+    lo.packed_struct(field_ty, [mark_part_reg(lo, matched, n) for n in sig.names])
+}
+
+/// `mark`'s own record, filled by field NAME — `name` the matched
+/// annotation's own word, `args` its literal arguments as text; any
+/// other field name the user's record wrote answers "", the same
+/// silence an unhandled generic path already reads as
+/// (`collect_field_text`).
+fn mark_part_reg(mut lo: LowerCx, m: AnnotationFact, part: string) -> Reg {
+    if part == "args" { return string_list_box(lo, m.args) }
+    if part == "name" { return lo.const_str(m.name) }
+    lo.const_str("")
+}
+
+fn string_list_box(mut lo: LowerCx, texts: List<string>) -> Reg {
+    let regs = [lo.const_str(t) for t in texts]
+    lo.grown_box(Type.List(lo.view.types.type(string)), lo.box_size(regs.length), regs)
 }
 
 /// `it.field` over a `.Component` kind, when `field` is not one of
