@@ -1908,3 +1908,162 @@ before I found them one crash and one test failure at a time; a
 worklist (today: `make idioms`/`avra check` name them one at a
 time, in whatever order the build happens to fail) would have
 turned three discoveries into one.
+
+## §32 As built — L3, sound-by-construction test runs
+
+**The target** (avra-8sb5.34.30.3). Tonight's R5 use-after-free was
+caught only because one existing program test happened to read the
+freed value — luck, not a guarantee. The ask: every program test that
+`avra test` already proves `eval == native == expected` for should
+ALSO run its native binary once under `AVRA_RC_GUARD=1` (a stale read
+answers garbage or traps instead of finding a plausible value) and
+once under `AVRA_MEM_STATS=1` (0 live bytes at exit), systematically,
+with `once fn` caches and static aggregates excluded on their own
+terms rather than allow-listed.
+
+**D1. The runtime's accounting has no EXACT signal, and a `once`
+cache is not excluded from it.** `AVRA_MEM_STATS`'s existing report is
+MB-rounded — a small program test's leak is bytes, and `>> 20` floors
+it to zero — and its "peak/now" figures never come back down for a
+`once` answer, because `avra_once_set` marks it `KIND_IMMORTAL`
+(runtime/avra_box.h) and retain/release both no-op on a negative
+kind: the bytes were added once at allocation and never subtracted,
+by design, since the cache holds the answer for the process's life.
+Measured on a scratch `once fn cached_dynamic() -> string`: 75 bytes
+"still live" under the OLD report, forever, on every run.
+
+**D2. `g_mortal_live`, a second always-on counter beside the
+existing `g_live_bytes`, and a credit paid at the moment of
+promotion, not read back from the header.** `acc_box`/`acc_add`
+(runtime/avra_runtime.c) add to it exactly when `kind >= 0` — a
+STATIC box (`str_static`, kind `-1` from birth: argv, env, keywords)
+never enters it at all, matching "A SETTLED AGGREGATE IS STATIC
+DATA." `avra_once_set` walks the value's OWN shape (`once_box_credit`
+— box, buffer and every OWNED array/map slot, recursively, the same
+walk `array_reclaim`/`map_reclaim` would make to free it) and
+subtracts that whole footprint from the ledger in the SAME
+call, BEFORE flipping the kind to immortal — while the kind still
+names its true shape, which is what makes the walk unambiguous. A
+report-time walk (the first draft) cannot tell a genuinely-promoted
+box from one baked immortal by the backend at compile time (a
+constant-foldable `once fn` body IS laid out as static data, kind
+already negative the first time `avra_once_set` ever sees it) —
+crediting that box's bytes on top of a ledger it never touched drove
+`g_mortal_live` NEGATIVE. Promotion-time credit needs no such guess:
+`vh->kind >= 0` is the exact question "did this box ever enter the
+ledger," asked at the one moment the answer is certain. A KIND_PLAIN
+box (a record, an enum) has no runtime-visible owned-field marks —
+the compiler releases those by name, never by a mark the runtime
+walks — so a `once fn` answering a record or enum with a managed
+field is undercredited; no case in this tree exercises it, and it is
+a recorded trigger for the day one does. `runtime/avra_runtime.c`
+gained one new line under `AVRA_MEM_STATS`: `mem: live N bytes at
+exit`, exact, which is the one line the soundness runner reads.
+
+**D3. Two real, silent leaks, found by turning the instrument on the
+compiler's own test-running code.** `suite_entry.av` hand-builds the
+suite's `main` in raw `Ins` — outside the memory pass entirely, which
+never sees hand-built IR — and TWO of its runtime calls minted an
+owned string and never released it: `tally_line`'s `avra_int_text` +
+`avra_str_concat` answer (the "N/M tests passed" line — leaked on
+EVERY suite, spec-case count irrelevant, since it runs once per
+suite) and `one_program`'s `avra_capture_end` answer (`got`, the
+program's captured output — leaked on every PROGRAM test, sized to
+its output). Neither touched any observable output; `eval == native
+== expected` and every spec case stayed green through both, which is
+exactly the class of bug a diff-the-answer check cannot see. Fixed
+with one `Ins.Release` each, in place (suite_entry.av), mirroring
+what a lowered body would have emitted for itself.
+
+**D4. The soundness runs are gated on `AVRA_SOUNDNESS`, not
+default.** Measured on `packages/std-avrac`'s own (large) suite
+binary directly: a plain run is 21.6s wall; the SAME binary under
+`AVRA_RC_GUARD=1` is 49.6s (2.3×) and, worse, EXITS RED — one spec
+case, `features/crossing`'s "five thousand directives cross and
+every one of them declares nothing," fails only under the guard.
+That spec drives a NESTED compile of a generated 5000-directive
+program through `real(...).check()`; the likeliest cause (not fully
+traced to its root) is that guard mode never actually frees
+anything, so `avra_mem_live()` — the always-on counter a
+budget/settlement ceiling reads, per CLAUDE.md's BUDGET MEASUREMENT
+entry — reports far more "still held" than the real occupancy the
+budget was sized against, tripping a ceiling a plain run never
+approaches. This is a genuine interaction between the guard and an
+existing resource ceiling, not a UAF and not a defect in this
+slice's own mechanism (the SAME binary passes `AVRA_MEM_STATS=1`
+clean, and every other of std-avrac's 6805 cases and every program
+test passes guarded); it is reported here, with its repro, rather
+than allow-listed. Given that and the wall-time cost, the two extra
+runs are opt-in (`AVRA_SOUNDNESS=1`, read once per suite in
+`packages/cli/src/stage.av`'s `first_red`) — `avra test`'s default
+behavior and cost are UNCHANGED. Wiring the flag into `make gate`'s
+own invocation is left to whoever resolves the crossing budget
+question; small and mid-sized packages (see numbers) pay only
+milliseconds and could reasonably default it on sooner.
+
+**Negative witnesses**, both a real bug reintroduced and reverted,
+each shown failing then clean:
+- The leak (D3), reverted by deleting its three `Ins.Release` lines:
+  a fresh scratch package (`spec "trivial" { given "nothing" { then
+  "true is true" { true } } }`) shows `1/1 tests passed` and
+  `eval == native == expected` — every check that existed before
+  tonight, GREEN — while `AVRA_SOUNDNESS=1` fails it: `AVRA_MEM_STATS=1:
+  70 bytes still live at exit`, exit 1. Restored: exit 0, 0 bytes.
+- R5's own first-draft bug (§30 above), reverted by deleting
+  `root_of`'s `if self.ins[d] is .Load { return null }` line: the
+  full suite's `borrowed_params` answers `2` for `s1` exactly as
+  originally found — caught by the EXISTING `eval != native` check
+  too, since the miscompile is native-only and this campaign already
+  runs both engines, so it is not a "passes today, fails mine" case.
+  Isolated to a ten-line scratch program (`emptied(mut b, row)`
+  emptying `b.rows` while `row` still points at the same freed list),
+  the UNGUARDED native run answers `0` (a stale read landing on
+  reused memory, not a crash — the silent-wrong-value shape the
+  guard exists for) while `AVRA_RC_GUARD=1` traps outright: `avra:
+  array_get read a RELEASED box`. Restored: `s1 gone 0` both ways,
+  guard clean.
+
+**Critical checks.** `build/avra test packages/std-avrac`:
+6805/6805 spec cases, every program test, green (repeated after
+every change in this slice). `build/avra test packages/cli`: 77/77.
+`build/avra test packages/std-process`: 118/118 + 2 programs (the
+`Command`/`Env`/`outcome` surface this slice calls). `build/avra test
+packages/std-text`: 113/113 + 2 programs (`parse_int`, the one this
+slice calls to read the ledger's line). `python3 tools/idioms.py`:
+no new violations (148 pre-existing debt sites, 648 files, 20
+packages). `build/avra fmt` identical on both touched `.av` files.
+`make cited` fails on `fn_params` (a stale licence in
+`tools/cited.allow` naming `features/code.av`) — untouched by this
+slice's three files (`packages/cli/src/stage.av`,
+`packages/std-avrac/src/compiler/suite_entry.av`,
+`runtime/avra_runtime.c`) and reproduces before any of them changed.
+
+**Numbers.** Fixed point: three successive `make avra`,
+`.avra-cache` moved aside before each, byte-identical
+(`cmp build/avra.g1 build/avra.g2`, `cmp build/avra.g2
+build/avra.g3`). Cost, `packages/std-avrac`'s own suite binary run
+directly, `time`, warm: plain 21.6s / 15.0s user; `AVRA_RC_GUARD=1`
+49.6s / 24.9s user (2.3×, and red — D4); `AVRA_MEM_STATS=1` 37.8s /
+18.0s user (1.75×). `build/avra test packages/std-avrac` end to end,
+`/usr/bin/time -l`, `.avra-cache` cleared: without the flag,
+307.30s real / 1,219.0B instructions retired / 588 MB peak; with
+`AVRA_SOUNDNESS=1`, 540.62s real (+76%) / 1,223.8B instructions
+(+0.4%) / 595 MB peak. Instructions retired barely moves — the added
+cost is almost entirely WALL TIME spent spawning and draining child
+processes (`@std.process`'s default `drain_grace: secs(2)` per
+`Command`), not CPU; on a small package (`std-path`, one suite, one
+program test) the two extra runs cost under 50ms end to end,
+noise-level against the package's own compile.
+
+What I wanted from the language while doing this: a `once fn`'s
+answer becoming immortal is a runtime FACT (`avra_box.h`'s
+`KIND_IMMORTAL`) with no Avra-level name — `core/ir.av`'s vocabulary
+has no way to ask "is this the process's one instance" from inside a
+pass, so a future pass that wants to reason about `once`-cache
+lifetime (this slice's runtime C code aside) has nothing to read.
+And the deeper one: `avra_mem_live()`'s use as a budget ceiling and
+`AVRA_RC_GUARD`'s use as a correctness net are two INSTRUMENTS built
+to answer different questions, sharing one counter that only one of
+them owns — D4 is that seam showing up as a false positive, and the
+fix belongs to whichever of the two is willing to stop reading the
+other's number.

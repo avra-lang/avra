@@ -1,19 +1,16 @@
-//! `avra docs` — one address space: what a diagnostic code means, a
-//! declared symbol's own `///` doc, an annotation's signature, a
-//! type's representation, a write-flow chain, `rules` — every rule
-//! the compiler carries, by identity — `dump` — every exported
-//! symbol's own facts, one row each — or `process` — the tools the
-//! package you stand in declares, each resolved where it stands
-//! today, printed before anything runs.
+//! `avra docs` — the documentation associated with a thing, one
+//! address space: what a diagnostic code means, a declared symbol's
+//! own `///` doc, an annotation's signature, `rules` — every rule the
+//! compiler carries, by identity — or `dump` — every exported
+//! symbol's own facts, one row each. Compiler introspection that is
+//! not documentation (a type's representation, a write-flow chain, a
+//! package's declared tools) lives in its own command — `repr`,
+//! `writes`, `process`.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{avra, Program, RuleEntry, rule_id, declared_law, DocRow, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.{avra, RuleEntry, rule_id, declared_law, DocRow, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
 use @std.avrac.compiler.store.{Store, store_at}
-use @std.avrac.diagnostics.{DiagCode, Diag, new_source_file, render}
-use @std.path.{joined_path}
-use @std.process.{Tool, tool, tool_from_env, ProcessError}
-use @std.io.{read_text, exists}
+use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.compiler.dev.{shown_code}
-use @std.avrac.compiler.host.{ToolRow, read_manifest}
 use @std.json.{Json, field, to_text}
 
 type DocsCmd = {}
@@ -21,11 +18,8 @@ type DocsCmd = {}
 impl Runnable for DocsCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("address")
-        if q == "process" { return explained_process(args.arg("at")) }
         if q == "rules" { return listed_rules(args.has_flag("json")) }
         if q == "dump" { return dumped(args.has_flag("json")) }
-        if q == "repr" { return explained_repr(args.arg("at")) }
-        if q == "writes" { return explained_writes(args.arg("at")) }
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.kind == q)
@@ -68,34 +62,9 @@ fn explained_kind(q: string) -> int {
     0
 }
 
-/// This command's package-scoped arms open through one door: the
-/// package's own program, clean — its refusal already reported, so
-/// every caller below answers only the absence it was written for.
-fn clean_program() -> Program? {
-    let p = root_program(here())
-    if !p.clean() {
-        eprintln(p.report())
-        return null
-    }
-    p
-}
-
-/// A found answer prints and exits clean; an absence explains why
-/// and exits 1 — the shape every package-scoped arm below closes
-/// with.
-fn answered(text: string?, absent: string) -> int {
-    let text? = text else {
-        eprintln("avra: ${absent}")
-        return 1
-    }
-    println(text)
-    0
-}
-
 /// `avra docs @name` — the annotation fn's signature, which IS
 /// its effect (§3.3 of the comptime design). The package is the
-/// directory the command stands in, as `docs process` reads its
-/// manifest.
+/// directory the command stands in.
 fn explained_annotation(name: string) -> int {
     let p? = clean_program() else { return 1 }
     answered(p.explain_annotation(name), "no fn `${name}` is declared in this package")
@@ -134,27 +103,6 @@ fn derived_decl(mut d: Db, store: Store, root: string, name: string) -> int {
     })
     println(found.text)
     0
-}
-
-/// `avra docs repr <type>` — the runtime REPRESENTATION the
-/// compiler chose for a type expression (features/values.av's
-/// `repr_word`): flat, boxed, niche, or a one-slot box. A declared
-/// name (`Id?`) resolves against the package the command stands in,
-/// as `docs @name` reads it.
-fn explained_repr(type_text: string) -> int {
-    let p? = clean_program() else { return 1 }
-    answered(p.explain_repr(type_text), "`${type_text}` is not a type this package resolves — a scalar, `List<…>`, `Map<…>` or a declared struct, each under an optional `?`")
-}
-
-/// `avra docs writes <fn>` — the WRITE-FLOW CHAIN the seats pass
-/// (compiler/receivers.av) found for `fn`'s seat 0 (a method's
-/// receiver, a free fn's first parameter): the fn names, in call
-/// order, from `fn` to the one whose declaration or body writes it
-/// directly — the same evidence F2047 warns from, turned into a few
-/// seconds instead of reading every callee by hand.
-fn explained_writes(fn_name: string) -> int {
-    let p? = clean_program() else { return 1 }
-    answered(p.explain_writes(fn_name), "no fn `${fn_name}` is declared in this package with a written seat 0")
 }
 
 /// `avra docs rules` — every rule the compiler carries (the `rules`
@@ -222,70 +170,12 @@ export fn dump_listing(rows: List<DocRow>) -> string {
     ["this package exports — ${rows.length}"].concat(["${r.address} — ${r.signature}" for r in rows]).join("\n")
 }
 
-/// The package's declared tools, minted as the library mints them, and
-/// what a child inherits — the set of doors, before any opens. `at` is
-/// the package's directory; the front door stands at the root.
-fn explained_process(at: string) -> int {
-    let manifest = joined_path(if at.length == 0 { here() } else { at }, "avra.toml")
-    if !exists(manifest) {
-        eprintln("avra: no ${manifest} — `docs process` reads a package's manifest")
-        return 1
-    }
-    let src = new_source_file(manifest, read_text(manifest) catch "")
-    let m = read_manifest(src)
-    for d in m.voices { eprintln(render(d, src)) }
-    if m.voices.any(refuses(it)) { return 1 }
-    if m.tools.is_empty() {
-        println("no [process.tools] declared — the script rung: any tool a literal names, an open set")
-        return 0
-    }
-    println("tools this package declares — ${m.tools.length}")
-    for row in m.tools { println("  ${row.name}  ${resolved_text(row)}  ${provenance_text(row)}  ${terminator_text(row.terminator)}") }
-    println("a child inherits the minimal base: PATH (relative entries stripped) HOME TMPDIR TERM LANG=C LC_ALL=C NO_COLOR=1")
-    0
-}
-
-/// A manifest voice that refuses — a warning is said and read past.
-fn refuses(d: Diag) -> bool {
-    d.severity is .Error
-}
-
-fn resolved_text(row: ToolRow) -> string {
-    match minted(row) {
-        .Ok(t) -> t.path,
-        .Err(e) -> "NOT FOUND — ${e.describe().message}",
-    }
-}
-
-/// A row minted as the library would, by its provenance.
-fn minted(row: ToolRow) -> Result<Tool, ProcessError> {
-    match row.from {
-        .Path -> tool(row.name),
-        .Env -> tool_from_env(row.var ?? "", row.default ?? row.name),
-        .Abs -> tool(row.at_path ?? row.name),
-    }
-}
-
-fn provenance_text(row: ToolRow) -> string {
-    match row.from {
-        .Path -> "from the PATH",
-        .Env -> "from ${row.var ?? "?"}, else `${row.default ?? row.name}`",
-        .Abs -> "at its path",
-    }
-}
-
-fn terminator_text(t: string?) -> string {
-    if t == null { return "options never end — a dashed word needs `after_options`" }
-    "options end at `${t!}`"
-}
-
 export command docs {
-    description: "One address space: an F-code, a kind, a declared symbol's own doc, an annotation's signature, a package kind (`@scope/name:E1`), `process`, `rules`, `dump`, `repr <type>`, or `writes <fn>`"
+    description: "The documentation associated with a thing: an F-code, a kind, a declared symbol's own doc, an annotation's signature, a package kind (`@scope/name:E1`), `rules`, or `dump`"
     arg address {
-        description: "an F-code, a kind, a declared name, `@name`, a package kind (`@scope/name:E1`), `process`, `rules`, `dump`, `repr`, or `writes`"
+        description: "an F-code, a kind, a declared name, `@name`, a package kind (`@scope/name:E1`), `rules`, or `dump`"
         required: true
     }
-    arg at { description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`); for `writes`: a fn name" }
-    flag json { description: "for `rules`: one JSON array of {id, module, name, doc}; for `dump`: one JSON array of {address, kind, signature, prose_lines, package}" }
+    flag json { description: "for `rules`: one JSON array of {id, module, name, doc, law}; for `dump`: one JSON array of {address, kind, signature, prose_lines, package}" }
     run: DocsCmd {}
 }

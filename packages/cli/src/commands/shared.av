@@ -184,6 +184,29 @@ export fn root_program(root: string) -> Program {
     ws.program(ws.entry_of())
 }
 
+/// A package-scoped command's one door: the package the command
+/// stands in, clean — its refusal already reported, so every caller
+/// below answers only the absence it was written for.
+export fn clean_program() -> Program? {
+    let p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return null
+    }
+    p
+}
+
+/// A found answer prints and exits clean; an absence explains why and
+/// exits 1 — the shape every package-scoped command closes with.
+export fn answered(text: string?, absent: string) -> int {
+    let text? = text else {
+        eprintln("avra: ${absent}")
+        return 1
+    }
+    println(text)
+    0
+}
+
 /// The argued path as a program: a directory is a package root, a
 /// file is entered.
 fn program_at(args: CliResult) -> Program? {
