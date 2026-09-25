@@ -32,6 +32,13 @@ impl Storage {
 
 /// One cell, as the storage class that produced it. Bound INTO a slot or
 /// read OUT of one, the same five shapes either way.
+///
+/// A `List<SqlValue>` COSTS A LIST AND AN ENUM TAG PER VALUE, against a
+/// typed positional bind's direct call — permanent, and accepted: the
+/// alternative is a bind API keyed on argument POSITION AND TYPE rather
+/// than on one list, which is more code at every generator that builds
+/// one (`@model`'s included) for a cost this driver's callers do not
+/// feel. Re-profile before reopening it, never assume it moved.
 export enum SqlValue {
     Int(int)
     Text(string)
@@ -70,12 +77,18 @@ impl SqlValue {
 /// bound at `prepare` time by every query verb below.
 export type Sql = { text: string, values: List<SqlValue> = [] }
 
-/// The statement `sql(text)` means, with no slots filled yet.
-export fn sql(text: string) -> Sql { Sql { text: text } }
+/// The statement `sql(text)` means, its slots filled in order (1-based,
+/// as the wall counts them) when `values` is given, empty otherwise.
+///
+/// ONE CALL, ONE `Sql`: a caller who already has both in hand writes
+/// `sql(text, values)` and pays for a single record — `.args()` below
+/// still builds a SECOND one from the first, which is the right shape
+/// for a caller building the values separately from the text, and the
+/// wrong one for the common case of both arriving together.
+export fn sql(text: string, values: List<SqlValue> = []) -> Sql { Sql { text: text, values: values } }
 
 impl Sql {
-    /// The same statement, with its slots filled in order (1-based, as
-    /// the wall counts them).
+    /// The same statement, with its slots filled in order.
     fn args(values: List<SqlValue>) -> Sql { self with { values: values } }
 }
 
@@ -126,7 +139,7 @@ impl Db {
     fn run(s: Sql) -> Result<int, SqlError> {
         let stmt = prepared(self, s)?
         let n = stmt.drained(self)
-        let _ = stmt.finalize()
+        let _ = stmt.reset()
         n
     }
 
@@ -143,7 +156,7 @@ impl Db {
     fn one(s: Sql) -> Result<Row, SqlError> {
         let stmt = prepared(self, s)?
         let row = single_row(stmt)
-        let _ = stmt.finalize()
+        let _ = stmt.reset()
         row
     }
 
@@ -151,7 +164,7 @@ impl Db {
     fn first(s: Sql) -> Result<Row?, SqlError> {
         let stmt = prepared(self, s)?
         let row = leading_row(stmt)
-        let _ = stmt.finalize()
+        let _ = stmt.reset()
         row
     }
 
@@ -159,7 +172,7 @@ impl Db {
     fn all(s: Sql) -> Result<List<Row>, SqlError> {
         let stmt = prepared(self, s)?
         let rows = every_row(stmt)
-        let _ = stmt.finalize()
+        let _ = stmt.reset()
         rows
     }
 
@@ -169,10 +182,31 @@ impl Db {
 
 // ── Preparing and binding ───────────────────────────────────────
 
-/// `prepare`, with `s`'s values bound into the slots it opened.
+/// `prepare`, with `s`'s values bound into the slots it opened — the
+/// connection's own cache is asked first, so text run before is
+/// REUSED rather than compiled again, and only a MISS pays for a fresh
+/// one. THE HIT PATH IS ONE CALL DEEP on purpose (`db.cached` directly,
+/// no wrapper between it and the caller), since it is the one every
+/// call after the first takes.
+///
+/// A REUSED STATEMENT ARRIVES RESET, NEVER FRESH-BOUND: `db.run` and
+/// its siblings reset what they used before answering (never
+/// finalize), so every entry in the cache is idle by the time it is
+/// found here. `bound` below rebinds every slot regardless, which is
+/// what makes a cache hit as clean as a fresh `prepare` from the
+/// caller's side — no stale value from the last call can survive
+/// into this one.
 fn prepared(db: Db, s: Sql) -> Result<Stmt, SqlError> {
-    let stmt = db.prepare(s.text)?
+    let stmt = db.cached(s.text) ?? freshly_cached(db, s.text)?
     let _ = bound(stmt, s.values)?
+    stmt
+}
+
+/// A statement this connection has not seen before: `prepare`d, and
+/// kept for the next call.
+fn freshly_cached(db: Db, text: string) -> Result<Stmt, SqlError> {
+    let stmt = db.prepare(text)?
+    db.remember(text, stmt)
     stmt
 }
 
@@ -182,10 +216,6 @@ fn prepared(db: Db, s: Sql) -> Result<Stmt, SqlError> {
 fn bound(s: Stmt, values: List<SqlValue>) -> Result<int, SqlError> {
     let n = s.slots()
     if values.length != n { fail SqlError.refused(Cause.Unfilled(n, values.length), unfilled_words(n, values.length)) }
-    filled(s, values)
-}
-
-fn filled(s: Stmt, values: List<SqlValue>) -> Result<int, SqlError> {
     for i, v in values.enumerate() {
         let _ = bind(s, i + 1, v)?
     }
