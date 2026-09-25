@@ -44,7 +44,13 @@ impl Workspace {
         // a loaded `@std/meta` the crossing cannot read generates
         // nothing; the annotation law speaks it
         if self.decls.meta_disagreement() != null { return [] }
-        let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at) }
+        let directives = if self.is_derived(w.ret) {
+            self.derive_directives(w, f, p, vis)
+        } else if self.is_declared(w.ret) {
+            self.declared_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
+        } else {
+            self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
+        }
         flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
     }
 
@@ -90,7 +96,7 @@ impl Workspace {
                         let asig: FnSig? = self.decls.sig(ann_decl)?.fn_sig()
                         if asig != null {
                             let sig = asig!
-                            if self.is_declares(sig.ret) || self.is_derived(sig.ret) {
+                            if self.is_declares(sig.ret) || self.is_derived(sig.ret) || self.is_declared(sig.ret) {
                                 out.push(DeclareWork {
                                     ann: ann_decl,
                                     stmt: x.stmt,
@@ -121,6 +127,12 @@ impl Workspace {
     /// Whether a return type is `@std.meta.Derived` — the `@derive`
     /// cue: the compiler runs each named trait's associated `derive`.
     fn is_derived(ret: TypeId) -> bool { self.decls.meta_type(ret, "Derived") }
+
+    /// Whether a return type is `@std.meta.Declared` — the OTHER
+    /// Declares shape, a real two-field struct answering `made` beside
+    /// `problems`, never the flattened single-field `List<Directive>`
+    /// `is_declares` reads.
+    fn is_declared(ret: TypeId) -> bool { self.decls.meta_type(ret, "Declared") }
 
     /// EVERY MARK OWES A READER. The compiler judges no mark — its
     /// meaning lives with whoever reads it — so the only law it can
@@ -358,6 +370,16 @@ impl Workspace {
     fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, at: Span?) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
             .Ok(crossed) -> crossed.directives(),
+            .Err(why) -> self.mute_lift(d, f, at, why),
+        }
+    }
+
+    /// A `Declared` answer's `made` field, read by the same lift as
+    /// `lifted_directives` — the OTHER Declares shape, generating code
+    /// beside diagnostics `check_annotation` reads separately.
+    fn declared_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, at: Span?) -> List<Directive> {
+        match self.lifted(d, f, stmt, call, args) {
+            .Ok(crossed) -> crossed.declared_made(),
             .Err(why) -> self.mute_lift(d, f, at, why),
         }
     }
