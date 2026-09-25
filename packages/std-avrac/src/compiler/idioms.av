@@ -735,3 +735,40 @@ fn field_list(fields: List<Code>) -> string {
 }
 
 fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
+
+/// Two ADJACENT `match` arms answering one IDENTICAL body — `or`
+/// joins their patterns (`.Struct(d, _) -> d`, `.Enum(d, _) -> d` is
+/// `.Struct(d, _) or .Enum(d, _) -> d`), since the alternatives may
+/// bind (every one binding the same names at the same types, F2039's
+/// law). GUARDED RULE-SIDE over `Code.arms()` (`Expr.Match` has no
+/// fixed arm count a quote pattern can spell): two sibling arms agree
+/// when neither carries a guard and their VALUE Codes are text-equal
+/// — wider than the retired regex, which read single-line arms only.
+///
+/// NO REWRITE: whether the join is SOUND is the alternatives-bind
+/// question — do the two patterns bind the same names at the same
+/// types? — a TYPING fact this rule-side text scan does not carry; a
+/// wrong join would silently change which value the body's own name
+/// reads.
+@keeps("match k { .A -> 1, .B -> 2 }")
+export rule one_body_arms {
+    quote { ${lit} } if one_body_arm_pair(lit) != null -> one_body_arms_found(lit),
+}
+
+/// The second arm's VALUE of the first adjacent, unguarded,
+/// same-body pair — absent when `lit` is not a `match`, or none of
+/// its sibling arms agree.
+fn one_body_arm_pair(lit: Code) -> Code? {
+    let arms? = lit.arms() else { return null }
+    for i in 1..arms.length {
+        let a = arms[i - 1]
+        let b = arms[i]
+        if a.guard == null && b.guard == null && a.value.text() == b.value.text() { return b.value }
+    }
+    null
+}
+
+fn one_body_arms_found(lit: Code) -> Fix {
+    let v = one_body_arm_pair(lit)!
+    Fix.Say(said(v.loc(), "two adjacent arms answer one body, `${v.text()}` — join their patterns with `or`; the alternatives may bind, each binding the same names at the same types", "this arm", null))
+}

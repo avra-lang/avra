@@ -1056,7 +1056,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       the baseline as accepted debt — a native finding carries no
       license of its own.
 
-- style.one_body_arms (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
+- compiler.one_body_arms (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
       `.Struct(d, _) -> d` then `.Enum(d, _) -> d` — are one arm:
       `.Struct(d, _) or .Enum(d, _) -> d`. An `or` arm BINDS when every
       alternative binds the same names at the same types, by name, in
@@ -1067,6 +1067,23 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       gap. LICENSED at the site when the names bind at DIFFERENT types
       (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
       a block body is its own sentence. Ratcheted (`one_body_arms`).
+      PORTED NATIVELY (avra-8sb5.25.16): `one_body_arms`
+      (compiler/idioms.av) — a bare-hole root guarded RULE-SIDE over a
+      new `Code.arms()` (features/code.av; `Expr.Match` has no fixed
+      arm count a quote pattern can spell), two sibling arms agreeing
+      when neither carries a guard and their VALUE Codes are text-
+      equal. WIDER than the retired regex (reads any adjacent pair
+      structurally, not only a single-line `->` text match): six real
+      sites swept in the same commit (compiler/expand.av,
+      compiler/typing/declare.av, core/exact_derive.av,
+      features/unify.av, grammar/validate.av — one pair each, joined
+      with `or`), and five already-licensed sites (core/parts.av x2,
+      core/shape.av x2, structs/idioms.av's own `index_compared`
+      rule matching its OWN two `quote{}` arms — a rule's arms are
+      match arms too) join the baseline as accepted debt, since a
+      native finding carries no license of its own. NO REWRITE: the
+      join is sound only when the alternatives-bind question (F2039)
+      agrees, a typing fact this rule-side text scan does not carry.
 - compiler.stmt_index_walk (ratcheted) A WALK OVER A STORE'S STATEMENTS HANDS THE IDS —
       `for s in store.stmt_ids()`, never `for i in 0..store.stmts.count()`
       and a `StmtId { index: i }` built inside. Four sites spelled the

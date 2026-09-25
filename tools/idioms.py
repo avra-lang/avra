@@ -500,26 +500,6 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
-ARM_LINE = re.compile(r"^(\s*)(\.[A-Z]\w*.*?)\s->\s(.+?),?\s*$")
-
-def one_body_arms(lines):
-    """Two ADJACENT variant arms answering ONE body are one arm: an
-    `or` joins their patterns, and since the alternatives may bind
-    (every one binding the same names at the same types, F2039's law),
-    `.Struct(d, _) -> d` and `.Enum(d, _) -> d` are `.Struct(d, _) or
-    .Enum(d, _) -> d`. Single-line arms only — a block body is a
-    different sentence each time. A pair whose names bind at
-    DIFFERENT types (`.F(v)`, a float, beside `.B(v)`, a bool) cannot
-    join and is licensed at the site (style.one_body_arms)."""
-    for i in range(1, len(lines)):
-        a, b = ARM_LINE.match(lines[i - 1]), ARM_LINE.match(lines[i])
-        if not a or not b or a.group(1) != b.group(1):
-            continue
-        body = a.group(3)
-        if body.endswith("{") or body != b.group(3):
-            continue
-        yield i, lines[i].strip()
-
 COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
 
 def comma_list_open(lines):
@@ -612,9 +592,6 @@ RULES = {
             "a `mut` nothing mutates — say `let`"),
     "grammar.comma_list_open": (comma_list_open,
             "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
-    "style.one_body_arms": (one_body_arms,
-            "two adjacent arms answer one body — join their patterns with `or`; the "
-            "alternatives may bind, each binding the same names at the same types"),
     "style.repeated_unwrap": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -677,6 +654,12 @@ UNRATCHETED = {
            "           through; `core/store.av` is exempt structurally (its own\n"
            "           `stmt_ids()` IS this walk); ratcheted by the native-findings\n"
            "           phase below",
+    "compiler.one_body_arms": "PORTED NATIVELY (avra-8sb5.25.16): `one_body_arms`\n"
+           "           (compiler/idioms.av) — a bare-hole root guarded rule-side over a\n"
+           "           new `Code.arms()` (features/code.av); ratcheted by the native-\n"
+           "           findings phase below. WIDER than the regex (structural, not a\n"
+           "           single-line text match); NO REWRITE (the alternatives-bind\n"
+           "           question, F2039, is a typing fact this rule-side scan lacks)",
     "compiler.raw_rt_call": "PORTED NATIVELY (avra-8sb5.25.16): `raw_rt_call`/`raw_rt_call_void`\n"
            "           (compiler/idioms.av) — a fixed-arity `quote` over `Ins.CallRt`/\n"
            "           `Ins.CallRtVoid`, guarded by the bound name hole's own TEXT\n"
@@ -898,10 +881,6 @@ UNRATCHETED = {
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
-    "style.one_body_arms": [["        .Struct(d, _) or .Enum(d, _) -> d,",
-             "        .Var(_, _, n) -> n,"],
-            ["        .A(x) -> {",
-             "        .B(x) -> {"]],
     # a let-else's match ends at `} else {`, and the scan must stop there
     # rather than count the next fn's projection as this match's arms
     "style.registry_catchall": [["    fn f() -> int? {",
@@ -973,10 +952,6 @@ SPECIMENS = {
     "style.free_state_verb": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
-    "style.one_body_arms": [["        .Struct(d, _) -> d,",
-             "        .Enum(d, _) -> d,"],
-            ["            .Ok(.Eof) -> false,",
-             "            .Ok(.Pending) -> false,"]],
     "style.filled_by_arena_count": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }
