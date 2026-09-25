@@ -113,10 +113,14 @@ impl Emit {
         if self.bare_value(dst) { return avra_llvm_cast_to_type(self.b, self.vals[elems[0].index], self.reg_type(dst)) }
         mut agg = avra_llvm_get_undef(self.reg_type(dst))
         // LICENSED style.hand_rolled_scan: the running aggregate, not a scan
-        // a value enum's word is an i64 whichever payload it carries
+        // a value enum's word rides the I64 slot every category rides —
+        // `worded` is the one door, the same a runtime call's argument
+        // takes: a bool zero-extends where a bare cast would refuse the
+        // widen, a float bitcasts, an int or a pointer cross as they do
+        // there too.
         let valued = self.types.valued_carrier(self.tys[dst.index])
         for j, r in elems {
-            let part = if valued { avra_llvm_cast_to_type(self.b, self.vals[r.index], avra_llvm_int64_type(self.lc)) } else { self.vals[r.index] }
+            let part = if valued { self.worded(r, self.vals[r.index]) } else { self.vals[r.index] }
             agg = avra_llvm_build_insert_value(self.b, agg, part, j, "pack")
         }
         agg
