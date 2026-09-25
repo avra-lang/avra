@@ -2,7 +2,7 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, TypeId, same_reg, distinct, lent_args, flatten, new_type_registry}
+use @std.avrac.core.{Ins, RtSig, Reg, TypeId, same_reg, distinct, lent_args, flatten, some_list, new_type_registry}
 
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
@@ -80,28 +80,24 @@ fn load_rides_pointer(l: Lowered, i: Ins) -> bool {
     d == null || l.types.rides_pointer(l.entry.reg_types[d!.index])
 }
 
-/// Every call THROUGH a box in the lifted bodies HOLDS that box across the
-/// call: it was read out of another box — a VIEW, which the caller cannot
-/// promise stands — and a read typed as a bare pointer once skipped it.
-fn every_callptr_seat_retained(l: Lowered) -> bool {
-    mut ok = true
-    for b in l.fns {
-        mut retained: List<int> = []
-        for i in b.ins {
-            let held: Reg? = match i {
-                .Retain(r) -> r,
-                _ -> null,
-            }
-            if held != null { retained.push(held!.index) }
-            let seat: Reg? = match i {
-                .CallPtr(_, _, args) -> args[0],
-                _ -> null,
-            }
-            // LICENSED type.index_compared: register identity, not type agreement
-            if seat != null && !retained.any(it == seat!.index) { ok = false }
-        }
+/// No CallPtr seat in ANY lowered body carries a defensive retain: THE
+/// ROOT OF A PATH DECIDES WHERE A WRITE LANDS, so a call that is not
+/// ALSO handed a seat's own root cannot write through it — a captured
+/// fn's own env stands on its own reference the whole call through.
+fn no_callptr_seat_retained(l: Lowered) -> bool {
+    l.fns.all((b: Body) -> callptr_seats(b.ins).all(retains_of(b.ins, it) == 0))
+}
+
+/// Every CallPtr's first seat, across one body's instructions.
+fn callptr_seats(ins: List<Ins>) -> List<Reg> {
+    flatten([some_list(callptr_seat(i)) for i in ins])
+}
+
+fn callptr_seat(i: Ins) -> Reg? {
+    match i {
+        .CallPtr(_, _, args) -> args.first(),
+        _ -> null,
     }
-    ok
 }
 
 /// A `string?` made and read through `??` — the niche subject.
@@ -136,12 +132,12 @@ spec "compiler/lower" {
         then "a call through a mut fn cell loads the box, never the answer" {
             entry_loads_ride_pointers(ir_of("mut f = () -> 1\nf()"))
         }
-        then "a captured fn's lane read is retained before the call that releases it" {
-            every_callptr_seat_retained(ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()"))
+        then "a captured fn's lane BORROWS and needs no guard — its call is never also handed the lane" {
+            no_callptr_seat_retained(ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()"))
         }
-        then "a captured fn's lane read BORROWS — the seat's own retain is the callee's reference" {
-            let l = ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()")
-            !l.fns.any(it.ins.any(is_owned_get(it))) && every_callptr_seat_retained(l)
+        then "the same lane read twice still borrows both calls uncounted" {
+            let l = ir_of("let a = () -> 1\nlet b = () -> a() + a()\nb()")
+            !l.fns.any(it.ins.any(is_owned_get(it))) && no_callptr_seat_retained(l)
         }
     }
     given "arithmetic" {
@@ -183,8 +179,11 @@ spec "compiler/lower" {
         then "a seat that STANDS is handed over uncounted — a parameter is borrowed" {
             no_call_seat_counted(ir_of(moved_seat()).entry.ins)
         }
-        then "a VIEW handed over is HELD across the call — the callee may empty the box it looks into" {
-            render_ir(ir_of(viewed_seat())).contains("retain r8\n  r9 = call n(r8)\n  release r8")
+        then "a VIEW whose root the call never also receives needs no guard" {
+            !render_ir(ir_of(viewed_seat())).contains("retain r8")
+        }
+        then "a VIEW whose root the SAME call also receives takes its own reference at the read instead" {
+            render_ir(ir_of(viewed_seat_with_root())).contains("avra_array_get_owned")
         }
     }
     given "THE LAW: nullability never allocates" {
@@ -376,6 +375,13 @@ fn moved_seat() -> string {
 /// A call whose argument is a view into a box the caller holds.
 fn viewed_seat() -> string {
     "type B = { xs: List<string> }\nfn n(xs: List<string>) -> int { xs.length }\nlet b = B { xs: [\"a\" + \"b\"] }\nn(b.xs)"
+}
+
+/// `viewed_seat`'s twin: the SAME call is ALSO handed the view's own
+/// root — the one shape a callee could reach back through, so the
+/// read takes its own reference rather than riding `b`'s.
+fn viewed_seat_with_root() -> string {
+    "type B = { xs: List<string> }\nfn n(b: B, xs: List<string>) -> int { xs.length }\nlet b = B { xs: [\"a\" + \"b\"] }\nn(b, b.xs)"
 }
 
 /// No `@lent` seat of any call in the slice is retained: each stands.

@@ -1539,3 +1539,290 @@ whether a multi-field variant or a self-reference already disqualified
 it, exactly the kind of question `avra explain repr` answers for ONE
 type but not for "which types does widening THIS rule move".
 
+## §30 As built — R5, count elision at the call-crossing retain
+
+**The target.** §6 named it: "R3 consuming params... params are
+borrowed, so a `with` on a param can never reuse." R5's own slot
+(avra-8sb5.34.7) narrowed further after two rounds of measurement —
+static literals and value enums, not stack placement — to "no
+retain/release on a box that never escapes the fn that made it."
+Escape analysis for STACK PLACEMENT was already tried and shelved
+(2026-09-24 comments on the ticket: only 1 of 10 request boxes never
+escape its fn). This slice is a DIFFERENT elision at the same
+doctrine: not "does the box ever leave," but "does THIS call ever
+reach it."
+
+**D15. A view crossing a user call is guarded only when the call is
+ALSO handed its root.** `Call`/`CallPtr`'s defensive retain (memory.av
+§ THE CALLER KEEPS ITS ARGUMENTS STANDING) protects a VIEW — a struct
+field read, a lending row's answer — against "the callee may empty
+the box it looks into." But a callee can only empty a box it holds a
+SEAT on (THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS, CLAUDE.md):
+Avra has no ambient mutable state, so a call that never receives a
+view's root — walked back through Extract and a lending row's own
+view, `Lives.root_of` — cannot reach it, let alone write through it.
+`root_handed` asks `lent_args(i).any(same_reg(it, life.root_of(ar)))`
+per lent arg; the guard stays for every arg whose root the call
+itself also receives, or that has no view behind it at all (`ar`
+roots at `ar`, trivially among its own call's seats).
+
+**D16. `root_of` answers ABSENT at a Load, on purpose.** A `mut`
+binding's cell can be read by more than one `Load`, each its own
+SSA register for the SAME box — register identity cannot say a later
+argument is "the same" root when it arrived through a second load.
+The first draft compared registers all the way down and broke
+`features/fns/tests/borrowed_params`' `emptied` fn: `emptied(b,
+b.rows[0])` reads `b` once (`avra_cell_thawed`, for the `mut` seat)
+and again (`load`, to walk `.rows[0]`) — TWO DIFFERENT REGISTERS for
+one box. `root_of(b.rows[0])` walked to the second load's register;
+the call's own arg was the first; `same_reg` said no; the retain was
+elided; `b.rows = []` inside `emptied` freed the list `row` still
+pointed at; native answered `2` where eval and `.expected` both say
+`s1`. `root_of` now returns absent the moment its walk meets ANY
+`.Load`, and `root_handed` reads absence as "reachable" — conservative,
+never wrong. `features/fns/tests/borrowed_params` caught this on the
+FIRST run of the full suite, exactly as its own header promises
+("each rule witnessed failing without it").
+
+**Why the upstream owned-twin mostly already covers same-call
+co-occurrence, and why that is not a proof.** For a LENDING CallRt
+view (`avra_array_get`, `avra_map_get`), `read_outlives`/
+`borrow_outlives` already walks forward from the read and — because
+its "did the slot change" scan (`leaves_or_changes`) treats ANY later
+instruction reading the SAME register as a possible change — upgrades
+the read to its owned twin the moment the call ALSO reads that exact
+register. Every hand-built same-call-co-occurrence case
+(`viewed_seat_with_root`, §below) is intercepted there, before
+`root_handed` ever runs. `emptied`'s witness is the case that
+mechanism cannot see: the register the call receives (`b`, thawed for
+the `mut` seat) and the register the view's chain passes through
+(`b` reloaded) are DIFFERENT SSA names for the same box, and
+`changes_cell`'s scan is register-identity, not box-identity. D16 is
+what closes that gap; it is also why `root_handed`'s guard-still-owed
+branch is a genuine SAFETY NET more than a frequently-taken one under
+today's lowering — proven necessary by one real defect, not by a
+dense trace of daily hits.
+
+**Guards witnessed failing.** `python3` was not used; the guard was
+removed literally, by reverting D16 to `Reg` (as first written), and
+`build/avra test packages/std-avrac` was run: `borrowed_params`
+failed exactly as described. Restoring D16 turned it back to
+`s1`/green.
+
+**Red team**, native under `AVRA_RC_GUARD=1`, matched against
+eval and (where noise-free) against the baseline compiler's own
+identical memory report:
+| attack | shape | result |
+|---|---|---|
+| nested view chain, `mut` seat clears the parent | `type Inner`/`Outer`, `peek(mut o, o.inner.xs)` | `z0 cleared` both engines; unguarded mem stats byte-identical to baseline |
+| same hazard through a `Cell`, not a seat | `Cell<Bag>`, `clear(c)` after `c.get().xs` | `c` both engines |
+| loop-carried root, view read each turn, root never passed | `for i in 0..5 { total + width(r.cells) }` | `15` both |
+| recursion, a view of a param passed down, never the param | `sum_from`/`peek`, param vs. view forms | `30` both |
+| `defer` writing a `mut` seat after a view of its old value | `run(mut s)`, `defer { s.items = [...] }` | refused by the language itself (a capture is a copy) — not a shape this door reaches |
+| `?` propagation crossing a call with a view alongside the record | `read(d: Doc)`, `first_line(d.lines)?` | `x/2` both |
+| a view stored past its originating call, into a list, each loop turn | `saved.push(keep(r.xs))` | `9` both |
+| two captured fns, the SAME lane read twice | `let a = () -> 1; let b = () -> a() + a()` | both `callptr` seats unretained, `avra_array_get` (not `_owned`) on both reads |
+
+Every attack is also in `packages/std-avrac/src/compiler/tests/
+lower_test.av`'s "the ownership roles read as behavior" / "calls
+through boxes wear the callee's type" — `no_callptr_seat_retained`,
+`viewed_seat` (elided) and `viewed_seat_with_root` (still guarded,
+via the owned-twin) replace the three assertions this slice made
+false by making the IR strictly BETTER than they expected.
+
+**Numbers.** Fixed point: three successive `make avra` after the
+final change gave byte-identical binaries (`cmp` on cache-forced
+rebuilds, .avra-cache moved aside each time). Instructions retired,
+`/usr/bin/time -l`, interleaved, 3 rounds, `.avra-cache` moved aside
+before every `check` round:
+
+| | before (main 94619dd) | after |
+|---|---|---|
+| tools/bench/request, 5,000,000 requests | 54.63B instr (avg) | 53.95B instr (avg) — −1.2% |
+| `check packages/cli` | 173.8B instr (avg) | 166.6B instr (avg) — −4.1% |
+
+Consistent in every round both ways (request: 54.51/54.73/54.64 →
+54.01/53.93/53.92; cli: 173.09/173.76/174.53 → 166.47/166.90/166.46).
+The compiler's own source is the better witness: `self`-and-a-field
+crossing a method call is the common shape this door reaches (an
+OOP-heavy tree), where the request bench's remaining allocations are
+mostly records and lists that never cross a call as a view at all
+(§6's own finding, unchanged). Diagnostics identical between old and
+new (122 warnings, same lines) — behavior unchanged, only the count
+lower. `make census` was not run: it drives `./avra` through
+`tools/watch.sh`, which this campaign's standing order (AGENT_RULES)
+forbids; instructions retired is this tree's own preferred proof for
+exactly that reason.
+
+What I wanted from the language while doing this: a way to assert
+"these two SSA registers are loads of the same untouched cell"
+directly, rather than by absence. `root_of` answering `Reg?` and
+treating `null` as "conservative" reads right, but the same shape
+(a value that MAY alias across more than one register, and a pass
+that must answer soundly without knowing) will recur anywhere a `mut`
+seat and a plain read of the same binding meet — a `same_box`
+predicate over `Lives`, keyed on the CELL rather than the register,
+would let a pass answer the sharper question instead of falling back
+to "unknown, so guard."
+
+## §31 R3 design — consuming params (not built)
+
+**Why this is a design, not a slice.** avra-8sb5.34.4's ticket already
+warns "Perceus owns params" is a calling-convention change; ROADMAP's
+own ladder entry for R5 says "Consuming params (R3) fold in here,"
+naming it as the same doctrine, not the same size. Every load-bearing
+mechanism this needs is a TOUCH POINT in `SeatMark`, `fn_fits`,
+`Body`, and BOTH sides of `.Call`/`.CallPtr` in memory.av — the same
+shape as R1 itself (§4), which had its own red-team table and its own
+landing. Attempting it inside R5's slice risks exactly what AGENT_RULES
+warns against: "a wrong elision is a use-after-free that tests may
+not see," compounded by a HALF-BUILT calling convention with no
+red team of its own. R5 (§30) already found and fixed one real
+use-after-free from a much narrower change; this is not the moment to
+also carry an unfinished one. What follows is grounded in the actual
+call sites (file:line), not a sketch.
+
+**D17. Ownership is a SEAT MARK, not a per-call decision.** The ticket
+offers two designs — "per seat from the callee's body" or "per call, a
+dying argument at an owning seat" — and names the deciding constraint
+itself: "keep ONE calling convention per fn symbol." A per-call choice
+means the SAME callee compiles two ways depending on who calls it, or
+carries a runtime branch; CLAUDE.md's fn-type-marks law exists
+precisely to rule this out ("a `mut`-taking fn stored in a plain fn
+seat wrote through an immutable `let` with no diagnostic, in both
+engines," the defect a mark-on-the-TYPE closes). So: a FOURTH mark,
+alongside `mutable`/`settled`/`unshared` — `SeatMark { mutable: bool,
+settled: bool, unshared: bool = false, owned: bool = false }`
+(core/types.av:792, appended — a GROWTH, not a move). The word is the
+owner's to choose; `owned` is the working name below (Perceus calls
+this the same thing; the runtime already says "owned twin" for the
+analogous runtime-row contract).
+
+**Grammar.** `features/fns/mod.av:40`'s `fn` rule already spells three
+optional prefix words per parameter: `( ck:"const" )? ( mk:"mut" )?
+( ik:"isolated" )? ps:NAME`. A fourth slot joins them (trailing comma
+law unaffected — this is a prefix, not a list). The SAME rule serves
+`extern fn` (line 39) and `once fn` (line 41); whether `owned` reaches
+those too is a real question — an extern's inout seat already takes
+the CALLER's cell address (`host_regs`, features/fns/lower.av:44), a
+different crossing than an Avra-to-Avra `owned` transfer, and a `once
+fn` takes no arguments at all (F2055) so the question does not reach
+it.
+
+**Type system.**
+- `owned_mark(marks, j) -> bool` beside `mut_mark`/`settled_mark`/
+  `isolated_mark` (core/types.av:817-829).
+- `fn_fits` (features/checks.av:86-103) gains one more line in the
+  per-seat loop, the SAME asymmetry direction as the other three:
+  `if owned_mark(g.marks, j) && !owned_mark(w.marks, j) { fits = false
+  }` — a value that consumes seat `j` cannot be smuggled into a seat
+  type that never promised to consume it, or a caller through a
+  DIFFERENT (unmarked) seat type would keep believing it still owns
+  the argument after the call.
+- `mark_word` (types.av:843-855) encodes the three existing marks as
+  ONE letter each (`p/m/c/b/P/M/C/B` by `unshared`×`mutable`×
+  `settled`); a fourth boolean doubles the space to sixteen. Folding
+  it into the same letter is the wrong shape — spell it as a SECOND
+  character per seat (`mark_word`'s existing letter, then `o` or
+  nothing), so the interner's key stays one string and the doubling
+  does not have to invent eight new letters nobody can read.
+- `declared_marks`/`marks_of` (features/checks.av:1005,
+  features/decls.av:971) read the parsed `owned` flag the same way
+  they read `const`/`mut`/`isolated` today.
+- A NEW REFUSAL: `owned` combined with `mut` on the same seat. The two
+  are opposed by what they promise — `mut` is shared, caller-visible
+  writing; `owned` is exclusive consumption, nothing left for the
+  caller to see written back through. `fn f(owned mut x: T)` refuses,
+  licensed at the seat, own F-code.
+- Whether `owned self` is legal (a builder's `fn build(owned self) ->
+  Output`) is a real, useful case (Rust's `self` consumption) and a
+  real question for the receiver's own seat-mark plumbing — worth
+  landing, not worth deciding here.
+
+**Lowering, the callee's side — the smaller half.** `Body` (compiler/
+lower/lower.av:71-89) gains `marks: List<SeatMark> = no_marks(...)`
+— sized to `params.length`, a GROWTH at all seven construction sites
+(lower.av:275, 511, 542, 566, 580, 608, 767, 789), most of which
+already have `FnSig`/`Decls` in scope to read it from (`lower_fn` at
+511 already threads a declared `Decl x`); the synthetic bodies
+(`lower_lambda`, `lower_collect`, `lower_root`, `lower_main`,
+`wrapped_body`, `unboxing_body`) take `no_marks` since none of them
+declare a param a caller could mark `owned`. In `memory.av`,
+`standing_regs` (line 73-80) currently marks EVERY param standing
+unconditionally (`j < seats`); an `owned` seat must NOT be standing —
+it is genuinely scope-owned, so the entry scope's `manages()` must
+also SEED it at function start (right after the body's own
+`ScopeEnter`, before the first instruction that could read a param):
+`for j in 0..seats { if owned_mark(marks, j) { takes(open_scopes,
+Reg{index: j}) } }`. THAT ALONE closes the loop: `Lives.handover`
+already asks `owned_top(open_scopes, r)` (line 647) with no idea
+WHERE a register's ownership came from, so `with`/`concat` on an
+owned param takes the R1 reusing twin the moment it dies there, for
+free — R3 does not touch R1's Handover logic at all, which is the
+whole point of making ownership a SCOPE fact rather than a special
+case. And `FnExit`/`ScopeExit`'s existing release-what-the-scope-owns
+logic (`releases_for`, `exit_releases`) already frees an owned param
+that nothing ever moved — an early `return` before touching it
+releases correctly with NO new code, because it is now indistinguishable
+from any other locally-owned value.
+
+**Lowering, the caller's side — the real work.** At a `.Call`/
+`.CallPtr` whose callee's `j`-th seat is `owned` (resolved for `.Call`
+through a `name -> marks` map built once from `l.fns` in `memory()`;
+for `.CallPtr` read directly off the callee register's OWN type,
+`types.arrow_parts(reg_types[f.index]).marks` — no new plumbing there,
+since `TypeRegistry` already carries it), the caller decides PER
+ARGUMENT, Perceus-style, using the SAME `dies_at`/`owned_top` question
+R1 already asks of a `CallRt`'s first seat (`Lives.moves`, line
+664-667) — generalized from "the innermost scope owns it and it dies
+here" to any owned-seat argument of a `.Call`/`.CallPtr`:
+- DIES here, scope-owned: hand the existing reference over — no
+  retain, and `disowns(open_scopes, ar)` instead of the scope's own
+  eventual release (the reference moved to the callee, who now owes
+  it).
+- Does not die, or is not scope-owned (a param passed through, a cell
+  load, an immortal): mint the callee its OWN reference — `Retain(ar)`
+  before the call, the same shape `moved_out` already uses for a yield
+  the closing scope does not own (memory.av:450-457).
+This is genuinely NEW code in the `.Call`/`.CallPtr` arm (line 177 the
+`lent` computation for standard seats stays exactly as R5 left it, for
+every non-`owned` seat; an `owned` seat is excluded from THAT
+treatment entirely and goes through this one instead) — nothing here
+reuses `root_handed` (§30), because an `owned` seat's hazard is not
+"can the callee reach the box," it is "who releases it," a different
+question the R1 vocabulary already answers.
+
+**Red team a landing owes (none of it run — this is the list, not the
+proof).** Every attack in §30's own table, replayed with an `owned`
+seat where §30 used a plain one; plus, specific to consumption: a
+value passed to an owned seat and used AGAIN by the caller afterward
+(must retain, must NOT double-free); the same call site inside a LOOP
+(an owned argument minted fresh each turn dies each turn — the R1
+loop-condition law, "the condition runs every turn," is the same
+hazard one level up: an owned param settled ONCE after the loop
+instead of once per call would leak or double-release exactly as an
+unsettled `LoopCond` mint did); recursion passing the SAME owned
+param down every level (each frame must own exactly one reference,
+never the caller's); a `dyn`/`CallPtr` call through a stored closure
+whose STATIC type disagrees with the concrete callee's marks (must be
+refused by `fn_fits` at typing, before lowering ever sees it — the
+adversarial case is proving that refusal fires, not that lowering
+handles it); `defer`/`errdefer` capturing an owned param (does a
+capture, itself a copy per CLAUDE.md's capture law, transfer or merely
+alias the ownership the entry scope seeded?); an owned seat's value
+ALSO handed to a `mut` seat of the SAME call (refused at the type
+level once `owned mut` is refused, but a DIFFERENT owned seat plus a
+DIFFERENT mut seat, same call, aliased argument, is not refused by
+that rule and needs its own attack). A fixed-point build and
+instructions-retired numbers on `with_host`-shaped code (the ticket's
+own witness fn) close the slice, the same way §30's did.
+
+What I wanted from the language while designing this (not while
+building it, since I built none of it): the SeatMark growth is now
+four independent booleans threaded through SEVEN construction sites
+and re-encoded by hand in `mark_word`'s letter table each time one is
+added — the THIRD time this exact shape has happened (`unshared` was
+the last one). A declared-marks record that derives its own
+interner-key encoding from its own field list, rather than a hand-kept
+letter table one commit behind the type, would turn "did I remember
+every site" from a code-review question into a compiler-enforced one.
