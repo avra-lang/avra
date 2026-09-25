@@ -12,12 +12,32 @@
 /// have no node of their own, so `Field` names one by its owning
 /// literal and its position — `own_name_at` reads its NAME, `kids_at`
 /// reaches its VALUE, and it stands among a `Run` exactly as any
-/// other kid does.
+/// other kid does. A fn declaration's PARAM is the same shape one
+/// list over: `Param` names one by its owning `FnDecl`/`ExternFn` and
+/// its position — `own_name_at`/`own_type_at` read its NAME and its
+/// TYPE, and `Code.fn_params` (features/code.av) is its one door,
+/// structural rather than through a quote pattern's own recursion (a
+/// param list has no fixed arity a pattern can spell, the same reason
+/// `Code.arms`/`Code.kids` read a `match`'s arms and a struct
+/// literal's fields that way).
 export enum At {
     Expr(id: ExprId)
     Stmt(id: StmtId)
     Pat(id: PatId)
     Field(owner: ExprId, index: int)
+    Param(owner: StmtId, index: int)
+}
+
+/// A scalar field a `Shape.TypedNode` holds OPEN instead of folding
+/// into its own identity, by binder INDEX — `own_name_at`'s catalog
+/// says which kinds carry a NAME this way, `own_type_at`'s which
+/// carry a WRITTEN TYPE. A node opens at most one of each: two
+/// `Open`s on one `TypedNode` is how a `let`'s own binder and its own
+/// annotation (`let ${x}: ${T} = ...`) are held open AT ONCE, each
+/// independently.
+export enum Open {
+    Name(index: int)
+    Type(index: int)
 }
 
 /// A PATTERN over the store. `Node` pins a subject's ARITY (`shallow`,
@@ -29,16 +49,27 @@ export enum At {
 /// folded: `shallow` is the BARE fold (the name excluded — `own_name_at`
 /// carries it separately), and a repeat occurrence of `index` demands
 /// the same NAME TEXT, not the same subtree — `own_name_at`'s catalog
-/// says which kinds carry a name this way. `Run` sits among a `Node`'s
-/// kids where a list-typed field's elements are: it takes a
-/// CONTIGUOUS SPAN of the subject's siblings there, by binder index —
-/// so the owning `Node`'s arity fold cannot pin that field's exact
-/// length (`node_shallow_at`/`named_node_shallow_at` blank it).
+/// says which kinds carry a name this way. `TypedNode` is `NamedNode`'s
+/// generalization: a LIST of `Open` fields held open at once, a NAME
+/// and/or a TYPE — the shape a node wanting BOTH held open needs, which
+/// a single `index` could not say. (Kept as a THIRD variant beside
+/// `Node`/`NamedNode`, never folded into them: a compiler that
+/// COMPILES this file is also the compiler that already LOWERS every
+/// existing `NamedNode`-shaped pattern in its own source, by an
+/// already-built binary that can only ever construct the variants its
+/// own prior generation knew — growing the vocabulary bootstraps,
+/// reshaping an existing member does not, exactly as a node variant is
+/// APPENDED, never inserted.) `Run` sits among a `Node`'s kids where a
+/// list-typed field's elements are: it takes a CONTIGUOUS SPAN of the
+/// subject's siblings there, by binder index — so the owning `Node`'s
+/// arity fold cannot pin that field's exact length (`node_shallow_at`/
+/// `named_node_shallow_at`/`typed_node_shallow_at` blank it).
 export enum Shape {
     Hole(index: int)
     Run(index: int)
     Node(shallow: int, kids: List<Shape>)
     NamedNode(shallow: int, kids: List<Shape>, index: int)
+    TypedNode(shallow: int, kids: List<Shape>, opens: List<Open>)
 }
 
 impl NodeStore {
@@ -50,6 +81,7 @@ impl NodeStore {
             .Stmt(id) -> self.shallow_stmt(self.stmt(id)),
             .Pat(id) -> self.shallow_pat(self.pat(id)),
             .Field(owner, index) -> shallow_field(field_name_of(self, owner, index)),
+            .Param(owner, index) -> shallow_param(self, owner, index),
         }
     }
 
@@ -57,7 +89,9 @@ impl NodeStore {
     /// subject is never built into a value of its own. A struct
     /// literal's own kids are its FIELDS, never its values directly:
     /// a value is reached one `At.Field` down, which is where its own
-    /// name lives too.
+    /// name lives too. A `Param` has none: its name and type are read
+    /// straight off it (`own_name_at`/`own_type_at`), never recursed
+    /// into.
     fn kids_at(at: At) -> List<At> {
         match at {
             .Expr(id) -> match self.expr(id) {
@@ -67,6 +101,7 @@ impl NodeStore {
             .Stmt(id) -> self.kids_stmt(self.stmt(id)),
             .Pat(id) -> self.kids_pat(self.pat(id)),
             .Field(owner, index) -> [At.Expr(field_value_of(self, owner, index))],
+            .Param(_, _) -> [],
         }
     }
 
@@ -78,18 +113,21 @@ impl NodeStore {
             .Stmt(id) -> self.stmt_fingerprint(id),
             .Pat(id) -> self.pat_fingerprint(id),
             .Field(owner, index) -> fp(305, [fp_str(field_name_of(self, owner, index)), self.expr_fingerprint(field_value_of(self, owner, index))]),
+            .Param(owner, index) -> shallow_param(self, owner, index),
         }
     }
 
     /// Where a node sits in the source — absent for one no span
     /// names (a generated node). A field's own span is its value's —
-    /// a field's NAME carries no span of its own in the node model.
+    /// a field's NAME carries no span of its own in the node model. A
+    /// param's own span is its own written seat's.
     fn span_at(at: At) -> Span? {
         match at {
             .Expr(id) -> self.expr_span(id),
             .Stmt(id) -> self.stmt_span(id),
             .Pat(id) -> self.pat_span(id),
             .Field(owner, index) -> self.expr_span(field_value_of(self, owner, index)),
+            .Param(owner, index) -> param_of(self, owner, index).span,
         }
     }
 
@@ -102,6 +140,7 @@ impl NodeStore {
             .Stmt(id) -> self.shallow_stmt(bare_stmt(self.stmt(id))),
             .Pat(id) -> self.shallow_pat(bare_pat(self.pat(id))),
             .Field(owner, index) -> shallow_field(""),
+            .Param(owner, index) -> shallow_param(self, owner, index),
         }
     }
 }
@@ -128,11 +167,31 @@ fn field_value_of(store: NodeStore, owner: ExprId, index: int) -> ExprId {
 /// reached through `kids_at`, never folded here.
 fn shallow_field(name: string) -> int { fp(304, [fp_str(name)]) }
 
+/// A fn declaration's `index`-th PARAM — the invariant `At.Param` is
+/// minted under: `owner` is always a `FnDecl` or an `ExternFn`,
+/// exactly as `Code.fn_params` (features/code.av) builds it.
+fn param_of(store: NodeStore, owner: StmtId, index: int) -> Param {
+    match store.stmt(owner) {
+        .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> params[index],
+        rest -> Param { name: Scoped(""), ty: null, default: null, promises: plain_mark, span: null, marks: [] },
+    }
+}
+
+/// A `Param`'s own content fingerprint, reused as both its arity fold
+/// and its subtree identity — `store.param_fps`' single value: a
+/// seat's whole content (name, type and contract alike) is what "the
+/// same param" means, so no field of it is folded twice under two
+/// different doors.
+fn shallow_param(store: NodeStore, owner: StmtId, index: int) -> int {
+    store.param_fps([param_of(store, owner, index)]).first()!
+}
+
 /// The node's own name-bearing field — a let/for/const binder, a
 /// bind pattern, a variant test, a call's callee, a method or field
-/// name — for every kind a NAME hole can hold open. Absent for every
-/// other kind: nothing to hold, so `name_hole_at` never reaches it
-/// and its name stays folded into `shallow_at` as before.
+/// name, a param's own name — for every kind a NAME hole can hold
+/// open. Absent for every other kind: nothing to hold, so
+/// `name_hole_at` never reaches it and its name stays folded into
+/// `shallow_at` as before.
 export fn own_name_at(store: NodeStore, at: At) -> string? {
     match at {
         .Stmt(id) -> match store.stmt(id) {
@@ -160,6 +219,29 @@ export fn own_name_at(store: NodeStore, at: At) -> string? {
             rest -> null,
         },
         .Field(owner, index) -> field_name_of(store, owner, index),
+        .Param(owner, index) -> param_of(store, owner, index).name.of,
+    }
+}
+
+/// The node's own WRITTEN-TYPE field — a `let`/`mut`/`const`'s own
+/// annotation, a call's own (single) pinned type argument, a param's
+/// own type — for every kind a TYPE hole can hold open. Absent for
+/// every other kind, and for an unannotated `let`/an untyped param
+/// (the field itself is `TypeRef?` and reads null): nothing to hold,
+/// so `type_hole_at` never reaches it and it stays folded into
+/// `shallow_at` as before.
+export fn own_type_at(store: NodeStore, at: At) -> TypeRef? {
+    match at {
+        .Stmt(id) -> match store.stmt(id) {
+            .Let(_, ty, _) or .MutLet(_, ty, _) or .ConstDecl(_, ty, _) -> ty,
+            rest -> null,
+        },
+        .Expr(id) -> match store.expr(id) {
+            .Call(_, pins, _) -> pins.first(),
+            rest -> null,
+        },
+        .Param(owner, index) -> param_of(store, owner, index).ty,
+        .Pat(_) or .Field(_, _) -> null,
     }
 }
 
@@ -255,6 +337,7 @@ export fn node_shallow_at(store: NodeStore, at: At, kids: List<Shape>) -> int {
         .Pat(id) -> store.shallow_pat(store.pat(id)),
         // a Field's own kids are one element — never a Run's own owner
         .Field(owner, index) -> shallow_field(field_name_of(store, owner, index)),
+        .Param(owner, index) -> shallow_param(store, owner, index),
     }
 }
 
@@ -269,6 +352,65 @@ export fn named_node_shallow_at(store: NodeStore, at: At, kids: List<Shape>) -> 
         .Pat(id) -> store.shallow_pat(bare_pat(store.pat(id))),
         // a Field's own kids are one element — never a Run's own owner
         .Field(owner, index) -> shallow_field(""),
+        .Param(owner, index) -> shallow_param(store, owner, index),
+    }
+}
+
+/// `named_node_shallow_at`'s generalization: `opens` names WHICH of
+/// the node's own scalar fields are held open (a NAME, a TYPE, or
+/// both), so this folds each of them blind in turn, on top of the
+/// same RUN blanking the other two forms already carry.
+export fn typed_node_shallow_at(store: NodeStore, at: At, kids: List<Shape>, opens: List<Open>) -> int {
+    let blank_name = opens.any(is_name_open)
+    let blank_type = opens.any(is_type_open)
+    let blank_run = kids.any(is_run_shape)
+    if !blank_name && !blank_type && !blank_run { return store.shallow_at(at) }
+    match at {
+        .Expr(id) -> store.shallow_expr(folded_expr(store.expr(id), blank_name, blank_type, blank_run)),
+        .Stmt(id) -> store.shallow_stmt(folded_stmt(store.stmt(id), blank_name, blank_type)),
+        .Pat(id) -> store.shallow_pat(folded_pat(store.pat(id), blank_name)),
+        .Param(owner, index) -> shallow_param(store, owner, index),
+        .Field(owner, index) -> shallow_field(if blank_name { "" } else { field_name_of(store, owner, index) }),
+    }
+}
+
+/// `bare_stmt`'s twin, ALSO blanking the node's own written-type
+/// field when `blank_type` — `TypedNode`'s own fold, never reached by
+/// `NamedNode`'s (name-only) path.
+fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool) -> Stmt {
+    match s {
+        .Let(name, ty, value) -> Stmt.Let(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+        .MutLet(name, ty, value) -> Stmt.MutLet(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+        .ConstDecl(name, ty, value) -> Stmt.ConstDecl(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+        .For(name, from, to, cond, step, stmts) -> Stmt.For(if blank_name { Scoped("") } else { name }, from, to, cond, step, stmts),
+        .ForEach(index, name, subject, stmts) -> Stmt.ForEach(index, if blank_name { Scoped("") } else { name }, subject, stmts),
+        rest -> s,
+    }
+}
+
+fn folded_pat(p: Pat, blank_name: bool) -> Pat {
+    match p {
+        .Bind(_) -> if blank_name { Pat.Bind(Scoped("")) } else { p },
+        .Variant(name, args) -> Pat.Variant(if blank_name { Plain("") } else { name }, args),
+        rest -> p,
+    }
+}
+
+/// `folded_stmt`/`folded_pat`'s twin over `Expr`, with the RUN-
+/// ELIGIBLE list field ALSO blanked to `[]` when `blank_run`, and the
+/// call's own PINNED TYPE ARGUMENTS when `blank_type` — its one
+/// TYPE-openable field.
+fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> Expr {
+    match e {
+        .Call(callee, pins, args) -> Expr.Call(if blank_name { Scoped("") } else { callee }, if blank_type { [] } else { pins }, if blank_run { [] } else { args }),
+        .MethodCall(subject, name, args) -> Expr.MethodCall(subject, if blank_name { Plain("") } else { name }, if blank_run { [] } else { args }),
+        .Prop(subject, name) -> Expr.Prop(subject, if blank_name { Plain("") } else { name }),
+        .Comp(elem, index, name, source, hi, cond) -> Expr.Comp(elem, index, if blank_name { Scoped("") } else { name }, source, hi, cond),
+        .StructLit(name, fields, values) -> Expr.StructLit(if blank_name { Nominal("") } else { name }, if blank_run { [] } else { fields }, if blank_run { [] } else { values }),
+        .Lambda(params, body) -> Expr.Lambda(if blank_name { blanked_param_name(params) } else { params }, body),
+        .ListLit(elems) -> Expr.ListLit(if blank_run { [] } else { elems }),
+        .Block(stmts, value) -> Expr.Block(if blank_run { [] } else { stmts }, if blank_run { null } else { value }),
+        rest -> e,
     }
 }
 
@@ -278,6 +420,10 @@ export fn named_node_shallow_at(store: NodeStore, at: At, kids: List<Shape>) -> 
 /// `match_kids`, which peels it off before any single-subject match
 /// is attempted).
 fn is_run_shape(s: Shape) -> bool { s is .Run }
+
+fn is_name_open(o: Open) -> bool { o is .Name }
+
+fn is_type_open(o: Open) -> bool { o is .Type }
 
 /// An arm run's ARITY: each arm's pattern count and guard presence,
 /// in order. The arm's VALUE and each PATTERN's own content are
@@ -318,13 +464,16 @@ fn kids_view(v: BodyView) -> List<At> {
     }
 }
 
-/// Two `At`s name the same node — same kind, same arena index.
+/// Two `At`s name the same node — same kind, same arena index (a
+/// `Field`/`Param` compares its owner and its position instead, since
+/// neither has an arena index of its own).
 fn same_at(a: At, b: At) -> bool {
     match a {
         .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), _ -> false },
         .Stmt(x) -> match b { .Stmt(y) -> same_stmt(x, y), _ -> false },
         .Pat(x) -> match b { .Pat(y) -> same_pat(x, y), _ -> false },
         .Field(ox, ix) -> match b { .Field(oy, iy) -> same_expr(ox, oy) && ix == iy, _ -> false },
+        .Param(ox, ix) -> match b { .Param(oy, iy) -> same_stmt(ox, oy) && ix == iy, _ -> false },
     }
 }
 
@@ -343,6 +492,10 @@ fn same_subtree(store: NodeStore, a: At, b: At) -> bool {
         .Pat(x) -> match b { .Pat(y) -> store.exact_pat(store.pat(x), store.pat(y)), rest -> false },
         .Field(ox, ix) -> match b {
             .Field(oy, iy) -> field_name_of(store, ox, ix) == field_name_of(store, oy, iy) && store.exact_expr(store.expr(field_value_of(store, ox, ix)), store.expr(field_value_of(store, oy, iy))),
+            rest -> false,
+        },
+        .Param(ox, ix) -> match b {
+            .Param(oy, iy) -> store.exact_param(param_of(store, ox, ix), param_of(store, oy, iy)),
             rest -> false,
         },
     }
@@ -404,7 +557,16 @@ fn hole_indices_in(shape: Shape) -> List<int> {
         .Hole(h) or .Run(h) -> [h],
         .Node(_, kids) -> flatten([hole_indices_in(k) for k in kids]),
         .NamedNode(_, kids, index) -> [index].concat(flatten([hole_indices_in(k) for k in kids])),
+        .TypedNode(_, kids, opens) -> open_indices(opens).concat(flatten([hole_indices_in(k) for k in kids])),
     }
+}
+
+fn open_index(o: Open) -> int {
+    match o { .Name(i) or .Type(i) -> i }
+}
+
+fn open_indices(opens: List<Open>) -> List<int> {
+    [open_index(o) for o in opens]
 }
 
 /// The greatest binder index anywhere under `shape`, or -1 when it
@@ -414,6 +576,7 @@ fn max_hole(shape: Shape) -> int {
         .Hole(h) or .Run(h) -> h,
         .Node(_, kids) -> max_of_holes(kids),
         .NamedNode(_, kids, index) -> higher(index, max_of_holes(kids)),
+        .TypedNode(_, kids, opens) -> higher(max_of_opens(opens), max_of_holes(kids)),
     }
 }
 
@@ -425,6 +588,16 @@ fn max_of_holes(kids: List<Shape>) -> int {
     for k in kids {
         let inner = max_hole(k)
         if inner > best { best = inner }
+    }
+    best
+}
+
+fn max_of_opens(opens: List<Open>) -> int {
+    // LICENSED style.hand_rolled_scan: a max fold; the subset has no reduce/max_by
+    mut best = -1
+    for o in opens {
+        let i = open_index(o)
+        if i > best { best = i }
     }
     best
 }
@@ -456,6 +629,21 @@ fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?
         return next
     }
     if own_name_at(store, seen![0]) == own_name_at(store, subject) { acc } else { null }
+}
+
+/// A TYPE binder seat: the FIRST occurrence records the subject; a
+/// REPEAT occurrence must carry the SAME WRITTEN TYPE — `bound_hole`'s
+/// twin, comparing what `own_type_at` reads (`spelled`, core/nodes.av)
+/// rather than the whole subtree — a written type's own spelling, not
+/// the typer's answer, exactly as a NAME binder compares written text.
+fn bound_type_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
+    let seen: List<At>? = acc[hole]
+    if seen == null {
+        mut next = acc
+        next.set(hole, [subject])
+        return next
+    }
+    if spelled(own_type_at(store, seen![0])!) == spelled(own_type_at(store, subject)!) { acc } else { null }
 }
 
 /// A RUN binder seat: the FIRST occurrence records the whole span —
@@ -490,6 +678,7 @@ fn match_shape(store: NodeStore, subject: At, shape: Shape, acc: List<List<At>?>
         .Run(_) -> null,
         .Node(shallow, kids) -> match_node(store, subject, shallow, kids, acc),
         .NamedNode(shallow, kids, index) -> match_named_node(store, subject, shallow, kids, index, acc),
+        .TypedNode(shallow, kids, opens) -> match_typed_node(store, subject, shallow, kids, opens, acc),
     }
 }
 
@@ -504,6 +693,41 @@ fn match_named_node(store: NodeStore, subject: At, shallow: int, kids: List<Shap
     let next? = bound_name_hole(store, subject, index, acc) else { return null }
     if kids.is_empty() { return next }
     match_kids(store, store.kids_at(subject), kids, next)
+}
+
+/// A `TypedNode`: `match_named_node`'s generalization — the subject's
+/// OPEN-blind shallow fold agrees, each of `opens` binds or repeats
+/// in order (a NAME open refuses a subject whose kind carries none, a
+/// TYPE open likewise), then its ordinary children match as before.
+fn match_typed_node(store: NodeStore, subject: At, shallow: int, kids: List<Shape>, opens: List<Open>, acc: List<List<At>?>) -> List<List<At>?>? {
+    if typed_node_shallow_at(store, subject, kids, opens) != shallow { return null }
+    let bound? = bind_opens(store, subject, opens, acc) else { return null }
+    if kids.is_empty() { return bound }
+    match_kids(store, store.kids_at(subject), kids, bound)
+}
+
+/// Every one of a `TypedNode`'s own `opens`, bound or repeat-checked
+/// in order — a NAME open reads `own_name_at`, a TYPE open
+/// `own_type_at`, and either refuses when the subject's kind answers
+/// none (a defensive refusal, never reached once the pattern's own
+/// build agrees with what it is matched against).
+fn bind_opens(store: NodeStore, subject: At, opens: List<Open>, acc: List<List<At>?>) -> List<List<At>?>? {
+    mut cur = acc
+    for o in opens {
+        match o {
+            .Name(idx) -> {
+                if own_name_at(store, subject) == null { return null }
+                let next? = bound_name_hole(store, subject, idx, cur) else { return null }
+                cur = next
+            },
+            .Type(idx) -> {
+                if own_type_at(store, subject) == null { return null }
+                let next? = bound_type_hole(store, subject, idx, cur) else { return null }
+                cur = next
+            },
+        }
+    }
+    cur
 }
 
 fn match_node(store: NodeStore, subject: At, shallow: int, kids: List<Shape>, acc: List<List<At>?>) -> List<List<At>?>? {
@@ -571,15 +795,15 @@ fn run_span(store: NodeStore, subjects: List<At>, from: int, after: Shape?, acc:
 
 /// Match `subject` against `shape`: null on a miss, one binder's
 /// WHOLE SPAN per binder in binder order on a hit — a `Hole`/
-/// `NamedNode` binder's span is always one element, `Run`'s is zero
-/// or more. TOTAL BY CONSTRUCTION: `shape` only ever came from
-/// `shape_at`/`quote_pat_shape`, whose holes are DEDUPED and every
-/// listed one reachable, so a hit's binds are DENSE — no seat a walk
-/// could leave unfilled, and no forced unwrap either. A kind mismatch
-/// (an Expr subject against a Stmt-rooted shape) is a miss like any
-/// other — the type's NAME rides the shallow fold's first part, so
-/// the two spaces never collide. Parentheses mint no node and spans
-/// are never folded, so neither ever matters.
+/// `NamedNode`/`TypedNode` binder's span is always one element,
+/// `Run`'s is zero or more. TOTAL BY CONSTRUCTION: `shape` only ever
+/// came from `shape_at`/`quote_pat_shape`, whose holes are DEDUPED
+/// and every listed one reachable, so a hit's binds are DENSE — no
+/// seat a walk could leave unfilled, and no forced unwrap either. A
+/// kind mismatch (an Expr subject against a Stmt-rooted shape) is a
+/// miss like any other — the type's NAME rides the shallow fold's
+/// first part, so the two spaces never collide. Parentheses mint no
+/// node and spans are never folded, so neither ever matters.
 export fn matched_runs(store: NodeStore, subject: At, shape: Shape) -> List<List<At>>? {
     let seed: List<List<At>?> = [null for i in 0..max_hole(shape) + 1]
     let acc? = match_shape(store, subject, shape, seed) else { return null }
