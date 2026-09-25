@@ -107,6 +107,12 @@ fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     let gives = e.constant(0)
     let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
+    // `got` is `avra_capture_end`'s own answer, owned by this entry —
+    // read by both arms above (the compare, and the red arm's print),
+    // never by the memory pass, which never sees hand-built IR. One
+    // release here, after the arms converge, is what a lowered body
+    // would have emitted for itself.
+    e.give(Ins.Release(got))
 }
 
 /// The engines a program's line names — the evaluator ran it here
@@ -139,7 +145,12 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
     let tail = e.text("/${total} tests passed")
     let line = e.mint(e.types.type(string))
     e.give(Ins.CallRt(line, "avra_str_concat", [text, tail]))
+    // `text` and `line` are each a fresh owned string this hand-built
+    // entry minted and the memory pass never walks — release both
+    // once their one use (the concat, then the print) has read them.
+    e.give(Ins.Release(text))
     e.give(Ins.CallRtVoid("avra_puts", [line]))
+    e.give(Ins.Release(line))
 }
 
 /// One case: called, judged, and counted when it fails.
