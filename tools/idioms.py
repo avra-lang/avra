@@ -234,9 +234,19 @@ def balanced(text, at):
 
 def split_seats(seats):
     """`seats` cut at its TOP-LEVEL commas — a seat's own type may
-    hold one (`fn(A, B) -> C`)."""
-    out, depth, start = [], 0, 0
-    for j, c in enumerate(seats):
+    hold one (`fn(A, B) -> C`). AN ARROW'S `>` CLOSES NOTHING: a fn
+    type answering a generic (`fn(A) -> Result<B, C>`) closes its
+    OWN parens at depth 0, and the arrow right after read as a
+    generic-close too, sending depth negative — so the comma inside
+    `Result<B, C>` then read as TOP-LEVEL and split a seat in two.
+    Never witnessed until a seat's fn type started answering a
+    two-argument generic and another seat followed it."""
+    out, depth, start, j = [], 0, 0, 0
+    while j < len(seats):
+        c = seats[j]
+        if seats[j:j + 2] == "->":
+            j += 2
+            continue
         if c in "(<":
             depth = depth + 1
         elif c in ")>":
@@ -244,6 +254,7 @@ def split_seats(seats):
         elif c == "," and depth == 0:
             out.append(seats[start:j])
             start = j + 1
+        j += 1
     return out + [seats[start:]]
 
 def opening_bracket(text, at):
@@ -848,7 +859,11 @@ CLEAN = {
              "    w.c.buf = grown"]],
     "style.dead_parameter": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
-            ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+            ["fn f(a: int) -> int { g(a) with { b: 1 } }"],
+            ["fn f(settle: fn(int) -> Result<int, string>, cross: fn(int) -> int) -> int {",
+             "    settle(1)",
+             "    cross(2)",
+             "}"]],
     "style.bool_comprehension": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],

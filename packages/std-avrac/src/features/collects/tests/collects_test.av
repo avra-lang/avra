@@ -6,7 +6,7 @@
 //! answers `UnknownKind` for any word at all; these run through
 //! `provided()` instead, the one door that gives a scratch program a
 //! real component to name.
-use @std.avrac.testing.{refused_in, shown, provided, vendored_meta, vendored_meta_paths}
+use @std.avrac.testing.{refused_in, shown, provided, answered, vendored_meta, vendored_meta_paths}
 use @std.avrac.compiler.{Program, new_workspace, avra}
 use @std.avrac.compiler.host.{memory_host}
 
@@ -16,6 +16,23 @@ fn ui() -> string {
 
 fn built(main: string) -> Program {
     provided("use @x.c.{widget}\n" + main, ui())
+}
+
+/// A trivial marker annotation, needed by every `@name`-kind test:
+/// `@std/meta`'s own `Named` is the only receiver a scratch program
+/// can name (`Fn`/`Type` narrow to what `declared_kind` answers, and
+/// `Named` takes every declaration alike), so this is the one fn
+/// every `@tag(...)` site below crosses.
+fn tag_decl() -> string {
+    "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n"
+}
+
+/// The ORM's own two annotations: `@model_shape` and `@model` are
+/// separate marks a type may wear independently — pairing them is
+/// the ORM's OWN law, never `collect`'s. `model`'s receiver is
+/// `Type`, not `Named`: it is what lets `it` cross WHOLE.
+fn orm_decl() -> string {
+    "use @std.meta.{Type}\nfn model_shape(what: Type) -> void {}\nfn model(what: Type) -> void {}\n"
 }
 
 fn ui2() -> string {
@@ -41,6 +58,52 @@ fn cross_package(import_orphan: bool) -> string? {
         "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport const marker: int = 1\nexport widget orphaned { n -> null }\n",
     })
     let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av", "/w/vendor/d/avra.toml", "/w/vendor/d/src/d.av", "/w/vendor/d/src/orphan/orphan.av"]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() {
+        .Ok(v) -> v,
+        .Err(_) -> null,
+    }
+}
+
+/// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
+/// (§4.4): `@acme/parts` is always reached (`app` imports its
+/// `Widget`) and carries both an exported `Widget` and a PRIVATE
+/// `Secret`, both `@tag`ged — `Secret` must never join, reached or
+/// not, since it is neither the collect's own package nor exported.
+/// `@acme/extra`'s exported `Orphan` joins only once `app` reaches it
+/// at all — file reachability, same as `cross_package`'s `orphan`.
+fn annotated_cross_package(import_extra: bool) -> string? {
+    let files = vendored_meta({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/parts\" = { path = \"vendor/parts\" }\n\"@acme/extra\" = { path = \"vendor/extra\" }\n",
+        "/w/src/main.av": "use @acme.parts.{Widget}\n" + if import_extra { "use @acme.extra.{Orphan}\n" } else { "" } + "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\nxs.length",
+        "/w/vendor/parts/avra.toml": "[package]\nname = \"@acme/parts\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/parts/src/parts.av": tag_decl() + "@tag(\"widget\")\nexport type Widget = { label: string }\n@tag(\"secret\")\ntype Secret = { label: string }\n",
+        "/w/vendor/extra/avra.toml": "[package]\nname = \"@acme/extra\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/extra/src/extra.av": tag_decl() + "@tag(\"ghost\")\nexport type Orphan = { label: string }\n",
+    })
+    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/parts/avra.toml", "/w/vendor/parts/src/parts.av", "/w/vendor/extra/avra.toml", "/w/vendor/extra/src/extra.av"]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() {
+        .Ok(v) -> v,
+        .Err(_) -> null,
+    }
+}
+
+/// `annotated_cross_package`'s ORM twin: the same shape — a reached
+/// `@acme/parts` carrying an exported `User` and a private `Secret`,
+/// an unreached-until-asked `@acme/extra` carrying an exported
+/// `Gadget` — but `it` crosses WHOLE as `@std/meta`'s `Type`, the
+/// ORM's own program.
+fn orm_cross_package(import_extra: bool) -> string? {
+    let files = vendored_meta({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/parts\" = { path = \"vendor/parts\" }\n\"@acme/extra\" = { path = \"vendor/extra\" }\n",
+        "/w/src/main.av": "use @acme.parts.{User}\n" + if import_extra { "use @acme.extra.{Gadget}\n" } else { "" } + "use @std.meta.{Type}\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in closure as ModelEntry { model: it, name: it.name } by it.name\n[m.name + \":\" + \"\${m.model.fields.length}\" for m in models].join(\" \")",
+        "/w/vendor/parts/avra.toml": "[package]\nname = \"@acme/parts\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/parts/src/parts.av": orm_decl() + "@model\nexport type User = { id: int, name: string }\n@model\ntype Secret = { note: string }\n",
+        "/w/vendor/extra/avra.toml": "[package]\nname = \"@acme/extra\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/extra/src/extra.av": orm_decl() + "@model\nexport type Gadget = { label: string }\n",
+    })
+    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/parts/avra.toml", "/w/vendor/parts/src/parts.av", "/w/vendor/extra/avra.toml", "/w/vendor/extra/src/extra.av"]
     let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
     match ws.program("/w/src/main.av").run() {
         .Ok(v) -> v,
@@ -134,6 +197,80 @@ spec "collect's own laws" {
         }
         then "importing that module's own name collects its instance" {
             cross_package(true) == "1"
+        }
+    }
+    given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
+        // `@tag` in the kind slot is `CollectKind.Annotated`, never
+        // resolved against the component list — every declaration
+        // wearing `@tag`, of any DeclKind (`type` here, unlike
+        // `.Component`'s always-a-const instances), gathered by the
+        // written name alone. `it.mark` answers the MATCHED
+        // annotation's own name and its literal arguments.
+        then "every declaration wearing the annotation is gathered, `it.mark` reads its name and args" {
+            answered(provided(tag_decl() + "@tag(\"widget\")\nexport type Widget = { label: string }\n@tag(\"gadget\")\nexport type Gadget = { label: string }\ntype MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect models: List<Entry> = @tag in self as Entry { name: it.name, mark: it.mark } by it.name\n[e.name + \":\" + e.mark.name + \"(\" + e.mark.args.join(\",\") + \")\" for e in models].join(\" \")", ui())) == "Gadget:tag(gadget) Widget:tag(widget)"
+        }
+        then "a bare word still resolves against the component list, never against annotations" {
+            !refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1"), "is not a declaration kind")
+        }
+        then "a path past `mark` on an `.Annotated` kind refuses — it has no instance value to read a field off" {
+            refused_in(provided(tag_decl() + "@tag(\"widget\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n1", ui()), "is not a field this kind's declarations answer")
+        }
+    }
+    given "the self-read cycle law (§4.2), over an `.Annotated` kind" {
+        // The same cycle `.Component` refuses, keyed off every
+        // `@name` the reading declaration itself wears
+        // (`self_collect_words`, features/consts/check.av) rather
+        // than `NodeStore.instance_of` — an annotated member need
+        // not be a component instance at all.
+        then "a const wearing the annotation the collect gathers by, reading that collect, refuses" {
+            refused_in(provided(tag_decl() + "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\n@tag(\"cyclic\")\nexport const cyclic: int = xs.length\n1", ui()), "`cyclic` is collected into `xs`")
+        }
+        then "a const wearing a DIFFERENT annotation reads the collect clean — no cycle" {
+            !refused_in(provided(tag_decl() + "use @std.meta.{Named}\nfn other(what: Named) -> void {}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\n@other\nexport const reads_xs: int = xs.length\n1", ui()), "collected into")
+        }
+    }
+    given "the export law across packages (§4.4)" {
+        // `Secret` is private and lives in a DIFFERENT package than
+        // the collect's own file — it must never join, reached or
+        // not; `Widget` (exported, same foreign package) always
+        // does; `Orphan` (exported, a SEPARATE package) joins only
+        // once `app` reaches it at all, `cross_package`'s law again.
+        then "an exported declaration in a reached foreign package joins, a private one there does not" {
+            annotated_cross_package(false) == "1"
+        }
+        then "reaching the second package too admits its own exported declaration as well" {
+            annotated_cross_package(true) == "2"
+        }
+    }
+    given "the ORM's exact shape — `it` as the whole `@std/meta` `Type` value" {
+        // `type ModelEntry = { model: Type, name: string }` / `as
+        // ModelEntry { model: it, name: it.name }`: a bare `it` whose
+        // SEAT names `@std/meta`'s `Type` crosses the WHOLE
+        // declaration (fields, variants, at, doc, annotations) —
+        // `Decls.takes_a_decl`, the same door an annotation's own
+        // receiver crosses through — never the fn-value door `run:
+        // it` uses for a component's own field.
+        then "`it` carries the type's own fields and name, `it.name` orders `by`" {
+            answered(provided(orm_decl() + "@model\nexport type User = { id: int, name: string }\n@model\nexport type Gadget = { label: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\n[m.name + \":\" + m.model.name + \":\" + \"\${m.model.fields.length}\" for m in models].join(\" \")", ui())) == "Gadget:Gadget:1 User:User:2"
+        }
+        // Matching is EXACT — pairing `@model_shape` with `@model` is
+        // the ORM's own law, never `collect`'s.
+        then "a type wearing both `@model_shape` and `@model` is collected" {
+            answered(provided(orm_decl() + "@model_shape\n@model\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length", ui())) == "1"
+        }
+        then "a type wearing only `@model_shape` is NOT collected" {
+            answered(provided(orm_decl() + "@model_shape\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length", ui())) == "0"
+        }
+        then "a type wearing only `@model`, with no `@model_shape`, IS collected" {
+            answered(provided(orm_decl() + "@model\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length", ui())) == "1"
+        }
+        // Closure across packages, exported only (§4.4) — with `it`
+        // crossing WHOLE.
+        then "an exported model in a reached foreign package joins, a private one there does not" {
+            orm_cross_package(false) == "User:2"
+        }
+        then "reaching the second package too admits its own exported model as well" {
+            orm_cross_package(true) == "Gadget:1 User:2"
         }
     }
     given "the `it`/`by` words" {
