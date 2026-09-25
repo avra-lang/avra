@@ -5,7 +5,7 @@ use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Va
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
-use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type}
+use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
 use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_untold, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
 // LICENSED style.unused_import: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
@@ -60,6 +60,12 @@ export type Parsed = {
 /// `explain_doc`'s answer: the rendered text, and the files it read to
 /// say so — a durable cache of it needs both (compiler/db.av).
 export type DocAnswer = { text: string, files: List<string> }
+
+/// One exported declaration's own facts, as `avra docs dump` rows
+/// them: its qualified address, its kind's word (features/decls.av's
+/// `kind_word`), a best-effort signature, its `///` lines, and the
+/// package it came from.
+export type DocRow = { address: string, kind: string, signature: string, prose_lines: List<string>, package: string }
 
 export fn new_dispatch() -> Dispatch {
     let enumpats: dyn PatSemantics = EnumPatSemantics {}
@@ -305,6 +311,38 @@ impl Program {
             text: "`${name}` names more than one declaration in this package — qualify it: ${qualified}",
             files: [decls.file(d.file).path for d in matches],
         }
+    }
+
+    /// Every EXPORTED declaration this package's own — `avra docs
+    /// dump`. A qualified address (`module.name`, `collision_answer`'s
+    /// spelling) so two modules exporting the same bare name never
+    /// collide in one array the way a single-name lookup would refuse.
+    /// `Builtin` is excluded: the LANGUAGE declares it, not this
+    /// package — every package would otherwise repeat the same rows
+    /// for `int`/`List`/`Task`/…, and it carries no file of its own
+    /// for `doc_of`'s fallback to mean anything about.
+    fn dumped_decls(package: string) -> List<DocRow> {
+        let decls = self.ws.decls
+        [self.dump_row(decls, d, package) for d in decls.decls.get() if d.exported && !(d.kind is .Builtin)]
+    }
+
+    fn dump_row(decls: Decls, d: Decl, package: string) -> DocRow {
+        DocRow {
+            address: "${decls.module_of(d.id)}.${d.name}",
+            kind: kind_word(d.kind),
+            signature: self.dump_signature(decls, d),
+            prose_lines: decls.doc_of(d.id) ?? [],
+            package: package,
+        }
+    }
+
+    /// A FN's signature, `explain_annotation`'s own spelling reused;
+    /// every other kind has no params/ret to print, so its word and
+    /// name stand in rather than a fabricated shape.
+    fn dump_signature(decls: Decls, d: Decl) -> string {
+        let sig? = decls.sig(d.id)?.fn_sig() else { return "${kind_word(d.kind)} ${d.name}" }
+        let holes = [decls.types.name_of(pt) for pt in sig.params]
+        "fn ${d.name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
     }
 
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s

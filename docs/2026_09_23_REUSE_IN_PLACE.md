@@ -1260,3 +1260,569 @@ feature marking one fn as answerable by ANY feature, distinct from
 both `export` (crosses packages) and package-private — would have
 let `defers` ask the real `callee_of` instead of keeping a second,
 narrower copy of its `.Declared` arm in sync by hand.
+
+## §30 As built — R13, identical monomorphic copies merged
+
+**The mechanism.** `object_written` (backend/llvm_wrapper.c) already
+ran `default<O%d>` through `LLVMRunPasses` per emitted module; it now
+calls `LLVMPassBuilderOptionsSetMergeFunctions(opts, 1)` first — the
+same C-API knob clang's `-fmerge-functions` sets, folding a duplicate
+body into a THUNK (a tail call/branch to the one it kept) rather than
+a raw pass-string splice. One line, no new pipeline text.
+
+**Why a thunk never merges an ADDRESS.** MergeFunctions has two
+shapes: replace every USE of the duplicate with the canonical
+function's value (legal only when the duplicate's address is not
+itself observable — `unnamed_addr`), or leave the duplicate's own
+symbol standing and rewrite its BODY to jump into the canonical one.
+Avra's backend never marks a function `unnamed_addr` (grepped: the
+only `LLVMSetUnnamedAddress` call in llvm_wrapper.c is on two STRING
+globals, never a function), so every merge here takes the second
+shape by construction — proved first in isolation
+(`opt -passes='default<O2>,mergefunc'` on hand-written IR: an
+external-linkage pair thunks with both addresses intact;
+`unnamed_addr` on the same pair is what lets the optimizer
+substitute one address for the other in a THIRD function that reads
+`ptr @a`/`ptr @b` — confirming the property is exactly the mark's,
+not a hope). Then proved on Avra itself: `pick_a`/`pick_b`, two
+non-generic fns over different single-field managed structs
+(`{v: string}`, `{v: List<int>}`), each passed as a VALUE into a
+higher-order `via_a`/`via_b` (forcing `FnAddr` + an indirect call,
+never a direct one) — `_av_pick_b` compiles to `b 0x…<_av_pick_a>`
+(4 bytes, its OWN symbol, a live jump into the real body) while
+`_av_pick_a` keeps its full ~208-byte implementation; both `via_a`
+and `via_b` compute the right answer through the indirect call
+(`eval == native`, `none/one|-1/2`), and `atos` on both addresses
+still answers `av_pick_a`/`av_pick_b` by name. Avra also has no
+channel that could notice a difference: `Type.Fn` is `false` under
+`comparable()` (features/checks.av) — `==` on two fn values is F2000
+before this ever reaches codegen — so the one operation that would
+actually observe two merged fns sharing behavior is refused at the
+type checker, independent of this change.
+
+**The corpse that isn't reachable.** One pair — a private, non-generic,
+single-call-site `first_of_a`/`first_of_b` (called directly, never
+passed as a value) — merged into `b println+0x14`: a mid-function
+OFFSET inside an unrelated fn. Alarming until traced: both call sites
+get inlined by the ordinary O2 inliner, leaving the standalone bodies
+with zero uses ANYWHERE in the module (confirmed: grepped the whole
+binary's disassembly for their symbol names — no `bl`/`b` references
+outside their own label), yet External linkage means LLVM cannot
+delete them outright, so MergeFunctions is free to fold their
+now-meaningless shells into whatever fits — the folded target's
+CONTENT is irrelevant because nothing ever branches there. Avra's own
+surface can't construct a caller for it either: no raw external
+linkage crosses into an Avra program, and the only way to make a
+private fn's address observable is the `$w`/`FnAddr` wrapper path,
+which is exactly the path `pick_a`/`pick_b` proved safe above. Kept
+as a finding, not a defect — it explains why a THUNK's target can
+look nonsensical under `nm` without meaning anything is wrong.
+
+**Numbers.** `build/avra.pre` (main 94619dd, unmodified) against the
+rebuilt `build/avra`, fixed point proven (three successive
+`make avra` byte-identical, `cmp` clean, confirmed twice after an
+unrelated stale intermediate binary was caught and re-derived —
+see the working-discipline note below):
+
+| | before | after |
+|---|---|---|
+| `build/avra` (whole file) | 7,435,344 B | 7,256,160 B (−179,184, −2.41%) |
+| `__text` | 5,205,556 B | 5,089,432 B (−116,124, −2.23%) |
+| defined text symbols (`nm`) | 14,197 | 14,138 (−59) |
+
+The symbol count barely moves because a thunk KEEPS its symbol —
+almost every byte saved is a duplicate's BODY shrinking to 4 bytes,
+not a symbol disappearing (`tools/symsize.py`'s per-symbol diff is
+noisy here for the same reason: a merge into a fresh `private` shared
+body, which `nm` never lists by name, misattributes its bytes to
+whatever named symbol sorts next to it — read the TOTAL, not the
+per-symbol rows, for this change).
+
+Speed, `/usr/bin/time -l` "instructions retired", `.avra-cache`
+cleared before every run compared (not only the first — the doctrine
+line earns its keep here, see below), interleaved:
+
+| | old | new | delta |
+|---|---|---|---|
+| `check packages/cli` ×3, avg | 173,389,501,232 | 173,484,953,394 | +0.055% (noise) |
+| `build packages/cli` (full, incl. link) | 468,364,646,333 | 469,334,844,037 | +0.21% |
+
+Speed is neutral within measurement noise for a check, and the one
+real cost — running one more module pass at emit time — is 0.2% on
+a full build of the compiler's own largest package, for a 2.4%
+smaller binary. `make avra`'s WALL time swung 47s–70s across these
+runs with other lanes' builds sharing the same 8 cores; instructions
+retired is why that swing is not in this table.
+
+**Cross-unit duplication, measured rather than guessed.** Per-file
+splitting (`Owned.File`, `EMIT_WIDTH=4` workers) means MergeFunctions
+only ever sees one file's own module — a `List<A>` and `List<B>`
+walker homed to two different files never meet. Measured directly:
+disassembled `build/avra.pre` and the rebuilt `build/avra` whole,
+normalized every defined fn's instruction text (mnemonics + register
+operands, immediates masked), hashed, and grouped the BASELINE's
+duplicate-body clusters by declaring file (the mangled name's own
+`~/path/to/file.av~N` suffix, or the declaring module when a
+callsite-local fn carries none). 459 duplicate-body groups, 2048
+participating symbols; of those, 146 are now thunks and 1425 are
+still full duplicate bodies post-merge — most of the survivors sit in
+groups this pass could never have reached (164 groups, an estimated
+~21,500 duplicated instructions, ~86 KB, are cross-file). That is
+real and roughly the same ORDER as what per-module merging already
+captured (116 KB), not a multiple of it — a residual worth a future
+ticket, not a reason to hold this one. `ld64` (this platform's
+linker) has no identical-code-folding flag at all (`man ld`: nothing
+answers to icf/fold/identical beyond `-dead_strip`, which is
+unrelated); `lld` (which has `--icf=all`/`safe` for exactly this) is
+not installed here and switching linkers is out of scope for this
+slice per its own brief — reported, not applied.
+
+**Red team.** `AVRA_RC_GUARD=1` and `AVRA_MEM_STATS=1` on small,
+standalone programs only (never a guarded whole-package run):
+`packages/std-avrac/src/compiler/tests/merge_functions` (two
+per-file-homed generic instantiations over different pointer-shaped
+managed structs, direct calls, empty-list case written first) and a
+scratch probe pairing the same shape with indirect/address-taken
+dispatch through a higher-order fn (`pick_a`/`pick_b`/`via_a`/`via_b`
+above) — both 0 MB live in every category at exit, no trap, `eval ==
+native == expected` on both. `atos` resolves every merged/thunked
+symbol by its OWN name in both probes (a tail-call thunk never
+touches `x30`, so a caller's return address still names the caller
+correctly — traceability is unaffected for anything reachable, and
+unreachable code, by definition, never traps to be misread). Attacks
+covered: aliasing across the merge (two distinct callers of a shared
+thunk seeing independently-owned data), a fn value stored and called
+through a parameter (the address-taken case), a pointer-shaped
+generic crossing two unrelated struct types, static/const list
+literals as the argument, and the empty-input path first in both
+probes. `python3 tools/idioms.py` (no new violations, debt unchanged
+at 99), `make cited` (235/43 resolve, 10 licensed) both clean — no
+`.av` source touched, so `avra fmt` does not apply.
+
+**Critical checks.** `build/avra test packages/std-avrac`: every
+program `eval == native == expected`, 113 examples proved as cases,
+clean. `build/avra test packages/std-http`: 468/468 unit tests, 4
+programs proved. `build/avra test packages/std-sqlite`: 505/505 unit
+tests, 2 programs proved. `make runtime-tests`: box sizes, cores,
+fibers, vtasks — 0 failed across all four. `avra ir` is unreachable
+by this change by construction: nothing in core/compiler/typing or
+lower.av moved, only the OBJECT-EMISSION pass list, so there is no
+IR golden this ticket owns.
+
+**A measurement lesson paid in this slice, not just cited.** The
+first pass at the speed numbers used the pre-existing `build/avra`
+this worktree started with as the "before" baseline and found `check
+packages/cli` costing 60–170× MORE instructions after this change —
+alarming, and wrong. That binary's own symbol table embedded a
+DIFFERENT worktree's absolute path (`avra-reuse`, not `avra-r13`):
+same commit in principle, but it failed outright on the CURRENT
+source (`no fn verdict_of defined`, `no fn println defined` —
+packages/cli/src/stage.av) on the very re-run that would have caught
+it, then SUCCEEDED cleanly on a later, otherwise-identical re-run,
+never reproducing the failure again across a dozen further
+invocations. Read as "WHICH TREE" and "WHICH VERSION" (CLAUDE.md,
+Working discipline): the saved `build/avra.pre` this worktree's own
+AGENT_RULES already prescribes is the right baseline precisely
+because it is a copy of THIS tree's own standing binary, not a
+binary carried in from somewhere else — switching to it collapsed
+the "60–170×" finding into the +0.055%/+0.21% table above. The one
+non-reproducing failure is recorded, not explained; a transient
+build failure on a shared 8-core machine running several other
+lanes' compiles at once is exactly the shape CLAUDE.md's resource-
+exhaustion entry describes, and it never recurred once isolated to
+this worktree's own binaries.
+
+What I wanted from the language while doing this: nothing new — this
+slice never touched Avra source, only the C wrapper around one LLVM
+pass-builder option, which is the whole point of a boundary that
+lets a backend concern stay a backend concern.
+## §30 As built — R15a, a Result side rides bool and float too — and a live landmine found, not disarmed
+
+**D36. A Result side's word widens past int and a word enum to a bool
+and a float.** Neither rides a pointer, so `side_word` (core/types.av)
+answers `0` for both, exactly as it already did for `int`: `Result<bool,
+E>`/`Result<float, E>` join `Result<int, E>` as value enums the moment
+their OTHER side is one word too (`judge_result`, unchanged). The
+LLVM backend's word slot was already an i64 whichever payload it
+carries (`ll_type_of`'s `wide_ll_type([word, word])`, D28); packing a
+bool into it used to go through the generic `avra_llvm_cast_to_type`,
+which REFUSES to widen an integer without the caller naming a sign —
+right for an ambiguous width, wrong for a bool, which has none. Routed
+through `worded` instead (llvm_emit.av's `pack_value`), the SAME table
+`rt_arg`'s I64 seats already use (`SlotForm.Widened` -> zext,
+`.Reinterpreted` -> bitcast, `.Word` -> identity) — a THIRD caller of
+an existing door, not a new one (GENERALIZE BEFORE ADDING). Extracting
+the word back never needed a change: the aggregate slot is always i64,
+so every direction out of it is a narrow or a same-width reinterpret,
+which `avra_llvm_cast_to_type` already handled — the float
+(int64<->double) branch there is real for the first time and no
+longer "unreachable today" (backend/llvm_wrapper.c's own comment,
+corrected). The rest of the machinery — `StaticBuild.slot_of`'s
+`.Float`/`.Bool` arms, `slot_value`/`slot_mark` in llvm.av,
+`slot_val` in interp.av, `is_managed`'s `counted_mask == 0` check —
+was already generic over the payload's own shape and needed nothing:
+built for `int` and never narrowed to it.
+
+**Scoped to the Result side alone, on purpose — NOT the value-enum
+payload law (`payload_word`, features/decls.av).** Widening
+`payload_word` the same way (a DECLARED enum's own bool/float-carrying
+variant becoming a word) reproduces cleanly and is provably the
+narrower change: `side_word` alone (Result sides) rebuilds and
+`avra test packages/std-avrac` runs clean end to end, twice, from a
+saved pre-slice binary; `payload_word` alone (enum payloads, `side_word`
+held back) traps `avra test packages/std-avrac` mid-suite with `index 0
+is out of bounds (length 0)` inside `features/annotations` — declaration
+generation, an annotation fn's `@traced` — and *with both widened
+together* the same package instead SEGFAULTS inside the allocator's
+free list (`array_made`, corrupted class bucket; `bt` bottoms out
+through `avra_slot_unique`/`array_clone` from `spelled_static`, a
+`once fn`'s own settlement). Isolated by A/B rebuild from
+`build/avra.pre` each time (never mixed generations), not guessed.
+
+**The implicated type, found by elimination, not proven to the
+line:** `features/worklist.av`'s `MetaVal` — `Int(int) | Float(int) |
+Text(string) | Bool(bool) | Absent | Gone | Node(int) | Map(int) |
+Octets(List<int>)`, the ONE currency every compile-time value crosses
+through (`literal_meta`, `Settled.answer`, annotation lift results) —
+is the only enum among the compiler's own meta types with NO
+disqualifying multi-field variant once `Bool` counts: `Kind` and
+`Node` (`@std.meta`) both stay boxed regardless (a `Template`/`Interp`/
+`Map`/`Result` variant already carries more than one field, and
+`Kind`'s own `List(Kind)`/`Cell(Kind)`/`Opt(Kind)` self-reference is
+refused by `same_decl`'s guard independently), so `MetaVal` is the
+first enum in the tree this change makes eligible with no other
+excuse. `MetaVal`'s own crossing code (`MetaHeap.slots`/`.node`/
+`.adopt`, `val_of`/`meta_of` in interp.av, `StaticBuild.slot_of`'s
+`.Enum`/`.Res` arms) reads as fully generic under inspection — ordinary
+matches, no hand-rolled slot arithmetic found — so the defect was not
+isolated to a line in the time this slice had. NAMED FOR THE NEXT
+SESSION, not fixed: widen `payload_word` to admit `.Float or .Bool`
+(mirroring this slice's `side_word` edit, comment already there at the
+site), then chase the trap with `AVRA_QTRACE=1`/a debug build of
+`array_reclaim`/`box_free` rather than blind bisection — this slice's
+bisection (four A/B rebuilds, ~30 min each) found WHICH half breaks,
+not WHERE.
+
+**Red team.** A standalone probe (`Holder { r: Result<bool, string> }`,
+no `use`) built and run under `AVRA_RC_GUARD=1`/`AVRA_MEM_STATS=1`:
+a record field copied then written through the copy, `with`, a `Cell`
+seat, a `dyn Shows` door, a generic `through<T>` door, a scalar `const`
+Result and a `const List<Result<float, string>>`, 2000 loop turns —
+eval == native, 0 MB live in every category at exit. The empty-value
+law: `parse("f")` (an Ok `false`) and `Result<bool, E>?` both round-trip
+present, never absent (`features/results/tests/scalar_results`, eval ==
+native == expected — `avra test packages/std-avrac` end to end). The
+program test pins float bit patterns directly, never through the
+default print (`${x}` collapses `-0.0`, `0.0` and a subnormal alike):
+`-0.0` via `0.0 * -1.0` checked by `1.0 / x < 0.0`, `NaN` via `x != x`,
+`+inf`/`-inf` via `x == x / 2.0` at each sign, a subnormal via 1074
+halvings of `1.0` compared against a FRESH independent call to the
+same builder (a bit-exact equality, not a printed string). `@std/sqlite`'s
+`Stmt.step() -> Result<bool, SqlError>` (the ticket's own motivating
+site — `SqlError` is a multi-field record, one counted pointer word) —
+`check packages/std-sqlite` clean; its native suite needs `make libs`
+(a local `sqlite3`), not run this slice.
+
+**Numbers** (Mac, `/usr/bin/time -l`, interleaved, 3 rounds, a
+`-> Result<bool, string>` fn called 5,000,000 times in a loop, against
+the exact pre-slice source and compiler):
+
+| | before | after |
+|---|---|---|
+| instructions/call | 105.4 | 81.4 (−22.7%) |
+| `build/avra` | 7,433,344 B | 7,431,904 B (−1,440 B) |
+
+What I wanted from the language while doing this: a way to ask the
+type registry "what does this declared enum's layout depend on" —
+this slice spent real time manually re-deriving, per candidate type,
+whether a multi-field variant or a self-reference already disqualified
+it, exactly the kind of question `avra explain repr` answers for ONE
+type but not for "which types does widening THIS rule move".
+
+## §30 As built — R5, count elision at the call-crossing retain
+
+**The target.** §6 named it: "R3 consuming params... params are
+borrowed, so a `with` on a param can never reuse." R5's own slot
+(avra-8sb5.34.7) narrowed further after two rounds of measurement —
+static literals and value enums, not stack placement — to "no
+retain/release on a box that never escapes the fn that made it."
+Escape analysis for STACK PLACEMENT was already tried and shelved
+(2026-09-24 comments on the ticket: only 1 of 10 request boxes never
+escape its fn). This slice is a DIFFERENT elision at the same
+doctrine: not "does the box ever leave," but "does THIS call ever
+reach it."
+
+**D15. A view crossing a user call is guarded only when the call is
+ALSO handed its root.** `Call`/`CallPtr`'s defensive retain (memory.av
+§ THE CALLER KEEPS ITS ARGUMENTS STANDING) protects a VIEW — a struct
+field read, a lending row's answer — against "the callee may empty
+the box it looks into." But a callee can only empty a box it holds a
+SEAT on (THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS, CLAUDE.md):
+Avra has no ambient mutable state, so a call that never receives a
+view's root — walked back through Extract and a lending row's own
+view, `Lives.root_of` — cannot reach it, let alone write through it.
+`root_handed` asks `lent_args(i).any(same_reg(it, life.root_of(ar)))`
+per lent arg; the guard stays for every arg whose root the call
+itself also receives, or that has no view behind it at all (`ar`
+roots at `ar`, trivially among its own call's seats).
+
+**D16. `root_of` answers ABSENT at a Load, on purpose.** A `mut`
+binding's cell can be read by more than one `Load`, each its own
+SSA register for the SAME box — register identity cannot say a later
+argument is "the same" root when it arrived through a second load.
+The first draft compared registers all the way down and broke
+`features/fns/tests/borrowed_params`' `emptied` fn: `emptied(b,
+b.rows[0])` reads `b` once (`avra_cell_thawed`, for the `mut` seat)
+and again (`load`, to walk `.rows[0]`) — TWO DIFFERENT REGISTERS for
+one box. `root_of(b.rows[0])` walked to the second load's register;
+the call's own arg was the first; `same_reg` said no; the retain was
+elided; `b.rows = []` inside `emptied` freed the list `row` still
+pointed at; native answered `2` where eval and `.expected` both say
+`s1`. `root_of` now returns absent the moment its walk meets ANY
+`.Load`, and `root_handed` reads absence as "reachable" — conservative,
+never wrong. `features/fns/tests/borrowed_params` caught this on the
+FIRST run of the full suite, exactly as its own header promises
+("each rule witnessed failing without it").
+
+**Why the upstream owned-twin mostly already covers same-call
+co-occurrence, and why that is not a proof.** For a LENDING CallRt
+view (`avra_array_get`, `avra_map_get`), `read_outlives`/
+`borrow_outlives` already walks forward from the read and — because
+its "did the slot change" scan (`leaves_or_changes`) treats ANY later
+instruction reading the SAME register as a possible change — upgrades
+the read to its owned twin the moment the call ALSO reads that exact
+register. Every hand-built same-call-co-occurrence case
+(`viewed_seat_with_root`, §below) is intercepted there, before
+`root_handed` ever runs. `emptied`'s witness is the case that
+mechanism cannot see: the register the call receives (`b`, thawed for
+the `mut` seat) and the register the view's chain passes through
+(`b` reloaded) are DIFFERENT SSA names for the same box, and
+`changes_cell`'s scan is register-identity, not box-identity. D16 is
+what closes that gap; it is also why `root_handed`'s guard-still-owed
+branch is a genuine SAFETY NET more than a frequently-taken one under
+today's lowering — proven necessary by one real defect, not by a
+dense trace of daily hits.
+
+**Guards witnessed failing.** `python3` was not used; the guard was
+removed literally, by reverting D16 to `Reg` (as first written), and
+`build/avra test packages/std-avrac` was run: `borrowed_params`
+failed exactly as described. Restoring D16 turned it back to
+`s1`/green.
+
+**Red team**, native under `AVRA_RC_GUARD=1`, matched against
+eval and (where noise-free) against the baseline compiler's own
+identical memory report:
+| attack | shape | result |
+|---|---|---|
+| nested view chain, `mut` seat clears the parent | `type Inner`/`Outer`, `peek(mut o, o.inner.xs)` | `z0 cleared` both engines; unguarded mem stats byte-identical to baseline |
+| same hazard through a `Cell`, not a seat | `Cell<Bag>`, `clear(c)` after `c.get().xs` | `c` both engines |
+| loop-carried root, view read each turn, root never passed | `for i in 0..5 { total + width(r.cells) }` | `15` both |
+| recursion, a view of a param passed down, never the param | `sum_from`/`peek`, param vs. view forms | `30` both |
+| `defer` writing a `mut` seat after a view of its old value | `run(mut s)`, `defer { s.items = [...] }` | refused by the language itself (a capture is a copy) — not a shape this door reaches |
+| `?` propagation crossing a call with a view alongside the record | `read(d: Doc)`, `first_line(d.lines)?` | `x/2` both |
+| a view stored past its originating call, into a list, each loop turn | `saved.push(keep(r.xs))` | `9` both |
+| two captured fns, the SAME lane read twice | `let a = () -> 1; let b = () -> a() + a()` | both `callptr` seats unretained, `avra_array_get` (not `_owned`) on both reads |
+
+Every attack is also in `packages/std-avrac/src/compiler/tests/
+lower_test.av`'s "the ownership roles read as behavior" / "calls
+through boxes wear the callee's type" — `no_callptr_seat_retained`,
+`viewed_seat` (elided) and `viewed_seat_with_root` (still guarded,
+via the owned-twin) replace the three assertions this slice made
+false by making the IR strictly BETTER than they expected.
+
+**Numbers.** Fixed point: three successive `make avra` after the
+final change gave byte-identical binaries (`cmp` on cache-forced
+rebuilds, .avra-cache moved aside each time). Instructions retired,
+`/usr/bin/time -l`, interleaved, 3 rounds, `.avra-cache` moved aside
+before every `check` round:
+
+| | before (main 94619dd) | after |
+|---|---|---|
+| tools/bench/request, 5,000,000 requests | 54.63B instr (avg) | 53.95B instr (avg) — −1.2% |
+| `check packages/cli` | 173.8B instr (avg) | 166.6B instr (avg) — −4.1% |
+
+Consistent in every round both ways (request: 54.51/54.73/54.64 →
+54.01/53.93/53.92; cli: 173.09/173.76/174.53 → 166.47/166.90/166.46).
+The compiler's own source is the better witness: `self`-and-a-field
+crossing a method call is the common shape this door reaches (an
+OOP-heavy tree), where the request bench's remaining allocations are
+mostly records and lists that never cross a call as a view at all
+(§6's own finding, unchanged). Diagnostics identical between old and
+new (122 warnings, same lines) — behavior unchanged, only the count
+lower. `make census` was not run: it drives `./avra` through
+`tools/watch.sh`, which this campaign's standing order (AGENT_RULES)
+forbids; instructions retired is this tree's own preferred proof for
+exactly that reason.
+
+What I wanted from the language while doing this: a way to assert
+"these two SSA registers are loads of the same untouched cell"
+directly, rather than by absence. `root_of` answering `Reg?` and
+treating `null` as "conservative" reads right, but the same shape
+(a value that MAY alias across more than one register, and a pass
+that must answer soundly without knowing) will recur anywhere a `mut`
+seat and a plain read of the same binding meet — a `same_box`
+predicate over `Lives`, keyed on the CELL rather than the register,
+would let a pass answer the sharper question instead of falling back
+to "unknown, so guard."
+
+## §31 R3 design — consuming params (not built)
+
+**Why this is a design, not a slice.** avra-8sb5.34.4's ticket already
+warns "Perceus owns params" is a calling-convention change; ROADMAP's
+own ladder entry for R5 says "Consuming params (R3) fold in here,"
+naming it as the same doctrine, not the same size. Every load-bearing
+mechanism this needs is a TOUCH POINT in `SeatMark`, `fn_fits`,
+`Body`, and BOTH sides of `.Call`/`.CallPtr` in memory.av — the same
+shape as R1 itself (§4), which had its own red-team table and its own
+landing. Attempting it inside R5's slice risks exactly what AGENT_RULES
+warns against: "a wrong elision is a use-after-free that tests may
+not see," compounded by a HALF-BUILT calling convention with no
+red team of its own. R5 (§30) already found and fixed one real
+use-after-free from a much narrower change; this is not the moment to
+also carry an unfinished one. What follows is grounded in the actual
+call sites (file:line), not a sketch.
+
+**D17. Ownership is a SEAT MARK, not a per-call decision.** The ticket
+offers two designs — "per seat from the callee's body" or "per call, a
+dying argument at an owning seat" — and names the deciding constraint
+itself: "keep ONE calling convention per fn symbol." A per-call choice
+means the SAME callee compiles two ways depending on who calls it, or
+carries a runtime branch; CLAUDE.md's fn-type-marks law exists
+precisely to rule this out ("a `mut`-taking fn stored in a plain fn
+seat wrote through an immutable `let` with no diagnostic, in both
+engines," the defect a mark-on-the-TYPE closes). So: a FOURTH mark,
+alongside `mutable`/`settled`/`unshared` — `SeatMark { mutable: bool,
+settled: bool, unshared: bool = false, owned: bool = false }`
+(core/types.av:792, appended — a GROWTH, not a move). The word is the
+owner's to choose; `owned` is the working name below (Perceus calls
+this the same thing; the runtime already says "owned twin" for the
+analogous runtime-row contract).
+
+**Grammar.** `features/fns/mod.av:40`'s `fn` rule already spells three
+optional prefix words per parameter: `( ck:"const" )? ( mk:"mut" )?
+( ik:"isolated" )? ps:NAME`. A fourth slot joins them (trailing comma
+law unaffected — this is a prefix, not a list). The SAME rule serves
+`extern fn` (line 39) and `once fn` (line 41); whether `owned` reaches
+those too is a real question — an extern's inout seat already takes
+the CALLER's cell address (`host_regs`, features/fns/lower.av:44), a
+different crossing than an Avra-to-Avra `owned` transfer, and a `once
+fn` takes no arguments at all (F2055) so the question does not reach
+it.
+
+**Type system.**
+- `owned_mark(marks, j) -> bool` beside `mut_mark`/`settled_mark`/
+  `isolated_mark` (core/types.av:817-829).
+- `fn_fits` (features/checks.av:86-103) gains one more line in the
+  per-seat loop, the SAME asymmetry direction as the other three:
+  `if owned_mark(g.marks, j) && !owned_mark(w.marks, j) { fits = false
+  }` — a value that consumes seat `j` cannot be smuggled into a seat
+  type that never promised to consume it, or a caller through a
+  DIFFERENT (unmarked) seat type would keep believing it still owns
+  the argument after the call.
+- `mark_word` (types.av:843-855) encodes the three existing marks as
+  ONE letter each (`p/m/c/b/P/M/C/B` by `unshared`×`mutable`×
+  `settled`); a fourth boolean doubles the space to sixteen. Folding
+  it into the same letter is the wrong shape — spell it as a SECOND
+  character per seat (`mark_word`'s existing letter, then `o` or
+  nothing), so the interner's key stays one string and the doubling
+  does not have to invent eight new letters nobody can read.
+- `declared_marks`/`marks_of` (features/checks.av:1005,
+  features/decls.av:971) read the parsed `owned` flag the same way
+  they read `const`/`mut`/`isolated` today.
+- A NEW REFUSAL: `owned` combined with `mut` on the same seat. The two
+  are opposed by what they promise — `mut` is shared, caller-visible
+  writing; `owned` is exclusive consumption, nothing left for the
+  caller to see written back through. `fn f(owned mut x: T)` refuses,
+  licensed at the seat, own F-code.
+- Whether `owned self` is legal (a builder's `fn build(owned self) ->
+  Output`) is a real, useful case (Rust's `self` consumption) and a
+  real question for the receiver's own seat-mark plumbing — worth
+  landing, not worth deciding here.
+
+**Lowering, the callee's side — the smaller half.** `Body` (compiler/
+lower/lower.av:71-89) gains `marks: List<SeatMark> = no_marks(...)`
+— sized to `params.length`, a GROWTH at all seven construction sites
+(lower.av:275, 511, 542, 566, 580, 608, 767, 789), most of which
+already have `FnSig`/`Decls` in scope to read it from (`lower_fn` at
+511 already threads a declared `Decl x`); the synthetic bodies
+(`lower_lambda`, `lower_collect`, `lower_root`, `lower_main`,
+`wrapped_body`, `unboxing_body`) take `no_marks` since none of them
+declare a param a caller could mark `owned`. In `memory.av`,
+`standing_regs` (line 73-80) currently marks EVERY param standing
+unconditionally (`j < seats`); an `owned` seat must NOT be standing —
+it is genuinely scope-owned, so the entry scope's `manages()` must
+also SEED it at function start (right after the body's own
+`ScopeEnter`, before the first instruction that could read a param):
+`for j in 0..seats { if owned_mark(marks, j) { takes(open_scopes,
+Reg{index: j}) } }`. THAT ALONE closes the loop: `Lives.handover`
+already asks `owned_top(open_scopes, r)` (line 647) with no idea
+WHERE a register's ownership came from, so `with`/`concat` on an
+owned param takes the R1 reusing twin the moment it dies there, for
+free — R3 does not touch R1's Handover logic at all, which is the
+whole point of making ownership a SCOPE fact rather than a special
+case. And `FnExit`/`ScopeExit`'s existing release-what-the-scope-owns
+logic (`releases_for`, `exit_releases`) already frees an owned param
+that nothing ever moved — an early `return` before touching it
+releases correctly with NO new code, because it is now indistinguishable
+from any other locally-owned value.
+
+**Lowering, the caller's side — the real work.** At a `.Call`/
+`.CallPtr` whose callee's `j`-th seat is `owned` (resolved for `.Call`
+through a `name -> marks` map built once from `l.fns` in `memory()`;
+for `.CallPtr` read directly off the callee register's OWN type,
+`types.arrow_parts(reg_types[f.index]).marks` — no new plumbing there,
+since `TypeRegistry` already carries it), the caller decides PER
+ARGUMENT, Perceus-style, using the SAME `dies_at`/`owned_top` question
+R1 already asks of a `CallRt`'s first seat (`Lives.moves`, line
+664-667) — generalized from "the innermost scope owns it and it dies
+here" to any owned-seat argument of a `.Call`/`.CallPtr`:
+- DIES here, scope-owned: hand the existing reference over — no
+  retain, and `disowns(open_scopes, ar)` instead of the scope's own
+  eventual release (the reference moved to the callee, who now owes
+  it).
+- Does not die, or is not scope-owned (a param passed through, a cell
+  load, an immortal): mint the callee its OWN reference — `Retain(ar)`
+  before the call, the same shape `moved_out` already uses for a yield
+  the closing scope does not own (memory.av:450-457).
+This is genuinely NEW code in the `.Call`/`.CallPtr` arm (line 177 the
+`lent` computation for standard seats stays exactly as R5 left it, for
+every non-`owned` seat; an `owned` seat is excluded from THAT
+treatment entirely and goes through this one instead) — nothing here
+reuses `root_handed` (§30), because an `owned` seat's hazard is not
+"can the callee reach the box," it is "who releases it," a different
+question the R1 vocabulary already answers.
+
+**Red team a landing owes (none of it run — this is the list, not the
+proof).** Every attack in §30's own table, replayed with an `owned`
+seat where §30 used a plain one; plus, specific to consumption: a
+value passed to an owned seat and used AGAIN by the caller afterward
+(must retain, must NOT double-free); the same call site inside a LOOP
+(an owned argument minted fresh each turn dies each turn — the R1
+loop-condition law, "the condition runs every turn," is the same
+hazard one level up: an owned param settled ONCE after the loop
+instead of once per call would leak or double-release exactly as an
+unsettled `LoopCond` mint did); recursion passing the SAME owned
+param down every level (each frame must own exactly one reference,
+never the caller's); a `dyn`/`CallPtr` call through a stored closure
+whose STATIC type disagrees with the concrete callee's marks (must be
+refused by `fn_fits` at typing, before lowering ever sees it — the
+adversarial case is proving that refusal fires, not that lowering
+handles it); `defer`/`errdefer` capturing an owned param (does a
+capture, itself a copy per CLAUDE.md's capture law, transfer or merely
+alias the ownership the entry scope seeded?); an owned seat's value
+ALSO handed to a `mut` seat of the SAME call (refused at the type
+level once `owned mut` is refused, but a DIFFERENT owned seat plus a
+DIFFERENT mut seat, same call, aliased argument, is not refused by
+that rule and needs its own attack). A fixed-point build and
+instructions-retired numbers on `with_host`-shaped code (the ticket's
+own witness fn) close the slice, the same way §30's did.
+
+What I wanted from the language while designing this (not while
+building it, since I built none of it): the SeatMark growth is now
+four independent booleans threaded through SEVEN construction sites
+and re-encoded by hand in `mark_word`'s letter table each time one is
+added — the THIRD time this exact shape has happened (`unshared` was
+the last one). A declared-marks record that derives its own
+interner-key encoding from its own field list, rather than a hand-kept
+letter table one commit behind the type, would turn "did I remember
+every site" from a code-review question into a compiler-enforced one.
