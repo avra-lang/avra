@@ -94,12 +94,44 @@ spec "avra fix" {
             }
         }
     }
+    given "the same push-loop rewrite, NOT the block's last statement — another statement follows it on the next line" {
+        then "the rewrite is still ACCEPTED and APPLIED — the splice keeps the statement's own trailing break rather than gluing onto the next line" {
+            // LICENSED loops.push_loop: the fixture text names the idiom under test, held as a string
+            let text = "fn doubled(xs: List<int>) -> int {\n    mut out: List<int> = []\n    for x in xs {\n        out.push(x * 2)\n    }\n    out.length\n}\n0\n"
+            let apps = fix_apps_of(text)
+            if apps.length != 1 || apps[0].by_law == null { return false }
+            let after? = fix_applied(text, apps) else { return false }
+            if after == text { return false }
+            mut ws2 = fix_ws_of(after)
+            mut p2: Program = ws2.program("/w/src/main.av")
+            match p2.checked_from(null, true) {
+                .Ok(_) -> true,
+                .Err(_) -> false,
+            }
+        }
+    }
     given "an index-walk idiom the IR proof cannot confirm — a different runtime protocol by construction — but its own `@law` accepts" {
         then "one Application, ACCEPTED by law — fix_applied writes the rewrite" {
             // LICENSED loops.index_walk: the fixture text names the idiom under test, held as a string
             let text = "fn summed(xs: List<int>) {\n    mut total = 0\n    for i in 0..xs.length {\n        total = total + xs[i]\n    }\n}\n0\n"
             let apps = fix_apps_of(text)
             apps.length == 1 && !apps[0].proved && apps[0].by_law != null && apps[0].kind == "loops.index_walk" && fix_applied(text, apps) != text
+        }
+    }
+    given "the same index-walk rewrite, NOT the block's last statement — another statement follows it on the next line" {
+        then "the rewrite is still ACCEPTED and APPLIED — the splice keeps the statement's own trailing break rather than gluing onto the next line" {
+            // LICENSED loops.index_walk: the fixture text names the idiom under test, held as a string
+            let text = "fn summed(xs: List<int>) -> int {\n    mut total = 0\n    for i in 0..xs.length {\n        total = total + xs[i]\n    }\n    total\n}\n0\n"
+            let apps = fix_apps_of(text)
+            if apps.length != 1 || apps[0].by_law == null { return false }
+            let after? = fix_applied(text, apps) else { return false }
+            if after == text { return false }
+            mut ws2 = fix_ws_of(after)
+            mut p2: Program = ws2.program("/w/src/main.av")
+            match p2.checked_from(null, true) {
+                .Ok(_) -> true,
+                .Err(_) -> false,
+            }
         }
     }
     given "a one-body-arms idiom the IR proof cannot confirm — fewer instructions after every honest merge — but its own `@law` accepts" {
