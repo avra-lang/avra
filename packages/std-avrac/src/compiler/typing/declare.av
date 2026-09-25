@@ -350,10 +350,23 @@ impl TypeCx {
     /// name, or an application like `List<int>`.
     mut fn written_type(at: Loc?, t: TypeRef) -> TypeId {
         if t.spliced && self.writer != null { return self.written_by(null, at, t with { spliced: false }) }
+        if !t.alternatives.is_empty() { return self.union_written(at, t.alternatives) }
         if t.arrow { return self.fn_written(at, t) }
         if t.dynamic { return self.dyn_type(at, t.name) }
         if t.args.is_empty() { return self.bare_row(t.name) ?? self.named_type(at, t.name) }
         self.applied(at, t)
+    }
+
+    /// `A or B` — every alternative its own written type, unioned. A
+    /// member that already refused absorbs, as every seat does.
+    fn union_written(at: Loc?, alts: List<TypeRef>) -> TypeId {
+        mut parts: List<TypeId> = []
+        for a in alts {
+            let ty = self.full_type(at, a)
+            if self.view.types.shape_of(ty) is .Error { return ty }
+            parts.push(ty)
+        }
+        self.view.types.union_of(parts)
     }
 
     /// A builtin that takes no type arguments — `Tasks` — is its row's

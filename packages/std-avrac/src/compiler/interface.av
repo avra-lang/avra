@@ -428,6 +428,21 @@ impl Decls {
             let ret? = self.read_type_wire(words, cursor + 1) else { return null }
             return WireType { id: self.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
         }
+        if tag == "U" {
+            if at + 1 >= words.length { return null }
+            let n? = wire_number(words[at + 1]) else { return null }
+            if n < 0 { return null }
+            mut members: List<TypeId> = []
+            mut cursor = at + 2
+            for j in 0..n {
+                let child? = self.read_type_wire(words, cursor) else { return null }
+                members.push(child.id)
+                cursor = child.next
+            }
+            // `union_of` is the only door — a wire's members re-canonicalize
+            // exactly as a freshly-declared union's would
+            return WireType { id: self.types.union_of(members), next: cursor }
+        }
         null
     }
 
@@ -462,6 +477,7 @@ impl Decls {
             .Map(k, v) -> "M~${self.wire_body(k)}~${self.wire_body(v)}",
             .Res(ok, err) -> "Q~${self.wire_body(ok)}~${self.wire_body(err)}",
             .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([self.wire_body(t) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), self.wire_body(ret)]), "~"),
+            .Union(members) -> joined(["U", "${members.length}"].concat([self.wire_body(m) for m in members]), "~"),
         }
     }
 
