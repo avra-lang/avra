@@ -1,7 +1,7 @@
 // Attacks on the structural matcher, assuming it is broken: degenerate
 // shapes, binders repeated more than twice, nesting through Pat and
 // through a quote body, and a subject deeper than its pattern.
-use @std.avrac.core.{new_node_store, NodeStore, Expr, Stmt, Pat, Arm, BinOp, BodyView, At, shape_at, matched, ExprId}
+use @std.avrac.core.{new_node_store, NodeStore, Expr, Stmt, Pat, Arm, BinOp, BodyView, At, Shape, shape_at, matched, matched_runs, node_shallow_at, ExprId}
 
 spec "core/shape adversarial" {
     given "degenerate shapes" {
@@ -130,6 +130,54 @@ spec "core/shape adversarial" {
             let deep = deep_binary(s, 12)
             let r = matched(s, At.Expr(deep), pat)
             r != null && r!.length == 1 && kid_is_expr(r![0], deep)
+        }
+    }
+    given "a subtree_fp collision — `aihhotaz`/`eepturoq` hash-collide under fp_str, ERRORS' avra-8sb5.45 pair" {
+        then "the two strings really do collide, span-blind, at the SUBTREE level — the pre-filter a repeated binder trusts" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.StrLit("aihhotaz"))
+            let b = s.alloc_expr(Expr.StrLit("eepturoq"))
+            s.subtree_fp(At.Expr(a)) == s.subtree_fp(At.Expr(b))
+        }
+        then "a repeated H binder is NOT fooled by it: the two colliding literals are DIFFERENT subtrees, and the match REFUSES" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.Ident("H"))
+            let pat_src = s.alloc_expr(Expr.ListLit([h, h]))
+            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h)])!
+
+            let a = s.alloc_expr(Expr.StrLit("aihhotaz"))
+            let b = s.alloc_expr(Expr.StrLit("eepturoq"))
+            let colliding_subj = s.alloc_expr(Expr.ListLit([a, b]))
+            let r_colliding = matched(s, At.Expr(colliding_subj), pat)
+
+            let a2 = s.alloc_expr(Expr.StrLit("aihhotaz"))
+            let same_subj = s.alloc_expr(Expr.ListLit([a, a2]))
+            let r_same = matched(s, At.Expr(same_subj), pat)
+
+            r_colliding == null && r_same != null && r_same!.length == 1
+        }
+        then "the SAME hazard, over a Run binder's repeat (`bound_run`'s own `same_run`) — Shape.Run hand-built, since quote_pat.av's grammar is a different door than shape_at's" {
+            mut s = new_node_store()
+
+            // a Run-bearing node's own template is folded BLIND to the
+            // field the Run occupies (`node_shallow_at`), so its actual
+            // element count never matters once a Run sits among its kids.
+            let inner_kids = [Shape.Run(0)]
+            let inner_template = s.alloc_expr(Expr.ListLit([]))
+            let inner_shape = Shape.Node(node_shallow_at(s, At.Expr(inner_template), inner_kids), inner_kids)
+
+            let d1 = s.alloc_expr(Expr.IntLit(0))
+            let d2 = s.alloc_expr(Expr.IntLit(0))
+            let outer_template = s.alloc_expr(Expr.ListLit([d1, d2]))
+            let outer_kids = [inner_shape, inner_shape]
+            let pat = Shape.Node(node_shallow_at(s, At.Expr(outer_template), outer_kids), outer_kids)
+
+            let a = s.alloc_expr(Expr.StrLit("aihhotaz"))
+            let b = s.alloc_expr(Expr.StrLit("eepturoq"))
+            let run1 = s.alloc_expr(Expr.ListLit([a]))
+            let run2 = s.alloc_expr(Expr.ListLit([b]))
+            let subj = s.alloc_expr(Expr.ListLit([run1, run2]))
+            matched_runs(s, At.Expr(subj), pat) == null
         }
     }
 }
