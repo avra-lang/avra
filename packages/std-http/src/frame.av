@@ -374,16 +374,18 @@ fn before_ows(buf: Bytes, lo: int, hi: int) -> int {
 
 // ── The framing fields (RFC 9112 §6, 9110 §7.2, §10.1.1) ────────
 
-/// What the framing fields say, folded one field at a time; `length`
-/// means something once `lengths` counts a Content-Length line, and
-/// `why` is the first law broken.
-type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codings: bool = false, hosts: int = 0, close: bool = false, keep: bool = false, expects: bool = false, why: Refusal? = null }
+/// What the framing fields say, folded one field at a time — a VALUE
+/// RECORD, every field a scalar, so a request costs no allocation to
+/// fold its fields into. `length` means something once `lengths`
+/// counts a Content-Length line; `why` means something once `refused`
+/// is set — the first law broken, unread until then.
+type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codings: bool = false, hosts: int = 0, close: bool = false, keep: bool = false, expects: bool = false, refused: bool = false, why: Refusal = .LineEnd }
 
 /// EVERY FRAMING FIELD READ, folded one at a time — the walk a
 /// request and a reply share.
 fn framing_of(buf: Bytes, fields: Fields) -> Framing {
     mut fr = Framing {}
-    for i in 0..fields.count() { noted(buf, fields.name_at(i), fields.value_at(i), fr) }
+    for i in 0..fields.count() { fr = noted(buf, fields.name_at(i), fields.value_at(i), fr) }
     fr
 }
 
@@ -415,7 +417,7 @@ fn persists(fr: Framing, minor: int) -> bool {
 /// kept: the body's delimiting, persistence, and the expectation.
 fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fields: Fields, end: int, limits: Limits) -> Framed {
     let fr = framing_of(buf, fields)
-    if fr.why != null { return .Refused(fr.why!) }
+    if fr.refused { return .Refused(fr.why) }
     if fr.hosts > 1 || minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
@@ -438,36 +440,35 @@ fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fie
     })
 }
 
-/// One field's contribution to the framing, written into it.
-fn noted(buf: Bytes, n: Span, v: Span, mut fr: Framing) {
-    if fr.why != null { return }
+/// One field's contribution to the framing, folded into it — a value
+/// in, the value it becomes out, never a write through a seat: that
+/// is what keeps `Framing` a register, not a box.
+fn noted(buf: Bytes, n: Span, v: Span, fr: Framing) -> Framing {
+    if fr.refused { return fr }
     when {
         buf.ieq_at(n.lo, n.hi, content_length) -> took_length(buf, v, fr)
         buf.ieq_at(n.lo, n.hi, transfer_encoding) -> took_codings(buf, v, fr)
         buf.ieq_at(n.lo, n.hi, host) -> took_host(buf, v, fr)
         buf.ieq_at(n.lo, n.hi, connection) -> took_connection(buf, v, fr)
         buf.ieq_at(n.lo, n.hi, expect) -> took_expectation(buf, v, fr)
-        _ -> nothing_noted()
+        _ -> fr
     }
 }
 
-fn nothing_noted() {}
-
 /// The framing refused by the law `why` names.
-fn broke(mut fr: Framing, why: Refusal) { fr.why = why }
+fn broke(fr: Framing, why: Refusal) -> Framing { fr with { refused: true, why: why } }
 
 /// A second Content-Length is refused even when it agrees — the
 /// permission to merge equal values is a MAY, and this is a server.
-fn took_length(buf: Bytes, v: Span, mut fr: Framing) {
+fn took_length(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let n? = decimal(buf, v) else { return broke(fr, .ContentLength) }
     if fr.lengths > 0 { return broke(fr, .ContentLength) }
-    fr.length = n
-    fr.lengths = 1
+    fr with { length: n, lengths: 1 }
 }
 
 /// `chunked` alone frames; other codings before a final `chunked`
 /// are not implemented; `chunked` anywhere else is a smuggling shape.
-fn took_codings(buf: Bytes, v: Span, mut fr: Framing) {
+fn took_codings(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let ts = tokens(buf, v)
     if ts.is_empty() { return broke(fr, .TransferEncoding) }
     let last = ts.last()!
@@ -475,23 +476,22 @@ fn took_codings(buf: Bytes, v: Span, mut fr: Framing) {
     let earlier_chunked = ts.slice(0, ts.length - 1).any((t) -> buf.ieq_at(t.lo, t.hi, chunked))
     if !final_chunked && !earlier_chunked { return broke(fr, .Coding) }
     if !final_chunked || earlier_chunked { return broke(fr, .TransferEncoding) }
-    fr.chunked = true
-    fr.codings = ts.length > 1
+    fr with { chunked: true, codings: ts.length > 1 }
 }
 
-fn took_host(buf: Bytes, v: Span, mut fr: Framing) {
+fn took_host(buf: Bytes, v: Span, fr: Framing) -> Framing {
     if v.hi == v.lo || buf.run(v.lo, target_char) != v.hi { return broke(fr, .Host) }
-    fr.hosts = fr.hosts + 1
+    fr with { hosts: fr.hosts + 1 }
 }
 
-fn took_connection(buf: Bytes, v: Span, mut fr: Framing) {
+fn took_connection(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let ts = tokens(buf, v)
-    fr.close = fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close))
-    fr.keep = fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive))
+    fr with { close: fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close)), keep: fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive)) }
 }
 
-fn took_expectation(buf: Bytes, v: Span, mut fr: Framing) {
-    if buf.ieq_at(v.lo, v.hi, continue_100) { fr.expects = true } else { fr.why = .Expectation }
+fn took_expectation(buf: Bytes, v: Span, fr: Framing) -> Framing {
+    if buf.ieq_at(v.lo, v.hi, continue_100) { return fr with { expects: true } }
+    broke(fr, .Expectation)
 }
 
 /// `1*DIGIT`, at most eighteen of them, as a number — or null.
@@ -576,7 +576,7 @@ fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) 
 /// a 204 or a 304; then chunks; then a length; then the close.
 fn settled_reply(buf: Bytes, status: int, minor: int, fields: Fields, end: int, limits: Limits, asked: Method) -> FramedReply {
     let fr = framing_of(buf, fields)
-    if fr.why != null { return .Refused(fr.why!) }
+    if fr.refused { return .Refused(fr.why) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
     if broken != null { return .Refused(broken!) }
