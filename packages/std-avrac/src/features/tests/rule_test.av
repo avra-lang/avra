@@ -1,0 +1,109 @@
+//! Rule mechanics no ported idiom's own example happens to exercise:
+//! a fill that is not atomic parenthesises; the same hole spliced
+//! twice in a rewrite takes the bound value at both occurrences; a
+//! guard reading `declared()` decides. (A bare `quote` widening
+//! under an ORDINARY fn, no `rule` sugar at all, is proved end to
+//! end by the `ordinary_widen` program test beside this file.)
+use @std.avrac.compiler.{analyze_source, Analysis, checks_fixes, checks_keeps, nearest_fix}
+use @std.avrac.features.{Code, Fix, rule}
+use @std.avrac.features.lists.{last_index}
+use @std.avrac.diagnostics.{warning}
+
+@fixes("wrap(a + b)", "(a + b) * 2")
+@keeps("a + b")
+export rule doubled {
+    quote { wrap(${x}) } -> quote { ${x} * 2 },
+}
+
+@fixes("mark(a)", "a + a")
+@keeps("a")
+export rule marked_twice {
+    quote { mark(${x}) } -> quote { ${x} + ${x} },
+}
+
+@keeps("1")
+export rule seen_typed {
+    quote { ${x} } if x.declared() != null -> Fix.Say(warning("test.seen_typed", x.loc(), "a bound name", "here", null)),
+}
+
+/// ONE TEXT, ONE TREE (avra-8sb5.25.21): a quote body's own tail
+/// takes the same tail law a program's does, so a both-branches
+/// `if`/`else` pattern is `Expr.If` whether it is written bare or
+/// parenthesised — the parentheses mint no node of their own. Proves
+/// the parenthesised spelling still matches the identical bare
+/// example `if_null_ternary` (nullable/idioms.av) fires on.
+@fixes("if x == null { 0 } else { x! }", "x ?? 0")
+@keeps("if next() == null { 0 } else { next()! }")
+export rule paren_if_null_ternary {
+    quote { (if ${x} == null { ${d} } else { ${x}! }) } if x.pure() -> quote { ${x} ?? ${d} },
+}
+
+/// Whether `applied` fires anywhere in `a`'s first statement.
+fn fires(applied: fn(Code) -> Fix?, a: Analysis) -> bool {
+    match a.view.stmts.first() {
+        s? -> nearest_fix(applied, a.code_at(.Stmt(s))) != null
+        null -> false
+    }
+}
+
+/// The fix `applied` finds anywhere in `a`'s first statement.
+fn fix_at(applied: fn(Code) -> Fix?, a: Analysis) -> Fix? {
+    match a.view.stmts.first() {
+        s? -> nearest_fix(applied, a.code_at(.Stmt(s)))
+        null -> null
+    }
+}
+
+/// A hole bound inside a postfix chain reports its OWN text — never
+/// the whole chain its match sits inside (avra-8sb5.25.22).
+@keeps("z")
+export rule chain_span_probe {
+    quote { ${xs}[${xs}.length - 1] } -> Fix.Say(warning("test.chain_span_probe", xs.loc(), xs.text(), "bound span", null)),
+}
+
+spec "features/rule (mechanics)" {
+    given "a fill that is not atomic" {
+        then "the rendered text parenthesises it" {
+            checks_fixes(doubled.run, "wrap(a + b)", "(a + b) * 2")
+        }
+        then "an atomic fill needs none" {
+            checks_keeps(doubled.run, "a + b")
+        }
+    }
+    given "the same hole name spliced twice in one rewrite" {
+        then "both occurrences take the bound value" {
+            checks_fixes(marked_twice.run, "mark(a)", "a + a")
+        }
+    }
+    given "a guard reading `declared()`" {
+        then "a bound name decides it fires" {
+            fires(seen_typed.run, analyze_source("fn f(x: int) -> int { x + 1 }"))
+        }
+        then "a plain literal, bound to nothing, decides it does not" {
+            !fires(seen_typed.run, analyze_source("fn h() -> int { 1 + 2 }"))
+        }
+    }
+    given "a parenthesised if/else pattern (avra-8sb5.25.21)" {
+        then "a bare if/else example, both branches answering a value, still fires" {
+            checks_fixes(paren_if_null_ternary.run, "if x == null { 0 } else { x! }", "x ?? 0")
+        }
+        then "an impure branch keeps" {
+            checks_keeps(paren_if_null_ternary.run, "if next() == null { 0 } else { next()! }")
+        }
+    }
+    given "a hole bound inside a postfix chain (avra-8sb5.25.22)" {
+        then "its own text is the receiver alone, not the chain around it" {
+            // LICENSED I7: the example text names the idiom it proves — the
+            // site the scanner is built to find, held as a string, not written
+            match fix_at(chain_span_probe.run, analyze_source("fn f() -> int { a.b[a.b.length - 1].c(1) }")) {
+                f? -> match f { .Say(voice) -> voice.message == "a.b", _ -> false }
+                null -> false
+            }
+        }
+        then "a rewrite inside the chain renders only the matched node's own text" {
+            // LICENSED I7: the example text names the idiom it proves — the
+            // site the scanner is built to find, held as a string, not written
+            checks_fixes(last_index.run, "a.b[a.b.length - 1].c(1)", "a.b.last()!")
+        }
+    }
+}

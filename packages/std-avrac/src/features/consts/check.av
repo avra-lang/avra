@@ -2,7 +2,7 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. Its type is recorded as
 //! a workspace fact; an annotation still holds what it declares.
-use core.{StmtId, ExprId, TypeId, TypeRef, Expr, DeclId, same_type, flatten, some_list}
+use core.{StmtId, ExprId, TypeId, TypeRef, Expr, DeclId, CollectParts, same_type, flatten, some_list}
 use features.{TypeCx, declared_decl, bound_decl_of}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
@@ -21,6 +21,19 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     cx.walk_value(s)
     // a value or an annotation the walk already refused is spoken for
     if cx.errored(v) || refused_annotation(cx, declared) { return }
+    // A MEMBER CANNOT READ ITS OWN COLLECTION WHILE COMPILING
+    // (docs/2026_09_22_COLLECTIONS.md §4.2) — a cycle regardless of
+    // scope: the collect's own value is THIS declaration's synthesis,
+    // not yet built while this declaration's value is what is being
+    // typed. Checked before the closure-fold law below, which would
+    // otherwise catch the same read under the wrong, less specific
+    // voice — a self-read is refused whether or not the collect that
+    // gathers it is closure-scoped.
+    let cycled: DeclId? = self_collect_read(cx, s, v)
+    if cycled != null {
+        let _ = cx.spoken(self_read_refused(cx, cx.loc_of(v), cx.view.store.let_name(s) ?? "this value", cycled!))
+        return
+    }
     // OPEN WORLD CLOSES AT LINK (docs/2026_09_22_COLLECTIONS.md §4.1):
     // a value read straight by NAME, so a helper fn hiding the read is
     // outside what this catches cheaply — the reachable, common case.
@@ -100,16 +113,43 @@ fn decl_refs(cx: TypeCx, root: ExprId) -> List<DeclId> {
 }
 
 fn closure_collect(cx: TypeCx, d: DeclId) -> bool {
-    let x = cx.view.decls.decl(d)
-    if !(x.kind is .Collect) { return false }
-    let p? = cx.view.decls.store_of(x.file).collect_parts(x.stmt) else { return false }
+    let p? = collect_parts_of(cx, d) else { return false }
     p.scope is .Closure
+}
+
+/// A collect gathering THIS declaration's own kind, read by name —
+/// `s` need not be a named instance (`instance_of` answers absent
+/// for an ordinary const, so nothing here ever matches for one).
+fn self_collect_read(cx: TypeCx, s: StmtId, root: ExprId) -> DeclId? {
+    let word? = cx.view.store.instance_of(s) else { return null }
+    decl_refs(cx, root).find(gathers(cx, word, it))
+}
+
+fn gathers(cx: TypeCx, word: string, d: DeclId) -> bool {
+    let p? = collect_parts_of(cx, d) else { return false }
+    match p.kind {
+        .Component(w) -> w == word,
+        .UnknownKind(_) -> false,
+    }
+}
+
+/// `d`'s own `CollectParts`, absent for anything not a `.Collect`
+/// declaration.
+fn collect_parts_of(cx: TypeCx, d: DeclId) -> CollectParts? {
+    let x = cx.view.decls.decl(d)
+    if !(x.kind is .Collect) { return null }
+    cx.view.decls.store_of(x.file).collect_parts(x.stmt)
 }
 
 // ── The voices ──
 
 fn closure_fold_refused(cx: TypeCx, at: Loc?, d: DeclId) -> Diag {
     refusal("collect.closure_fold", at, "`${cx.view.decls.decl(d).name}` is closed only when a program links — read it at run time", "folded here", "read it from a fn's body, never from a const's compile-time value")
+}
+
+fn self_read_refused(cx: TypeCx, at: Loc?, name: string, d: DeclId) -> Diag {
+    let coll = cx.view.decls.decl(d).name
+    refusal("collect.self_read", at, "`${name}` is collected into `${coll}`, so it cannot read `${coll}` while compiling", "reads it here", "an instance's own body sees what it is given directly, never the collection it joins")
 }
 
 /// A computed const needs a compile-time value form: a literal the

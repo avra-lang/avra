@@ -9,10 +9,27 @@
 // same shape as features/lists/idioms.av's own I7 license.
 use @std.avrac.compiler.{avra, new_workspace, fix_applied, fighting_pair, analysed, Application, Program, Workspace}
 use @std.avrac.compiler.host.{memory_host}
-use @std.errors.{Edit, Loc}
+use @std.avrac.diagnostics.{Diag, error_at}
+use @std.errors.{Edit, Loc, Suggestion, Confidence}
 
 fn fix_ws_of(main: string) -> Workspace {
     new_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w", avra())
+}
+
+// `edit_over` is rule_proof_test.av's own — the tests module is one
+// namespace, so it is not redefined here.
+
+fn suggestion_diag(kind: string, confidence: Confidence, edits: List<Edit>) -> Diag {
+    error_at(kind, null, "test finding") with { suggestions: [Suggestion { confidence: confidence, description: "test", edits: edits }] }
+}
+
+/// `suggestion_applications` over one Diag's own suggestion — the
+/// SECOND source `avra fix` reads, never through a rule's Candidate.
+fn suggestion_apps_of(main: string, d: Diag, only: string? = null) -> List<Application> {
+    mut ws = fix_ws_of(main)
+    mut p: Program = ws.program("/w/src/main.av")
+    let a = p.entry_file()!
+    p.suggestion_applications("/w/src/main.av", analysed(a), [d], only)
 }
 
 // LICENSED I26: `x!` inside these fixture strings is idiom text under
@@ -28,7 +45,7 @@ spec "avra fix" {
     given "a null-check idiom the IR proof confirms" {
         then "one Application, PROVED" {
             let apps = fix_apps_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n")
-            apps.length == 1 && apps[0].proved && apps[0].rule_kind == "nullable.if_null_ternary"
+            apps.length == 1 && apps[0].proved && apps[0].kind == "nullable.if_null_ternary"
         }
         then "fix_applied splices the file to the rewritten form" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
@@ -76,17 +93,206 @@ spec "avra fix" {
     }
 }
 
+// THE SECOND SOURCE: any OTHER diagnostic's own `Suggestion`,
+// generalized off the rule DSL entirely — no rule, no Candidate, no
+// `At`, just a `Diag` carrying `edits: List<Edit>` the way a
+// spell-check or a named-type wrap builds one.
+spec "avra fix — the general Diag.suggestion channel" {
+    given "a Diag's own suggestion, proving the SAME rewrite a rule would" {
+        then "PROVED — Confidence plays no part in it" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]))
+            apps.length == 1 && apps[0].proved && apps[0].kind == "test.finding"
+        }
+    }
+    given "a HIGH-confidence suggestion the IR proof does NOT confirm" {
+        // THE SINGLE MOST IMPORTANT PROPERTY IN THIS TICKET: a suggestion
+        // marked High confidence, whose edit the IR proof cannot confirm,
+        // stays SHOWN and is never written — Confidence is a claim for a
+        // HUMAN, proof is the only gate `avra fix` itself reads.
+        then "SHOWN, not proved — fix_applied writes nothing" {
+            let text = "fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n"
+            let edit = edit_over(text, "a + b", "a - b")
+            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]))
+            apps.length == 1 && !apps[0].proved && fix_applied(text, apps) == text
+        }
+    }
+    given "a LOW-confidence suggestion the IR proof DOES confirm" {
+        then "PROVED all the same — confidence never raises or lowers the gate" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.Low, [edit]))
+            apps.length == 1 && apps[0].proved
+        }
+    }
+    given "a suggestion whose one edit sits over a REMARK" {
+        then "no Application at all — the general gate refuses it outright, same as a rule's" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null {\n        // held\n        0\n    } else { x! }\n}\n0\n"
+            let edit = edit_over(text, "if x == null {\n        // held\n        0\n    } else { x! }", "x ?? 0")
+            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit])).is_empty()
+        }
+    }
+    given "a suggestion whose one edit sits over a `// LICENSED` site" {
+        then "no Application at all — a human's own decision, unconditionally" {
+            let text = "fn pick(x: int?) -> int {\n    // LICENSED I1: kept as a ternary on purpose\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit])).is_empty()
+        }
+    }
+    given "a suggestion with TWO edits, both provable together" {
+        then "PROVED — applied as ONE rewrite" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\nfn pick2(y: int?) -> int {\n    if y == null { 0 } else { y! }\n}\npick(null) + pick2(null)\n"
+            let edits = [
+                edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0"),
+                edit_over(text, "if y == null { 0 } else { y! }", "y ?? 0"),
+            ]
+            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, edits))
+            let after = fix_applied(text, apps)
+            apps[0].proved && after != null && after!.contains("x ?? 0") && after!.contains("y ?? 0")
+        }
+    }
+    given "a Diag carrying TWO suggestions" {
+        then "both become their own Application" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            let d = error_at("test.two", null, "test finding") with { suggestions: [
+                Suggestion { confidence: Confidence.High, description: "a", edits: [edit] },
+                Suggestion { confidence: Confidence.Medium, description: "b", edits: [edit] },
+            ] }
+            mut ws = fix_ws_of(text)
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            p.suggestion_applications("/w/src/main.av", analysed(a), [d], null).length == 2
+        }
+    }
+    given "--only naming a DIFFERENT kind" {
+        then "no Application at all" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]), "other.kind").is_empty()
+        }
+    }
+    given "a Diag with TWO suggestions, only ONE of them sitting over a `// LICENSED` site" {
+        then "ONE Application — the licensed suggestion is dropped, the other is not; granularity is per-SUGGESTION" {
+            // the padding fn keeps pick2 more than 200 bytes past the
+            // LICENSED comment — see the bleed test right below for
+            // what happens without it
+            let text = "fn pick(x: int?) -> int {\n    // LICENSED I1: kept as a ternary on purpose\n    if x == null { 0 } else { x! }\n}\nfn padding() -> int {\n    1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1\n}\nfn pick2(y: int?) -> int {\n    if y == null { 0 } else { y! }\n}\npick(null) + padding() + pick2(null)\n"
+            let licensed_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            let clean_edit = edit_over(text, "if y == null { 0 } else { y! }", "y ?? 0")
+            let d = error_at("test.two", null, "test finding") with { suggestions: [
+                Suggestion { confidence: Confidence.High, description: "licensed one", edits: [licensed_edit] },
+                Suggestion { confidence: Confidence.High, description: "clean one", edits: [clean_edit] },
+            ] }
+            mut ws = fix_ws_of(text)
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            let apps = p.suggestion_applications("/w/src/main.av", analysed(a), [d], null)
+            apps.length == 1 && apps[0].edits[0].replacement == "y ?? 0"
+        }
+    }
+    given "a `// LICENSED` comment less than 200 bytes before an UNRELATED declaration's own code" {
+        then "REFUSAL QUALITY, not soundness: the license's protection BLEEDS onto the next declaration — licensed_just_above is a raw byte-distance window, not scoped to the declaration it sits in" {
+            let text = "fn pick(x: int?) -> int {\n    // LICENSED I1: kept as a ternary on purpose\n    if x == null { 0 } else { x! }\n}\nfn pick2(y: int?) -> int {\n    if y == null { 0 } else { y! }\n}\npick(null) + pick2(null)\n"
+            let clean_edit = edit_over(text, "if y == null { 0 } else { y! }", "y ?? 0")
+            let d = suggestion_diag("test.bleed", Confidence.High, [clean_edit])
+            mut ws = fix_ws_of(text)
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            // an edit over pick2 ALONE, nowhere near pick's own body,
+            // is still dropped — the OTHER function's license comment
+            // reaches it purely by byte distance
+            p.suggestion_applications("/w/src/main.av", analysed(a), [d], null).is_empty()
+        }
+    }
+}
+
+// CROSS-SOURCE FIGHTS: `fighting_pair`/`fix_applied` must treat a
+// rule's own Application and a Diag's own Suggestion Application as
+// ONE pool — an overlap between the two is exactly as much a fight
+// as an overlap between two rules.
+spec "avra fix — a rule and a suggestion fighting over the same code" {
+    given "a rule-proved rewrite and a SEPARATE suggestion, BOTH proved, over the identical span" {
+        then "fighting_pair names both — an overlap between the two sources is a fight, same as two rules'" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let rule_apps = fix_apps_of(text)
+            let same_span_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            let sg_apps = suggestion_apps_of(text, suggestion_diag("test.rival", Confidence.High, [same_span_edit]))
+            let apps = rule_apps.concat(sg_apps)
+            rule_apps.length == 1 && rule_apps[0].proved && sg_apps.length == 1 && sg_apps[0].proved && fighting_pair(apps) == "nullable.if_null_ternary and test.rival"
+        }
+        then "fix_applied refuses the whole splice rather than pick a winner" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let rule_apps = fix_apps_of(text)
+            let same_span_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
+            let sg_apps = suggestion_apps_of(text, suggestion_diag("test.rival", Confidence.High, [same_span_edit]))
+            fix_applied(text, rule_apps.concat(sg_apps)) == null
+        }
+    }
+}
+
+// DESIGN GAP, NOT A SOUNDNESS BUG: this ticket's OWN doc comments
+// name three motivating uses for the general Suggestion channel — a
+// spell-check, a dependency line, a named type's wrap. All three of
+// the compiler's REAL diagnostics of those shapes
+// (`resolve.unresolved`'s "did you mean", `resolve.not_a_dependency`,
+// `type.mismatch`'s named-type wrap) are built on `refusal`, which is
+// Severity.Error by construction (diagnostics/mod.av's `error_at`).
+// `packages/cli/src/commands/fix.av`'s `fixed` bails at its very
+// first line, `if !p.clean() { fail p.report() }`, before it ever
+// calls `suggestion_applications` — and `p.clean()` is false
+// whenever ANY file in the program carries an error, which the
+// diagnostic CARRYING the suggestion always does, by definition. So
+// none of the three motivating examples can ever reach `avra fix`'s
+// real CLI command; only a WARNING-severity source (a rule's own
+// finding, or some future non-error diagnostic) can. Confirmed
+// end-to-end against the real CLI binary, not just here: `avra fix`
+// on a file with an unresolved-name typo prints the bare error
+// report and exits 1, the same as `avra check` would — it never
+// reaches the `[]`-or-populated JSON array `--json` prints once
+// `suggestion_applications` runs.
+spec "the general Suggestion channel's own motivating diagnostics are unreachable" {
+    given "a real unresolved-name diagnostic, complete with its own \"did you mean\" Suggestion" {
+        then "the program carrying it is NOT clean — avra fix's own gate bails before suggestion_applications ever runs" {
+            mut ws = fix_ws_of("let value = 1\nvaleu\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            let sg_count = a.diagnostics.find(it.kind == "resolve.unresolved")?.suggestions?.length ?? 0
+            !p.clean() && sg_count > 0
+        }
+    }
+}
+
+// THE COUNTEREXAMPLE: `type.coalesce_never` is a real WARNING (never
+// blocks `p.clean()`) built far from any rule's Candidate, carrying a
+// real Suggestion over `a.diagnostics` — the first non-rule diagnostic
+// to actually reach `avra fix`'s apply path end to end, not merely a
+// forward-looking one.
+spec "a real WARNING-severity Suggestion reaching avra fix's own apply path" {
+    given "`n ?? 4` where `n`'s type says it is never absent" {
+        then "the program stays clean, and its own Suggestion PROVES and applies through the general channel" {
+            let text = "fn f() -> int {\n    let n = 3\n    n ?? 4\n}\n0\n"
+            mut ws = fix_ws_of(text)
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            let apps = p.suggestion_applications("/w/src/main.av", analysed(a), a.diagnostics, null)
+            p.clean() && apps.length == 1 && apps[0].kind == "type.coalesce_never" && apps[0].proved && fix_applied(text, apps) == "fn f() -> int {\n    let n = 3\n    n\n}\n0\n"
+        }
+    }
+}
+
 fn overlapping_apps() -> List<Application> {
     [
-        Application { rule_kind: "a.b", edit: edit_at(0, 3, "x"), proved: true },
-        Application { rule_kind: "c.d", edit: edit_at(2, 5, "y"), proved: true },
+        Application { kind: "a.b", edits: [edit_at(0, 3, "x")], proved: true },
+        Application { kind: "c.d", edits: [edit_at(2, 5, "y")], proved: true },
     ]
 }
 
 fn disjoint_apps() -> List<Application> {
     [
-        Application { rule_kind: "a.b", edit: edit_at(0, 2, "x"), proved: true },
-        Application { rule_kind: "c.d", edit: edit_at(2, 4, "y"), proved: true },
+        Application { kind: "a.b", edits: [edit_at(0, 2, "x")], proved: true },
+        Application { kind: "c.d", edits: [edit_at(2, 4, "y")], proved: true },
     ]
 }
 

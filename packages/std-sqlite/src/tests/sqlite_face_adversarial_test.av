@@ -73,6 +73,119 @@ spec "std/sqlite face adversarial" {
         // twice with no "already bound" state to trip over.
         then "the same Sql value runs clean twice in a row" { fadv_run_twice() == "1|1" }
     }
+    given "the connection's statement cache, exercised rather than assumed" {
+
+        // The cache reuses ONE compiled statement across many calls —
+        // fifty inserts through the same text, each with its own bound
+        // value. A two-call test cannot tell a correct rebind from a
+        // reset that silently kept the FIRST call's binding; fifty
+        // distinct values, read back in order, can.
+        then "fifty inserts through one cached statement all land, in order" { fadv_cache_write_order() == "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49" }
+        // The read side of the same claim: fifty lookups through one
+        // cached SELECT, each asking for a different value, each
+        // answering ITS OWN — never a neighbour's, which is what a
+        // rebind that missed a slot would produce.
+        then "fifty reads through one cached statement each answer their own value" { fadv_cache_read_each() }
+        // A statement that FAILED mid-execution — a UNIQUE violation —
+        // is still sitting in the cache afterwards; the next call for
+        // the same text must find it usable, not wedged in the failed
+        // call's state.
+        then "a cached statement that just failed a UNIQUE check runs clean next time" { fadv_cache_after_failure() == "err|ok|ok" }
+        // The slot-count guard reads `slots()` fresh every call — a
+        // cache hit must not let a wrong argument count through just
+        // because the statement was seen before.
+        then "the wrong argument count is still refused on a statement the cache already holds" { fadv_cache_wrong_arity() == "sqlite.unfilled" }
+        // Two spellings of one query that differ only by whitespace and
+        // a trailing comment are two DIFFERENT map keys — no sharing,
+        // and each pays its own prepare, but both still run correctly.
+        then "texts differing by whitespace are cached separately and both still work" { fadv_cache_whitespace_variants() == "1|1" }
+    }
+}
+
+/// Fifty inserts through the SAME `Sql` text (the cache's one entry),
+/// each with a different bound value; the values read back, in
+/// insertion order, joined by a comma.
+fn fadv_cache_write_order() -> string {
+    fadv_cache_write_order_or() catch "?"
+}
+
+fn fadv_cache_write_order_or() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let ins = sql("insert into t (v) values (?)")
+    for i in 0..50 {
+        let _ = db.run(ins.args([.Int(i)]))?
+    }
+    let rows = db.all(sql("select v from t order by rowid"))?
+    ["${row.int(0)?}" for row in rows].join(",")
+}
+
+/// Fifty lookups through one cached SELECT, each asking for a distinct
+/// value already written — a stale rebind would answer a neighbour's
+/// value instead of the one just asked for.
+fn fadv_cache_read_each() -> bool {
+    fadv_cache_read_each_or() catch false
+}
+
+fn fadv_cache_read_each_or() -> Result<bool, SqlError> {
+    mut db = fadv_db()?
+    let ins = sql("insert into t (v) values (?)")
+    for i in 0..50 {
+        let _ = db.run(ins.args([.Int(i)]))?
+    }
+    let sel = sql("select v from t where v = ?")
+    for i in 0..50 {
+        let row = db.one(sel.args([.Int(i)]))?
+        if row.int(0)? != i { return false }
+    }
+    true
+}
+
+/// A UNIQUE-constrained insert: the same cached statement fails once
+/// (the duplicate) and then succeeds twice more (fresh values) —
+/// `err|ok|ok`, or the kind of whichever call broke that shape.
+fn fadv_cache_after_failure() -> string {
+    fadv_cache_after_failure_or() catch "?"
+}
+
+fn fadv_cache_after_failure_or() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    db.run(sql("create table u (v unique)"))?
+    let ins = sql("insert into u (v) values (?)")
+    let _ = db.run(ins.args([.Int(1)]))?
+    let first = fadv_outcome_word(db.run(ins.args([.Int(1)])))
+    let second = fadv_outcome_word(db.run(ins.args([.Int(2)])))
+    let third = fadv_outcome_word(db.run(ins.args([.Int(3)])))
+    "${first}|${second}|${third}"
+}
+
+fn fadv_outcome_word(r: Result<int, SqlError>) -> string { if fadv_kind(r).is_empty() { "ok" } else { "err" } }
+
+/// A statement the cache already holds, called next with the wrong
+/// number of arguments — refused the same way a fresh `prepare` would
+/// refuse it, or the kind IS the refusal and the call before it is
+/// empty when it ran clean.
+fn fadv_cache_wrong_arity() -> string {
+    fadv_cache_wrong_arity_or() catch "?"
+}
+
+fn fadv_cache_wrong_arity_or() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let ins = sql("insert into t (v) values (?)")
+    let _ = db.run(ins.args([.Int(1)]))?
+    fadv_kind(db.run(ins.args([])))
+}
+
+/// Two texts naming the same insert, one with a trailing comment —
+/// different cache keys, both still run and both still write their row.
+fn fadv_cache_whitespace_variants() -> string {
+    fadv_cache_whitespace_variants_or() catch "?|?"
+}
+
+fn fadv_cache_whitespace_variants_or() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let a = db.run(sql("insert into t (v) values (?)").args([.Int(1)]))?
+    let b = db.run(sql("insert into t (v) values (?) -- note").args([.Int(2)]))?
+    "${a}|${b}"
 }
 
 fn fadv_class_via_bind(v: SqlValue) -> string {

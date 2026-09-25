@@ -8,6 +8,7 @@
 use @std.io.{exists, write_text, remove}
 use @std.sqlite.open.{Db, Mode, OpenConfig}
 use @std.sqlite.stmt.{Stmt}
+use @std.sqlite.sql.{sql, Sql}
 use @std.sqlite.error.{SqlError}
 
 /// A fresh in-memory database handed to `work`, or the kind the OPEN
@@ -287,5 +288,38 @@ spec "std/sqlite connection" {
         then "an in-memory database passes it too" { opens(Db.memory()) }
         then "read-only passes it on an existing file" { opens(Db.open_read(a_path())) }
         then "cleaned up" { gone(a_path()) }
+    }
+    given "the statement cache, once the connection closes" {
+
+        // Two cached inserts build the cache up, and `close` must
+        // finalize both entries and still answer zero — never trip
+        // over a statement it itself put there. Afterwards the
+        // connection is closed exactly as `raw`'s own tests prove:
+        // the SAME `Cell` a copy of `Db` would share.
+        then "closing after cached queries still answers zero, and the connection then refuses" { cache_finalizes_on_close() == "close=0 after=sqlite.closed" }
+    }
+}
+
+fn cache_finalizes_on_close() -> string {
+    match cache_finalizes_on_close_or() {
+        .Ok(s) -> s,
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn cache_finalizes_on_close_or() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    db.run(sql("create table t (v)"))?
+    let ins = sql("insert into t (v) values (?)")
+    db.run(ins.args([.Int(1)]))?
+    db.run(ins.args([.Int(2)]))?
+    let rc = db.close()
+    "close=${rc} after=${run_kind(db, ins.args([.Int(3)]))}"
+}
+
+fn run_kind(mut db: Db, s: Sql) -> string {
+    match db.run(s) {
+        .Ok(_) -> "",
+        .Err(e) -> e.cause.kind(),
     }
 }

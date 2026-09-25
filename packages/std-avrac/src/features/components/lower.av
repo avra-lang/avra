@@ -2,10 +2,58 @@
 //! over the instance as the compiler settles it, its diagnostics
 //! spoken at the instance. An instance only a run can build — one
 //! that reads a parameter or the world — is not checked.
-use core.{ExprId, Span}
+use core.{ExprId, StmtId, TypeId, Reg, Annotation, Span, joined, doc_first_paragraph}
 use features.{LowerCx, SettleRoot, Unsettled, nothing}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal, warning}
+
+/// A component instance's `doc`/annotation-fed fields, filled from
+/// what only the WRAPPING STATEMENT carries — the `///` above it and
+/// its `@name(args)` annotations — since neither exists yet while
+/// the instance's own record literal is built (an annotation wraps
+/// the statement from OUTSIDE, once the statement already stands:
+/// `core/store.av`'s `annotate`/`annotate_before`). A field named
+/// `doc` reads the statement's own `///`, first paragraph; any OTHER
+/// `List<R>` field whose name an annotation shares gets one `R` per
+/// matching annotation, built from its arguments by position — a
+/// one-arg annotation into `List<string>` appends the string.
+fn augmented(mut cx: LowerCx, e: ExprId, x: ExprId, base: Reg) -> Reg {
+    let owner? = cx.view.store.instance_owner(e) else { return base }
+    let ty = cx.type_at(x)
+    let sig? = cx.fields_of(ty) else { return base }
+    for j, name in sig.names {
+        if name == "doc" {
+            cx.field_written(base, ty, j, cx.const_str(doc_text(cx, owner)))
+        } else {
+            let anns = [a for a in cx.view.store.annotations_of(owner) if a.name == name]
+            if !anns.is_empty() { cx.field_written(base, ty, j, annotation_list_reg(cx, anns, sig.types[j])) }
+        }
+    }
+    base
+}
+
+fn doc_text(cx: LowerCx, owner: StmtId) -> string {
+    joined(doc_first_paragraph(cx.view.store.doc_comment(owner) ?? []), " ")
+}
+
+/// Every matching annotation, one `R` each, packed into the field's
+/// own `List<R>`.
+fn annotation_list_reg(mut cx: LowerCx, anns: List<Annotation>, list_ty: TypeId) -> Reg {
+    let elem_ty: TypeId = cx.view.types.element(list_ty) ?? list_ty
+    let regs = [annotation_elem_reg(cx, a, elem_ty) for a in anns]
+    let size = cx.box_size(regs.length)
+    cx.grown_box(cx.view.types.shape_of(list_ty), size, regs)
+}
+
+/// One annotation's own `R`: its arguments packed positionally when
+/// `R` is a record of exactly that many fields, else its ONE written
+/// argument, R's own shape.
+fn annotation_elem_reg(mut cx: LowerCx, a: Annotation, elem_ty: TypeId) -> Reg {
+    let one? = a.args.first() else { return cx.mint_ty(elem_ty) }
+    let fsig? = cx.fields_of(elem_ty) else { return cx.reg_of(one) }
+    if fsig.names.length != a.args.length { return cx.reg_of(one) }
+    cx.packed_struct(elem_ty, [cx.reg_of(arg) for arg in a.args])
+}
 
 fn checked(mut cx: LowerCx, e: ExprId, check: ExprId) {
     if !settleable(cx, e, check) { return }

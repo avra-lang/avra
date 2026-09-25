@@ -13,7 +13,7 @@ use @std.errors.{Loc}
 /// `it.line` is in the design (docs/2026_09_22_COLLECTIONS.md) and
 /// not built: a Loc is a byte range (`@std/errors`'s `Loc`), and no
 /// line index is wired to this projection yet.
-const generic_words: List<string> = ["name", "module", "file", "doc"]
+export const generic_words: List<string> = ["name", "module", "file", "doc"]
 
 export fn check_collect(mut cx: TypeCx, s: StmtId) {
     let p? = cx.view.store.collect_parts(s) else { return }
@@ -33,7 +33,7 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
 /// answers here, never a string compare.
 fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
     match kind {
-        .Rule or .Component(_) -> nothing(),
+        .Component(_) -> nothing(),
         .UnknownKind(w) -> cx.emit(unknown_kind(cx.stmt_loc(s), w)),
     }
 }
@@ -63,14 +63,21 @@ fn checked_projection(mut cx: TypeCx, s: StmtId, proj: Projection, kind: Collect
 fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
     if path.is_empty() { return true }
     if path.length > 1 { return false }
-    let word = path[0].of
-    generic_words.contains(word) || kind_word(kind, word)
+    generic_words.contains(path[0].of) || kind_word(kind)
 }
 
-fn kind_word(kind: CollectKind, word: string) -> bool {
+/// A component's OWN field, by name — `rule in closure as RuleEntry
+/// { run: it.run }` reads the `rule` component's `run` field off
+/// each instance. Not checked against the component's actual
+/// fields here (this door has no component signature in hand, only
+/// its word): a name that misses is `field_named`'s DEFECT at
+/// lowering (features/values.av), loud rather than a plausible
+/// default. `UnknownKind` names no component at all, so it answers
+/// no word.
+fn kind_word(kind: CollectKind) -> bool {
     match kind {
-        .Rule -> word == "root_kind",
-        .Component(_) or .UnknownKind(_) -> false,
+        .Component(_) -> true,
+        .UnknownKind(_) -> false,
     }
 }
 
@@ -82,7 +89,7 @@ fn path_word(path: List<Plain>) -> string {
 // ── voices ──
 
 fn unknown_kind(at: Loc?, kind: string) -> Diag {
-    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "the declared kinds today: rule — or an imported component's own name")
+    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "an imported component's own name — `rule` among them")
 }
 
 fn unknown_scope(at: Loc?, scope: string) -> Diag {

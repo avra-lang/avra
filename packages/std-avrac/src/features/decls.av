@@ -250,11 +250,6 @@ export type Decls = {
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
-    // the workspace's collect-gathering hook: force-admits a
-    // closure-scoped collect's own SCOPE whole, by the word it
-    // gathers (a member's file is never `use`-reached — it exists to
-    // be discovered)
-    ensure_collect: Cell<fn(FileId, string) -> void>,
     // whether THIS compilation is a program (has an entry) or a
     // library — the closure-fold law's door (features/consts/check.av)
     ensure_entry: Cell<fn() -> bool>,
@@ -294,9 +289,6 @@ fn no_store(f: FileId) {}
 
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
-
-// LICENSED I23: a fn VALUE filling the collect-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
-fn no_collect_ensure(f: FileId, word: string) {}
 
 // LICENSED I23: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
@@ -376,7 +368,6 @@ export fn new_decls() -> Decls {
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
-        ensure_collect: Cell.new(no_collect_ensure),
         ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
         builtins: list_cell(),
@@ -420,7 +411,6 @@ export fn kind_word(k: DeclKind) -> string {
         .Main -> "main",
         .Case -> "case",
         .Const -> "const",
-        .Rule -> "rule",
         .Collect -> "collect",
         .Builtin -> "builtin",
     }
@@ -592,14 +582,13 @@ impl Decls {
         IndexedWord { word: w, id: d.id }
     }
 
-    /// The word a declaration answers `collect` under: `rule` for a
-    /// `DeclKind.Rule`; for a `Const` (the ONLY kind a named instance
-    /// promotes to, `NodeStore.declared_instance`) the component its
-    /// own statement instances (`NodeStore.instance_of`) — absent for
-    /// everything else, a `Builtin`'s sentinel file and stmt among
-    /// them, which no store carries.
+    /// The word a declaration answers `collect` under: for a `Const`
+    /// (the ONLY kind a named instance promotes to,
+    /// `NodeStore.declared_instance`) the component its own statement
+    /// instances (`NodeStore.instance_of`, `rule` among them) —
+    /// absent for everything else, a `Builtin`'s sentinel file and
+    /// stmt among them, which no store carries.
     fn collect_word(d: Decl) -> string? {
-        if d.kind is .Rule { return "rule" }
         if !(d.kind is .Const) { return null }
         self.store_of(d.file).instance_of(d.stmt)
     }
@@ -729,7 +718,6 @@ impl Decls {
     fn disarm() {
         self.ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
-        self.ensure_collect.set(no_collect_ensure)
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_ensure)
@@ -746,9 +734,6 @@ impl Decls {
 
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
 
-    /// The workspace arms the collect-gathering hook once.
-    fn arm_collect(ensure: fn(FileId, string) -> void) { self.ensure_collect.set(ensure) }
-
     /// The workspace arms the entry hook once.
     fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
 
@@ -756,15 +741,16 @@ impl Decls {
     /// workspace will run — or a library, read at run time only.
     fn is_program() -> bool { (self.ensure_entry.get())() }
 
-    /// Every declaration `word` names WITHIN `scope`, `owner`'s SCOPE
-    /// force-admitted whole first (the hook) — the closure law for a
-    /// collect whose members are never `use`-reached. Read through
-    /// the collect index, so a second ask over the same word rescans
-    /// nothing new; the SCOPE still filters every ask, since
-    /// admission and membership answer different questions — the
-    /// index may already hold more than `self`/`package` claims.
+    /// Every declaration `word` names WITHIN `scope` — a member is
+    /// found the way any declaration is, by import reachability
+    /// (docs/2026_09_22_COLLECTIONS.md §5: contributions merge
+    /// exactly where imports merge). Read through the collect index,
+    /// so a second ask over the same word rescans nothing new; the
+    /// SCOPE FILTERS what is already reached, it never widens it —
+    /// `closure` answers everything the program links, `package`
+    /// narrows to the owner's own package, `self` to the owner's own
+    /// file.
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
-        (self.ensure_collect.get())(owner, word)
         [d for d in self.decls_of_word(word) if self.in_scope(d, scope, owner)]
     }
 
@@ -896,7 +882,7 @@ impl Decls {
         let m = self.types.machine_type(t)
         match self.types.shape_of(m) {
             .Int -> 0,
-            .Enum(e, _) -> if e.index != d.index && self.carries_nothing(e) { 0 } else { null },
+            .Enum(e, _) -> if !same_decl(e, d) && self.carries_nothing(e) { 0 } else { null },
             .Struct(_, _) -> if self.types.travels_wide(m) { null } else { 1 },
             .Opt(inner) -> if self.types.opt_rides_pointer(inner) { 1 } else { null },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> 1,
@@ -1202,16 +1188,17 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Record or .Named or .Alias or .Enum or .Builtin or .Trait -> x.name,
-            .Fn or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule or .Collect -> null,
+            .Fn or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
         }
     }
 
-    /// A fn's name — free fns, methods, and rules (a rule IS a fn of
-    /// one synthetic seat).
+    /// A fn's name — free fns and methods; a named component
+    /// instance (a `rule` among them) is a `Const`, read as its own
+    /// built value, never called by symbol.
     fn fn_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Fn or .Method or .Rule -> x.name,
+            .Fn or .Method -> x.name,
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> null,
         }
     }
@@ -1290,7 +1277,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
-            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Rule or .Collect -> x.name,
+            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

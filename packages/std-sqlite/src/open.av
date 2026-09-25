@@ -221,6 +221,9 @@ fn reads_as_uri(path: string) -> SqlError {
 
 // ── Opening, and closing ────────────────────────────────────────
 
+/// A statement kept alive under the exact text that prepared it.
+type Cached = { text: string, stmt: Stmt }
+
 /// An open connection.
 ///
 /// THE HANDLE IS A CELL BECAUSE LIVENESS IS SHARED. Two `close_v2`
@@ -238,7 +241,25 @@ fn reads_as_uri(path: string) -> SqlError {
 /// (`gen << 32 | idx` into a table, `runtime/avra_runtime.c:1727`), a
 /// process-wide table a package cannot build. THAT remains the language
 /// ask; the double close does not.
-export type Db = { raw: Cell<ptr?> }
+export type Db = {
+    raw: Cell<ptr?>,
+    /// Statements this connection has already compiled, RESET rather
+    /// than finalized between calls — `sql.av`'s `run`/`one`/`first`/
+    /// `all`/`scalar` reuse one instead of paying `prepare` again for
+    /// text they have already seen. A CELL for the same reason `raw`
+    /// is: a copy of `Db` must share one cache for one connection, not
+    /// fork into two.
+    ///
+    /// KEYED ON THE EXACT TEXT, byte for byte — two spellings of one
+    /// query that differ by whitespace or a comment are two entries,
+    /// each paying its own `prepare` once. Never evicted: nothing here
+    /// ages an entry out, so a connection that runs many DISTINCT
+    /// one-off texts over its life grows this without bound. Sound for
+    /// the fixed, small set of texts an ORM or a hand-written app
+    /// repeats; wrong for a connection that never repeats a query.
+    /// `close` finalizes every entry.
+    cache: Cell<List<Cached>> = Cell.new([]),
+}
 
 impl Db {
     /// A database at a path, opened for reading and writing and created
@@ -274,9 +295,27 @@ impl Db {
     /// Closing an already-closed `Db` answers 0 and does nothing —
     /// through the same binding or through any copy of it, since they
     /// share a cell.
+    ///
+    /// EVERY CACHED STATEMENT IS FINALIZED FIRST, and `close_v2`'s
+    /// zombie form is not why. Left unfinalized, a cached statement is
+    /// nobody's to finalize later — the cache was its only holder — so
+    /// it leaks, and being a zombie's anchor it keeps the CONNECTION
+    /// object alive and leaking too. Finalizing here is what actually
+    /// frees both, whatever `close_v2` would have tolerated.
+    ///
+    /// CLEARING THE CACHE AFTER IS WHAT MAKES THE NEXT CALL HONEST: a
+    /// `run`/`one`/`first`/`all`/`scalar` on a closed `Db` falls through
+    /// every empty cache lookup straight to `prepare`, which is where
+    /// `Cause.Closed` is spoken. A stale, already-finalized entry left
+    /// standing would answer `Cause.Finalized` instead — true of the
+    /// statement, and the wrong reason.
     fn close() -> int {
         let handle: ptr? = self.raw.get()
         if handle == null { return 0 }
+        for c in self.cache.get() {
+            let _ = c.stmt.finalize()
+        }
+        self.cache.set([])
         self.raw.set(null)
         sqlite3_close_v2(handle)
     }
@@ -296,6 +335,25 @@ impl Db {
     fn closed_fault() -> SqlError? {
         if self.raw.get() == null { return connection_closed }
         null
+    }
+
+    /// The statement already prepared for `text` on this connection,
+    /// or absence when this is the first time it is asked for. The
+    /// hottest call on the cached path — every `run`/`one`/`first`/
+    /// `all`/`scalar` reaches it once.
+    fn cached(text: string) -> Stmt? {
+        // LICENSED I4: `.find(it.text == text)` closes over `text`, minting a
+        // lambda per call; a plain loop does not, and this runs on every call.
+        for c in self.cache.get() {
+            if c.text == text { return c.stmt }
+        }
+        null
+    }
+
+    /// `stmt` kept under `text`, so the next call for the same text
+    /// finds it here instead of preparing again.
+    fn remember(text: string, stmt: Stmt) {
+        self.cache.push(Cached { text: text, stmt: stmt })
     }
 }
 

@@ -8,9 +8,10 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind, body_symbol}
+use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, doc_first_paragraph, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind, body_symbol}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
+use features.collects.{generic_words}
 use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
@@ -628,21 +629,19 @@ fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<
 
 /// The kind's own gathering door — A REGISTRY, exhaustive over
 /// `CollectKind`: the next kind (fn, case) answers here, never a
-/// string compare. `rule` and a component both read the SAME index,
-/// by the SAME word (`Decls.collect_word`) — `owner`'s scope
-/// force-admitted whole through the hook (`Decls.gathered`, armed in
-/// workspace.av). `UnknownKind` was already refused at
+/// string compare. Every component's instances read the SAME index,
+/// by the SAME word (`Decls.collect_word`), filtered to `scope` by
+/// `Decls.gathered`. `UnknownKind` was already refused at
 /// `check_collect` — it gathers nothing, honestly.
 fn collect_members(a: Analysis, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
     match kind {
-        .Rule -> a.view.decls.gathered("rule", scope, owner),
         .Component(w) -> a.view.decls.gathered(w, scope, owner),
         .UnknownKind(_) -> [],
     }
 }
 
 fn collect_sort_key(a: Analysis, p: CollectParts, d: Decl) -> string {
-    joined([collect_field_text(a, p.kind, d, [k]) for k in p.order], ".")
+    joined([collect_field_text(a, d, [k]) for k in p.order], ".")
 }
 
 /// One entry: its fields read by NAME off the projected type's own
@@ -658,46 +657,75 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
 }
 
 /// One field's register: the declaration ITSELF (a fn value) for a
-/// bare `it`, a kind's own typed field next, else its GENERIC text
-/// projection, const.
+/// bare `it`; a component's OWN field, read off its instance's
+/// built value, for a named path that is not one of the generic
+/// words; else the GENERIC text projection, const.
 fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg {
     if path.is_empty() {
         let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
         return collect_fn_reg(lo, d.id, fnty)
     }
-    if is_root_kind_path(kind, path) { return lo.const_int(collect_root_kind(a, d)) }
-    lo.const_str(collect_field_text(a, kind, d, path))
+    if is_root_kind_path(path) { return lo.const_int(component_root_kind(a.view.decls, d)) }
+    let own? = component_field_reg(lo, a, entry_ty, name, path, kind, d) else { return lo.const_str(collect_field_text(a, d, path)) }
+    own
 }
 
-/// `rule`'s own `root_kind` path — the one kind-typed (non-string)
-/// field this kind answers.
-fn is_root_kind_path(kind: CollectKind, path: List<Plain>) -> bool {
-    match kind {
-        .Rule -> path.length == 1 && path[0].of == "root_kind",
-        .Component(_) or .UnknownKind(_) -> false,
-    }
+/// `root_kind` — the one kind-typed (non-string) field a
+/// `.Component` kind's declarations may answer: not a stored field
+/// of the component's own record (`rule` declares none named this),
+/// so it is read off the WRITTEN body rather than the built value.
+fn is_root_kind_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "root_kind"
+}
+
+/// A component instance's ROOT-KIND INDEX: its one-seat fn field's
+/// WRITTEN arms, first arm's pattern, folded (`core.root_kind_of`) —
+/// `any_root` when the field is not there, is not an arms body, or
+/// the index cannot narrow. Read off the PARSED body, never the
+/// built value `component_field_reg` reads: the index is a fact
+/// about what was WRITTEN, settled once at lowering, the same door
+/// `rule`'s own hand-built version once opened by hand
+/// (docs/2026_09_22_COLLECTIONS.md §5 — nodes touched, never nodes
+/// × rules).
+export fn component_root_kind(decls: Decls, d: Decl) -> int {
+    let store = decls.store_of(d.file)
+    let v? = store.stmt_value(d.stmt) else { return any_root }
+    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return any_root }
+    let parts? = store.lambda_parts(block) else { return any_root }
+    let arms? = match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null } else { return any_root }
+    root_kind_of(store, arms) ?? any_root
+}
+
+/// `it.field` over a `.Component` kind, when `field` is not one of
+/// the four generic words: the instance's own value, built once per
+/// run through its unit exactly as a bare `it` reads an instance
+/// elsewhere (`state.av`'s `instance_value_reg`, here with no
+/// read-site expression to mint the answer at — the instance's own
+/// declared type stands in), then the named field read off it
+/// (`values.av`'s `field_named`, whose own DEFECT is the honest
+/// answer for a word that names no field).
+fn component_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg? {
+    if path.length != 1 || generic_words.contains(path[0].of) || !(kind is .Component) { return null }
+    let word = path[0].of
+    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
+    let inst_ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo.view.types.intern(Type.Error)
+    let unit = lo.view.decls.instance_unit(d.id)
+    if lo.unseen(unit.name) { lo.jobs.pending.push(unit) }
+    let inst = lo.call_decl(inst_ty, unit.name, [])
+    lo.field_named(inst, inst_ty, word, field_ty)
 }
 
 /// A path's TEXT projection — the generic fields every kind answers:
-/// name, module, file, the `///` doc's first paragraph joined; a
-/// kind-typed path's own text, for the SORT KEY alone.
-fn collect_field_text(a: Analysis, kind: CollectKind, d: Decl, path: List<Plain>) -> string {
+/// name, module, file, the `///` doc's first paragraph joined.
+fn collect_field_text(a: Analysis, d: Decl, path: List<Plain>) -> string {
     if path.length != 1 { return "" }
     let word = path[0].of
     if word == "name" { return d.name }
     if word == "module" { return a.view.decls.short_module_of(d.id) }
     if word == "file" { return a.view.decls.file(d.file).path }
     if word == "doc" { return joined(doc_first_paragraph(a.view.decls.doc_of(d.id) ?? []), " ") }
-    if is_root_kind_path(kind, path) { return "${collect_root_kind(a, d)}" }
+    if is_root_kind_path(path) { return "${component_root_kind(a.view.decls, d)}" }
     ""
-}
-
-/// `rule`'s own field: the ROOT-KIND INDEX (`core.root_kind_of`) its
-/// first arm's pattern folds to, `any_root` when it cannot narrow.
-fn collect_root_kind(a: Analysis, d: Decl) -> int {
-    let store = a.view.decls.store_of(d.file)
-    let parts? = store.rule_parts(d.stmt) else { return any_root }
-    root_kind_of(store, parts.arms) ?? any_root
 }
 
 /// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
@@ -712,15 +740,6 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
     }
     let size = lo.box_size(1)
     lo.fn_box(lo.view.types.shape_of(fnty), size, wname, [])
-}
-
-fn doc_first_paragraph(lines: List<string>) -> List<string> {
-    mut out: List<string> = []
-    for l in lines {
-        if l == "" { return out }
-        out.push(l)
-    }
-    out
 }
 
 /// A file's run-time statements as a body under `name` — `main` for

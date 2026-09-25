@@ -1,6 +1,6 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
-use core.{NodeStore, DeclId, FileId, UseParts, ExprId, Case, flatten, SpecParts, spelled, user_kind, is_kind_word, DeclKind, CollectKind, CollectScope}
+use core.{NodeStore, DeclId, FileId, UseParts, ExprId, Case, flatten, SpecParts, spelled, user_kind, is_kind_word}
 use @std.path.{under_dir, joined_path, normalized}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
@@ -20,7 +20,6 @@ impl Workspace {
             if !self.is_held(f) { let _ = self.items(f) }
         }
         self.timed("parse", self.clock() - t0)
-        self.admit_collect_scopes()
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
@@ -86,93 +85,6 @@ impl Workspace {
     /// Every case of every file, in file and declaration order.
     fn cases() -> List<TestCase> {
         flatten([self.file_cases(fi.id) for fi in self.decls.files.get()])
-    }
-
-    /// EVERY COLLECT'S OWN SCOPE, ADMITTED WHOLE, BEFORE resolve/sigs
-    /// — a member force-admitted LATER renders its diagnostics after
-    /// method resolution already ran for everything else
-    /// (avra-8sb5.25.23's own bug, paid once). A closure collect's
-    /// members are never found by PARSING for them first (that IS the
-    /// chicken-and-egg this door exists to skip): the "parse" phase
-    /// just above already minted every `collect` among the root
-    /// files, each one naming its OWN word and scope — this walks
-    /// THOSE, so a second collect anywhere in the program (a new
-    /// kind, a new component, a new package) is admitted by writing
-    /// it, never by a row spelled here. `Decls.gathered`'s hook
-    /// (armed in workspace.av) re-asks the same door lazily, at
-    /// lowering, for any collect this walk missed — one admitted from
-    /// a HELD file, whose statement this walk never parsed.
-    fn admit_collect_scopes() {
-        for d in self.decls.decls_of_kind(DeclKind.Collect) { self.admit_one_collect(d) }
-    }
-
-    fn admit_one_collect(d: Decl) {
-        let p? = self.decls.store_of(d.file).collect_parts(d.stmt) else { return }
-        if collect_word_of(p.kind) == null { return }
-        self.admit_scope(p.scope, d.file)
-    }
-
-    /// A REGISTRY match over `CollectScope`: `self` needs nothing
-    /// beyond the collect's own (already-parsed) file, `package`
-    /// force-admits its owner whole, `closure` every package the
-    /// program reaches. An unknown scope was already refused at
-    /// `check_collect` — it admits nothing, honestly.
-    fn admit_scope(scope: CollectScope, owner: FileId) {
-        match scope {
-            .Self -> nothing(),
-            .Package -> self.admit_package_of(owner),
-            .Closure -> self.admit_every_package(),
-            .UnknownScope(_) -> nothing(),
-        }
-    }
-
-    fn admit_package_of(owner: FileId) {
-        let pkg? = self.owning_package(owner) else { return }
-        self.admit_package(pkg)
-    }
-
-    fn admit_every_package() {
-        for pkg in self.packages() { self.admit_package(pkg) }
-    }
-
-    /// THE CLOSURE LAW FOR A COLLECT WHOSE MEMBERS ARE NEVER
-    /// `use`-REACHED: `pkg` is force-admitted WHOLE — a member (a
-    /// `rule`, a named instance in a feature dir nothing imports)
-    /// exists to be discovered, not read in through the ordinary
-    /// import graph, so import-reachability alone would find none.
-    /// `/tests/` is excluded — `is_test_path`'s law: a fixture is a
-    /// standalone PROGRAM, never a module of the build admitting it,
-    /// and the entry law (`outside_entry`) refuses one that runs
-    /// top-level statements outside the actual entry. May be asked
-    /// EARLIER than a program is derived at all (the suite's own
-    /// self-check runs before one exists); either way, what admission
-    /// leaves is `Decls.indexed`'s to read.
-    fn admit_package(pkg: Package) {
-        for path in self.all_files(pkg.src) {
-            if !self.is_test_path(path) { self.admit_file(path) }
-        }
-    }
-
-    fn admit_file(path: string) {
-        let f = self.file_id(path)
-        if !self.is_held(f) { let _ = self.items(f) }
-    }
-
-    /// `admit_package_of`, from one of the collect's own files — the
-    /// lowering hook's door (`Decls.gathered`, armed in
-    /// workspace.av), which knows a `FileId` and not the collect's
-    /// own scope: re-admits the owner's PACKAGE, the one scope every
-    /// collect's members can always be found through.
-    // LICENSED I23: a fn VALUE filling the collect-ensure seat — its parameters are the seat's contract, and this no-op reads only the one it needs
-    fn collect_admit_from(word: string, owner: FileId) {
-        self.admit_package_of(owner)
-    }
-
-    /// The package whose `src` holds `f` — a collect's own package,
-    /// found from one of its files.
-    fn owning_package(f: FileId) -> Package? {
-        let path = self.decls.file(f).path
-        self.packages().find(under_dir(path, it.src))
     }
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
@@ -296,20 +208,7 @@ impl Workspace {
 fn is_type_decl(x: Decl) -> bool {
     match x.kind {
         .Record or .Named or .Alias or .Enum or .Builtin -> true,
-        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule or .Collect -> false,
-    }
-}
-
-/// The word `Decls.indexed`/`collect_word` answers a collect's own
-/// `CollectKind` by — the same door `Decls.collect_word` reads a
-/// declaration's OWN word through, so a collect's admission asks for
-/// exactly what the index would find. `UnknownKind` names nothing to
-/// admit — `check_collect` already refused it.
-fn collect_word_of(kind: CollectKind) -> string? {
-    match kind {
-        .Rule -> "rule",
-        .Component(w) -> w,
-        .UnknownKind(_) -> null,
+        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
     }
 }
 
