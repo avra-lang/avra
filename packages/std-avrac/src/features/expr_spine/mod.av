@@ -1,6 +1,20 @@
 //! The expression spine: the precedence ladder every expression
 //! feature hangs from. Left association comes from folding the
-//! repeated tail, exactly as the grammar reads.
+//! repeated tail, exactly as the grammar reads. Literals,
+//! identifiers, the operator ladder — `|| && == != < <= > >= + -
+//! * / % !` — and postfix access (`xs[i]`, `xs.length`,
+//! `u?.age`, `v!`, `v?`) live here, at the loosest layer, with
+//! `catch`. The TRAILING BLOCK is a postfix like the rest: `f(a) {
+//! x -> body }` is `f(a, (x) -> body)`, `else { … }` after it
+//! fills the next fn seat, `{ … }` with no arrow takes no seat (or
+//! `it`, when the body reads it), and a name or a field read takes
+//! one as a call with no parentheses (`run { … }`, `db.tx { … }`).
+//! A HEAD — what `if`, `while`, `for`, `match` and `let … else`
+//! open their brace after — takes none: parenthesise the call
+//! there. The TYPE LITERAL is a postfix too: `v.type(List<string?>)`
+//! is `v.interned(.List(.Opt(.Str)))` — the type in its own
+//! spelling, folded once by the receiver; a name that spells no
+//! shape is a hole, the id it names.
 use features.{LanguageFeature, BuilderRow}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}

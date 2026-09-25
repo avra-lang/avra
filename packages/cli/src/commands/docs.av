@@ -4,7 +4,7 @@
 //! tools the package you stand in declares, each resolved where it
 //! stands today, printed before anything runs.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{avra}
+use @std.avrac.compiler.{avra, Program}
 use @std.avrac.diagnostics.{DiagCode, Diag, new_source_file, render}
 use @std.path.{joined_path}
 use @std.process.{Tool, tool, tool_from_env, ProcessError}
@@ -62,23 +62,37 @@ fn explained_kind(q: string) -> int {
     0
 }
 
+/// This command's package-scoped arms open through one door: the
+/// package's own program, clean — its refusal already reported, so
+/// every caller below answers only the absence it was written for.
+fn clean_program() -> Program? {
+    let p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return null
+    }
+    p
+}
+
+/// A found answer prints and exits clean; an absence explains why
+/// and exits 1 — the shape every package-scoped arm below closes
+/// with.
+fn answered(text: string?, absent: string) -> int {
+    let text? = text else {
+        eprintln("avra: ${absent}")
+        return 1
+    }
+    println(text)
+    0
+}
+
 /// `avra docs @name` — the annotation fn's signature, which IS
 /// its effect (§3.3 of the comptime design). The package is the
 /// directory the command stands in, as `docs process` reads its
 /// manifest.
 fn explained_annotation(name: string) -> int {
-    mut p = root_program(here())
-    if !p.clean() {
-        eprintln(p.report())
-        return 1
-    }
-    let sig = p.explain_annotation(name)
-    if sig == null {
-        eprintln("avra: no fn `${name}` is declared in this package")
-        return 1
-    }
-    println(sig!)
-    0
+    let p? = clean_program() else { return 1 }
+    answered(p.explain_annotation(name), "no fn `${name}` is declared in this package")
 }
 
 /// `avra docs <name>` — a declared fn/type/enum/trait/const's own
@@ -86,18 +100,8 @@ fn explained_annotation(name: string) -> int {
 /// form of the command misses through. The package is the directory
 /// the command stands in, as every other form here reads it.
 fn explained_decl(name: string) -> int {
-    mut p = root_program(here())
-    if !p.clean() {
-        eprintln(p.report())
-        return 1
-    }
-    let text = p.explain_doc(name)
-    if text == null {
-        eprintln("avra: nothing registered under `${name}` — no diagnostic code, kind, or declared fn/type/enum/trait/const wears it")
-        return 1
-    }
-    println(text!)
-    0
+    let p? = clean_program() else { return 1 }
+    answered(p.explain_doc(name), "nothing registered under `${name}` — no diagnostic code, kind, or declared fn/type/enum/trait/const wears it")
 }
 
 /// `avra docs repr <type>` — the runtime REPRESENTATION the
@@ -106,18 +110,8 @@ fn explained_decl(name: string) -> int {
 /// name (`Id?`) resolves against the package the command stands in,
 /// as `docs @name` reads it.
 fn explained_repr(type_text: string) -> int {
-    mut p = root_program(here())
-    if !p.clean() {
-        eprintln(p.report())
-        return 1
-    }
-    let word = p.explain_repr(type_text)
-    if word == null {
-        eprintln("avra: `${type_text}` is not a type this package resolves — a scalar, `List<…>`, `Map<…>` or a declared struct, each under an optional `?`")
-        return 1
-    }
-    println(word!)
-    0
+    let p? = clean_program() else { return 1 }
+    answered(p.explain_repr(type_text), "`${type_text}` is not a type this package resolves — a scalar, `List<…>`, `Map<…>` or a declared struct, each under an optional `?`")
 }
 
 /// `avra docs writes <fn>` — the WRITE-FLOW CHAIN the seats pass
@@ -127,18 +121,8 @@ fn explained_repr(type_text: string) -> int {
 /// directly — the same evidence F2047 warns from, turned into a few
 /// seconds instead of reading every callee by hand.
 fn explained_writes(fn_name: string) -> int {
-    mut p = root_program(here())
-    if !p.clean() {
-        eprintln(p.report())
-        return 1
-    }
-    let chain = p.explain_writes(fn_name)
-    if chain == null {
-        eprintln("avra: no fn `${fn_name}` is declared in this package with a written seat 0")
-        return 1
-    }
-    println(chain!)
-    0
+    let p? = clean_program() else { return 1 }
+    answered(p.explain_writes(fn_name), "no fn `${fn_name}` is declared in this package with a written seat 0")
 }
 
 /// The package's declared tools, minted as the library mints them, and
