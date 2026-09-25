@@ -1,4 +1,5 @@
 use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db, sql}
 use @std.sqlite.error.{SqlError}
 
@@ -15,7 +16,7 @@ fn seeded() -> Result<Db, SqlError> {
     db
 }
 
-fn inserted(mut db: Db, email: string, name: string) -> Result<User, SqlError> {
+fn inserted(mut db: Db, email: string, name: string) -> Result<User, ModelError> {
     User { id: 0, email: email, name: name }.insert(db)
 }
 
@@ -31,45 +32,62 @@ fn name_of(db: Db, id: int) -> Result<string, SqlError> {
     (db.scalar(sql("select name from User where id = ?").args([.Int(id)]))?).text()
 }
 
-fn round_trip() -> Result<string, SqlError> {
-    mut db = seeded()?
+fn round_trip() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
     let u = inserted(db, "ada@example.com", "Ada")?
-    "${u.id}|${email_of(db, u.id)?}|${name_of(db, u.id)?}"
+    "${u.id}|${modeled(email_of(db, u.id))?}|${modeled(name_of(db, u.id))?}"
 }
 
-fn updates() -> Result<string, SqlError> {
-    mut db = seeded()?
+fn updates() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
     let u = inserted(db, "a@x.com", "A")?
     let changed = u with { name: "B" }
     changed.update(db)?
-    name_of(db, u.id)
+    modeled(name_of(db, u.id))
 }
 
-fn deletes() -> Result<int, SqlError> {
-    mut db = seeded()?
+fn deletes() -> Result<int, ModelError> {
+    mut db = modeled(seeded())?
     let u = inserted(db, "a@x.com", "A")?
-    u.delete(db)?
-    row_count(db)
+    modeled(u.delete(db))?
+    modeled(row_count(db))
 }
 
-fn unique_violation() -> string {
-    match dup_insert() {
-        .Ok(_) -> "",
-        .Err(e) -> e.cause.kind(),
-    }
-}
-
-fn dup_insert() -> Result<int, SqlError> {
-    mut db = seeded()?
+fn dup_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded())?
     let _ = inserted(db, "a@x.com", "A")?
     let _ = inserted(db, "a@x.com", "B")?
     0
 }
 
-fn found() -> Result<string, SqlError> {
-    mut db = seeded()?
+fn unique_violation_own_kind() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn unique_violation_message() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn unique_violation_cause_kind() -> string {
+    match dup_insert() {
+        .Ok(_) -> "",
+        .Err(e) -> match e.cause() {
+            c? -> c.describe().kind
+            null -> "no cause"
+        },
+    }
+}
+
+fn found() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
     let u = inserted(db, "ada@example.com", "Ada")?
-    let f = User.find(db, u.id)?
+    let f = modeled(User.find(db, u.id))?
     match f {
         u2? -> "${u2.id}|${u2.email}|${u2.name}"
         null -> "not found"
@@ -111,6 +129,10 @@ spec "std/db @model" {
     }
     given "a unique column violated" {
 
-        then "the constraint failure is a real SqlError, not a silent success" { unique_violation() == "sqlite.constraint.unique" }
+        then "its own kind names it a model constraint violation" { unique_violation_own_kind() == "db.constraint.unique" }
+        then "the message names the violated field and its @unique declaration" {
+            unique_violation_message().contains("`email`") && unique_violation_message().contains("`User.email`")
+        }
+        then "the underlying SqlError stays reachable via .cause(), kind intact" { unique_violation_cause_kind() == "sqlite.constraint.unique" }
     }
 }

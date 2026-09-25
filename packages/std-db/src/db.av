@@ -21,8 +21,10 @@
 //! — the file that types this trait must not also carry code the
 //! annotated file's own names could shadow.
 use @std.meta.{Type, Field, Kind, Directive, Code, Decls, literal}
+use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
+use error.{ModelError, UniqueField, or_attributed}
 
 export trait Model {
     static fn derive(t: Type) -> List<Directive> {
@@ -81,10 +83,10 @@ fn generated(t: Type) -> Decls {
                 db.run(sql(${literal(create_table_sql_of(t))}))
             }
 
-            fn insert(mut db: Db) -> Result<${t}, SqlError> {
+            fn insert(mut db: Db) -> Result<${t}, ModelError> {
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in non_id_fields(t)]}
-                db.run(sql(${literal(insert_sql_of(t))}, args))?
+                or_attributed(db.run(sql(${literal(insert_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})?
                 self with { id: db.last_insert_rowid() }
             }
 
@@ -94,11 +96,11 @@ fn generated(t: Type) -> Decls {
                 if s.step()? { ${row_ctor(t)} } else { null }
             }
 
-            fn update(mut db: Db) -> Result<int, SqlError> {
+            fn update(mut db: Db) -> Result<int, ModelError> {
                 mut args: List<SqlValue> = []
                 ${[push_bound(f) for f in non_id_fields(t)]}
                 args.push(.Int(self.id))
-                db.run(sql(${literal(update_sql_of(t))}, args))
+                or_attributed(db.run(sql(${literal(update_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
             }
 
             fn delete(mut db: Db) -> Result<int, SqlError> {
@@ -150,8 +152,49 @@ fn column_ddl(f: Field) -> string {
     "${quoted(f.name)} ${sql_type_of(f.kind)}${unique_suffix(f)}"
 }
 
+fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
+
 fn unique_suffix(f: Field) -> string {
-    if f.marks.any(it.name == "unique") { " UNIQUE" } else { "" }
+    if is_unique(f) { " UNIQUE" } else { "" }
+}
+
+/// The `@unique` fields' own (name, declaration site) pairs, baked
+/// into `insert`/`update`'s generated body so a constraint violation
+/// resolves back through the schema the moment it happens — never a
+/// second lookup against `t` at run time, which the derive has no
+/// reason to keep around. Hand-spelled per count, the same law and
+/// remedy as `row_ctor`: a list literal has no expression position for
+/// a variable-width splice, and `non_id_fields(t)` is already capped
+/// at `MAX_FIELDS - 1`.
+fn unique_fields_code(t: Type) -> Code {
+    let fs = [f for f in non_id_fields(t) if is_unique(f)]
+    match fs.length {
+        0 -> quote { [] }
+        1 -> quote { [${unique_field_code(fs[0])}] }
+        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] }
+        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] }
+        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] }
+        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] }
+        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() }
+    }
+}
+
+fn unique_field_code(f: Field) -> Code {
+    quote { UniqueField { name: ${literal(f.name)}, at: ${loc_code(f.at)} } }
+}
+
+fn loc_code(at: Loc?) -> Code {
+    match at {
+        null -> quote { null }
+        loc? -> quote { Loc { file: ${loc_file_code(loc.file)}, lo: ${loc.lo}, hi: ${loc.hi} } }
+    }
+}
+
+fn loc_file_code(file: string?) -> Code {
+    match file {
+        null -> quote { null }
+        f? -> quote { ${literal(f)} }
+    }
 }
 
 fn sql_type_of(k: Kind) -> string {
