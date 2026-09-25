@@ -23,19 +23,29 @@ export const any_root: int = -1
 /// One rule: its identity (`<module>.<name>`, split), the fn the
 /// pass calls, the ROOT-KIND INDEX (`core.root_kind_of`) its first
 /// arm's pattern folds to — `any_root` for a rule the index cannot
-/// narrow — its own `///` SENTENCE, and the examples that prove it
+/// narrow — its own `///` SENTENCE, the examples that prove it
 /// (`avra test`'s own suite reads these, never `check` —
-/// compiler/rule_examples.av).
-export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: int, doc: string, fixes: List<Fixes>, keeps: List<string> }
+/// compiler/rule_examples.av), and its `@law` — `component rule`'s
+/// own raw `List<string>` (`check` refuses more than one), zero or
+/// one long; `declared_law` is the read that turns it into the
+/// `string?` a rule either carries or does not.
+export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: int, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string> }
 
 /// `<module>.<name>` — the identity a finding's kind and `--only`
 /// both read.
 export fn rule_id(r: RuleEntry) -> string { "${r.module}.${r.name}" }
 
+/// A rule's own equivalence claim (`RuleEntry.law`), absent for a
+/// rule whose rewrite (if it has one) stays behind `avra fix`'s IR
+/// proof alone — `compiler/rule_proof.av`'s `law_proved` and
+/// `avra docs rules --json`'s `law` field both read it here, never
+/// the raw list twice over.
+export fn declared_law(r: RuleEntry) -> string? { r.law.first() }
+
 /// EVERY RULE, in module then name order — gathered, never listed by
 /// hand: a rule declared in any feature dir joins this with no edit
 /// here.
-export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, doc: it.doc, fixes: it.fixes, keeps: it.keeps } by it.module, it.name
+export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law } by it.module, it.name
 
 /// The rules whose root-kind index admits `kind` — the ones indexed
 /// at it, plus every `any_root` rule, tried everywhere. Design §5:

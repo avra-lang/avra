@@ -68,6 +68,33 @@ spec "the IR proof" {
     }
 }
 
+// THE LAW DOOR: `law_proved` trusts the rule's own claim instead of
+// comparing IR — it is never asked to also match IR, only to refuse
+// a splice that fails to even type-check (avra-8sb5.25.55).
+spec "the law door" {
+    given "a declared law, over a rewrite whose IR the proof itself would refuse" {
+        then "the claim is handed back UNCHANGED — the law is trusted, not re-derived" {
+            mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            p.law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a - b\n}\n0\n", "a claim the IR proof cannot see") == "a claim the IR proof cannot see"
+        }
+    }
+    given "no law at all" {
+        then "absence, whatever the after-text does" {
+            mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            p.law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n", null) == null
+        }
+    }
+    given "a declared law, over a splice that does not even TYPE-CHECK" {
+        then "REFUSED — a law never excuses an unsound splice, only a comparison this proof was never going to make" {
+            mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            p.law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a + undefined_name\n}\n0\n", "trust me") == null
+        }
+    }
+}
+
 // THE GENERALIZED PROOF: `edits_proved` asks `ir_proved`'s own
 // question with no node id in hand — only the byte ranges a
 // `Suggestion`'s own `Edit`s carry, exactly what a spell-check, a
