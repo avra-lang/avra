@@ -239,12 +239,16 @@ export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: Lis
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> }
+/// `cross` is `settle`'s sibling: a declaration crossed as the meta
+/// value a seat names (`@std/meta`'s `Fn`/`Type`/`Named`/`Trait`),
+/// the same door an annotation's own receiver crosses through —
+/// `collect`'s bare `it` is its one caller today.
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
-export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
-    Jobs { pending: [], seen: {}, lifts: [], wraps: [], statics: [], externs: externs, settle: settle }
+export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> Jobs {
+    Jobs { pending: [], seen: {}, lifts: [], wraps: [], statics: [], externs: externs, settle: settle, cross: cross }
 }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER
