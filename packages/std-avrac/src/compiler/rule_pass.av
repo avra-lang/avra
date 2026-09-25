@@ -68,16 +68,18 @@ export fn code_at(a: Analysed, at: At) -> Code {
     Code { of: a, at: at }
 }
 
-/// Every candidate as a `Diag` — `avra check`'s findings. A `Fix.Say`
-/// carries the rule's own voice unchanged; a `Fix.Rewrite` wraps in a
-/// `Suggestion` over one `Edit` at the matched node's own span.
+/// Every candidate as a `Diag` — `avra check`'s findings. A `Fix.Say`'s
+/// voice carries no kind of its own (`features/fix.av`'s `said`); this
+/// is the ONE place either fix shape's `Diag` is stamped with the
+/// firing rule's own identity (`rule_id`) — a `Fix.Rewrite` wraps in a
+/// `Suggestion` over one `Edit` at the matched node's own span besides.
 export fn rule_findings(a: Analysed, stmts: List<StmtId>) -> List<Diag> {
     flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
 }
 
 fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
     match c.fix {
-        .Say(voice) -> [voice],
+        .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
         .Rewrite(_) -> rewrite_diags(a, c.at, c.owner, c.fix),
     }
 }
@@ -97,5 +99,5 @@ fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
     let loc? = code_at(a, at).loc() else { return null }
     let edit = Edit { loc: loc, replacement: text }
     let sg = Suggestion { confidence: Confidence.High, description: "rewrite to `${text}`", edits: [edit] }
-    warning("rule.${rule_id(r)}", loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
+    warning(rule_id(r), loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
 }

@@ -1,0 +1,65 @@
+//! `avra docs rules` — every rule the compiler carries
+//! (compiler/rules_table.av's `rules` collect, `Program.rule_listing`),
+//! by identity: the structural ground truth a native idiom finding's
+//! kind is checked against, never a kind string's own shape (P7,
+//! avra-8sb5.25.49). The one arm this command holds today; more join
+//! it as `avra explain`'s other forms move here.
+use @std.cli.{CliResult, Runnable, command, arg, flag}
+use @std.avrac.compiler.{Program, RuleEntry, rule_id}
+use @std.json.{Json, field, to_text}
+
+type DocsCmd = {}
+
+impl Runnable for DocsCmd {
+    fn run(args: CliResult) -> int {
+        let q = args.arg("name")
+        if q == "rules" { return docs_rules(args.has_flag("json")) }
+        eprintln("avra: `docs ${q}` — only `rules` is wired here so far")
+        1
+    }
+}
+
+fn docs_rules(json: bool) -> int {
+    let held? = program_at_cwd() else { return 2 }
+    let entries = held.rule_listing()
+    if json {
+        println(to_text(Json.Arr([rule_json(r) for r in entries])))
+    } else {
+        println(rules_listing(entries))
+    }
+    0
+}
+
+/// The current directory's own package, as a `Program` — `avra docs`
+/// asks nothing of any ONE file, so it takes no argument to name one.
+fn program_at_cwd() -> Program? {
+    root_program(here())
+}
+
+fn rule_json(r: RuleEntry) -> Json {
+    Json.Obj([
+        field("id", Json.Str(rule_id(r))),
+        field("module", Json.Str(r.module)),
+        field("name", Json.Str(r.name)),
+        field("doc", Json.Str(r.doc)),
+    ])
+}
+
+/// The listing's own text, apart from printing it — every rule's
+/// identity and doc, one per line, in the collect's own order
+/// (module then name), under a header naming the count.
+export fn rules_listing(entries: List<RuleEntry>) -> string {
+    let header = "rules this package declares — ${entries.length}"
+    let lines = [header].concat(["${rule_id(r)} — ${r.doc}" for r in entries])
+    lines.join("\n")
+}
+
+export command docs {
+    description: "Every rule the compiler carries — `rules`"
+    arg name {
+        description: "`rules` — the only form today"
+        required: true
+    }
+    flag json { description: "print the rules as one JSON array ({id, module, name, doc})" }
+    run: DocsCmd {}
+}
