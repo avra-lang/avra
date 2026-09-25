@@ -43,7 +43,7 @@ numbering was folded into the baseline directly the day the numbers
 went (avra-8sb5.25.49), and any new native debt joins it the same
 way, reviewed at adoption and every time after.
 """
-import collections, os, re, subprocess, sys, glob
+import collections, glob, json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
@@ -1161,45 +1161,28 @@ def licensed(lines, i, code):
 # adversarial test's report() assertion QUOTES this exact shape).
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
-# Every registered diagnostic's own kind, straight from the
-# compiler's index (`avra diagnostics`, "## <kind>" — one column
-# since avra-32.40.13 dropped the F-code) — an ORDINARY refusal,
-# never a rule's. Read LIVE, never from the generated
-# docs/DIAGNOSTICS.md file (ERRORS' own first draft of this filter):
-# a native-finding scan that trusted the file would be stale between
-# an edit and `make witnesses`, silently under- or over-counting
-# debt in between.
-DIAG_HEADER_RE = re.compile(r"^## (\S+)\s*$", re.M)
-
-def registered_diag_kinds(binary):
-    env = dict(os.environ, AVRA_WATCH_HELD="1")
-    try:
-        out = subprocess.run([binary, "diagnostics"], cwd=ROOT, env=env,
-                              capture_output=True, text=True, timeout=60).stdout
-    except Exception:
-        return set()
-    return set(DIAG_HEADER_RE.findall(out))
+def collected_rule_ids(binary):
+    """Every rule the compiler carries, by identity — `avra docs rules
+    --json` over the cli, whose closure links every rule. An empty
+    answer is a failure, never an empty set: a filter that examined
+    nothing would count nothing."""
+    env = dict(os.environ, AVRA_WATCH_HELD="1", AVRA_CWD=os.path.join(ROOT, "packages", "cli"))
+    out = subprocess.run([binary, "docs", "rules", "--json"], cwd=os.path.join(ROOT, "packages", "cli"),
+                         env=env, capture_output=True, text=True, timeout=300).stdout
+    ids = {r["id"] for r in json.loads(out or "[]")}
+    if not ids:
+        sys.exit("idioms: `avra docs rules --json` answered no rules — refusing to count native findings blind")
+    return ids
 
 def native_findings():
     """Every finding `avra check` reports on its own — a Bucket-A idiom
     ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
     second regex racing the compiler's own vocabulary.
 
-    THE FILTER WAS THE F-CODE, AND IT IS GONE (avra-8sb5.40.13
-    dropped the numeric bracket a registered diagnostic used to wear,
-    so a `type.alias_copy` and a `rule.enums.bool_variant_match` now
-    render alike). "Dotted" stopped being a filter the day every kind
-    became one; the filter is REGISTRY MEMBERSHIP. A kind
-    `registered_diag_kinds()` names is an ORDINARY diagnostic — the
-    compiler's own gate, never the idiom ratchet's; a kind the
-    registry does not name is a `rule`'s own, unregistered by
-    construction, and that is what this scan counts. NOT the positive
-    form ("a kind names a collected `rule`", `avra docs rules`'s own
-    `rules` table): a rule's Say voice answers a SECOND, hand-typed
-    name (`hand_sized_index` answers `style.hand_sized_column`, not
-    its own `compiler.hand_sized_index`), so that membership test
-    would miss most of what is in the baseline today. Revisit once a
-    rule's kind IS its id.
+    A finding counts when its kind IS a collected rule's id
+    (`collected_rule_ids`): a rule's finding kind is its id by
+    construction, so membership is the whole test and every other
+    diagnostic is the compiler's own gate, never this ratchet's.
 
     A NATIVE finding reads no license at its site, ever — a rule
     carries no comment of its own, so a native finding either gets
@@ -1216,7 +1199,7 @@ def native_findings():
     binary = os.path.join(ROOT, "build", "avra")
     if not os.path.exists(binary):
         return {}, 0
-    registered = registered_diag_kinds(binary)
+    rule_ids = collected_rule_ids(binary)
     pkgs = sorted(set(os.path.dirname(p) for p in SRC))
     env = dict(os.environ, AVRA_WATCH_HELD="1")
     sites, checked = set(), 0
@@ -1228,7 +1211,7 @@ def native_findings():
             continue
         checked += 1
         for kind, path, line in WARN_RE.findall(out):
-            if kind in registered:
+            if kind not in rule_ids:
                 continue
             path = path if os.path.isabs(path) else os.path.join(ROOT, path)
             rel = os.path.relpath(path, ROOT)
