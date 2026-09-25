@@ -17,6 +17,14 @@ fn built(main: string) -> Program {
     provided("use @x.c.{widget}\n" + main, ui())
 }
 
+fn ui2() -> string {
+    "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
+}
+
+fn built2(main: string) -> Program {
+    provided("use @x.c.{widget, gadget}\n" + main, ui2())
+}
+
 spec "collect's own laws" {
     given "the order law" {
         then "a collect with no `by` refuses" {
@@ -69,23 +77,28 @@ spec "collect's own laws" {
             !refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1"), "is closed only when a program links")
         }
     }
+    given "the self-read cycle law (§4.2)" {
+        // A member reading its own collection while compiling: a
+        // cycle, since the collection's value IS this member's own
+        // synthesis. `consts/check.av`'s `self_collect_read` keys it
+        // off `NodeStore.instance_of` (the instance's own component
+        // word) matching the referenced collect's `CollectKind`
+        // word — general over every `.Component` kind, `widget`
+        // among them, not a `rule` special case.
+        then "an instance reading the collection it is itself gathered into refuses" {
+            refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n1"), "`cyclic` is collected into `xs`")
+        }
+        then "a different collect of the same kind is STILL a self-read — every collect of that word gathers this instance too" {
+            refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\ncollect ys: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget reads_ys { n -> if ys.length > n { n } else { null } }\n1"), "`reads_ys` is collected into `ys`")
+        }
+        then "an instance reading a DIFFERENT kind's collection is fine — no cycle" {
+            !refused_in(built2("type Entry = { name: string }\ncollect zs: List<Entry> = gadget in closure as Entry { name: it.name } by it.name\nexport widget reads_gadgets { n -> if zs.length > n { n } else { null } }\n1"), "collected into")
+        }
+        then "an ordinary const naming no component reads any collect clean" {
+            !refused_in(built("type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1"), "collected into")
+        }
+    }
     given "the `it`/`by` words" {
-        // THE SELF-READ CYCLE LAW (§4.2) — a member reading its own
-        // collection while compiling — has no enforcement left to test.
-        // `features/rules/check.av`'s `checked_rule`/`self_collection_read`
-        // carried it, keyed on `CollectKind.Rule` by hand; both are gone
-        // with `Stmt.Rule`. A generalised version belongs beside
-        // `consts/check.av`'s `closure_collect_read` (the §4.1 door this
-        // module already owns) — attempted here and reverted: neither the
-        // read from a component instance's own arms-sugar guard nor from
-        // an ordinary const proved reachable through `closure_collect_read`
-        // under `provided()`'s harness in the time this migration had, so
-        // shipping it unverified risked a law that reads as enforced and
-        // is not. REPORTED, not silently dropped: whoever picks this up
-        // next should first prove `closure_collect_read` finds a name at
-        // all from inside a written arms body (the exact case a `rule`
-        // needs), then key the cycle test off `Decls.collect_word`
-        // matching the instance's own `NodeStore.instance_of`.
         then "an ordinary `it` still means the pronoun, unreserved by the new grammar" {
             shown("[1, 2, 3].any(it > 1)") == "true"
         }
