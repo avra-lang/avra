@@ -78,12 +78,20 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
-                .Records or .Validates -> { for x in crossed.saids() { if !x.warning { spoken_said(cx, a, d, s, x) } } },
-                .Declares or .Derives -> nothing(),
+                .Records or .Validates -> speak_saids(cx, a, d, s, crossed.saids()),
+                .Declares -> { if cx.view.decls.meta_type(sig.ret, "Declared") { speak_saids(cx, a, d, s, crossed.declared_problems()) } },
+                .Derives -> nothing(),
             }
         },
         .Err(why) -> unsettled(cx, a, why),
     }
+}
+
+/// The problems a Records/Validates answer, or a `Declared` answer's
+/// own `problems`, spoken as this declaration's warnings — never a
+/// generated code path, whatever effect produced them.
+fn speak_saids(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, xs: List<Diagnostic>) {
+    for x in xs { if !x.warning { spoken_said(cx, a, d, s, x) } }
 }
 
 /// The kind of declaration the annotation crosses, or null for a
@@ -132,6 +140,7 @@ fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
             _ -> null
         },
         .Struct(_, _) if cx.view.decls.meta_type(ret, "Derived") -> Effect.Derives,
+        .Struct(_, _) if cx.view.decls.meta_type(ret, "Declared") -> Effect.Declares,
         rest -> null,
     }
 }

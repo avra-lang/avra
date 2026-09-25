@@ -33,7 +33,7 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
 /// answers here, never a string compare.
 fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
     match kind {
-        .Component(_) -> nothing(),
+        .Component(_) or .Annotated(_) -> nothing(),
         .UnknownKind(w) -> cx.emit(unknown_kind(cx.stmt_loc(s), w)),
     }
 }
@@ -63,21 +63,28 @@ fn checked_projection(mut cx: TypeCx, s: StmtId, proj: Projection, kind: Collect
 fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
     if path.is_empty() { return true }
     if path.length > 1 { return false }
-    generic_words.contains(path[0].of) || kind_word(kind)
+    generic_words.contains(path[0].of) || kind_word(kind, path[0].of)
 }
 
-/// A component's OWN field, by name — `rule in closure as RuleEntry
-/// { run: it.run }` reads the `rule` component's `run` field off
-/// each instance. Not checked against the component's actual
-/// fields here (this door has no component signature in hand, only
-/// its word): a name that misses is `field_named`'s DEFECT at
-/// lowering (features/values.av), loud rather than a plausible
-/// default. `UnknownKind` names no component at all, so it answers
-/// no word.
-fn kind_word(kind: CollectKind) -> bool {
+/// A kind's OWN word, past the four generic ones — a REGISTRY over
+/// `CollectKind`, since each kind's non-generic vocabulary is its
+/// own. A `.Component`'s is the instance's OWN field, by name
+/// (`rule in closure as RuleEntry { run: it.run }` reads the `rule`
+/// component's `run` field off each instance) — not checked against
+/// the component's actual fields here (this door has no component
+/// signature in hand, only its word): a name that misses is
+/// `field_named`'s DEFECT at lowering (features/values.av), loud
+/// rather than a plausible default. A `.Annotated`'s is `mark`
+/// alone — the matched annotation's own name and literal args
+/// (`collect_field_reg`, compiler/lower/lower.av); an annotated
+/// declaration has no instance value to read an arbitrary field
+/// off, so nothing past `mark` is honest to accept. `UnknownKind`
+/// names no declarations at all, so it answers no word.
+fn kind_word(kind: CollectKind, word: string) -> bool {
     match kind {
         .Component(_) -> true,
         .UnknownKind(_) -> false,
+        .Annotated(_) -> word == "mark",
     }
 }
 
@@ -89,7 +96,7 @@ fn path_word(path: List<Plain>) -> string {
 // ── voices ──
 
 fn unknown_kind(at: Loc?, kind: string) -> Diag {
-    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "an imported component's own name — `rule` among them")
+    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "an imported component's own name — `rule` among them — or `@name` for every declaration wearing that annotation")
 }
 
 fn unknown_scope(at: Loc?, scope: string) -> Diag {

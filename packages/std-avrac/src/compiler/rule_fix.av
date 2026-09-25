@@ -12,11 +12,25 @@ use compiler.backend.{trimmed}
 /// One rewrite's outcome: the diagnostic kind that answered it (a
 /// rule's own `<module>.<name>`, or a plain `Diag.kind` for anything
 /// else), every EDIT it proposes — applied together or not at all —
-/// and whether the set is PROVED, the tier `avra fix` writes. A
-/// `Fix.Say` and a rewrite with nowhere to point an edit never reach
-/// here at all (`fix_applications`); a `Suggestion` with no edits
-/// never reaches here either (`suggestion_applications`).
-export type Application = { kind: string, edits: List<Edit>, proved: bool }
+/// whether the set is PROVED (the IR proof itself, `ir_proved`/
+/// `edits_proved`), and `by_law` — the rule's own claim
+/// (`RuleEntry.law`), non-null only when the IR proof did NOT hold
+/// and the law trusted it instead (`law_proved`, compiler/
+/// rule_proof.av). `accepted()` is the tier `avra fix` writes,
+/// whichever door opened it. A `Fix.Say` and a rewrite with nowhere
+/// to point an edit never reach here at all (`fix_applications`); a
+/// `Suggestion` with no edits never reaches here either
+/// (`suggestion_applications`) — and carries no law, since a law
+/// lives on a `rule`, never on an arbitrary diagnostic.
+export type Application = { kind: string, edits: List<Edit>, proved: bool, by_law: string? }
+
+impl Application {
+    /// Whether `avra fix` writes this edit — the IR proof holding, or
+    /// the rule's own law trusted in its place. Never both at once:
+    /// `rewrite_application` only asks the law once the IR proof has
+    /// already answered false.
+    fn accepted() -> bool { self.proved || self.by_law != null }
+}
 
 impl Program {
     /// Every rewrite candidate this file's declarations turn up, each
@@ -44,7 +58,9 @@ impl Program {
         if licensed_just_above(a.view.store, loc.lo) { return [] }
         let edit = Edit { loc: loc, replacement: trimmed(raw) }
         let after? = spliced(text, [edit]) else { return [] }
-        [Application { kind: rule_id(c.owner), edits: [edit], proved: self.ir_proved(path, a, c.at, after) }]
+        let proved = self.ir_proved(path, a, c.at, after)
+        let by_law: string? = if proved { null } else { self.law_proved(path, after, declared_law(c.owner)) }
+        [Application { kind: rule_id(c.owner), edits: [edit], proved: proved, by_law: by_law }]
     }
 
     /// `avra fix`'s SECOND source: every OTHER diagnostic's own
@@ -65,7 +81,7 @@ impl Program {
     }
 
     fn suggestion_application(path: string, a: Analysed, kind: string, sg: Suggestion) -> Application {
-        Application { kind: kind, edits: sg.edits, proved: self.edits_proved(path, a, sg.edits) }
+        Application { kind: kind, edits: sg.edits, proved: self.edits_proved(path, a, sg.edits), by_law: null }
     }
 }
 
@@ -114,24 +130,25 @@ fn licensed_remark(r: Remark, lo: int) -> bool {
     }
 }
 
-/// The PROVED applications' edits, ALL of them, spliced into `text`
+/// The ACCEPTED applications' edits, ALL of them, spliced into `text`
 /// at once — absence when two overlap (two rules, or a rule and a
 /// suggestion, landing on the same code) or any reaches outside the
-/// text; every unproved application is left exactly as `check`
-/// already showed it.
+/// text; every application `accepted()` refuses is left exactly as
+/// `check` already showed it, whether that is because nothing proved
+/// it or because a law-carrying rewrite failed even to type-check.
 export fn fix_applied(text: string, apps: List<Application>) -> string? {
-    spliced(text, flatten([ap.edits for ap in apps if ap.proved]))
+    spliced(text, flatten([ap.edits for ap in apps if ap.accepted()]))
 }
 
-/// The first two PROVED applications with an overlapping edit
+/// The first two ACCEPTED applications with an overlapping edit
 /// between them, named — two rules (or a rule and a suggestion) that
 /// fight over the same code is a defect worth SAYING, not just a
-/// silent "nothing applied". Absence when no two proved applications
-/// touch.
+/// silent "nothing applied". Absence when no two accepted
+/// applications touch.
 export fn fighting_pair(apps: List<Application>) -> string? {
-    let proved = [ap for ap in apps if ap.proved]
-    for i, a in proved {
-        for j, b in proved {
+    let accepted = [ap for ap in apps if ap.accepted()]
+    for i, a in accepted {
+        for j, b in accepted {
             if i < j && applications_overlap(a, b) { return "${a.kind} and ${b.kind}" }
         }
     }
