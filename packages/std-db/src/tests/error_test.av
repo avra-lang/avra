@@ -1,0 +1,74 @@
+use @std.db.error.{ModelError, UniqueField, attributed}
+use @std.sqlite.error.{Cause, SqlError, Violation}
+
+fn field(name: string) -> UniqueField { UniqueField { name: name, at: null } }
+
+fn unique_failure(message: string) -> SqlError {
+    SqlError { cause: Cause.Constraint(Violation.Unique), code: 19, extended: 2067, message: message, sql: null }
+}
+
+fn other_failure() -> SqlError {
+    SqlError { cause: Cause.Closed, code: 0, extended: 0, message: "database is closed", sql: null }
+}
+
+fn kind_of(e: ModelError) -> string { e.describe().kind }
+fn message_of(e: ModelError) -> string { e.describe().message }
+
+spec "std/db ModelError attribution" {
+    given "a failure that is not a unique-constraint violation at all" {
+        then "it always passes through unenriched, whatever fields are known" {
+            kind_of(attributed(other_failure(), "T", [field("a"), field("b")])) == "sqlite.closed"
+        }
+        then "and its own message stays SQLite's, untouched" {
+            message_of(attributed(other_failure(), "T", [field("a")])) == "database is closed"
+        }
+    }
+    given "a unique-constraint violation and zero known @unique fields" {
+
+        then "the structurally-impossible case still passes through plainly, never a fabricated field" {
+            kind_of(attributed(unique_failure("UNIQUE constraint failed: T.x"), "T", [])) == "sqlite.constraint.unique"
+        }
+    }
+    given "a unique-constraint violation and exactly one known @unique field" {
+
+        then "it attributes with full confidence, without needing to parse the message at all" {
+            kind_of(attributed(unique_failure("constraint failed"), "T", [field("email")])) == "db.constraint.unique"
+        }
+        then "the message names that one field" {
+            message_of(attributed(unique_failure("constraint failed"), "T", [field("email")])).contains("`email`")
+        }
+    }
+    given "a unique-constraint violation and two known @unique fields, the message naming one cleanly" {
+
+        then "it attributes to the exact column SQLite named, not the other" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: T.email"), "T", [field("email"), field("username")]))
+            m.contains("`email`") && !m.contains("`username`")
+        }
+        then "naming the other column attributes to that one instead" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: T.username"), "T", [field("email"), field("username")]))
+            m.contains("`username`") && !m.contains("`email`")
+        }
+    }
+    given "a unique-constraint violation, two known @unique fields, and a message that does not parse" {
+
+        then "an unrecognized format falls back honestly, never a wrong guess" {
+            let m = message_of(attributed(unique_failure("constraint failed"), "T", [field("email"), field("username")]))
+            m.contains("`T.email`") && m.contains("`T.username`")
+        }
+        then "different capitalization in the message is not force-matched" {
+            let m = message_of(attributed(unique_failure("UNIQUE CONSTRAINT FAILED: T.EMAIL"), "T", [field("email"), field("username")]))
+            m.contains("`T.email`") && m.contains("`T.username`")
+        }
+        then "a message naming a column that isn't one of the model's own @unique fields falls back too" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: T.other_column"), "T", [field("email"), field("username")]))
+            m.contains("`T.email`") && m.contains("`T.username`")
+        }
+    }
+    given "two different models sharing a field name, one violation between them" {
+
+        then "the message naming the OTHER model's table never cross-attributes into this one" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: OtherModel.email"), "ThisModel", [field("email"), field("username")]))
+            m.contains("`ThisModel.email`") && m.contains("`ThisModel.username`")
+        }
+    }
+}

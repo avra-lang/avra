@@ -5,10 +5,11 @@
 // — then the row deleted and its absence confirmed. Native only:
 // sqlite is FFI.
 use @std.io.{remove}
-use @std.db.{model}
+use @std.db.{model_shape, model}
+use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db, sql}
-use @std.sqlite.error.{SqlError}
 
+@model_shape
 @model
 type Account = {
     id: int = 0,
@@ -25,25 +26,25 @@ fn word(f: Account?) -> string {
     }
 }
 
-fn story() -> Result<string, SqlError> {
+fn story() -> Result<string, ModelError> {
     let _ = remove(path()) catch ""
-    mut db = Db.open(path())?
-    Account.create_table(db)?
+    mut db = modeled(Db.open(path()))?
+    modeled(Account.create_table(db))?
     let a = Account { id: 0, email: "ada@example.com", balance: 100 }.insert(db)?
-    let inserted = word(Account.find(db, a.id)?)
+    let inserted = word(modeled(Account.find(db, a.id))?)
     let changed = a with { balance: 250 }
     changed.update(db)?
-    let updated = word(Account.find(db, a.id)?)
+    let updated = word(modeled(Account.find(db, a.id))?)
     let rc = db.close()
 
-    mut reopened = Db.open(path())?
-    let survived = word(Account.find(reopened, a.id)?)
-    let found = Account.find(reopened, a.id)?
+    mut reopened = modeled(Db.open(path()))?
+    let survived = word(modeled(Account.find(reopened, a.id))?)
+    let found = modeled(Account.find(reopened, a.id))?
     let deleted = match found {
-        row? -> row.delete(reopened)?
+        row? -> modeled(row.delete(reopened))?
         null -> 0 - 1
     }
-    let after_delete = word(Account.find(reopened, a.id)?)
+    let after_delete = word(modeled(Account.find(reopened, a.id))?)
     let rc2 = reopened.close()
     let _ = remove(path()) catch ""
     "inserted ${inserted}\nupdated ${updated}\nsurvived reopen ${survived}\ndeleted ${deleted} row(s)\nafter delete ${after_delete}\nclose1 ${rc}, close2 ${rc2}"
@@ -52,7 +53,7 @@ fn story() -> Result<string, SqlError> {
 fn told() -> string {
     match story() {
         .Ok(s) -> s,
-        .Err(e) -> "FAILED ${e.cause.kind()}: ${e.message}",
+        .Err(e) -> "FAILED ${e.describe().kind}: ${e.describe().message}",
     }
 }
 

@@ -1,5 +1,6 @@
 use @std.text.{repeat, from_codepoint}
 use @std.db.{model_shape, model}
+use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db, sql}
 use @std.sqlite.error.{SqlError}
 
@@ -34,29 +35,29 @@ fn solo_db() -> Result<Db, SqlError> {
     db
 }
 
-fn solo_insert() -> Result<int, SqlError> {
-    mut db = solo_db()?
+fn solo_insert() -> Result<int, ModelError> {
+    mut db = modeled(solo_db())?
     let s = Solo { id: 0 }.insert(db)?
     s.id
 }
 
-fn solo_update() -> Result<int, SqlError> {
-    mut db = solo_db()?
+fn solo_update() -> Result<int, ModelError> {
+    mut db = modeled(solo_db())?
     let s = Solo { id: 0 }.insert(db)?
     s.update(db)
 }
 
-fn solo_create_twice() -> Result<int, SqlError> {
-    mut db = solo_db()?
-    Solo.create_table(db)?
+fn solo_create_twice() -> Result<int, ModelError> {
+    mut db = modeled(solo_db())?
+    modeled(Solo.create_table(db))?
     let s = Solo { id: 0 }.insert(db)?
     s.id
 }
 
-fn solo_find() -> Result<bool, SqlError> {
-    mut db = solo_db()?
+fn solo_find() -> Result<bool, ModelError> {
+    mut db = modeled(solo_db())?
     let s = Solo { id: 0 }.insert(db)?
-    let f = Solo.find(db, s.id)?
+    let f = modeled(Solo.find(db, s.id))?
     f != null
 }
 
@@ -70,12 +71,12 @@ fn solo_version_of(db: Db, id: int) -> Result<int, SqlError> {
     (db.scalar(sql("select \"__avra_version__\" from Solo where id = ?").args([.Int(id)]))?).int()
 }
 
-fn solo_version_bumps() -> Result<string, SqlError> {
-    mut db = solo_db()?
+fn solo_version_bumps() -> Result<string, ModelError> {
+    mut db = modeled(solo_db())?
     let s = Solo { id: 0 }.insert(db)?
-    let before = solo_version_of(db, s.id)?
+    let before = modeled(solo_version_of(db, s.id))?
     s.update(db)?
-    let after = solo_version_of(db, s.id)?
+    let after = modeled(solo_version_of(db, s.id))?
     "${before}|${after}"
 }
 
@@ -85,10 +86,10 @@ fn wide_db() -> Result<Db, SqlError> {
     db
 }
 
-fn wide_find() -> Result<string, SqlError> {
-    mut db = wide_db()?
+fn wide_find() -> Result<string, ModelError> {
+    mut db = modeled(wide_db())?
     let w = Wide { id: 0, a: "1", b: "2", c: "3", d: "4", e: "5" }.insert(db)?
-    let f = Wide.find(db, w.id)?
+    let f = modeled(Wide.find(db, w.id))?
     match f {
         w2? -> "${w2.a}|${w2.b}|${w2.c}|${w2.d}|${w2.e}"
         null -> "not found"
@@ -101,24 +102,24 @@ fn reserved_db() -> Result<Db, SqlError> {
     db
 }
 
-fn reserved_round_trip() -> Result<int, SqlError> {
-    mut db = reserved_db()?
+fn reserved_round_trip() -> Result<int, ModelError> {
+    mut db = modeled(reserved_db())?
     let r = Reserved { id: 0, order: "x", group: "y" }.insert(db)?
     r.id
 }
 
-fn reserved_find() -> Result<string, SqlError> {
-    mut db = reserved_db()?
+fn reserved_find() -> Result<string, ModelError> {
+    mut db = modeled(reserved_db())?
     let r = Reserved { id: 0, order: "x", group: "y" }.insert(db)?
-    let f = Reserved.find(db, r.id)?
+    let f = modeled(Reserved.find(db, r.id))?
     match f {
         r2? -> "${r2.order}|${r2.group}"
         null -> "not found"
     }
 }
 
-fn update_nonexistent_id() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn update_nonexistent_id() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let ghost = User { id: 999999, email: "z@z.com", name: "Z" }
     ghost.update(db)
 }
@@ -135,41 +136,43 @@ fn seeded_user() -> Result<Db, SqlError> {
     db
 }
 
-fn manual_id_ignored() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn manual_id_ignored() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let u = User { id: 8675309, email: "a@x.com", name: "A" }.insert(db)?
     u.id
 }
 
-fn quote_in_value() -> Result<string, SqlError> {
-    mut db = seeded_user()?
+fn quote_in_value() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "a@x.com", name: "O'Brien; DROP TABLE User;--" }.insert(db)?
-    (db.scalar(sql("select name from User where id = ?").args([.Int(u.id)]))?).text()
+    let v = modeled(db.scalar(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    modeled(v.text())
 }
 
-fn table_survives_injection_attempt() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn table_survives_injection_attempt() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let _ = User { id: 0, email: "a@x.com", name: "'; DROP TABLE User; --" }.insert(db)?
-    (db.scalar(sql("select count(*) from User"))?).int()
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
 }
 
-fn double_insert_same_row_value() -> Result<string, SqlError> {
-    mut db = seeded_user()?
+fn double_insert_same_row_value() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
     let a = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
     let b = User { id: 0, email: "b@x.com", name: "B" }.insert(db)?
     "${a.id}|${b.id}"
 }
 
-fn insert_after_delete_id_advances() -> Result<string, SqlError> {
-    mut db = seeded_user()?
+fn insert_after_delete_id_advances() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
     let a = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    a.delete(db)?
+    modeled(a.delete(db))?
     let b = User { id: 0, email: "b@x.com", name: "B" }.insert(db)?
     "${a.id}|${b.id}"
 }
 
-fn update_is_idempotent() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn update_is_idempotent() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
     let _ = u.update(db)?
     u.update(db)
@@ -238,34 +241,37 @@ fn mixed_db() -> Result<Db, SqlError> {
     db
 }
 
-fn bool_and_float_round_trip() -> Result<string, SqlError> {
-    mut db = mixed_db()?
+fn bool_and_float_round_trip() -> Result<string, ModelError> {
+    mut db = modeled(mixed_db())?
     let m = Mixed { id: 0, active: true, score: 3.5, tag: "x" }.insert(db)?
-    let active = (db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)]))?).int()?
-    let score = (db.scalar(sql("select score from Mixed where id = ?").args([.Int(m.id)]))?).real()?
+    let av = modeled(db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)])))?
+    let active = modeled(av.int())?
+    let sv = modeled(db.scalar(sql("select score from Mixed where id = ?").args([.Int(m.id)])))?
+    let score = modeled(sv.real())?
     "${active}|${score}"
 }
 
-fn false_stores_as_zero() -> Result<int, SqlError> {
-    mut db = mixed_db()?
+fn false_stores_as_zero() -> Result<int, ModelError> {
+    mut db = modeled(mixed_db())?
     let m = Mixed { id: 0, active: false, score: 0.0, tag: "y" }.insert(db)?
-    (db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)]))?).int()
+    let v = modeled(db.scalar(sql("select active from Mixed where id = ?").args([.Int(m.id)])))?
+    modeled(v.int())
 }
 
-fn mixed_find_round_trip() -> Result<string, SqlError> {
-    mut db = mixed_db()?
+fn mixed_find_round_trip() -> Result<string, ModelError> {
+    mut db = modeled(mixed_db())?
     let m = Mixed { id: 0, active: true, score: 3.5, tag: "x" }.insert(db)?
-    let f = Mixed.find(db, m.id)?
+    let f = modeled(Mixed.find(db, m.id))?
     match f {
         m2? -> "${m2.active}|${m2.score}|${m2.tag}"
         null -> "not found"
     }
 }
 
-fn mixed_find_false_is_false_not_absent() -> Result<bool, SqlError> {
-    mut db = mixed_db()?
+fn mixed_find_false_is_false_not_absent() -> Result<bool, ModelError> {
+    mut db = modeled(mixed_db())?
     let m = Mixed { id: 0, active: false, score: 0.0, tag: "y" }.insert(db)?
-    let f = Mixed.find(db, m.id)?
+    let f = modeled(Mixed.find(db, m.id))?
     match f {
         m2? -> m2.active == false
         null -> false
@@ -277,12 +283,12 @@ fn mixed_find_false_is_false_not_absent() -> Result<bool, SqlError> {
 /// derive) — so the survival check reads the value back through
 /// Avra's own `.text()`/`.length`, the same path `find`'s row reader
 /// will use, never through a SQL-side length function.
-fn nul_byte_in_text_survives() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn nul_byte_in_text_survives() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let odd = "a" + from_codepoint(0) + "b"
     let u = User { id: 0, email: "nul@x.com", name: odd }.insert(db)?
-    let row = db.one(sql("select name from User where id = ?").args([.Int(u.id)]))?
-    (row.text(0)?).length
+    let row = modeled(db.one(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    (modeled(row.text(0))?).length
 }
 
 spec "std/db @model adversarial 2" {
@@ -301,48 +307,53 @@ spec "std/db @model adversarial 2" {
     }
 }
 
-fn rollback_undoes_model_insert() -> Result<int, SqlError> {
-    mut db = seeded_user()?
-    db.begin()?
+fn rollback_undoes_model_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
     let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    db.rollback()?
-    (db.scalar(sql("select count(*) from User"))?).int()
+    modeled(db.rollback())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
 }
 
-fn commit_keeps_model_insert() -> Result<int, SqlError> {
-    mut db = seeded_user()?
-    db.begin()?
+fn commit_keeps_model_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
     let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    db.commit()?
-    (db.scalar(sql("select count(*) from User"))?).int()
+    modeled(db.commit())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
 }
 
-fn rollback_undoes_model_update() -> Result<string, SqlError> {
-    mut db = seeded_user()?
+fn rollback_undoes_model_update() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    db.begin()?
+    modeled(db.begin())?
     let changed = u with { name: "B" }
     changed.update(db)?
-    db.rollback()?
-    (db.scalar(sql("select name from User where id = ?").args([.Int(u.id)]))?).text()
+    modeled(db.rollback())?
+    let v = modeled(db.scalar(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    modeled(v.text())
 }
 
-fn rollback_undoes_model_delete() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn rollback_undoes_model_delete() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    db.begin()?
-    u.delete(db)?
-    db.rollback()?
-    (db.scalar(sql("select count(*) from User"))?).int()
+    modeled(db.begin())?
+    modeled(u.delete(db))?
+    modeled(db.rollback())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
 }
 
-fn mixed_model_and_raw_sql_in_one_transaction() -> Result<int, SqlError> {
-    mut db = seeded_user()?
-    db.begin()?
+fn mixed_model_and_raw_sql_in_one_transaction() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
+    modeled(db.begin())?
     let _ = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    db.run(sql("insert into User (email, name) values ('b@x.com', 'B')"))?
-    db.commit()?
-    (db.scalar(sql("select count(*) from User"))?).int()
+    modeled(db.run(sql("insert into User (email, name) values ('b@x.com', 'B')")))?
+    modeled(db.commit())?
+    let v = modeled(db.scalar(sql("select count(*) from User")))?
+    modeled(v.int())
 }
 
 spec "std/db @model transactions" {
@@ -381,74 +392,106 @@ fn multi_unique_db() -> Result<Db, SqlError> {
 fn update_causes_unique_violation() -> string {
     match update_violation_attempt() {
         .Ok(_) -> "no refusal",
-        .Err(e) -> e.cause.kind(),
+        .Err(e) -> e.describe().kind,
     }
 }
 
-fn update_violation_attempt() -> Result<int, SqlError> {
-    mut db = multi_unique_db()?
+fn update_violation_attempt_message() -> string {
+    match update_violation_attempt() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn update_violation_attempt() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
     let _ = MultiUnique { id: 0, email: "a@x.com", username: "alice" }.insert(db)?
     let b = MultiUnique { id: 0, email: "b@x.com", username: "bob" }.insert(db)?
     let clashing = b with { username: "alice" }
     clashing.update(db)
 }
 
-fn version_unchanged_after_failed_update() -> Result<int, SqlError> {
-    mut db = multi_unique_db()?
+fn version_unchanged_after_failed_update() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
     let _ = MultiUnique { id: 0, email: "a@x.com", username: "alice" }.insert(db)?
     let b = MultiUnique { id: 0, email: "b@x.com", username: "bob" }.insert(db)?
     let clashing = b with { username: "alice" }
     let _ = clashing.update(db) catch 0 - 1
-    (db.scalar(sql("select \"__avra_version__\" from MultiUnique where id = ?").args([.Int(b.id)]))?).int()
+    let v = modeled(db.scalar(sql("select \"__avra_version__\" from MultiUnique where id = ?").args([.Int(b.id)])))?
+    modeled(v.int())
 }
 
 fn second_unique_field_also_enforced() -> string {
     match dup_username() {
         .Ok(_) -> "no refusal",
-        .Err(e) -> e.cause.kind(),
+        .Err(e) -> e.describe().kind,
     }
 }
 
-fn dup_username() -> Result<int, SqlError> {
-    mut db = multi_unique_db()?
+fn dup_username_message() -> string {
+    match dup_username() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn dup_username() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
     let _ = MultiUnique { id: 0, email: "a@x.com", username: "alice" }.insert(db)?
     let _ = MultiUnique { id: 0, email: "different@x.com", username: "alice" }.insert(db)?
+    0
+}
+
+fn dup_email_message() -> string {
+    match dup_email() {
+        .Ok(_) -> "no refusal",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn dup_email() -> Result<int, ModelError> {
+    mut db = modeled(multi_unique_db())?
+    let _ = MultiUnique { id: 0, email: "same@x.com", username: "alice" }.insert(db)?
+    let _ = MultiUnique { id: 0, email: "same@x.com", username: "different" }.insert(db)?
     0
 }
 
 fn operating_on_a_closed_db() -> string {
     match closed_db_insert() {
         .Ok(_) -> "no refusal",
-        .Err(e) -> e.cause.kind(),
+        .Err(e) -> e.describe().kind,
     }
 }
 
-fn closed_db_insert() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn closed_db_insert() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     db.close()
     let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
     u.id
 }
 
-fn huge_string_survives() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn huge_string_survives() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let big = repeat("x", 500000)
     let u = User { id: 0, email: "big@x.com", name: big }.insert(db)?
-    let row = db.one(sql("select name from User where id = ?").args([.Int(u.id)]))?
-    (row.text(0)?).length
+    let row = modeled(db.one(sql("select name from User where id = ?").args([.Int(u.id)])))?
+    (modeled(row.text(0))?).length
 }
 
-fn empty_string_is_not_null() -> Result<string, SqlError> {
-    mut db = seeded_user()?
+fn empty_string_is_not_null() -> Result<string, ModelError> {
+    mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "e@x.com", name: "" }.insert(db)?
-    let row = db.one(sql("select typeof(name), length(name) from User where id = ?").args([.Int(u.id)]))?
-    "${row.text(0)?}|${row.int(1)?}"
+    let row = modeled(db.one(sql("select typeof(name), length(name) from User where id = ?").args([.Int(u.id)])))?
+    "${modeled(row.text(0))?}|${modeled(row.int(1))?}"
 }
 
 spec "std/db @model more adversarial" {
     given "two independently unique fields on one model" {
-        then "the second field's uniqueness is enforced on insert too" { second_unique_field_also_enforced() == "sqlite.constraint.unique" }
-        then "an update that collides with another row's unique field is refused" { update_causes_unique_violation() == "sqlite.constraint.unique" }
+        then "the second field's uniqueness is enforced on insert too" { second_unique_field_also_enforced() == "db.constraint.unique" }
+        then "a duplicate username names that exact field, never the other" { dup_username_message().contains("`username`") && dup_username_message().contains("`MultiUnique.username`") && !dup_username_message().contains("`email`") }
+        then "a duplicate email names that exact field, never the other" { dup_email_message().contains("`email`") && dup_email_message().contains("`MultiUnique.email`") && !dup_email_message().contains("`username`") }
+        then "an update that collides with another row's unique field is refused" { update_causes_unique_violation() == "db.constraint.unique" }
+        then "the update collision names the field it collided on" { update_violation_attempt_message().contains("`username`") && update_violation_attempt_message().contains("`MultiUnique.username`") }
         then "a refused update leaves the hidden version column unbumped" { (version_unchanged_after_failed_update() catch 0 - 1) == 1 }
     }
     given "a model operation on a closed connection" {
