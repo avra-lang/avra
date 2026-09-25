@@ -500,31 +500,6 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
-RAW_RT_CALL = re.compile(r'Ins\.CallRt(?:Void)?\(.*"avra_')
-
-def raw_rt_call(lines):
-    """A runtime row named by a bare string — `Ins.CallRt(dst,
-    "avra_x", args)` — instead of through its generated method
-    (`cx.x(sh, args)`, features/rt.av, from core/rt_namespace.av). A
-    row's method carries the row's own arity in its signature, so a
-    misspelled row is the ordinary "no method" refusal at typing and
-    a wrong seat count the ordinary fn-arity refusal; a bare string
-    reopens both holes a typo can hide behind. `features/emit.av`
-    speaks the one door (`call`/`call_at`/`call_void`) every
-    generated method calls through, and two sites still spell the
-    string by design: `compiler/suite_entry.av` builds the TEST
-    BINARY's entry from its own separate row table (not `rt_sigs()`,
-    a different builder), and `compiler/memory/memory.av` rewrites an
-    ALREADY-LOWERED instruction's string field (the owned-twin
-    substitution) — neither reads a row through `LowerCx` (style.raw_rt_call)."""
-    if CURRENT["path"].endswith((
-        "features/emit.av", "compiler/suite_entry.av", "compiler/memory/memory.av",
-    )):
-        return
-    for i, l in enumerate(lines):
-        if RAW_RT_CALL.search(l):
-            yield i, l.strip()
-
 MINT_LET = re.compile(r"let (\w+)\s*=\s*(?:self|cx)\.(?:mint_shape|mint_ty|mint_like|result)\(")
 RAW_EMIT = re.compile(r"(?:self|cx)\.emit\(Ins\.(\w+)\((\w+)")
 
@@ -679,14 +654,6 @@ RULES = {
     "style.one_body_arms": (one_body_arms,
             "two adjacent arms answer one body — join their patterns with `or`; the "
             "alternatives may bind, each binding the same names at the same types"),
-    "style.raw_rt_call": (raw_rt_call,
-            "a runtime row named by a bare string — `Ins.CallRt(dst, \"avra_x\", args)` — "
-            "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
-            "a misspelled row or a wrong seat count then refuses at typing instead of "
-            "waiting for a typo nothing catches"),
-    "style.stmt_index_walk": (line_rx(r"for i in 0\.\.[\w.]*stmts\.count\(\)"),
-            "an index walk over a store's statements — `for s in store.stmt_ids()` "
-            "hands the ids themselves"),
     "style.raw_mint_emit": (raw_mint_emit,
             "a register minted, then defined by a raw `emit(Ins...)` — that is a vocabulary "
             "verb (`cx.bin(sh, op, a, b)`, `cx.call_decl_at(e, callee, args)`, …, "
@@ -748,6 +715,17 @@ UNRATCHETED = {
            "           fact column sized from an arena's count, `filled(...count())`)\n"
            "           has no structural shape a rule can hold yet and stays\n"
            "           `style.filled_by_arena_count`'s own regex",
+    "compiler.stmt_index_walk": "PORTED NATIVELY (avra-8sb5.25.16): `stmt_index_walk`\n"
+           "           (compiler/idioms.av) — reads `Code.for_range()`, the same\n"
+           "           workaround `loops.index_walk` already reads its own range head\n"
+           "           through; `core/store.av` is exempt structurally (its own\n"
+           "           `stmt_ids()` IS this walk); ratcheted by the native-findings\n"
+           "           phase below",
+    "compiler.raw_rt_call": "PORTED NATIVELY (avra-8sb5.25.16): `raw_rt_call`/`raw_rt_call_void`\n"
+           "           (compiler/idioms.av) — a fixed-arity `quote` over `Ins.CallRt`/\n"
+           "           `Ins.CallRtVoid`, guarded by the bound name hole's own TEXT\n"
+           "           (`starts_with(\"\\\"avra_\")`); ratcheted by the native-findings\n"
+           "           phase below",
     "nullable.if_null_ternary": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
@@ -993,11 +971,6 @@ CLEAN = {
     "style.bool_comprehension": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
-    "style.raw_rt_call": [['    cx.array_sized(sh, size)'],
-            ['    self.array_push(box, v)'],
-            ['        cx.map_get(sh, m, k)']],
-    "style.stmt_index_walk": [['    for s in store.stmt_ids() {'],
-            ['    flatten([some_list(self.use_parts(s)) for s in self.stmt_ids()])']],
     "style.raw_mint_emit": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
             ['    self.un(present)'],
             ['        cx.pack(ty, [present, value])']],
@@ -1043,11 +1016,6 @@ SPECIMENS = {
              "        .Enum(d, _) -> d,"],
             ["            .Ok(.Eof) -> false,",
              "            .Ok(.Pending) -> false,"]],
-    "style.raw_rt_call": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
-            ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
-            ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
-    "style.stmt_index_walk": [["    for i in 0..store.stmts.count() {"],
-            ["        for i in 0..self.stmts.count() {"]],
     "style.raw_mint_emit": [["    let dst = cx.mint_shape(Type.Bool)",
              "    cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))"],
             ["    let dst = self.mint_shape(Type.Bool)",

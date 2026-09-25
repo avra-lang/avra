@@ -1009,7 +1009,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       that has a declaration of its own, which is a field with a
       default.
 
-- style.raw_rt_call (ratcheted) A RUNTIME ROW NAMED BY A BARE STRING —
+- compiler.raw_rt_call (ratcheted) A RUNTIME ROW NAMED BY A BARE STRING —
       `cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))` — where a
       generated method carries the row instead: `cx.array_sized(sh,
       size)`. `rt_sigs()` projects into one `LowerCx` method per row
@@ -1046,6 +1046,15 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       ALREADY-LOWERED instruction's string field (the owned-twin
       substitution) — neither reads a row through `LowerCx`.
       Ratcheted (`raw_rt_call`).
+      PORTED NATIVELY (avra-8sb5.25.16): `raw_rt_call`/`raw_rt_call_void`
+      (compiler/idioms.av) — a fixed-arity `quote` over `Ins.CallRt`/
+      `Ins.CallRtVoid` needs no hole this idiom hadn't already earned;
+      the string guard reads a bound hole's OWN TEXT (`starts_with`),
+      the same door `str_grown_quadratically` reads a name through.
+      Two sites (`settle_test.av`'s reach-law probes, which construct
+      a raw row on purpose to test the reach mechanism itself) join
+      the baseline as accepted debt — a native finding carries no
+      license of its own.
 
 - style.one_body_arms (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
       `.Struct(d, _) -> d` then `.Enum(d, _) -> d` — are one arm:
@@ -1058,12 +1067,20 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       gap. LICENSED at the site when the names bind at DIFFERENT types
       (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
       a block body is its own sentence. Ratcheted (`one_body_arms`).
-- style.stmt_index_walk (ratcheted) A WALK OVER A STORE'S STATEMENTS HANDS THE IDS —
+- compiler.stmt_index_walk (ratcheted) A WALK OVER A STORE'S STATEMENTS HANDS THE IDS —
       `for s in store.stmt_ids()`, never `for i in 0..store.stmts.count()`
       and a `StmtId { index: i }` built inside. Four sites spelled the
       index walk (a `while` among them); the ids are what every one read.
       LICENSED at the site when the index keys something else too (the
       mint loop's side table). Ratcheted (`for i in 0..…stmts.count()`).
+      PORTED NATIVELY (avra-8sb5.25.16): `stmt_index_walk`
+      (compiler/idioms.av), reading `Code.for_range()` the same
+      workaround `loops.index_walk` already reads its own range head
+      through — no new shape.av capability. `core/store.av` is
+      exempt structurally (its own `stmt_ids()` IS this walk); the
+      one genuine license (`decls_mint.av`, the index keys a side
+      table too) has no comment a native finding can read, so it
+      joins the baseline as accepted debt instead.
 - style.mutable_slot_not_cell (unratcheted) A MUTABLE SLOT IS A `Cell`, NEVER A ONE-ELEMENT
       LIST. `ensure: List<fn(DeclId)>` written `self.ensure.set(0, f)`
       and read `self.ensure[0]` is a Cell spelled as a list: its writes

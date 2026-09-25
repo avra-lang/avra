@@ -307,6 +307,75 @@ fn hand_sized(e: Code, k: Code) -> Fix {
     Fix.Say(said(e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
 }
 
+/// A walk over a NodeStore's own statements BY INDEX — `for i in
+/// 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()`
+/// hands the ids themselves, the thing every such walk actually
+/// wants. A BARE-HOLE ROOT, structural GUARD (`Code.for_range`,
+/// features/code.av, the same shape `loops.index_walk` reads its own
+/// range head off): the bound is `${owner}.stmts.count()` here
+/// rather than a list's `.length`. `core/store.av` is exempt — its
+/// own `stmt_ids()` IS this walk, the one place it is allowed to be
+/// spelled out.
+///
+/// NO REWRITE: the body may read `i` as a plain int (a map key, an
+/// offset into a side table) as freely as it may use it to look a
+/// statement up by id — only a human reading the body can tell
+/// which, and `decls_mint.av`'s own walk needs the int (a `by_stmt`
+/// map key), not the id.
+@keeps("for i in 0..xs.length { log(i) }")
+export rule stmt_index_walk {
+    quote { ${lit} } if stmt_index_walked(lit) -> stmt_index_walk_found(lit),
+}
+
+fn stmt_index_walked(lit: Code) -> bool {
+    if lit.of.view.source.file.ends_with("core/store.av") { return false }
+    let r? = lit.for_range() else { return false }
+    r.from.text() == "0" && r.to.text().ends_with(".stmts.count()")
+}
+
+fn stmt_index_walk_found(lit: Code) -> Fix {
+    let r = lit.for_range()!
+    Fix.Say(said(r.to.loc(), "an index walk over a store's statements — `for s in store.stmt_ids()` hands the ids themselves", "this loop", null))
+}
+
+/// A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x",
+/// args)` / `Ins.CallRtVoid("avra_x", args)` — instead of through its
+/// GENERATED method (`cx.x(sh, args)`, features/rt.av, minted from
+/// `core/rt_namespace.av`'s projection of `rt_sigs()`). A row's
+/// method carries the row's own arity in its signature, so a
+/// misspelled row is the ordinary "no method" refusal at typing and
+/// a wrong seat count the ordinary fn-arity refusal; a bare string
+/// reopens both holes a typo can hide behind. Two files spell the
+/// string BY DESIGN and are exempt: `compiler/suite_entry.av` builds
+/// the TEST BINARY's own entry from its own separate row table, never
+/// `rt_sigs()`; `compiler/memory/memory.av` rewrites an
+/// ALREADY-LOWERED instruction's string field (the owned-twin
+/// substitution) — neither reads a row through `LowerCx`.
+///
+/// NO REWRITE: the generated method's own NAME is `rt_sigs()`'s row
+/// name, lower-cased and de-prefixed (`core/rt_namespace.av`) — a
+/// transform this pattern's one bound string never performs.
+@keeps("cx.array_sized(sh, size)")
+export rule raw_rt_call {
+    quote { Ins.CallRt(${dst}, ${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
+}
+
+/// The void twin — no `dst` to bind.
+@keeps("self.array_push(box, v)")
+export rule raw_rt_call_void {
+    quote { Ins.CallRtVoid(${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
+}
+
+fn is_rt_string(name: Code) -> bool {
+    if !name.text().starts_with("\"avra_") { return false }
+    let f = name.of.view.source.file
+    !f.ends_with("compiler/suite_entry.av") && !f.ends_with("compiler/memory/memory.av")
+}
+
+fn raw_rt_call_found(name: Code) -> Fix {
+    Fix.Say(said(name.loc(), "a runtime row named by a bare string, ${name.text()} — the generated method carries the row's own arity (`cx.<name>(sh, args)`, features/rt.av), so a misspelled row or a wrong seat count refuses at typing instead of waiting for a typo nothing catches", "this call", null))
+}
+
 /// A `mut` list built to answer "have I seen this before" — a
 /// POSITION law once the whole list is already in hand: the first
 /// index a value occurs at is decided by `.index_of`, compared
