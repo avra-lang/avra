@@ -196,7 +196,15 @@ impl Db {
 /// what makes a cache hit as clean as a fresh `prepare` from the
 /// caller's side — no stale value from the last call can survive
 /// into this one.
-fn prepared(db: Db, s: Sql) -> Result<Stmt, SqlError> {
+///
+/// EXPORTED for a caller who reads columns directly off `Stmt` (a
+/// `@model` derive that already knows every column's type at compile
+/// time, so it never needs `Row`/`SqlValue` — the accepted per-cell
+/// box cost that pair carries is not a cost this caller pays). Such a
+/// caller `.step()`s and `.reset()`s the answer itself, under the
+/// SAME contract every verb above already keeps: reset before this
+/// door is asked again for the same connection.
+export fn prepared(db: Db, s: Sql) -> Result<Stmt, SqlError> {
     let stmt = db.cached(s.text) ?? freshly_cached(db, s.text)?
     let _ = bound(stmt, s.values)?
     stmt
@@ -255,11 +263,13 @@ fn every_row(s: Stmt) -> Result<List<Row>, SqlError> {
     out
 }
 
-/// The row standing, copied whole: every column's value AND name, read
-/// once at the row's own width.
+/// The row standing, copied whole: every column's value, read fresh
+/// at the row's own width, and its names, which `Stmt.names` caches
+/// (they never change for this statement's life) rather than re-asks
+/// SQLite for every row.
 fn snapshot(s: Stmt) -> Result<Row, SqlError> {
     let n = s.width()
-    Row { values: [value_at(s, i)? for i in 0..n], names: [s.column_name(i)? for i in 0..n] }
+    Row { values: [value_at(s, i)? for i in 0..n], names: s.names()? }
 }
 
 /// A column read into a `SqlValue` — the read-side dispatch, one

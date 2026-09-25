@@ -16,7 +16,7 @@
 //! database" are the same answer. It costs one page read.
 use error.{Cause, SqlError, barred}
 use @std.text.{has_nul}
-use c.{sqlite3_open_v2, sqlite3_close_v2, sqlite3_errstr}
+use c.{sqlite3_open_v2, sqlite3_close_v2, sqlite3_errstr, sqlite3_last_insert_rowid}
 use stmt.{Stmt}
 
 /// How the file is opened. THREE MODES AND NO `create` FIELD, because
@@ -318,6 +318,14 @@ impl Db {
         self.cache.set([])
         self.raw.set(null)
         sqlite3_close_v2(handle)
+    }
+
+    /// The rowid of the last row this connection inserted — 0 before
+    /// any insert. A trigger's own insert changes this, so a caller
+    /// wanting THEIR statement's rowid reads it immediately after
+    /// stepping, before any other statement on the same connection runs.
+    fn last_insert_rowid() -> int {
+        sqlite3_last_insert_rowid(self.raw.get())
     }
 
     /// The refusal for a connection that was closed, or absence when it
