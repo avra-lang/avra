@@ -868,16 +868,9 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
         char passes[32];
         snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
         LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
-        // Mono emits one fn per instantiation, and a pointer-shaped generic
-        // (List<A> beside List<B>, A and B both boxes) compiles many of them
-        // to the same body. MergeFunctions folds a structural duplicate into
-        // a thunk calling the one it kept — SAFE here specifically because
-        // no fn this backend emits is ever `unnamed_addr` (grep confirms:
-        // only globals get LLVMSetUnnamedAddress), so the pass may never
-        // fold two fns' ADDRESSES together, only their bodies; a fn value
-        // Avra hands out keeps its own symbol and its own address either
-        // way. Marking a fn `unnamed_addr` in the future reopens that door
-        // and this guard must move with it.
+        // Structural duplicates (a pointer-shaped generic's instantiations)
+        // fold into thunks. Sound while no fn is `unnamed_addr`: the pass
+        // then merges bodies, never addresses.
         LLVMPassBuilderOptionsSetMergeFunctions(opts, 1);
         LLVMErrorRef ran = LLVMRunPasses(m, passes, tm, opts);
         LLVMDisposePassBuilderOptions(opts);
