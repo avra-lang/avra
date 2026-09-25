@@ -1,0 +1,260 @@
+//! THE QUERY KERNEL — the compiler as a spreadsheet (L6, ps3t.8):
+//! every step is a query that remembers its answer, the queries it
+//! read (its deps, discovered by execution), the revision its answer
+//! last CHANGED and the revision it was last VERIFIED. `ask` is the
+//! red-green decision: a cell verified this revision is current;
+//! otherwise its deps are re-verified through their families, and a
+//! cell none of whose deps changed since its own verification is
+//! re-marked current without running (green). A recomputed answer
+//! whose hash is unchanged keeps its changed_at — the wave dies
+//! there (early cutoff). A query that reaches itself is a CYCLE,
+//! answered as such rather than recursed into. Inputs are cells the
+//! driver sets. A key is a FAMILY number and the dense id the family
+//! keys by — two list indexes, no strings. Values live in the
+//! families' own typed tables; the kernel holds only bookkeeping.
+/// A cell's address: its family, and the dense id the family keys
+/// by (a FileId, a DeclId).
+export type Key = { family: int, arg: int }
+
+export fn same_key(a: Key, b: Key) -> bool {
+    a.family == b.family && a.arg == b.arg
+}
+
+export enum Verdict {
+    Reuse
+    Compute
+    Cycle
+}
+
+type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+
+// A shared KernelState's cell list copies on write. Bound each copy to
+// one short row rather than a table that grows with the program.
+const cell_chunk: int = 256
+
+type KernelState = {
+    rev: int,
+    /// ONE SLOT, SHARED — see `features/decls.av`'s member tables: a write must
+    /// not copy the block.
+    cells: List<Cell<List<QueryCell?>>>,
+    verifiers: List<fn(int) -> int>,
+    // One dependency list per open query, EACH IN ITS OWN CELL. A shared
+    // `List` reaches a copy at every append, so a list routed through the
+    // state copied its whole self per recorded read; a cell is a stable
+    // box, so `push` on it appends in place.
+    pending: List<Cell<List<Key>>>,
+    open: List<Key>,
+    hits: int,
+    misses: int,
+}
+
+/// A kernel is a shared handle. Copying it copies the handle; every
+/// query family and verifier therefore sees the same revision, open
+/// stack, dependencies, and counters.
+export type Kernel = { state: Cell<KernelState> }
+
+export fn new_kernel() -> Kernel {
+    let state = KernelState { rev: 1, cells: [], verifiers: [], pending: [], open: [], hits: 0, misses: 0 }
+    Kernel { state: Cell.new(state) }
+}
+
+impl Kernel {
+    fn snapshot() -> KernelState { self.state.get() }
+
+    fn replace(state: KernelState) { self.state.set(state) }
+
+    fn revision() -> int { self.snapshot().rev }
+
+    fn bump() {
+        mut s = self.snapshot()
+        s.rev = s.rev + 1
+        self.replace(s)
+    }
+
+    fn family(verify: fn(int) -> int) -> int {
+        mut s = self.snapshot()
+        s.verifiers.push(verify)
+        let ordinal = s.verifiers.length - 1
+        self.replace(s)
+        ordinal
+    }
+
+    /// Verifiers capture their workspace, which contains this handle.
+    /// Replacing them breaks that ownership cycle after a one-shot run.
+    fn disarm() {
+        mut s = self.snapshot()
+        s.verifiers = [never_verify for v in s.verifiers]
+        self.replace(s)
+    }
+
+    fn set_input(key: Key, value_hash: int) {
+        mut s = self.snapshot()
+        let prior: QueryCell? = state_cell(s, key)
+        if prior != null && prior!.value_hash == value_hash {
+            write_cell(s, key, QueryCell { deps: [], changed_at: prior!.changed_at, verified_at: state_revision(s), value_hash: value_hash })
+            self.replace(s)
+            return
+        }
+        if prior != null { s.rev = state_revision(s) + 1 }
+        let rev = state_revision(s)
+        write_cell(s, key, QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash })
+        self.replace(s)
+    }
+
+    fn ask(key: Key) -> Verdict {
+        self.record_dep(key)
+        let seen = self.snapshot()
+        if seen.open.any(same_key(it, key)) { return Verdict.Cycle }
+        let cell? = state_cell(seen, key) else { return self.miss() }
+        if cell.verified_at == state_revision(seen) { return self.hit() }
+        // A verifier may recursively update this same database. No
+        // snapshot is written across that call.
+        if self.any_dep_changed(cell) { return self.miss() }
+        mut latest = self.snapshot()
+        write_cell(latest, key, cell with { verified_at: state_revision(latest) })
+        self.replace(latest)
+        self.hit()
+    }
+
+    fn any_dep_changed(cell: QueryCell) -> bool {
+        for d in cell.deps {
+            if self.changed_after(d, cell.verified_at) { return true }
+        }
+        false
+    }
+
+    fn changed_after(dep: Key, since: int) -> bool {
+        let verify = self.snapshot().verifiers[dep.family]
+        verify(dep.arg) > since
+    }
+
+    fn active(key: Key) -> bool {
+        self.snapshot().open.any(same_key(it, key))
+    }
+
+    /// Whether ANY key of a family is open — a query of that family is
+    /// in flight. The kernel is language-agnostic, so the family is
+    /// passed in.
+    fn family_active(family: int) -> bool {
+        self.snapshot().open.any(it.family == family)
+    }
+
+    fn changed_at(key: Key) -> int {
+        let s = self.snapshot()
+        state_cell(s, key)?.changed_at ?? state_revision(s)
+    }
+
+    fn cell(key: Key) -> QueryCell? { state_cell(self.snapshot(), key) }
+
+    fn begin(key: Key) {
+        mut s = self.snapshot()
+        let none: List<Key> = []
+        s.pending.push(Cell.new(none))
+        s.open.push(key)
+        self.replace(s)
+    }
+
+    fn settle(key: Key, value_hash: int) {
+        mut s = self.snapshot()
+        let deps: List<Key> = s.pending.pop().get()
+        let _ = s.open.pop()
+        let prior: QueryCell? = state_cell(s, key)
+        let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { state_revision(s) }
+        write_cell(s, key, QueryCell { deps: deps, changed_at: changed, verified_at: state_revision(s), value_hash: value_hash })
+        self.replace(s)
+    }
+
+    /// One read's dependency, appended to the OPEN query's list. The list
+    /// lives in a `Cell`, so the append is in place and the state is not
+    /// written at all: routing it through the shared record copied the
+    /// whole list per read.
+    fn record_dep(key: Key) {
+        let s = self.snapshot()
+        if s.pending.is_empty() { return }
+        s.pending.last()!.push(key)
+    }
+
+    fn sweep() {
+        mut s = self.snapshot()
+        let rev = state_revision(s)
+        for row in s.cells {
+            for j, held in row.get() {
+                if held != null && held!.verified_at != rev { row.set_at(j, null) }
+            }
+        }
+        self.replace(s)
+    }
+
+    /// Remove every cell in one family. Typed memo storage must be
+    /// evicted with it, so a later ask cannot reuse bookkeeping after
+    /// its value has been released.
+    fn evict_family(family: int) {
+        mut s = self.snapshot()
+        mut at = family
+        let stride = s.verifiers.length
+        while at < s.cells.length * cell_chunk {
+            let block = at / cell_chunk
+            let offset = at % cell_chunk
+            if offset < s.cells[block].get().length {
+                s.cells[block].set_at(offset, null)
+            }
+            at = at + stride
+        }
+        self.replace(s)
+    }
+
+    fn hit() -> Verdict {
+        mut s = self.snapshot()
+        s.hits = s.hits + 1
+        self.replace(s)
+        Verdict.Reuse
+    }
+
+    fn miss() -> Verdict {
+        mut s = self.snapshot()
+        s.misses = s.misses + 1
+        self.replace(s)
+        Verdict.Compute
+    }
+
+    fn stats() -> string {
+        let s = self.snapshot()
+        "rev ${state_revision(s)}: ${s.hits} hits, ${s.misses} misses"
+    }
+}
+
+fn state_revision(s: KernelState) -> int { s.rev }
+
+fn state_slot(s: KernelState, key: Key) -> int {
+    let _ = s.verifiers[key.family]
+    key.arg * s.verifiers.length + key.family
+}
+
+fn state_cell(s: KernelState, key: Key) -> QueryCell? {
+    let at = state_slot(s, key)
+    let block = at / cell_chunk
+    let offset = at % cell_chunk
+    if block >= s.cells.length { return null }
+    let row = s.cells[block].get()
+    if offset >= row.length { return null }
+    row[offset]
+}
+
+fn write_cell(mut s: KernelState, key: Key, cell: QueryCell) {
+    let at = state_slot(s, key)
+    let block = at / cell_chunk
+    let offset = at % cell_chunk
+    while s.cells.length <= block {
+        let no_row: List<QueryCell?> = []
+        s.cells.push(Cell.new(no_row))
+    }
+    while s.cells[block].get().length <= offset { s.cells[block].push(null) }
+    s.cells[block].set_at(offset, cell)
+}
+
+extern fn avra_trap(message: string)
+
+fn never_verify(arg: int) -> int {
+    avra_trap("defect: a disarmed query database was reused")
+    arg
+}

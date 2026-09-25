@@ -112,7 +112,7 @@ export type DeclFacts = {
     /// hold skips.
     instance: bool = false,
     /// THE DECLARATION'S OWN `///` LINES, absent where it wrote none — a fact every
-    /// tool (`avra explain`, the formatter, `@std/meta`'s crossing) reads the same
+    /// tool (`avra docs`, the formatter, `@std/meta`'s crossing) reads the same
     /// way, so a held file answers it without the parse the hold exists to skip.
     doc: List<string>? = null,
     /// EVERY `@name(args)` THE DECLARATION WEARS, in written order — the general
@@ -1172,11 +1172,25 @@ impl Decls {
     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
 
     /// THE ONE READING DOOR for a declaration's `///` doc — a held file answers
-    /// through the same fact `capture_facts` recorded at admit.
-    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc }
+    /// through the same fact `capture_facts` recorded at admit. A declaration
+    /// with none of its own inherits its FILE's `//!` header: the general
+    /// case, not a feature-shaped one — any lightly-documented file with one
+    /// clear purpose reads this way, `avra docs enums` included, and nothing
+    /// here knows what a "feature" is. Never `store_of`: a held declaration
+    /// has no store to force, and a declaration minted with no facts at all
+    /// must still answer null rather than trap.
+    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc ?? self.file_doc_of(self.decl(d).file) }
+
+    /// A file's `//!` header when it has a real store, null for a held
+    /// file (its record carries no file-level doc) or an out-of-range
+    /// one (a declaration minted with no file behind it at all).
+    fn file_doc_of(f: FileId) -> List<string>? {
+        if f.index >= self.stores.get().length { return null }
+        self.stores.get()[f.index]?.file_doc()
+    }
 
     /// THE ONE READING DOOR for a declaration's `@name(args)` annotations, in
-    /// written order — the fact `avra explain`, the formatter's `Code` and
+    /// written order — the fact `avra docs`, the formatter's `Code` and
     /// `@std/meta`'s crossing all read, so no reader parses a store of its own.
     fn annotations_of(d: DeclId) -> List<AnnotationFact> { self.facts_of(d)?.annotations ?? [] }
 

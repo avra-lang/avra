@@ -1,0 +1,125 @@
+//! `avra docs writes <fn>` — the seats pass's (compiler/receivers.av)
+//! write-flow chain for a fn's seat 0 (a method's receiver, a free fn's
+//! first parameter), printed as fn names in call order.
+use @std.io.{make_dirs, write_text}
+use commands.{root_program}
+
+/// A four-deep delegation chain: `ensured` calls `sig` calls
+/// `sign_cx_for` calls `mint`, and only `mint` writes — the shape this
+/// door exists for (an hour of grep, reduced to a chain). `touched` is
+/// declared `mut fn` directly, `calls_touched` reaches it through one
+/// hop. `never_writes` reads but never writes. `cycle_a`/`cycle_b` are
+/// mutually recursive with no real write anywhere in the cycle. `bump`
+/// is a free fn whose seat 0 is a `mut` parameter, not a receiver.
+/// `main` has no seat 0 at all.
+fn pkg_chain(name: string) -> string {
+    let root = pkg_named(name)
+    let src = "type Cx = { n: int }\n\nimpl Cx {\n    fn ensured() { self.sig() }\n    fn sig() { self.sign_cx_for() }\n    fn sign_cx_for() { self.mint() }\n    fn mint() { self.n = 1 }\n    fn never_writes() -> int { self.n }\n    fn cycle_a() { self.cycle_b() }\n    fn cycle_b() { self.cycle_a() }\n    mut fn touched() { self.n = 3 }\n    fn calls_touched() { self.touched() }\n}\n\nfn bump(mut c: Cx) { c.n = 2 }\n\nfn main() -> int { 0 }\n"
+    let _ = write_text("${root}/src/main.av", src)
+    root
+}
+
+/// A bare package root — a manifest and an empty `src/`, for a test
+/// that writes its own `main.av` afterward.
+fn pkg_named(name: string) -> string {
+    let root = "/tmp/avra-explain-writes-test/${name}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    root
+}
+
+/// `explain_writes` writes through its receiver (the seats pass's
+/// `write_chain` reaches `self.ws` on a direct path) — every caller
+/// binds `mut` first, the same door `avra docs writes` itself opens.
+fn writes_of(root: string, name: string) -> string? {
+    mut p = root_program(root)
+    p.explain_writes(name)
+}
+
+spec "commands/docs writes" {
+    given "a fn whose body writes seat 0 directly" {
+        then "the chain is the fn alone" {
+            writes_of(pkg_chain("direct"), "mint") == "mint"
+        }
+    }
+    given "a fn delegating through three untouched hops to the one real write" {
+        then "the chain names every hop, in call order, ending at the write" {
+            writes_of(pkg_chain("delegated"), "ensured") == "ensured -> sig -> sign_cx_for -> mint"
+        }
+    }
+    given "a fn declared `mut fn` directly" {
+        then "the chain is the fn alone — declared, not inferred" {
+            writes_of(pkg_chain("declared"), "touched") == "touched"
+        }
+        then "a caller through it chains to the declared fn" {
+            writes_of(pkg_chain("declared-caller"), "calls_touched") == "calls_touched -> touched"
+        }
+    }
+    given "a fn that only reads seat 0" {
+        then "nothing to explain — no chain" {
+            writes_of(pkg_chain("no-write"), "never_writes") == null
+        }
+    }
+    given "a mutually recursive cycle with no real write in it" {
+        then "no acyclic witness exists, and the walk answers null rather than looping forever" {
+            writes_of(pkg_chain("cycle"), "cycle_a") == null
+        }
+    }
+    given "a free fn whose seat 0 is a `mut` parameter, not a receiver" {
+        then "the chain reaches it the same way a method's receiver does" {
+            writes_of(pkg_chain("free-fn"), "bump") == "bump"
+        }
+    }
+    given "a fn with no seat 0 at all" {
+        then "nothing to explain" {
+            writes_of(pkg_chain("no-seats"), "main") == null
+        }
+    }
+    given "an undeclared name" {
+        then "nothing to explain, never a crash" {
+            writes_of(pkg_chain("undeclared"), "NotAFn") == null
+        }
+    }
+    given "cycles and diamonds — the shapes a plain fixpoint boolean cannot distinguish from a witness" {
+        then "self-recursion with a real write past the recursive call is still terminal" {
+            let root = pkg_named("self-rec-writes")
+            let src = "type Cx = { n: int }\n\nimpl Cx {\n    fn f(k: int) { if k > 0 { self.f(k - 1) } else { self.n = 9 } }\n}\n\nfn main() -> int { 0 }\n"
+            let _ = write_text("${root}/src/main.av", src)
+            writes_of(root, "f") == "f"
+        }
+        then "self-recursion with no write anywhere is a 1-cycle, never a hang" {
+            let root = pkg_named("self-rec-never")
+            let src = "type Cx = { n: int }\n\nimpl Cx {\n    fn f(k: int) -> int { if k > 0 { self.f(k - 1) } else { k } }\n}\n\nfn main() -> int { 0 }\n"
+            let _ = write_text("${root}/src/main.av", src)
+            writes_of(root, "f") == null
+        }
+        then "a three-fn cycle with no real write is null, never a hang" {
+            let root = pkg_named("tri-cycle")
+            let src = "type Cx = { n: int }\n\nimpl Cx {\n    fn a() { self.b() }\n    fn b() { self.c() }\n    fn c() { self.a() }\n}\n\nfn main() -> int { 0 }\n"
+            let _ = write_text("${root}/src/main.av", src)
+            writes_of(root, "a") == null
+        }
+        then "a diamond — two edges reaching one real write — answers one valid witness" {
+            let root = pkg_named("diamond")
+            let src = "type Cx = { n: int }\n\nimpl Cx {\n    fn left() { self.real_write() }\n    fn right() { self.real_write() }\n    fn diamond() {\n        self.left()\n        self.right()\n    }\n    fn real_write() { self.n = 7 }\n}\n\nfn main() -> int { 0 }\n"
+            let _ = write_text("${root}/src/main.av", src)
+            writes_of(root, "diamond") == "diamond -> left -> real_write"
+        }
+    }
+    given "a generic receiver" {
+        then "the chain walks it the same as any other type" {
+            let root = pkg_named("generic-receiver")
+            let src = "type Box<T> = { held: T }\n\nimpl Box<T> {\n    fn ensure() { self.set() }\n    fn set() { self.held = self.held }\n}\n\nfn main() -> int { 0 }\n"
+            let _ = write_text("${root}/src/main.av", src)
+            writes_of(root, "ensure") == "ensure -> set"
+        }
+    }
+    given "a broken package" {
+        then "refuses before the walk ever runs, never a crash" {
+            let root = pkg_named("broken")
+            let src = "type Cx = { n: int }\nimpl Cx {\n    fn mint() { self.n = 1 }\n}\nfn main() -> int { garbage((((  }\n"
+            let _ = write_text("${root}/src/main.av", src)
+            !root_program(root).clean()
+        }
+    }
+}
