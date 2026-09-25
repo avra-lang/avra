@@ -1,11 +1,16 @@
 //! `@std/db` — a record type IS the schema. `@model` reads a
 //! declaration's fields (their names, their shapes, their marks) and
 //! answers the table DDL and the typed CRUD that agree with it —
-//! never a second, hand-kept schema description.
+//! never a second, hand-kept schema description. `@model_shape`
+//! answers the same declaration's contract: a generator and a
+//! validator are different effects (`@std/meta`'s answer type picks
+//! exactly one per fn, never both), so the two are two written
+//! words, stacked, not one fn quietly doing both.
 //!
-//!     use @std.db.{model}
+//!     use @std.db.{model_shape, model}
 //!     use @std.sqlite.{Db}
 //!
+//!     @model_shape
 //!     @model
 //!     type User = {
 //!         id: int = 0
@@ -20,7 +25,7 @@
 //! Stands ALONE with `@std/meta`, per CLAUDE.md's derive-isolation law
 //! — the file that types this trait must not also carry code the
 //! annotated file's own names could shadow.
-use @std.meta.{Type, Field, Kind, Directive, Code, Decls, literal}
+use @std.meta.{Type, Field, Kind, Directive, Diagnostic, Code, Decls, literal, refuse_as_at}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 
@@ -35,15 +40,30 @@ export trait Model {
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
 /// declaration reads as what it is rather than a trait a reader has
-/// to look up.
+/// to look up. GENERATES ONLY — a `List<Directive>` fn carries no
+/// `Diagnostic` of its own — so this runs UNCONDITIONALLY, even over
+/// a shape `@model_shape` refuses: the `impl` it builds may be one
+/// nothing should call, but it never traps the compiler, and
+/// `@model_shape` beside it is what actually stops the build.
 export fn model(t: Type) -> List<Directive> {
     Model.derive(t)
 }
 
+/// `@model_shape` — `@model`'s contract, checked for real: every
+/// refusal here is a `model.`-prefixed `Diagnostic`, at the
+/// declaration itself, in the law's own words. Stack it beside
+/// `@model` on every model, always.
+export fn model_shape(t: Type) -> List<Diagnostic> {
+    if t.variants.length > 0 { return [enum_not_supported(t)] }
+    if !has_id_field(t) { return [no_id_field(t)] }
+    if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
+    []
+}
+
 // ── The shape a model must have ──────────────────────────────────
 
-/// The FIRST field, required, or the whole derive answers one
-/// self-explaining refusal instead of a table nobody could use.
+/// The FIRST field, required, or `@model_shape` refuses with
+/// `model.no_id_field`.
 fn has_id_field(t: Type) -> bool {
     !t.fields.is_empty() && t.fields[0].name == "id" && t.fields[0].kind is .Int
 }
@@ -56,9 +76,6 @@ fn has_id_field(t: Type) -> bool {
 const MAX_FIELDS: int = 6
 
 fn generated(t: Type) -> Decls {
-    if t.variants.length > 0 { return broken_kind() }
-    if !has_id_field(t) { return broken_id() }
-    if t.fields.length > MAX_FIELDS { return broken_width() }
     quote {
         impl ${t} {
             static fn table_name() -> string { ${literal(table_name_of(t))} }
@@ -108,45 +125,41 @@ fn generated(t: Type) -> Decls {
     }
 }
 
-// ── Refusals — a self-explaining name, the way core/identity_derive.av
-// answers a payload type it has no row for. `@std/meta`'s annotation
-// effects are exhaustive and mutually exclusive by answer type alone
-// (`List<Diagnostic>` validates, `List<Directive>` generates —
-// features/annotations/check.av's `effect_of`): a Declares-effect
-// derive answers ONE of the two, never both, so `@model` — a plain
-// `List<Directive>` fn — has no `Diagnostic` of its own to raise.
-//
-// A NAME HERE IS NEVER SEEN UNLESS IT IS A MEMBER. These three are
-// bare fns, not `impl ${t} { }` members, so a real call through any
-// generated method name (`create_table`, `insert`, ...) meets the
-// TYPE's own missing-member refusal first and never reaches this
-// name at all — probed for all three refusals with a realistic call
-// (`create_table`): an enum answers "no variant `create_table`"
-// naming its real variants, a record answers "is a record, not an
-// enum" with a help suggesting a struct literal. The self-explaining name
-// is a fact for a reader of the generated tree, not a diagnostic a
-// user's build will ever show.
-//
-// The two-annotation split — a `List<Diagnostic>` validator stacked
-// beside this `List<Directive>` generator, e.g. `@model_shape @model
-// type User = {...}` — raises a real, correctly-placed refusal today
-// with no compiler change (annotations on one declaration run
-// independently; features/tests/crossing_test.av's `Shape`/`plainly`
-// pair is exactly this shape, generate and validate side by side).
-// Not taken here: it taxes every CORRECT model with a second written
-// word to cover the rare broken one, which a single annotation
-// answering both a Diagnostic and a Directive would not. ──
+// ── `@model_shape`'s refusals — each a `model.`-prefixed `Diagnostic`
+// at the type's own declaration, stating the law broken in its own
+// words, never a generic "`@model` failed:" prefix flattening three
+// different mistakes into one sentence. ──
 
-fn broken_kind() -> Decls {
-    quote { fn model_only_derives_over_a_record_never_an_enum() {} }
+fn enum_not_supported(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "model.enum_not_supported",
+        t.at,
+        "`@model` derives a table from a record's fields — `${t.name}` is an enum, with none",
+        "declare `${t.name}` as a record: `type ${t.name} = { id: int = 0, ... }`",
+    )
 }
 
-fn broken_id() -> Decls {
-    quote { fn model_needs_id_int_equals_0_as_its_first_field() {} }
+fn no_id_field(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "model.no_id_field",
+        t.at,
+        "every `@model`'s first field is `id: int = 0` — the primary key SQLite mints — and `${t.name}` ${first_field_words(t)}",
+        "add `id: int = 0` as `${t.name}`'s first field",
+    )
 }
 
-fn broken_width() -> Decls {
-    quote { fn model_has_more_fields_than_this_derive_can_construct_from_a_row() {} }
+fn first_field_words(t: Type) -> string {
+    if t.fields.is_empty() { return "has no fields at all" }
+    "declares `${t.fields[0].name}: ${t.fields[0].ty}` first"
+}
+
+fn too_many_fields(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "model.too_many_fields",
+        t.at,
+        "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
+        "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields",
+    )
 }
 
 // ── The DDL, built once from the fields — plain string assembly at
