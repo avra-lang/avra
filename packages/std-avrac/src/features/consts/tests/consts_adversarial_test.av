@@ -193,7 +193,7 @@ spec "features/consts (adversarial)" {
         then "a const that trapped is refused ONCE, however many reads" {
             let a = analyze_source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z")
             match a.run() {
-                .Err(msg) -> a.diagnostics.is_empty() && spoken_once(msg, "F2062"),
+                .Err(msg) -> a.diagnostics.is_empty() && spoken_once(msg, "const.trap"),
                 .Ok(_) -> false,
             }
         }
@@ -205,7 +205,7 @@ spec "features/consts (adversarial)" {
         }
     }
     given "a run-time read hidden in a branch" {
-        then "a const reading a parameter inside an `if` branch is refused F2074, never a defect" {
+        then "a const reading a parameter inside an `if` branch is refused const.param, never a defect" {
             let src = "fn g(n: int) -> int {\n    const C = if true { n } else { 0 }\n    C\n}\ng(1)\n"
             refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
         }

@@ -1,7 +1,7 @@
 // Golden renderings: the human text is a contract. Every code's
 // shape is asserted EXACTLY — a drifted gutter or caret fails here.
 use @std.errors.{Loc, Frame, Error, ErrorInfo, info, Suggestion, Edit, Confidence}
-use @std.avrac.diagnostics.{Diag, DiagCode, error_at, render, SourceFile, new_source_file}
+use @std.avrac.diagnostics.{Diag, error_at, render, SourceFile, new_source_file}
 
 enum Underlying { Bad }
 
@@ -38,15 +38,6 @@ impl Error for SelfCause {
     fn cause() -> dyn Error? { self }
 }
 
-fn rendered_registry() -> List<DiagCode> {
-    let rows = table<DiagCode> {
-        kind              | id      | summary
-        "parse.expected"  | "F0100" | "the parse needed a token that is not there"
-        "language.defect" | "F0900" | "the language definition itself is defective"
-    }
-    rows
-}
-
 fn two_lines() -> SourceFile {
     new_source_file("<source>", "let a = 1\nlet = 3")
 }
@@ -71,14 +62,14 @@ spec "diagnostics/render" {
         // part naming what moved.
         then "the label renders on its own line, under the message, with no window" {
             let d = error_at("language.defect", null, "the package moved") with { primary: Frame { label: "`Named` declares nothing where the crossing reads `at`", loc: null }, help: "build against the one this compiler ships" }
-            let expected = """error[F0900]: the package moved
+            let expected = """error[language.defect]: the package moved
   `Named` declares nothing where the crossing reads `at`
 help: build against the one this compiler ships"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "no label is no line — nothing is promised and nothing written" {
             let d = error_at("language.defect", null, "the package moved")
-            render(d, rendered_registry(), two_lines()) == "error[F0900]: the package moved"
+            render(d, two_lines()) == "error[language.defect]: the package moved"
         }
     }
     given "a located diagnostic" {
@@ -86,61 +77,61 @@ help: build against the one this compiler ships"""
             let at = Loc { file: "app.av", lo: 14, hi: 15 }
             let m = Frame { label: "expected NAME", loc: at }
             let d = error_at("parse.expected", at, "expected NAME while parsing `stmt`") with { primary: m, help: "a `let` names its value" }
-            let expected = """error[F0100]: expected NAME while parsing `stmt`
+            let expected = """error[parse.expected]: expected NAME while parsing `stmt`
   ╭─[app.av:2:5]
 2 │ let = 3
   ·     ┬
   ·     ╰── expected NAME
 ──╯
 help: a `let` names its value"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "an unlabeled mark draws no arrow — it would point at nothing" {
             let at = Loc { file: null, lo: 0, hi: 3 }
             let d = error_at("parse.expected", at, "m")
-            let expected = """error[F0100]: m
+            let expected = """error[parse.expected]: m
   ╭─[<source>:1:1]
 1 │ let a = 1
   · ┬
 ──╯"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
     }
     given "an anchorless diagnostic" {
         then "no window renders, help still lands" {
             let d = error_at("language.defect", null, "rule `s` is declared more than once") with { help: "merge same-name rules first" }
-            let expected = """error[F0900]: rule `s` is declared more than once
+            let expected = """error[language.defect]: rule `s` is declared more than once
 help: merge same-name rules first"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
-        then "an unregistered kind renders as itself" {
+        then "any kind renders as itself — the bracket, verbatim" {
             let d = error_at("ghost.kind", null, "m")
-            render(d, rendered_registry(), two_lines()) == "error[ghost.kind]: m"
+            render(d, two_lines()) == "error[ghost.kind]: m"
         }
     }
     given "a diagnostic's cause chain" {
         then "no cause renders no chain line" {
             let d = error_at("language.defect", null, "rule `s` is declared more than once") with { help: "merge same-name rules first" }
-            let expected = """error[F0900]: rule `s` is declared more than once
+            let expected = """error[language.defect]: rule `s` is declared more than once
 help: merge same-name rules first"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "one hop: the cause's own message, on its own line" {
             let d = error_at("language.defect", null, "the build failed") with { cause: Underlying.Bad }
-            let expected = """error[F0900]: the build failed
+            let expected = """error[language.defect]: the build failed
 caused by: the underlying thing failed"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "two hops: each cause on its own line, deepest last" {
             let d = error_at("language.defect", null, "the build failed") with { cause: Wrapping { inner: Underlying.Bad } }
-            let expected = """error[F0900]: the build failed
+            let expected = """error[language.defect]: the build failed
 caused by: wrapped
 caused by: the underlying thing failed"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "a chain of exactly sixteen hops renders every one" {
             let d = error_at("language.defect", null, "the build failed") with { cause: deep_chain(15) }
-            let expected = """error[F0900]: the build failed
+            let expected = """error[language.defect]: the build failed
 caused by: cause 15
 caused by: cause 14
 caused by: cause 13
@@ -157,11 +148,11 @@ caused by: cause 3
 caused by: cause 2
 caused by: cause 1
 caused by: cause 0"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "a chain of seventeen hops stops at the cap, and its last line says so" {
             let d = error_at("language.defect", null, "the build failed") with { cause: deep_chain(16) }
-            let expected = """error[F0900]: the build failed
+            let expected = """error[language.defect]: the build failed
 caused by: cause 16
 caused by: cause 15
 caused by: cause 14
@@ -178,11 +169,11 @@ caused by: cause 4
 caused by: cause 3
 caused by: cause 2
 caused by: cause 1 — the chain continues past 16; an error answering itself as its own cause?"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "a cause that answers itself renders fifteen identical hops, then a line that says the chain continues" {
             let d = error_at("language.defect", null, "the build failed") with { cause: SelfCause.S }
-            let expected = """error[F0900]: the build failed
+            let expected = """error[language.defect]: the build failed
 caused by: loop
 caused by: loop
 caused by: loop
@@ -199,7 +190,7 @@ caused by: loop
 caused by: loop
 caused by: loop
 caused by: loop — the chain continues past 16; an error answering itself as its own cause?"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
     }
     given "a diagnostic's suggestions" {
@@ -207,21 +198,21 @@ caused by: loop — the chain continues past 16; an error answering itself as it
             let edit = Edit { loc: Loc { file: null, lo: 0, hi: 3 }, replacement: "y" }
             let sg = Suggestion { confidence: Confidence.High, description: "replace `x` with `y`", edits: [edit] }
             let d = error_at("language.defect", null, "m") with { suggestions: [sg] }
-            let expected = """error[F0900]: m
+            let expected = """error[language.defect]: m
 fix (high): replace `x` with `y`
   y"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "a suggestion with TWO edits shows both, never just the first" {
             let e1 = Edit { loc: Loc { file: null, lo: 0, hi: 1 }, replacement: "a" }
             let e2 = Edit { loc: Loc { file: null, lo: 2, hi: 3 }, replacement: "b" }
             let sg = Suggestion { confidence: Confidence.Medium, description: "swap both", edits: [e1, e2] }
             let d = error_at("language.defect", null, "m") with { suggestions: [sg] }
-            let expected = """error[F0900]: m
+            let expected = """error[language.defect]: m
 fix (medium): swap both
   a
   b"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "TWO suggestions on one Diag both render, never just the first" {
             let e1 = Edit { loc: Loc { file: null, lo: 0, hi: 1 }, replacement: "a" }
@@ -229,16 +220,16 @@ fix (medium): swap both
             let sg1 = Suggestion { confidence: Confidence.High, description: "first fix", edits: [e1] }
             let sg2 = Suggestion { confidence: Confidence.Low, description: "second fix", edits: [e2] }
             let d = error_at("language.defect", null, "m") with { suggestions: [sg1, sg2] }
-            let expected = """error[F0900]: m
+            let expected = """error[language.defect]: m
 fix (high): first fix
   a
 fix (low): second fix
   b"""
-            render(d, rendered_registry(), two_lines()) == expected
+            render(d, two_lines()) == expected
         }
         then "no suggestions is no fix line at all" {
             let d = error_at("language.defect", null, "m")
-            render(d, rendered_registry(), two_lines()) == "error[F0900]: m"
+            render(d, two_lines()) == "error[language.defect]: m"
         }
     }
 }

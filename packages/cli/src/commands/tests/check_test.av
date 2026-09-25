@@ -31,14 +31,14 @@ fn report_of(root: string) -> string {
     }
 }
 
-/// F4019's exact words — the golden this fix owes.
+/// manifest.no_source's exact words — the golden this fix owes.
 fn no_source_message(root: string) -> string {
-    "error[F4019]: nothing to check under `${root}`: no `src/` and no program files\nhelp: add a `src/` directory, or a `.av` file directly under this root"
+    "error[manifest.no_source]: nothing to check under `${root}`: no `src/` and no program files\nhelp: add a `src/` directory, or a `.av` file directly under this root"
 }
 
 spec "commands/check root_workspace" {
     given "a src-less root with no program files directly in it" {
-        then "check refuses with F4019's exact words, never silence" {
+        then "check refuses with manifest.no_source's exact words, never silence" {
             let root = rootless_root("empty")
             report_of(root) == no_source_message(root)
         }
@@ -52,16 +52,16 @@ spec "commands/check root_workspace" {
         then "a broken one is examined and refused, never silently clean" {
             let root = rootless_root("broken")
             direct_program(root, "a", "garbage ((((\n")
-            report_of(root).contains("F0100")
+            report_of(root).contains("parse.expected")
         }
     }
     given "a src-less root with no program files AND a broken manifest" {
-        then "the manifest's own refusal speaks — never shadowed by the more generic F4019" {
+        then "the manifest's own refusal speaks — never shadowed by the more generic manifest.no_source" {
             let root = "/tmp/avra-check-nothing-test/broken-manifest"
             let _ = make_dirs(root)
             let _ = write_text("${root}/avra.toml", "this is not toml [[[\n")
             let report = report_of(root)
-            report.contains("F4020") && !report.contains("F4019")
+            report.contains("manifest.syntax") && !report.contains("manifest.no_source")
         }
     }
     given "a root with a real src/ — the sibling branch this fix does not touch" {

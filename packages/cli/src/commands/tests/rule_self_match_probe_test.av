@@ -1,0 +1,33 @@
+//! `compiler/idioms.av`'s own rules are declared as `quote { ... } ->
+//! ...` patterns whose left side, matched structurally, is a
+//! `Pat.Quote` — and that pattern's own text is a CODE SHAPE
+//! (`${cx}.emit(Ins.IfStart(${c}))`, say) mirrored into an expr
+//! tree so the pattern can be WRITTEN. Before rule_pass.av's
+//! `every_at` learned to stop at a `Pat.Quote`, the rules pass
+//! walked INTO that mirrored tree the same as any other code, so
+//! every rule in this file matched its OWN declaration — a
+//! PRECISION bug (avra-8sb5.25.49), not debt: `compiler/idioms.av`
+//! had 34 self-matches and exactly one real defect
+//! (`most_copied`'s own `mut best: string? = null`, a genuine
+//! `nullable_flag_local`, still caught here). Real sites elsewhere
+//! (walk.av, interp.av, derive.av, …) are untouched by this fix —
+//! `tools/idioms.baseline`'s own before/after is the tree-wide
+//! proof; this test pins the file the bug lived in.
+use @std.avrac.compiler.{rule_findings, analysed}
+use commands.{root_program}
+
+spec "commands/rule pass — a rule never fires on its own pattern" {
+    given "compiler/idioms.av, analyzed as part of the real std-avrac package" {
+        then "the only finding is the one real defect, never one of the file's 34 self-matching quote patterns" {
+            mut p = root_program("packages/std-avrac")
+            let hit = p.files.find(it.view.source.file.ends_with("compiler/idioms.av"))
+            match hit {
+                a? -> {
+                    let cands = rule_findings(analysed(a), a.view.stmts)
+                    cands.length == 1 && cands[0].kind == "style.nullable_flag_local"
+                }
+                null -> false
+            }
+        }
+    }
+}

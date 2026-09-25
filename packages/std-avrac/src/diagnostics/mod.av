@@ -1,7 +1,7 @@
 //! The compiler's diagnostic: an @std.errors Error carrying source
 //! marks, a severity, and remedies. Structured first (P11); rendering
-//! is a projection. A diagnostic names its KIND; the F-code is the
-//! registry's projection of that kind (codes.av).
+//! is a projection. A diagnostic's identity is its KIND — a dotted
+//! string, unique by construction (assembly refuses a duplicate).
 use core.{flatten, Span, inserted}
 use @std.errors.{Loc, Frame, Suggestion, Error, ErrorInfo, info}
 
@@ -35,20 +35,18 @@ impl Error for Diag {
     fn trace() -> List<Frame> { self.secondary }
 }
 
-/// One registry row: a kind, its stable F-code, and its one-line
-/// meaning for `avra explain`.
-export type DiagCode = { kind: string, id: string, summary: string }
+/// One registry row: a kind and its one-line meaning for `avra explain`.
+export type DiagCode = { kind: string, summary: string }
 
 /// The registry row a PACKAGE's kind (`@scope/name:E1`) renders and
-/// explains under: its id puts a space after the package, as the
-/// report shows it.
+/// explains under.
 export fn user_code(kind: string, summary: string) -> DiagCode {
-    DiagCode { kind: kind, id: kind.replace(":", ": "), summary: summary }
+    DiagCode { kind: kind, summary: summary }
 }
 
-/// The registry's F-code for a kind, when the kind is registered.
-export fn code_for(codes: List<DiagCode>, kind: string) -> string? {
-    codes.find(it.kind == kind)?.id
+/// Whether the registry knows this kind.
+export fn registered(codes: List<DiagCode>, kind: string) -> bool {
+    codes.any(it.kind == kind)
 }
 
 /// A span as a boundary location; absence passes through, so every
@@ -102,7 +100,7 @@ fn start_of(d: Diag) -> int {
 /// A refusal in the one shape every voice takes: the kind, where,
 /// the message, the label at the site, and the help (or none).
 export fn refusal(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
-    // LICENSED I28: the one site that spells the shape — every voice calls this
+    // LICENSED rule.compiler.refusal_assembled: the one site that spells the shape — every voice calls this
     pointed(error_at(kind, at, message), label) with { help: help }
 }
 

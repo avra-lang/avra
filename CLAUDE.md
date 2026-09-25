@@ -71,16 +71,16 @@ tool path can add to it. An idiom the LANGUAGE can now state is a
 tools/idioms.py reads that finding rather than racing it with a
 second regex, and ratchets it on the SAME baseline. Two honest exits
 for a REGEX finding: write the idiomatic form, or annotate `//
-LICENSED I<n>: reason` AT the site — that debt is zero, keep it
-there. A NATIVE finding has no license window (a rule reads no
-comment of its own); accepted debt for one lives in the baseline
+LICENSED <module>.<rule>: reason` AT the site — that debt is zero,
+keep it there. A NATIVE finding has no license window (a rule reads
+no comment of its own); accepted debt for one lives in the baseline
 only, reviewed at adoption and every time after. A new idiom lands
 in DOGFOODING's registry AT DISCOVERY **with its matcher** (or an
 UNRATCHETED reason — the tool refuses a registry entry that has
-neither), under the NEXT FREE NUMBER: two lanes numbered a new idiom
-the same day, both landed I33, and the duplicate key silently
-dropped the earlier rule while `make idioms` kept reporting success.
-The tool now reads its own source and refuses a repeated number.
+neither), NAMED BY ITS RULE — `<module>.<rule>`, never
+a number: a counter let two lanes land one number the
+same day and silently drop a rule. The tool refuses a
+repeated NAME, reading its own source.
 
 ## Style
 
@@ -98,7 +98,7 @@ The tool now reads its own source and refuses a repeated number.
   `put(m, …)`, the backend's `define(em, …)`) are methods now, and
   so are the pass contexts' whole vocabularies (`cx.accepts(e,
   want)`, `cx.open_region(c)`, `ws.sig(d)` — 320 verbs, one sweep);
-  I39 refuses a new free verb in the pass's own files. A PASS ENTRY
+  style.free_state_verb refuses a new free verb in the pass's own files. A PASS ENTRY
   POINT (`lower(a: Analysis)`, `memory(l: Lowered)`) keeps the one
   standard signature and is not a verb.
 - A long fn splits at its PHASE boundaries into named helpers, each
@@ -109,8 +109,8 @@ The tool now reads its own source and refuses a repeated number.
 - A LAW never assembles PROSE: every refusal is a NAMED VOICE fn
   (its whole body the one `spoken`/`emit`), in a voices section at
   the file's tail or shared where features share words. Rule
-  bodies read as guard + verb (I28; enums/check.av is the
-  exemplar).
+  bodies read as guard + verb (rule.compiler.refusal_assembled;
+  enums/check.av is the exemplar).
   AND A VOICE STATES THE LAW, NOT THE SYMPTOM. "a pointer's only
   constant is null" is the rule; "both engines read it as null" was
   the observation that happened to hold the day it was written. A
@@ -168,7 +168,7 @@ engine's spec, written by dogfooding.
   silently forgets the next variant (`let_name` dropped For's
   counter exactly so; `type_decl_name` would have swallowed the next
   type-declaring statement). Registries spell every arm — `or`-runs
-  keep that affordable. Ratcheted as I22 AND held by the compiler:
+  keep that affordable. Ratcheted as style.registry_catchall AND held by the compiler:
   F2040 counts the ANSWERING ARMS over the declared enum and names
   the variants a hole would forget. The license is a SPELLING, not a
   comment — `rest ->` says the remainder is deliberate, and both the
@@ -524,7 +524,8 @@ engine's spec, written by dogfooding.
   method, an index, a `for` head, an interpolation hole, a LITERAL
   PATTERN, printing) judges the SHAPE — `match id { 5 -> … }` over a
   `UserId` compares the number, exactly as `id == 5` does. The two doors are spelled: `shape_at`/`shape_of`
-  keep the name, `seen_at`/`seen_shape` see through it (I42). A
+  keep the name, `seen_at`/`seen_shape` see through it
+  (style.seen_shape_vs_seat_shape). A
   LITERAL fills a named seat directly (`let rows: Rows = [1, 2]`,
   `let id: UserId = 5`) because a literal has no type of its own
   until a want lands on it; nothing COMPUTED wears a name it was not
@@ -949,8 +950,8 @@ engine's spec, written by dogfooding.
   When a computation is keyed AND its artifact is NAMED, derive both
   from ONE value (`settled_symbol`); two spellings of the identity a
   cache depends on is a wrong answer waiting for a second caller.
-- Every diagnostic names a registered kind (its F-code is the
-  registry's projection), carries help or a structured fix where
+- Every diagnostic names a registered kind — its own identity,
+  unique by construction — carries help or a structured fix where
   expressible, and has a golden rendering test.
   AND THE RENDERER NEVER DROPS A LABEL: a voice with NO PLACE still
   renders its label. A label is what the diagnostic SAYS; a Loc is
@@ -1311,7 +1312,7 @@ engine's spec, written by dogfooding.
   method (`cx.<name>(sh, args)`, `features/rt.av`, from
   `core/rt_namespace.av`'s projection of `rt_sigs()`) calls through
   one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
-  them is I58's own refusal, and a misspelled or wrong-arity call
+  them is style.raw_rt_call's own refusal, and a misspelled or wrong-arity call
   through the generated method is the ordinary "no method"/method-
   arity refusal (F2030) at typing, for free. EVERY OTHER VALUE-
   PRODUCING SHAPE mints and emits in ONE call too, the same
@@ -1326,15 +1327,15 @@ engine's spec, written by dogfooding.
   (a literal fills a named seat directly), never the raw scalar the
   fixed forms mint at, so a literal's defining register needs the
   node-tied verb. A raw `let dst = cx.mint_shape(sh); cx.emit(Ins.…
-  (dst, …))` outside `emit.av` is I60's refusal; a shape with only
+  (dst, …))` outside `emit.av` is style.raw_mint_emit's refusal; a shape with only
   ONE call site (`FnAddr`, `ConstFloat`, a bare uninitialized
   `Alloca`) has no covering verb and stays a two-statement pair, and
   a site whose one register answers several branches — a mint shared
   across match arms, a mint at neither a fixed shape nor a node's own
   type — is licensed at the site. Two
-  engines read one instruction stream by construction; I33 ratchets
-  the raw brackets, I39 the free verbs, I58 the raw runtime-call
-  string, I60 the raw mint-then-emit split, and the vocabulary grows
+  engines read one instruction stream by construction; style.raw_region ratchets
+  the raw brackets, style.free_state_verb the free verbs, style.raw_rt_call the raw runtime-call
+  string, style.raw_mint_emit the raw mint-then-emit split, and the vocabulary grows
   with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
@@ -1356,7 +1357,7 @@ engine's spec, written by dogfooding.
   `cx.type(Map<string, want>)` — a type literal, the type in its own
   spelling folded ONCE by its receiver's `interned` (core/types.av's
   `TypeLit`); a name that spells no shape is a HOLE, the `TypeId`
-  binding it names. `intern(Type.Opt(intern(Type.Str)))` is I40. The
+  binding it names. `intern(Type.Opt(intern(Type.Str)))` is style.interned_by_hand. The
   receiver is any value with `interned`: the registry, TypeCx,
   LowerCx, Decls. A declared type has no spelling — bind its id and
   name the binding.
@@ -1615,7 +1616,7 @@ Syntax the grammar lacks:
   "pick another name", while `let _ = g()` and `.Bind(_)` are the
   ordinary spellings. A parameter a SEAT owns and the body never reads
   is `_q` — a leading underscore is a name, it compiles, and the idiom
-  bar has always read that prefix as "unread by contract" (I23).
+  bar has always read that prefix as "unread by contract" (style.dead_parameter).
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
   keys are strings, not `int`", help "other key types are recorded".
   It kills the obvious trie-node shape; key by the text.
@@ -1840,7 +1841,7 @@ Runtime facts, ours to ratify:
   nullable.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
-  turn, and I27 retired with the strlen it ratcheted. WITH ONE
+  turn, and style.restrlen_loop retired with the strlen it ratcheted. WITH ONE
   CAVEAT, NOW PAID: `str_len` read `(h && h->len) ? h->len :
   strlen(s)`, so an EMPTY box failed the truthiness test, discarded
   its own header and answered from a terminator instead. That was
@@ -2437,8 +2438,9 @@ Runtime facts, ours to ratify:
   the law is evergreen, the example has a date on it.
   AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST AS FIRST
   WRITTEN: there is no `ACCEPTED` table in `tools/idioms.py`. What the
-  tree holds is main's `CLEAN` table — the accept surface for I20,
-  I21, I23 and I48 — and the `COUNTS` list beside `COUNTED`, one
+  tree holds is main's `CLEAN` table — the accept surface for
+  style.refusal_uncounted_contains, style.unmutated_mut,
+  style.dead_parameter and style.bool_comprehension — and the `COUNTS` list beside `COUNTED`, one
   matcher's worth of the accept surface; both are self-tested, and
   every other matcher's accept surface is still unexercised. Do not
   read this entry as saying every matcher's accept surface is guarded.

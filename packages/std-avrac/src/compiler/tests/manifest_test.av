@@ -1,7 +1,6 @@
 // The manifest read into facts, and every rule of the manifest spec
 // speaking in its own words — errors that refuse, warnings that do
 // not.
-use @std.avrac.compiler.{avra}
 use @std.avrac.diagnostics.{new_source_file, render}
 
 use features.{budgets_of}
@@ -127,12 +126,12 @@ spec "compiler/manifest" {
         then "a `[link]` row spelling an option renders with its code and remedy" {
             let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"-lm\"]\n"
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4015]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]")
+            render(m.voices[0], new_source_file("avra.toml", text)).starts_with("error[manifest.link_option]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]")
         }
         then "a refusal points at its line in the manifest" {
             let text = "[package]\nname = \"app\"\nversion = \"1.2\"\n"
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4003]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
+            render(m.voices[0], new_source_file("avra.toml", text)).starts_with("error[manifest.bad_version]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
         }
     }
     given "[lifted]" {
@@ -155,7 +154,7 @@ spec "compiler/manifest" {
         then "the refusal names the row and its units" {
             let text = packaged("\n[lifted]\nmemory = 0\n")
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).contains("error[F4017]: `[lifted] memory` is a count of at least 1")
+            render(m.voices[0], new_source_file("avra.toml", text)).contains("error[manifest.bad_budget]: `[lifted] memory` is a count of at least 1")
         }
     }
 }
