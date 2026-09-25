@@ -439,4 +439,30 @@ spec "avra fmt --write's own receipt" {
             }
         }
     }
+    given "a scope whose only content is its tail value — `tail_scoped`'s span narrows to the value alone, for a diagnostic pointing at the answer" {
+        then "an own-line comment before the closing brace stays inside it, stable under one write" {
+            let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
+            let ws = with_main(src)
+            let f = ws.file_id("/w/src/main.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> "${text}\n" == src,
+                .Err(_) -> false,
+            }
+        }
+        then "the same comment, mid-chain in the author's own wrapping, lands inside the brace and stays there on a second write" {
+            let ws1 = with_main("fn f(c: int) -> bool {\n    c == 61 ||\n    // the bitwise three\n    c == 124\n}\n")
+            let f1 = ws1.file_id("/w/src/main.av")
+            match ws1.write_checked_source(f1) {
+                .Ok(first) -> {
+                    let ws2 = with_main("${first}\n")
+                    let f2 = ws2.file_id("/w/src/main.av")
+                    match ws2.write_checked_source(f2) {
+                        .Ok(second) -> "${second}\n" == "${first}\n",
+                        .Err(_) -> false,
+                    }
+                },
+                .Err(_) -> false,
+            }
+        }
+    }
 }
