@@ -432,6 +432,31 @@ impl Workspace {
         Lifted { answer: self.crossed_decl_of(d, want, heap), heap: heap }
     }
 
+    /// `@std/meta`'s `type_named`: a name resolved from where `f`
+    /// stands — its own bindings, then its imports — the SAME
+    /// namespace an ordinary type reference reads. Absent for a name
+    /// nothing declares there, or one bound to a fn or a trait. Reads
+    /// only the DECLARED shape (`crossed_lifted`, never `lifted`), so
+    /// it cannot re-enter another declaration's own derive: a cycle
+    /// between two derives asking for each other's type is the query
+    /// kernel's ordinary recursion guard, a smaller view, not a trap.
+    fn type_named_lifted(f: FileId, name: string) -> Lifted {
+        let d? = self.visible(f).type_decl(name) else { return absent_lifted() }
+        // a builtin scalar (`string`, `int`, …) is bound in every
+        // namespace but declares no fields or variants to answer —
+        // absent, the same as a name nothing declares
+        if self.decls.is_builtin(d) { return absent_lifted() }
+        let want? = self.meta_type_id("Type") else { return absent_lifted() }
+        self.crossed_lifted(d, want)
+    }
+
+    /// The TypeId `@std/meta`'s own `name` record wears — the `want`
+    /// a crossing seat reads to choose its shape.
+    fn meta_type_id(name: string) -> TypeId? {
+        let d? = self.decls.package_decl("@std.meta", name) else { return null }
+        self.decls.self_type_of(d)
+    }
+
     /// A declaration's own `///` doc, its lines joined — the one
     /// source `Fn.doc`/`Type.doc` cross with, off the door every
     /// other reader of a declaration's doc now shares.
@@ -521,3 +546,7 @@ impl Workspace {
         [kind_of(self.decls.types, t) for t in sig.types]
     }
 }
+
+/// A lifted call's absent answer — nothing crossed, in a heap of
+/// its own.
+fn absent_lifted() -> Lifted { Lifted { answer: MetaVal.Absent, heap: new_meta_heap() } }
