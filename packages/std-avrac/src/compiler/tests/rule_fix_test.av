@@ -106,11 +106,11 @@ spec "avra fix — the general Diag.suggestion channel" {
             apps.length == 1 && apps[0].proved && apps[0].kind == "test.finding"
         }
     }
-    // THE SINGLE MOST IMPORTANT PROPERTY IN THIS TICKET: a suggestion
-    // marked High confidence, whose edit the IR proof cannot confirm,
-    // stays SHOWN and is never written — Confidence is a claim for a
-    // HUMAN, proof is the only gate `avra fix` itself reads.
     given "a HIGH-confidence suggestion the IR proof does NOT confirm" {
+        // THE SINGLE MOST IMPORTANT PROPERTY IN THIS TICKET: a suggestion
+        // marked High confidence, whose edit the IR proof cannot confirm,
+        // stays SHOWN and is never written — Confidence is a claim for a
+        // HUMAN, proof is the only gate `avra fix` itself reads.
         then "SHOWN, not proved — fix_applied writes nothing" {
             let text = "fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n"
             let edit = edit_over(text, "a + b", "a - b")
@@ -220,9 +220,7 @@ spec "avra fix — a rule and a suggestion fighting over the same code" {
             let same_span_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
             let sg_apps = suggestion_apps_of(text, suggestion_diag("test.rival", Confidence.High, [same_span_edit]))
             let apps = rule_apps.concat(sg_apps)
-            rule_apps.length == 1 && rule_apps[0].proved &&
-                sg_apps.length == 1 && sg_apps[0].proved &&
-                fighting_pair(apps) == "nullable.if_null_ternary and test.rival"
+            rule_apps.length == 1 && rule_apps[0].proved && sg_apps.length == 1 && sg_apps[0].proved && fighting_pair(apps) == "nullable.if_null_ternary and test.rival"
         }
         then "fix_applied refuses the whole splice rather than pick a winner" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
@@ -279,8 +277,7 @@ spec "a real WARNING-severity Suggestion reaching avra fix's own apply path" {
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
             let apps = p.suggestion_applications("/w/src/main.av", analysed(a), a.diagnostics, null)
-            p.clean() && apps.length == 1 && apps[0].kind == "type.coalesce_never" && apps[0].proved &&
-                fix_applied(text, apps) == "fn f() -> int {\n    let n = 3\n    n\n}\n0\n"
+            p.clean() && apps.length == 1 && apps[0].kind == "type.coalesce_never" && apps[0].proved && fix_applied(text, apps) == "fn f() -> int {\n    let n = 3\n    n\n}\n0\n"
         }
     }
 }
