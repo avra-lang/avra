@@ -2,7 +2,7 @@
 
 **Status:** design, awaiting PERF's sign-off on §5 (layout) before implementation.
 **Date:** 2026-09-25
-**Scope:** `Result<T, A | B>`, hand-written. NOT in scope: inferred
+**Scope:** `Result<T, A or B>`, hand-written. NOT in scope: inferred
 `Result<T, _>` (avra-8sb5.40.10.2 — needs a new body-collecting walk
 with no existing precedent) or catch-chain narrowing (avra-8sb5.9.29 —
 needs §4's subtract operation, which this doc designs but a later
@@ -18,13 +18,13 @@ an open existential, the opposite shape from a closed enumerable set).
 `Type.Union(members: List<TypeId>)`, joining `core/types.av`'s `Type`
 enum. Construction always flattens and dedupes: unioning a `Union`
 into anything absorbs its members rather than nesting
-(`(A|B)|C` interns identically to `A|B|C`), and a member appearing
-twice collapses to one. This is genuinely new — every existing
-composite (`List`, `Map`, `Res`, `App`) is a fixed positional tuple
-with no post-construction dedup — but it's the only way `A|B` and
-`B|A` (and `(A|B)|C` and `A|(B|C)`) can be the same interned type,
-which they must be for `accepts`/subset-checking to work by identity
-rather than by re-deriving membership every time.
+(`(A or B) or C` interns identically to `A or B or C`), and a member
+appearing twice collapses to one. This is genuinely new — every
+existing composite (`List`, `Map`, `Res`, `App`) is a fixed positional
+tuple with no post-construction dedup — but it's the only way `A or B`
+and `B or A` (and every other reassociation/reordering) can be the
+same interned type, which they must be for `accepts`/subset-checking
+to work by identity rather than by re-deriving membership every time.
 
 **Canon key**: sort member `TypeId.index`es ascending, join
 (`"20:${sorted.join(".")}"`, tag 20 or whatever's next free). Sorting
@@ -38,15 +38,21 @@ new code path for the overwhelmingly common case).
 
 ## 2. Grammar and surface AST
 
+**Spelled `or`, not `|`** (owner's call, 2026-09-25) — `or` is already
+this language's alternation keyword (pattern arms: `.A or .B or .C ->
+...`), so type alternation reuses the same word for the same concept
+rather than introducing a second spelling. Not even a new reserved
+word: `or` is already one.
+
 Extend `features/type_expr/mod.av`'s `type` rule with a trailing
 repetition, not an infix rule (avoids PEG left-recursion): today's
 whole `type` production becomes `type_atom`, and the new top-level
 `type` is:
 ```
-type = t:type_atom ( "|" t2:type_atom )+ -> union_type(t, t2)
+type = t:type_atom ( "or" t2:type_atom )+ -> union_type(t, t2)
 type = t:type_atom -> t
 ```
-`?` binds tighter than `|` (`A | B?` parses as `A | (B?)`), matching
+`?` binds tighter than `or` (`A or B?` parses as `A or (B?)`), matching
 every other place `?` already binds to the immediately preceding name.
 
 `core/nodes.av`'s `TypeRef` gains one field:
@@ -108,7 +114,7 @@ this ticket builds the operation, that ticket wires it into chained
 **Simplified, 2026-09-25: no blocking dependency.** `Union`'s
 `side_word` answers "not one word" unconditionally — the same
 conservative fallback every non-word-sized type already gets today.
-`Result<T, A|B>` therefore boxes exactly like `Result<T, SomeStruct>`
+`Result<T, A or B>` therefore boxes exactly like `Result<T, SomeStruct>`
 already does, with zero new runtime code. This makes Phase 1 fully
 buildable now, independent of `r15a`/avra-8sb5.34.26 landing.
 
@@ -119,13 +125,13 @@ so a boxed `Union` value is NOT bit-identical to a bare boxed `A`.
 `features/values.av`'s `propagated` passes a value through unchanged
 whenever `valued(from) == valued(into)` — both `false` for two boxed
 Results, so today's guard would hand a `?`-widened `Result<T, A>` into
-`Result<T, A|B>` straight through as an unwrapped `A` where the caller
+`Result<T, A or B>` straight through as an unwrapped `A` where the caller
 expects a tagged union box. Silent wrong read, no diagnostic. Phase 1's
 `propagated` change must be "same Result TYPE" (not "both boxed"), and
 route every real mismatch — including box-to-box — through an explicit
 lift that constructs the union's own tagged box from the plain value.
 Add a program test pinning this exactly: `fn f() -> Result<int, A>`
-failing, `fn g() -> Result<int, A|B> { f()? }`, match the `A` arm in
+failing, `fn g() -> Result<int, A or B> { f()? }`, match the `A` arm in
 `g`'s own caller, eval == native.
 
 The generalized-tag-space idea below (extending `Result`'s own tag
@@ -142,7 +148,7 @@ registers only when both sides are one word, judged once at intern.
 **Proposal: generalize `Result`'s own tag space, not a boxed
 sub-enum.** Today `Result<T, E>` is tag 0 (Ok) / tag 1 (Err), and if
 `E` needs a discriminant it's `E`'s OWN tag living inside the payload
-word. For `Result<T, A|B|...>`, extend the OUTER tag space instead:
+word. For `Result<T, A or B or ...>`, extend the OUTER tag space instead:
 tag 0 = Ok, tag 1..N = Err-via-member-1..Err-via-member-N. This reuses
 the value-enum machinery's existing per-tag counted-mask support
 (already generalized for N tags, not just 2) rather than inventing a
