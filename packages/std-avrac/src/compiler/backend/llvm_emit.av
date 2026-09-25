@@ -81,24 +81,36 @@ impl Emit {
         avra_llvm_const_int(avra_llvm_int64_type(self.lc), v, 1)
     }
 
-    /// Whether a register holds a FLAT record of one field — one that
-    /// IS its field. A value record is an aggregate like any other.
-    fn flat_value(r: Reg) -> bool {
-        self.types.is_flat(self.tys[r.index]) && !self.types.is_wide(self.tys[r.index])
+    /// Whether a register holds a value with no LLVM aggregate at
+    /// all: a FLAT record of one field, which IS its field, or a
+    /// nullable WORD ENUM, whose own tag doubles as the absent
+    /// sentinel — one register either way.
+    fn bare_value(r: Reg) -> bool {
+        let ty = self.tys[r.index]
+        self.types.is_flat(ty) && !self.types.is_wide(ty) || self.word_opt(ty)
+    }
+
+    /// A nullable WORD ENUM, by its own shape — never reduced through
+    /// `machine_type`, which would already have flattened it away.
+    fn word_opt(ty: TypeId) -> bool {
+        match self.types.shape_of(ty) {
+            .Opt(inner) -> self.types.is_word_enum(inner),
+            rest -> false,
+        }
     }
 
     /// One element out of an aggregate — or the value itself, when the
-    /// aggregate is a FLAT record and IS that element.
+    /// register rides BARE.
     fn extract_value(src: Reg, at: int) -> ptr {
-        if self.flat_value(src) { return self.vals[src.index] }
+        if self.bare_value(src) { return self.vals[src.index] }
         avra_llvm_build_extract_value(self.b, self.vals[src.index], at, "x")
     }
 
     /// A packed value: element by element into an undef aggregate —
     /// registers all the way, which is what lets SROA see through it.
     fn pack_value(dst: Reg, elems: List<Reg>) -> ptr {
-        // A FLAT record IS its one field — the pack is the value itself.
-        if self.flat_value(dst) { return self.vals[elems[0].index] }
+        // A BARE register IS its one element — the pack is the value itself.
+        if self.bare_value(dst) { return avra_llvm_cast_to_type(self.b, self.vals[elems[0].index], self.reg_type(dst)) }
         mut agg = avra_llvm_get_undef(self.reg_type(dst))
         // LICENSED I4: the running aggregate, not a scan
         // a value enum's word is an i64 whichever payload it carries

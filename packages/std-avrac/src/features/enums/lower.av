@@ -290,7 +290,7 @@ fn guard_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, g: ExprId) -> Reg {
 export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
     match cx.view.store.pat(p) {
         .Wild or .Rest or .Bind(_) -> cx.const_bool(true),
-        .Lit(lit) -> cx.same_value(v, cx.reg_of(lit), vty),
+        .Lit(lit) -> literal_pat_reg(cx, lit, v, vty),
         .Variant(name, args) -> variant_reg(cx, name.of, args, v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's test")
@@ -301,6 +301,17 @@ export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
             cx.const_bool(false)
         },
     }
+}
+
+/// A LITERAL PATTERN: `null` asks the subject's own PRESENCE,
+/// directly — never through equality. `null_reg`'s register has no
+/// repr of its own ("the ADOPTING edge gives it one"), and a bare
+/// `null` pattern is never adopted, so comparing it by VALUE reads a
+/// TAGGED subject's spare tag against an unrelated zero. Any other
+/// literal still compares by value.
+fn literal_pat_reg(mut cx: LowerCx, lit: ExprId, v: Reg, vty: TypeId) -> Reg {
+    if cx.view.store.expr(lit) is .NullLit { return cx.un(cx.presence_of(v, vty)) }
+    cx.same_value(v, cx.reg_of(lit), vty)
 }
 
 fn variant_reg(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> Reg {

@@ -45,8 +45,9 @@ export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
         .List(_) or .Cell(_) or .Task(_) or .Tasks or .EmptyList or .Map(_, _) or .EmptyMap or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> true,
         .Res(_, _) -> !(types.is_valued(ty) && types.counted_mask(ty) == 0),
         // a FLAT record's nullable is a one-slot BOX — counted,
-        // though the bare record never is
-        .Opt(inner) -> types.is_flat(inner) || is_managed(types, inner),
+        // though the bare record never is; a WORD ENUM's nullable
+        // spends its spare tag instead and never boxes
+        .Opt(inner) -> types.is_flat(inner) && !types.is_word_enum(inner) || is_managed(types, inner),
         .Ptr or .Int or .Float or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or .Error or .Void -> false,
     }
 }
