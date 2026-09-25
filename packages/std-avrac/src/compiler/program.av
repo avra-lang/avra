@@ -267,14 +267,25 @@ impl Program {
     /// A declaration's `///` doc and its own `@name(args)` annotations,
     /// off the one door every declaration's parse facts answer through —
     /// `avra docs <name>`'s general form. Null for a name no declared
-    /// fn, type, enum, trait or const of this package wears.
+    /// fn, type, enum, trait or const of this package wears. A name
+    /// TWO modules both declare — legal, since each namespaces on its
+    /// own — is named as a collision rather than silently answered
+    /// from whichever one the compiler happened to reach first.
     fn explain_doc(name: string) -> string? {
         let decls = self.ws.decls
-        let decl? = decls.decls.get().find((d: Decl) -> d.name == name) else { return null }
+        let matches = [d for d in decls.decls.get() if d.name == name]
+        if matches.length > 1 { return self.collision_text(decls, name, matches) }
+        let decl? = matches.first() else { return null }
         let doc = decls.doc_of(decl.id) ?? []
         let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
         let lines = doc.concat(anns)
         if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+    }
+
+    /// `name` names more than one declaration — never guessed at.
+    fn collision_text(decls: Decls, name: string, matches: List<Decl>) -> string {
+        let qualified = [decls.module_of(d.id) + "." + name for d in matches].join(", ")
+        "`${name}` names more than one declaration in this package — qualify it: ${qualified}"
     }
 
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s

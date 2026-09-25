@@ -46,4 +46,26 @@ spec "commands/docs — a declaration's doc and annotations" {
             doc_of(root, src, "NotHere") == null
         }
     }
+    given "a file's own `//!` header" {
+        then "a declaration with none of its own inherits it" {
+            let root = doc_pkg_named("file-doc")
+            let src = "//! What this file is for.\nfn bump(n: int) -> int {\n    n + 1\n}\n\nfn main() -> int {\n    bump(1)\n}\n"
+            doc_of(root, src, "bump") == "What this file is for."
+        }
+        then "a declaration's own doc still wins over the file header" {
+            let root = doc_pkg_named("file-doc-override")
+            let src = "//! The file's own header.\n/// bump's own doc.\nfn bump(n: int) -> int {\n    n + 1\n}\n\nfn main() -> int {\n    bump(1)\n}\n"
+            doc_of(root, src, "bump") == "bump's own doc."
+        }
+    }
+    given "two different modules that both declare the same name" {
+        then "the collision is named, never silently guessed at" {
+            let root = doc_pkg_named("collision")
+            let _ = make_dirs("${root}/src/alpha")
+            let _ = make_dirs("${root}/src/beta")
+            let _ = write_text("${root}/src/alpha/mod.av", "export enum Foo { X Y }\n")
+            let _ = write_text("${root}/src/beta/mod.av", "export enum Foo { P Q R }\n")
+            doc_of(root, "use alpha.{Foo}\n0\n", "Foo") == "`Foo` names more than one declaration in this package — qualify it: alpha.Foo, beta.Foo"
+        }
+    }
 }
