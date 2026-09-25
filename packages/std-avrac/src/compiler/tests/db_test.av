@@ -4,13 +4,19 @@
 //! a file's own content — change exactly when the thing they witness
 //! does. `db()` is `once`, so every case below uses its own name: they
 //! all share the same process-wide `Db`.
-use @std.io.{make_dirs, write_text}
+use @std.io.{make_dirs, write_text, remove, list_dir}
+use @std.path.{joined_path}
 use compiler.db.{db, DocFacts, current_listing_digest, current_file_digest}
 use compiler.store.{store_at}
 
+/// A clean package per call: a prior run's leftovers under `src/` are
+/// gone before this one writes its own, so a listing comparison never
+/// inherits another run's files at a path this suite reuses.
 fn db_pkg_named(name: string) -> string {
     let root = "/tmp/avra-db-test/${name}"
-    let _ = make_dirs("${root}/src")
+    let src = "${root}/src"
+    let _ = make_dirs(src)
+    for f in list_dir(src) catch [] { let _ = remove(joined_path(src, f)) }
     root
 }
 
