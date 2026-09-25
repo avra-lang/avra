@@ -43,7 +43,7 @@ numbering was folded into the baseline directly the day the numbers
 went (avra-8sb5.25.49), and any new native debt joins it the same
 way, reviewed at adoption and every time after.
 """
-import collections, os, re, subprocess, sys, glob
+import collections, glob, json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
@@ -121,7 +121,7 @@ def emit_then_error(lines):
                     break
 
 def bracket_ritual(lines):
-    """push … work … pop on ONE name: that is a bracket fn (style.bracket_ritual)."""
+    """push … work … pop on ONE name: that is a bracket fn (compiler.bracket_ritual)."""
     for i, l in enumerate(lines):
         m = re.match(r"\s*([a-z_]+)\.push\(", l)
         if not m:
@@ -134,7 +134,7 @@ def bracket_ritual(lines):
 
 def seen_accumulator(lines):
     """`mut seen` + contains + push: duplicate detection that is a
-    POSITION law when the list is already in hand (style.seen_accumulator)."""
+    POSITION law when the list is already in hand (compiler.seen_accumulator)."""
     for i, l in enumerate(lines):
         if re.match(r"\s*mut seen\b", l):
             window = "\n".join(lines[i:i + 14])
@@ -340,7 +340,7 @@ def let_shadowed(scope_text, name):
 
 def let_else_guard(lines):
     """`let x = E` then an immediate absence-exit — `let x? = E else
-    { … }` (rule.nullable.let_else_guard)."""
+    { … }` (nullable.let_else_guard)."""
     for i in range(len(lines) - 1):
         m = LET_GUARD.match(lines[i])
         if not m:
@@ -705,78 +705,84 @@ RULES = {
 }
 
 UNRATCHETED = {
-    "rule.lists.last_index":  "PORTED NATIVELY (avra-8sb5.25.16): `lists.last_index`, a `rule`\n"
+    "lists.last_index":  "PORTED NATIVELY (avra-8sb5.25.16): `lists.last_index`, a `rule`\n"
            "           in features/lists/idioms.av — `avra check`/`avra fix` enforce it,\n"
            "           ratcheted here by the native-findings phase below, not by a regex",
-    "type.index_compared":  "PORTED NATIVELY: `structs.index_compared` (features/structs/idioms.av)\n"
+    "structs.index_compared":  "PORTED NATIVELY: `structs.index_compared` (features/structs/idioms.av)\n"
            "           — a `rule`, ratcheted by the native-findings phase below",
-    "style.protocol_defaulted": "PORTED NATIVELY: all six protocol projections as siblings\n"
+    "compiler.bool_of_defaulted": "PORTED NATIVELY: all six protocol projections as siblings\n"
            "           (`bool_of_defaulted` … `pairs_of_defaulted`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "rule.compiler.refusal_assembled": "PORTED NATIVELY: `refusal_assembled` (compiler/idioms.av) — ratcheted\n"
+    "compiler.refusal_assembled": "PORTED NATIVELY: `refusal_assembled` (compiler/idioms.av) — ratcheted\n"
            "           by the native-findings phase below",
-    "style.uncounted_refusal": "PORTED NATIVELY: all four receiver shapes as siblings\n"
+    "compiler.uncounted_refusal": "PORTED NATIVELY: all four receiver shapes as siblings\n"
            "           (`uncounted_refusal` … `voices_uncounted`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "style.raw_region": "PORTED NATIVELY: all six `Ins` variants as siblings (`if_start_raw`\n"
+    "compiler.if_start_raw": "PORTED NATIVELY: all six `Ins` variants as siblings (`if_start_raw`\n"
            "           … `loop_end_raw`, compiler/idioms.av) — ratcheted by the\n"
            "           native-findings phase below",
-    "style.raw_scope": "PORTED NATIVELY: both scope brackets as siblings (`scope_enter_raw`,\n"
+    "compiler.scope_enter_raw": "PORTED NATIVELY: both scope brackets as siblings (`scope_enter_raw`,\n"
            "           `scope_exit_raw`, compiler/idioms.av) — ratcheted by the\n"
            "           native-findings phase below",
-    "style.quadratic_growth": "PORTED NATIVELY: `str_grown_quadratically` (compiler/idioms.av) —\n"
+    "compiler.str_grown_quadratically": "PORTED NATIVELY: `str_grown_quadratically` (compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "style.interned_by_hand": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
+    "compiler.interned_opt": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
            "           (`interned_int` … `interned_res`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
-    "rule.loops.push_loop":  "PORTED NATIVELY: `push_loop` (features/loops/idioms.av) — a NAME hole\n"
+    "loops.push_loop":  "PORTED NATIVELY: `push_loop` (features/loops/idioms.av) — a NAME hole\n"
            "           (avra-8sb5.25.6) holds the loop's own binder open; ratcheted\n"
            "           by the native-findings phase below",
-    "style.bool_comprehension": "PORTED NATIVELY: `bool_comprehension_list`/`_range`\n"
+    "lists.bool_comprehension_list": "PORTED NATIVELY: `bool_comprehension_list`/`_range`\n"
            "           (features/lists/idioms.av) — a NAME hole holds the comprehension's\n"
            "           own element binder open; ratcheted by the native-findings phase\n"
            "           below. A comprehension with its own `if` filter is not yet\n"
            "           reached (the subset today)",
-    "style.seen_accumulator": "PORTED NATIVELY: `seen_accumulator` (compiler/idioms.av) — a RUN hole\n"
+    "compiler.seen_accumulator": "PORTED NATIVELY: `seen_accumulator` (compiler/idioms.av) — a RUN hole\n"
            "           (avra-8sb5.25.10) holds the rest of the enclosing block open so the\n"
            "           accumulator's own `.contains`/`.push` calls are found wherever they\n"
            "           sit, not only in the first 14 lines; ratcheted by the native-\n"
            "           findings phase below",
-    "rule.nullable.if_null_ternary": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
+    "compiler.hand_sized_index": "PORTED NATIVELY: `hand_sized_index` (compiler/idioms.av) — an id read\n"
+           "           through a hand offset, `${e}.index - ${k}`; ratcheted by the\n"
+           "           native-findings phase below. The sibling half of this idiom (a\n"
+           "           fact column sized from an arena's count, `filled(...count())`)\n"
+           "           has no structural shape a rule can hold yet and stays\n"
+           "           `style.filled_by_arena_count`'s own regex",
+    "nullable.if_null_ternary": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
-    "rule.nullable.let_else_guard": "PORTED NATIVELY: `let_else_guard` (features/nullable/idioms.av) — a NAME\n"
+    "nullable.let_else_guard": "PORTED NATIVELY: `let_else_guard` (features/nullable/idioms.av) — a NAME\n"
            "           hole (avra-8sb5.25.6) and two run holes (avra-8sb5.25.10) hold the\n"
            "           `let`'s binder and the enclosing block's head/tail open; ratcheted\n"
            "           by the native-findings phase below. Narrower than the retired\n"
            "           regex: an annotated `let` never matches (no type-seat hole yet,\n"
            "           avra-8sb5.25.10), and shadowing is approximated by a text scan for\n"
            "           `name!` in the tail rather than a real binding check",
-    "style.emit_then_error": "PORTED NATIVELY: `emit_then_error` (compiler/idioms.av) — two run holes\n"
+    "compiler.emit_then_error": "PORTED NATIVELY: `emit_then_error` (compiler/idioms.av) — two run holes\n"
            "           hold the enclosing block's head/tail open so the pair is found\n"
            "           adjacent anywhere in it, not only within a fixed line window;\n"
            "           ratcheted by the native-findings phase below",
-    "style.bracket_ritual": "PORTED NATIVELY: `bracket_ritual` (compiler/idioms.av) — a run hole\n"
+    "compiler.bracket_ritual": "PORTED NATIVELY: `bracket_ritual` (compiler/idioms.av) — a run hole\n"
            "           holds the rest of the enclosing block open and a guard scans it by\n"
            "           TEXT for a matching `.pop()`, never the fixed 14-line window;\n"
            "           ratcheted by the native-findings phase below. Narrower than the\n"
            "           retired regex on purpose: the push and the pop must sit in the SAME\n"
            "           block (siblings), so a stack held open ACROSS match arms (the\n"
-           "           `// LICENSED style.bracket_ritual: this IS the bracket` sites) never even reaches\n"
+           "           `// LICENSED compiler.bracket_ritual: this IS the bracket` sites) never even reaches\n"
            "           the shape, let alone the license check",
-    "style.index_walk": "PORTED NATIVELY: `index_walk` (features/loops/idioms.av) — a run hole\n"
+    "loops.index_walk": "PORTED NATIVELY: `index_walk` (features/loops/idioms.av) — a run hole\n"
            "           holds the loop body open and a guard scans it by TEXT for\n"
            "           `xs[j]`; ratcheted by the native-findings phase below. Narrower\n"
            "           than the retired regex on purpose: the pattern roots at a\n"
            "           STATEMENT `for` loop, so a comprehension's own `for` clause\n"
            "           (`[… for j in 0..xs.length]`) never matches — a different shape,\n"
            "           not yet its own rule",
-    "rule.closures.pronoun_lambda": "PORTED NATIVELY: `pronoun_lambda` (features/closures/idioms.av) — a\n"
+    "closures.pronoun_lambda": "PORTED NATIVELY: `pronoun_lambda` (features/closures/idioms.av) — a\n"
            "           NAME hole on the lambda's OWN param (avra-8sb5.25.10's Lambda\n"
            "           own-name-at case) plus a structural `call_args()` walk that\n"
            "           refuses a param handed to a nested call's own arguments;\n"
            "           ratcheted by the native-findings phase below",
-    "style.nullable_flag_local": "PORTED NATIVELY: `nullable_flag_local` (features/nullable/idioms.av)\n"
+    "nullable.nullable_flag_local": "PORTED NATIVELY: `nullable_flag_local` (features/nullable/idioms.av)\n"
            "           — no TYPE hole (a quote pattern has none in type position yet,\n"
            "           avra-8sb5.25.10): a bare-hole root guarded\n"
            "           `lit.is_nullable_flag_mut()` reads the `mut` declaration's own\n"
@@ -790,13 +796,17 @@ UNRATCHETED = {
            "           membership` was written for THAT idiom, and honouring it as this\n"
            "           one's predecessor would have SILENTLY suppressed a genuine\n"
            "           nullable-flag-local finding under someone else's review. This\n"
-           "           idiom was renumbered to style.nullable_flag_local to break the collision, and now carries\n"
-           "           `style.nullable_flag_local` permanently — a name chosen once, never\n"
-           "           mechanically incremented, so the same accident cannot recur the\n"
-           "           same way; every `// LICENSED style.hand_rolled_scan:` comment the tree ever carried\n"
-           "           was written for the OTHER idiom, never this one, and none of them\n"
-           "           was ever honoured as this idiom's predecessor.",
-    "rule.if_expr.when_ladder": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
+           "           idiom was renumbered to style.nullable_flag_local to break the collision — a\n"
+           "           name chosen once, never mechanically incremented, so the same\n"
+           "           accident could not recur the same way; every `// LICENSED style.hand_rolled_scan:`\n"
+           "           comment the tree ever carried was written for the OTHER idiom, never\n"
+           "           this one, and none of them was ever honoured as this idiom's\n"
+           "           predecessor. SUPERSEDED AGAIN, by a stronger guarantee (avra-8sb5.25.51):\n"
+           "           the name is `nullable.nullable_flag_local` now, `rule_id` itself —\n"
+           "           collision-proof by CONSTRUCTION (one module, one name, the rules\n"
+           "           table refuses a repeat) rather than by a human's care not to\n"
+           "           mechanically increment a hand-picked one.",
+    "if_expr.when_ladder": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
            "           pattern's own three parts (`if`, `else if`, `else`) are the\n"
            "           floor a chain of any length recurses past, one nested match at a\n"
            "           time, rather than one pattern spanning every depth; ratcheted by\n"
@@ -808,12 +818,12 @@ UNRATCHETED = {
            "           for its value structurally cannot be the statement form; a 4+-arm\n"
            "           chain is found once at each nesting level it appears at, a known\n"
            "           duplicate the Fix.Say tier does not need suppressed",
-    "rule.enums.bool_variant_match": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
+    "enums.bool_variant_match": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
            "           (features/enums/idioms.av) — no guard needed: the pattern's own\n"
            "           WILDCARD seat (a literal `_`, never an `or`-run) already refuses\n"
            "           a registry's remaining variants structurally, before any is\n"
            "           asked; ratcheted by the native-findings phase below",
-    "rule.compiler.modified_copy_literal": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
+    "compiler.modified_copy_literal": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
            "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
            "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
            "           ratcheted by the native-findings phase below. Narrower than the\n"
@@ -1151,35 +1161,28 @@ def licensed(lines, i, code):
 # adversarial test's report() assertion QUOTES this exact shape).
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
-def registered_kinds():
-    """Every kind the compiler's own registry answers for — read from
-    the generated index (`## kind` headings) rather than run, so a
-    native-finding scan costs no witness. Stale only between an edit
-    and `make witnesses`, which is what keeps this file honest.
-
-    INTERIM (avra-8sb5.25.49): the rule-listing door this filter
-    wants instead — "a kind counts only when it names a collected
-    `rule`" — is `avra docs rules`, still landing. Kept here as
-    ERRORS' own registry-membership form until that door opens."""
-    path = os.path.join(ROOT, "docs", "DIAGNOSTICS.md")
-    if not os.path.exists(path):
-        return set()
-    return set(re.findall(r"^## (.+)$", open(path).read(), re.M))
+def collected_rule_ids(binary):
+    """Every rule the compiler carries, by identity — `avra docs rules
+    --json` over the cli, whose closure links every rule. An empty
+    answer is a failure, never an empty set: a filter that examined
+    nothing would count nothing."""
+    env = dict(os.environ, AVRA_WATCH_HELD="1", AVRA_CWD=os.path.join(ROOT, "packages", "cli"))
+    out = subprocess.run([binary, "docs", "rules", "--json"], cwd=os.path.join(ROOT, "packages", "cli"),
+                         env=env, capture_output=True, text=True, timeout=300).stdout
+    ids = {r["id"] for r in json.loads(out or "[]")}
+    if not ids:
+        sys.exit("idioms: `avra docs rules --json` answered no rules — refusing to count native findings blind")
+    return ids
 
 def native_findings():
     """Every finding `avra check` reports on its own — a Bucket-A idiom
     ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
     second regex racing the compiler's own vocabulary.
 
-    THE FILTER WAS THE F-CODE, AND IT IS GONE (avra-8sb5.40.13
-    dropped the numeric bracket a registered diagnostic used to wear,
-    so a `type.alias_copy` and a `rule.enums.bool_variant_match` now
-    render alike). "Dotted" stopped being a filter the day every kind
-    became one; the filter is REGISTRY MEMBERSHIP. A kind
-    `registered_kinds()` names is an ORDINARY diagnostic — the
-    compiler's own gate, never the idiom ratchet's; a kind the
-    registry does not name is a `rule`'s own, unregistered by
-    construction, and that is what this scan counts.
+    A finding counts when its kind IS a collected rule's id
+    (`collected_rule_ids`): a rule's finding kind is its id by
+    construction, so membership is the whole test and every other
+    diagnostic is the compiler's own gate, never this ratchet's.
 
     A NATIVE finding reads no license at its site, ever — a rule
     carries no comment of its own, so a native finding either gets
@@ -1196,7 +1199,7 @@ def native_findings():
     binary = os.path.join(ROOT, "build", "avra")
     if not os.path.exists(binary):
         return {}, 0
-    registered = registered_kinds()
+    rule_ids = collected_rule_ids(binary)
     pkgs = sorted(set(os.path.dirname(p) for p in SRC))
     env = dict(os.environ, AVRA_WATCH_HELD="1")
     sites, checked = set(), 0
@@ -1208,7 +1211,7 @@ def native_findings():
             continue
         checked += 1
         for kind, path, line in WARN_RE.findall(out):
-            if kind in registered:
+            if kind not in rule_ids:
                 continue
             path = path if os.path.isabs(path) else os.path.join(ROOT, path)
             rel = os.path.relpath(path, ROOT)
@@ -1295,7 +1298,7 @@ def save(fps):
 def registry_entries():
     """Every name the registry CLAIMS, in order, duplicates kept. The
     name must be followed by space or `(` — prose about a rule
-    ("- rule.lists.last_index's matcher was BLIND to…") is
+    ("- lists.last_index's matcher was BLIND to…") is
     commentary, not an entry."""
     doc = os.path.join(ROOT, "DOGFOODING.md")
     return re.findall(r"^- ([a-z][a-z_]*(?:\.[a-z_]+)+)(?=[\s(])", open(doc).read(), re.M)

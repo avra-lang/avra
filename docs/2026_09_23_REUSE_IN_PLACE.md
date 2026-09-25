@@ -57,7 +57,7 @@ twin, two sources (P17).
 so each twin is hosted by its base row's arm; `avra_cell_forget` by
 `CellRelease`'s no-op. Answers are identical by construction.
 
-**D9. `style.quadratic_growth` now names only PLACES.** A local `mut`
+**D9. `compiler.str_grown_quadratically` now names only PLACES.** A local `mut`
 grows in place, so the lint fires only when the grown thing is not a
 bare name (`self.out = self.out + t`). 17 of its 19 baseline sites
 were locals and retired; the 2 left are real (std-process).
