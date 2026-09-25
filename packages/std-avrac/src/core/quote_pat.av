@@ -6,9 +6,9 @@
 //! its own identity); a NAME seat's written text (a `let`'s declared
 //! name, a call's callee, a field name — `own_name_at`'s catalog) is
 //! such a scalar TOO, but a LONE hole there is a position this
-//! matcher CAN hold open (`Shape.NamedNode`, or `Shape.TypedNode`
-//! when a TYPE is also open), reading the subject's own name text
-//! back as a `string` rather than recursing into it — an EMBEDDED
+//! matcher CAN hold open (`Shape.TypedNode`'s `Open.Name`), reading
+//! the subject's own name text back as a `string` rather than
+//! recursing into it — an EMBEDDED
 //! hole (`l${x}_y`) still has none. A TYPE seat's own written type (a
 //! `let`'s annotation, a call's one pinned type argument, a param's
 //! own type — `own_type_at`'s catalog) is a scalar the SAME way, held
@@ -204,18 +204,11 @@ export fn root_of(store: NodeStore, s: StmtId) -> At {
 /// typing already refused otherwise.
 export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> Shape {
     let w? = quote_hole_at(store, at) else {
-        let t? = type_hole_at(store, at) else {
-            let n? = name_hole_at(store, at) else {
-                let kids = [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)]
-                return Shape.Node(node_shallow_at(store, at, kids), kids)
-            }
-            let kids = [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)]
-            return Shape.NamedNode(named_node_shallow_at(store, at, kids), kids, names.index_of(holes[n].name!))
-        }
-        // a TYPE open is present here — `NamedNode`'s single index
-        // cannot ALSO hold a name open, so any node reaching this
-        // branch (a type open alone, or a type open beside a name
-        // open) takes the general `TypedNode` form instead
+        // `opens` is `[]` at a node with neither field open, one
+        // `Open` at a node with a NAME or a TYPE open alone, and both
+        // at a node with a name and a type open at once
+        // (`let ${x}: ${T} = ...`) — `TypedNode` holds every one of
+        // these shapes; nothing here is `Node`'s or `NamedNode`'s own.
         let opens = node_opens(store, at, holes, names)
         let kids = [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)]
         return Shape.TypedNode(typed_node_shallow_at(store, at, kids, opens), kids, opens)
