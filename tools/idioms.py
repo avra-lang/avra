@@ -1195,13 +1195,30 @@ NATIVE_PREDECESSOR = {
     "rule.if_expr.when_ladder": "I54",
 }
 
+def registered_kinds():
+    """Every kind the compiler's own registry answers for — read from
+    the generated index (`## kind` headings) rather than run, so a
+    native-finding scan costs no witness. Stale only between an edit
+    and `make witnesses`, which is what keeps this file honest."""
+    path = os.path.join(ROOT, "docs", "DIAGNOSTICS.md")
+    if not os.path.exists(path):
+        return set()
+    return set(re.findall(r"^## (.+)$", open(path).read(), re.M))
+
 def native_findings():
     """Every finding `avra check` reports on its own — a Bucket-A idiom
     ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
-    second regex racing the compiler's own vocabulary. An F-code is
-    the compiler's ordinary gate, never the idiom ratchet's; a rule's
-    kind is always dotted (`style.x`, `type.x`, `rule.module.name`),
-    which is the whole filter.
+    second regex racing the compiler's own vocabulary.
+
+    THE FILTER WAS THE F-CODE, AND IT IS GONE (avra-8sb5.40.13
+    dropped the numeric bracket a registered diagnostic used to wear,
+    so a `type.alias_copy` and a `rule.enums.bool_variant_match` now
+    render alike). "Dotted" stopped being a filter the day every kind
+    became one; the filter is REGISTRY MEMBERSHIP. A kind
+    `registered_kinds()` names is an ORDINARY diagnostic — the
+    compiler's own gate, never the idiom ratchet's; a kind the
+    registry does not name is a `rule`'s own, unregistered by
+    construction, and that is what this scan counts.
 
     A site the OLD regex already ratcheted carries `// LICENSED
     I<n>: reason` under that regex's own number (NATIVE_PREDECESSOR)
@@ -1220,6 +1237,7 @@ def native_findings():
     binary = os.path.join(ROOT, "build", "avra")
     if not os.path.exists(binary):
         return {}, 0
+    registered = registered_kinds()
     pkgs = sorted(set(os.path.dirname(p) for p in SRC))
     env = dict(os.environ, AVRA_WATCH_HELD="1")
     sites, checked = set(), 0
@@ -1231,7 +1249,7 @@ def native_findings():
             continue
         checked += 1
         for kind, path, line in WARN_RE.findall(out):
-            if re.match(r"^F\d+$", kind):
+            if kind in registered:
                 continue
             path = path if os.path.isabs(path) else os.path.join(ROOT, path)
             rel = os.path.relpath(path, ROOT)

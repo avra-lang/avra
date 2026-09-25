@@ -185,8 +185,9 @@ first, its range spans the file; each owner over its own range;
 voices in source order) for the facade and lowering. What made it
 possible is THE BODY FLOOR: a fn body — and a field default — sees
 declarations, never the top level's run-time bindings (resolve
-refuses `F3020` with the parameter remedy; before, the read resolved
-and lowering hit a defect). So no body reads another body's facts.
+refuses `resolve.runtime_binding` with the parameter remedy; before,
+the read resolved and lowering hit a defect). So no body reads
+another body's facts.
 A field DEFAULT is a declaration (`DeclKind.Default`, keyed under
 its record, a zero-parameter body answering the field's type): it
 is typed once in its module and every literal that omits the field
@@ -304,11 +305,11 @@ type Loc = { file: string?, lo: int, hi: int }                                //
 type Frame = { label: string, loc: Loc? }
 enum Severity { Error Warning }
 type Diag = { kind: string, severity: Severity, primary: Frame, secondary: List<Frame>, message: string, help: string?, suggestions: List<Suggestion> }
-type DiagCode = { kind: string, id: string, summary: string }                 // the F-code is the registry's projection
+type DiagCode = { kind: string, summary: string }                             // the kind is the registry's identity
 fn refusal(kind, at: Loc?, message, label, help: string?) -> Diag             // THE one voice shape (I28)
 fn error_at(kind, loc, message) -> Diag   fn defect_at(loc, message) -> Diag   fn pointed(d, label) -> Diag
-fn loc_at(file: string?, s: Span?) -> Loc?   fn by_position(ds) -> List<Diag>   fn code_for(codes, kind) -> string?
-fn render(d, codes, src) -> string   fn render_among(d, codes, sources: List<SourceFile>) -> string
+fn loc_at(file: string?, s: Span?) -> Loc?   fn by_position(ds) -> List<Diag>   fn registered(codes, kind) -> bool
+fn render(d, src) -> string   fn render_among(d, sources: List<SourceFile>) -> string
 
 /// Every query value's diagnostics, one sink; `report` folds sinks.
 type Voices = { list: List<Diag> }
