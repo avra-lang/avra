@@ -1,14 +1,14 @@
 // The kernel's laws, over a toy family: an input `n` and a derived
 // `double` that reads it. Runs are counted so reuse is observable.
-use @std.avrac.query.{Db, new_db, Key, new_memo}
+use @std.avrac.query.{Kernel, new_kernel, Key, new_memo}
 
 /// A derived family over the kernel: computes 2n, counting runs.
 /// The tally and values are explicit shared cells, so the verifier's
 /// captured Toy and the caller's Toy observe the same query state.
-type Toy = { db: Db, input: int, double_family: int, runs: Cell<int>, values: Cell<List<int>> }
+type Toy = { db: Kernel, input: int, double_family: int, runs: Cell<int>, values: Cell<List<int>> }
 
 fn toy() -> Toy {
-    mut db = new_db()
+    mut db = new_kernel()
     let input = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
     let t = Toy { db: db, input: input, double_family: 0, runs: Cell.new(0), values: Cell.new([0, 0, 0, 0]) }
     let double_family = db.family(verified_double(t, it))
@@ -96,7 +96,7 @@ spec "query/db" {
     }
     given "cycles and sweeps" {
         then "a query that reaches itself is answered Cycle, not recursed" {
-            mut db = new_db()
+            mut db = new_kernel()
             let fam = db.family((arg: int) -> 0)
             let key = Key { family: fam, arg: 0 }
             db.begin(key)
@@ -118,12 +118,12 @@ spec "query/db" {
     }
     given "the open stack — `active` is the bracket, seen from outside" {
         then "an unopened key is not active" {
-            mut db = new_db()
+            mut db = new_kernel()
             let fam = db.family((arg: int) -> 0)
             !db.active(Key { family: fam, arg: 0 })
         }
         then "a key is active between begin and settle, and not after" {
-            mut db = new_db()
+            mut db = new_kernel()
             let fam = db.family((arg: int) -> 0)
             let key = Key { family: fam, arg: 0 }
             db.begin(key)
@@ -132,7 +132,7 @@ spec "query/db" {
             during && !db.active(key)
         }
         then "the OUTER key stays active while an inner one is open" {
-            mut db = new_db()
+            mut db = new_kernel()
             let fam = db.family((arg: int) -> 0)
             let outer = Key { family: fam, arg: 0 }
             let inner = Key { family: fam, arg: 1 }
@@ -170,7 +170,7 @@ spec "query/db" {
 spec "query/memo" {
     given "a typed family" {
         then "copies share values and dependency state" {
-            let db = new_db()
+            let db = new_kernel()
             let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
             let memo = new_memo<int>(db, family)
             let copy = memo
@@ -186,7 +186,7 @@ spec "query/memo" {
             first == 21 && second == 21 && runs.get() == 1
         }
         then "a memo's query is open between begin and finish, and not after" {
-            let db = new_db()
+            let db = new_kernel()
             let family = db.family((arg: int) -> 0)
             let memo = new_memo<int>(db, family)
             let before = memo.open(3)
@@ -196,7 +196,7 @@ spec "query/memo" {
             !before && during && !memo.open(3)
         }
         then "eviction removes values and kernel reuse together" {
-            let db = new_db()
+            let db = new_kernel()
             let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
             let memo = new_memo<int>(db, family)
             let _ = memo.demand(0, () -> 21, (v: int) -> v)
@@ -204,7 +204,7 @@ spec "query/memo" {
             memo.demand(0, () -> 34, (v: int) -> v) == 34
         }
         then "eviction leaves neighboring families intact" {
-            let db = new_db()
+            let db = new_kernel()
             let left_family = db.family((arg: int) -> 0)
             let right_family = db.family((arg: int) -> 0)
             let left = new_memo<int>(db, left_family)
