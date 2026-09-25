@@ -1151,13 +1151,44 @@ def licensed(lines, i, code):
 # adversarial test's report() assertion QUOTES this exact shape).
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
+# Every registered diagnostic's own two names, straight from the
+# compiler's index (`avra diagnostics`, "## <id> — <kind>") — an
+# ORDINARY refusal, never a rule's. Reading BOTH columns, never
+# assuming which one a check's own bracket shows, is what survives
+# avra-32's own F-code removal (.40.13): today the bracket shows the
+# id (`F2050`), an `F\d+` shape a regex could still catch; the day
+# every registered code's bracket shows its KIND instead (dotted,
+# indistinguishable in SHAPE from a rule's own), a shape check goes
+# blind and lets every ordinary refusal through as if it were debt.
+# A rule's kind is never IN this set — checked empirically, zero
+# overlap with `rules` (avra explain rules) — because a rule is
+# never a REGISTERED code: it is found dynamically by the rules
+# pass, not declared in compiler/codes.av. That is the whole filter,
+# and it needs no shape assumption about either column at all.
+DIAG_HEADER_RE = re.compile(r"^## (\S+) — (\S+)\s*$", re.M)
+
+def registered_diag_kinds(binary):
+    env = dict(os.environ, AVRA_WATCH_HELD="1")
+    try:
+        out = subprocess.run([binary, "diagnostics"], cwd=ROOT, env=env,
+                              capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return set()
+    names = set()
+    for a, b in DIAG_HEADER_RE.findall(out):
+        names.add(a)
+        names.add(b)
+    return names
+
 def native_findings():
     """Every finding `avra check` reports on its own — a Bucket-A idiom
     ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
-    second regex racing the compiler's own vocabulary. An F-code is
-    the compiler's ordinary gate, never the idiom ratchet's; a rule's
-    kind is always dotted (`style.x`, `type.x`, `rule.module.name`),
-    which is the whole filter.
+    second regex racing the compiler's own vocabulary. A REGISTERED
+    diagnostic (`registered_diag_kinds`) is the compiler's ordinary
+    gate, never the idiom ratchet's; every other warning is a rule's
+    own — `avra explain rules` names the rule table this reasons
+    about, structurally, never a kind STRING'S shape (avra-8sb5.25.49,
+    after avra-32.40.13 made a registered code's kind dotted too).
 
     A NATIVE finding reads no license at its site, ever — a rule
     carries no comment of its own, so a native finding either gets
@@ -1174,6 +1205,7 @@ def native_findings():
     binary = os.path.join(ROOT, "build", "avra")
     if not os.path.exists(binary):
         return {}, 0
+    diag_kinds = registered_diag_kinds(binary)
     pkgs = sorted(set(os.path.dirname(p) for p in SRC))
     env = dict(os.environ, AVRA_WATCH_HELD="1")
     sites, checked = set(), 0
@@ -1185,7 +1217,7 @@ def native_findings():
             continue
         checked += 1
         for kind, path, line in WARN_RE.findall(out):
-            if re.match(r"^F\d+$", kind):
+            if kind in diag_kinds:
                 continue
             path = path if os.path.isabs(path) else os.path.join(ROOT, path)
             rel = os.path.relpath(path, ROOT)

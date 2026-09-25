@@ -1,7 +1,8 @@
 //! `avra explain` — what a diagnostic code means, from the
 //! assembled registry; and `avra explain process` — the tools the
 //! package you stand in declares, each resolved where it stands
-//! today, printed before anything runs.
+//! today, printed before anything runs; and `avra explain rules` —
+//! every rule the compiler carries, by identity.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.avrac.compiler.{avra}
 use @std.avrac.diagnostics.{DiagCode, Diag, new_source_file, render}
@@ -10,12 +11,14 @@ use @std.process.{Tool, tool, tool_from_env, ProcessError}
 use @std.io.{read_text, exists}
 use @std.avrac.compiler.dev.{shown_code}
 use @std.avrac.compiler.host.{ToolRow, read_manifest}
+use @std.avrac.compiler.{rules, rule_id, RuleEntry}
 
 type ExplainCmd = {}
 
 impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
+        if q == "rules" { return explained_rules() }
         if q == "process" { return explained_process(args.arg("at")) }
         if q == "repr" { return explained_repr(args.arg("at")) }
         if q == "writes" { return explained_writes(args.arg("at")) }
@@ -140,6 +143,29 @@ fn explained_writes(fn_name: string) -> int {
     0
 }
 
+/// `avra explain rules` — every rule the compiler carries
+/// (compiler/rules_table.av's `rules` collect), by module then
+/// name (docs/2026_09_22_COLLECTIONS.md §5's own P7 example). THE
+/// STRUCTURAL GROUND TRUTH for "is this kind the name of a
+/// collected rule" — a native idiom finding's kind is real only
+/// when `rule_id(r)` names it here, never guessed from the kind
+/// STRING's own shape (dotted, or not an F-code). `RuleEntry`
+/// carries no declaring file yet, so the listing is the identity
+/// alone; a location column joins when one does.
+fn explained_rules() -> int {
+    println(rules_listing(rules))
+    0
+}
+
+/// The listing's own text, apart from printing it — every rule's
+/// identity, one per line, in the collect's own order (module then
+/// name), under a header naming the count.
+export fn rules_listing(entries: List<RuleEntry>) -> string {
+    let header = "rules — List<RuleEntry>, rule in closure, by module then name — ${entries.length} entries"
+    let lines = [header].concat(["  ${rule_id(r)}" for r in entries])
+    lines.join("\n")
+}
+
 /// The package's declared tools, minted as the library mints them, and
 /// what a child inherits — the set of doors, before any opens. `at` is
 /// the package's directory; the front door stands at the root.
@@ -198,9 +224,9 @@ fn terminator_text(t: string?) -> string {
 }
 
 export command explain {
-    description: "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain"
+    description: "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain; `rules` — every rule the compiler carries"
     arg code {
-        description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, `repr`, or `writes`"
+        description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, `repr`, `writes`, or `rules`"
         required: true
     }
     arg at { description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`); for `writes`: a fn name" }
