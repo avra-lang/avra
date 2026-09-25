@@ -11,7 +11,7 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, flatten, BodyParts, Slot, StaticBox}
+use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, flatten, BodyParts, Slot, StaticBox, same_type}
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template, new_meta_heap}
 use @std.meta.{Node}
 
@@ -176,7 +176,7 @@ impl LowerCx {
     /// map, a type still open, or a part the run must compute.
     mut fn spelled_static(e: ExprId) -> Reg? {
         let ty = self.facts.type_at(e)
-        if !self.view.types.rides_pointer(ty) || self.view.types.shape_of(ty) is .Map || self.concrete(ty).index != ty.index { return null }
+        if !self.view.types.rides_pointer(ty) || self.view.types.shape_of(ty) is .Map || !same_type(self.concrete(ty), ty) { return null }
         mut heap = new_meta_heap()
         let v? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap) else { return null }
         mut build = self.static_build()
@@ -231,7 +231,7 @@ impl LowerCx {
 
     /// A slot as a register of `ty`: a word is its constant, a box the
     /// address of the static its boxes make.
-    // LICENSED I60: every arm answers the same minted register — six branches, one identity
+    // LICENSED style.raw_mint_emit: every arm answers the same minted register — six branches, one identity
     mut fn crossed_reg(c: Slot, ty: TypeId, name: string, boxes: List<StaticBox>) -> Reg {
         let r = self.mint_ty(ty)
         match c {
@@ -435,7 +435,7 @@ impl LowerCx {
     /// here is how a consumer avoids knowing the number.
     mut fn tag_of(v: Reg) -> Reg {
         if self.valued(self.out.type_of_reg(v)) { return self.extracted(self.opened_enum(v), 0, self.mint_shape(Type.Int)) }
-        if self.view.types.is_flat(self.out.type_of_reg(v)) { return self.extracted(v, 0, self.mint_shape(Type.Int)) }
+        if self.view.types.word_carrier(self.out.type_of_reg(v)) { return self.extracted(v, 0, self.mint_shape(Type.Int)) }
         self.slot_read(v, 0, null)
     }
 
@@ -485,7 +485,7 @@ impl LowerCx {
     mut fn field_written(box: Reg, record: TypeId, n: int, v: Reg) {
         let base = self.field_offset(record, n)
         mut at = base
-        // LICENSED I4: a running offset, each leaf past the width before it
+        // LICENSED style.hand_rolled_scan: a running offset, each leaf past the width before it
         for r in self.leaves(v) {
             self.leaf_write(box, at, r)
             at = at + self.view.types.slot_width(self.out.type_of_reg(r))
@@ -653,7 +653,7 @@ impl LowerCx {
     /// for every other.
     fn width_of(words: List<Reg>) -> int {
         mut n = 0
-        // LICENSED I4: a sum, not a scan
+        // LICENSED style.hand_rolled_scan: a sum, not a scan
         for w in words { n = n + self.view.types.slot_width(self.out.type_of_reg(w)) }
         n
     }
@@ -749,8 +749,17 @@ impl LowerCx {
         match self.repr_of(opt) {
             .Niche or .Boxed -> self.zeroed(self.mint_ty(opt)),
             .Pair -> self.absent_pair(opt),
-            .Tagged -> self.pack(opt, [self.const_int(absent_tag), self.const_int(0)]),
+            .Tagged -> self.absent_tagged(opt),
         }
+    }
+
+    /// A TAGGED nullable's absence: the spare tag alone for a WORD
+    /// ENUM — its tag is its whole value, so absence takes the one
+    /// register it already has — the spare tag beside a filler word
+    /// for a VALUE ENUM, whose payload rides a second register.
+    mut fn absent_tagged(opt: TypeId) -> Reg {
+        if self.view.types.is_word_enum(self.carried_type(opt)) { return self.pack(opt, [self.const_int(absent_tag)]) }
+        self.pack(opt, [self.const_int(absent_tag), self.const_int(0)])
     }
 
     mut fn absent_pair(opt: TypeId) -> Reg {
@@ -781,13 +790,13 @@ impl LowerCx {
         if self.valued(inner) { return self.named_over(inner, self.pack(self.view.types.machine_type(inner), [self.const_int(absent_tag), self.const_int(0)])) }
         if self.view.types.travels_wide(inner) { return self.pack(inner, [self.hollow_of(f) for f in self.view.types.flat_fields(inner)]) }
         if self.view.types.seen_shape(inner) is .Bool {
-            // LICENSED I60: `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
+            // LICENSED style.raw_mint_emit: `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
             let z = self.mint_ty(inner)
             self.emit(Ins.ConstBool(z, false))
             return z
         }
         if self.view.types.seen_shape(inner) is .Float {
-            // LICENSED I60: as above — `zeroed`'s ConstInt wears the wrong machine shape for a float register
+            // LICENSED style.raw_mint_emit: as above — `zeroed`'s ConstInt wears the wrong machine shape for a float register
             let z = self.mint_ty(inner)
             self.emit(Ins.ConstFloat(z, 0))
             return z
@@ -886,8 +895,10 @@ fn inner_repr_of(types: TypeRegistry, inner: TypeId) -> Repr {
     // absence already, and an encoding never spends one value twice
     if types.seen_shape(inner) is .Opt { return Repr.Pair }
     if types.rides_pointer(inner) { return Repr.Niche }
-    // a value enum's absence is its spare tag, so it stays in registers
-    if types.is_valued(types.machine_type(inner)) { return Repr.Tagged }
+    // a value enum's absence is its spare tag, so it stays in
+    // registers — a WORD ENUM's tag is its whole value, so its spare
+    // tag is the SAME register, not a second one
+    if types.is_valued(types.machine_type(inner)) || types.is_word_enum(inner) { return Repr.Tagged }
     if types.is_flat(inner) { return Repr.Boxed }
     Repr.Pair
 }

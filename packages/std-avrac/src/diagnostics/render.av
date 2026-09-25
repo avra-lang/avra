@@ -1,15 +1,15 @@
 //! A Diag rendered for the terminal. The structured value is the
 //! substrate; this prose is one projection of it (P11).
 //!
-//!   error[F0100]: expected NAME while parsing `stmt`
+//!   error[parse.expected]: expected NAME while parsing `stmt`
 //!     ╭─[app.av:2:5]
 //!   2 │ let = 3
 //!     ·     ┬
 //!     ·     ╰── expected NAME
 //!   ──╯
 //!   help: a `let` names its value
-use core.{joined}
-use @std.errors.{Loc, Error}
+use core.{joined, flatten}
+use @std.errors.{Loc, Error, Suggestion, Confidence}
 use @std.text.{repeat}
 
 fn severity_word(s: Severity) -> string {
@@ -17,6 +17,30 @@ fn severity_word(s: Severity) -> string {
         .Error -> "error",
         .Warning -> "warning",
     }
+}
+
+fn confidence_word(c: Confidence) -> string {
+    match c {
+        .High -> "high",
+        .Medium -> "medium",
+        .Low -> "low",
+    }
+}
+
+/// One suggestion's own lines: its confidence and what it says to
+/// do, then every edit it proposes — a proof is never asked here
+/// (that re-lowers the program, which `avra check` cannot afford to
+/// pay per rendering); `avra fix`'s own report is where PROVED is
+/// said.
+fn suggestion_lines(sg: Suggestion) -> List<string> {
+    ["fix (${confidence_word(sg.confidence)}): ${sg.description}"].concat([edit_line(e.replacement) for e in sg.edits])
+}
+
+/// A deleting edit answers "" — shown as its own word, never a bare
+/// line of spaces that reads as accidental whitespace.
+fn edit_line(replacement: string) -> string {
+    if replacement.is_empty() { return "  (removed)" }
+    "  ${replacement}"
 }
 
 /// A label with nowhere to point — its own line under the message,
@@ -76,18 +100,16 @@ fn causes_of(e: dyn Error?, depth: int = cause_chain_cap) -> List<string> {
     ["caused by: ${continued(msg)}"].concat(causes_of(cur.cause(), depth - 1))
 }
 
-/// The whole diagnostic as terminal text. The F-code is the
-/// registry's projection of the kind; an unregistered kind renders
-/// as itself.
-export fn render(d: Diag, codes: List<DiagCode>, src: SourceFile) -> string {
-    render_with(d, codes, (l: Loc) -> src)
+/// The whole diagnostic as terminal text — the kind is the bracket.
+export fn render(d: Diag, src: SourceFile) -> string {
+    render_with(d, (l: Loc) -> src)
 }
 
 /// The diagnostic rendered over MANY sources — each frame's window
 /// comes from the file its Loc names; a file no source answers to
 /// falls back to the first.
-export fn render_among(d: Diag, codes: List<DiagCode>, sources: List<SourceFile>) -> string {
-    render_with(d, codes, (l: Loc) -> source_named(sources, l.file))
+export fn render_among(d: Diag, sources: List<SourceFile>) -> string {
+    render_with(d, (l: Loc) -> source_named(sources, l.file))
 }
 
 fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
@@ -105,9 +127,8 @@ fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
 /// those words went red with the refusal itself still correct. The
 /// workaround is worse than the defect: folding the label into the
 /// message at one voice is a copy the next unlocated voice repeats.
-fn render_with(d: Diag, codes: List<DiagCode>, pick: fn(Loc) -> SourceFile) -> string {
-    let code = code_for(codes, d.kind) ?? d.kind
-    mut parts = ["${severity_word(d.severity)}[${code}]: ${d.message}"]
+fn render_with(d: Diag, pick: fn(Loc) -> SourceFile) -> string {
+    mut parts = ["${severity_word(d.severity)}[${d.kind}]: ${d.message}"]
     if d.primary.loc != null {
         parts.push(window(d.primary.loc!, d.primary.label, pick(d.primary.loc!)))
     } else {
@@ -116,7 +137,6 @@ fn render_with(d: Diag, codes: List<DiagCode>, pick: fn(Loc) -> SourceFile) -> s
     parts = parts.concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
     parts = parts.concat(causes_of(d.cause))
     if d.help != null { parts.push("help: ${d.help!}") }
-    let sg? = d.suggestions.first() else { return joined(parts, "\n") }
-    let ed? = sg.edits.first() else { return joined(parts, "\n") }
-    joined(parts.concat(["fix: ${ed.replacement}"]), "\n")
+    parts = parts.concat(flatten([suggestion_lines(sg) for sg in d.suggestions]))
+    joined(parts, "\n")
 }

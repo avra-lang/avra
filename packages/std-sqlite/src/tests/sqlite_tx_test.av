@@ -1,9 +1,8 @@
 // A unit of work: begun, kept or thrown away, and what survives when
 // the process does not.
-use @std.sqlite.open.{Db, open, memory, close}
-use @std.sqlite.stmt.{Stmt, run, prepare, step, finalize, int_at}
-use @std.sqlite.tx.{begin, begin_read, commit, rollback, finish, in_transaction, begin_unless_open}
-use @std.sqlite.error.{SqlError, defect}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
+use @std.sqlite.error.{SqlError}
 
 /// A database with one table and one row, and the count after `work`
 /// has run against it — or the kind the work was refused with.
@@ -11,7 +10,7 @@ fn after(work: fn(Db) -> Result<int, SqlError>) -> string { in_memory((db) -> wo
 
 fn worked(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
     let said = seeded_then(db, work)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
@@ -35,7 +34,7 @@ fn ran_then_counted(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
 }
 
 fn tx_counted(db: Db) -> string {
-    match prepare(db, "select count(*) from t") {
+    match db.prepare("select count(*) from t") {
         .Ok(s) -> stepped_count(s),
         .Err(e) -> e.cause.kind(),
     }
@@ -43,13 +42,13 @@ fn tx_counted(db: Db) -> string {
 
 fn stepped_count(s: Stmt) -> string {
     let said = first_count(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn first_count(s: Stmt) -> string {
-    match step(s) {
-        .Ok(_) -> counted_told(int_at(s, 0)),
+    match s.step() {
+        .Ok(_) -> counted_told(s.int_at(0)),
         .Err(e) -> e.cause.kind(),
     }
 }
@@ -64,68 +63,68 @@ fn counted_told(r: Result<int, SqlError>) -> string {
 // ── The units of work each case runs ────────────────────────────
 
 fn committed(db: Db) -> Result<int, SqlError> {
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (2)")?
-    commit(db)
+    db.commit()
 }
 
 fn rolled_back(db: Db) -> Result<int, SqlError> {
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (2)")?
     let _ = run(db, "insert into t values (3)")?
-    rollback(db)
+    db.rollback()
 }
 
 /// A unit of work that fails partway and cleans up with `finish` —
 /// the shape a caller writes when they do not know how far they got.
 fn failed_then_finished(db: Db) -> Result<int, SqlError> {
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (2)")?
     let outcome = run(db, "insert into nosuchtable values (3)")
-    let _ = finish(db)
+    let _ = db.finish()
     zeroed(outcome)
 }
 
 /// The failure swallowed, because the CASE is about what survived in
 /// the database rather than about the error.
-// LICENSED I23: conforms to a callback signature — the CONTRACT owns the list
+// LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns the list
 fn zeroed(r: Result<int, SqlError>) -> Result<int, SqlError> { 0 }
 
 fn committed_twice(db: Db) -> Result<int, SqlError> {
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (2)")?
-    let _ = commit(db)?
-    commit(db)
+    let _ = db.commit()?
+    db.commit()
 }
 
 fn begun_twice(db: Db) -> Result<int, SqlError> {
-    let _ = begin(db)?
-    begin(db)
+    let _ = db.begin()?
+    db.begin()
 }
 
-fn finished_with_nothing_open(db: Db) -> Result<int, SqlError> { finish(db) }
+fn finished_with_nothing_open(db: Db) -> Result<int, SqlError> { db.finish() }
 
-fn rolled_back_with_nothing_open(db: Db) -> Result<int, SqlError> { rollback(db) }
+fn rolled_back_with_nothing_open(db: Db) -> Result<int, SqlError> { db.rollback() }
 
 fn read_only_transaction(db: Db) -> Result<int, SqlError> {
-    let _ = begin_read(db)?
-    commit(db)
+    let _ = db.begin_read()?
+    db.commit()
 }
 
 /// A caller who may or may not own the frame: begin one only if none
 /// is open, do the work, and commit. The insert lands either way.
 fn opened_if_needed(db: Db) -> Result<int, SqlError> {
-    let _ = begin(db)?
-    let mine = begin_unless_open(db)?
+    let _ = db.begin()?
+    let mine = db.begin_unless_open()?
     let _ = run(db, "insert into t values (2)")?
-    let _ = commit(db)?
+    let _ = db.commit()?
     mined(mine)
 }
 
 /// `begin_unless_open` must answer FALSE inside an open frame — it did
 /// not open one, so the caller must not end one.
 fn mined(mine: bool) -> Result<int, SqlError> {
-    if mine { fail defect("begin_unless_open opened a second transaction inside an open one") }
+    if mine { fail SqlError.defect("begin_unless_open opened a second transaction inside an open one") }
     0
 }
 
@@ -134,7 +133,7 @@ fn mined(mine: bool) -> Result<int, SqlError> {
 /// SPELLED OUT because it answers a `bool`: an open that fails is not a
 /// kind here, it is "the question was never asked".
 fn tx_asked(q: fn(Db) -> bool) -> bool {
-    match memory() {
+    match Db.memory() {
         .Ok(db) -> tx_in_db(db, q),
         .Err(_) -> false,
     }
@@ -142,16 +141,16 @@ fn tx_asked(q: fn(Db) -> bool) -> bool {
 
 fn tx_in_db(db: Db, q: fn(Db) -> bool) -> bool {
     let said = q(db)
-    let _ = finish(db)
-    let _ = close(db)
+    let _ = db.finish()
+    let _ = db.close()
     said
 }
 
-fn is_closed(db: Db) -> bool { !in_transaction(db) }
+fn is_closed(db: Db) -> bool { !db.in_transaction() }
 
 fn is_open_after_begin(db: Db) -> bool {
-    match begin(db) {
-        .Ok(_) -> in_transaction(db),
+    match db.begin() {
+        .Ok(_) -> db.in_transaction(),
         .Err(_) -> false,
     }
 }
@@ -160,7 +159,7 @@ fn is_closed_after_commit(db: Db) -> bool { closed_after(db, ended_by_commit) }
 fn is_closed_after_rollback(db: Db) -> bool { closed_after(db, ended_by_rollback) }
 
 fn closed_after(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
-    match begin(db) {
+    match db.begin() {
         .Ok(_) -> tx_ended(db, end),
         .Err(_) -> false,
     }
@@ -168,13 +167,13 @@ fn closed_after(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
 
 fn tx_ended(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
     match end(db) {
-        .Ok(_) -> !in_transaction(db),
+        .Ok(_) -> !db.in_transaction(),
         .Err(_) -> false,
     }
 }
 
-fn ended_by_commit(db: Db) -> Result<int, SqlError> { commit(db) }
-fn ended_by_rollback(db: Db) -> Result<int, SqlError> { rollback(db) }
+fn ended_by_commit(db: Db) -> Result<int, SqlError> { db.commit() }
+fn ended_by_rollback(db: Db) -> Result<int, SqlError> { db.rollback() }
 
 spec "std/sqlite transaction" {
     given "work kept and work thrown away" {

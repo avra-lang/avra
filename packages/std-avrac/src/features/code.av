@@ -7,7 +7,7 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr, TypeRef, own_name_at}
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, AnnotationFact}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
@@ -83,7 +83,7 @@ impl Code {
     fn is_nullable_flag_mut() -> bool {
         match self.at {
             .Stmt(id) -> match self.of.view.store.stmt(id) {
-                .MutLet(_, ty, value) -> mut_ty_optional(ty) && is_null_lit(self.of.view.store, value),
+                .MutLet(_, ty, value) -> mut_ty_optional(ty) && self.of.view.store.null_literal(value),
                 _ -> false,
             },
             _ -> false,
@@ -270,12 +270,6 @@ fn mut_ty_optional(ty: TypeRef?) -> bool {
     t.optional
 }
 
-/// Whether `id` names the `null` literal — `is_nullable_flag_mut`'s
-/// read of the declaration's own seed value.
-fn is_null_lit(store: NodeStore, id: ExprId) -> bool {
-    store.expr(id) is .NullLit
-}
-
 /// A HELD `Code`'s own text, spliced as an expression — parenthesised
 /// when its top node is not atomic, so `${x}` filling `${x} * 2`
 /// never lets an outer operator read past what `x` bound.
@@ -316,7 +310,7 @@ impl Ty {
     /// The same interned type as `other` — comparable across two
     /// Codes from the same analysis.
     fn same(other: Ty) -> bool {
-        // LICENSED I9: interned identity, the agreement law's own currency
+        // LICENSED type.index_compared: interned identity, the agreement law's own currency
         self.id.index == other.id.index
     }
 }

@@ -5,6 +5,7 @@
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
 use features.{TypeCx, this_is, chained_binder}
 use diagnostics.{refusal, warning, Diag}
+use @std.errors.{Confidence, Edit, Loc, Suggestion}
 
 fn nullable_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
@@ -45,7 +46,7 @@ fn coalesce_type(mut cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
     if cx.shape_at(l) is .Null {
         return not_absent_able(cx, l, "type.coalesce", "`??` answers", "`??` always answers with the right side", "write the right side alone")
     }
-    if held == null { return never_absent(cx, l) }
+    if held == null { return never_absent(cx, l, r) }
     let carried = held!
     if cx.accepts(r, carried) { return carried }
     let whole = cx.type_at(l)
@@ -56,8 +57,8 @@ fn coalesce_type(mut cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
 /// A value that cannot be absent, asked as if it could: a narrowed
 /// read is the carried value already — the ask is redundant and
 /// silent; anything else earns a warning and answers itself.
-fn never_absent(mut cx: TypeCx, v: ExprId) -> TypeId {
-    if cx.narrowed_at(v) == null { cx.emit(coalesce_never_fires(cx, v)) }
+fn never_absent(mut cx: TypeCx, v: ExprId, r: ExprId) -> TypeId {
+    if cx.narrowed_at(v) == null { cx.emit(coalesce_never_fires(cx, v, r)) }
     cx.type_at(v)
 }
 
@@ -149,7 +150,7 @@ fn propagate_res_type(mut cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
     let promised = ret!
     if cx.errored_ty(promised) { return cx.error_type }
     let rsides? = cx.view.types.res_parts(promised) else { return failure_unpromised(cx, v, promised, sides) }
-    // LICENSED I9: type identity — interned ids ARE the agreement
+    // LICENSED type.index_compared: type identity — interned ids ARE the agreement
     if rsides.err.index != sides.err.index { return failures_disagree(cx, v, sides, rsides) }
     sides.ok
 }
@@ -163,9 +164,24 @@ fn propagate_res_type(mut cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
 /// always-absent arm's help. The chain refuses on its own words —
 /// its guarantee remedy is actionable (`write .name`), not the
 /// family's generic line.
-fn coalesce_never_fires(cx: TypeCx, v: ExprId) -> Diag {
+fn coalesce_never_fires(cx: TypeCx, v: ExprId, r: ExprId) -> Diag {
     let n = cx.name_at(v)
-    warning("type.coalesce_never", cx.loc_of(v), "`??` never fires — a `${n}` is never absent", this_is(n), "drop the `??` and its right side")
+    let loc = cx.loc_of(v)
+    let d = warning("type.coalesce_never", loc, "`??` never fires — a `${n}` is never absent", this_is(n), coalesce_never_remedy())
+    let fix? = drop_coalesce_fix(loc, cx.loc_of(r)) else { return d }
+    d with { suggestions: [fix] }
+}
+
+fn coalesce_never_remedy() -> string { "drop the `??` and its right side" }
+
+/// The edit that turns `l ?? r` into `l`: delete from the left
+/// side's own end to the right side's — the `??` and everything it
+/// answers, whatever whitespace sits between. Absent when either
+/// side carries no span (a synthesized node, never real source).
+fn drop_coalesce_fix(lloc: Loc?, rloc: Loc?) -> Suggestion? {
+    let l? = lloc else { return null }
+    let r? = rloc else { return null }
+    Suggestion { confidence: Confidence.High, description: coalesce_never_remedy(), edits: [Edit { loc: Loc { file: l.file, lo: l.hi, hi: r.hi }, replacement: "" }] }
 }
 
 fn not_absent_able(mut cx: TypeCx, v: ExprId, kind: string, asks: string, so: string, remedy: string) -> TypeId {

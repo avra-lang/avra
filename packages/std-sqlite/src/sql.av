@@ -11,10 +11,10 @@
 //! (or over `Storage`) — no `_ ->`, so a sixth storage class or a sixth
 //! bindable shape breaks both matches at compile time rather than
 //! silently falling through.
-use error.{Cause, Storage, SqlError, refused}
+use error.{Cause, Storage, SqlError}
 use open.{Db}
 use script.{statements}
-use stmt.{Stmt, prepare, compiled, step, finalize, drained, width, class_at, int_at, real_at, text_at, blob_at, column_name, slots, bind_int, bind_real, bind_text, bind_null, bind_blob_bytes, wrong_class}
+use stmt.{Stmt}
 
 impl Storage {
     /// The class's name as SQLite's own `typeof()` spells it — the word
@@ -32,6 +32,13 @@ impl Storage {
 
 /// One cell, as the storage class that produced it. Bound INTO a slot or
 /// read OUT of one, the same five shapes either way.
+///
+/// A `List<SqlValue>` COSTS A LIST AND AN ENUM TAG PER VALUE, against a
+/// typed positional bind's direct call — permanent, and accepted: the
+/// alternative is a bind API keyed on argument POSITION AND TYPE rather
+/// than on one list, which is more code at every generator that builds
+/// one (`@model`'s included) for a cost this driver's callers do not
+/// feel. Re-profile before reopening it, never assume it moved.
 export enum SqlValue {
     Int(int)
     Text(string)
@@ -54,15 +61,15 @@ impl SqlValue {
     }
 
     fn int() -> Result<int, SqlError> {
-        match self { .Int(v) -> v, _ -> { fail wrong_class(0, Storage.Int, self.class()) } }
+        match self { .Int(v) -> v, _ -> { fail SqlError.wrong_class(0, Storage.Int, self.class()) } }
     }
 
     fn text() -> Result<string, SqlError> {
-        match self { .Text(v) -> v, _ -> { fail wrong_class(0, Storage.Text, self.class()) } }
+        match self { .Text(v) -> v, _ -> { fail SqlError.wrong_class(0, Storage.Text, self.class()) } }
     }
 
     fn real() -> Result<float, SqlError> {
-        match self { .Real(v) -> v, _ -> { fail wrong_class(0, Storage.Real, self.class()) } }
+        match self { .Real(v) -> v, _ -> { fail SqlError.wrong_class(0, Storage.Real, self.class()) } }
     }
 }
 
@@ -70,12 +77,18 @@ impl SqlValue {
 /// bound at `prepare` time by every query verb below.
 export type Sql = { text: string, values: List<SqlValue> = [] }
 
-/// The statement `sql(text)` means, with no slots filled yet.
-export fn sql(text: string) -> Sql { Sql { text: text } }
+/// The statement `sql(text)` means, its slots filled in order (1-based,
+/// as the wall counts them) when `values` is given, empty otherwise.
+///
+/// ONE CALL, ONE `Sql`: a caller who already has both in hand writes
+/// `sql(text, values)` and pays for a single record — `.args()` below
+/// still builds a SECOND one from the first, which is the right shape
+/// for a caller building the values separately from the text, and the
+/// wrong one for the common case of both arriving together.
+export fn sql(text: string, values: List<SqlValue> = []) -> Sql { Sql { text: text, values: values } }
 
 impl Sql {
-    /// The same statement, with its slots filled in order (1-based, as
-    /// the wall counts them).
+    /// The same statement, with its slots filled in order.
     fn args(values: List<SqlValue>) -> Sql { self with { values: values } }
 }
 
@@ -86,15 +99,15 @@ export type Row = { values: List<SqlValue>, names: List<string> }
 
 impl Row {
     fn text(i: int) -> Result<string, SqlError> {
-        match cell(self, i)? { .Text(v) -> v, other -> { fail wrong_class(i, Storage.Text, other.class()) } }
+        match cell(self, i)? { .Text(v) -> v, other -> { fail SqlError.wrong_class(i, Storage.Text, other.class()) } }
     }
 
     fn int(i: int) -> Result<int, SqlError> {
-        match cell(self, i)? { .Int(v) -> v, other -> { fail wrong_class(i, Storage.Int, other.class()) } }
+        match cell(self, i)? { .Int(v) -> v, other -> { fail SqlError.wrong_class(i, Storage.Int, other.class()) } }
     }
 
     fn real(i: int) -> Result<float, SqlError> {
-        match cell(self, i)? { .Real(v) -> v, other -> { fail wrong_class(i, Storage.Real, other.class()) } }
+        match cell(self, i)? { .Real(v) -> v, other -> { fail SqlError.wrong_class(i, Storage.Real, other.class()) } }
     }
 
     /// The class at a column, column 0 by default — the row's own width
@@ -105,7 +118,7 @@ impl Row {
     /// A cell by its column NAME rather than its position.
     fn get(name: string) -> Result<SqlValue, SqlError> {
         let i = self.names.index_of(name)
-        if i < 0 { fail refused(Cause.NoColumn(name), no_column_words(name, self.names)) }
+        if i < 0 { fail SqlError.refused(Cause.NoColumn(name), no_column_words(name, self.names)) }
         self.values[i]
     }
 }
@@ -115,7 +128,7 @@ impl Row {
 /// without asking the statement that made it.
 fn cell(r: Row, i: int) -> Result<SqlValue, SqlError> {
     let w = r.values.length
-    if i < 0 || i >= w { fail refused(Cause.OutOfRow(i, w), row_width_words(i, w)) }
+    if i < 0 || i >= w { fail SqlError.refused(Cause.OutOfRow(i, w), row_width_words(i, w)) }
     r.values[i]
 }
 
@@ -125,8 +138,8 @@ impl Db {
     /// text holding none — `prepare`'s own laws, unchanged by binding.
     fn run(s: Sql) -> Result<int, SqlError> {
         let stmt = prepared(self, s)?
-        let n = drained(self, stmt)
-        let _ = finalize(stmt)
+        let n = stmt.drained(self)
+        let _ = stmt.reset()
         n
     }
 
@@ -143,7 +156,7 @@ impl Db {
     fn one(s: Sql) -> Result<Row, SqlError> {
         let stmt = prepared(self, s)?
         let row = single_row(stmt)
-        let _ = finalize(stmt)
+        let _ = stmt.reset()
         row
     }
 
@@ -151,7 +164,7 @@ impl Db {
     fn first(s: Sql) -> Result<Row?, SqlError> {
         let stmt = prepared(self, s)?
         let row = leading_row(stmt)
-        let _ = finalize(stmt)
+        let _ = stmt.reset()
         row
     }
 
@@ -159,7 +172,7 @@ impl Db {
     fn all(s: Sql) -> Result<List<Row>, SqlError> {
         let stmt = prepared(self, s)?
         let rows = every_row(stmt)
-        let _ = finalize(stmt)
+        let _ = stmt.reset()
         rows
     }
 
@@ -169,10 +182,31 @@ impl Db {
 
 // ── Preparing and binding ───────────────────────────────────────
 
-/// `prepare`, with `s`'s values bound into the slots it opened.
+/// `prepare`, with `s`'s values bound into the slots it opened — the
+/// connection's own cache is asked first, so text run before is
+/// REUSED rather than compiled again, and only a MISS pays for a fresh
+/// one. THE HIT PATH IS ONE CALL DEEP on purpose (`db.cached` directly,
+/// no wrapper between it and the caller), since it is the one every
+/// call after the first takes.
+///
+/// A REUSED STATEMENT ARRIVES RESET, NEVER FRESH-BOUND: `db.run` and
+/// its siblings reset what they used before answering (never
+/// finalize), so every entry in the cache is idle by the time it is
+/// found here. `bound` below rebinds every slot regardless, which is
+/// what makes a cache hit as clean as a fresh `prepare` from the
+/// caller's side — no stale value from the last call can survive
+/// into this one.
 fn prepared(db: Db, s: Sql) -> Result<Stmt, SqlError> {
-    let stmt = prepare(db, s.text)?
+    let stmt = db.cached(s.text) ?? freshly_cached(db, s.text)?
     let _ = bound(stmt, s.values)?
+    stmt
+}
+
+/// A statement this connection has not seen before: `prepare`d, and
+/// kept for the next call.
+fn freshly_cached(db: Db, text: string) -> Result<Stmt, SqlError> {
+    let stmt = db.prepare(text)?
+    db.remember(text, stmt)
     stmt
 }
 
@@ -180,12 +214,8 @@ fn prepared(db: Db, s: Sql) -> Result<Stmt, SqlError> {
 /// the statement's slot count disagree — caught before anything is
 /// bound, per `Cause.Unfilled`'s own contract.
 fn bound(s: Stmt, values: List<SqlValue>) -> Result<int, SqlError> {
-    let n = slots(s)
-    if values.length != n { fail refused(Cause.Unfilled(n, values.length), unfilled_words(n, values.length)) }
-    filled(s, values)
-}
-
-fn filled(s: Stmt, values: List<SqlValue>) -> Result<int, SqlError> {
+    let n = s.slots()
+    if values.length != n { fail SqlError.refused(Cause.Unfilled(n, values.length), unfilled_words(n, values.length)) }
     for i, v in values.enumerate() {
         let _ = bind(s, i + 1, v)?
     }
@@ -196,30 +226,30 @@ fn filled(s: Stmt, values: List<SqlValue>) -> Result<int, SqlError> {
 /// match over `SqlValue`.
 fn bind(s: Stmt, index: int, v: SqlValue) -> Result<int, SqlError> {
     match v {
-        .Int(n) -> bind_int(s, index, n),
-        .Real(n) -> bind_real(s, index, n),
-        .Text(t) -> bind_text(s, index, t),
-        .Blob(b) -> bind_blob_bytes(s, index, b),
-        .Null -> bind_null(s, index),
+        .Int(n) -> s.bind_int(index, n),
+        .Real(n) -> s.bind_real(index, n),
+        .Text(t) -> s.bind_text(index, t),
+        .Blob(b) -> s.bind_blob_bytes(index, b),
+        .Null -> s.bind_null(index),
     }
 }
 
 // ── Reading rows off an already-bound statement ─────────────────
 
 fn single_row(s: Stmt) -> Result<Row, SqlError> {
-    if !step(s)? { fail refused(Cause.NoRow, "this query answered no rows, and `one` wants exactly one") }
+    if !s.step()? { fail SqlError.refused(Cause.NoRow, "this query answered no rows, and `one` wants exactly one") }
     let row = snapshot(s)?
-    if step(s)? { fail refused(Cause.ManyRows, "this query answered more than one row, and `one` wants exactly one") }
+    if s.step()? { fail SqlError.refused(Cause.ManyRows, "this query answered more than one row, and `one` wants exactly one") }
     row
 }
 
 fn leading_row(s: Stmt) -> Result<Row?, SqlError> {
-    if step(s)? { snapshot(s)? } else { null }
+    if s.step()? { snapshot(s)? } else { null }
 }
 
 fn every_row(s: Stmt) -> Result<List<Row>, SqlError> {
     mut out: List<Row> = []
-    while step(s)? {
+    while s.step()? {
         out.push(snapshot(s)?)
     }
     out
@@ -228,18 +258,18 @@ fn every_row(s: Stmt) -> Result<List<Row>, SqlError> {
 /// The row standing, copied whole: every column's value AND name, read
 /// once at the row's own width.
 fn snapshot(s: Stmt) -> Result<Row, SqlError> {
-    let n = width(s)
-    Row { values: [value_at(s, i)? for i in 0..n], names: [column_name(s, i)? for i in 0..n] }
+    let n = s.width()
+    Row { values: [value_at(s, i)? for i in 0..n], names: [s.column_name(i)? for i in 0..n] }
 }
 
 /// A column read into a `SqlValue` — the read-side dispatch, one
 /// exhaustive match over `Storage`.
 fn value_at(s: Stmt, i: int) -> Result<SqlValue, SqlError> {
-    match class_at(s, i)? {
-        .Int -> SqlValue.Int(int_at(s, i)?),
-        .Real -> SqlValue.Real(real_at(s, i)?),
-        .Text -> SqlValue.Text(text_at(s, i)?),
-        .Blob -> SqlValue.Blob(blob_at(s, i)?),
+    match s.class_at(i)? {
+        .Int -> SqlValue.Int(s.int_at(i)?),
+        .Real -> SqlValue.Real(s.real_at(i)?),
+        .Text -> SqlValue.Text(s.text_at(i)?),
+        .Blob -> SqlValue.Blob(s.blob_at(i)?),
         .Null -> SqlValue.Null,
     }
 }
@@ -258,7 +288,7 @@ fn ran_count(db: Db, parts: List<string>) -> Result<int, SqlError> {
 /// when it holds no statement, `compiled`'s own "nothing to run" case,
 /// which a script tolerates and a single-statement verb refuses.
 fn ran_one(db: Db, part: string) -> Result<bool, SqlError> {
-    match compiled(db, part) {
+    match db.compiled(part) {
         .Ok(s) -> exhausted(s),
         .Err(e) -> if e.cause is .NoStatement { false } else { fail e },
     }
@@ -266,12 +296,12 @@ fn ran_one(db: Db, part: string) -> Result<bool, SqlError> {
 
 fn exhausted(s: Stmt) -> Result<bool, SqlError> {
     let _ = stepped_through(s)?
-    let _ = finalize(s)
+    let _ = s.finalize()
     true
 }
 
 fn stepped_through(s: Stmt) -> Result<int, SqlError> {
-    while step(s)? {}
+    while s.step()? {}
     0
 }
 

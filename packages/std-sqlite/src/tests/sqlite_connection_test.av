@@ -6,8 +6,9 @@
 // zero. What it CANNOT assert is that the file is a database — that is
 // T127, opening is lazy, and the check needs a statement.
 use @std.io.{exists, write_text, remove}
-use @std.sqlite.open.{Db, Mode, config_at, open, open_read, memory, open_with, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize}
+use @std.sqlite.open.{Db, Mode, OpenConfig}
+use @std.sqlite.stmt.{Stmt}
+use @std.sqlite.sql.{sql, Sql}
 use @std.sqlite.error.{SqlError}
 
 /// A fresh in-memory database handed to `work`, or the kind the OPEN
@@ -20,7 +21,7 @@ use @std.sqlite.error.{SqlError}
 /// a helper generic in the answer would need `absent` as a second
 /// parameter, which is more ceremony than the ladder it replaces.
 fn in_memory(work: fn(Db) -> string) -> string {
-    match memory() {
+    match Db.memory() {
         .Ok(db) -> work(db),
         .Err(e) -> e.cause.kind(),
     }
@@ -37,14 +38,14 @@ fn opens(r: Result<Db, SqlError>) -> bool {
 /// `close` writes through its receiver, so the handle must sit in a
 /// place that can be nulled — `F2048` refuses a `let`.
 fn closed(db: Db) -> bool {
-    close(db) == 0
+    db.close() == 0
 }
 
 /// Closing the SAME binding twice: the second finds a nulled handle,
 /// does nothing, and answers zero. This is the half of the double-close
 /// the type actually closes.
 fn closed_twice(db: Db) -> bool {
-    close(db) == 0 && close(db) == 0
+    db.close() == 0 && db.close() == 0
 }
 
 /// The kind an open was refused with, or the word for success.
@@ -56,10 +57,10 @@ fn open_kind(r: Result<Db, SqlError>) -> string {
 }
 
 fn opened_word(db: Db) -> string {
-    ok_after(close(db))
+    ok_after(db.close())
 }
 
-// LICENSED I23: conforms to a callback signature — the CONTRACT owns the list
+// LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns the list
 fn ok_after(rc: int) -> string { "OPENED" }
 
 /// An open whose handle is closed twice, through one binding.
@@ -100,9 +101,9 @@ fn close_through_a_copy() -> string { in_memory(copied_close) }
 
 fn copied_close(db: Db) -> string {
     let copy = db
-    let first = close(copy)
+    let first = copy.close()
     let original_nulled = db.raw.get() == null
-    let second = close(db)
+    let second = db.close()
     "first=${first} second=${second} original_nulled=${original_nulled}"
 }
 
@@ -111,7 +112,7 @@ fn finalize_through_a_copy() -> string { in_memory(copied_finalize) }
 
 fn copied_finalize(db: Db) -> string {
     let said = with_statement(db, copied_stmt)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
@@ -121,12 +122,12 @@ fn step_past_done_through_a_copy() -> string { in_memory(copied_step) }
 
 fn copied_step(db: Db) -> string {
     let said = with_statement(db, stepped_then_copied)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn with_statement(db: Db, act: fn(Stmt) -> string) -> string {
-    match prepare(db, "select 1") {
+    match db.prepare("select 1") {
         .Ok(s) -> act(s),
         .Err(e) -> e.cause.kind(),
     }
@@ -134,18 +135,18 @@ fn with_statement(db: Db, act: fn(Stmt) -> string) -> string {
 
 fn copied_stmt(s: Stmt) -> string {
     let copy = s
-    let first = finalize(copy)
+    let first = copy.finalize()
     let original_nulled = s.raw.get() == null
-    let second = finalize(s)
+    let second = s.finalize()
     "first=${first} second=${second} original_nulled=${original_nulled}"
 }
 
 fn stepped_then_copied(s: Stmt) -> string {
     let copy = s
-    let row = word_of(step(s))
-    let done = word_of(step(s))
-    let again = word_of(step(copy))
-    let _ = finalize(s)
+    let row = word_of(s.step())
+    let done = word_of(s.step())
+    let again = word_of(copy.step())
+    let _ = s.finalize()
     "row=${row} done=${done} again=${again}"
 }
 
@@ -163,27 +164,27 @@ enum Carried { In(db: Db), None }
 
 fn through_a_list(db: Db) -> string {
     let dbs = [db, db]
-    let first = close(dbs[0])
+    let first = dbs[0].close()
     "first=${first} other=${dbs[1].raw.get() == null} original=${db.raw.get() == null}"
 }
 
 fn through_a_field(db: Db) -> string {
     let h = Holder { db: db, tag: 1 }
-    shut(close(h.db), db)
+    shut(h.db.close(), db)
 }
 
 fn through_a_payload(db: Db) -> string {
-    shut(match Carried.In(db) { .In(d) -> close(d), .None -> 99 }, db)
+    shut(match Carried.In(db) { .In(d) -> d.close(), .None -> 99 }, db)
 }
 
 fn through_a_capture(db: Db) -> string {
-    let shutter = () -> close(db)
+    let shutter = () -> db.close()
     shut(shutter(), db)
 }
 
 fn through_a_frame(db: Db) -> string { shut(closed_deeper(db), db) }
 
-fn closed_deeper(db: Db) -> int { close(db) }
+fn closed_deeper(db: Db) -> int { db.close() }
 
 /// What a close through a carrier answered, and what the ORIGINAL
 /// binding holds afterwards — the whole assertion for four of the five.
@@ -196,7 +197,7 @@ fn shut(first: int, db: Db) -> string {
 fn closed_four_ways(db: Db) -> string {
     let a = db
     let b = a
-    "${close(db)} ${close(a)} ${close(b)} ${close(db)}"
+    "${db.close()} ${a.close()} ${b.close()} ${db.close()}"
 }
 
 fn word_of(r: Result<bool, SqlError>) -> string {
@@ -226,21 +227,21 @@ spec "std/sqlite connection" {
 
         // It dies with the connection, so it is a verb rather than a
         // path a caller could spell by accident.
-        then "it opens" { opens(memory()) }
-        then "and closing answers zero" { opens(memory()) }
-        then "two of them are independent" { opens(memory()) && opens(memory()) }
+        then "it opens" { opens(Db.memory()) }
+        then "and closing answers zero" { opens(Db.memory()) }
+        then "two of them are independent" { opens(Db.memory()) && opens(Db.memory()) }
         // The half of the double-close this type DOES close: `close`
         // nulls its receiver, so the second call finds nothing to do.
-        then "closing the same binding twice is safe" { opens_and_closes_twice(memory()) }
+        then "closing the same binding twice is safe" { opens_and_closes_twice(Db.memory()) }
     }
     given "a database in a file" {
 
         then "the fixture starts absent" { gone(a_path()) || !exists(a_path()) }
-        then "opening creates it" { opens(open(a_path())) }
+        then "opening creates it" { opens(Db.open(a_path())) }
         then "and the file is on disk afterwards" { exists(a_path()) }
-        then "opening it again finds it" { opens(open(a_path())) }
-        then "read-only opens an existing file" { opens(open_read(a_path())) }
-        then "open-existing opens it too" { opens(open_with(config_at(a_path()) with { mode: Mode.OpenExisting })) }
+        then "opening it again finds it" { opens(Db.open(a_path())) }
+        then "read-only opens an existing file" { opens(Db.open_read(a_path())) }
+        then "open-existing opens it too" { opens(Db.open_with(OpenConfig.config_at(a_path()) with { mode: Mode.OpenExisting })) }
         then "and it can be cleaned up" { gone(a_path()) }
     }
     given "a file that is not there" {
@@ -249,16 +250,16 @@ spec "std/sqlite connection" {
         // CREATES the file. Read-only is the existence check that does
         // not create what it asks about — measured, rc=14 CANTOPEN.
         then "the fixture is absent" { !exists(absent()) }
-        then "read-only fails" { open_kind(open_read(absent())) == "sqlite.cant_open" }
+        then "read-only fails" { open_kind(Db.open_read(absent())) == "sqlite.cant_open" }
         then "and the file is STILL absent" { !exists(absent()) }
-        then "open-existing fails the same way" { open_kind(open_with(config_at(absent()) with { mode: Mode.OpenExisting })) == "sqlite.cant_open" }
+        then "open-existing fails the same way" { open_kind(Db.open_with(OpenConfig.config_at(absent()) with { mode: Mode.OpenExisting })) == "sqlite.cant_open" }
         then "and still creates nothing" { !exists(absent()) }
     }
     given "a path the door refuses before SQLite sees it" {
 
-        then "an empty path" { open_kind(open("")) == "sqlite.empty_path" }
-        then "`:memory:` spelled as a path" { open_kind(open(":memory:")) == "sqlite.empty_path" }
-        then "a `file:` path" { open_kind(open("file:/tmp/x.db")) == "sqlite.uri_path" }
+        then "an empty path" { open_kind(Db.open("")) == "sqlite.empty_path" }
+        then "`:memory:` spelled as a path" { open_kind(Db.open(":memory:")) == "sqlite.empty_path" }
+        then "a `file:` path" { open_kind(Db.open("file:/tmp/x.db")) == "sqlite.uri_path" }
         then "and none of them reached the library" { !exists("file:/tmp/x.db") }
     }
     given "a file that is not a database — T127, now CLOSED" {
@@ -274,7 +275,7 @@ spec "std/sqlite connection" {
         // sqlite_schema` — and they flipped, which is how the closure
         // was noticed rather than remembered.
         then "the fixture is a text file" { made(not_a_db(), "this is not a database") }
-        then "and it is REFUSED at open, not at the first query" { open_kind(open(not_a_db())) == "sqlite.not_a_database" }
+        then "and it is REFUSED at open, not at the first query" { open_kind(Db.open(not_a_db())) == "sqlite.not_a_database" }
         then "the file is unharmed by the attempt" { exists(not_a_db()) }
         then "cleaned up" { gone(not_a_db()) }
     }
@@ -282,10 +283,43 @@ spec "std/sqlite connection" {
 
         // It costs one page read and must leave nothing behind: no open
         // statement, and no file where there was none.
-        then "a fresh file still opens" { opens(open(a_path())) }
-        then "and opens again, so the probe finalized" { opens(open(a_path())) }
-        then "an in-memory database passes it too" { opens(memory()) }
-        then "read-only passes it on an existing file" { opens(open_read(a_path())) }
+        then "a fresh file still opens" { opens(Db.open(a_path())) }
+        then "and opens again, so the probe finalized" { opens(Db.open(a_path())) }
+        then "an in-memory database passes it too" { opens(Db.memory()) }
+        then "read-only passes it on an existing file" { opens(Db.open_read(a_path())) }
         then "cleaned up" { gone(a_path()) }
+    }
+    given "the statement cache, once the connection closes" {
+
+        // Two cached inserts build the cache up, and `close` must
+        // finalize both entries and still answer zero — never trip
+        // over a statement it itself put there. Afterwards the
+        // connection is closed exactly as `raw`'s own tests prove:
+        // the SAME `Cell` a copy of `Db` would share.
+        then "closing after cached queries still answers zero, and the connection then refuses" { cache_finalizes_on_close() == "close=0 after=sqlite.closed" }
+    }
+}
+
+fn cache_finalizes_on_close() -> string {
+    match cache_finalizes_on_close_or() {
+        .Ok(s) -> s,
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn cache_finalizes_on_close_or() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    db.run(sql("create table t (v)"))?
+    let ins = sql("insert into t (v) values (?)")
+    db.run(ins.args([.Int(1)]))?
+    db.run(ins.args([.Int(2)]))?
+    let rc = db.close()
+    "close=${rc} after=${run_kind(db, ins.args([.Int(3)]))}"
+}
+
+fn run_kind(mut db: Db, s: Sql) -> string {
+    match db.run(s) {
+        .Ok(_) -> "",
+        .Err(e) -> e.cause.kind(),
     }
 }

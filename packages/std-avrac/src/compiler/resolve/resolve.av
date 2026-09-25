@@ -16,8 +16,7 @@ use core.{StmtId, ExprId, FileId, Param, flatten, Binding, found_at, NodeStore, 
 use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, SelfSeat, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
-use features.rules.{example_marks}
+use features.{ResolveCx, SelfSeat, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound, example_marks}
 
 /// Words the spec reserves for future levels, memory, and
 /// concurrency: refusing them as names today means they become
@@ -71,9 +70,14 @@ impl ResolveCx {
         self.in_block = in_block
         for s in stmts {
             stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s)
-            // A rule's `@fixes`/`@keeps` name no declared fn — recognised
-            // by NAME, never resolved (features/rules/check.av judges them).
-            for a in self.view.store.annotations_of(s) { if !example_marks(a.name) { self.walk_annotation(a) } }
+            // A rule's `@fixes`/`@keeps` NAME no declared fn — the callee
+            // is never resolved — but its ARGS are read at lowering as
+            // ordinary values (components/lower.av's `augmented`,
+            // features/rule.av's `example_marks` names the two words),
+            // so they walk like any other expression's.
+            for a in self.view.store.annotations_of(s) {
+                if example_marks(a.name) { for e in a.args { self.walk(e) } } else { self.walk_annotation(a) }
+            }
         }
         self.in_block = was
     }
@@ -160,7 +164,7 @@ impl ResolveCx {
             let _ = self.refused_binder(pp.name.of, self.loc_of(lam))
         }
         let origin: FileId? = self.view.origin_of(lam)
-        // LICENSED I15: this IS the bracket
+        // LICENSED style.bracket_ritual: this IS the bracket
         self.lframes.push(LFrame { lam: lam, params: [keyed(pp.name.of, origin) for pp in params], floor: self.overlays.length })
         self.walk(body)
         let _ = self.lframes.pop()
@@ -215,7 +219,7 @@ impl ResolveCx {
         let seats = written_seats(self.keywords, ps)
         let outer = self.scope
         let origin: FileId? = self.view.origin_of(body)
-        // LICENSED I15: this IS the bracket
+        // LICENSED style.bracket_ritual: this IS the bracket
         self.floors.push(self.overlays.length)
         self.marks.push([pp.promises for pp in seats])
         self.scope = [keyed(pp.name.of, origin) for pp in seats]
@@ -236,7 +240,7 @@ impl ResolveCx {
 
 /// The topmost overlay INDEX holding `name`, or null.
 fn overlay_index(overlays: List<Map<string, Binding>>, name: string) -> int? {
-    // LICENSED I19: a REVERSE scan — the nearest scope wins
+    // LICENSED style.index_walk: a REVERSE scan — the nearest scope wins
     mut j = overlays.length - 1
     while j >= 0 {
         if overlays[j].get(name) != null { return j }
@@ -257,7 +261,7 @@ const no_frame: int = 0 - 1
 /// The innermost frame whose FLOOR admits the overlay — the frame
 /// the overlay was opened inside.
 fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
-    // LICENSED I19: a REVERSE scan — innermost frame first
+    // LICENSED style.index_walk: a REVERSE scan — innermost frame first
     mut k = lframes.length - 1
     while k >= 0 {
         if lframes[k].floor <= ohit { return k }
@@ -268,7 +272,7 @@ fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
 
 /// The innermost frame whose PARAMS hold `name`, or null.
 fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
-    // LICENSED I19: a REVERSE scan — innermost frame first
+    // LICENSED style.index_walk: a REVERSE scan — innermost frame first
     mut k = lframes.length - 1
     while k >= 0 {
         if found_at(lframes[k].params, name) != null { return k }
@@ -279,7 +283,7 @@ fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
 
 /// Every let definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
-    // LICENSED I13: a comprehension's filter and element cannot share a
+    // LICENSED style.repeated_projection: a comprehension's filter and element cannot share a
     // binding — comprehension bindings are on the sugar backlog
     [Def { name: store.let_name(s)!, stmt: s } for s in stmts if store.let_name(s) != null]
 }

@@ -128,23 +128,6 @@ impl TypeCx {
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: self.view.decls.types.type(bool) }))
     }
 
-    /// A rule's signature is SYNTHESISED, never written: one seat,
-    /// `e: Code`, answering `Fix?` — the same door a quote pattern
-    /// reaches `Code` through, so a rule and the patterns inside it
-    /// agree on one `Code` however the program came to see it.
-    fn declare_rule(x: Decl) {
-        let code? = self.view.decls.avrac_named("Code") else { return self.rule_no_avrac(x) }
-        let fix? = self.view.decls.avrac_named("Fix") else { return self.rule_no_avrac(x) }
-        let code_ty = self.view.decls.self_type_of(code)
-        let fix_opt = self.view.types.intern(Type.Opt(self.view.decls.self_type_of(fix)))
-        self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [code_ty], ret: fix_opt }))
-    }
-
-    fn rule_no_avrac(x: Decl) {
-        self.emit(refusal("type.rule_avrac", self.view.decls.loc(x.id), "a rule reads code and answers a fix — this program does not load `@std/avrac`", "this rule", "the handle and `Fix` arrive with `@std/avrac`"))
-        self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [self.error_type], ret: self.error_type }))
-    }
-
     /// A field's type. The grammar always writes one, so absence is
     /// unreachable.
     fn field_type(s: StmtId, f: Param) -> TypeId {
@@ -322,7 +305,7 @@ impl TypeCx {
     /// The type-parameter scope brackets — one fn at a time, no
     /// nesting (the language has no nested fns).
     fn enter_tscope(s: StmtId) {
-        // LICENSED I3: pushing through the field alias — concat would rebind the local
+        // LICENSED rule.loops.push_loop: pushing through the field alias — concat would rebind the local
         for v in self.tvars_of(s) { self.tscope.push(v) }
     }
 
@@ -386,7 +369,7 @@ impl TypeCx {
     fn fn_written(at: Loc?, t: TypeRef) -> TypeId {
         mut seats: List<TypeId> = []
         mut answer = self.error_type
-        // LICENSED I3: the tail is the answer; comprehensions cannot split it off
+        // LICENSED rule.loops.push_loop: the tail is the answer; comprehensions cannot split it off
         for j, a in t.args {
             let ty = self.full_type(at, a)
             if self.view.types.shape_of(ty) is .Error { return ty }
@@ -597,7 +580,6 @@ impl TypeCx {
             .Default -> self.declare_default(x),
             .Impl -> self.declare_impl_block(x.stmt),
             .Case -> self.declare_case(x),
-            .Rule -> self.declare_rule(x),
             .Const or .Collect -> nothing(),
             // a builtin was signed at admission, from its row
             .Trait or .Syntax or .Main or .Builtin -> nothing(),

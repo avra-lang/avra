@@ -206,7 +206,7 @@ impl Ins {
 
 /// `i` WITH EVERY REGISTER PASSED THROUGH `m` — every `Reg`-typed
 /// payload, destination and operands alike, one arm per variant
-/// (I28's registry: a new instruction owes this arm or the rewrite
+/// (rule.compiler.refusal_assembled's registry: a new instruction owes this arm or the rewrite
 /// is silently incomplete). The ONE fn two callers share for an
 /// ALPHA-RENAMED comparison: fold `[remapped(i, m).fingerprint() for
 /// i in ins]` over a register-renumbering `m` and two bodies that
@@ -418,14 +418,25 @@ export fn alpha_table(ins: List<Ins>, nparams: int) -> Map<string, int> {
     m
 }
 
-/// One body's instructions as an ALPHA-RENAMED fingerprint list —
-/// the register NUMBERS folded (`Ins.fingerprint`'s `dst.fingerprint()`
-/// et al) never enter it; only their RENAMED positions do.
-export fn alpha_fps(raw: List<Ins>, nparams: int) -> List<int> {
+/// `raw`'s instructions, renamed by first appearance — the shape
+/// `alpha_fps` folds into fingerprints and `same_ins_list` compares
+/// structurally, so a hash pre-filter and its exact fallback walk the
+/// SAME renamed values.
+export fn alpha_renamed(raw: List<Ins>, nparams: int) -> List<Ins> {
     let ins = canon_not_if(raw)
     let renames = alpha_table(ins, nparams)
     let rename = (r: Reg) -> Reg { index: renames.get("${r.index}") ?? r.index }
-    [remapped(i, rename).fingerprint() for i in ins]
+    [remapped(i, rename) for i in ins]
+}
+
+/// One body's instructions as an ALPHA-RENAMED fingerprint list —
+/// the register NUMBERS folded (`Ins.fingerprint`'s `dst.fingerprint()`
+/// et al) never enter it; only their RENAMED positions do. A shared
+/// fingerprint is a FAST PRE-FILTER, never the verdict: the fold is an
+/// un-keyed rolling hash (`fp_mix`, core/fp.av) and two different
+/// instruction lists can share one — `same_ins_list` is the proof.
+export fn alpha_fps(raw: List<Ins>, nparams: int) -> List<int> {
+    [i.fingerprint() for i in alpha_renamed(raw, nparams)]
 }
 
 /// Two fingerprint lists, elementwise — `==` compares scalars only,
@@ -487,8 +498,77 @@ export fn closes_region(i: Ins) -> bool {
 /// Register identity — two registers are one when their indexes
 /// agree.
 export fn same_reg(a: Reg, b: Reg) -> bool {
-    // LICENSED I9: register identity, not type agreement — ids compare by index
+    // LICENSED type.index_compared: register identity, not type agreement — ids compare by index
     a.index == b.index
+}
+
+/// Two register lists equal element by element — `same_fps`'s shape,
+/// for `Reg` rather than `int`.
+fn same_regs(a: List<Reg>, b: List<Reg>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_reg(a[it], b[it]))
+}
+
+/// Two OPTIONAL registers equal — absent on both sides, or the same
+/// register on both.
+fn same_reg_opt(a: Reg?, b: Reg?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    same_reg(a!, b!)
+}
+
+/// `a` and `b` STRUCTURALLY EQUAL — the actual proof behind a
+/// fingerprint match. Every fingerprint bottoms out in an un-keyed
+/// rolling hash (core/fp.av), so `same_fps` agreeing is a claim two
+/// DIFFERENT instruction lists can make; this walks the values
+/// themselves. Like `fingerprint()` and `remapped()`, it answers by
+/// variant with no catch-all on `a` — a new `Ins` variant owes this
+/// arm too, or the proof silently favours "equal" for the case
+/// nobody wrote. The inner match against `b` is a PROJECTION (one
+/// variant answers, `rest` is honestly false for every other one,
+/// present or future) rather than a second registry: a different
+/// variant is never equal, so its answer needs no update when `Ins`
+/// grows.
+export fn same_ins(a: Ins, b: Ins) -> bool {
+    match a {
+        .ConstInt(d1, v1) -> match b { .ConstInt(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .ConstFloat(d1, v1) -> match b { .ConstFloat(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .ConstStr(d1, s1) -> match b { .ConstStr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .ConstBool(d1, v1) -> match b { .ConstBool(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .Bin(d1, op1, l1, r1) -> match b { .Bin(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2), rest -> false },
+        .Un(d1, op1, s1) -> match b { .Un(d2, op2, s2) -> same_reg(d1, d2) && op1 == op2 && same_reg(s1, s2), rest -> false },
+        .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
+        .CallRt(d1, c1, args1) -> match b { .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2), rest -> false },
+        .Pack(d1, e1) -> match b { .Pack(d2, e2) -> same_reg(d1, d2) && same_regs(e1, e2), rest -> false },
+        .Extract(d1, s1, at1) -> match b { .Extract(d2, s2, at2) -> same_reg(d1, d2) && same_reg(s1, s2) && at1 == at2, rest -> false },
+        .FnAddr(d1, s1) -> match b { .FnAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
+        .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
+        .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
+        .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && same_fps(cs1, cs2), rest -> false },
+        .ArmEnd(g1) -> match b { .ArmEnd(g2) -> same_reg(g1, g2), rest -> false },
+        .RegionEnd(d1, g1) -> match b { .RegionEnd(d2, g2) -> same_reg(d1, d2) && same_reg(g1, g2), rest -> false },
+        .Call(d1, c1, args1) -> match b { .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2), rest -> false },
+        .CallPtr(d1, f1, args1) -> match b { .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2), rest -> false },
+        .RetVal(r1) -> match b { .RetVal(r2) -> same_reg(r1, r2), rest -> false },
+        .FnExit(g1) -> match b { .FnExit(g2) -> same_reg(g1, g2), rest -> false },
+        .Alloca(d1) -> match b { .Alloca(d2) -> same_reg(d1, d2), rest -> false },
+        .Load(d1, s1) -> match b { .Load(d2, s2) -> same_reg(d1, d2) && same_reg(s1, s2), rest -> false },
+        .Store(s1, v1) -> match b { .Store(s2, v2) -> same_reg(s1, s2) && same_reg(v1, v2), rest -> false },
+        .LoopStart -> match b { .LoopStart -> true, rest -> false },
+        .LoopCond(c1) -> match b { .LoopCond(c2) -> same_reg(c1, c2), rest -> false },
+        .LoopEnd -> match b { .LoopEnd -> true, rest -> false },
+        .Retain(r1) -> match b { .Retain(r2) -> same_reg(r1, r2), rest -> false },
+        .Release(r1) -> match b { .Release(r2) -> same_reg(r1, r2), rest -> false },
+        .Ret(c1) -> match b { .Ret(c2) -> c1 == c2, rest -> false },
+    }
+}
+
+/// Two alpha-renamed instruction lists, STRUCTURALLY. `same_fps`
+/// compares their hashes as a cheap pre-filter; a hash match proves
+/// nothing on its own, so `same_ir` (compiler/rule_proof.av) never
+/// calls a rewrite proved without this walk agreeing too.
+export fn same_ins_list(a: List<Ins>, b: List<Ins>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_ins(a[it], b[it]))
 }
 
 /// A slot in a runtime signature — the CallRt contract's currency,

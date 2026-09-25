@@ -2,7 +2,7 @@
 //! `quote` its `expand` answers and the field each hole reads. An
 //! importing file's parse copies it where an instance stands, so the
 //! reading needs nothing but the provider's text — never its typing.
-use core.{NodeStore, StmtId, ExprId, BodyView, BodyParts, ComponentParts, FnParts, Param, flatten, some_list, body_behavior}
+use core.{NodeStore, StmtId, ExprId, TypeRef, BodyView, BodyParts, ComponentParts, FnParts, Param, flatten, some_list, body_behavior}
 use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced}
 use grammar.{Token, TokenKind, lex_source}
 
@@ -32,7 +32,7 @@ fn top_starts(tokens: List<Token>) -> List<int> {
     mut depth = 0
     mut fresh = true
     mut starts: List<int> = []
-    // LICENSED I3: a running depth — each token's place depends on every brace before it
+    // LICENSED rule.loops.push_loop: a running depth — each token's place depends on every brace before it
     for i, t in tokens {
         if depth == 0 && fresh && !t.lit_matches("export") { starts.push(i) }
         if t.lit_matches("{") { depth = depth + 1 }
@@ -76,14 +76,24 @@ fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
 /// A component read as a record: its head in order, the `List` fields
 /// its instance's statements may fill, and its one fn field.
 fn record_of(store: NodeStore, c: ComponentParts) -> Record {
-    let fns = [p.name.of for p in c.fields if p.ty?.arrow ?? false]
+    let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false]
     Record {
         head: [p.name.of for p in c.head],
         slots: [ChildSlot { name: p.name.of, of: element_name(p), gathers: !declares_component(store, element_name(p)) } for p in c.fields if lists(p)],
         named: c.fields.any(it.name.of == "name"),
         checks: member(store, c, "check") != null,
-        fn_field: if fns.length == 1 { fns[0] } else { null },
+        fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.of } else { null },
+        fn_optional: arrow_fields.length == 1 && answers_nullable(arrow_fields[0].ty),
     }
+}
+
+/// A written fn type's own answer — its LAST seat — reads as
+/// nullable: the `?` an arms body's implicit `_ -> null` tail
+/// answers to.
+fn answers_nullable(ty: TypeRef?) -> bool {
+    let t? = ty else { return false }
+    let ans? = t.args.last() else { return false }
+    ans.optional
 }
 
 /// Whether the file declares a component by this name — a list of its

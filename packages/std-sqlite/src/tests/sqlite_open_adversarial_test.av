@@ -15,16 +15,16 @@
 // it through would have blamed the driver via `Cause.Defect`. Three
 // modes make the contradiction unrepresentable, which is neither.
 use @std.text.{from_codepoint, from_codepoints}
-use @std.sqlite.open.{OpenConfig, Mode, Threading, config_at, flags_of, path_fault}
+use @std.sqlite.open.{OpenConfig, Mode, Threading}
 use @std.sqlite.error.{SqlError}
 
 // ── The fixtures, so each case shows only its attack ────────────
 
 /// The kind a path is refused with, or the word for acceptance.
-fn door(path: string) -> string { verdict(path_fault(config_at(path))) }
+fn door(path: string) -> string { verdict(OpenConfig.config_at(path).path_fault()) }
 
 /// The same, for a caller who asked for URIs.
-fn door_uri(path: string) -> string { verdict(path_fault(config_at(path) with { uri: true })) }
+fn door_uri(path: string) -> string { verdict((OpenConfig.config_at(path) with { uri: true }).path_fault()) }
 
 fn verdict(e: SqlError?) -> string {
     if e == null { return "ACCEPTED" }
@@ -35,7 +35,7 @@ fn nul() -> string { from_codepoint(0) }
 
 /// All 48 configurations: three modes times four flags.
 fn conf(n: int) -> OpenConfig {
-    config_at("/tmp/a.db") with { mode: mode_at(n % 3), uri: bit(n, 3), shared_cache: bit(n, 6), threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized }, no_follow: bit(n, 24) }
+    OpenConfig.config_at("/tmp/a.db") with { mode: mode_at(n % 3), uri: bit(n, 3), shared_cache: bit(n, 6), threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized }, no_follow: bit(n, 24) }
 }
 fn mode_at(i: int) -> Mode {
     match i {
@@ -45,7 +45,7 @@ fn mode_at(i: int) -> Mode {
     }
 }
 fn bit(n: int, b: int) -> bool { n / b % 2 == 1 }
-fn words() -> List<int> { [flags_of(conf(n)) for n in 0..48] }
+fn words() -> List<int> { [conf(n).flags_of() for n in 0..48] }
 fn set_in(word: int, b: int) -> bool { word & b != 0 }
 /// Every bit `sqlite3.h:603-624` marks "Ok for sqlite3_open_v2()".
 fn known() -> int { 1 | 2 | 4 | 64 | 32768 | 65536 | 131072 | 262144 | 16777216 | 33554432 }
@@ -144,7 +144,7 @@ spec "std/sqlite open adversarial" {
         // The two words open.av records as measured against the
         // library. A number in a doc comment is a claim; here it is a
         // check that fails when a contributor moves.
-        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { flags_of(config_at("/tmp/a.db")) == 33882118 }
-        then "read-only swaps those two write bits for one, and touches nothing else" { flags_of(config_at("/tmp/a.db") with { mode: Mode.ReadOnly }) == 33882113 }
+        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { OpenConfig.config_at("/tmp/a.db").flags_of() == 33882118 }
+        then "read-only swaps those two write bits for one, and touches nothing else" { (OpenConfig.config_at("/tmp/a.db") with { mode: Mode.ReadOnly }).flags_of() == 33882113 }
     }
 }

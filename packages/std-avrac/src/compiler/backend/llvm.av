@@ -98,13 +98,13 @@ impl Owned {
 /// wrapper minted here is not in the stored object.
 /// Whether a module OWNS the body — its file is that module's file. ONE question,
 /// asked once, so no caller opens the nullable twice and none can disagree.
-// LICENSED I39: a pure PROJECTION — a program, a body and a file in, one answer out.
+// LICENSED style.free_state_verb: a pure PROJECTION — a program, a body and a file in, one answer out.
 fn owns(b: Body, f: FileId) -> bool {
     let home = home_of(b)
     home != null && same_file(home!, f)
 }
 
-// LICENSED I39: a pure PROJECTION — a body in, the file it belongs to out.
+// LICENSED style.free_state_verb: a pure PROJECTION — a body in, the file it belongs to out.
 export fn home_of(b: Body) -> FileId? { b.file }
 
 /// What these bodies NAME, and their own names with it: a module declares a
@@ -331,7 +331,7 @@ fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
 /// instruction emits, the verifier gates.
 fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>, rt: Map<string, RtSig>, bd: Body, f: ptr) -> string? {
     mut vals: List<ptr> = []
-    // LICENSED I3: a RANGE walk — comprehensions iterate lists only
+    // LICENSED rule.loops.push_loop: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
     mut em = Emit {
         lc: lc,
@@ -457,10 +457,12 @@ fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
 }
 
 /// A nullable's machine type: the niche IS its value's pointer; a
-/// scalar pair is a first-class {present: i1, value} aggregate that
-/// lives in registers and never touches memory.
+/// WORD ENUM's nullable is its own register, the spare tag its
+/// absence; a scalar pair is a first-class {present: i1, value}
+/// aggregate that lives in registers and never touches memory.
 fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
     if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
+    if types.is_word_enum(inner) { return ll_type_of(lc, types, inner) }
     let arr = avra_llvm_type_array_new(2)
     avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
     avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))

@@ -80,6 +80,11 @@ export type NodeStore = {
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
     sugar_matches: Cell<List<bool>>,
+    // a component instance's WRAPPING STATEMENT — where its `///`
+    // and `@name(args)` annotations live, attached from OUTSIDE once
+    // the instance's own expression already stands; absent for an
+    // instance that binds no statement of its own (a nested child)
+    instance_owners: Cell<List<StmtId?>>,
     // the DSL text an expression-position `grammar { … }` literal
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
@@ -126,6 +131,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         run_holes: list_cell(),
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
+        instance_owners: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
         quotes_at: map_cell(),
@@ -175,6 +181,7 @@ impl NodeStore {
         self.run_holes.push(false)
         self.raw_strings.push(false)
         self.sugar_matches.push(false)
+        self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.tables.push(null)
         ExprId { index: self.exprs.add(e, span) }
@@ -303,6 +310,18 @@ impl NodeStore {
 
     fn is_sugar_match(e: ExprId) -> bool {
         self.sugar_matches.get()[e.index]
+    }
+
+    /// The statement a component instance's expression is bound
+    /// under — set once, at the statement that wraps it, before any
+    /// `@name(args)` outside it attaches (`annotate`/`annotate_before`
+    /// run AFTER the wrapped statement is whole).
+    fn mark_instance_owner(e: ExprId, s: StmtId) {
+        self.instance_owners.set_at(e.index, s)
+    }
+
+    fn instance_owner(e: ExprId) -> StmtId? {
+        self.instance_owners.get()[e.index]
     }
 
     /// Where a quote's runs of text start in the source, one per part.
@@ -435,7 +454,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Collect(_, _, _, _, _, _) or .Error -> null,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .Error -> null,
         }
     }
 
@@ -632,7 +651,7 @@ impl NodeStore {
     /// The statement whose span begins at or after `at`, earliest
     /// first — where a doc group's anchor lands.
     fn statement_after(at: int) -> StmtId? {
-        // LICENSED I4: a min-by fold; the subset has no min_by
+        // LICENSED style.hand_rolled_scan: a min-by fold; the subset has no min_by
         mut best: StmtId? = null
         mut best_lo = 0
         for s in self.stmt_ids() {
@@ -828,7 +847,7 @@ impl NodeStore {
     }
 
     /// Every statement the store holds, in the order it was built.
-    // LICENSED I62: the one index walk every other reader asks for
+    // LICENSED style.stmt_index_walk: the one index walk every other reader asks for
     fn stmt_ids() -> List<StmtId> { [StmtId { index: i } for i in 0..self.stmts.count()] }
 
     /// A `use` statement's parts, when the statement is one.
@@ -843,6 +862,8 @@ impl NodeStore {
     fn stmt(id: StmtId) -> Stmt { self.stmts.node_at(id.index) }
     fn expr_span(id: ExprId) -> Span? { self.exprs.span_at(id.index) }
     fn stmt_span(id: StmtId) -> Span? { self.stmts.span_at(id.index) }
+    /// Whether `id` is the `null` literal.
+    fn null_literal(id: ExprId) -> bool { self.expr(id) is .NullLit }
     fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints.get()[id.index] }
     fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints.get()[id.index] }
 

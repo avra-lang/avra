@@ -905,3 +905,260 @@ scans" at §23's profile. Every one of those three passes is a LAW
 against request smuggling (frame.av's own opening comment), so
 merging them needs the SAME red-team weight as the framer's original
 landing, not an afternoon's. Not attempted this slice.
+
+## §27 As built — R11e, a nullable word enum spends the spare tag
+
+**D35. A nullable WORD ENUM (every variant carries nothing, so its
+value IS its tag — R8) rides ONE register, the spare tag -1 its
+absence** — D31's own trick (`Repr.Tagged`), generalized from
+`is_valued` to `is_word_enum` rather than given a second mechanism
+(the GENERALIZE-BEFORE-ADDING law). `TypeRegistry.word_carrier`
+answers the tag's register for either type that names it — the enum
+itself or its nullable — the way `valued_carrier` already does for a
+value enum's Opt; `opt_rides_pointer` refuses the pointer only a flat
+RECORD needs (a word enum's tag has its own spare value, unlike a
+flat record's fields, so it never boxes). `inner_repr_of` files a
+word enum's Opt under `Tagged` beside a value enum's; `absent_tagged`
+splits the two payload widths apart (one register, the tag alone, for
+a word enum — tag-and-word for a value enum, D31's original shape).
+`Decls.scalar_field` widens to admit a WORD ENUM'S OWN NULLABLE
+alongside D34's `int`/`bool`/word-enum trio, so a record carrying one
+(`@std/http`'s `Framing`) is flat again, asked of the field's
+declaration exactly as D34 requires.
+
+**Every consumer D31 already taught to read a Tagged repr reads this
+one the same way, because it IS the same repr**: `tag_of`/
+`presence_of`/`carried_of`/`insisted_tagged` (values.av) already
+switch on `repr_of`, not on `is_valued` directly, so word-enum
+nullables fell through unaided the moment `inner_repr_of` answered
+`Tagged` for them. Four consumers needed their OWN widening because
+they read a register's SHAPE rather than asking `repr_of`: `memory.av`'s
+`is_managed` (a word-enum Opt never boxes, so it is never counted, the
+same law flat records already hold); `llvm.av`'s `opt_ll_type` (the
+nullable's LLVM type is the WORD's, no wrapping aggregate); `llvm_emit.av`'s
+`bare_value` (renamed from `flat_value` — a nullable word enum has no
+LLVM aggregate either, so `extract_value`/`pack_value` treat it as
+identity, a `cast_to_type` guarding the one case a flat record's
+identity pack never needed: a present value ADOPTED into the
+nullable, per `adopted`'s `.Tagged -> r` branch, arrives typed as the
+BARE enum and is cast into the `Opt` register's own LLVM type at the
+door rather than re-minted); and `interp.av`'s `bare_reg` (the
+interpreter's mirror, no LLVM types to cast, just the same identity
+question).
+
+**Two companion fixes a Tagged nullable's OWN absence exposed, not
+new to word enums but never exercised until this slice's tests wrote
+a `match … { null -> …, v? -> … }` and an `x == null` over one**:
+`pat_reg`'s bare `null` arm used to compare the subject against
+`reg_of(the null literal)` by VALUE (`same_value`) — sound for a
+NICHE nullable, where a null literal's register IS the pointer zero,
+and wrong for a TAGGED one, where a null literal's register carries
+no repr of its own until an adopting edge gives it one (the niche's
+own law, `adopted`'s comment) — so the comparison read a Tagged
+subject's spare tag against an unrelated raw zero. `literal_pat_reg`
+asks the subject's own PRESENCE directly instead, never through
+equality; `nullable_eq_reg` gets the same fix for `x == null` and
+`null == x`. Both are `repr_of`-general, not word-enum-specific — no
+regression test for `match v { null -> …, x? -> … }` existed over a
+nullable VALUE enum before this slice, so whether D31 carried the
+same latent gap is unconfirmed; worth a probe before the next Tagged
+consumer is added.
+
+**`@std/http`'s `Framing` restored to `why: Refusal?`** (D34 had
+split it into `refused: bool` + `why: Refusal = .LineEnd`, a
+placeholder default unread while `refused` was false, spelled by
+hand at the one call site D34 declined to give nullable enums for
+free). `noted`/`broke`/`settled`/`settled_reply` read `fr.why != null`
+in place of `fr.refused`, matching the file's own established idiom
+two lines below (`let broken: Refusal? = body_refusal(fr, limits); if
+broken != null { return .Refused(broken!) }`) rather than a new one.
+
+**Red team.** `features/enums/tests/nullable_word_enums` (`??`, `?.`,
+`match` with `v?`/`null` arms, a record field, `List<E?>`, a `Map`
+value, a `Cell`, a fn param/answer, a generic `T?` over a word-enum
+`T`, and `E??` nested through a generic — the spare tag never
+collapses a present-null into absent) plus
+`nullable_word_enums_adversarial_test.av` (aliasing: a record field
+copied then written through the copy, a `Cell` seat, `with`, a list
+element by index; crossing: `dyn`, a generic seat, a `Box<T>`-shaped
+field; static data: a top-level const and a const `List<E?>`; the tag
+boundary at 64 variants; equality both directions and `!=`; a
+single-variant word enum; a managed STRING field beside the nullable
+word enum in the same flat record; `Result<E?, string>` through `?`
+— stays boxed, correctly, since `payload_word`'s `.Opt` case still
+asks for a pointer-riding nullable and a word-enum one is not one, so
+this is left on the table rather than a defect; a `for` loop and
+recursion over `List<E?>`; and a `match` arm that leaves the fn
+merging beside both a present and an absent companion, `hollow_of`'s
+fallback path) — eval == native under `AVRA_RC_GUARD=1` (two small
+standalone probes built and run directly under the guard, per the
+doctrine that the guard is for small programs, never a whole-package
+compiler self-host: one exercising the enum feature's own aliasing/
+dyn/generic/list/map/cell shapes across 2,000 loop turns, one calling
+`@std/http`'s `framed()` 3,000 times across three request shapes
+including two distinct `Refusal` reasons; `AVRA_MEM_STATS=1` read 0
+MB live in every category at exit on both).
+
+**A genuine finding along the way, not a defect in this slice**: the
+red team's first pass wrote `if k < 0 { return "early" } else {
+Dir.N }` as a merge attack and hit F2000 "an `if`'s branches
+disagree: `string` vs `Dir`". Control-probed with a bare `int` in
+place of the enum — identical refusal, so plain `if`/`else` has never
+exempted a diverging arm from the branch-type join (`if_expr/
+check.av`'s `branch_type` compares both arms directly and never calls
+`checks.av`'s `stays()`, the filter `match` arms and other N-ary
+joins already use). Orthogonal to this ticket's representation
+change; filed as avra-8sb5.47. The attack was rewritten as a `match`
+(whose join already exempts a leaving arm) to keep testing what it
+meant to test — `hollow_of`'s fallback merging beside a present AND
+an absent companion — and passes clean.
+
+**Numbers** (tools/bench/request, Mac, 5,000,000 requests,
+`/usr/bin/time -l`, interleaved, 4 rounds averaged, against the exact
+pre-slice source and compiler — old `frame.av` built by the saved
+pre-change binary, new `frame.av` built by the post-slice one):
+
+| | before | after |
+|---|---|---|
+| instructions/request | 11,412 | 11,410 (−0.01%, noise) |
+| boxes/request | 7 | 7 (unchanged) |
+| bench binary | 379,448 B | 379,368 B (−80 B) |
+| `build/avra` | 7,366,128 B | 7,348,688 B (−17,440 B, −0.24%) |
+
+No measurable request-path win — expected: `Framing` was already a
+flat value record after the tail slice (D34's `bool` workaround), so
+this slice removes a field and a write far too small to clear the
+±0.7% floor, not a new allocation site. What R11e buys is real
+elsewhere: the honest `Refusal?` field back in `Framing` (D34's own
+"stays out, on purpose" now paid), and — the larger claim — the
+representation itself, generalized once at the type-registry level
+rather than re-solved per call site, ready for the next record
+anywhere in the tree that wants a nullable payload-free enum field
+without boxing.
+
+## §28 As built — R14, `sized_moved`'s block-size shortcut and `written()`'s own accumulator
+
+**The capacity fix landed on the SLOW path, not the fast one.**
+`sized_capacity`'s cheap check (a size class read from the LENGTH)
+stays exactly as it was — the ticket's own candidate, reading the
+block's real size on every append, was measured and refused: it cost
+`tools/bench/request` ~3.6% instructions/request for a bug that only
+truncation triggers, all of it `malloc_size`/`malloc_usable_size`
+calls on appends that never needed one. `box_free`'s free-list filing
+was measured the same way (misfiles a big block truncated small into
+a class too small to be handed out again) and refused for the same
+reason — its own `block_size` call landed on every SIZED box's death,
+not only a truncated one, and cost the same bench the same order of
+regression; reverted whole, left as `avra-8sb5.10.104`'s open half.
+The fix instead sits where the move already happens: `sized_moved`
+(entered only once the cheap check has already said "no room") asks
+the block's real size ONCE, before moving anything, and answers the
+same pointer when the block already fits — a box grown once and
+truncated many times over pays for the allocator's opinion only on
+the turn it might be wrong, never on the turns it is right by
+construction. `appended`'s own disassembly is byte-identical before
+and after (`objdump -d --disassemble-symbols=_appended`, both
+`build/avra` and the saved `build/avra.pre`) — the fix adds nothing
+to the hot fast path, because it never left `sized_moved`, which was
+`noinline` already.
+
+**`written()` lost its list, not its shape.** `packages/std-http/src/
+http.av`'s `written` built a `List<Bytes>` of parts (pushed once per
+header, four pieces each) and gathered it in one call at the end;
+it now grows a single local `mut w: Bytes`, one `concat` per piece,
+answering `w` at the tail. THE TAIL MATTERS: `w.concat(r.body)`
+answered directly as the function's own last expression measured
+WORSE than the list it replaced (12,845 instr/request against an
+11,376 baseline) — reuse in place never reached that call at all,
+confirmed with an isolated probe (`built(status, b, c) -> Bytes {
+mut w = seed(status); w = w.concat(b); w.concat(c) }`, called in a
+loop: 2 boxes per call, meaning NEITHER concat wrote in place).
+Binding the result to `w` and answering `w` on its own line fixed it
+in both the probe (1 box per call, matching the top-level pattern
+`docs/2026_09_23_REUSE_IN_PLACE.md`'s own growth benchmarks already
+rely on) and `written` itself. A value sitting directly in a function's
+answer position is invisible to Handover; a value bound to a local
+first, then answered, is not — the same fn, the same call, two
+different costs, and nothing in the diagnostics said which.
+
+**Measured and not landed — the connection's own buffer.** The
+ticket's stated goal — `l.out` grown in place across many requests on
+one connection, "zero allocations after the first" — is not reachable
+by restructuring `@std/http`'s Avra source at all, for a reason that
+has nothing to do with capacity: **Handover (Owned/Emptied) never
+recognizes a STRUCT FIELD**, only a bare top-level `mut x: T` local's
+own reassignment. Four isolated probes, each an `AVRA_MEM_STATS` box
+count over 5,000,000 calls:
+
+| accumulator shape | boxes/call |
+|---|---|
+| top-level `mut out: Bytes` local, reassigned in a loop | ~0 (steady state) |
+| `mut h: Holder` LOCAL struct, `h.out = h.out.concat(x)` | 3 (every concat fresh) |
+| `mut h: Holder` PARAMETER, same field write, inside the callee | 3 |
+| `Cell<Bytes>`, `out.set(out.get().concat(x))` | 1 (never reused) |
+
+`l.out` is a field of `Link` (`packages/std-http/src/server.av`) by
+its whole design — every request's reply is answered through a
+connection state machine passed as `mut l: Link` from `conversed`
+down through `stepped`/`framing`/`bodied`/`answered` — so no
+restructuring inside `@std/http` reaches the shape Handover actually
+recognizes. `written`'s own rewrite is the reachable half: it grows
+ITS OWN local, not the caller's field, and the caller still adopts
+the finished `Bytes` by reference (D2, an empty `l.out` shares the
+answer for free) exactly as it did before. Filed as
+`avra-8sb5.10.107` (Handover never reaches a struct field), with the
+tail-position finding above recorded on it too. `avra-8sb5.10.104`
+(this campaign's own capacity ticket) is commented closed on its
+capacity half and left open on its field-growth half, which is now
+`.107`'s to answer.
+
+**Red team.** `packages/std-avrac/src/features/tests/reuse_in_place/
+reuse_in_place.av` gained four permanent cases (eval == native ==
+expected, and — since the file is self-contained, no `use` at all —
+built standalone and run under `AVRA_RC_GUARD=1` clean, no trap, no
+leak under `AVRA_MEM_STATS=1`): a block truncated to empty and grown
+back forty times over (the length a truncation resets read back as
+the block's own room was the whole bug); a copy taken before the
+truncation, proving the shortcut still only ever reaches a SOLE-owned
+box (the caller chain's own `sole_sized` check, unchanged by this
+slice); a literal `Bytes` truncated and grown, proving an immortal
+box is still never written through; and a block truncated small then
+grown well past the room its ORIGINAL allocation ever held, proving
+the shortcut's absence — a genuine move — still lands on the right
+bytes. `@std/http`'s own suite (468 unit tests, 4 programs, all of
+`http_adversarial_test.av`'s CRLF-injection, NUL, empty-body and
+status-line attacks among them) passed unchanged against the
+rewritten `written` — the restructuring touched no law, only the
+gather's shape.
+
+**Numbers.** Isolated probe (`out = out.slice(0, 0); out =
+out.concat(status_line); out = out.concat(content_len); out =
+out.concat(body)`, a top-level `mut Bytes` local, 5,000,000
+iterations, `/usr/bin/time -l`, `AVRA_CENSUS` for the box counts):
+
+| | before | after |
+|---|---|---|
+| instructions/iteration | 1,086 | 790 (−27.3%) |
+| `Bytes` boxes, whole run | 9,999,999 | 1 (steady state, one box) |
+
+`tools/bench/request` (Mac, 5,000,000 requests, `/usr/bin/time -l`,
+interleaved, several rounds averaged; the runtime fix alone measures
+NEUTRAL here — a debug counter confirmed `sized_moved` is called
+ZERO times in this bench's whole run, since nothing in the request
+path truncates a buffer today — the numbers below are the runtime fix
+plus `written`'s rewrite together):
+
+| | before | after |
+|---|---|---|
+| instructions/request | 11,382 | 10,906 (−4.2%) |
+| boxes/request | 10 | 9 |
+| list buffers/request | 5 | 2 |
+| bench binary | 379,272 B | 379,880 B (+608 B, +0.16%) |
+
+What I wanted from the language while doing this: a way to say "this
+value, reached through a field, dies here" that Handover can see —
+today the only spelling that works is a bare local, and a struct
+field (even one this function alone can reach, through its own `mut`
+seat) silently falls back to a full copy with no diagnostic
+distinguishing it from the reachable case. `avra-8sb5.10.107` is that
+ask, filed.

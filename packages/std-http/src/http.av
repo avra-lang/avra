@@ -262,18 +262,25 @@ export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// carry and cut the head mid-field.
 export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
-/// THE RESPONSE IN ONE ALLOCATION: its pieces gathered once, sized
-/// by their sum — the status line read from the binary, the text it
-/// carries shared rather than copied.
+/// THE RESPONSE WRITTEN STRAIGHT INTO ONE BUFFER: each piece appended
+/// in place — no list gathered and copied once, since a local `mut`
+/// accumulator grown by `concat` already lands in one box (reuse in
+/// place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
 fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    mut parts: List<Bytes> = [reply_line(r.status)]
+    mut w = reply_line(r.status)
     for h in r.headers {
-        parts.push(h.name.bytes())
-        parts.push(field_colon)
-        parts.push(h.value.bytes())
-        parts.push(crlf)
+        w = w.concat(h.name.bytes())
+        w = w.concat(field_colon)
+        w = w.concat(h.value.bytes())
+        w = w.concat(crlf)
     }
-    parts.concat([length_field, "${r.body.length}".bytes(), crlf, fate(keep_alive, minor).bytes(), crlf, r.body]).bytes()
+    w = w.concat(length_field)
+    w = w.concat("${r.body.length}".bytes())
+    w = w.concat(crlf)
+    w = w.concat(fate(keep_alive, minor).bytes())
+    w = w.concat(crlf)
+    w = w.concat(r.body)
+    w
 }
 
 /// Every status line a response can carry, laid out once in the binary.
@@ -315,7 +322,7 @@ export fn sendable(r: Response) -> bool {
 /// ONE, and a writer says only which fields it owns. The reply's
 /// writer and the request's each name their own list.
 export fn fields_writable(headers: List<Header>, written_by: List<Bytes>) -> bool {
-    // LICENSED I4: a loop, not `all`/`any` — each lambda is a box per call on a per-request path
+    // LICENSED style.hand_rolled_scan: a loop, not `all`/`any` — each lambda is a box per call on a per-request path
     for h in headers {
         if !writable(h) || names_one_of(h.name, written_by) { return false }
     }
@@ -343,7 +350,7 @@ export fn every_octet(s: string, class: Bytes) -> bool {
 /// Whether `name` is one of `written_by`, ASCII-folded.
 export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
     let b = name.bytes()
-    // LICENSED I4: a loop, not `any` — a capturing lambda is a box per call on a per-request path
+    // LICENSED style.hand_rolled_scan: a loop, not `any` — a capturing lambda is a box per call on a per-request path
     for w in written_by {
         if b.ieq_at(0, b.length, w) { return true }
     }

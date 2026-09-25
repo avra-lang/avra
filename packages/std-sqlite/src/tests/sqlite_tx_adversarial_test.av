@@ -2,9 +2,8 @@
 // red-team pass that found five wrong answers, and each one names the
 // mechanism rather than the symptom, so it still means something after
 // the code that produced it has moved.
-use @std.sqlite.open.{Db, open, memory, close}
-use @std.sqlite.stmt.{Stmt, run, prepare, step, finalize}
-use @std.sqlite.tx.{begin, begin_read, commit, rollback, finish, finish_if_opened, in_transaction, begin_unless_open}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError}
 use @std.io.{exists, remove}
 
@@ -27,22 +26,22 @@ fn on_a_closed_db(work: fn(Db) -> string) -> string {
 }
 
 fn after_closing(db: Db, work: fn(Db) -> string) -> string {
-    let _ = close(db)
+    let _ = db.close()
     work(db)
 }
 
-fn asked_open(db: Db) -> string { "${in_transaction(db)}" }
-fn tried_begin(db: Db) -> string { tx_kind(begin(db)) }
-fn tried_commit(db: Db) -> string { tx_kind(commit(db)) }
-fn tried_rollback(db: Db) -> string { tx_kind(rollback(db)) }
-fn tried_finish(db: Db) -> string { "${finish(db)} open=${in_transaction(db)}" }
+fn asked_open(db: Db) -> string { "${db.in_transaction()}" }
+fn tried_begin(db: Db) -> string { tx_kind(db.begin()) }
+fn tried_commit(db: Db) -> string { tx_kind(db.commit()) }
+fn tried_rollback(db: Db) -> string { tx_kind(db.rollback()) }
+fn tried_finish(db: Db) -> string { "${db.finish()} open=${db.in_transaction()}" }
 
 // The same law one module over. `prepare` reaches the CONNECTION, and
 // with no door it handed SQLite a null handle and passed SQLITE_MISUSE
 // back as `sqlite.defect` — the driver accusing itself for the caller's
 // sequence, which is the whole reason `.Closed` exists.
 fn tried_prepare(db: Db) -> string {
-    match prepare(db, "select 1") {
+    match db.prepare("select 1") {
         .Ok(_) -> "Ok",
         .Err(e) -> e.cause.kind(),
     }
@@ -66,11 +65,11 @@ fn conflicted(db: Db) -> string {
 
 fn seeded_conflict(db: Db) -> Result<string, SqlError> {
     let _ = run(db, "create table t (n int unique on conflict rollback)")?
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (1)")?
     let dup = tx_kind(run(db, "insert into t values (1)"))
-    let open_still = in_transaction(db)
-    "${dup} open=${open_still} commit=${tx_kind(commit(db))}"
+    let open_still = db.in_transaction()
+    "${dup} open=${open_still} commit=${tx_kind(db.commit())}"
 }
 
 // ── A BUSY COMMIT ───────────────────────────────────────────────
@@ -81,7 +80,7 @@ fn seeded_conflict(db: Db) -> Result<string, SqlError> {
 // no second connection to contend with.
 
 fn commit_under_a_standing_reader() -> string {
-    match open(busy_path()) {
+    match Db.open(busy_path()) {
         .Ok(w) -> with_a_writer(w),
         .Err(e) -> e.cause.kind(),
     }
@@ -91,8 +90,8 @@ fn busy_path() -> string { "build/sqlite-tx-busy.db" }
 
 fn with_a_writer(w: Db) -> string {
     let said = contended(w)
-    let _ = finish(w)
-    let _ = close(w)
+    let _ = w.finish()
+    let _ = w.close()
     let _ = busy_swept()
     said
 }
@@ -119,7 +118,7 @@ fn seeded_file(w: Db) -> Result<int, SqlError> {
 }
 
 fn with_a_reader(w: Db) -> string {
-    match open(busy_path()) {
+    match Db.open(busy_path()) {
         .Ok(r) -> reading(w, r),
         .Err(e) -> e.cause.kind(),
     }
@@ -127,21 +126,21 @@ fn with_a_reader(w: Db) -> string {
 
 fn reading(w: Db, r: Db) -> string {
     let said = held_open(w, r)
-    let _ = close(r)
+    let _ = r.close()
     said
 }
 
 fn held_open(w: Db, r: Db) -> string {
-    match prepare(r, "select n from t") {
+    match r.prepare("select n from t") {
         .Ok(s) -> stepped_then_committed(w, s),
         .Err(e) -> e.cause.kind(),
     }
 }
 
 fn stepped_then_committed(w: Db, s: Stmt) -> string {
-    let _ = step(s)
+    let _ = s.step()
     let said = committed_while_read(w)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
@@ -153,10 +152,10 @@ fn committed_while_read(w: Db) -> string {
 }
 
 fn promoted(w: Db) -> Result<string, SqlError> {
-    let _ = begin(w)?
+    let _ = w.begin()?
     let _ = run(w, "insert into t values (2)")?
-    let c = tx_kind(commit(w))
-    "${c} open=${in_transaction(w)} finish=${finish(w)}"
+    let c = tx_kind(w.commit())
+    "${c} open=${w.in_transaction()} finish=${w.finish()}"
 }
 
 // ── AN INNER SCOPE CLEANING UP ──────────────────────────────────
@@ -170,7 +169,7 @@ fn inner_cleanup(clean: fn(Db, bool) -> int) -> string {
 
 fn tx_nested(db: Db, clean: fn(Db, bool) -> int) -> string {
     let said = outer_then_inner(db, clean)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
@@ -183,16 +182,16 @@ fn outer_then_inner(db: Db, clean: fn(Db, bool) -> int) -> string {
 
 fn framed(db: Db, clean: fn(Db, bool) -> int) -> Result<string, SqlError> {
     let _ = run(db, "create table t (n int)")?
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (1)")?
-    let opened = begin_unless_open(db)?
+    let opened = db.begin_unless_open()?
     let _ = clean(db, opened)
-    "mine=${opened} outer_open=${in_transaction(db)}"
+    "mine=${opened} outer_open=${db.in_transaction()}"
 }
 
-// LICENSED I23: conforms to a callback signature — the CONTRACT owns the list
-fn cleaned_by_finish(db: Db, opened: bool) -> int { finish(db) }
-fn cleaned_by_the_pair(db: Db, opened: bool) -> int { finish_if_opened(db, opened) }
+// LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns the list
+fn cleaned_by_finish(db: Db, opened: bool) -> int { db.finish() }
+fn cleaned_by_the_pair(db: Db, opened: bool) -> int { db.finish_if_opened(opened) }
 
 // ── A READ TRANSACTION THAT WRITES ──────────────────────────────
 
@@ -200,8 +199,8 @@ fn wrote_inside_a_read() -> string { in_memory(promoting) }
 
 fn promoting(db: Db) -> string {
     let said = deferred_then_wrote(db)
-    let _ = finish(db)
-    let _ = close(db)
+    let _ = db.finish()
+    let _ = db.close()
     said
 }
 
@@ -214,7 +213,7 @@ fn deferred_then_wrote(db: Db) -> string {
 
 fn seeded_deferred(db: Db) -> Result<string, SqlError> {
     let _ = run(db, "create table t (n int)")?
-    let _ = begin_read(db)?
+    let _ = db.begin_read()?
     tx_kind(run(db, "insert into t values (1)"))
 }
 

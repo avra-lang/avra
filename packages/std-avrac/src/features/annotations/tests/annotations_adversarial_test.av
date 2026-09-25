@@ -180,7 +180,7 @@ spec "features/annotations — the compile-time call's laws" {
         then "a deprecation warns at the use, not the declaration" {
             let p = packaged(deprecation_use() + "@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
             let out = checked(p)
-            p.clean() && out.contains("F2071") && out.contains("`sum` is deprecated — use add") && out.contains("main.av:4") && out.contains("used here")
+            p.clean() && out.contains("annotation.warning") && out.contains("`sum` is deprecated — use add") && out.contains("main.av:4") && out.contains("used here")
         }
         then "a use before the declaration still warns — the marks are a query" {
             let p = packaged(deprecation_use() + "fn call() -> int { sum(1, 2) }\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\ncall()")
@@ -342,33 +342,33 @@ spec "features/annotations — the compile-time call's laws" {
         then "a kinded refusal renders under the annotation's package, and is the one diagnostic" {
             let p = audited(audit_use() + "@audited\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:E1" && p.report().starts_with("error[@acme/audit: E1]: `f` is audited\n")
+            diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:E1" && p.report().starts_with("error[@acme/audit:E1]: `f` is audited\n")
         }
-        then "a kind-less refusal stays F2069" {
+        then "a kind-less refusal stays annotation.said" {
             let p = audited(audit_use() + "@plain\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            diagnostics.length == 1 && diagnostics[0].kind == "annotation.said" && p.report().starts_with("error[F2069]: `f` is plain\n")
+            diagnostics.length == 1 && diagnostics[0].kind == "annotation.said" && p.report().starts_with("error[annotation.said]: `f` is plain\n")
         }
         then "a root program's kind wears its own manifest name" {
             let p = packaged("use @std.meta.{Fn, Diagnostic, refuse_as}\nfn check(f: Fn) -> List<Diagnostic> { [refuse_as(\"E7\", \"`\${f.name}` is bare\")] }\n@check\nfn f() -> int {\n    1\n}\nf()\n")
-            p.report().starts_with("error[app: E7]: `f` is bare\n")
+            p.report().starts_with("error[app:E7]: `f` is bare\n")
         }
         then "`explain` finds every kind the package's source spells, in a branch too, spoken or not — and misses one it does not" {
             let p = audited(audit_use() + "fn f() -> int {\n    1\n}\nf()\n")
             let rows = p.kind_rows()
             let e1 = rows.find(it.kind == "@acme/audit:E1")
             let e2 = rows.find(it.kind == "@acme/audit:E2")
-            p.clean() && e1 != null && e1!.id == "@acme/audit: E1" && e1!.summary == "spoken by `@audited`" && e2 != null && e2!.summary == "a quiet fn" && rows.find(it.kind == "@acme/audit:E9") == null
+            p.clean() && e1 != null && e1!.summary == "spoken by `@audited`" && e2 != null && e2!.summary == "a quiet fn" && rows.find(it.kind == "@acme/audit:E9") == null
         }
         then "a kind that is not a word is the annotation's mistake, spoken in place of its verdict" {
             let p = audited(audit_use() + "@blank\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            diagnostics.length == 1 && p.report().starts_with("error[F2079]: an annotation's kind is a word\n") && p.report().contains("`@blank` named ``, saying: `f` is blank")
+            diagnostics.length == 1 && p.report().starts_with("error[annotation.kind]: an annotation's kind is a word\n") && p.report().contains("`@blank` named ``, saying: `f` is blank")
         }
         then "a kinded WARNING wears its package at the use" {
             let p = audited(audit_use() + "@old\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            p.clean() && diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:W1" && p.warnings().starts_with("warning[@acme/audit: W1]: `f` is old\n")
+            p.clean() && diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:W1" && p.warnings().starts_with("warning[@acme/audit:W1]: `f` is old\n")
         }
         then "the registry reaches a dependency through the package's own entry, as `avra docs` does" {
             mut ws = audit_workspace(audit_use() + "fn f() -> int {\n    1\n}\nf()\n")
@@ -379,7 +379,7 @@ spec "features/annotations — the compile-time call's laws" {
             let p = audited(audit_use() + "@quiet\nfn never() -> int {\n    1\n}\nnever()\n")
             let rows = p.kind_rows()
             let e2 = rows.find(it.kind == "@acme/audit:E2")
-            !p.clean() && e2 != null && e2!.summary == "a quiet fn" && p.report().starts_with("error[@acme/audit: E2]: a quiet fn\n")
+            !p.clean() && e2 != null && e2!.summary == "a quiet fn" && p.report().starts_with("error[@acme/audit:E2]: a quiet fn\n")
         }
     }
 }

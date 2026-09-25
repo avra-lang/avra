@@ -1,0 +1,43 @@
+// A record's one-seat fn field takes a body of ARMS too — `hook doubled
+// { n -> n * 2 }`'s own sugar, over patterns instead of a bound name —
+// and `doc`/`keeps` fill from the instance's wrapping statement: its
+// `///` and its `@keeps(...)` (the one List-field-matching annotation
+// name `example_marks` recognises today — features/rule.av; a fully
+// general "any List field, any name" door is future work, noted
+// there). Both read an EXPORTED instance's statement — a headless
+// record's un-exported `let` binds no declaration `attach_docs` can
+// find, which `rule`'s own always-exported spelling never meets.
+use @std.avrac.testing.{provided, answered}
+use @std.avrac.compiler.{Program}
+
+fn arms_ui() -> string {
+    "export component matcher {\n    run: fn(int) -> string\n    doc: string = \"\"\n    keeps: List<string> = []\n}\n\nexport component sifter {\n    run: fn(int) -> string?\n}\n"
+}
+
+fn arms_built(main: string) -> Program {
+    provided("use @x.c.{matcher, sifter}\n" + main, arms_ui())
+}
+
+spec "features/components — a one-seat fn field's arms body" {
+    given "the arms form, a non-nullable answer" {
+        then "each pattern tries in order, the first hit answers" {
+            answered(arms_built("export matcher one {\n    0 -> \"zero\",\n    n -> \"other\",\n}\n\"\${one.run(0)} \${one.run(5)}\"")) == "zero other"
+        }
+        then "a one-line arms body reads flat" {
+            answered(arms_built("export matcher one { 0 -> \"zero\", n -> \"other\" }\none.run(1)")) == "other"
+        }
+    }
+    given "the arms form, a nullable answer" {
+        then "arms with no catch-all take an implicit `_ -> null` tail" {
+            answered(arms_built("export sifter one { 0 -> \"zero\" }\n\"\${one.run(0) ?? \"miss\"} \${one.run(1) ?? \"miss\"}\"")) == "zero miss"
+        }
+    }
+    given "the wrapping statement's own facts" {
+        then "`doc` reads the instance's own `///`, first paragraph" {
+            answered(arms_built("/// counts to two\nexport matcher one { n -> \"\${n}\" }\none.doc")) == "counts to two"
+        }
+        then "an annotation named like a `List` field appends one entry per call, written order" {
+            answered(arms_built("@keeps(\"a\")\n@keeps(\"b\")\nexport matcher one { n -> \"\${n}\" }\none.keeps.join(\",\")")) == "a,b"
+        }
+    }
+}

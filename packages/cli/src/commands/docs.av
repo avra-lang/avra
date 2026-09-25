@@ -23,11 +23,11 @@ impl Runnable for DocsCmd {
         if q == "writes" { return explained_writes(args.arg("at")) }
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
-        let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
+        let hit: DiagCode? = avra().rows.codes.find(it.kind == q)
         if hit != null {
             let c = hit!
-            println("${c.id} ${c.kind} — ${c.summary}")
-            shown_witness(c.id)
+            println("${c.kind} — ${c.summary}")
+            shown_witness(c.kind)
             return 0
         }
         explained_decl(q)
@@ -38,8 +38,8 @@ impl Runnable for DocsCmd {
 /// that triggers this code and the compiler's own words over it. A
 /// REAL refusal with its holes filled beats a template of the law,
 /// and it is the same rendering docs/DIAGNOSTICS.md pins.
-fn shown_witness(id: string) {
-    let shown? = shown_code(id) else { return }
+fn shown_witness(kind: string) {
+    let shown? = shown_code(kind) else { return }
     if !shown.fired { return }
     println("")
     println(shown.witness_source())
@@ -54,12 +54,12 @@ fn explained_kind(q: string) -> int {
     // the package's own refusals are not in the way: the kind asked
     // about may be the one they wear
     mut p = root_program(here())
-    let hit: DiagCode? = p.kind_rows().find(it.kind == q || it.id == q)
+    let hit: DiagCode? = p.kind_rows().find(it.kind == q)
     if hit == null {
         eprintln("avra: no annotation this package reaches registers `${q}` — a kind registers when `refuse_as` spells it as a literal, or when an annotation speaks it")
         return 1
     }
-    println("${hit!.id} — ${hit!.summary}")
+    println("${hit!.kind} — ${hit!.summary}")
     0
 }
 
@@ -163,7 +163,7 @@ fn explained_process(at: string) -> int {
     }
     let src = new_source_file(manifest, read_text(manifest) catch "")
     let m = read_manifest(src)
-    for d in m.voices { eprintln(render(d, avra().rows.codes, src)) }
+    for d in m.voices { eprintln(render(d, src)) }
     if m.voices.any(refuses(it)) { return 1 }
     if m.tools.is_empty() {
         println("no [process.tools] declared — the script rung: any tool a literal names, an open set")

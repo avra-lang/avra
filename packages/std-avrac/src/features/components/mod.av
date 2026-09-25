@@ -22,20 +22,23 @@ export fn components() -> LanguageFeature {
         "component_named_bare" | build_component_named_bare
         "setting"              | build_setting
         "instance_body"        | build_instance_body
+        "instance_arms_body"   | build_instance_arms_body
     }
     let codes = table<DiagCode> {
-        kind                      | id      | summary
-        "type.component_expand"   | "F2112" | "a component's `expand` answers the code an instance becomes"
-        "type.component_twice"    | "F2113" | "a template reads each of its instance's fields once"
-        "type.component_check"    | "F2114" | "a component's `check` answers `List<Diagnostic>`"
-        "lower.component_checked" | "F2115" | "a component's `check` judged this instance"
-        "type.component_format"   | "F2119" | "a `Format` head is `@std.meta`'s pattern type"
+        kind                      | summary
+        "type.component_expand"   | "a component's `expand` answers the code an instance becomes"
+        "type.component_twice"    | "a template reads each of its instance's fields once"
+        "type.component_check"    | "a component's `check` answers `List<Diagnostic>`"
+        "lower.component_checked" | "a component's `check` judged this instance"
+        "type.component_format"   | "a `Format` head is `@std.meta`'s pattern type"
     }
     LanguageFeature components {
         gram: grammar {
             stmt = "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( fs:NAME ":" ft:type ( "=" fd:expression )? | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m)
-            stmt = w:COMPONENT n:NAME b:instance_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
+            stmt = w:COMPONENT n:NAME b:named_inst_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
             setting = k:NAME ":" v:expression END -> setting(k, v)
+            named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
+                | b:instance_body -> b
             instance_body = "{" ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
             primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }

@@ -1,0 +1,116 @@
+// A NULLABLE WORD ENUM SPENDS THE SPARE TAG -1: its own register
+// widens for free — `E?` stays one word, so a lift `E -> E?` never
+// builds a box. Each attack puts one where a box or a pair used to
+// hold it, and a nested `E??` (through a generic) keeps present-null
+// apart from absent, the way any other nullable-over-nullable must.
+enum Signal { Red, Yellow, Green }
+
+trait Named {
+    fn name() -> string
+}
+
+impl Named for Signal {
+    fn name() -> string {
+        match self {
+            .Red -> "red",
+            .Yellow -> "yellow",
+            .Green -> "green",
+        }
+    }
+}
+
+type Frame = { signal: Signal?, n: int }
+type Box<T> = { held: T? }
+
+fn boxed<T>(x: T) -> Box<T> { Box { held: x } }
+fn wrap<T>(v: T) -> T? { v }
+fn none_of<T>() -> T? { null }
+
+fn classify(s: string) -> Signal? {
+    match s {
+        "r" -> Signal.Red,
+        "y" -> Signal.Yellow,
+        "g" -> Signal.Green,
+        _ -> null,
+    }
+}
+
+/// `?.` — a method through the nullable.
+fn worded(s: Signal?) -> string { s?.name() ?? "none" }
+
+/// `match … { v? -> …, null -> … }`.
+fn matched(s: Signal?) -> string {
+    match s {
+        v? -> v.name()
+        null -> "absent"
+    }
+}
+
+let some: Signal? = classify("g")
+let none: Signal? = classify("z")
+
+// `??`
+let coalesced_some = some ?? Signal.Red
+let coalesced_none = none ?? Signal.Red
+
+// `?.` and `match`
+let chained = "${worded(some)} ${worded(none)}"
+let matches = "${matched(some)} ${matched(none)}"
+
+// a list element
+let xs: List<Signal?> = [some, none, Signal.Yellow]
+let listed = [x?.name() ?? "none" for x in xs].join(",")
+
+// a map value
+mut m: Map<string, Signal?> = {}
+m.set("k", some)
+m.set("gone", null)
+let mapped = "${worded(m.get("k") ?? null)} ${worded(m.get("gone") ?? null)} ${worded(m.get("missing") ?? null)}"
+
+// a Cell
+let c = Cell.new(some)
+c.set(none)
+let celled_after_set = worded(c.get())
+c.set(Signal.Green)
+let celled_final = worded(c.get())
+
+// a record field
+let f1 = Frame { signal: some, n: 1 }
+let f2 = f1 with { signal: null }
+let framed = "${worded(f1.signal)}/${f1.n} ${worded(f2.signal)}/${f2.n}"
+
+// `T?` over a generic `T` bound to a word enum
+let g1 = wrap(Signal.Yellow)
+let g2 = none_of<Signal>()
+let generic = "${worded(g1)} ${worded(g2)}"
+
+// `E??` nested via a generic: present, present-null, and absent must
+// all read apart — the outer flag and the inner tag never collapse
+// into one absence
+let b_present = boxed(some)
+let b_inner_absent = boxed(none)
+let outer_absent = none_of<Signal?>()
+let nested_present = match b_present.held {
+    v? -> match v {
+        w? -> w.name()
+        null -> "inner-absent"
+    }
+    null -> "outer-absent"
+}
+let nested_inner_absent = match b_inner_absent.held {
+    v? -> match v {
+        w? -> w.name()
+        null -> "inner-absent"
+    }
+    null -> "outer-absent"
+}
+let nested_outer_absent = match outer_absent {
+    v? -> match v {
+        w? -> w.name()
+        null -> "inner-absent"
+    }
+    null -> "outer-absent"
+}
+let nested = "${nested_present} ${nested_inner_absent} ${nested_outer_absent}"
+
+"${chained} | ${matches} | ${worded(coalesced_some)} ${worded(coalesced_none)} | ${listed} | ${mapped} | ${celled_after_set} ${celled_final} | ${framed} | ${generic} | ${nested}"

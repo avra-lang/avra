@@ -16,7 +16,7 @@ for f in $files; do
     msg=$(./avra build --time "$pkg" 2>&1); st=$?
     mv "$f.sweep" "$f"
     class=ok
-    [ "$st" -ne 0 ] && class=$(printf '%s\n' "$msg" | grep -oE 'error\[F[0-9]{4}\]|avra: [a-z `A-Z]{0,40}|Undefined symbols' | head -1)
+    [ "$st" -ne 0 ] && class=$(printf '%s\n' "$msg" | grep -oE 'error\[[^]]+\]|avra: [a-z `A-Z]{0,40}|Undefined symbols' | head -1)
     printf '%s' "$msg" | grep -q "the hold was refused" && class="refused-then-ok"
     # A CLEAN BUILD THAT HELD ALMOST NOTHING IS A FINDING TOO: the hold collapsed
     # once to 25/292 on a correct build, and "clean" said nothing about it.

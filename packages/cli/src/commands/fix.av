@@ -1,11 +1,17 @@
-//! `avra fix <file>` — apply every PROVED rule rewrite, splicing it
-//! into the source; every rewrite the IR proof cannot confirm is
-//! only SHOWN (`avra check` already reported it) and left untouched.
+//! `avra fix <file>` — apply every PROVED rewrite, splicing it into
+//! the source: a rule's own, and every OTHER diagnostic's own
+//! `Diag.suggestions` (a spell-check, a dependency line, a named
+//! type's wrap), proved the same way. Every rewrite the IR proof
+//! cannot confirm is only SHOWN (`avra check` already reported it)
+//! and left untouched — Confidence is never the gate, proof is.
 //! `--dry` prints what would change and writes nothing; `--only
-//! <rule>` limits to one rule's `<module>.<name>`.
+//! <kind>` limits to one rule's `<module>.<name>` or one diagnostic's
+//! own kind.
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.avrac.compiler.{Program, Application, fix_applied, fighting_pair, analysed, rule_doc}
+use @std.avrac.core.{joined}
+use @std.errors.{Edit}
 use @std.json.{Json, field, to_text}
 
 type FixCmd = {}
@@ -30,7 +36,9 @@ fn fixed(p: Program, args: CliResult) -> Result<int, string> {
     let named = args.option("only")
     let only = if named == "" { null } else { named }
     let json = args.has_flag("json")
-    let apps = p.fix_applications(a.view.source.file, analysed(a), only)
+    let path = a.view.source.file
+    let an = analysed(a)
+    let apps = p.fix_applications(path, an, only).concat(p.suggestion_applications(path, an, a.diagnostics, only))
     let text = a.view.source.text
     report(text, apps, json)
     if apps.is_empty() { return 0 }
@@ -50,8 +58,9 @@ fn fixed(p: Program, args: CliResult) -> Result<int, string> {
 }
 
 /// The findings, printed either as prose lines or as one JSON array
-/// (--json: rule, before/after text, the rule's own /// sentence,
-/// and the explain link) — the empty case is `[]`, never omitted.
+/// (--json: kind, every edit's before/after text, the rule's own
+/// /// sentence when it has one, and the `docs_cmd` link) — the empty
+/// case is `[]`, never omitted.
 fn report(text: string, apps: List<Application>, json: bool) {
     if json {
         println(to_text(Json.Arr([application_json(text, ap) for ap in apps])))
@@ -66,12 +75,18 @@ fn report(text: string, apps: List<Application>, json: bool) {
 
 fn application_json(text: string, ap: Application) -> Json {
     Json.Obj([
-        field("rule", Json.Str(ap.rule_kind)),
+        field("kind", Json.Str(ap.kind)),
         field("proved", Json.Bool(ap.proved)),
-        field("before", Json.Str(text.substring(ap.edit.loc.lo, ap.edit.loc.hi))),
-        field("after", Json.Str(ap.edit.replacement)),
-        field("doc", doc_field(rule_doc(ap.rule_kind))),
-        field("docs_cmd", Json.Str("avra docs ${ap.rule_kind}")),
+        field("edits", Json.Arr([edit_json(text, e) for e in ap.edits])),
+        field("doc", doc_field(rule_doc(ap.kind))),
+        field("docs_cmd", Json.Str("avra docs ${ap.kind}")),
+    ])
+}
+
+fn edit_json(text: string, e: Edit) -> Json {
+    Json.Obj([
+        field("before", Json.Str(text.substring(e.loc.lo, e.loc.hi))),
+        field("after", Json.Str(e.replacement)),
     ])
 }
 
@@ -97,7 +112,13 @@ fn application_lines(apps: List<Application>) -> List<string> {
 
 fn application_line(ap: Application) -> string {
     let tier = if ap.proved { "proved" } else { "shown, not applied" }
-    "${ap.rule_kind} (${tier}): ${ap.edit.replacement}"
+    "${ap.kind} (${tier}): ${joined([edit_summary(e) for e in ap.edits], ", ")}"
+}
+
+/// A deleting edit answers "" — named, never a bare empty slot in
+/// the joined list.
+fn edit_summary(e: Edit) -> string {
+    if e.replacement.is_empty() { "(removed)" } else { e.replacement }
 }
 
 /// A whole-file before/after, printed plainly — enough to review a
@@ -108,11 +129,11 @@ fn diff_of(before: string, after: string) -> string {
 }
 
 export command fix {
-    description: "Apply every proved rule rewrite, splicing it into the source"
+    description: "Apply every proved rewrite, splicing it into the source"
     flags: [time]
     flag dry { description: "print what would change, write nothing" }
-    flag json { description: "print findings as one JSON array (rule, before, after, doc, explain)" }
+    flag json { description: "print findings as one JSON array (kind, edits, doc, docs_cmd)" }
     args: [file]
-    option only { description: "apply only this rule (<module>.<name>)" }
+    option only { description: "apply only this kind (a rule's <module>.<name>, or a diagnostic's own kind)" }
     run: FixCmd {}
 }

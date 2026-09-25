@@ -10,12 +10,11 @@
 use core.{StmtId, ExprId, TypeId, Type, TypeRef, TypeRegistry, DeclId, Binding, same_expr, flatten, mut_mark, Annotation}
 use core.{SeatMark, FileId}
 use diagnostics.{refusal}
-use features.{TypeCx, NarrowFrame, Gathering, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, TypeRow, type_row, Decl, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named, Namespace}
+use features.{TypeCx, NarrowFrame, Gathering, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, TypeRow, type_row, Decl, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named, Namespace, example_marks}
 use features.structs.{fits_default}
 use features.fns.{fits_seat_default}
 use features.specs.{fits_case}
 use features.annotations.{check_annotation}
-use features.rules.{example_marks}
 use features.closures.{takes_by_name}
 use features.impls.{derive_contract}
 
@@ -58,9 +57,14 @@ impl TypeCx {
             .Main -> {
                 self.type_stmts(runtime_stmts(self.view))
                 // a top-level declaration's annotations sit ABOVE it,
-                // so the entry's body owns them, and types them here
+                // so the entry's body owns them, and types them here —
+                // its own `@fixes`/`@keeps` args included, read at
+                // lowering by components/lower.av's `augmented`.
                 for s in self.view.stmts {
-                    if self.view.store.is_declaration(s) { self.type_annotations(s) }
+                    if self.view.store.is_declaration(s) {
+                        self.type_annotations(s)
+                        self.type_example_args(s)
+                    }
                 }
             },
             // a bodyless fn is an EXTERN, and its declaration has laws
@@ -71,7 +75,6 @@ impl TypeCx {
             .Method -> self.method_body(x),
             .Default -> self.default_body(x),
             .Case -> self.case_body(x),
-            .Rule -> self.rule_body(x),
             .Record or .Named or .Alias or .Enum or .Const or .Syntax or .Collect -> self.type_stmts([x.stmt]),
             // a trait's members type as methods; the trait holds its
             // `derive` to the contract where it is written
@@ -87,14 +90,6 @@ impl TypeCx {
     mut fn fn_body(x: Decl) {
         self.type_stmts([x.stmt])
         self.seat_contract(x, 0)
-    }
-
-    /// A rule's body: its synthesized `Match(Ident(e), arms ++ [_ ->
-    /// null])` walks under its synthesized seat, exactly as a fn body
-    /// does — the arm law (coverage, agreement) is `match`'s own, and
-    /// the `_ -> null` tail is what makes a miss the honest answer.
-    mut fn rule_body(x: Decl) {
-        self.type_stmts([x.stmt])
     }
 
     /// A method's body, then its receiver's contract — the trait's word
@@ -116,7 +111,7 @@ impl TypeCx {
         match self.view.decls.decl(x.parent!).kind {
             .Record -> fits_default(self, root, x.name, want),
             .Fn or .Method -> fits_seat_default(self, root, x.name, want),
-            .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Rule or .Collect -> nothing(),
+            .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> nothing(),
         }
     }
 
@@ -125,7 +120,7 @@ impl TypeCx {
     mut fn case_body(x: Decl) {
         let root: ExprId = x.root!
         let want: TypeId = self.view.decls.sig(x.id)?.fn_sig()?.ret ?? self.error_type
-        // LICENSED I15: this IS the bracket
+        // LICENSED style.bracket_ritual: this IS the bracket
         self.fn_ret.push(want)
         self.plant_want(root, want)
         self.walk(root)
@@ -159,7 +154,7 @@ impl TypeCx {
         let sig: FnSig? = self.stmt_sig(s)
         let outer = self.scope
         let outer_marks = self.scope_marks
-        // LICENSED I15: this IS the bracket
+        // LICENSED style.bracket_ritual: this IS the bracket
         self.fn_ret.push(sig?.ret ?? self.error_type)
         self.scope = sig?.params ?? []
         self.scope_marks = self.view.decls.marks_of(self.decl_of(s), self.scope.length)
@@ -187,12 +182,25 @@ impl TypeCx {
             // A rule's `@fixes`/`@keeps` are recognised by NAME, like
             // `@derive` — but unlike it, neither resolves to a
             // declared fn at all, so the general call law never
-            // reaches them; `features/rules/check.av` judges their
-            // own shape instead.
+            // reaches them; `rule`'s own `check()` judges their
+            // presence. Their ARGS type separately, under MAIN's own
+            // wide window (`type_example_args`) — they sit ABOVE the
+            // declaration, same as the callee this door already
+            // skips, so a declaration's own narrow window passes
+            // them by too.
             if !example_marks(a.name) && self.facts.owns(a.callee) {
                 self.walk_annotation(a)
                 check_annotation(self, s, a)
             }
+        }
+    }
+
+    /// `@fixes`/`@keeps` args, typed under MAIN's wide window — the
+    /// one place their span is inside the window in force, same as
+    /// their callee already reads from here.
+    mut fn type_example_args(s: StmtId) {
+        for a in self.view.store.annotations_of(s) {
+            if example_marks(a.name) { for e in a.args { let _ = self.walk_type(e) } }
         }
     }
 
@@ -242,7 +250,7 @@ impl TypeCx {
     mut fn lambda_body(lam: ExprId, ptys: List<TypeId>, marks: List<SeatMark>, body: ExprId) -> TypeId {
         self.facts.seat_lambda(lam, ptys, marks)
         self.facts.seat_captures(lam, self.capture_seats(lam))
-        // LICENSED I15: this IS the bracket
+        // LICENSED style.bracket_ritual: this IS the bracket
         self.lam_bar.push(self.fn_ret.length)
         let ret = self.walk_type(body)
         let _ = self.lam_bar.pop()
@@ -252,7 +260,7 @@ impl TypeCx {
     /// A `collect`'s body walked under its own frame: the values its
     /// statements discard, in the order they ran.
     mut fn gathered(body: ExprId) -> List<ExprId> {
-        // LICENSED I15: this IS the bracket
+        // LICENSED style.bracket_ritual: this IS the bracket
         self.gathers.push(Gathering { bars: self.lam_bar.length, values: [] })
         let _ = self.walk_type(body)
         self.gathers.pop().values
@@ -366,7 +374,7 @@ impl TypeCx {
     }
 
     fn any_hungry(ids: List<ExprId>) -> bool {
-        // LICENSED I4: `it` binds to the NEAREST call, so a self-method predicate is F2033 — the scan is spelled
+        // LICENSED style.hand_rolled_scan: `it` binds to the NEAREST call, so a self-method predicate is F2033 — the scan is spelled
         for k in ids {
             if self.facts.hungry_at(k) { return true }
         }
@@ -629,10 +637,10 @@ fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
 /// trait's wears `Self` there, the signatory's its own type.
 fn sigs_agree(want: FnSig, got: FnSig) -> bool {
     if got.params.length != want.params.length { return false }
-    // LICENSED I9: type identity — interned ids ARE the agreement
+    // LICENSED type.index_compared: type identity — interned ids ARE the agreement
     if want.ret.index != got.ret.index { return false }
     for j, w in want.params {
-        // LICENSED I9: type identity — interned ids ARE the agreement
+        // LICENSED type.index_compared: type identity — interned ids ARE the agreement
         if j > 0 && got.params[j].index != w.index { return false }
     }
     true

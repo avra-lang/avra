@@ -1,9 +1,10 @@
 //! THE RULES PASS: every node a file's own declarations hold, the
 //! table's rules tried where their root-kind index admits (or
-//! carries `any_root`). `rule_candidates` is the ONE walk — `avra
-//! check`'s findings (`rule_findings`) and `avra fix`'s proof both
-//! read it, so a rewrite `check` shows is the exact one `fix` proves
-//! or refuses, never a second derivation that could disagree.
+//! carries `any_root`) — design §5: nodes touched, never nodes ×
+//! rules. `rule_candidates` is the ONE walk — `avra check`'s findings
+//! (`rule_findings`) and `avra fix`'s proof both read it, so a
+//! rewrite `check` shows is the exact one `fix` proves or refuses,
+//! never a second derivation that could disagree.
 use core.{At, StmtId, NodeStore, flatten}
 use features.{Code, Fix, Analysed}
 use diagnostics.{Diag, warning}
@@ -28,9 +29,27 @@ fn stmt_candidates(a: Analysed, entries: List<RuleEntry>, s: StmtId) -> List<Can
 
 /// Every node under (and including) `root`, children before owner —
 /// `core.every_expr`'s shape, generalized to every `At` kind, so a
-/// rule rooted at a statement reaches it too.
+/// rule rooted at a statement reaches it too. A `Pat.Quote`'s own
+/// BODY never descends: it is the pattern's TEXT, mirrored into an
+/// expr tree so a `quote{ ... }` pattern can be WRITTEN as code —
+/// never code a rule should fire ON. Without this guard, a rule's
+/// own declaration matches ITSELF: `if_start_raw`'s pattern spells
+/// `Ins.IfStart(${c})`, and that reads as a real `Ins.IfStart` call
+/// to every rule walking compiler/idioms.av (or any feature's own
+/// idioms.av) — a PRECISION bug, not debt to license away.
 fn every_at(store: NodeStore, root: At) -> List<At> {
+    if quote_pattern(store, root) { return [root] }
     flatten([every_at(store, k) for k in store.kids_at(root)]).concat([root])
+}
+
+/// Whether `at` is a `Pat.Quote` — the PATTERN position. A rewrite's
+/// own `-> quote { ... }` is an ordinary `Expr`, ANSWER position,
+/// real code the walk still reaches and rules may still fire on.
+fn quote_pattern(store: NodeStore, at: At) -> bool {
+    match at {
+        .Pat(id) -> store.pat(id) is .Quote,
+        _ -> false,
+    }
 }
 
 fn node_candidates(a: Analysed, entries: List<RuleEntry>, at: At) -> List<Candidate> {
@@ -77,6 +96,6 @@ fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
     let text = trimmed(raw)
     let loc? = code_at(a, at).loc() else { return null }
     let edit = Edit { loc: loc, replacement: text }
-    let sg = Suggestion { confidence: Confidence.High, description: rule_id(r), edits: [edit] }
+    let sg = Suggestion { confidence: Confidence.High, description: "rewrite to `${text}`", edits: [edit] }
     warning("rule.${rule_id(r)}", loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
 }

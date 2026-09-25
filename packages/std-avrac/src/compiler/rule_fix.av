@@ -1,18 +1,22 @@
-//! `avra fix`'s OWN LOGIC: every candidate the rules pass finds,
-//! turned into an APPLICATION — proved (IR-equal) or merely shown —
-//! then the proved ones spliced at once. The CLI command's whole job
-//! is arguments in, this out; nothing here touches a filesystem.
+//! `avra fix`'s OWN LOGIC: every candidate the rules pass finds, AND
+//! every OTHER diagnostic's own `Diag.suggestions`, turned into ONE
+//! kind of APPLICATION — proved (IR-equal) or merely shown — then the
+//! proved ones spliced at once. The CLI command's whole job is
+//! arguments in, this out; nothing here touches a filesystem.
 use core.{NodeStore, Remark, flatten}
 use features.{Analysed, Decl}
-use diagnostics.{spliced}
-use @std.errors.{Edit, Loc}
+use diagnostics.{spliced, Diag}
+use @std.errors.{Edit, Loc, Suggestion}
 use compiler.backend.{trimmed}
 
-/// One candidate's outcome: the rule that answered, the EDIT it
-/// proposes, and whether it is PROVED — the tier `avra fix` writes.
-/// A `Fix.Say` and a rewrite with nowhere to point an edit never
-/// reach here at all (`fix_applications`).
-export type Application = { rule_kind: string, edit: Edit, proved: bool }
+/// One rewrite's outcome: the diagnostic kind that answered it (a
+/// rule's own `<module>.<name>`, or a plain `Diag.kind` for anything
+/// else), every EDIT it proposes — applied together or not at all —
+/// and whether the set is PROVED, the tier `avra fix` writes. A
+/// `Fix.Say` and a rewrite with nowhere to point an edit never reach
+/// here at all (`fix_applications`); a `Suggestion` with no edits
+/// never reaches here either (`suggestion_applications`).
+export type Application = { kind: string, edits: List<Edit>, proved: bool }
 
 impl Program {
     /// Every rewrite candidate this file's declarations turn up, each
@@ -40,10 +44,38 @@ impl Program {
         if licensed_just_above(a.view.store, loc.lo) { return [] }
         let edit = Edit { loc: loc, replacement: trimmed(raw) }
         let after? = spliced(text, [edit]) else { return [] }
-        let proved = self.ir_proved(path, a, c.at, after)
-        [Application { rule_kind: rule_id(c.owner), edit: edit, proved: proved }]
+        [Application { kind: rule_id(c.owner), edits: [edit], proved: self.ir_proved(path, a, c.at, after) }]
     }
 
+    /// `avra fix`'s SECOND source: every OTHER diagnostic's own
+    /// `Suggestion`s, proved the SAME way a rule's rewrite is proved
+    /// (`edits_proved`) — so a Diag built far from the rule DSL (a
+    /// spell-check, a dependency line, a named type's wrap) applies
+    /// exactly as a rule's own rewrite does, once its edits prove the
+    /// same program before and after. `rule_findings`'s own
+    /// suggestions are never read here — `fix_applications` already
+    /// owns them, through the `Candidate` each one answers for; reading
+    /// both would apply the same rewrite twice.
+    fn suggestion_applications(path: string, a: Analysed, diags: List<Diag>, only: string?) -> List<Application> {
+        flatten([self.diag_applications(path, a, d) for d in diags if only == null || d.kind == only])
+    }
+
+    fn diag_applications(path: string, a: Analysed, d: Diag) -> List<Application> {
+        [self.suggestion_application(path, a, d.kind, sg) for sg in d.suggestions if fixable(a.view.store, sg)]
+    }
+
+    fn suggestion_application(path: string, a: Analysed, kind: string, sg: Suggestion) -> Application {
+        Application { kind: kind, edits: sg.edits, proved: self.edits_proved(path, a, sg.edits) }
+    }
+}
+
+/// Whether `sg` has anything for `avra fix` to even consider: at
+/// least one edit, none of them over a REMARK or a `// LICENSED`
+/// site — the same two guards `rewrite_application` holds a rule's
+/// own rewrite to, carried into the general gate so a licensed site
+/// refuses ANY automated fix over it, rule-derived or not.
+fn fixable(store: NodeStore, sg: Suggestion) -> bool {
+    !sg.edits.is_empty() && sg.edits.all((e: Edit) -> !holds_remark(store, e.loc) && !licensed_just_above(store, e.loc.lo))
 }
 
 /// A rule's own `///` sentence, by `<module>.<name>` — the table's
@@ -69,7 +101,7 @@ fn holds_remark(store: NodeStore, loc: Loc) -> bool {
 /// `licensed`), and a rule that PROVES a rewrite here is no less
 /// bound by it: proof says the rewrite is safe, never that it is
 /// wanted (grammar/tests/layout/layout.av's own if-chain is the
-/// witness — provably `when`-shaped, and LICENSED I54 because the
+/// witness — provably `when`-shaped, and LICENSED rule.if_expr.when_ladder because the
 /// chain, not the ladder, is what that test is FOR).
 fn licensed_just_above(store: NodeStore, lo: int) -> bool {
     store.remarks.get().any(licensed_remark(it, lo))
@@ -82,26 +114,32 @@ fn licensed_remark(r: Remark, lo: int) -> bool {
     }
 }
 
-/// The PROVED applications, spliced into `text` at once — absence
-/// when two of them overlap (two rules landing on the same code) or
-/// either reaches outside the text; every unproved application is
-/// left exactly as `check` already showed it.
+/// The PROVED applications' edits, ALL of them, spliced into `text`
+/// at once — absence when two overlap (two rules, or a rule and a
+/// suggestion, landing on the same code) or any reaches outside the
+/// text; every unproved application is left exactly as `check`
+/// already showed it.
 export fn fix_applied(text: string, apps: List<Application>) -> string? {
-    spliced(text, [ap.edit for ap in apps if ap.proved])
+    spliced(text, flatten([ap.edits for ap in apps if ap.proved]))
 }
 
-/// The first two PROVED applications whose edits overlap, named —
-/// two rules that fight over the same code (or one rule firing twice
-/// on it) is a defect worth SAYING, not just a silent "nothing
-/// applied". Absence when no two proved edits touch.
+/// The first two PROVED applications with an overlapping edit
+/// between them, named — two rules (or a rule and a suggestion) that
+/// fight over the same code is a defect worth SAYING, not just a
+/// silent "nothing applied". Absence when no two proved applications
+/// touch.
 export fn fighting_pair(apps: List<Application>) -> string? {
     let proved = [ap for ap in apps if ap.proved]
     for i, a in proved {
         for j, b in proved {
-            if i < j && overlaps(a.edit.loc, b.edit.loc) { return "${a.rule_kind} and ${b.rule_kind}" }
+            if i < j && applications_overlap(a, b) { return "${a.kind} and ${b.kind}" }
         }
     }
     null
+}
+
+fn applications_overlap(a: Application, b: Application) -> bool {
+    a.edits.any((e: Edit) -> b.edits.any((f: Edit) -> overlaps(e.loc, f.loc)))
 }
 
 fn overlaps(a: Loc, b: Loc) -> bool {
