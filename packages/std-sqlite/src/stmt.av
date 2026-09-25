@@ -14,11 +14,12 @@
 //! and an out-of-memory — so a read that tests the POINTER cannot tell
 //! them apart. `int_at` asks `column_type` before it reads, and a cell
 //! of the wrong class is a `Mismatch` rather than a coerced zero.
-use error.{Cause, Storage, SqlError, refused, barred, defect, cause_of}
+use @std.errors.{Loc}
+use error.{Cause, Storage, SqlError, barred}
 use boundary.{transient, static_bytes}
-use open.{Db, closed_fault}
+use open.{Db}
 use script.{statements}
-use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
+use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_column_name, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_error_offset, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
 
 /// A compiled statement. BOTH FIELDS ARE CELLS because both are
 /// shared state: the handle so finalizing twice finalizes once, and
@@ -32,211 +33,396 @@ export type Stmt = { raw: Cell<ptr?>, done: Cell<bool> = Cell.new(false) }
 const row_code: int = 100
 const done_code: int = 101
 
-/// One statement compiled from `sql`.
-///
-/// THE TEXT MUST HOLD EXACTLY ONE STATEMENT, and that is checked by the
-/// PARSER before SQLite is asked — `statements` divides the script by
-/// asking `sqlite3_complete` where each one ends, so a semicolon inside
-/// a literal or a trigger body cannot split it. `prepare` compiles only
-/// the FIRST statement and reports success for the rest, which is the
-/// silent wrong answer this refuses.
-export fn prepare(db: Db, sql: string) -> Result<Stmt, SqlError> {
-    let _ = barred(closed_fault(db))?
-    let parts = statements(sql)?
-    if parts.length > 1 { fail refused(Cause.ManyStatements, "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many") }
-    if parts.is_empty() { fail refused(Cause.NoStatement, "the text holds no statement — it is empty or nothing but comments") }
-    compiled(db, parts[0])
-}
-
-/// The call, and the only place the statement handle is nullable.
-///
-/// ONE DOOR COVERS THE MODULE. `prepare` asks `closed_fault` before
-/// anything else, and every other verb here that reaches the CONNECTION
-/// is downstream of a successful prepare — `run`'s `sqlite3_changes64`
-/// is reached only after one — so a closed connection is named once,
-/// where the caller can act on it, rather than arriving as SQLite's
-/// SQLITE_MISUSE with the driver's name on it.
-fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
-    mut handle: ptr? = null // LICENSED I4: an out-parameter cell C fills
-    mut tail: ptr? = null // LICENSED I4: an out-parameter cell C fills
-    let rc = sqlite3_prepare_v3(db.raw.get(), sql.bytes(), sql.length, 0, handle, tail)
-    if rc != 0 { fail failed(rc, sql) }
-    // rc = SQLITE_OK WITH A NULL STATEMENT is SQLite's "nothing to run"
-    // — the text was a comment, or blank (T37). The splitter does NOT
-    // judge this and deliberately so: it divides text into segments and
-    // leaves "does this segment hold a statement" to `prepare`, which is
-    // the only thing that can answer. For a verb that takes ONE
-    // statement the answer is a refusal; a script verb skips the
-    // segment instead. Same fact, two verbs, opposite answers.
-    if handle == null { fail refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
-    Stmt { raw: Cell.new(handle) }
-}
-
-/// The statement stepped. `true` when a row is standing, `false` when
-/// the statement is done. Anything else is the failure it names.
-///
-/// Since 3.6.23.1 `step` AUTO-RESETS rather than answering
-/// SQLITE_MISUSE, so the code is the real error and not a protocol
-/// complaint about the previous one.
-///
-/// AND THE AUTO-RESET HAS A SECOND HALF THIS DRIVER CANNOT YET STOP:
-/// STEPPING PAST DONE RUNS THE STATEMENT AGAIN. The reset that makes
-/// the error code honest also rewinds, so a step after DONE is a fresh
-/// execution — measured, three steps on one INSERT write THREE ROWS and
-/// every one of them answers `false`, and a SELECT hands its rows out a
-/// second time. Nothing in the answer says so.
-///
-/// SO THE DRIVER REMEMBERS, because SQLite cannot: its own witness,
-/// `sqlite3_stmt_busy`, is 1 mid-row but 0 after DONE (measured both
-/// ways), so it cannot tell a finished statement from a fresh one and
-/// a guard built on it would refuse half the cases. `Stmt.done` is
-/// that memory, and it is a CELL so the mark reaches every copy of
-/// the statement rather than the one binding that stepped.
-/// `sqlite_stmt_adversarial_test.av` pins the behaviour.
-export fn step(s: Stmt) -> Result<bool, SqlError> {
-    let _ = barred(finalized_fault(s))?
-    if s.done.get() { fail refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
-    let rc = sqlite3_step(s.raw.get())
-    if rc == row_code { return true }
-    if rc == done_code {
-        s.done.set(true)
-        return false
+impl Db {
+    /// One statement compiled from `sql`.
+    ///
+    /// THE TEXT MUST HOLD EXACTLY ONE STATEMENT, and that is checked by
+    /// the PARSER before SQLite is asked — `statements` divides the
+    /// script by asking `sqlite3_complete` where each one ends, so a
+    /// semicolon inside a literal or a trigger body cannot split it.
+    /// `sqlite3_prepare_v3` compiles only the FIRST statement and
+    /// reports success for the rest, which is the silent wrong answer
+    /// this refuses.
+    fn prepare(sql: string) -> Result<Stmt, SqlError> {
+        let _ = barred(self.closed_fault())?
+        let parts = statements(sql)?
+        if parts.length > 1 { fail SqlError.refused(Cause.ManyStatements, "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many") }
+        if parts.is_empty() { fail SqlError.refused(Cause.NoStatement, "the text holds no statement — it is empty or nothing but comments") }
+        self.compiled(parts[0])
     }
-    fail failed(rc, null)
+
+    /// The call, and the only place the statement handle is nullable.
+    ///
+    /// ONE DOOR COVERS THE MODULE. `prepare` asks `closed_fault` before
+    /// anything else, and every other verb here that reaches the
+    /// CONNECTION is downstream of a successful prepare — `drained`'s
+    /// `sqlite3_changes64` is reached only after one — so a closed
+    /// connection is named once, where the caller can act on it, rather
+    /// than arriving as SQLite's SQLITE_MISUSE with the driver's name on
+    /// it.
+    fn compiled(sql: string) -> Result<Stmt, SqlError> {
+        mut handle: ptr? = null // LICENSED I4: an out-parameter cell C fills
+        mut tail: ptr? = null // LICENSED I4: an out-parameter cell C fills
+        let rc = sqlite3_prepare_v3(self.raw.get(), sql.bytes(), sql.length, 0, handle, tail)
+        if rc != 0 { fail failed_at(self, rc, sql) }
+        // rc = SQLITE_OK WITH A NULL STATEMENT is SQLite's "nothing to run"
+        // — the text was a comment, or blank (T37). The splitter does NOT
+        // judge this and deliberately so: it divides text into segments and
+        // leaves "does this segment hold a statement" to `prepare`, which is
+        // the only thing that can answer. For a verb that takes ONE
+        // statement the answer is a refusal; a script verb skips the
+        // segment instead. Same fact, two verbs, opposite answers.
+        if handle == null { fail SqlError.refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
+        Stmt { raw: Cell.new(handle) }
+    }
 }
 
-/// The statement rewound, its bindings kept — and the DONE mark
-/// cleared, because rewinding is exactly the caller saying they mean to
-/// run it again.
-export fn reset(s: Stmt) -> int {
-    if dead(s) { return 0 }
-    s.done.set(false)
-    sqlite3_reset(s.raw.get())
-}
+impl Stmt {
+    /// The statement stepped. `true` when a row is standing, `false` when
+    /// the statement is done. Anything else is the failure it names.
+    ///
+    /// Since 3.6.23.1 `step` AUTO-RESETS rather than answering
+    /// SQLITE_MISUSE, so the code is the real error and not a protocol
+    /// complaint about the previous one.
+    ///
+    /// AND THE AUTO-RESET HAS A SECOND HALF THIS DRIVER CANNOT YET STOP:
+    /// STEPPING PAST DONE RUNS THE STATEMENT AGAIN. The reset that makes
+    /// the error code honest also rewinds, so a step after DONE is a fresh
+    /// execution — measured, three steps on one INSERT write THREE ROWS and
+    /// every one of them answers `false`, and a SELECT hands its rows out a
+    /// second time. Nothing in the answer says so.
+    ///
+    /// SO THE DRIVER REMEMBERS, because SQLite cannot: its own witness,
+    /// `sqlite3_stmt_busy`, is 1 mid-row but 0 after DONE (measured both
+    /// ways), so it cannot tell a finished statement from a fresh one and
+    /// a guard built on it would refuse half the cases. `Stmt.done` is
+    /// that memory, and it is a CELL so the mark reaches every copy of
+    /// the statement rather than the one binding that stepped.
+    /// `sqlite_stmt_adversarial_test.av` pins the behaviour.
+    fn step() -> Result<bool, SqlError> {
+        let _ = barred(self.finalized_fault())?
+        if self.done.get() { fail SqlError.refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
+        let rc = sqlite3_step(self.raw.get())
+        if rc == row_code { return true }
+        if rc == done_code {
+            self.done.set(true)
+            return false
+        }
+        fail failed(rc, null)
+    }
 
-/// The statement destroyed, and the handle NULLED so it cannot be
-/// destroyed again. Answers the code of the most recent step, so a
-/// failing statement reports its failure here as well.
-export fn finalize(s: Stmt) -> int {
-    let handle: ptr? = s.raw.get()
-    if handle == null { return 0 }
-    s.raw.set(null)
-    sqlite3_finalize(handle)
+    /// The statement rewound, its bindings kept — and the DONE mark
+    /// cleared, because rewinding is exactly the caller saying they mean to
+    /// run it again.
+    fn reset() -> int {
+        if self.dead() { return 0 }
+        self.done.set(false)
+        sqlite3_reset(self.raw.get())
+    }
+
+    /// The statement destroyed, and the handle NULLED so it cannot be
+    /// destroyed again. Answers the code of the most recent step, so a
+    /// failing statement reports its failure here as well.
+    fn finalize() -> int {
+        let handle: ptr? = self.raw.get()
+        if handle == null { return 0 }
+        self.raw.set(null)
+        sqlite3_finalize(handle)
+    }
+
+    /// A statement that has ALREADY been bound, drained to its change
+    /// count. Answers the rows it CHANGED — `sqlite3_changes64`, which
+    /// counts what this statement did DIRECTLY, so trigger, foreign-key
+    /// and REPLACE side effects are not in it.
+    ///
+    /// A ROW-YIELDING STATEMENT IS REFUSED HERE. `sqlite3_column_count`
+    /// says at PREPARE time whether a statement yields rows, so running
+    /// one through a verb that answers a count would throw the rows away
+    /// silently — which is the whole reason this verb refuses instead.
+    fn drained(db: Db) -> Result<int, SqlError> {
+        if sqlite3_column_count(self.raw.get()) > 0 { fail SqlError.refused(Cause.RowsDiscarded, "this statement answers rows and this verb answers a count — read it instead") }
+        let more = self.step()?
+        if more { fail SqlError.refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
+        sqlite3_changes64(db.raw.get())
+    }
+
+    // ── Binding values into the slots ───────────────────────────
+    //
+    // NO VERB IN THIS DRIVER TAKES A `mut` SEAT. A bind changes SQLite's
+    // statement and not the Avra value; `finalize` and `close` DO write
+    // the handle away, and they reach it through its cell, so the write
+    // lands in the one slot every copy reads rather than in whichever
+    // binding the caller happened to pass.
+    //
+    // PARAMETER INDICES ARE 1-BASED and column indices are 0-based. The
+    // two families sit next to each other and disagree, which is the
+    // oldest off-by-one in this API — so every bind checks its index
+    // against `sqlite3_bind_parameter_count` and refuses by name rather
+    // than letting SQLITE_RANGE come back as a bare code.
+    //
+    // A BIND AFTER A STEP, WITH NO RESET, IS SQLITE_MISUSE — and it
+    // arrives as `Cause.Defect`, which reads as the driver's bug when it
+    // is the caller's sequence. The index guard below cannot help: the
+    // mistake is in the ORDER, not the number. It is unguarded for the
+    // same reason the step-past-DONE case is — `Stmt` has no memory of
+    // having been stepped, and `sqlite3_stmt_busy` witnesses only the
+    // mid-row half (1 mid-row, 0 after DONE, measured). Both wait on the
+    // same flag. Reset before you rebind.
+
+    /// How many parameter slots the statement has.
+    fn slots() -> int {
+        if self.dead() { return 0 }
+        sqlite3_bind_parameter_count(self.raw.get())
+    }
+
+    /// An integer bound into the Nth hole, counting from 1.
+    fn bind_int(index: int, value: int) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_int64(self.raw.get(), i, value))
+    }
+
+    /// A float into the Nth slot. A `double` on both sides of the wall, so
+    /// the value SQLite stores is the value that was bound — no conversion
+    /// happens crossing, and none is decided here.
+    fn bind_real(index: int, value: float) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_double(self.raw.get(), i, value))
+    }
+
+    /// SQL NULL bound into the Nth hole. NULL is a VALUE here — it is not
+    /// the absence of a bind, and a hole never bound is also NULL, which is
+    /// why clearing the binds and this verb are different things. The face
+    /// has no clearing verb: the wall's `sqlite3_clear_bindings` is the one
+    /// there is, and it takes a non-null `ptr`.
+    fn bind_null(index: int) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_null(self.raw.get(), i))
+    }
+
+    /// A string's bytes bound into the Nth hole, COPIED. A zero-length
+    /// blob is a real value and stays distinct from NULL.
+    ///
+    /// THE VALUE IS A `string`, SO IT IS ALWAYS UTF-8 — an arbitrary octet
+    /// run is `bind_blob_bytes`'s to bind. This verb exists for the common
+    /// case where the blob's bytes happen to be a string a caller already
+    /// holds, sparing them a `.bytes()` at every call site.
+    fn bind_blob(index: int, value: string) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_blob(self.raw.get(), i, value.bytes(), value.length, transient()))
+    }
+
+    /// Arbitrary octets bound into the Nth hole, COPIED — `bind_blob`'s
+    /// `Bytes`-taking twin, for a value that is not (or is not known to be)
+    /// valid UTF-8.
+    fn bind_blob_bytes(index: int, value: Bytes) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_blob(self.raw.get(), i, value, value.length, transient()))
+    }
+
+    /// Text bound into the Nth hole, COPIED by SQLite.
+    ///
+    /// The length is the Avra string's own — every byte of it — and never
+    /// -1. `-1` asks C to measure with `strlen`, so text holding a NUL would
+    /// be bound short and the database would hold a prefix of what the
+    /// caller wrote, silently.
+    fn bind_text(index: int, value: string) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_text(self.raw.get(), i, value.bytes(), value.length, transient()))
+    }
+
+    /// Text bound WITHOUT a copy — the named hatch (P8).
+    ///
+    /// Under `SQLITE_STATIC` the caller promises the bytes stay valid until
+    /// the statement is finalized or the parameter is rebound. Avra cannot
+    /// enforce that: a released box is a use-after-free INSIDE SQLite, at a
+    /// site with no relationship to this call, where the runtime's
+    /// refcounter is blind because a foreign pointer carries no header. The
+    /// verb is long and says so on purpose. `bind_text` is what you want.
+    ///
+    /// IT TAKES `Bytes`, AND THE BORROW IS WHY. The wall's seat carries a
+    /// length, so the value crossing is octets — and a face taking
+    /// `string` would have to MINT those octets here, handing SQLite a box
+    /// with no holder but this call. That is the very use-after-free the
+    /// verb's name warns about, created BY the verb rather than by its
+    /// caller. Taking `Bytes` puts the box in the caller's hands, where
+    /// the promise it is making can actually be kept.
+    fn bind_text_unsafely_borrowed(index: int, value: Bytes) -> Result<int, SqlError> {
+        let i = in_slots(self, index)?
+        judged(sqlite3_bind_text(self.raw.get(), i, value, value.length, static_bytes()))
+    }
+
+    // ── Reading the row that is standing ────────────────────────
+
+    /// How many columns the statement's rows have — known at PREPARE time,
+    /// which is how a driver tells a row-yielding statement from a writing
+    /// one without reading the SQL.
+    fn width() -> int {
+        if self.dead() { return 0 }
+        sqlite3_column_count(self.raw.get())
+    }
+
+    /// How many columns the CURRENT row has: 0 before the first step, 0
+    /// after DONE, and 0 after a reset. SQLite's own answer to "is a row
+    /// standing", which is why no flag of ours is needed.
+    fn standing() -> int {
+        if self.dead() { return 0 }
+        sqlite3_data_count(self.raw.get())
+    }
+
+    /// The storage class of a cell. THE FIRST QUESTION ASKED OF ANY CELL.
+    fn class_at(col: int) -> Result<Storage, SqlError> {
+        let held = in_row(self, col)?
+        storage_of(sqlite3_column_type(self.raw.get(), col))
+    }
+
+    /// A cell as an integer, refused when it holds another class.
+    fn int_at(col: int) -> Result<int, SqlError> {
+        let class = self.class_at(col)?
+        if !(class is .Int) { fail SqlError.wrong_class(col, Storage.Int, class) }
+        sqlite3_column_int64(self.raw.get(), col)
+    }
+
+    /// A cell as a float, refused when it holds another class — the INTEGER
+    /// class included, and that refusal is the whole design.
+    ///
+    /// AN INTEGER CELL READ AS A DOUBLE LOSES PRECISION ABOVE 2^53, and
+    /// nothing in the answer says so. Measured against the vendored library,
+    /// through SQLite's own cast so the loss is the library's rather than
+    /// this driver's arithmetic:
+    ///
+    /// ```
+    /// stored                    9007199254740993   (2^53 + 1, INTEGER)
+    /// cast to real, back to int 9007199254740992
+    /// the round trip compares   0                  <- false
+    /// what it lost              -1
+    /// ```
+    ///
+    /// So accepting an INTEGER here would be an implicit widen at the
+    /// boundary, decided by the driver, on a value that came from outside
+    /// and may be any 64-bit integer. That is the widen the language itself
+    /// refuses — `1.5 + 2` does not compile — and a driver must not reopen
+    /// at its door what the language closed inside it. A caller who means
+    /// the widen writes it: read `int_at` and convert, or ask SQL for
+    /// `cast(v as real)`, which moves the decision into the query where it
+    /// is visible.
+    ///
+    /// AFFINITY MAKES THIS RARER THAN IT SOUNDS, measured across the four
+    /// affinities: a column DECLARED `real` answers REAL for every value,
+    /// `3` and `3.0` alike, because REAL affinity converts on the way in.
+    /// The INTEGER class reaches a `real_at` from a column with NO declared
+    /// type, where `3` and `3.0` are stored as they were written, and from
+    /// `sum` over integers — while `avg` and `total` are always REAL.
+    fn real_at(col: int) -> Result<float, SqlError> {
+        let class = self.class_at(col)?
+        if !(class is .Real) { fail SqlError.wrong_class(col, Storage.Real, class) }
+        sqlite3_column_double(self.raw.get(), col)
+    }
+
+    // ── Reading text and octets ──────────────────────────────────
+    //
+    // THE BUFFER IS SQLITE'S AND IT DIES AT THE NEXT STEP, so a cell that
+    // holds text or a blob is COPIED into a box of ours before the driver
+    // answers it. `avra_bytes_adopted` is the one door a foreign buffer
+    // enters by — the only place the runtime dereferences an address a
+    // program supplied — and it is named for what it does rather than for
+    // being safe, because it is not: the LENGTH is the whole contract and
+    // nothing on this side can check it.
+    //
+    // THE EMPTY CASE IS THE FIRST CASE, and it is why the class is asked
+    // before the pointer. `sqlite3_column_blob` answers a NULL POINTER for
+    // SQL NULL and for a ZERO-LENGTH BLOB alike, so a read that branched on
+    // the pointer would spend absence twice and hand back `null` for an
+    // empty blob. The CLASS says which, and an empty blob is an EMPTY BOX.
+    //
+    // THE ADOPTION'S SEAT TAKES NO ABSENCE (F2088), so the null decision
+    // lives HERE rather than in the runtime: `taken` answers the empty box
+    // for a buffer of no octets and never asks C to read address zero.
+
+    /// A cell as TEXT, refused when it holds another class. The octets are
+    /// SQLite's UTF-8, copied and then read as text — so a blob that is
+    /// not UTF-8 is refused by `text_at`'s class check and never by a
+    /// decoder.
+    fn text_at(col: int) -> Result<string, SqlError> {
+        let class = self.class_at(col)?
+        if !(class is .Text) { fail SqlError.wrong_class(col, Storage.Text, class) }
+        let p: ptr? = sqlite3_column_text(self.raw.get(), col)
+        let held = taken(p, sqlite3_column_bytes(self.raw.get(), col), col)?
+        let word? = held.text() else { fail SqlError.defect(not_utf8_words(col)) }
+        word
+    }
+
+    /// A cell as OCTETS, refused when it holds another class. A blob of no
+    /// octets is an empty `Bytes`; only SQL NULL is absence, and the class
+    /// is what says so.
+    fn blob_at(col: int) -> Result<Bytes, SqlError> {
+        let class = self.class_at(col)?
+        if !(class is .Blob) { fail SqlError.wrong_class(col, Storage.Blob, class) }
+        let p: ptr? = sqlite3_column_blob(self.raw.get(), col)
+        taken(p, sqlite3_column_bytes(self.raw.get(), col), col)
+    }
+
+    /// The column's name in the result set — the `AS` alias where there is
+    /// one — copied. `sqlite3_column_name` has no companion length function
+    /// the way `column_text`/`column_blob` pair with `column_bytes`, so its
+    /// bytes are measured by their NUL: SQLite's own words for it are "a
+    /// zero-terminated UTF-8 string", and a name is never the cell data a
+    /// foreign row could hand back un-measured.
+    fn column_name(col: int) -> Result<string, SqlError> {
+        let _ = in_row(self, col)?
+        let p: ptr? = sqlite3_column_name(self.raw.get(), col)
+        let held? = p else { fail SqlError.defect(no_name_words(col)) }
+        let bytes = avra_bytes_adopted(held, avra_sqlite_cstr_len(held))
+        let word? = bytes.text() else { fail SqlError.defect(not_utf8_name_words(col)) }
+        word
+    }
+
+    /// The refusal for a statement that was finalized, or absence when it
+    /// still stands. `finalize` NULLS the handle, so the null test IS the
+    /// question — `closed_fault`'s twin one level down, and every verb
+    /// that can refuse asks it before reading a count.
+    fn finalized_fault() -> SqlError? {
+        if self.dead() { return statement_finalized }
+        null
+    }
+
+    /// Whether the statement has been finalized. THE COUNTING VERBS ASK IT
+    /// AND ANSWER FOR THEMSELVES: they answer a plain `int`, so they have
+    /// no channel to refuse through, and zero is the honest answer for a
+    /// statement that is gone — no columns, no row standing, no slots,
+    /// nothing to rewind.
+    ///
+    /// AND THE ZERO IS THE DRIVER'S, NOT THE LIBRARY'S. A null handed to
+    /// `sqlite3_column_count` answers zero only under
+    /// `SQLITE_ENABLE_API_ARMOR`, so a driver that let the null cross
+    /// would rest on a build flag no reader of this package can see.
+    fn dead() -> bool { self.raw.get() == null }
+
 }
 
 /// A statement that answers no rows, run whole: prepared, stepped to
-/// DONE, finalized. Answers the rows it CHANGED — `sqlite3_changes64`,
-/// which counts what this statement did DIRECTLY, so trigger,
-/// foreign-key and REPLACE side effects are not in it.
-///
-/// A ROW-YIELDING STATEMENT IS REFUSED HERE. `sqlite3_column_count`
-/// says at PREPARE time whether a statement yields rows, so running one
-/// through a verb that answers a count would throw the rows away
-/// silently — which is the whole reason this verb refuses instead.
+/// DONE, finalized. The WALL's own convenience over bare text — the
+/// face's `Db.run(Sql)` (`sql.av`) is the one with a caller-facing name,
+/// so this stays a free fn rather than a second `Db.run` method no
+/// overload could tell apart.
 export fn run(db: Db, sql: string) -> Result<int, SqlError> {
-    let s = prepare(db, sql)?
-    let n = drained(db, s)
-    let _ = finalize(s)
+    let s = db.prepare(sql)?
+    let n = s.drained(db)
+    let _ = s.finalize()
     n
 }
 
-fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
-    if sqlite3_column_count(s.raw.get()) > 0 { fail refused(Cause.RowsDiscarded, "this statement answers rows and this verb answers a count — read it instead") }
-    let more = step(s)?
-    if more { fail refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
-    sqlite3_changes64(db.raw.get())
+/// `failed`, plus the span a PARSE failure carries — `sqlite3_error_offset`
+/// answers -1 for a code with no token to blame, and `at` is absent
+/// exactly then. Only a connection-holding failure can ask; `step`'s
+/// failures stay spanless, since `Stmt` carries no connection back to it.
+fn failed_at(db: Db, rc: int, sql: string?) -> SqlError {
+    failed(rc, sql) with { at: offset_of(db) }
 }
 
-// ── Binding values into the slots ───────────────────────────────
-//
-// NO VERB IN THIS DRIVER TAKES A `mut` SEAT. A bind changes SQLite's
-// statement and not the Avra value; `finalize` and `close` DO write
-// the handle away, and they reach it through its cell, so the write
-// lands in the one slot every copy reads rather than in whichever
-// binding the caller happened to pass.
-//
-// PARAMETER INDICES ARE 1-BASED and column indices are 0-based. The two
-// families sit next to each other and disagree, which is the oldest
-// off-by-one in this API — so every bind checks its index against
-// `sqlite3_bind_parameter_count` and refuses by name rather than
-// letting SQLITE_RANGE come back as a bare code.
-//
-// A BIND AFTER A STEP, WITH NO RESET, IS SQLITE_MISUSE — and it arrives
-// as `Cause.Defect`, which reads as the driver's bug when it is the
-// caller's sequence. The index guard below cannot help: the mistake is
-// in the ORDER, not the number. It is unguarded for the same reason the
-// step-past-DONE case is — `Stmt` has no memory of having been stepped,
-// and `sqlite3_stmt_busy` witnesses only the mid-row half (1 mid-row, 0
-// after DONE, measured). Both wait on the same flag. Reset before you
-// rebind.
-
-/// How many parameter slots the statement has.
-export fn slots(s: Stmt) -> int {
-    if dead(s) { return 0 }
-    sqlite3_bind_parameter_count(s.raw.get())
-}
-
-/// An integer bound into the Nth hole, counting from 1.
-export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
-    let i = in_slots(s, index)?
-    judged(sqlite3_bind_int64(s.raw.get(), i, value))
-}
-
-/// A float into the Nth slot. A `double` on both sides of the wall, so
-/// the value SQLite stores is the value that was bound — no conversion
-/// happens crossing, and none is decided here.
-export fn bind_real(s: Stmt, index: int, value: float) -> Result<int, SqlError> {
-    let i = in_slots(s, index)?
-    judged(sqlite3_bind_double(s.raw.get(), i, value))
-}
-
-/// SQL NULL bound into the Nth hole. NULL is a VALUE here — it is not
-/// the absence of a bind, and a hole never bound is also NULL, which is
-/// why clearing the binds and this verb are different things. The face
-/// has no clearing verb: the wall's `sqlite3_clear_bindings` is the one
-/// there is, and it takes a non-null `ptr`.
-export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
-    let i = in_slots(s, index)?
-    judged(sqlite3_bind_null(s.raw.get(), i))
-}
-
-/// Text bound into the Nth hole, COPIED by SQLite.
-///
-/// The length is the Avra string's own — every byte of it — and never
-/// -1. `-1` asks C to measure with `strlen`, so text holding a NUL would
-/// be bound short and the database would hold a prefix of what the
-/// caller wrote, silently.
-export fn bind_text(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_slots(s, index)?
-    judged(sqlite3_bind_text(s.raw.get(), i, value.bytes(), value.length, transient()))
-}
-
-/// Bytes bound into the Nth hole, COPIED. A zero-length blob is a real
-/// value and stays distinct from NULL.
-export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_slots(s, index)?
-    judged(sqlite3_bind_blob(s.raw.get(), i, value.bytes(), value.length, transient()))
-}
-
-/// Text bound WITHOUT a copy — the named hatch (P8).
-///
-/// Under `SQLITE_STATIC` the caller promises the bytes stay valid until
-/// the statement is finalized or the parameter is rebound. Avra cannot
-/// enforce that: a released box is a use-after-free INSIDE SQLite, at a
-/// site with no relationship to this call, where the runtime's
-/// refcounter is blind because a foreign pointer carries no header. The
-/// verb is long and says so on purpose. `bind_text` is what you want.
-///
-/// IT TAKES `Bytes`, AND THE BORROW IS WHY. The wall's seat carries a
-/// length, so the value crossing is octets — and a face taking
-/// `string` would have to MINT those octets here, handing SQLite a box
-/// with no holder but this call. That is the very use-after-free the
-/// verb's name warns about, created BY the verb rather than by its
-/// caller. Taking `Bytes` puts the box in the caller's hands, where
-/// the promise it is making can actually be kept.
-export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: Bytes) -> Result<int, SqlError> {
-    let i = in_slots(s, index)?
-    judged(sqlite3_bind_text(s.raw.get(), i, value, value.length, static_bytes()))
+fn offset_of(db: Db) -> Loc? {
+    let n = sqlite3_error_offset(db.raw.get())
+    if n < 0 { return null }
+    Loc { file: null, lo: n, hi: n }
 }
 
 /// An index inside the statement's slots, or the refusal that names the
@@ -244,9 +430,9 @@ export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: Bytes) -> Resu
 /// twin, and it asks the statement first for the same reason: a
 /// finalized statement has no slots, and saying so blames the index.
 fn in_slots(s: Stmt, index: int) -> Result<int, SqlError> {
-    let _ = barred(finalized_fault(s))?
-    let n = slots(s)
-    if index < 1 || index > n { fail refused(Cause.OutOfSlots(index, n), slot_words(index, n)) }
+    let _ = barred(s.finalized_fault())?
+    let n = s.slots()
+    if index < 1 || index > n { fail SqlError.refused(Cause.OutOfSlots(index, n), slot_words(index, n)) }
     index
 }
 
@@ -260,126 +446,20 @@ fn judged(rc: int) -> Result<int, SqlError> {
     rc
 }
 
-// ── Reading the row that is standing ────────────────────────────
-
-/// How many columns the statement's rows have — known at PREPARE time,
-/// which is how a driver tells a row-yielding statement from a writing
-/// one without reading the SQL.
-export fn width(s: Stmt) -> int {
-    if dead(s) { return 0 }
-    sqlite3_column_count(s.raw.get())
-}
-
-/// How many columns the CURRENT row has: 0 before the first step, 0
-/// after DONE, and 0 after a reset. SQLite's own answer to "is a row
-/// standing", which is why no flag of ours is needed.
-export fn standing(s: Stmt) -> int {
-    if dead(s) { return 0 }
-    sqlite3_data_count(s.raw.get())
-}
-
-/// The storage class of a cell. THE FIRST QUESTION ASKED OF ANY CELL.
-export fn class_at(s: Stmt, col: int) -> Result<Storage, SqlError> {
-    let held = in_row(s, col)?
-    storage_of(sqlite3_column_type(s.raw.get(), col))
-}
-
-/// A cell as an integer, refused when it holds another class.
-export fn int_at(s: Stmt, col: int) -> Result<int, SqlError> {
-    let class = class_at(s, col)?
-    if !(class is .Int) { fail wrong_class(col, Storage.Int, class) }
-    sqlite3_column_int64(s.raw.get(), col)
-}
-
-/// A cell as a float, refused when it holds another class — the INTEGER
-/// class included, and that refusal is the whole design.
-///
-/// AN INTEGER CELL READ AS A DOUBLE LOSES PRECISION ABOVE 2^53, and
-/// nothing in the answer says so. Measured against the vendored library,
-/// through SQLite's own cast so the loss is the library's rather than
-/// this driver's arithmetic:
-///
-/// ```
-/// stored                    9007199254740993   (2^53 + 1, INTEGER)
-/// cast to real, back to int 9007199254740992
-/// the round trip compares   0                  <- false
-/// what it lost              -1
-/// ```
-///
-/// So accepting an INTEGER here would be an implicit widen at the
-/// boundary, decided by the driver, on a value that came from outside
-/// and may be any 64-bit integer. That is the widen the language itself
-/// refuses — `1.5 + 2` does not compile — and a driver must not reopen
-/// at its door what the language closed inside it. A caller who means
-/// the widen writes it: read `int_at` and convert, or ask SQL for
-/// `cast(v as real)`, which moves the decision into the query where it
-/// is visible.
-///
-/// AFFINITY MAKES THIS RARER THAN IT SOUNDS, measured across the four
-/// affinities: a column DECLARED `real` answers REAL for every value,
-/// `3` and `3.0` alike, because REAL affinity converts on the way in.
-/// The INTEGER class reaches a `real_at` from a column with NO declared
-/// type, where `3` and `3.0` are stored as they were written, and from
-/// `sum` over integers — while `avg` and `total` are always REAL.
-export fn real_at(s: Stmt, col: int) -> Result<float, SqlError> {
-    let class = class_at(s, col)?
-    if !(class is .Real) { fail wrong_class(col, Storage.Real, class) }
-    sqlite3_column_double(s.raw.get(), col)
-}
-
-// ── Reading text and octets ─────────────────────────────────────
-//
-// THE BUFFER IS SQLITE'S AND IT DIES AT THE NEXT STEP, so a cell that
-// holds text or a blob is COPIED into a box of ours before the driver
-// answers it. `avra_bytes_adopted` is the one door a foreign buffer
-// enters by — the only place the runtime dereferences an address a
-// program supplied — and it is named for what it does rather than for
-// being safe, because it is not: the LENGTH is the whole contract and
-// nothing on this side can check it.
-//
-// THE EMPTY CASE IS THE FIRST CASE, and it is why the class is asked
-// before the pointer. `sqlite3_column_blob` answers a NULL POINTER for
-// SQL NULL and for a ZERO-LENGTH BLOB alike, so a read that branched on
-// the pointer would spend absence twice and hand back `null` for an
-// empty blob. The CLASS says which, and an empty blob is an EMPTY BOX.
-//
-// THE ADOPTION'S SEAT TAKES NO ABSENCE (F2088), so the null decision
-// lives HERE rather than in the runtime: `taken` answers the empty box
-// for a buffer of no octets and never asks C to read address zero.
-
 extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+
+/// A borrowed, NUL-terminated buffer's length in bytes — this package's
+/// own C, for the one wall answer with no paired length function.
+extern fn avra_sqlite_cstr_len(p: ptr) -> int
 
 /// A cell's octets, copied. The CLASS has already said a value is
 /// there; what remains is a pointer that may be absent because the
 /// value is empty, and a length that must be true.
 fn taken(p: ptr?, n: int, col: int) -> Result<Bytes, SqlError> {
-    if n < 0 { fail defect(negative_length_words(col, n)) }
+    if n < 0 { fail SqlError.defect(negative_length_words(col, n)) }
     let held? = p else { return "".bytes() }
     if n == 0 { return "".bytes() }
     avra_bytes_adopted(held, n)
-}
-
-/// A cell as TEXT, refused when it holds another class. The octets are
-/// SQLite's UTF-8, copied and then read as text — so a blob that is
-/// not UTF-8 is refused by `text_at`'s class check and never by a
-/// decoder.
-export fn text_at(s: Stmt, col: int) -> Result<string, SqlError> {
-    let class = class_at(s, col)?
-    if !(class is .Text) { fail wrong_class(col, Storage.Text, class) }
-    let p: ptr? = sqlite3_column_text(s.raw.get(), col)
-    let held = taken(p, sqlite3_column_bytes(s.raw.get(), col), col)?
-    let word? = held.text() else { fail defect(not_utf8_words(col)) }
-    word
-}
-
-/// A cell as OCTETS, refused when it holds another class. A blob of no
-/// octets is an empty `Bytes`; only SQL NULL is absence, and the class
-/// is what says so.
-export fn blob_at(s: Stmt, col: int) -> Result<Bytes, SqlError> {
-    let class = class_at(s, col)?
-    if !(class is .Blob) { fail wrong_class(col, Storage.Blob, class) }
-    let p: ptr? = sqlite3_column_blob(s.raw.get(), col)
-    taken(p, sqlite3_column_bytes(s.raw.get(), col), col)
 }
 
 /// A cell's class, or a `NoColumn` when the index is outside the row.
@@ -390,9 +470,9 @@ export fn blob_at(s: Stmt, col: int) -> Result<Bytes, SqlError> {
 /// columns wide and "column 0 is outside a row 0 wide" sends the
 /// caller to their column index for a mistake in their sequence.
 fn in_row(s: Stmt, col: int) -> Result<int, SqlError> {
-    let _ = barred(finalized_fault(s))?
-    let w = standing(s)
-    if col < 0 || col >= w { fail refused(Cause.OutOfRow(col, w), out_of_row_words(col, w)) }
+    let _ = barred(s.finalized_fault())?
+    let w = s.standing()
+    if col < 0 || col >= w { fail SqlError.refused(Cause.OutOfRow(col, w), out_of_row_words(col, w)) }
     col
 }
 
@@ -403,37 +483,16 @@ fn storage_of(code: int) -> Result<Storage, SqlError> {
         3 -> Storage.Text,
         4 -> Storage.Blob,
         5 -> Storage.Null,
-        _ -> { fail defect("SQLite named a storage class this driver does not know: ${code}") },
+        _ -> { fail SqlError.defect("SQLite named a storage class this driver does not know: ${code}") },
     }
 }
 
-/// Whether the statement has been finalized. THE COUNTING VERBS ASK IT
-/// AND ANSWER FOR THEMSELVES: they answer a plain `int`, so they have
-/// no channel to refuse through, and zero is the honest answer for a
-/// statement that is gone — no columns, no row standing, no slots,
-/// nothing to rewind.
-///
-/// AND THE ZERO IS THE DRIVER'S, NOT THE LIBRARY'S. A null handed to
-/// `sqlite3_column_count` answers zero only under
-/// `SQLITE_ENABLE_API_ARMOR`, so a driver that let the null cross
-/// would rest on a build flag no reader of this package can see.
-fn dead(s: Stmt) -> bool { s.raw.get() == null }
-
-/// The refusal for a statement that was finalized, or absence when it
-/// still stands. `finalize` NULLS the handle, so the null test IS the
-/// question — `closed_fault`'s twin one level down, and every verb
-/// that can refuse asks it before reading a count.
-export fn finalized_fault(s: Stmt) -> SqlError? {
-    if dead(s) { return statement_finalized }
-    null
-}
-
-const statement_finalized: SqlError = refused(Cause.Finalized, "this statement was finalized — prepare it again")
+const statement_finalized: SqlError = SqlError.refused(Cause.Finalized, "this statement was finalized — prepare it again")
 
 // ── The voices ──────────────────────────────────────────────────
 
 fn failed(rc: int, sql: string?) -> SqlError {
-    SqlError { cause: cause_of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
+    SqlError { cause: Cause.of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
 }
 
 fn negative_length_words(col: int, n: int) -> string {
@@ -444,8 +503,21 @@ fn not_utf8_words(col: int) -> string {
     "column ${col} is TEXT that is not valid UTF-8 — read it as a blob"
 }
 
-fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
-    refused(Cause.Mismatch(col, wanted, found), "column ${col} holds ${class_word(found)} and the read asked for ${class_word(wanted)}")
+fn no_name_words(col: int) -> string {
+    "SQLite answered no name for column ${col} — out of memory reading it"
+}
+
+fn not_utf8_name_words(col: int) -> string {
+    "column ${col}'s name is not valid UTF-8"
+}
+
+impl SqlError {
+    /// A cell's class named against the class a read wanted — `Row`'s own
+    /// indexed reads reuse this too, since a materialized value's mismatch
+    /// is the same sentence over a different receiver.
+    static fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
+        SqlError.refused(Cause.Mismatch(col, wanted, found), "column ${col} holds ${class_word(found)} and the read asked for ${class_word(wanted)}")
+    }
 }
 
 fn out_of_row_words(col: int, w: int) -> string {

@@ -52,8 +52,8 @@
 // them out as static data.
 
 // The payload's header. NULL for a pointer that is not a box: the
-// null pointer, an unaligned or low address (a box is sixteen-
-// aligned and lives above the image base — a scalar mistaken for
+// null pointer, an unaligned address or one in the null page (a box
+// is sixteen-aligned and never there — a small scalar mistaken for
 // one is refused before anything is read), or a header without the
 // tag.
 static Header* hdr(void* p) { return avra_hdr(p); }
@@ -322,13 +322,26 @@ static int64_t g_live_bytes = 0;
 
 int64_t avra_mem_live(void) { return g_live_bytes; }
 
-static void acc_add(int k, int64_t bytes) {
-    g_live_bytes += bytes;
-    if (!accounting()) return;
+// The report's own tables, kept only while it is on.
+__attribute__((noinline, cold))
+static void acc_note(int k, int64_t bytes) {
     g_acc_live[k] += bytes;
     g_acc_total_live += bytes;
     if (g_acc_live[k] > g_acc_peak[k]) g_acc_peak[k] = g_acc_live[k];
     if (g_acc_total_live > g_acc_total_peak) g_acc_total_peak = g_acc_total_live;
+}
+
+static inline void acc_add(int k, int64_t bytes) {
+    g_live_bytes += bytes;
+    if (__builtin_expect(accounting(), 0)) acc_note(k, bytes);
+}
+
+static int acc_kind_of(int32_t kind);
+
+// A box's bytes moved: its kind's category is read only for the report.
+static inline void acc_box(int32_t kind, int64_t bytes) {
+    g_live_bytes += bytes;
+    if (__builtin_expect(accounting(), 0)) acc_note(acc_kind_of(kind), bytes);
 }
 
 // EVERY KIND NAMED, so a new one is visible here rather than filed
@@ -370,7 +383,7 @@ static void* box_alloc(size_t size, int32_t kind) {
     h->kind = kind;
     h->rc = 1;
     h->len = (uint32_t)bytes;
-    acc_add(acc_kind_of(kind), (int64_t)(sizeof(Header) + bytes));
+    acc_box(kind, (int64_t)(sizeof(Header) + bytes));
     return (void*)(h + 1);
 }
 
@@ -419,7 +432,7 @@ static void box_free(void* p) {
     Header* h = (Header*)p - 1;
     size_t bytes = box_bytes(h);
     size_t cls = class_of(bytes);
-    acc_add(acc_kind_of(h->kind), -(int64_t)(sizeof(Header) + bytes));
+    acc_box(h->kind, -(int64_t)(sizeof(Header) + bytes));
     h->tag = 0;
     if (cls && g_free_len[cls] < LIST_LIMIT) {
         *(Header**)(h + 1) = g_free[cls];
@@ -607,7 +620,7 @@ static size_t sized_capacity(Header* h) {
 // A sized box's length moved to `n`, its terminator written.
 // Accounting follows the LENGTH, as `box_free` does.
 static void sized_resized(Header* h, size_t n) {
-    acc_add(acc_kind_of(h->kind), (int64_t)n - (int64_t)h->len);
+    acc_box(h->kind, (int64_t)n - (int64_t)h->len);
     h->len = (uint32_t)n;
     ((char*)(h + 1))[n] = '\0';
 }
@@ -626,7 +639,7 @@ static char* sized_moved(char* p, size_t need) {
         // a stale reader finds garbage rather than the text it expected
         char* out = (char*)box_alloc(room + 1, h->kind);
         Header* oh = (Header*)out - 1;
-        acc_add(acc_kind_of(oh->kind), -(int64_t)(room - n));
+        acc_box(oh->kind, -(int64_t)(room - n));
         oh->len = (uint32_t)n;
         memcpy(out, p, n);
         if (rc_guarded()) {

@@ -1,0 +1,49 @@
+// BuildError — the build's own defects, typed: what clang, the store
+// and the entry's own shape can each refuse, each answering through
+// @std.errors the same way every other compiler error does.
+use @std.avrac.compiler.{BuildError}
+
+spec "BuildError" {
+    given "an empty program" {
+        then "it names the fact" {
+            let d = BuildError.Empty.describe()
+            d.kind == "build.empty" && d.message == "the program is empty"
+        }
+    }
+    given "an LLVM emit failure" {
+        then "the underlying words pass through verbatim" {
+            let d = BuildError.EmitFailed("cannot write `/tmp/x.o`").describe()
+            d.kind == "build.emit_failed" && d.message == "cannot write `/tmp/x.o`"
+        }
+    }
+    given "the entry's module written but unreadable" {
+        then "it names the path" {
+            let d = BuildError.ModuleUnreadable("/tmp/x.bc").describe()
+            d.kind == "build.module_unreadable" && d.message == "avra: the entry's module could not be read back — /tmp/x.bc"
+        }
+    }
+    given "clang failing to link" {
+        then "the exit code is in the words" {
+            let d = BuildError.LinkFailed(1).describe()
+            d.kind == "build.link_failed" && d.message == "avra: clang failed linking — exited with code 1"
+        }
+    }
+    given "a held object gone from the store" {
+        then "the path is named" {
+            let d = BuildError.ObjectGone("/tmp/x.o").describe()
+            d.kind == "build.object_gone" && d.message == "avra: a held object disappeared: /tmp/x.o"
+        }
+    }
+    given "a symbol nothing in the program declares" {
+        then "it names the missing symbol" {
+            let d = BuildError.NotClosed("av_widget").describe()
+            d.kind == "build.not_closed" && d.message == "internal compiler error: nothing declares `av_widget` — the program is not closed"
+        }
+    }
+    given "a report already rendered elsewhere" {
+        then "it passes through verbatim" {
+            let d = BuildError.Diagnosed("error[manifest.no_target]: nothing to run").describe()
+            d.kind == "build.diagnosed" && d.message == "error[manifest.no_target]: nothing to run"
+        }
+    }
+}

@@ -262,15 +262,34 @@ export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// carry and cut the head mid-field.
 export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
-/// ONE BUFFER, GROWN IN PLACE: every append consumes the text before
-/// it, so the head is written into a single box and the body joins it
-/// there.
+/// THE RESPONSE IN ONE ALLOCATION: its pieces gathered once, sized
+/// by their sum — the status line read from the binary, the text it
+/// carries shared rather than copied.
 fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    mut out = "HTTP/1.1 " + "${r.status}" + " " + reason(r.status) + "\r\n"
-    for h in r.headers { out = out + h.name + ": " + h.value + "\r\n" }
-    out = out + "content-length: " + "${r.body.length}" + "\r\n" + fate(keep_alive, minor) + "\r\n"
-    out.bytes().concat(r.body)
+    mut parts: List<Bytes> = [reply_line(r.status)]
+    for h in r.headers {
+        parts.push(h.name.bytes())
+        parts.push(field_colon)
+        parts.push(h.value.bytes())
+        parts.push(crlf)
+    }
+    parts.concat([length_field, "${r.body.length}".bytes(), crlf, fate(keep_alive, minor).bytes(), crlf, r.body]).bytes()
 }
+
+/// Every status line a response can carry, laid out once in the binary.
+const reply_lines: List<Bytes> = [reply_text(s).bytes() for s in 100..1000]
+
+/// A status line: the binary's for a status of three digits.
+fn reply_line(status: int) -> Bytes {
+    if status < 100 || status > 999 { return reply_text(status).bytes() }
+    reply_lines[status - 100]
+}
+
+fn reply_text(status: int) -> string { "HTTP/1.1 ${status} ${reason(status)}\r\n" }
+
+const field_colon: Bytes = ": ".bytes()
+
+const length_field: Bytes = "content-length: ".bytes()
 
 /// The connection's fate, when the peer cannot assume it.
 fn fate(keep_alive: bool, minor: int) -> string {

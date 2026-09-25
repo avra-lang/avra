@@ -6,8 +6,8 @@
 // COPIED into a box of ours before the driver answers it. The class is
 // asked first and the copy is made second, which is what lets an empty
 // value and an absent one be different answers.
-use @std.sqlite.open.{Db, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, width, class_at, int_at, real_at, text_at, blob_at}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt}
 use @std.sqlite.error.{Storage, SqlError}
 
 /// A cell's CLASS and what the matching read answers — the length of
@@ -16,30 +16,30 @@ use @std.sqlite.error.{Storage, SqlError}
 fn cell(sql: string) -> string { in_memory((db) -> class_and_read(db, sql)) }
 
 fn class_and_read(db: Db, sql: string) -> string {
-    let said = match prepare(db, sql) {
+    let said = match db.prepare(sql) {
         .Ok(s) -> cell_of_row(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn cell_of_row(s: Stmt) -> string {
-    let _ = step(s)
-    let word = cell_class_word(class_at(s, 0))
-    let said = match class_at(s, 0) {
+    let _ = s.step()
+    let word = cell_class_word(s.class_at(0))
+    let said = match s.class_at(0) {
         .Ok(c) -> "${word}|${read_by_class(s, c)}",
         .Err(e) -> e.cause.kind(),
     }
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn read_by_class(s: Stmt, c: Storage) -> string {
     match c {
-        .Text -> "text:${text_len_word(text_at(s, 0))}",
-        .Blob -> "blob:${octet_len_word(blob_at(s, 0))}",
-        .Null -> "text:${text_len_word(text_at(s, 0))}|blob:${octet_len_word(blob_at(s, 0))}",
+        .Text -> "text:${text_len_word(s.text_at(0))}",
+        .Blob -> "blob:${octet_len_word(s.blob_at(0))}",
+        .Null -> "text:${text_len_word(s.text_at(0))}|blob:${octet_len_word(s.blob_at(0))}",
         .Int or .Real -> "scalar",
     }
 }
@@ -74,12 +74,12 @@ fn scalar(sql: string) -> string { in_memory((db) -> read_one(db, sql)) }
 
 fn read_one(db: Db, sql: string) -> string {
     let said = said_by(db, sql)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn said_by(db: Db, sql: string) -> string {
-    match prepare(db, sql) {
+    match db.prepare(sql) {
         .Ok(s) -> stepped_int(s),
         .Err(e) -> e.cause.kind(),
     }
@@ -87,13 +87,13 @@ fn said_by(db: Db, sql: string) -> string {
 
 fn stepped_int(s: Stmt) -> string {
     let said = first_int(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn first_int(s: Stmt) -> string {
-    match step(s) {
-        .Ok(more) -> if more { told(int_at(s, 0)) } else { "NO ROW" },
+    match s.step() {
+        .Ok(more) -> if more { told(s.int_at(0)) } else { "NO ROW" },
         .Err(e) -> e.cause.kind(),
     }
 }
@@ -109,7 +109,7 @@ fn told(r: Result<int, SqlError>) -> string {
 fn real_scalar(sql: string) -> string { in_memory((db) -> real_said_by(db, sql)) }
 
 fn real_said_by(db: Db, sql: string) -> string {
-    match prepare(db, sql) {
+    match db.prepare(sql) {
         .Ok(s) -> stepped_real(s),
         .Err(e) -> e.cause.kind(),
     }
@@ -117,13 +117,13 @@ fn real_said_by(db: Db, sql: string) -> string {
 
 fn stepped_real(s: Stmt) -> string {
     let said = first_real(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn first_real(s: Stmt) -> string {
-    match step(s) {
-        .Ok(more) -> if more { told_real(real_at(s, 0)) } else { "NO ROW" },
+    match s.step() {
+        .Ok(more) -> if more { told_real(s.real_at(0)) } else { "NO ROW" },
         .Err(e) -> e.cause.kind(),
     }
 }
@@ -140,12 +140,12 @@ fn class_word_of(sql: string) -> string { in_memory((db) -> classed(db, sql)) }
 
 fn classed(db: Db, sql: string) -> string {
     let said = class_said(db, sql)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn class_said(db: Db, sql: string) -> string {
-    match prepare(db, sql) {
+    match db.prepare(sql) {
         .Ok(s) -> class_stepped(s),
         .Err(e) -> e.cause.kind(),
     }
@@ -153,13 +153,13 @@ fn class_said(db: Db, sql: string) -> string {
 
 fn class_stepped(s: Stmt) -> string {
     let said = class_after_step(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn class_after_step(s: Stmt) -> string {
-    match step(s) {
-        .Ok(more) -> if more { named(class_at(s, 0)) } else { "NO ROW" },
+    match s.step() {
+        .Ok(more) -> if more { named(s.class_at(0)) } else { "NO ROW" },
         .Err(e) -> e.cause.kind(),
     }
 }
@@ -272,12 +272,12 @@ fn scalar_at(sql: string, col: int) -> string { in_memory((db) -> at_col(db, sql
 
 fn at_col(db: Db, sql: string, col: int) -> string {
     let said = col_said(db, sql, col)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn col_said(db: Db, sql: string, col: int) -> string {
-    match prepare(db, sql) {
+    match db.prepare(sql) {
         .Ok(s) -> col_stepped(s, col),
         .Err(e) -> e.cause.kind(),
     }
@@ -285,13 +285,13 @@ fn col_said(db: Db, sql: string, col: int) -> string {
 
 fn col_stepped(s: Stmt, col: int) -> string {
     let said = col_after_step(s, col)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn col_after_step(s: Stmt, col: int) -> string {
-    match step(s) {
-        .Ok(more) -> if more { told(int_at(s, col)) } else { "NO ROW" },
+    match s.step() {
+        .Ok(more) -> if more { told(s.int_at(col)) } else { "NO ROW" },
         .Err(e) -> e.cause.kind(),
     }
 }

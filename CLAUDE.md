@@ -314,8 +314,13 @@ engine's spec, written by dogfooding.
   program allocates it with `box_alloc`/`str_owned`, or
   `str_static` when the program must never own it — never a bare
   `malloc` or a C literal. The tag is the belt (`hdr` refuses a
-  header without it, and an unaligned or sub-image address before
-  reading anything); the law is the braces.
+  header without it, and an unaligned or null-page address before
+  reading anything); the law is the braces. THE FLOOR IS THE NULL
+  PAGE, NEVER THE IMAGE BASE: a 4 GB floor held only while the loader
+  put everything high, so under valgrind (and any non-PIE image)
+  every box read as foreign — nothing counted, nothing freed, every
+  constant copied — and the first Linux profile reported that as the
+  program.
 - A CELL WEARS ITS BINDING'S DECLARED TYPE, never its first value's,
   and A STORE SETTLES BY THE CELL'S TYPE, never the value's. `mut x:
   T? = null` seeded a cell in the null's own type (the widen from

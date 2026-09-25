@@ -1,9 +1,10 @@
 //! THE PROOF: a rewrite is SAFE when the declaration it lands inside
 //! lowers to the SAME IR before and after, register renumbering
-//! aside (`core.alpha_fps`) — never by trusting the rewrite's own
-//! claim. `avra fix` applies only what this proves; everything else
-//! is SHOWN, never written (design §3).
-use core.{At, alpha_fps, same_fps}
+//! aside (`core.alpha_renamed`) — never by trusting the rewrite's own
+//! claim, and never by a fingerprint match alone (`core.same_ins_list`
+//! walks the actual values). `avra fix` applies only what this
+//! proves; everything else is SHOWN, never written (design §3).
+use core.{At, alpha_renamed, same_fps, same_ins_list}
 use features.{Analysed, enclosing_decl}
 use compiler.lower.{Body}
 use @std.path.{normalized}
@@ -60,7 +61,14 @@ impl Program {
     }
 }
 
+// A fingerprint agreeing is a fast pre-filter, never the verdict: it
+// is an un-keyed rolling hash (core/fp.av) with no collision check,
+// so two different instruction lists can share one. `same_ins_list`
+// is the actual proof, over the same renamed values the hash folded.
+//
 // LICENSED I39: compares two independent Body VALUES, neither one's own state
 fn same_ir(a: Body, b: Body) -> bool {
-    same_fps(alpha_fps(a.ins, a.params.length), alpha_fps(b.ins, b.params.length))
+    let ra = alpha_renamed(a.ins, a.params.length)
+    let rb = alpha_renamed(b.ins, b.params.length)
+    same_fps([i.fingerprint() for i in ra], [i.fingerprint() for i in rb]) && same_ins_list(ra, rb)
 }

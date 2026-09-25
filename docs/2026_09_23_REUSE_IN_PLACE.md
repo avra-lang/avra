@@ -625,3 +625,283 @@ load that sends no `Connection` field); @std/net's `write`/`try_write`
 no longer box. `try_read` answers `Result<Read, NetError>` and `Read`
 is itself two words, so it stays boxed. `check packages/cli` -0.4%
 instructions; the compiler binary +3.4% (8.29 -> 8.57 MB).
+
+## §22 Where the campaign stands (Linux Sprite, one core, e3d55d2)
+
+| | start | §15 | now | C floor |
+|---|---|---|---|---|
+| tools/bench/request | 5.40 µs | 1.95 µs | 1.70 µs | — |
+| wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k, 3.65 µs | 330k, 3.05 µs | 1.14M, 0.88 µs |
+| wrk keep-alive c=50 | 44.3k | 56.3k | 56.6k (17.8 µs CPU) | 72.7k |
+
+Keep-alive is syscall-bound: a read and a write per request dominate
+the 17.8 µs, so the allocation levers show in the pipelined column.
+The next levers are the response written into the connection's own
+buffer (R14) and fewer syscalls per request (batched writes).
+
+## §23 As built — the profile, and three cuts from it
+
+**The first Linux profile was the instrument's.** callgrind under
+valgrind maps a PIE image and its heap below 4 GB, and `avra_hdr`
+refuses every address below 4 GB, so every box read as foreign:
+no count, no free, every constant copied — `malloc` at 30%. Real runs
+are unaffected (PIE at 0x56…, 0 boxes live at exit); the premise is a
+deadline all the same (avra-8sb5.34.24). The true profile came from a
+profiling-only copy with the floor at 0x10000: 12.5k instructions a
+request — memory work 31%, the framer's scans 23%, http logic 20%,
+the response's header checks 10%, building the response 11%.
+
+**Three cuts** (request bench, 5M requests, instructions retired):
+1. The live-byte count stays on every allocation (a settlement's
+   budget reads it); the report's category is computed only when
+   `AVRA_MEM_STATS` is set (`acc_box`, `acc_note` out of line):
+   64.57B -> 64.04B.
+2. The server judged every response twice (`as_sent`, then `wire`
+   again). It calls `wire` once; only a `HEAD` asks `as_sent` again to
+   measure the body it withholds. No unjudged writer is exported — a
+   response no peer could read stays refused at the one crossing.
+3. The reply is ONE gathered allocation (`List<Bytes>.bytes()`): the
+   status line read from `reply_lines`, a const of every three-digit
+   status laid out in the binary; header text shared, not copied.
+   Together: 64.0B -> 59.9B (-6.4%). A header's four pieces are
+   pushed, not concatenated as a literal: the literal is a box per
+   header, and measured 3.5% slower.
+
+## §24 Keep-alive: the gap is our CPU, not the kernel
+
+Counted with an LD_PRELOAD shim over libc's wrappers (the Sprite
+refuses ptrace and perf), one core, wrk -c50, 5 s:
+
+| per request | Avra | C floor |
+|---|---|---|
+| read | 1.00 | 1.00 |
+| write | 1.00 | 1.00 |
+| epoll_wait | 0.03 | 0.02 |
+| clock_gettime | 4.03 | 0 |
+
+The same syscalls as C. The four clock reads are the idle and write
+deadlines' (`within`), 27 ns each on this TSC clock — ~0.1 µs of the
+~2.9 µs gap (63k vs 77k req/s). The rest is the request's own work,
+so the pipelined profile's levers (§23) move keep-alive too.
+
+## §25 As built — R12, cold paths compiled for size
+
+**D34. A body reachable from a `once fn` alone is cold by
+construction.** `Body.memoized` names a `once fn`'s own (set at
+`lower_fn` from the store's `is_once` fact, the same one that already
+picks `once_body`'s guard); `cold_bodies` (compiler/lower/lower.av)
+closes it over the whole program's call graph — a body joins the cold
+set once EVERY caller into it is cold too, propagated by worklist from
+the `memoized` roots. `body_symbol` names a call's target and an
+address taken alike, so a hot reference either way keeps a body hot —
+the set is self-correcting, never a hand-kept list, and a body with no
+recorded caller (dead code, or reached only from the entry, which the
+graph excludes on purpose) simply never joins it. `Lowered.cold` carries
+the set once per program, computed in `union`/`settlement`, never
+per emitted module — a split build would otherwise redo the closure
+once per file.
+
+**D35. The mark is two LLVM function attributes, not a new IR
+shape.** `avra_llvm_set_cold` (backend/llvm_wrapper.c) adds `cold` and
+`minsize` at the function the emitter already has in hand
+(`llvm.av`'s `emit_mode`, beside the existing `weak_odr` mark) —
+`cold` tells the optimizer the function is rarely reached, `minsize`
+tells it to spend bytes for cycles inside it. Neither attribute
+changes what a function computes, only how LLVM lays it out: the risk
+of marking a hot body cold by mistake is a PERFORMANCE question, not a
+correctness one, and `cold_bodies`'s "every caller must be cold" rule
+means a wrong mark can only ever be a missed win, never a regression —
+confirmed by the request bench (below) reading identical instruction
+counts before and after, since that program's call graph has no
+`once fn` in it at all. Considered and refused: per-instruction branch
+weights on `?`/`catch`'s failure arm (the ticket's other candidate) —
+it would need a new fact threaded through `Ins.IfStart` down from
+lowering, which is IR-vocabulary growth (protocol: justify, pay every
+consumer) for a payload that gates a HINT, not a value; the measured
+growth was squarely in registration tables, not error branches, so the
+whole-fn attribute on the fact the backend already computes
+(`body_symbol`, `is_once`) was the cheaper, sufficient lever.
+
+**Size ledger** (`tools/symsize.py`, `nm -n --defined-only`, size =
+next symbol's address minus this one; Mac arm64, build/avra.pre =
+tree at 10f8a9b, build/avra = this change, two-generation build
+ladder, gen2 == gen3 byte-identical):
+
+| | before | after |
+|---|---|---|
+| whole binary | 8,573,056 B | 7,341,152 B (−14.4%) |
+| `__TEXT` sum (nm) | 6.60 MB | 5.14 MB (−22.2%) |
+
+Per-module `__TEXT` deltas: `avrac.features` 2,779,388 → 1,392,312 B
+(−1,387,076, roughly halved), `avrac.core` 792,480 → 712,552 B
+(−79,928), `avrac.compiler` 2,196,024 → 2,137,720 B (−58,304),
+`avrac.grammar` 306,604 → 302,624 B (−3,980). Biggest single-symbol
+shrinks: `impls.impls` −48,720 B, `expr_spine.expr_spine` −44,240 B,
+`fns.fns` −37,880 B, `core.rt_sigs` −23,108 B (a table-building fn
+R12's own closure caught that R10/R11's report never named),
+`enums.enums` −19,484 B, the grammar payload tables −18.6 KB/−18.1 KB,
+`closures.closures` −17,584 B, `structs.structs` −16,644 B,
+`components.components` −11,820 B. `minsize` also invites LLVM's
+machine outliner: ~186 new `_OUTLINED_FUNCTION_N` symbols share code
+the individual registration fns used to carry each on their own,
++44 KB — already netted into the totals above, not a separate cost.
+
+**Compiler cost, `check packages/cli`** (`/usr/bin/time -l`,
+interleaved old/new twice, `.avra-cache` moved aside each run):
+
+| | old (avg of 2) | new (avg of 2) | delta |
+|---|---|---|---|
+| instructions retired | 162.77 B | 165.03 B | **+1.39%** |
+| cycles elapsed | 43.64 B | 40.70 B | −6.7% |
+| wall (`real`) | 17.08 s / 20.25 s | 15.23 s / 13.88 s | lower both pairs |
+
+Diagnostics are BYTE-IDENTICAL between old and new
+(`diff` on stdout, four runs) — the mark changes layout, never
+meaning. Instructions retired sit above the ±0.7% floor this doc's
+own numbers treat as noise; `minsize` is the reason, read straight:
+the ~40 marked fns each run exactly once per process (grammar
+assembly, `once fn avra()`'s own memoized body), and a size-optimized
+body can cost a few more instructions to execute in exchange for fewer
+bytes and better locality for everything AROUND it — which is what the
+cycles and wall numbers show moving instead. Recorded rather than
+argued away: this is a real, small, one-time cost, not measurement
+noise, and it buys a materially smaller, not-slower-in-cycles binary.
+
+**Request bench** (`tools/bench/request`, built with each compiler,
+run interleaved 4× each, instructions retired — the stable figure; the
+program's own printed ns/request is noisier on a loaded Mac desktop):
+
+| | old (avg of 4) | new (avg of 4) |
+|---|---|---|
+| instructions retired | 59.839 B | 59.778 B |
+
+No measurable difference (~0.1%, inside noise) — expected: this
+program's own call graph has no `once fn` in it, so `cold_bodies`
+marks nothing and the compiled bench is untouched. This is the
+confirmation that R12 is scoped to the COMPILER's own binary and
+never reaches into an arbitrary compiled program's hot path.
+
+**Red team.** (1) A wrongly-cold-marked hot fn regressing a real
+program: unreachable by construction (the "every caller cold"
+closure), and the request bench's null result is the empirical check.
+(2) Behavior change under the mark: `cold`/`minsize` are LLVM
+optimizer hints with no semantic effect by design; confirmed by
+byte-identical `check packages/cli` diagnostics across old/new and by
+the full `eval == native == expected` suites below. (3) The closure
+itself wrong (marks something reachable from the entry): `entry`/
+`program_main` are included as nodes in the graph fed to
+`cold_bodies` specifically so anything they call keeps a permanent
+non-cold caller — verified by reading the marked-cold set is exactly
+the ~40 registration-table fns the size ledger names, nothing from the
+request bench's or cli's own runtime logic. (4) Fixed-point
+stability: gen2, gen3 and a gen4 built via `make libs` are
+byte-identical (`cmp` clean) — the mark doesn't oscillate as the
+compiler recompiles itself under its own new logic.
+
+**Tests.** `packages/std-avrac`: 6672/6672 tests passed, 156 programs
+proved (`eval == native == expected`), exit 0. `packages/std-http`:
+468/468 tests passed, 4 programs proved, exit 0. `python3
+tools/idioms.py`: no new violations. `python3 tools/externs.py`: clean
+(the one new extern, `avra_llvm_set_cold`, matches its C body's arity
+and width). `./build/avra fmt` unchanged on every touched file.
+
+**Deferred:** branch-level cold hints on `?`/`catch`/trap failure arms
+(the ticket's mechanism 2) — refused per D35's reasoning, not merely
+postponed; the ROADMAP's sugar/IR backlog is where it belongs if a
+future measurement finds the registration-table lever insufficient on
+its own.
+## §26 As built — tail, Framing as a value record
+
+**D34. A FLAT record's field list widens past `int`: a `bool`, and a
+WORD ENUM (one whose own declaration carries no payload anywhere, so
+its tag is its whole value) are scalar fields too** — asked of a
+field's own declaration through `carries_nothing`, never of the type
+registry's marks, so the answer never depends on which of the two was
+declared first (the law `payload_word` already keeps for an enum
+payload). `Decls.scalar_field` is the one predicate; `flatten`
+(decls.av) calls it in place of the old `is .Int` check. Nothing else
+moved: `slot_width`, `ll_type_of`, `packed_struct`, `leaves`/
+`unboxed_at` and the crossing's `inline_slots` were already generic
+over a field's OWN shape (built for R4b's nested value records and
+R11's enum payloads) — a bool lands as an i1 register, a word enum's
+tag as an int64, exactly as `ll_type_of`/`machine_shape` already
+answered them standalone.
+
+**A nullable enum stays OUT, on purpose.** `Opt(WordEnum)` still
+rides a pointer (`opt_rides_pointer`'s "a flat record has no spare
+value" law, unchanged) — giving a nullable enum its own spare-tag
+register (mirroring D31's valued-enum niche) is a real generalization
+and a wider one: it would move EVERY `<Enum>?` in the tree, not one
+record's field, and `is_managed`'s `flat_managed` (memory.av) has
+never been exercised for a record carrying a MANAGED field — the
+backend's `retained`/`released` pass a `.Struct` register straight to
+`avra_rc_retain`, sound only because every flat record today is
+unmanaged. Left as the next scalar-field width; a record that wants a
+`T?` field avoids the box by carrying a `bool` + `T` pair instead
+(`@std/http`'s own fix, below).
+
+**§26a `@std/http`'s `Framing` (frame.av), applied.** `why: Refusal?`
+was the one field blocking `flatten`: a nullable enum. Split into
+`refused: bool` and `why: Refusal` (the `.LineEnd` default is a
+placeholder, unread while `refused` is false) — the {bool, value}
+pair D34 declined to give nullable enums for free, spelled by hand at
+the one call site that needed it.
+
+Fixed by the SAME move: a `mut` seat keeps its box (types.av's
+`unflatten`), so `noted`/`broke`/`took_length`/`took_codings`/
+`took_host`/`took_connection`/`took_expectation` had to stop taking
+`mut fr: Framing` and start taking `fr: Framing`, answering the next
+`Framing` — `with` in place of a field write. A record threaded
+through a `mut` HELPER PARAMETER can never be a value record
+regardless of its fields: the write needs an address, and a value
+record's whole point is that it has none. `framing_of`'s own `mut fr`
+stays a `mut` LOCAL (a local is opened, not sealed), so the fold reads
+exactly as before, one field at a time.
+
+Attacks: `features/tests/scalar_fields` (a bool and a word-enum field
+through a `Cell`, a `mut` seat, a `match` on the field itself, a
+capture taken before a later write, `Result`, `dyn`, a `Map`, a fold
+through `with` across a loop — `Framing`'s own shape — a nested wide
+field, a generic `Box<T>`, a static list, `is`, `pop`) — eval ==
+native under `AVRA_RC_GUARD=1`, 0 boxes live at exit. `@std/http`'s
+own suite (468 unit tests, 4 programs, every named `Refusal` already
+pinned by `frame_test.av`) passed unchanged — the restructuring
+touched no LAW, only the fold's shape.
+
+**Numbers** (tools/bench/request, Mac, 5,000,000 requests,
+`/usr/bin/time -l`, interleaved, several rounds averaged):
+
+| | before | after |
+|---|---|---|
+| instructions/request | 11,966 | 11,385 (-4.9%) |
+| boxes/request | 8 | 7 |
+
+`framing_of`'s own allocation site is gone; the other seven (the
+field list, `Head`, `Request`, three inside `written`, `Response`)
+are unmoved — R14 (the response written into the connection's own
+buffer) and net's last box (R11d, below) are what is left.
+`check packages/cli`: 162.3B -> 162.0B instructions (-0.2%, inside
+the documented ±0.7% noise floor), binary 8.573 -> 8.572 MB.
+
+**Measured and not landed — R11d, `Result<Read, NetError>`.**
+`judge_result`/`side_word` require BOTH sides at most one word;
+`Read` (`@std/net`) is itself a value enum (`Data(Bytes) | Eof |
+Pending`, tag+word, TWO words already), so `side_word(Read)` is null
+by its OWN rule (`is_valued(t) -> null`) and the Result stays boxed.
+Fitting it would widen a Result carrying a valued-enum side to THREE
+registers (the Result's own tag, the side's tag, the side's word) — a
+real change to `judge_result`'s "one word per side" invariant, on the
+type every body in the compiler and every std package spells.
+Reconnaissance only this slice, deliberately: Framing's fix stayed
+inside one record's own field list and one `mut`-seat law; this one
+moves a load-bearing assumption under `Result<T, E>` itself. Left for
+its own ticket (avra-8sb5.34.22), with a red team sized to match.
+
+**Measured and not landed — the framer's own scans (candidate 3).**
+`crlf_only` and `request_line`/`field_lines` each re-scan the same
+head bytes (a blank-line search, a CRLF-well-formedness pass, then a
+class-table pass per token) — real waste, named "23% the framer's own
+scans" at §23's profile. Every one of those three passes is a LAW
+against request smuggling (frame.av's own opening comment), so
+merging them needs the SAME red-team weight as the framer's original
+landing, not an afternoon's. Not attempted this slice.

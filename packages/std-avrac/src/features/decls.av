@@ -911,16 +911,29 @@ impl Decls {
         es.payloads.all(it.is_empty())
     }
 
-    /// THE FLAT LAW: a record of `int` fields and no type parameters IS
-    /// its fields — one field an id in a register, several a VALUE
+    /// THE FLAT LAW: a record of SCALAR fields and no type parameters
+    /// IS its fields — one field an id in a register, several a VALUE
     /// RECORD in registers (a span, a line), boxed only where a one-word
     /// seat holds it. A pointer-riding field keeps the box, because that
-    /// reference must still be counted; a `bool` waits on the runtime's
-    /// i64 seams, which coerce by shape.
+    /// reference must still be counted.
     fn flatten(record: DeclId, types: List<TypeId>) {
         if types.is_empty() || !self.tparams(record).is_empty() { return }
-        if !types.all((t) -> self.types.shape_of(t) is .Int) { return }
+        if !types.all((t) -> self.scalar_field(t)) { return }
         self.types.mark_flat(self.record_type(record), types)
+    }
+
+    /// A SCALAR FIELD: an `int`, a `bool` (the runtime's i64 seams
+    /// coerce it by shape), or a WORD ENUM — one whose own
+    /// declaration carries no payload anywhere, so its tag is its
+    /// whole value. Asked of the field's own declaration through
+    /// `carries_nothing`, never of the type registry's marks, so the
+    /// answer never depends on which of the two was declared first.
+    fn scalar_field(t: TypeId) -> bool {
+        match self.types.shape_of(t) {
+            .Int or .Bool -> true,
+            .Enum(e, _) -> self.carries_nothing(e),
+            rest -> false,
+        }
     }
 
     /// A record declaration's own type.
@@ -1173,12 +1186,15 @@ impl Decls {
     /// `@std/meta`'s crossing all read, so no reader parses a store of its own.
     fn annotations_of(d: DeclId) -> List<AnnotationFact> { self.facts_of(d)?.annotations ?? [] }
 
-    /// A type's name — records and enums.
+    /// A type's name, read as a value — a receiver for `Type.name(…)`,
+    /// never a constructible shape of its own. A trait's Self is not
+    /// among its answers here: nothing pins it, so `decl_type_of`
+    /// never reaches the generic-fn refusal for a trait's bare name.
     fn type_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Record or .Named or .Alias or .Enum or .Builtin -> x.name,
-            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
+            .Record or .Named or .Alias or .Enum or .Builtin or .Trait -> x.name,
+            .Fn or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
         }
     }
 
