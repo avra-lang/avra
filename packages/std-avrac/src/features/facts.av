@@ -397,12 +397,17 @@ impl Decls {
 
 /// A body's instruction list under construction: registers mint in
 /// instruction order, `give` is the mint-order law, and a runtime
-/// callee must have its row in the registry.
-export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices, externs: List<string> }
+/// callee must have its row in the registry. `decls` rides along for
+/// one reason: `mint_ty` is the ONE place a type is fixed to a
+/// register (every `mint_shape`/`result`/`mint_like` reaches it), so
+/// it is the one place to force a struct or enum's own declaration
+/// before anything downstream — the interpreter's `bare_reg` and
+/// `const_int_val` included — reads that register's layout.
+export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices, externs: List<string>, decls: Decls }
 
 /// An emitter over a program whose externs it may call by name.
-export fn new_emitter(externs: List<string>) -> Emitter {
-    Emitter { ins: [], reg_types: [], defined: [], voices: no_voices(), externs: externs }
+export fn new_emitter(externs: List<string>, decls: Decls) -> Emitter {
+    Emitter { ins: [], reg_types: [], defined: [], voices: no_voices(), externs: externs, decls: decls }
 }
 
 impl Emitter {
@@ -411,6 +416,7 @@ impl Emitter {
     fn defect(what: string) { self.record("defect: ${what}") }
 
     fn mint_ty(ty: TypeId) -> Reg {
+        self.decls.declared_first(ty)
         self.reg_types.push(ty)
         Reg { index: self.reg_types.length - 1 }
     }

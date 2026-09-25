@@ -336,7 +336,7 @@ export fn new_decls() -> Decls {
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
-    Decls {
+    let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
         paths: Cell.new(no_paths),
@@ -384,6 +384,10 @@ export fn new_decls() -> Decls {
         ensure_writes: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
     }
+    // the registry cannot reach a declaration on its own — a struct or
+    // enum's layout answers the blank default until this runs
+    d.types.arm_declare((t: TypeId) -> d.declared_first(t))
+    d
 }
 
 /// A row's type parameters — `T1`, `T2`, … by arity; the ordinal
@@ -919,6 +923,23 @@ impl Decls {
         self.payload_word(d, t)
     }
 
+    /// A STRUCT or ENUM's layout answers the blank default — not flat,
+    /// not valued, not settled — until its OWN declaration has run;
+    /// asking a layout fact of one that has not is asking a different
+    /// question from every later ask (CLAUDE.md, "a slot's seed is
+    /// computed the same way as its updates"). Force it first: a
+    /// registry reader outside the type's own declare pass never
+    /// knows whether demand has reached it yet, and the crossing
+    /// machinery — `materialized`'s whole family, deep in const and
+    /// `@derive` settlement — reads layout facts on exactly the types
+    /// demand order has not forced.
+    fn declared_first(t: TypeId) {
+        match self.types.shape_of(t) {
+            .Struct(r, _) or .Enum(r, _) -> { let _ = self.sig(r) },
+            rest -> nothing_asked(),
+        }
+    }
+
     /// A payload's word, asked of its own declaration first so the
     /// answer never depends on which was declared first: 0 an int or
     /// a word enum, 1 a pointer that is counted, absent for anything
@@ -930,10 +951,7 @@ impl Decls {
     /// cause not yet found. Widening this arm to match needs that
     /// cause found first.
     fn payload_word(d: DeclId, t: TypeId) -> int? {
-        match self.types.shape_of(t) {
-            .Struct(r, _) -> { let _ = self.sig(r) },
-            rest -> nothing_asked(),
-        }
+        self.declared_first(t)
         // a FLAT record is a word a `mut` seat may still box — out
         if self.types.shape_of(t) is .Struct && self.types.is_flat(t) { return null }
         let m = self.types.machine_type(t)
