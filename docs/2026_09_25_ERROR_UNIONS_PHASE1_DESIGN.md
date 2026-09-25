@@ -1,0 +1,147 @@
+# Error unions, Phase 1 — named unions only
+
+**Status:** design, awaiting PERF's sign-off on §5 (layout) before implementation.
+**Date:** 2026-09-25
+**Scope:** `Result<T, A | B>`, hand-written. NOT in scope: inferred
+`Result<T, _>` (avra-8sb5.40.10.2 — needs a new body-collecting walk
+with no existing precedent) or catch-chain narrowing (avra-8sb5.9.29 —
+needs §4's subtract operation, which this doc designs but a later
+ticket wires into chained `catch`).
+
+Every claim below is checked against a full research pass of the
+current type system (no union mechanism exists anywhere today — `T?`
+is a cardinality-2 niche trick that doesn't generalize, `dyn Trait` is
+an open existential, the opposite shape from a closed enumerable set).
+
+## 1. Type representation
+
+`Type.Union(members: List<TypeId>)`, joining `core/types.av`'s `Type`
+enum. Construction always flattens and dedupes: unioning a `Union`
+into anything absorbs its members rather than nesting
+(`(A|B)|C` interns identically to `A|B|C`), and a member appearing
+twice collapses to one. This is genuinely new — every existing
+composite (`List`, `Map`, `Res`, `App`) is a fixed positional tuple
+with no post-construction dedup — but it's the only way `A|B` and
+`B|A` (and `(A|B)|C` and `A|(B|C)`) can be the same interned type,
+which they must be for `accepts`/subset-checking to work by identity
+rather than by re-deriving membership every time.
+
+**Canon key**: sort member `TypeId.index`es ascending, join
+(`"20:${sorted.join(".")}"`, tag 20 or whatever's next free). Sorting
+is the mechanical fix for order-independence; nothing else in `canon`
+needs it because nothing else has members that commute.
+
+**A one-member union is not a union** — `Union([x])` never gets
+minted; the constructor answers `x` directly. This keeps `Result<T, E>`
+for a plain `E` exactly as it is today (no wrapper, no perf cost, no
+new code path for the overwhelmingly common case).
+
+## 2. Grammar and surface AST
+
+Extend `features/type_expr/mod.av`'s `type` rule with a trailing
+repetition, not an infix rule (avoids PEG left-recursion): today's
+whole `type` production becomes `type_atom`, and the new top-level
+`type` is:
+```
+type = t:type_atom ( "|" t2:type_atom )+ -> union_type(t, t2)
+type = t:type_atom -> t
+```
+`?` binds tighter than `|` (`A | B?` parses as `A | (B?)`), matching
+every other place `?` already binds to the immediately preceding name.
+
+`core/nodes.av`'s `TypeRef` gains one field:
+`alternatives: List<TypeRef> = []`. Non-empty means this `TypeRef` is
+a union; `name`/`args`/`optional`/`dynamic`/`arrow` on the outer
+`TypeRef` are unused in that case, and `alternatives` holds the 2+
+member `TypeRef`s (each an ordinary single type, resolved the existing
+way). Extending the existing shape rather than forking a parallel node
+— `TypeRef` has absorbed exactly this kind of orthogonal addition
+before (`dynamic`, `arrow`, `marks`).
+
+## 3. Widening (fail / construction / `?` propagation)
+
+The one law every check below reduces to: **treat every type as "a set
+of member ids"** — a plain type is a 1-element set, a `Union` is its
+own member set. Then:
+
+- `fail v` where the promised err side is a union: accepted when `v`'s
+  type is IN the set (today's `types_disagree`'s `got.index ==
+  want.index` becomes `want_set.contains(got.index)`).
+- `?` propagation (`nullable/check.av`'s `propagate_res_type`): accepted
+  when the callee's error set is a SUBSET of the caller's error set —
+  not equality. A plain-type callee into a plain-type caller is the
+  existing behavior exactly (both 1-element sets, subset ⟺ equal).
+  A plain-type callee into a union caller is "is this one member in
+  the set." A union callee into a union caller (calling a fn that
+  itself returns a union error into a fn with a wider union) is real
+  subset checking, term for term.
+- Widening a value of one union type into a WIDER union (adding a
+  member the value's own type doesn't need) is the same subset check
+  in the other direction — always legal, since the runtime already
+  carries a tag for its actual member; only the caller's own
+  compile-time promise widens.
+
+## 4. `catch` over a union — a new pattern form
+
+No existing pattern can select "which of N unrelated declared types
+is this" — enum-variant coverage is keyed to one `EnumSig`'s name/tag
+table, not to member `TypeId`s. Phase 1 adds a type-qualified bind:
+```
+result catch e: NotFound -> ...
+       catch e: Timeout  -> ...
+```
+Each arm's `e: Member` narrows `e` to that member's own type inside
+the arm body (an ordinary bind, typed at the member, not at the whole
+union). Coverage is UNION-MEMBERSHIP coverage: total when every member
+is named (in any order) or a catch-all `e -> ...` arm exists; selective
+otherwise, in which case the answer's error side is `want_set MINUS
+covered_members` — a genuine new `Union` (or a plain type, if exactly
+one member remains, or `T` alone with no error side, if none remain —
+though a Result that can't fail is a compound question for a later
+pass, not solved here). This subtract-and-reinterned-as-a-narrower-
+Union operation is what avra-8sb5.9.29 (catch-chain narrowing) needs;
+this ticket builds the operation, that ticket wires it into chained
+`.catch`.
+
+## 5. Runtime layout — FOR PERF'S REVIEW
+
+Per the existing layout law (`side_word`/`judge_result`, `docs/
+2026_09_23_REUSE_IN_PLACE.md` §19–23): a `Result` rides `{tag, word}`
+registers only when both sides are one word, judged once at intern.
+
+**Proposal: generalize `Result`'s own tag space, not a boxed
+sub-enum.** Today `Result<T, E>` is tag 0 (Ok) / tag 1 (Err), and if
+`E` needs a discriminant it's `E`'s OWN tag living inside the payload
+word. For `Result<T, A|B|...>`, extend the OUTER tag space instead:
+tag 0 = Ok, tag 1..N = Err-via-member-1..Err-via-member-N. This reuses
+the value-enum machinery's existing per-tag counted-mask support
+(already generalized for N tags, not just 2) rather than inventing a
+boxed-union representation — `side_word`'s judgment for the union
+"side" becomes "the union rides a word iff EVERY member does," with
+`judge_result` iterating N+1 tags (1 Ok + N Err-members) the same way
+a value enum already iterates its own variant count.
+
+`?` propagation between two DIFFERENT unions (subset widening, §3) is
+therefore a real re-tag (the member's position in the callee's tag
+space almost never matches its position in the caller's wider union's
+tag space) — never an identity pass-through, matching `propagated`'s
+existing re-wrap-on-layout-mismatch behavior.
+
+**Open question for PERF specifically**: does extending `Result`'s own
+tag space to `1+N` (rather than always 2) interact with anything
+`r15a`/avra-8sb5.34.26 assumes is fixed at exactly 2 (Ok/Err) when
+judging `side_word`/`judge_result`? If the two-tag assumption is baked
+in structurally rather than incidentally, the alternative (a boxed
+"ErrUnion" sub-value, always one counted pointer, Result stays exactly
+2-tag) is a fallback — simpler, but boxes on every union error even
+when every member would individually fit in a word. Prefer the
+generalized-tag-space version unless it's a real fight with the
+just-landed layout work.
+
+## Sequencing
+
+Waiting on `r15a` (avra-8sb5.34.26) to land on main before touching
+`Type.Res`/`side_word`/`judge_result` at all, per PERF's request.
+Everything in §1–4 (representation, grammar, widening, catch) is
+independent of the layout question and can be designed/reviewed now;
+only §5's actual code waits on the merge.
