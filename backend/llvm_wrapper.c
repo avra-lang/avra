@@ -1026,11 +1026,19 @@ LLVMValueRef avra_llvm_cast_to_type(LLVMBuilderRef b, LLVMValueRef val, LLVMType
         if (aw < ew) avra_trap("cast_to_type asked to WIDEN an integer — the sign is the caller's to name: build_zext or build_sext");
         return val;
     }
-    // UNREACHABLE TODAY: no double value exists in the language, so
-    // these four arms have never run. They also pre-decide a question
-    // float's lane has not answered — a BITCAST reinterprets bits and
-    // a conversion changes the number, and which one a "cast" means
-    // is exactly what that lane must choose deliberately.
+    // A REINTERPRETATION, never a conversion, settled by R15a: a value
+    // enum's word slot is an i64 whichever payload it carries, so a
+    // float payload crossing it is the same 64 bits under a different
+    // type. i64 -> double is real and exercised — `Ins.Extract`'s
+    // destination cast (llvm_emit.av) reads a value enum's Float
+    // payload back this way, and the slot it reads from is always i64,
+    // so this always bitcasts. double -> i64 is not reached by
+    // anything today: the one caller that packs a float INTO the word
+    // slot (`pack_value`'s `valued` branch) goes through `worded`,
+    // which bitcasts directly rather than asking this general
+    // function. Both narrower-width arms (FPToSI/SIToFP) stay a real
+    // NUMERIC conversion, for a narrower float value nothing asks for
+    // yet.
     // double ↔ i64: bitcast (preserves bits)
     if (ak == LLVMDoubleTypeKind && ek == LLVMIntegerTypeKind) {
         unsigned ew = LLVMGetIntTypeWidth(expected);
