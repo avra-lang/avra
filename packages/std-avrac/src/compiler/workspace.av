@@ -918,9 +918,13 @@ impl Workspace {
     }
 
     /// A module's names, bound ONCE: every file's declarations in file
-    /// then declaration order.
+    /// then declaration order. RECURSIVE: minting a held module's enum
+    /// payload asks a sibling file's signature, which types the field
+    /// against that file's visible namespace, which asks this same
+    /// module's names back — a re-entry is a SMALLER view (the binder
+    /// alone, no signature work waits on it), never a trap.
     fn namespace(m: ModuleId) -> ModuleNames {
-        match self.module_names.start(m.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.module_names.start_recursive(m.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
@@ -928,9 +932,13 @@ impl Workspace {
     }
 
     /// What a file's top level sees: its module's names, then its
-    /// imports — with what the `use` lines earned.
+    /// imports — with what the `use` lines earned. RECURSIVE, the same
+    /// way `namespace` is: a held sibling's enum payload can ask this
+    /// same file's signature mid-mint, which asks this same file's
+    /// visible namespace back — a re-entry is a SMALLER view, never a
+    /// trap.
     fn visible(f: FileId) -> Namespace {
-        match self.visibles.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.visibles.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
