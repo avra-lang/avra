@@ -267,6 +267,7 @@ export fn node_payload_rows() -> List<PayloadRow> {
 @derive(Children)
 @derive(Identity)
 @derive(Matchable)
+@derive(Exact)
 export enum Expr {
     IntLit(value: int)
     /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -539,7 +540,10 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 
 /// `spliced` marks a type that came through a template's HOLE: it
 /// names a type where it lands, never where the template was written.
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false }
+/// A non-empty `alternatives` makes this ref a UNION — `A or B` — and
+/// every other field is unused: the 2+ members are ordinary written
+/// types in their own right, each resolved the usual way.
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -564,6 +568,7 @@ export fn plain(t: TypeRef) -> TypeRef {
 
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
+    if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
     let base = when {
         t.arrow -> spelled_arrow(t)
         t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
@@ -641,6 +646,7 @@ export fn same_pat(a: PatId, b: PatId) -> bool {
 @derive(Rebuild)
 @derive(Grammar)
 @derive(Matchable)
+@derive(Exact)
 export enum Pat {
     Wild
     Rest
@@ -749,6 +755,7 @@ impl UseParts {
 @derive(Children)
 @derive(Identity)
 @derive(Matchable)
+@derive(Exact)
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
@@ -951,6 +958,7 @@ fn type_fp(t: TypeRef?) -> int {
         flagged(written.spliced),
         fp_list([mark_fp(m) for m in written.marks]),
         fp_list([type_fp(a) for a in written.args]),
+        fp_list([type_fp(a) for a in written.alternatives]),
     ])
 }
 
@@ -1004,5 +1012,92 @@ fn fp_binop(op: BinOp) -> int {
         .Shl -> 17,
         .Shr -> 18,
     }
+}
+
+// ── Exact equality, `@derive(Exact)`'s own siblings ────────────────
+// Every compound type ABOVE that a `*_fp` fold hashes gets an exact
+// twin here — never a hash, always the actual fields, span-blind (a
+// `span` field is skipped exactly where its `*_fp` sibling skips it).
+// `@derive(Exact)` (exact_derive.av) calls these for the payload
+// types it does not itself own.
+
+fn exact_strs(a: List<string>, b: List<string>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it] == b[it])
+}
+
+fn exact_plains(a: List<Plain>, b: List<Plain>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it].of == b[it].of)
+}
+
+fn exact_scopeds(a: List<Scoped>, b: List<Scoped>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it].of == b[it].of)
+}
+
+fn exact_seat_mark(a: SeatMark, b: SeatMark) -> bool {
+    a.mutable == b.mutable && a.settled == b.settled && a.unshared == b.unshared
+}
+
+fn exact_seat_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_seat_mark(a[it], b[it]))
+}
+
+fn exact_mark(a: Mark, b: Mark) -> bool {
+    a.name == b.name && exact_strs(a.args, b.args)
+}
+
+fn exact_marks(a: List<Mark>, b: List<Mark>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_mark(a[it], b[it]))
+}
+
+/// `type_fp`'s exact twin: the same fields, compared, never hashed.
+fn exact_type_ref(a: TypeRef?, b: TypeRef?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    let wa = a!
+    let wb = b!
+    wa.name == wb.name && wa.optional == wb.optional && wa.dynamic == wb.dynamic && wa.arrow == wb.arrow && wa.spliced == wb.spliced && exact_seat_marks(wa.marks, wb.marks) && exact_type_refs(wa.args, wb.args)
+}
+
+fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_type_ref(a[it], b[it]))
+}
+
+fn exact_collect_kind(a: CollectKind, b: CollectKind) -> bool {
+    match a {
+        .Component(w1) -> match b { .Component(w2) -> w1 == w2, rest -> false },
+        .UnknownKind(w1) -> match b { .UnknownKind(w2) -> w1 == w2, rest -> false },
+    }
+}
+
+fn exact_collect_scope(a: CollectScope, b: CollectScope) -> bool {
+    match a {
+        .Self -> match b { .Self -> true, rest -> false },
+        .Package -> match b { .Package -> true, rest -> false },
+        .Closure -> match b { .Closure -> true, rest -> false },
+        .UnknownScope(w1) -> match b { .UnknownScope(w2) -> w1 == w2, rest -> false },
+    }
+}
+
+fn exact_proj_field(a: ProjField, b: ProjField) -> bool {
+    a.field.of == b.field.of && exact_plains(a.path, b.path)
+}
+
+fn exact_proj_fields(a: List<ProjField>, b: List<ProjField>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_proj_field(a[it], b[it]))
+}
+
+fn exact_projection(a: Projection, b: Projection) -> bool {
+    exact_type_ref(a.ty, b.ty) && exact_proj_fields(a.fields, b.fields)
+}
+
+fn exact_hole(a: Hole, b: Hole) -> bool {
+    a.name == b.name && exact_type_ref(a.ty, b.ty) && a.greedy == b.greedy
+}
+
+fn exact_format_part(a: FormatPart, b: FormatPart) -> bool {
+    a.piece == b.piece && exact_hole(a.hole, b.hole)
+}
+
+fn exact_format_parts(a: List<FormatPart>, b: List<FormatPart>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_format_part(a[it], b[it]))
 }
 

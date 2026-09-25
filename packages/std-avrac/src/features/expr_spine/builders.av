@@ -345,11 +345,16 @@ fn build_trailing(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Lambda(seats, body))
 }
 
-/// The one catch builder — the four surfaces are alternatives of
-/// ONE optional group, so `disjunction` parses once and the form is
-/// read off which captures arrived: braces arms (cv/cb/ca), one
-/// selective arm (sv/sb/sa), a catch-all bind (eb/ea), or a value
-/// (rv). No captures at all means no `catch` was written.
+/// The one catch builder — the six surfaces are alternatives of ONE
+/// optional group, so `disjunction` parses once and the form is read
+/// off which captures arrived: braced enum arms (cv/cb/ca), braced
+/// union arms (tb/tn/ta), one selective enum arm (sv/sb/sa), one
+/// union arm (ub/un/ua), a catch-all bind (eb/ea), or a value (rv).
+/// No captures at all means no `catch` was written. A union arm's
+/// `name: Type` reverses the enum arm's `.Variant(name)` — the bind
+/// sits where the dot's variant would, the type where its payload
+/// bind would — so both spellings hand `Expr.Catch` the same one
+/// shape: a `Plain` naming what to match, a `Scoped` naming the bind.
 fn build_catch(b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let rv = b.exprs(10)?
@@ -359,12 +364,25 @@ fn build_catch(b: Builder) -> Result<LangNode, string> {
         let ea = b.expr(9)?
         return b.make_expr(Expr.Catch(l, [Plain("")], [Scoped(eb[0].text)], [ea]))
     }
+    let ub = b.tokens(14)?
+    if !ub.is_empty() {
+        let ua = b.expr(16)?
+        let un = b.tokens(15)?
+        return b.make_expr(Expr.Catch(l, [Plain(un[0].text)], [Scoped(ub[0].text)], [ua]))
+    }
     let sv = b.tokens(5)?
     if !sv.is_empty() {
         let sa = b.expr(7)?
         let sb = b.tokens(6)?
         let bound: Token? = sb.first()
         return b.make_expr(Expr.Catch(l, [Plain(sv[0].text)], [Scoped(bound?.text ?? "")], [sa]))
+    }
+    let tb = b.tokens(11)?
+    if !tb.is_empty() {
+        let tn = b.tokens(12)?
+        let ta = b.exprs(13)?
+        if tb.length != tn.length || tb.length != ta.length { return .Err(zip_defect) }
+        return b.make_expr(Expr.Catch(l, [Plain(n.text) for n in tn], [Scoped(n.text) for n in tb], ta))
     }
     let cv = b.tokens(2)?
     if cv.is_empty() {

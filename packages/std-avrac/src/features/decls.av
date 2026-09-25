@@ -890,7 +890,7 @@ impl Decls {
             .Enum(e, _) -> if !same_decl(e, d) && self.carries_nothing(e) { 0 } else { null },
             .Struct(_, _) -> if self.types.travels_wide(m) { null } else { 1 },
             .Opt(inner) -> if self.types.opt_rides_pointer(inner) { 1 } else { null },
-            .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> 1,
+            .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Union(_) -> 1,
             .Float or .Bool or .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
         }
     }
@@ -1176,15 +1176,16 @@ impl Decls {
 
     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
 
-    /// THE ONE READING DOOR for a declaration's `///` doc — a held file answers
-    /// through the same fact `capture_facts` recorded at admit. A declaration
-    /// with none of its own inherits its FILE's `//!` header: the general
-    /// case, not a feature-shaped one — any lightly-documented file with one
-    /// clear purpose reads this way, `avra docs enums` included, and nothing
-    /// here knows what a "feature" is. Never `store_of`: a held declaration
-    /// has no store to force, and a declaration minted with no facts at all
+    /// THE ONE READING DOOR for a declaration's OWN `///` doc — a held
+    /// file answers through the same fact `capture_facts` recorded at
+    /// admit. A declaration's doc is its own `///` or nothing; a
+    /// file's `//!` is `file_doc_of`'s, never this door's fallback — a
+    /// caller that wants an undocumented declaration to read as its
+    /// file's header composes both explicitly: `doc_of(d) ??
+    /// file_doc_of(file)`. Never `store_of`: a held declaration has no
+    /// store to force, and a declaration minted with no facts at all
     /// must still answer null rather than trap.
-    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc ?? self.file_doc_of(self.decl(d).file) }
+    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc }
 
     /// A file's `//!` header when it has a real store, null for a held
     /// file (its record carries no file-level doc) or an out-of-range

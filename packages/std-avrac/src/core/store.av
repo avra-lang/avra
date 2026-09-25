@@ -1076,6 +1076,79 @@ impl NodeStore {
     }
 }
 
+// ── Exact equality, the store-bound half ───────────────────────────
+// `@derive(Exact)` (core/exact_derive.av) generates `exact_expr`/
+// `exact_stmt`/`exact_pat` themselves; every compound type an Expr,
+// Stmt or Pat carries THROUGH THE STORE (an id that dereferences, a
+// list of them, an Arm/Param/Variant/Case that holds one) is walked
+// here instead — `case_fps`/`param_fps`/`variant_fps`'s own siblings,
+// comparing rather than folding.
+impl NodeStore {
+    fn exact_opt_expr(a: ExprId?, b: ExprId?) -> bool {
+        if a == null || b == null { return a == null && b == null }
+        self.exact_expr(self.expr(a!), self.expr(b!))
+    }
+
+    fn exact_expr_ids(a: List<ExprId>, b: List<ExprId>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_expr(self.expr(a[k]), self.expr(b[k])))
+    }
+
+    fn exact_stmt_ids(a: List<StmtId>, b: List<StmtId>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_stmt(self.stmt(a[k]), self.stmt(b[k])))
+    }
+
+    fn exact_pat_ids(a: List<PatId>, b: List<PatId>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_pat(self.pat(a[k]), self.pat(b[k])))
+    }
+
+    /// An arm's own equality — `arm_fps`'s exact twin.
+    fn exact_arm(a: Arm, b: Arm) -> bool {
+        self.exact_pat_ids(a.pats, b.pats) && self.exact_opt_expr(a.guard, b.guard) && self.exact_expr(self.expr(a.value), self.expr(b.value))
+    }
+
+    fn exact_arms(a: List<Arm>, b: List<Arm>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_arm(a[k], b[k]))
+    }
+
+    /// A seat's own equality — `param_fps`'s exact twin.
+    fn exact_param(a: Param, b: Param) -> bool {
+        a.name.of == b.name.of && exact_type_ref(a.ty, b.ty) && exact_seat_mark(a.promises, b.promises) && self.exact_opt_expr(a.default, b.default) && exact_marks(a.marks, b.marks)
+    }
+
+    fn exact_params(a: List<Param>, b: List<Param>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_param(a[k], b[k]))
+    }
+
+    /// A variant's own equality — `variant_fps`'s exact twin.
+    fn exact_variant(a: Variant, b: Variant) -> bool {
+        a.name.of == b.name.of && self.exact_params(a.payloads, b.payloads) && exact_marks(a.marks, b.marks)
+    }
+
+    fn exact_variants(a: List<Variant>, b: List<Variant>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_variant(a[k], b[k]))
+    }
+
+    /// A case's own equality — `case_fps`'s exact twin.
+    fn exact_case(a: Case, b: Case) -> bool {
+        a.group == b.group && a.name == b.name && self.exact_expr(self.expr(a.body), self.expr(b.body))
+    }
+
+    fn exact_cases(a: List<Case>, b: List<Case>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_case(a[k], b[k]))
+    }
+
+    /// `view_fp`'s exact twin: an EXPANSION compares equal to any
+    /// other expansion, unread — a node wears one identity either
+    /// side of its own expansion, and equality is no different.
+    fn exact_view(a: BodyView, b: BodyView) -> bool {
+        match a {
+            .None -> match b { .None -> true, rest -> false },
+            .Verbatim(stmts1, arms1) -> match b { .Verbatim(stmts2, arms2) -> self.exact_stmt_ids(stmts1, stmts2) && self.exact_arms(arms1, arms2), rest -> false },
+            .Expanded(_) -> match b { .Expanded(_) -> true, rest -> false },
+        }
+    }
+}
+
 /// The argument that fills seat `j`: the one named for it, else the
 /// positional one at its position, else -1.
 fn filler(labels: List<string>, seat: string, j: int) -> int {
