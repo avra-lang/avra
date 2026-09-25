@@ -118,9 +118,9 @@ spec "features/defers" {
         }
     }
     given "the IR, as `avra ir` prints it" {
-        then "the box is read and called through after the frame's value, inside the scope — handed over uncounted, released by the frame" {
-            let shape = "  r5 = call avra_array_get(r1, r4)\n    r6 = callptr r5(r1)\n    release r1\n    yield r3\n"
-            render_ir(ir_of("${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    1\n}\nf()")).contains(shape)
+        then "a capture-free deferred body is static data — read once, called through, and never released" {
+            let ir = render_ir(ir_of("${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    1\n}\nf()"))
+            ir.contains("static fn\$") && ir.contains("callptr") && !ir.contains("avra_array_sized")
         }
         then "a method call on a captured receiver needs no closure box — called directly, never through a pointer" {
             let ir = render_ir(ir_of("${puts()}type Stmt = { n: int, m: int }\nimpl Stmt {\n    fn reset() {\n        avra_puts(\"r\${self.n}\")\n    }\n}\nfn f() -> int {\n    mut s = Stmt { n: 1, m: 2 }\n    defer s.reset()\n    0\n}\nf()"))

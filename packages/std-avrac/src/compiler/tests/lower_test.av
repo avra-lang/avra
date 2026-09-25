@@ -2,7 +2,7 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, TypeId, same_reg, distinct, lent_args, flatten, new_type_registry}
+use @std.avrac.core.{Ins, RtSig, Reg, TypeId, same_reg, distinct, lent_args, flatten, new_type_registry, static_code_syms}
 
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
@@ -58,6 +58,12 @@ fn addr_syms(l: Lowered) -> List<string> {
         if sym != null { out.push(sym!) }
     }
     out
+}
+
+/// A capture-free box's code address, laid out static instead of
+/// minted by `Ins.FnAddr` — `addr_syms`'s twin.
+fn static_addr_syms(l: Lowered) -> List<string> {
+    flatten([static_code_syms(st.boxes) for st in l.statics])
 }
 
 fn call_ptrs(l: Lowered) -> int {
@@ -294,13 +300,15 @@ ret 0"""
         then "a lambda lifts once, named for its file and its node" {
             let l = ir_of("let f = (x: int) -> x + 1\nf(2)")
             let names = [b.name for b in l.fns]
-            addr_syms(l).length == 1 && names.any(it.ends_with("\$l3"))
+            // capture-free — its box is static data, never `Ins.FnAddr`
+            addr_syms(l).length == 0 && static_addr_syms(l).length == 1 && names.any(it.ends_with("\$l3"))
         }
         then "a named fn boxes behind its wrapper" {
             let l = ir_of("fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 4)")
             let names = [b.name for b in l.fns]
-            let syms = addr_syms(l)
-            syms.length == 1 && syms[0] == "double\$w" && names.contains("double\$w")
+            // no captures ever ride a named fn value — always static data
+            let syms = static_addr_syms(l)
+            addr_syms(l).length == 0 && syms.length == 1 && syms[0] == "double\$w" && names.contains("double\$w")
         }
     }
     given "the program is the entry's closure" {

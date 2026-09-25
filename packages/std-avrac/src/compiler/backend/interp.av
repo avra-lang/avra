@@ -271,19 +271,6 @@ impl Machine {
     }
 }
 
-/// A slot's value — a box's by the handle already built for it.
-fn slot_val(c: Slot, built: List<Val>) -> Val {
-    match c {
-        .Int(n) -> Val.I(n),
-        .Float(bits) -> Val.F(bits),
-        .Bool(b) -> Val.B(b),
-        .Text(s) -> Val.S(s),
-        .Box(at) -> built[at],
-        .Null -> Val.N,
-        .Absent -> Val.Gone,
-    }
-}
-
 /// A run nobody budgets: a program runs to its end.
 const unbudgeted: int = 1000000000000000
 
@@ -971,12 +958,27 @@ impl Machine {
 
     fn box_val(b: StaticBox, built: List<Val>) -> Val {
         match b {
-            .Slots(cells) -> self.fresh_array([slot_val(c, built) for c in cells]),
+            .Slots(cells) -> self.fresh_array([self.slot_val(c, built) for c in cells]),
             .Octets(b) -> Val.Y([b.at(j) for j in 0..b.length]),
             .Table(keys, values) -> {
-                self.maps.push(MapVal { keys: keys, vals: [slot_val(c, built) for c in values] })
+                self.maps.push(MapVal { keys: keys, vals: [self.slot_val(c, built) for c in values] })
                 Val.M(self.maps.length - 1)
             },
+        }
+    }
+
+    /// A slot's value — a box's by the handle already built for it, a
+    /// code address the same body index `fn_addr_val` answers.
+    fn slot_val(c: Slot, built: List<Val>) -> Val {
+        match c {
+            .Int(n) -> Val.I(n),
+            .Float(bits) -> Val.F(bits),
+            .Bool(b) -> Val.B(b),
+            .Text(s) -> Val.S(s),
+            .Box(at) -> built[at],
+            .Null -> Val.N,
+            .Absent -> Val.Gone,
+            .Code(sym) -> self.fn_addr_val(sym),
         }
     }
 

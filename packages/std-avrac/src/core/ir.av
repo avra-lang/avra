@@ -466,6 +466,9 @@ export enum Slot {
     /// A nullable SCALAR that is not there: the word zero, its cell
     /// marked absent (runtime/avra_box.h's `MARK_ABSENT`).
     Absent
+    /// A CODE ADDRESS — the symbol a `FnAddr` would resolve at run
+    /// time, laid out once instead: a capture-free closure's slot 0.
+    Code(sym: string)
 }
 
 /// One box: a slot array, or a map's keys beside its values.
@@ -475,6 +478,26 @@ export enum StaticBox {
     /// Octets laid out as the binary's own immortal box — the layout
     /// text shares.
     Octets(b: Bytes)
+}
+
+/// The code addresses these boxes name — a `Slot.Code` is a body
+/// reference as real as an instruction's, just not one an `Ins` scan
+/// would ever see.
+export fn static_code_syms(boxes: List<StaticBox>) -> List<string> {
+    flatten([box_code_syms(b) for b in boxes])
+}
+
+fn box_code_syms(b: StaticBox) -> List<string> {
+    match b {
+        .Slots(cells) -> flatten([slot_code_sym(c) for c in cells]),
+        .Table(_, values) -> flatten([slot_code_sym(c) for c in values]),
+        .Octets(_) -> [],
+    }
+}
+
+/// One slot's code address, or none — every slot but `.Code` names one.
+fn slot_code_sym(c: Slot) -> List<string> {
+    match c { .Code(sym) -> [sym], rest -> [] }
 }
 
 /// A settled aggregate as its boxes, the ROOT last — the address a
