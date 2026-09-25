@@ -140,10 +140,21 @@ fn quoted_table(t: Type) -> string { quoted(table_name_of(t)) }
 
 fn non_id_fields(t: Type) -> List<Field> { t.fields.slice(1, t.fields.length) }
 
+/// Reserved on every table, unconditionally, whether or not this phase
+/// reads it — a monotonic write counter Phase 7's compare-and-set
+/// authority needs on rows that already exist by the time it lands.
+/// Double-underscore-wrapped like `__avra_models__`, so no field an Avra
+/// program can declare will ever collide with it. Hidden: it never
+/// appears on the struct, in `find`'s column list, or anywhere a user
+/// can read or write from Phase 1.
+const VERSION_COLUMN: string = "__avra_version__"
+
 fn create_table_sql_of(t: Type) -> string {
-    let cols = [column_ddl(f) for f in t.fields]
+    let cols = [column_ddl(f) for f in t.fields].concat([version_column_ddl()])
     "CREATE TABLE IF NOT EXISTS ${quoted_table(t)} (${cols.join(", ")})"
 }
+
+fn version_column_ddl() -> string { "${quoted(VERSION_COLUMN)} INTEGER NOT NULL DEFAULT 1" }
 
 fn column_ddl(f: Field) -> string {
     if f.name == "id" { return "${quoted(f.name)} INTEGER PRIMARY KEY AUTOINCREMENT" }
@@ -179,17 +190,17 @@ fn select_by_id_sql_of(t: Type) -> string {
     "SELECT ${names} FROM ${quoted_table(t)} WHERE ${quoted("id")} = ?"
 }
 
-/// The same empty-list law as `insert_sql_of`: `SET` with nothing to
-/// set is a syntax error, so a column-free model updates `id` to
-/// itself — a real statement that still answers whether the row exists.
+/// The version bump is always in `SET`, so a column-free model still
+/// gets a syntactically valid `UPDATE` with no special case — unlike
+/// `insert_sql_of`, which has no such column to fall back on.
 fn update_sql_of(t: Type) -> string {
-    let fs = non_id_fields(t)
-    if fs.is_empty() { return "UPDATE ${quoted_table(t)} SET ${quoted("id")} = ${quoted("id")} WHERE ${quoted("id")} = ?" }
-    let sets = [set_clause(f) for f in fs].join(", ")
+    let sets = [set_clause(f) for f in non_id_fields(t)].concat([version_bump_clause()]).join(", ")
     "UPDATE ${quoted_table(t)} SET ${sets} WHERE ${quoted("id")} = ?"
 }
 
 fn set_clause(f: Field) -> string { "${quoted(f.name)} = ?" }
+
+fn version_bump_clause() -> string { "${quoted(VERSION_COLUMN)} = ${quoted(VERSION_COLUMN)} + 1" }
 
 fn delete_sql_of(t: Type) -> string {
     "DELETE FROM ${quoted_table(t)} WHERE ${quoted("id")} = ?"

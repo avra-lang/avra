@@ -52,6 +52,20 @@ fn deletes() -> Result<int, SqlError> {
     row_count(db)
 }
 
+fn version_of(db: Db, id: int) -> Result<int, SqlError> {
+    (db.scalar(sql("select \"__avra_version__\" from User where id = ?").args([.Int(id)]))?).int()
+}
+
+fn version_bumps_on_update() -> Result<string, SqlError> {
+    mut db = seeded()?
+    let u = inserted(db, "v@x.com", "V")?
+    let before = version_of(db, u.id)?
+    let changed = u with { name: "V2" }
+    changed.update(db)?
+    let after = version_of(db, u.id)?
+    "${before}|${after}"
+}
+
 fn unique_violation() -> string {
     match dup_insert() {
         .Ok(_) -> "",
@@ -86,7 +100,7 @@ spec "std/db @model" {
     given "a model's own generated SQL" {
         then "the table name is the type's own name" { User.table_name() == "User" }
         then "the create-table DDL names the primary key and the unique column" {
-            User.create_table_sql() == "CREATE TABLE IF NOT EXISTS \"User\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"email\" TEXT UNIQUE, \"name\" TEXT)"
+            User.create_table_sql() == "CREATE TABLE IF NOT EXISTS \"User\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"email\" TEXT UNIQUE, \"name\" TEXT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1)"
         }
     }
     given "a row inserted" {
@@ -108,6 +122,10 @@ spec "std/db @model" {
     given "a row deleted" {
 
         then "the table is empty" { (deletes() catch 0 - 1) == 0 }
+    }
+    given "the hidden version column" {
+
+        then "it starts at 1 and bumps to 2 on update" { (version_bumps_on_update() catch "?") == "1|2" }
     }
     given "a unique column violated" {
 
