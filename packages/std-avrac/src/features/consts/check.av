@@ -117,18 +117,26 @@ fn closure_collect(cx: TypeCx, d: DeclId) -> bool {
     p.scope is .Closure
 }
 
-/// A collect gathering THIS declaration's own kind, read by name —
-/// `s` need not be a named instance (`instance_of` answers absent
-/// for an ordinary const, so nothing here ever matches for one).
+/// A collect gathering THIS declaration's own word, read by name —
+/// every word `s` itself answers `collect` under: a named
+/// instance's OWN component word (`instance_of`, absent for an
+/// ordinary const, so nothing here ever matches for one) and every
+/// `@name` `s` wears, since an `.Annotated` collect gathers by mark,
+/// not by component.
 fn self_collect_read(cx: TypeCx, s: StmtId, root: ExprId) -> DeclId? {
-    let word? = cx.view.store.instance_of(s) else { return null }
-    decl_refs(cx, root).find(gathers(cx, word, it))
+    let words = self_collect_words(cx, s)
+    if words.is_empty() { return null }
+    decl_refs(cx, root).find((d) -> words.any((w) -> gathers(cx, w, d)))
+}
+
+fn self_collect_words(cx: TypeCx, s: StmtId) -> List<string> {
+    some_list(cx.view.store.instance_of(s)).concat([a.name for a in cx.view.store.annotations_of(s)])
 }
 
 fn gathers(cx: TypeCx, word: string, d: DeclId) -> bool {
     let p? = collect_parts_of(cx, d) else { return false }
     match p.kind {
-        .Component(w) -> w == word,
+        .Component(w) or .Annotated(w) -> w == word,
         .UnknownKind(_) -> false,
     }
 }

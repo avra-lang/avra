@@ -726,7 +726,14 @@ impl Workspace {
         if rd != null { return rd }
         let before = self.parsed(f)
         if has_errors(before.voices.list) { return "the source has parse errors" }
-        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after))
+        // THE SAME BLOCK WORDS `before` READ UNDER: `parse_program`'s
+        // own `words` parameter defaults to none, and a file that
+        // imports a component or a named grammar (every `rule`
+        // declaration in this very file is one) parses its own blocks
+        // as ordinary statements without them — a rewrite that moved
+        // not one byte of that block would still fail to reparse.
+        let words = self.block_words(f, before)
+        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after), words)
         if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
         if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
         for i, s in before.stmts {

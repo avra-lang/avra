@@ -35,11 +35,16 @@ type IndexedWord = { word: string, id: DeclId }
 /// THE COLLECT INDEX's own state: every word's rows so far, and how
 /// far into `decls` it has read — `through` is the index's OWN
 /// cursor, never `decls.get().length` read twice at different times.
-type CollectIndex = { by_word: Map<string, List<DeclId>>, through: int }
+/// TWO TABLES, never one: `by_word` is a `.Component`'s own name
+/// (at most one per declaration — `collect_word`), `by_mark` an
+/// `.Annotated` one's (zero or more per declaration — a decl may
+/// wear several `@name`s). Sharing one map would let a component
+/// named `rule` and an annotation `@rule` answer for each other.
+type CollectIndex = { by_word: Map<string, List<DeclId>>, by_mark: Map<string, List<DeclId>>, through: int }
 
 fn no_collect_index() -> CollectIndex {
     let empty: Map<string, List<DeclId>> = {}
-    CollectIndex { by_word: empty, through: 0 }
+    CollectIndex { by_word: empty, by_mark: empty, through: 0 }
 }
 
 /// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
@@ -563,15 +568,32 @@ impl Decls {
         self.collect_index.get().by_word.get(word) ?? []
     }
 
+    /// THE MARK INDEX: every declaration under each `@name` it wears
+    /// — `indexed`'s twin, for `.Annotated` kinds. A declaration may
+    /// answer several names (several annotations) where a component
+    /// word answers at most one, which is why this is a second table
+    /// and not a second bucket in the same map.
+    fn indexed_by_mark(name: string) -> List<DeclId> {
+        self.grown_index()
+        self.collect_index.get().by_mark.get(name) ?? []
+    }
+
     fn grown_index() {
         let idx = self.collect_index.get()
         let all = self.decls.get()
         if idx.through >= all.length { return }
-        mut by_word = idx.by_word
-        for row in self.collect_rows(idx.through, all) {
-            by_word.set(row.word, (by_word.get(row.word) ?? []).concat([row.id]))
-        }
-        self.collect_index.set(CollectIndex { by_word: by_word, through: all.length })
+        let by_word = self.folded_index(idx.by_word, self.collect_rows(idx.through, all))
+        let by_mark = self.folded_index(idx.by_mark, self.mark_rows(idx.through, all))
+        self.collect_index.set(CollectIndex { by_word: by_word, by_mark: by_mark, through: all.length })
+    }
+
+    /// `rows` folded onto `base` — one row per word, appended to
+    /// whichever declarations already answer it. Shared by the two
+    /// index tables `grown_index` extends.
+    fn folded_index(base: Map<string, List<DeclId>>, rows: List<IndexedWord>) -> Map<string, List<DeclId>> {
+        mut m = base
+        for row in rows { m.set(row.word, (m.get(row.word) ?? []).concat([row.id])) }
+        m
     }
 
     /// The new rows' own words, `all[from..]` — a row with none (most
@@ -597,11 +619,29 @@ impl Decls {
         self.store_of(d.file).instance_of(d.stmt)
     }
 
+    /// Every `@name` row a declaration answers, `collect_word`'s
+    /// twin — every annotation it wears, of any DeclKind (a `type`,
+    /// a `fn`, a `record` may each carry one, unlike a component
+    /// instance's one word).
+    fn mark_rows(from: int, all: List<Decl>) -> List<IndexedWord> {
+        flatten([self.marked_words(all[i]) for i in from..all.length])
+    }
+
+    fn marked_words(d: Decl) -> List<IndexedWord> {
+        [IndexedWord { word: a.name, id: d.id } for a in self.annotations_of(d.id)]
+    }
+
     /// Every indexed declaration of `word`, admitted so far —
     /// `decls_of_kind`'s law here too: a fixture (`/tests/`) is not
     /// the program's own.
     fn decls_of_word(word: string) -> List<Decl> {
         [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).path.contains("/tests/")]
+    }
+
+    /// Every indexed declaration wearing `@name`, `decls_of_word`'s
+    /// mark twin.
+    fn decls_of_mark(name: string) -> List<Decl> {
+        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if !self.file(d.file).path.contains("/tests/")]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -758,15 +798,27 @@ impl Decls {
         [d for d in self.decls_of_word(word) if self.in_scope(d, scope, owner)]
     }
 
+    /// `gathered`'s mark twin: every declaration wearing `@name`,
+    /// filtered to `scope` the same way.
+    fn gathered_by_mark(name: string, scope: CollectScope, owner: FileId) -> List<Decl> {
+        [d for d in self.decls_of_mark(name) if self.in_scope(d, scope, owner)]
+    }
+
     /// A REGISTRY match over `CollectScope`: `self` is the owner's own
     /// file, `package` the owner's own package, `closure` everything
-    /// admitted. An unknown scope was already refused at
-    /// `check_collect` — it gathers nothing, honestly.
+    /// admitted — ACROSS PACKAGES, EXPORTED DECLARATIONS ONLY
+    /// (docs/2026_09_22_COLLECTIONS.md §4.4): a declaration in the
+    /// owner's OWN package is seen either way, private ones included,
+    /// the same as `self`/`package` already see; one a DIFFERENT
+    /// package holds must have said `export`, or a dependency could
+    /// silently hand a program its own unexported internals. An
+    /// unknown scope was already refused at `check_collect` — it
+    /// gathers nothing, honestly.
     fn in_scope(d: Decl, scope: CollectScope, owner: FileId) -> bool {
         match scope {
             .Self -> same_file(d.file, owner),
             .Package -> self.package_of_file(d.file) == self.package_of_file(owner),
-            .Closure -> true,
+            .Closure -> d.exported || self.package_of_file(d.file) == self.package_of_file(owner),
             .UnknownScope(_) -> false,
         }
     }

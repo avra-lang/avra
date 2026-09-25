@@ -1,7 +1,7 @@
 // Attacks on the structural matcher, assuming it is broken: degenerate
 // shapes, binders repeated more than twice, nesting through Pat and
 // through a quote body, and a subject deeper than its pattern.
-use @std.avrac.core.{new_node_store, NodeStore, Expr, Stmt, Pat, Arm, BinOp, BodyView, At, Shape, shape_at, matched, matched_runs, node_shallow_at, ExprId}
+use @std.avrac.core.{new_node_store, NodeStore, Expr, Stmt, Pat, Arm, BinOp, BodyView, At, Shape, shape_at, matched, matched_runs, typed_node_shallow_at, ExprId}
 
 spec "core/shape adversarial" {
     given "degenerate shapes" {
@@ -160,17 +160,18 @@ spec "core/shape adversarial" {
             mut s = new_node_store()
 
             // a Run-bearing node's own template is folded BLIND to the
-            // field the Run occupies (`node_shallow_at`), so its actual
-            // element count never matters once a Run sits among its kids.
+            // field the Run occupies (`typed_node_shallow_at`), so its
+            // actual element count never matters once a Run sits among
+            // its kids.
             let inner_kids = [Shape.Run(0)]
             let inner_template = s.alloc_expr(Expr.ListLit([]))
-            let inner_shape = Shape.Node(node_shallow_at(s, At.Expr(inner_template), inner_kids), inner_kids)
+            let inner_shape = Shape.TypedNode(typed_node_shallow_at(s, At.Expr(inner_template), inner_kids, []), inner_kids, [])
 
             let d1 = s.alloc_expr(Expr.IntLit(0))
             let d2 = s.alloc_expr(Expr.IntLit(0))
             let outer_template = s.alloc_expr(Expr.ListLit([d1, d2]))
             let outer_kids = [inner_shape, inner_shape]
-            let pat = Shape.Node(node_shallow_at(s, At.Expr(outer_template), outer_kids), outer_kids)
+            let pat = Shape.TypedNode(typed_node_shallow_at(s, At.Expr(outer_template), outer_kids, []), outer_kids, [])
 
             let a = s.alloc_expr(Expr.StrLit("aihhotaz"))
             let b = s.alloc_expr(Expr.StrLit("eepturoq"))
