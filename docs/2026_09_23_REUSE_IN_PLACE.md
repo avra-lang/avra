@@ -1386,3 +1386,165 @@ seat and a plain read of the same binding meet — a `same_box`
 predicate over `Lives`, keyed on the CELL rather than the register,
 would let a pass answer the sharper question instead of falling back
 to "unknown, so guard."
+
+## §31 R3 design — consuming params (not built)
+
+**Why this is a design, not a slice.** avra-8sb5.34.4's ticket already
+warns "Perceus owns params" is a calling-convention change; ROADMAP's
+own ladder entry for R5 says "Consuming params (R3) fold in here,"
+naming it as the same doctrine, not the same size. Every load-bearing
+mechanism this needs is a TOUCH POINT in `SeatMark`, `fn_fits`,
+`Body`, and BOTH sides of `.Call`/`.CallPtr` in memory.av — the same
+shape as R1 itself (§4), which had its own red-team table and its own
+landing. Attempting it inside R5's slice risks exactly what AGENT_RULES
+warns against: "a wrong elision is a use-after-free that tests may
+not see," compounded by a HALF-BUILT calling convention with no
+red team of its own. R5 (§30) already found and fixed one real
+use-after-free from a much narrower change; this is not the moment to
+also carry an unfinished one. What follows is grounded in the actual
+call sites (file:line), not a sketch.
+
+**D17. Ownership is a SEAT MARK, not a per-call decision.** The ticket
+offers two designs — "per seat from the callee's body" or "per call, a
+dying argument at an owning seat" — and names the deciding constraint
+itself: "keep ONE calling convention per fn symbol." A per-call choice
+means the SAME callee compiles two ways depending on who calls it, or
+carries a runtime branch; CLAUDE.md's fn-type-marks law exists
+precisely to rule this out ("a `mut`-taking fn stored in a plain fn
+seat wrote through an immutable `let` with no diagnostic, in both
+engines," the defect a mark-on-the-TYPE closes). So: a FOURTH mark,
+alongside `mutable`/`settled`/`unshared` — `SeatMark { mutable: bool,
+settled: bool, unshared: bool = false, owned: bool = false }`
+(core/types.av:792, appended — a GROWTH, not a move). The word is the
+owner's to choose; `owned` is the working name below (Perceus calls
+this the same thing; the runtime already says "owned twin" for the
+analogous runtime-row contract).
+
+**Grammar.** `features/fns/mod.av:40`'s `fn` rule already spells three
+optional prefix words per parameter: `( ck:"const" )? ( mk:"mut" )?
+( ik:"isolated" )? ps:NAME`. A fourth slot joins them (trailing comma
+law unaffected — this is a prefix, not a list). The SAME rule serves
+`extern fn` (line 39) and `once fn` (line 41); whether `owned` reaches
+those too is a real question — an extern's inout seat already takes
+the CALLER's cell address (`host_regs`, features/fns/lower.av:44), a
+different crossing than an Avra-to-Avra `owned` transfer, and a `once
+fn` takes no arguments at all (F2055) so the question does not reach
+it.
+
+**Type system.**
+- `owned_mark(marks, j) -> bool` beside `mut_mark`/`settled_mark`/
+  `isolated_mark` (core/types.av:817-829).
+- `fn_fits` (features/checks.av:86-103) gains one more line in the
+  per-seat loop, the SAME asymmetry direction as the other three:
+  `if owned_mark(g.marks, j) && !owned_mark(w.marks, j) { fits = false
+  }` — a value that consumes seat `j` cannot be smuggled into a seat
+  type that never promised to consume it, or a caller through a
+  DIFFERENT (unmarked) seat type would keep believing it still owns
+  the argument after the call.
+- `mark_word` (types.av:843-855) encodes the three existing marks as
+  ONE letter each (`p/m/c/b/P/M/C/B` by `unshared`×`mutable`×
+  `settled`); a fourth boolean doubles the space to sixteen. Folding
+  it into the same letter is the wrong shape — spell it as a SECOND
+  character per seat (`mark_word`'s existing letter, then `o` or
+  nothing), so the interner's key stays one string and the doubling
+  does not have to invent eight new letters nobody can read.
+- `declared_marks`/`marks_of` (features/checks.av:1005,
+  features/decls.av:971) read the parsed `owned` flag the same way
+  they read `const`/`mut`/`isolated` today.
+- A NEW REFUSAL: `owned` combined with `mut` on the same seat. The two
+  are opposed by what they promise — `mut` is shared, caller-visible
+  writing; `owned` is exclusive consumption, nothing left for the
+  caller to see written back through. `fn f(owned mut x: T)` refuses,
+  licensed at the seat, own F-code.
+- Whether `owned self` is legal (a builder's `fn build(owned self) ->
+  Output`) is a real, useful case (Rust's `self` consumption) and a
+  real question for the receiver's own seat-mark plumbing — worth
+  landing, not worth deciding here.
+
+**Lowering, the callee's side — the smaller half.** `Body` (compiler/
+lower/lower.av:71-89) gains `marks: List<SeatMark> = no_marks(...)`
+— sized to `params.length`, a GROWTH at all seven construction sites
+(lower.av:275, 511, 542, 566, 580, 608, 767, 789), most of which
+already have `FnSig`/`Decls` in scope to read it from (`lower_fn` at
+511 already threads a declared `Decl x`); the synthetic bodies
+(`lower_lambda`, `lower_collect`, `lower_root`, `lower_main`,
+`wrapped_body`, `unboxing_body`) take `no_marks` since none of them
+declare a param a caller could mark `owned`. In `memory.av`,
+`standing_regs` (line 73-80) currently marks EVERY param standing
+unconditionally (`j < seats`); an `owned` seat must NOT be standing —
+it is genuinely scope-owned, so the entry scope's `manages()` must
+also SEED it at function start (right after the body's own
+`ScopeEnter`, before the first instruction that could read a param):
+`for j in 0..seats { if owned_mark(marks, j) { takes(open_scopes,
+Reg{index: j}) } }`. THAT ALONE closes the loop: `Lives.handover`
+already asks `owned_top(open_scopes, r)` (line 647) with no idea
+WHERE a register's ownership came from, so `with`/`concat` on an
+owned param takes the R1 reusing twin the moment it dies there, for
+free — R3 does not touch R1's Handover logic at all, which is the
+whole point of making ownership a SCOPE fact rather than a special
+case. And `FnExit`/`ScopeExit`'s existing release-what-the-scope-owns
+logic (`releases_for`, `exit_releases`) already frees an owned param
+that nothing ever moved — an early `return` before touching it
+releases correctly with NO new code, because it is now indistinguishable
+from any other locally-owned value.
+
+**Lowering, the caller's side — the real work.** At a `.Call`/
+`.CallPtr` whose callee's `j`-th seat is `owned` (resolved for `.Call`
+through a `name -> marks` map built once from `l.fns` in `memory()`;
+for `.CallPtr` read directly off the callee register's OWN type,
+`types.arrow_parts(reg_types[f.index]).marks` — no new plumbing there,
+since `TypeRegistry` already carries it), the caller decides PER
+ARGUMENT, Perceus-style, using the SAME `dies_at`/`owned_top` question
+R1 already asks of a `CallRt`'s first seat (`Lives.moves`, line
+664-667) — generalized from "the innermost scope owns it and it dies
+here" to any owned-seat argument of a `.Call`/`.CallPtr`:
+- DIES here, scope-owned: hand the existing reference over — no
+  retain, and `disowns(open_scopes, ar)` instead of the scope's own
+  eventual release (the reference moved to the callee, who now owes
+  it).
+- Does not die, or is not scope-owned (a param passed through, a cell
+  load, an immortal): mint the callee its OWN reference — `Retain(ar)`
+  before the call, the same shape `moved_out` already uses for a yield
+  the closing scope does not own (memory.av:450-457).
+This is genuinely NEW code in the `.Call`/`.CallPtr` arm (line 177 the
+`lent` computation for standard seats stays exactly as R5 left it, for
+every non-`owned` seat; an `owned` seat is excluded from THAT
+treatment entirely and goes through this one instead) — nothing here
+reuses `root_handed` (§30), because an `owned` seat's hazard is not
+"can the callee reach the box," it is "who releases it," a different
+question the R1 vocabulary already answers.
+
+**Red team a landing owes (none of it run — this is the list, not the
+proof).** Every attack in §30's own table, replayed with an `owned`
+seat where §30 used a plain one; plus, specific to consumption: a
+value passed to an owned seat and used AGAIN by the caller afterward
+(must retain, must NOT double-free); the same call site inside a LOOP
+(an owned argument minted fresh each turn dies each turn — the R1
+loop-condition law, "the condition runs every turn," is the same
+hazard one level up: an owned param settled ONCE after the loop
+instead of once per call would leak or double-release exactly as an
+unsettled `LoopCond` mint did); recursion passing the SAME owned
+param down every level (each frame must own exactly one reference,
+never the caller's); a `dyn`/`CallPtr` call through a stored closure
+whose STATIC type disagrees with the concrete callee's marks (must be
+refused by `fn_fits` at typing, before lowering ever sees it — the
+adversarial case is proving that refusal fires, not that lowering
+handles it); `defer`/`errdefer` capturing an owned param (does a
+capture, itself a copy per CLAUDE.md's capture law, transfer or merely
+alias the ownership the entry scope seeded?); an owned seat's value
+ALSO handed to a `mut` seat of the SAME call (refused at the type
+level once `owned mut` is refused, but a DIFFERENT owned seat plus a
+DIFFERENT mut seat, same call, aliased argument, is not refused by
+that rule and needs its own attack). A fixed-point build and
+instructions-retired numbers on `with_host`-shaped code (the ticket's
+own witness fn) close the slice, the same way §30's did.
+
+What I wanted from the language while designing this (not while
+building it, since I built none of it): the SeatMark growth is now
+four independent booleans threaded through SEVEN construction sites
+and re-encoded by hand in `mark_word`'s letter table each time one is
+added — the THIRD time this exact shape has happened (`unshared` was
+the last one). A declared-marks record that derives its own
+interner-key encoding from its own field list, rather than a hand-kept
+letter table one commit behind the type, would turn "did I remember
+every site" from a code-review question into a compiler-enforced one.
