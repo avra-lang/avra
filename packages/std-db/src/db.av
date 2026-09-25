@@ -56,10 +56,15 @@ export fn model(t: Type) -> List<Directive> {
 /// no_id_field`, ...), at the declaration itself, in the law's own
 /// words. Stack it beside `@model` on every model, always.
 export fn model_shape(t: Type) -> List<Diagnostic> {
+    if !has_annotation(t, "model") { return [model_missing(t)] }
     if t.variants.length > 0 { return [enum_not_supported(t)] }
     if !has_id_field(t) { return [no_id_field(t)] }
     if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
     []
+}
+
+fn has_annotation(t: Type, name: string) -> bool {
+    t.annotations.any(it.name == name)
 }
 
 // ── The shape a model must have ──────────────────────────────────
@@ -82,9 +87,15 @@ const MAX_FIELDS: int = 6
 /// rather than an `impl` whose every method mistypes against a shape
 /// it was never built for. `@model_shape` is what SPEAKS the refusal;
 /// this is what stops a second, silent, unrelated pile of errors from
-/// speaking over it.
+/// speaking over it. Its FIRST question is the sibling annotation
+/// itself: `@model` alone (no `@model_shape`) never ran the checks
+/// below at all, so a bad shape would sail straight through with no
+/// diagnostic anywhere — `@model_shape`'s own `model_missing` speaks
+/// the mirror case, but `@model` has no Diagnostic channel of its
+/// own, so silence (an empty `impl`) is the only honest answer it can
+/// give.
 fn shape_ok(t: Type) -> bool {
-    t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
+    has_annotation(t, "model_shape") && t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
 }
 
 fn generated(t: Type) -> Decls {
@@ -146,6 +157,15 @@ fn generated(t: Type) -> Decls {
 // package is ALREADY the namespace: `user_kind` prefixes it as
 // `@std/db:enum_not_supported`, so a self-chosen `model.` prefix
 // would only duplicate what the package name already says. ──
+
+fn model_missing(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "model_missing",
+        t.at,
+        "`@model_shape` checks a model's contract, and `${t.name}` never declares the model itself",
+        "add `@model` beside `@model_shape` on `${t.name}` — the two are always written together",
+    )
+}
 
 fn enum_not_supported(t: Type) -> Diagnostic {
     refuse_as_at(
