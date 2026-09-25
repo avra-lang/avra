@@ -619,6 +619,15 @@ static size_t sized_capacity(Header* h) {
     return block_size(h) - sizeof(Header) - 1;
 }
 
+// Whether a sized box can hold `need` content bytes without moving:
+// its block has the room, and the class its new length files under
+// when freed is no bigger than the block.
+static int in_place_fits(Header* h, size_t need) {
+    size_t payload = block_size(h) - sizeof(Header);
+    size_t cls = class_of(need + 1);
+    return need + 1 <= payload && (cls == 0 || cls * CLASS_BYTES <= payload);
+}
+
 // A sized box's length moved to `n`, its terminator written.
 // Accounting follows the LENGTH, as `box_free` does.
 static void sized_resized(Header* h, size_t n) {
@@ -637,8 +646,12 @@ static char* sized_moved(char* p, size_t need) {
     // truncation can shrink well under the block's real size — ask
     // the allocator once, here on the already-slow path, rather than
     // on every append's fast check, before paying for a move the
-    // block never needed.
-    if (!rc_guarded() && block_size(h) - sizeof(Header) - 1 >= need) return p;
+    // block never needed. `box_free` files a box by its LENGTH's
+    // class, so growing in place is sound only while that class
+    // still fits the block: an allocator may round a block past its
+    // class (glibc does, by 8), and a box grown into that slack would
+    // be handed out later as a bigger class than its block holds.
+    if (!rc_guarded() && in_place_fits(h, need)) return p;
     size_t n = h->len;
     size_t room = need < 2 * n ? 2 * n : need;
     if (room + 1 <= CLASS_MAX || class_of(n + 1) != 0 || rc_guarded()) {
