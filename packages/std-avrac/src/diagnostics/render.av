@@ -8,8 +8,8 @@
 //!     ·     ╰── expected NAME
 //!   ──╯
 //!   help: a `let` names its value
-use core.{joined}
-use @std.errors.{Loc, Error}
+use core.{joined, flatten}
+use @std.errors.{Loc, Error, Suggestion, Confidence}
 use @std.text.{repeat}
 
 fn severity_word(s: Severity) -> string {
@@ -17,6 +17,23 @@ fn severity_word(s: Severity) -> string {
         .Error -> "error",
         .Warning -> "warning",
     }
+}
+
+fn confidence_word(c: Confidence) -> string {
+    match c {
+        .High -> "high",
+        .Medium -> "medium",
+        .Low -> "low",
+    }
+}
+
+/// One suggestion's own lines: its confidence and what it says to
+/// do, then every edit it proposes — a proof is never asked here
+/// (that re-lowers the program, which `avra check` cannot afford to
+/// pay per rendering); `avra fix`'s own report is where PROVED is
+/// said.
+fn suggestion_lines(sg: Suggestion) -> List<string> {
+    ["fix (${confidence_word(sg.confidence)}): ${sg.description}"].concat(["  ${e.replacement}" for e in sg.edits])
 }
 
 /// A label with nowhere to point — its own line under the message,
@@ -116,7 +133,6 @@ fn render_with(d: Diag, codes: List<DiagCode>, pick: fn(Loc) -> SourceFile) -> s
     parts = parts.concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
     parts = parts.concat(causes_of(d.cause))
     if d.help != null { parts.push("help: ${d.help!}") }
-    let sg? = d.suggestions.first() else { return joined(parts, "\n") }
-    let ed? = sg.edits.first() else { return joined(parts, "\n") }
-    joined(parts.concat(["fix: ${ed.replacement}"]), "\n")
+    parts = parts.concat(flatten([suggestion_lines(sg) for sg in d.suggestions]))
+    joined(parts, "\n")
 }

@@ -1,12 +1,22 @@
-//! THE PROOF: a rewrite is SAFE when the declaration it lands inside
-//! lowers to the SAME IR before and after, register renumbering
-//! aside (`core.alpha_fps`) — never by trusting the rewrite's own
-//! claim. `avra fix` applies only what this proves; everything else
-//! is SHOWN, never written (design §3).
-use core.{At, alpha_fps, same_fps}
-use features.{Analysed, enclosing_decl}
-use compiler.lower.{Body}
+//! THE PROOF: a rewrite is SAFE when every declaration it lands
+//! inside lowers to the SAME IR before and after, register
+//! renumbering aside (`core.alpha_fps`) — never by trusting the
+//! rewrite's own claim. `avra fix` applies only what this proves;
+//! everything else is SHOWN, never written (design §3).
+//!
+//! TWO DOORS, ONE COMPARISON: a rule's own `Candidate` carries a node
+//! id (`At`) straight from the walk that found it (`ir_proved`); any
+//! OTHER `Suggestion` — a spell-check, a dependency line, a named
+//! type's wrap — carries only the byte ranges its own `Edit`s point
+//! at, since it was built far from any AST walk (`edits_proved`).
+//! Both end at `decl_ir_proved`, the one question either door asks:
+//! does this declaration answer the same program before and after.
+use core.{At, alpha_fps, same_fps, Span, DeclId}
+use features.{Analysed, enclosing_decl, FileView}
+use compiler.lower.{Body, Lowered}
 use @std.path.{normalized}
+use @std.errors.{Edit}
+use diagnostics.{spliced}
 
 impl Program {
     /// Whether the declaration ENCLOSING `at` lowers to the SAME IR
@@ -19,6 +29,53 @@ impl Program {
     /// the rewrite.
     fn ir_proved(path: string, a: Analysed, at: At, after_text: string) -> bool {
         let d? = enclosing_decl(a.view, at) else { return false }
+        let before_lo = match self.checked_from(null, true) {
+            .Ok(l) -> l,
+            .Err(_) -> { return false },
+        }
+        mut after_p = self.after_program(path, after_text)
+        if !after_p.clean() { return false }
+        let after_lo = match after_p.checked_from(null, true) {
+            .Ok(l) -> l,
+            .Err(_) -> { return false },
+        }
+        self.decl_ir_proved(before_lo, after_lo, d)
+    }
+
+    /// `ir_proved`'s question, generalized off a rule's own `At` to
+    /// an arbitrary `Suggestion`'s edit set — no node id in hand,
+    /// only the byte ranges its `Edit`s already carry. Splices ALL of
+    /// `edits` into `path`'s text AT ONCE (so a multi-edit suggestion
+    /// is proved as the one rewrite it is, never edit by edit), then
+    /// asks the SAME question of every declaration any edit lands in.
+    /// `false` for an edit outside `path` (a suggestion editing
+    /// another file entirely — `packages.av`'s dependency line lands
+    /// in a manifest, which carries no IR to compare), one that lands
+    /// outside every declaration, or a splice that overlaps, reaches
+    /// outside the text, or does not even lower clean.
+    fn edits_proved(path: string, a: Analysed, edits: List<Edit>) -> bool {
+        if edits.is_empty() || edits.any(it.loc.file != null && it.loc.file! != path) { return false }
+        let ds = [decl_at_span(a.view, Span { lo: e.loc.lo, hi: e.loc.hi }) for e in edits]
+        if ds.any(it == null) { return false }
+        let after_text? = spliced(a.view.source.text, edits) else { return false }
+        let before_lo = match self.checked_from(null, true) {
+            .Ok(l) -> l,
+            .Err(_) -> { return false },
+        }
+        mut after_p = self.after_program(path, after_text)
+        if !after_p.clean() { return false }
+        let after_lo = match after_p.checked_from(null, true) {
+            .Ok(l) -> l,
+            .Err(_) -> { return false },
+        }
+        [d! for d in ds].all((d: DeclId) -> self.decl_ir_proved(before_lo, after_lo, d))
+    }
+
+    /// THE comparison itself: `d`'s own body, looked up by SYMBOL
+    /// (never by id — `before_lo`/`after_lo` are two independent
+    /// lowerings, so `d` names nothing in the second one) in each
+    /// lowering, alpha-fingerprinted and compared.
+    fn decl_ir_proved(before_lo: Lowered, after_lo: Lowered, d: DeclId) -> bool {
         let symbol = self.ws.decls.symbol(d)
         // NO entry: `self`'s own entry is whichever ONE file `avra
         // fix` was asked about — every OTHER file in the same
@@ -34,17 +91,7 @@ impl Program {
         // keeps its own entry-bound meaning for its other caller
         // (specs_test.av's case-refusal checks, which WANT that law
         // enforced).
-        let before_lo = match self.checked_from(null, true) {
-            .Ok(l) -> l,
-            .Err(_) -> { return false },
-        }
         let before_body? = before_lo.fns.find(it.name == symbol) else { return false }
-        mut after_p = self.after_program(path, after_text)
-        if !after_p.clean() { return false }
-        let after_lo = match after_p.checked_from(null, true) {
-            .Ok(l) -> l,
-            .Err(_) -> { return false },
-        }
         let after_body? = after_lo.fns.find(it.name == symbol) else { return false }
         same_ir(before_body, after_body)
     }
@@ -58,6 +105,14 @@ impl Program {
         mut ws2 = timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock)
         ws2.program(null)
     }
+}
+
+/// `enclosing_decl`'s own question (features/code.av), over a byte
+/// range rather than a node id — the only anchor an `Edit` outside
+/// the rule DSL carries, since it was never minted from a walk over
+/// `at`s.
+fn decl_at_span(view: FileView, sp: Span) -> DeclId? {
+    view.decls.innermost(view.decls.owner_spans(view.file), sp)
 }
 
 // LICENSED I39: compares two independent Body VALUES, neither one's own state
