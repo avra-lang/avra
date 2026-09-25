@@ -1,8 +1,7 @@
 //! `avra explain` — what a diagnostic code means, from the
 //! assembled registry; and `avra explain process` — the tools the
 //! package you stand in declares, each resolved where it stands
-//! today, printed before anything runs; and `avra explain rules` —
-//! every rule the compiler carries, by identity.
+//! today, printed before anything runs.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.avrac.compiler.{avra}
 use @std.avrac.diagnostics.{DiagCode, Diag, new_source_file, render}
@@ -11,24 +10,22 @@ use @std.process.{Tool, tool, tool_from_env, ProcessError}
 use @std.io.{read_text, exists}
 use @std.avrac.compiler.dev.{shown_code}
 use @std.avrac.compiler.host.{ToolRow, read_manifest}
-use @std.avrac.compiler.{rules, rule_id, RuleEntry}
 
 type ExplainCmd = {}
 
 impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
-        if q == "rules" { return explained_rules() }
         if q == "process" { return explained_process(args.arg("at")) }
         if q == "repr" { return explained_repr(args.arg("at")) }
         if q == "writes" { return explained_writes(args.arg("at")) }
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
-        let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
+        let hit: DiagCode? = avra().rows.codes.find(it.kind == q)
         if hit != null {
             let c = hit!
-            println("${c.id} ${c.kind} — ${c.summary}")
-            shown_witness(c.id)
+            println("${c.kind} — ${c.summary}")
+            shown_witness(c.kind)
             return 0
         }
         explained_decl(q)
@@ -39,8 +36,8 @@ impl Runnable for ExplainCmd {
 /// that triggers this code and the compiler's own words over it. A
 /// REAL refusal with its holes filled beats a template of the law,
 /// and it is the same rendering docs/DIAGNOSTICS.md pins.
-fn shown_witness(id: string) {
-    let shown? = shown_code(id) else { return }
+fn shown_witness(kind: string) {
+    let shown? = shown_code(kind) else { return }
     if !shown.fired { return }
     println("")
     println(shown.witness_source())
@@ -55,12 +52,12 @@ fn explained_kind(q: string) -> int {
     // the package's own refusals are not in the way: the kind asked
     // about may be the one they wear
     mut p = root_program(here())
-    let hit: DiagCode? = p.kind_rows().find(it.kind == q || it.id == q)
+    let hit: DiagCode? = p.kind_rows().find(it.kind == q)
     if hit == null {
         eprintln("avra: no annotation this package reaches registers `${q}` — a kind registers when `refuse_as` spells it as a literal, or when an annotation speaks it")
         return 1
     }
-    println("${hit!.id} — ${hit!.summary}")
+    println("${hit!.kind} — ${hit!.summary}")
     0
 }
 
@@ -143,29 +140,6 @@ fn explained_writes(fn_name: string) -> int {
     0
 }
 
-/// `avra explain rules` — every rule the compiler carries
-/// (compiler/rules_table.av's `rules` collect), by module then
-/// name (docs/2026_09_22_COLLECTIONS.md §5's own P7 example). THE
-/// STRUCTURAL GROUND TRUTH for "is this kind the name of a
-/// collected rule" — a native idiom finding's kind is real only
-/// when `rule_id(r)` names it here, never guessed from the kind
-/// STRING's own shape (dotted, or not an F-code). `RuleEntry`
-/// carries no declaring file yet, so the listing is the identity
-/// alone; a location column joins when one does.
-fn explained_rules() -> int {
-    println(rules_listing(rules))
-    0
-}
-
-/// The listing's own text, apart from printing it — every rule's
-/// identity, one per line, in the collect's own order (module then
-/// name), under a header naming the count.
-export fn rules_listing(entries: List<RuleEntry>) -> string {
-    let header = "rules — List<RuleEntry>, rule in closure, by module then name — ${entries.length} entries"
-    let lines = [header].concat(["  ${rule_id(r)}" for r in entries])
-    lines.join("\n")
-}
-
 /// The package's declared tools, minted as the library mints them, and
 /// what a child inherits — the set of doors, before any opens. `at` is
 /// the package's directory; the front door stands at the root.
@@ -177,7 +151,7 @@ fn explained_process(at: string) -> int {
     }
     let src = new_source_file(manifest, read_text(manifest) catch "")
     let m = read_manifest(src)
-    for d in m.voices { eprintln(render(d, avra().rows.codes, src)) }
+    for d in m.voices { eprintln(render(d, src)) }
     if m.voices.any(refuses(it)) { return 1 }
     if m.tools.is_empty() {
         println("no [process.tools] declared — the script rung: any tool a literal names, an open set")
@@ -224,9 +198,9 @@ fn terminator_text(t: string?) -> string {
 }
 
 export command explain {
-    description: "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain; `rules` — every rule the compiler carries"
+    description: "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain"
     arg code {
-        description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, `repr`, `writes`, or `rules`"
+        description: "a kind, a package kind (`@scope/name:E1`), `process`, `repr`, or `writes`"
         required: true
     }
     arg at { description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`); for `writes`: a fn name" }

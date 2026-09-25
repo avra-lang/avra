@@ -949,8 +949,8 @@ engine's spec, written by dogfooding.
   When a computation is keyed AND its artifact is NAMED, derive both
   from ONE value (`settled_symbol`); two spellings of the identity a
   cache depends on is a wrong answer waiting for a second caller.
-- Every diagnostic names a registered kind (its F-code is the
-  registry's projection), carries help or a structured fix where
+- Every diagnostic names a registered kind — its own identity,
+  unique by construction — carries help or a structured fix where
   expressible, and has a golden rendering test.
   AND THE RENDERER NEVER DROPS A LABEL: a voice with NO PLACE still
   renders its label. A label is what the diagnostic SAYS; a Loc is
