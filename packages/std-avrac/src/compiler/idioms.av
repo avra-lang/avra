@@ -7,6 +7,7 @@
 //! before the language grew able to say them; a sibling shape not
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
+use core.{TypeRef}
 use features.{Code, Fix, rule, said}
 use @std.meta.{name}
 
@@ -307,6 +308,36 @@ fn hand_sized(e: Code, k: Code) -> Fix {
     Fix.Say(said(e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
 }
 
+/// `hand_sized_index`'s sibling half of ONE idiom: a fact column
+/// SEEDED from an arena's own count — `filled(store.exprs.count(),
+/// null)` — rather than through `SideTable<V>`, which states the
+/// storage, the window, the growth and the out-of-window defect once.
+/// TWO ARMS, one shape: `filled(...)` and `filled<T>(...)` — a
+/// pinned type argument is a TYPE-seat hole (avra-8sb5.25.10), held
+/// open only so the SECOND arm's message can quote it back; the smell
+/// is the same either way, the first ARGUMENT ending in `.count()`.
+///
+/// NO REWRITE, `hand_sized_index`'s own reason: adopting `SideTable<V>`
+/// means replacing the surrounding TABLE's own declaration and every
+/// other site that reads or grows it, outside this one call's span.
+@keeps("filled(n, null)")
+@keeps("filled<TypeId>(n, hole)")
+export rule filled_by_arena_count {
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { filled(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, null),
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { filled<${t}>(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, t),
+}
+
+// LICENSED style.filled_by_arena_count: the voice quotes the matched text back, which names the shape it detects
+fn hand_sized_column(n: Code, seed: Code, t: TypeRef?) -> Fix {
+    let head = match t {
+        ty? -> "filled<${ty.text()}>"
+        null -> "filled"
+    }
+    Fix.Say(said(n.loc(), "`${head}(${n.text()}.count(), ${seed.text()})` is a fact column sized from an arena's count — SideTable<V> states the storage, the window, the growth and the out-of-window defect once", "this call", null))
+}
+
 /// A walk over a NodeStore's own statements BY INDEX — `for i in
 /// 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()`
 /// hands the ids themselves, the thing every such walk actually
@@ -336,6 +367,100 @@ fn stmt_index_walked(lit: Code) -> bool {
 fn stmt_index_walk_found(lit: Code) -> Fix {
     let r = lit.for_range()!
     Fix.Say(said(r.to.loc(), "an index walk over a store's statements — `for s in store.stmt_ids()` hands the ids themselves", "this loop", null))
+}
+
+/// A VOCABULARY VERB written as a free fn taking a pass STATE first —
+/// `open_region(cx, c)`, `sig(ws, d)` — where the state's own impl IS
+/// its vocabulary, so the verb belongs there as a method
+/// (`cx.open_region(c)`, `ws.sig(d)`). A BARE-HOLE ROOT, structural
+/// GUARD (`Code.fn_params`, features/code.av, the same door
+/// `modified_copy_literal`/`one_body_arms` read a struct literal's
+/// fields and a `match`'s arms through): a param LIST has no fixed
+/// arity a quote pattern can spell, so only the FIRST param's own
+/// written type is asked, structurally, never bound through the
+/// pattern itself. THE REACH is the pass's own files — a `fn`
+/// declared directly under `features/` or `compiler/`, never one
+/// nested a directory deeper (`features/quote/lower.av`'s own
+/// dispatch targets stay free, `push_loop`'s same file-shape test).
+///
+/// NO REWRITE: the fix moves the fn's BODY inside the state's `impl`
+/// block and every CALL SITE loses its first argument — a
+/// whole-declaration refactor this pattern's one bound param cannot
+/// see, let alone perform.
+@keeps("fn f(a: int, b: int) -> int { a + b }")
+@keeps("fn lower(a: Analysis) -> Lowered { a }")
+export rule free_state_verb {
+    quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit),
+}
+
+/// The states a vocabulary verb's OWN impl belongs to — `open_region`,
+/// `accepts`, `sig` and their like all read or write one of these.
+const state_types: List<string> = ["TypeCx", "LowerCx", "ResolveCx", "Survey", "Workspace", "Decls", "Builder", "Body", "Scope"]
+
+/// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
+/// directly under `features/` or `compiler/` and that param's own
+/// written type is one of `state_types` — absent for every other
+/// shape (not a `fn`, no params, a nested feature file, an unrelated
+/// first type, or a `fn` that is not top-level: a trait's own method
+/// SIGNATURE (`fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId`,
+/// features/contract.av's `NodeSemantics`) is a DISPATCH TARGET
+/// `cx` reaches BY NODE KIND, never a vocabulary verb wanting to move
+/// onto `cx`'s own impl, and an `impl`'s method is the same shape one
+/// door over — both are indented, unlike a free fn, which the retired
+/// regex's own column-0 anchor already excluded them by).
+fn free_state_param(lit: Code) -> Code? {
+    if !is_pass_file(lit.of.view.source.file) { return null }
+    if !is_top_level(lit) { return null }
+    let params? = lit.fn_params() else { return null }
+    let p0? = params.first() else { return null }
+    if !is_state_type(p0.decl_type()) { return null }
+    p0
+}
+
+fn is_state_type(t: TypeRef?) -> bool {
+    let ty? = t else { return false }
+    state_types.contains(ty.name)
+}
+
+/// Whether `lit` sits at its file's own column zero — unindented,
+/// never nested inside an `impl`/`trait` body. NOTHING between the
+/// previous newline and `lit`'s own start, not merely nothing but
+/// whitespace there — an indented `fn` is whitespace too, and
+/// `.trim()` would call four leading spaces "empty" as readily as
+/// none. `export` is the one mark this checks for by name: a
+/// `FnDecl`'s own span starts at `fn`, so an EXPORTED top-level fn
+/// carries `"export "` between the line's start and its span, never
+/// nothing — the retired regex's own `(?:export )?` said the same.
+fn is_top_level(lit: Code) -> bool {
+    let loc? = lit.loc() else { return false }
+    let text = lit.of.view.source.text
+    let start = line_start_of(text, loc.lo)
+    let prefix = text.substring(start, loc.lo)
+    prefix.is_empty() || prefix == "export "
+}
+
+/// The index one past the newline before `at`, or 0 when there is
+/// none — where `at`'s own LINE begins.
+fn line_start_of(text: string, at: int) -> int {
+    // LICENSED style.hand_rolled_scan: a backward scan to the previous newline; the subset has no rfind
+    mut i = at
+    while i > 0 && text.char_code(i - 1) != 10 { i = i - 1 }
+    i
+}
+
+/// Whether `file` names a `.av` file DIRECTLY under `features/` or
+/// `compiler/` — one path segment, never a feature's own subdirectory
+/// (`features/quote/lower.av`'s parent is `quote`, not `features`).
+fn is_pass_file(file: string) -> bool {
+    let segs = file.split("/")
+    let n = segs.length
+    n >= 2 && (segs[n - 2] == "features" || segs[n - 2] == "compiler")
+}
+
+fn free_state_verb_found(lit: Code) -> Fix {
+    let p0 = free_state_param(lit)!
+    let ty = p0.decl_type()!
+    Fix.Say(said(lit.loc(), "a vocabulary verb written as a free fn taking a pass state first (`${ty.text()} ${p0.name() ?? "?"}`) — the state's own impl IS its vocabulary, so this belongs there as a method instead", "this fn", null))
 }
 
 /// A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x",

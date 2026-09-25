@@ -6,15 +6,24 @@
 //! its own identity); a NAME seat's written text (a `let`'s declared
 //! name, a call's callee, a field name — `own_name_at`'s catalog) is
 //! such a scalar TOO, but a LONE hole there is a position this
-//! matcher CAN hold open (`Shape.NamedNode`), reading the subject's
-//! own name text back as a `string` rather than recursing into it —
-//! an EMBEDDED hole (`l${x}_y`) still has none. `${..name}` at an
-//! Expression or Statement seat is a RUN: it binds a whole CONTIGUOUS
-//! SPAN of siblings there (`Shape.Run`), zero or more, never one node
-//! — a call's arguments, a list literal's elements, a block's
-//! statements are the seats it can stand among today. A Type or an
-//! Arm seat names no `At` at all; neither is a child position this
-//! matcher can hold open yet.
+//! matcher CAN hold open (`Shape.NamedNode`, or `Shape.TypedNode`
+//! when a TYPE is also open), reading the subject's own name text
+//! back as a `string` rather than recursing into it — an EMBEDDED
+//! hole (`l${x}_y`) still has none. A TYPE seat's own written type (a
+//! `let`'s annotation, a call's one pinned type argument, a param's
+//! own type — `own_type_at`'s catalog) is a scalar the SAME way, held
+//! open by `Shape.TypedNode`'s `Open.Type`, reading the subject's own
+//! written `TypeRef` back. A node holds BOTH a name and a type open
+//! at once (`let ${x}: ${T} = ...`), since `TypedNode` carries a LIST
+//! of them, never a single index. `${..name}` at an Expression or
+//! Statement seat is a RUN: it binds a whole CONTIGUOUS SPAN of
+//! siblings there (`Shape.Run`), zero or more, never one node — a
+//! call's arguments, a list literal's elements, a block's statements
+//! are the seats it can stand among today. An Arm seat, and a param
+//! LIST's own arbitrary arity, name no `At` a pattern can hold open
+//! yet — a param's own name and type ARE reachable, structurally,
+//! through `Code.fn_params` (features/code.av), never through this
+//! matcher's own recursion.
 
 /// One `${...}` occurrence in a quote pattern's body, in written
 /// order: the bare name its content reads, when it is one — a
@@ -33,13 +42,13 @@ export fn quote_pat_holes(store: NodeStore, body: ExprId) -> List<QuoteHole> {
 }
 
 /// Whether this occurrence names a binder the matcher can hold — an
-/// Expression, a Statement or a Run seat, read as a bare name; a Name
-/// or a Binder seat too, when it is LONE at its own field
-/// (`quote_pat_reached` is the precise, position-aware gate typing
-/// refuses against — this is the loose, kind-only test
+/// Expression, a Statement or a Run seat, read as a bare name; a
+/// Name, a Binder or a Type seat too, when it is LONE at its own
+/// field (`quote_pat_reached` is the precise, position-aware gate
+/// typing refuses against — this is the loose, kind-only test
 /// `quote_pat_names` dedupes with).
 export fn quote_hole_ok(h: QuoteHole) -> bool {
-    h.name != null && (h.kind is .Expression || h.kind is .Statement || h.kind is .Name || h.kind is .Binder || h.kind is .Run)
+    h.name != null && (h.kind is .Expression || h.kind is .Statement || h.kind is .Name || h.kind is .Binder || h.kind is .Run || h.kind is .Type)
 }
 
 /// Whether a hole's kind binds TEXT (a name's own written text)
@@ -61,17 +70,29 @@ export fn quote_pat_is_text(holes: List<QuoteHole>, n: string) -> bool {
     [h.kind for h in holes if h.name == n].any(quote_hole_is_text)
 }
 
-/// Whether binder `n` mixes a text seat with a code seat — one
-/// binder answers one type, so this is refused before a pattern is
-/// matched or lowered.
+/// Whether binder `n` mixes a text seat, a type seat or a code seat —
+/// one binder answers one type, so this is refused before a pattern
+/// is matched or lowered. TWO independent buckets, since a TYPE seat
+/// is neither text nor code: mixing text with anything else, or
+/// mixing a type seat with anything but another type seat.
 export fn quote_pat_mixed(holes: List<QuoteHole>, n: string) -> bool {
     let mine = [h.kind for h in holes if h.name == n]
-    mine.any(quote_hole_is_text) && !mine.all(quote_hole_is_text)
+    let texts = mine.any(quote_hole_is_text) && !mine.all(quote_hole_is_text)
+    let types = mine.any(it is .Type) && !mine.all(it is .Type)
+    texts || types
 }
 
 /// Whether ANY occurrence of binder `n` was written `${..n}` — a RUN.
 export fn quote_pat_is_run(holes: List<QuoteHole>, n: string) -> bool {
     [h.run for h in holes if h.name == n].any(it)
+}
+
+/// Whether binder `n` was ever written at a TYPE seat — a written
+/// `TypeRef`, never code or text. `quote_pat_is_text`'s twin; a
+/// binder MIXING a type seat with any other kind is refused before
+/// either reads it (`quote_pat_mixed`).
+export fn quote_pat_is_type(holes: List<QuoteHole>, n: string) -> bool {
+    [h.kind for h in holes if h.name == n].any(it is .Type)
 }
 
 /// Whether binder `n` mixes a RUN occurrence with an ordinary one —
@@ -124,11 +145,12 @@ export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
 /// kind (`shallow_at` — Expr vs Stmt AND which variant, one int) —
 /// absence for a rule the index cannot narrow (a first arm that is
 /// not a quote, a multi-statement body with no single root, a ROOT
-/// whose own kids hold a run hole, or a ROOT whose own NAME field is
-/// a lone hole): a target's index is folded plain, over arbitrary
-/// code with no run and no hole of its own, so a root folded BLIND
-/// to one field's length or text could never agree with it — "any
-/// node" is the honest narrowing, not a closer miss.
+/// whose own kids hold a run hole, or a ROOT whose own NAME or TYPE
+/// field is a lone hole): a target's index is folded plain, over
+/// arbitrary code with no run and no hole of its own, so a root
+/// folded BLIND to one field's length, text or written type could
+/// never agree with it — "any node" is the honest narrowing, not a
+/// closer miss.
 export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
     let a? = arms.first() else { return null }
     let p0? = a.pats.first() else { return null }
@@ -138,15 +160,17 @@ export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
     // is the placeholder's own fold — meaningless, and never a real
     // subject's; "any node" is what a bare-hole root means
     if quote_hole_at(store, at) != null { return null }
-    // a root whose own NAME field is a lone hole (a for loop's own
-    // variable, a method call's own name) folds that hole's spelling
-    // into `shallow_at` exactly as any written text would —
-    // `quote_pat_shape` reads this same seat as a NamedNode and folds
-    // it BLIND (`shallow_bare_at`) for this reason, but a real
-    // subject is indexed by its own RAW `shallow_at`, name included,
-    // so a bare fold here could never agree with one either; "any
-    // node" is the honest narrowing, not a closer miss
-    if name_hole_at(store, at) != null { return null }
+    // a root whose own NAME or TYPE field is a lone hole (a for
+    // loop's own variable, a method call's own name, a let's own
+    // annotation) folds that field's spelling into `shallow_at`
+    // exactly as any written text would — `quote_pat_shape` reads
+    // this same seat as an OPEN field and folds it BLIND
+    // (`named_node_shallow_at`/`typed_node_shallow_at`) for this
+    // reason, but a real subject is indexed by its own RAW
+    // `shallow_at`, that field included, so a bare fold here could
+    // never agree with one either; "any node" is the honest
+    // narrowing, not a closer miss
+    if !own_hole_indices(store, at).is_empty() { return null }
     let holes = quote_pat_holes(store, body)
     if store.kids_at(at).any(is_run_kid(store, it, holes)) { return null }
     store.shallow_at(at)
@@ -180,42 +204,63 @@ export fn root_of(store: NodeStore, s: StmtId) -> At {
 /// typing already refused otherwise.
 export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> Shape {
     let w? = quote_hole_at(store, at) else {
-        let n? = name_hole_at(store, at) else {
+        let t? = type_hole_at(store, at) else {
+            let n? = name_hole_at(store, at) else {
+                let kids = [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)]
+                return Shape.Node(node_shallow_at(store, at, kids), kids)
+            }
             let kids = [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)]
-            return Shape.Node(node_shallow_at(store, at, kids), kids)
+            return Shape.NamedNode(named_node_shallow_at(store, at, kids), kids, names.index_of(holes[n].name!))
         }
+        // a TYPE open is present here — `NamedNode`'s single index
+        // cannot ALSO hold a name open, so any node reaching this
+        // branch (a type open alone, or a type open beside a name
+        // open) takes the general `TypedNode` form instead
+        let opens = node_opens(store, at, holes, names)
         let kids = [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)]
-        return Shape.NamedNode(named_node_shallow_at(store, at, kids), kids, names.index_of(holes[n].name!))
+        return Shape.TypedNode(typed_node_shallow_at(store, at, kids, opens), kids, opens)
     }
     let index = names.index_of(holes[w].name!)
     if holes[w].run { Shape.Run(index) } else { Shape.Hole(index) }
+}
+
+/// `at`'s own OPEN fields, as a `TypedNode` is being built: a NAME
+/// open when a lone hole stands at its name-bearing field, a TYPE
+/// open the same way at its written-type field — both, in that
+/// order, when it carries both (`let ${x}: ${T} = ...`).
+fn node_opens(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> List<Open> {
+    let named = [Open.Name(binder_index(holes, names, i)) for i in some_list(name_hole_at(store, at))]
+    named.concat([Open.Type(binder_index(holes, names, i)) for i in some_list(type_hole_at(store, at))])
+}
+
+fn binder_index(holes: List<QuoteHole>, names: List<string>, i: int) -> int {
+    names.index_of(holes[i].name!)
 }
 
 /// Every raw hole index this pattern's Shape can hold open — the
 /// SAME walk `quote_pat_shape` takes, answering positions instead of
 /// building. Typing refuses any hole whose index is absent here
 /// (`features/quote/check.av`'s `quote_pat_types`), which is what
-/// makes a non-lone Name occurrence (`l${x}_y`) a refusal rather than
-/// a silently-ignored one: `quote_hole_ok`'s kind-only test cannot
-/// tell the two apart, this walk can.
+/// makes a non-lone Name or Type occurrence (`l${x}_y`, `${T}<int>`)
+/// a refusal rather than a silently-ignored one: `quote_hole_ok`'s
+/// kind-only test cannot tell the two apart, this walk can.
 export fn quote_pat_reached(store: NodeStore, at: At) -> List<int> {
     let w? = quote_hole_at(store, at) else {
         let kids = flatten([quote_pat_reached(store, kid) for kid in store.kids_at(at)])
-        let n? = name_hole_at(store, at) else { return kids }
-        return [n].concat(kids)
+        return own_hole_indices(store, at).concat(kids)
     }
     [w]
 }
 
 /// The occurrence index `at`'s own position IS, when it stands as a
 /// lone hole placeholder filling a whole expression or statement;
-/// null for every other seat, a Pat included — the matcher has no
-/// binder for one yet.
+/// null for every other seat — a Pat, a Field or a Param included,
+/// none a whole-node hole this matcher can hold open yet.
 fn quote_hole_at(store: NodeStore, at: At) -> int? {
     match at {
         .Expr(e) -> lone_hole_of(store.ident_name(e)),
         .Stmt(s) -> store.hole_stmt(s),
-        .Pat(_) or .Field(_, _) -> null,
+        .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
     }
 }
 
@@ -225,6 +270,34 @@ fn quote_hole_at(store: NodeStore, at: At) -> int? {
 fn name_hole_at(store: NodeStore, at: At) -> int? {
     let t? = own_name_at(store, at) else { return null }
     lone_hole_of(t)
+}
+
+/// The occurrence index `at`'s own TYPE field is, when that field is
+/// nothing but a hole — absence when the kind names no field
+/// (`own_type_at`'s catalog), when there is no field written at all
+/// (an unannotated `let`, an untyped param — `own_type_at` answers
+/// null the same as for a kind with none), or when the field carries
+/// more than the hole (`${T}<int>`, `${T}?`) — a LONE hole fills the
+/// whole field only when it stands utterly alone there, `name_hole_at`'s
+/// law over a `TypeRef` instead of a `string`.
+fn type_hole_at(store: NodeStore, at: At) -> int? {
+    let t? = own_type_at(store, at) else { return null }
+    if !bare_type(t) { return null }
+    lone_hole_of(t.name)
+}
+
+/// Whether a written type carries nothing but its own name — no `?`,
+/// no `<...>`, no `dyn`, no `or` union.
+fn bare_type(t: TypeRef) -> bool {
+    t.args.is_empty() && !t.optional && !t.dynamic && !t.arrow && t.alternatives.is_empty()
+}
+
+/// `at`'s own open-field hole indices, raw (into the quote's OWN
+/// `holes`, never yet the pattern's deduped binder position) — its
+/// NAME hole's, its TYPE hole's, both when it carries both, empty
+/// when it carries neither.
+fn own_hole_indices(store: NodeStore, at: At) -> List<int> {
+    some_list(name_hole_at(store, at)).concat(some_list(type_hole_at(store, at)))
 }
 
 /// The index a LONE hole's own text names, or absence — `${k}`
