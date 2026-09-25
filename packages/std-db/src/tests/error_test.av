@@ -70,5 +70,20 @@ spec "std/db ModelError attribution" {
             let m = message_of(attributed(unique_failure("UNIQUE constraint failed: OtherModel.email"), "ThisModel", [field("email"), field("username")]))
             m.contains("`ThisModel.email`") && m.contains("`ThisModel.username`")
         }
+        then "a model name that is a SUFFIX of the violated table's name never cross-attributes either" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: SuperUser.email"), "User", [field("email"), field("username")]))
+            m.contains("`User.email`") && m.contains("`User.username`")
+        }
+    }
+    given "two @unique fields where one field's name is a PREFIX of the other's" {
+
+        then "a violation on the longer name attributes to the longer name, not the prefix" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: T.name2"), "T", [field("name"), field("name2")]))
+            m.contains("`name2`") && !m.contains("`name` must")
+        }
+        then "a violation on the shorter name still attributes to the shorter name" {
+            let m = message_of(attributed(unique_failure("UNIQUE constraint failed: T.name"), "T", [field("name"), field("name2")]))
+            m.contains("`name` must") && !m.contains("`name2`")
+        }
     }
 }
