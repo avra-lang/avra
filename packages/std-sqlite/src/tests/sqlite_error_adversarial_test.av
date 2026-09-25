@@ -1,16 +1,16 @@
 // The red team's record for the failure value. Nothing here found a
 // wrong answer — the registry survived every boundary — so this file is
 // the proof of that rather than a repair, and it holds the boundaries
-// so the next change to `cause_of` has to keep them.
+// so the next change to `Cause.of` has to keep them.
 //
 // The one thing it does pin is a DEPARTURE: §4.2's `retryable` makes
 // `SQLITE_LOCKED` retryable, and a retry loop there waits on a lock its
 // own connection holds — a hang, not a slow error (T49). The two cases
 // under "the retry decision" are what would notice if it were undone.
-use @std.sqlite.error.{Cause, Storage, Violation, Waiting, Denial, cause_of}
+use @std.sqlite.error.{Cause, Storage, Violation, Waiting, Denial}
 
-fn kind_at(ext: int) -> string { cause_of(ext).kind() }
-fn retry_at(ext: int) -> bool { cause_of(ext).retryable() }
+fn kind_at(ext: int) -> string { Cause.of(ext).kind() }
+fn retry_at(ext: int) -> bool { Cause.of(ext).retryable() }
 
 /// Every arm of the registry, once, with a payload where it takes one.
 /// A new variant that nobody adds here still compiles — but every
@@ -89,7 +89,7 @@ spec "std/sqlite error adversarial" {
         // on that we can observe, so a hard error beats a spin.
         then "a shared-cache LOCKED is not retried either" { !retry_at(262) }
         then "and it too is classified as a busy" { kind_at(262) == "sqlite.busy" }
-        // `cause_of` drops the detail, so the two cannot be told apart
+        // `Cause.of` drops the detail, so the two cannot be told apart
         // from the cause alone — the extended code is what keeps them
         // distinct, and it rides in `SqlError.extended`.
         then "the cause alone cannot tell 6 from 262" { kind_at(6) == kind_at(262) }

@@ -1,12 +1,12 @@
 // The red team's record for the ERGONOMIC FACE (`sql.av`) — the values
 // that cross it, rather than the wall's own protocol (already covered
 // by the statement/connection adversarial suites).
-use @std.sqlite.open.{Db, memory}
+use @std.sqlite.open.{Db}
 use @std.sqlite.error.{SqlError}
 use @std.sqlite.sql.{sql, Row, SqlValue}
 
 fn fadv_db() -> Result<Db, SqlError> {
-    let db = memory()?
+    mut db = Db.memory()?
     db.run(sql("create table t (v)"))?
     db
 }
@@ -80,7 +80,7 @@ fn fadv_class_via_bind(v: SqlValue) -> string {
 }
 
 fn fadv_written(v: SqlValue) -> Result<Row, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     db.run(sql("insert into t (v) values (?)").args([v]))?
     db.one(sql("select v from t"))
 }
@@ -107,7 +107,7 @@ fn fadv_blob_len_of(row: Row) -> int {
 }
 
 fn fadv_blob_row(octets: List<int>) -> Result<Row, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     db.run(sql("insert into t (v) values (?)").args([.Blob(octets.bytes()!)]))?
     db.one(sql("select v from t"))
 }
@@ -125,7 +125,7 @@ fn fadv_text_round_trip(s: string) -> bool {
 }
 
 fn fadv_text_read_back(s: string) -> Result<string, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     db.run(sql("insert into t (v) values (?)").args([.Text(s)]))?
     (db.one(sql("select v from t"))?).text(0)
 }
@@ -135,7 +135,8 @@ fn fadv_run_kind(text: string, args: List<SqlValue>) -> string {
 }
 
 fn fadv_run_with(text: string, args: List<SqlValue>) -> Result<int, SqlError> {
-    (fadv_db()?).run(sql(text).args(args))
+    mut db = fadv_db()?
+    db.run(sql(text).args(args))
 }
 
 fn fadv_row_int(i: int) -> Result<int, SqlError> {
@@ -147,7 +148,7 @@ fn fadv_row_text(i: int) -> Result<string, SqlError> {
 }
 
 fn fadv_one_row(text: string) -> Result<Row, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     db.run(sql("insert into t (v) values (7)"))?
     db.one(sql(text))
 }
@@ -160,7 +161,7 @@ fn fadv_row_survives_finalize() -> string {
 }
 
 fn fadv_seeded_row() -> Result<Row, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     db.run(sql("create table u (n integer, w text)"))?
     db.run(sql("insert into u (n, w) values (?, ?)").args([.Int(7), .Text("seven")]))?
     db.one(sql("select n, w from u"))
@@ -180,7 +181,7 @@ fn fadv_row_survives_reuse() -> string {
 }
 
 fn fadv_seeded_row_and_db() -> Result<Row, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     db.run(sql("create table u (n integer, w text)"))?
     db.run(sql("insert into u (n, w) values (?, ?)").args([.Int(7), .Text("seven")]))?
     let row = db.one(sql("select n, w from u"))?
@@ -211,7 +212,7 @@ fn fadv_first_row(text: string) -> Result<Row?, SqlError> {
 fn fadv_run_twice() -> string { fadv_twice() catch "?" }
 
 fn fadv_twice() -> Result<string, SqlError> {
-    let db = fadv_db()?
+    mut db = fadv_db()?
     let statement = sql("insert into t (v) values (1)")
     let first = db.run(statement)?
     let second = db.run(statement)?

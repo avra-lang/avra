@@ -5,7 +5,7 @@
 //! behaviour, never this driver's preference.
 use @std.io.{exists, write_text}
 use @std.sqlite.{version}
-use @std.sqlite.open.{open, open_read, memory, Db}
+use @std.sqlite.open.{Db}
 use @std.sqlite.error.{SqlError}
 use @std.sqlite.sql.{sql, Row, SqlValue}
 
@@ -15,7 +15,7 @@ use @std.sqlite.sql.{sql, Row, SqlValue}
 /// classes — integer, text and NULL. That is what SQLite permits and
 /// what a typed read must refuse rather than coerce (T1, T14).
 fn face_seeded() -> Result<Db, SqlError> {
-    let db = memory()?
+    mut db = Db.memory()?
     db.run(sql("create table t (id integer primary key, a, b text)"))?
     db.run(sql("insert into t (a, b) values (?, ?)").args([.Int(1), .Text("one")]))?
     db.run(sql("insert into t (a, b) values (?, ?)").args([.Text("two"), .Text("2")]))?
@@ -26,7 +26,7 @@ fn face_seeded() -> Result<Db, SqlError> {
 /// The empty triple as three rows: SQL NULL, the empty string, the
 /// zero-length blob (T96, T97, T29).
 fn face_empties() -> Result<Db, SqlError> {
-    let db = memory()?
+    mut db = Db.memory()?
     db.run(sql("create table e (v)"))?
     db.run(sql("insert into e values (null), (''), (x'')"))?
     db
@@ -62,14 +62,17 @@ fn face_spanned<T>(r: Result<T, SqlError>) -> bool {
     }
 }
 
-fn face_ran(text: string) -> Result<int, SqlError> { (face_seeded()?).run(sql(text)) }
+fn face_ran(text: string) -> Result<int, SqlError> {
+    mut db = face_seeded()?
+    db.run(sql(text))
+}
 
 /// A whole script through the verb that owns the `pzTail` loop — its
 /// answer is the number of statements that RAN, so a skipped empty one
 /// is visible as a count rather than as an error.
 fn face_script(text: string) -> Result<int, SqlError> { (face_seeded()?).exec(text) }
 fn face_run_kind(text: string) -> string { face_kind_of(face_ran(text)) }
-fn face_open_kind(path: string) -> string { face_kind_of(open(path)) }
+fn face_open_kind(path: string) -> string { face_kind_of(Db.open(path)) }
 
 fn face_one_row(text: string) -> Result<Row, SqlError> { (face_seeded()?).one(sql(text)) }
 fn face_one_text(text: string) -> Result<string, SqlError> { (face_one_row(text)?).text(0) }
@@ -157,7 +160,7 @@ spec "std/sqlite face" {
         // T129 — the default flags carry CREATE, so "open it and see"
         // CREATES a zero-byte file, and a zero-byte file is a valid
         // empty database. From then on the answer is always yes.
-        then "a read-only open of a missing file fails" { face_kind_of(open_read(face_absent_path())) == "sqlite.cant_open" }
+        then "a read-only open of a missing file fails" { face_kind_of(Db.open_read(face_absent_path())) == "sqlite.cant_open" }
         then "and the file is still not there" { !exists(face_absent_path()) }
     }
     given "a statement that answers no rows" {
@@ -288,7 +291,7 @@ spec "std/sqlite face" {
 // ── The last two projections, kept beside the cases they serve ──
 
 fn face_memory_opens() -> bool {
-    match memory() {
+    match Db.memory() {
         .Ok(_) -> true,
         .Err(_) -> false,
     }

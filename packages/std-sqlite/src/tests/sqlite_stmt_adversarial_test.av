@@ -7,8 +7,8 @@
 // it and both are pinned below — one as a WARNING about behaviour that
 // stands, one as a refusal that did not exist.
 use @std.text.{from_codepoint}
-use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, slots, width, standing, class_at, int_at, text_at, blob_at}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{memory_used}
 use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_hard_heap_limit64}
@@ -17,7 +17,7 @@ use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_byte
 
 /// A memory database with `t(v integer)` and nothing in it.
 fn fresh() -> Result<Db, SqlError> {
-    mut db = memory()?
+    mut db = Db.memory()?
     let _ = run(db, "create table t(v integer)")?
     db
 }
@@ -42,16 +42,16 @@ fn cw(c: Storage) -> string {
 fn rows_in(db: Db) -> string { ik(one_int(db, "select count(*) from t")) }
 
 fn one_int(db: Db, sql: string) -> Result<int, SqlError> {
-    mut s = prepare(db, sql)?
+    mut s = db.prepare(sql)?
     let v = head_int(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     v
 }
 
 fn head_int(s: Stmt) -> Result<int, SqlError> {
-    let more = step(s)?
+    let more = s.step()?
     if !more { fail no_row_here() }
-    int_at(s, 0)
+    s.int_at(0)
 }
 
 fn no_row_here() -> SqlError {
@@ -70,18 +70,18 @@ fn insert_thrice() -> string {
 }
 
 fn thrice(db: Db) -> string {
-    let word = match prepare(db, "insert into t(v) values (1)") {
+    let word = match db.prepare("insert into t(v) values (1)") {
         .Ok(s) -> stepped_thrice(s),
         .Err(e) -> e.cause.kind(),
     }
     let n = rows_in(db)
-    let _ = close(db)
+    let _ = db.close()
     "${word} rows=${n}"
 }
 
 fn stepped_thrice(s: Stmt) -> string {
-    let w = "${sk(step(s))} ${sk(step(s))} ${sk(step(s))}"
-    let _ = finalize(s)
+    let w = "${sk(s.step())} ${sk(s.step())} ${sk(s.step())}"
+    let _ = s.finalize()
     w
 }
 
@@ -95,17 +95,17 @@ fn select_past_done() -> string {
 
 fn two_passes(db: Db) -> string {
     let _ = run(db, "insert into t(v) values (1), (2)")
-    let word = match prepare(db, "select v from t") {
+    let word = match db.prepare("select v from t") {
         .Ok(s) -> five_steps(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn five_steps(s: Stmt) -> string {
-    let w = "${sk(step(s))} ${sk(step(s))} ${sk(step(s))} | ${sk(step(s))} ${sk(step(s))}"
-    let _ = finalize(s)
+    let w = "${sk(s.step())} ${sk(s.step())} ${sk(s.step())} | ${sk(s.step())} ${sk(s.step())}"
+    let _ = s.finalize()
     w
 }
 
@@ -118,19 +118,19 @@ fn rebound_late() -> string {
 }
 
 fn late(db: Db) -> string {
-    let word = match prepare(db, "insert into t(v) values (?1)") {
+    let word = match db.prepare("insert into t(v) values (?1)") {
         .Ok(s) -> bind_step_bind(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn bind_step_bind(s: Stmt) -> string {
-    let a = ik(bind_int(s, 1, 10))
-    let b = sk(step(s))
-    let c = ik(bind_int(s, 1, 20))
-    let _ = finalize(s)
+    let a = ik(s.bind_int(1, 10))
+    let b = sk(s.step())
+    let c = ik(s.bind_int(1, 20))
+    let _ = s.finalize()
     "bind=${a} step=${b} rebind=${c}"
 }
 
@@ -143,11 +143,11 @@ fn after_finalize() -> string {
 }
 
 fn dead(db: Db) -> string {
-    let word = match prepare(db, "select 1") {
+    let word = match db.prepare("select 1") {
         .Ok(s) -> used_after(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
@@ -163,23 +163,23 @@ fn live_before_step() -> string {
 }
 
 fn unstepped(db: Db) -> string {
-    let word = match prepare(db, "select 1") {
+    let word = match db.prepare("select 1") {
         .Ok(s) -> read_early(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn read_early(s: Stmt) -> string {
-    let said = "width=${width(s)} standing=${standing(s)} int=${ik(int_at(s, 0))} bind=${ik(bind_int(s, 1, 1))}"
-    let _ = finalize(s)
+    let said = "width=${s.width()} standing=${s.standing()} int=${ik(s.int_at(0))} bind=${ik(s.bind_int(1, 1))}"
+    let _ = s.finalize()
     said
 }
 
 fn used_after(s: Stmt) -> string {
-    let rc = finalize(s)
-    "finalize=${rc} step=${sk(step(s))} reset=${reset(s)}" + " width=${width(s)} standing=${standing(s)} slots=${slots(s)}" + " class=${ck(class_at(s, 0))} int=${ik(int_at(s, 0))}" + " bind_int=${ik(bind_int(s, 1, 1))} bind_text=${ik(bind_text(s, 1, "x"))}"
+    let rc = s.finalize()
+    "finalize=${rc} step=${sk(s.step())} reset=${s.reset()}" + " width=${s.width()} standing=${s.standing()} slots=${s.slots()}" + " class=${ck(s.class_at(0))} int=${ik(s.int_at(0))}" + " bind_int=${ik(s.bind_int(1, 1))} bind_text=${ik(s.bind_text(1, "x"))}"
 }
 
 // ── The copy at the boundary ─────────────────────────────────────
@@ -196,21 +196,21 @@ fn text_survives_a_step() -> string {
 
 fn two_rows(db: Db) -> string {
     let _ = run(db, "insert into t(v) values (11), (22)")
-    let word = match prepare(db, "select cast(v as text) from t order by v") {
+    let word = match db.prepare("select cast(v as text) from t order by v") {
         .Ok(s) -> read_then_step(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn read_then_step(s: Stmt) -> string {
-    let _ = step(s)
-    let first = tk(text_at(s, 0))
-    let _ = step(s)
-    let second = tk(text_at(s, 0))
-    let again = tk(text_at(s, 0))
-    let _ = finalize(s)
+    let _ = s.step()
+    let first = tk(s.text_at(0))
+    let _ = s.step()
+    let second = tk(s.text_at(0))
+    let again = tk(s.text_at(0))
+    let _ = s.finalize()
     "first=${first} second=${second} first_still=${again == second} kept=${first}"
 }
 
@@ -219,18 +219,18 @@ fn read_then_step(s: Stmt) -> string {
 fn octets_hold_nuls() -> string { in_memory(holed_blob) }
 
 fn holed_blob(db: Db) -> string {
-    let word = match prepare(db, "select x'004100ff00'") {
+    let word = match db.prepare("select x'004100ff00'") {
         .Ok(s) -> stepped_blob(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn stepped_blob(s: Stmt) -> string {
-    let _ = step(s)
-    let said = "blob=${bk(blob_at(s, 0))} as_text=${tk(text_at(s, 0))}"
-    let _ = finalize(s)
+    let _ = s.step()
+    let said = "blob=${bk(s.blob_at(0))} as_text=${tk(s.text_at(0))}"
+    let _ = s.finalize()
     said
 }
 
@@ -238,20 +238,20 @@ fn stepped_blob(s: Stmt) -> string {
 fn text_holds_a_nul() -> string { in_memory(nul_round_trip) }
 
 fn nul_round_trip(db: Db) -> string {
-    let word = match prepare(db, "select ?") {
+    let word = match db.prepare("select ?") {
         .Ok(s) -> bound_nul(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn bound_nul(s: Stmt) -> string {
     let held = "ab" + from_codepoint(0) + "cd"
-    let _ = bind_text(s, 1, held)
-    let _ = step(s)
-    let said = "sent=${held.length} back=${tk(text_at(s, 0))}"
-    let _ = finalize(s)
+    let _ = s.bind_text(1, held)
+    let _ = s.step()
+    let said = "sent=${held.length} back=${tk(s.text_at(0))}"
+    let _ = s.finalize()
     said
 }
 
@@ -259,18 +259,18 @@ fn bound_nul(s: Stmt) -> string {
 fn a_big_blob() -> string { in_memory(big_blob) }
 
 fn big_blob(db: Db) -> string {
-    let word = match prepare(db, "select zeroblob(1048576)") {
+    let word = match db.prepare("select zeroblob(1048576)") {
         .Ok(s) -> stepped_big(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn stepped_big(s: Stmt) -> string {
-    let _ = step(s)
-    let said = bk(blob_at(s, 0))
-    let _ = finalize(s)
+    let _ = s.step()
+    let said = bk(s.blob_at(0))
+    let _ = s.finalize()
     said
 }
 
@@ -291,21 +291,21 @@ fn reset_keeps() -> string {
 }
 
 fn kept(db: Db) -> string {
-    let word = match prepare(db, "insert into t(v) values (?1)") {
+    let word = match db.prepare("insert into t(v) values (?1)") {
         .Ok(s) -> bind_step_reset_step(s),
         .Err(e) -> e.cause.kind(),
     }
     let n = ik(one_int(db, "select count(*) from t where v = 77"))
-    let _ = close(db)
+    let _ = db.close()
     "${word} 77s=${n}"
 }
 
 fn bind_step_reset_step(s: Stmt) -> string {
-    let _ = bind_int(s, 1, 77)
-    let a = sk(step(s))
-    let rc = reset(s)
-    let b = sk(step(s))
-    let _ = finalize(s)
+    let _ = s.bind_int(1, 77)
+    let a = sk(s.step())
+    let rc = s.reset()
+    let b = sk(s.step())
+    let _ = s.finalize()
     "step=${a} reset=${rc} again=${b}"
 }
 
@@ -316,23 +316,23 @@ fn varying() -> string { in_memory(varied) }
 fn varied(db: Db) -> string {
     let _ = run(db, "create table mixed(x)")
     let _ = run(db, "insert into mixed(x) values (1), ('two'), (null)")
-    let word = match prepare(db, "select x from mixed order by rowid") {
+    let word = match db.prepare("select x from mixed order by rowid") {
         .Ok(s) -> three_classes(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn three_classes(s: Stmt) -> string {
     let w = "${one_class(s)} ${one_class(s)} ${one_class(s)}"
-    let _ = finalize(s)
+    let _ = s.finalize()
     w
 }
 
 fn one_class(s: Stmt) -> string {
-    match step(s) {
-        .Ok(m) -> if m { "${ck(class_at(s, 0))}/${ik(int_at(s, 0))}" } else { "DONE" },
+    match s.step() {
+        .Ok(m) -> if m { "${ck(s.class_at(0))}/${ik(s.int_at(0))}" } else { "DONE" },
         .Err(e) -> e.cause.kind(),
     }
 }
@@ -343,19 +343,19 @@ fn nul_trip() -> string { in_memory(tripped) }
 
 fn tripped(db: Db) -> string {
     let _ = run(db, "create table n(t text)")
-    let word = match prepare(db, "insert into n(t) values (?1)") {
+    let word = match db.prepare("insert into n(t) values (?1)") {
         .Ok(s) -> bound_with_nul(s),
         .Err(e) -> e.cause.kind(),
     }
     let bytes = ik(one_int(db, "select length(cast(t as blob)) from n"))
-    let _ = close(db)
+    let _ = db.close()
     "${word} bytes=${bytes}"
 }
 
 fn bound_with_nul(s: Stmt) -> string {
-    let a = ik(bind_text(s, 1, "ab${from_codepoint(0)}cd"))
-    let b = sk(step(s))
-    let _ = finalize(s)
+    let a = ik(s.bind_text(1, "ab${from_codepoint(0)}cd"))
+    let b = sk(s.step())
+    let _ = s.finalize()
     "bind=${a} step=${b}"
 }
 
@@ -371,7 +371,7 @@ fn outlives() -> string {
 
 fn across(db: Db) -> string {
     let _ = run(db, "insert into t(v) values (1), (2)")
-    match prepare(db, "select v from t order by v") {
+    match db.prepare("select v from t order by v") {
         .Ok(s) -> stepped_across(db, s),
         .Err(e) -> e.cause.kind(),
     }
@@ -379,10 +379,10 @@ fn across(db: Db) -> string {
 
 fn stepped_across(db: Db, s: Stmt) -> string {
     mut held = s
-    let a = "${sk(step(held))}/${ik(int_at(held, 0))}"
-    let rc = close(db)
-    let b = "${sk(step(held))}/${ik(int_at(held, 0))}"
-    let fin = finalize(held)
+    let a = "${sk(held.step())}/${ik(held.int_at(0))}"
+    let rc = db.close()
+    let b = "${sk(held.step())}/${ik(held.int_at(0))}"
+    let fin = held.finalize()
     "before=${a} close=${rc} after=${b} finalize=${fin}"
 }
 
@@ -392,7 +392,7 @@ fn nested(n: int) -> string { in_memory((db) -> deep(db, n)) }
 
 fn deep(db: Db, n: int) -> string {
     let word = ik(one_int(db, "select ${dup("(", n)}1${dup(")", n)}"))
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
@@ -403,20 +403,20 @@ fn dup(s: string, n: int) -> string { [s for i in 0..n].join("") }
 fn cell_of(sql: string) -> string { in_memory((db) -> celled(db, sql)) }
 
 fn celled(db: Db, sql: string) -> string {
-    let word = match prepare(db, sql) {
+    let word = match db.prepare(sql) {
         .Ok(s) -> three_questions(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn three_questions(s: Stmt) -> string {
-    let out = match step(s) {
+    let out = match s.step() {
         .Ok(m) -> if m { asked_in_order(s) } else { "no row" },
         .Err(e) -> e.cause.kind(),
     }
-    let _ = finalize(s)
+    let _ = s.finalize()
     out
 }
 
