@@ -8,7 +8,7 @@
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
 use core.{TypeRef}
-use features.{Code, Fix, rule, said}
+use features.{ArmInfo, Code, Fix, rule, said}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -477,9 +477,18 @@ fn free_state_verb_found(lit: Code) -> Fix {
 /// ALREADY-LOWERED instruction's string field (the owned-twin
 /// substitution) — neither reads a row through `LowerCx`.
 ///
-/// NO REWRITE: the generated method's own NAME is `rt_sigs()`'s row
-/// name, lower-cased and de-prefixed (`core/rt_namespace.av`) — a
-/// transform this pattern's one bound string never performs.
+/// NO REWRITE, but not for the reason it looks: the generated
+/// method's own NAME is a MECHANICAL string transform on the row name
+/// (`short_name`, core/rt_namespace.av — strip the five-character
+/// `avra_` prefix, nothing else). What this pattern cannot mechanize
+/// is the SHAPE: the generated method MINTS the destination itself
+/// (`self.call(sh, …)`), so a sound rewrite folds in the `dst`'s own
+/// mint call too, and that mint sits in an EARLIER statement this
+/// bare `Ins.CallRt(…)` expression never binds — the same
+/// position-shift hazard `raw_mint_emit`'s own family carries (moving
+/// a mint across `${..mid}` statements can reorder side effects), and
+/// the reason that family names `CallRt`/`CallRtVoid` as its
+/// EXCLUSION rather than a tenth sibling.
 @keeps("cx.array_sized(sh, size)")
 export rule raw_rt_call {
     quote { Ins.CallRt(${dst}, ${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
@@ -870,30 +879,66 @@ fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
 /// when neither carries a guard and their VALUE Codes are text-equal
 /// — wider than the retired regex, which read single-line arms only.
 ///
-/// NO REWRITE: whether the join is SOUND is the alternatives-bind
-/// question — do the two patterns bind the same names at the same
-/// types? — a TYPING fact this rule-side text scan does not carry; a
-/// wrong join would silently change which value the body's own name
-/// reads.
+/// THE REWRITE TRUSTS THE PROOF, NOT THE GUARD: whether the join is
+/// SOUND is the alternatives-bind question — do the two patterns bind
+/// the same names at the same types (F2039)? — a TYPING fact this
+/// rule-side text scan does not carry, so the rewrite does not answer
+/// it either. `ir_proved` does: it lowers the AFTER text and writes
+/// nothing unless the result both TYPECHECKS and answers the SAME IR
+/// — a mismatched bind either refuses to typecheck (F2039) or lowers
+/// to a different program, and either way the join stays SHOWN, not
+/// applied, the same door `modified_copy_literal`'s `with` collapse
+/// already stands behind.
+@fixes("match k { .Struct(d, _) -> d, .Enum(d, _) -> d }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
 @keeps("match k { .A -> 1, .B -> 2 }")
 export rule one_body_arms {
-    quote { ${lit} } if one_body_arm_pair(lit) != null -> one_body_arms_found(lit),
+    quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit),
 }
 
-/// The second arm's VALUE of the first adjacent, unguarded,
+/// The second arm's own INDEX of the first adjacent, unguarded,
 /// same-body pair — absent when `lit` is not a `match`, or none of
-/// its sibling arms agree.
-fn one_body_arm_pair(lit: Code) -> Code? {
+/// its sibling arms agree. `.arms()` also answers for a `rule {}`
+/// declaration's own arm list (the SAME shape internally), which
+/// carries no real `match SUBJECT { … }` text for the rewrite to
+/// splice a subject into — `lit.text()` starting with the keyword is
+/// what tells a genuine match expression from that borrowed shape.
+fn merge_index(lit: Code) -> int? {
+    if !lit.text().starts_with("match ") { return null }
     let arms? = lit.arms() else { return null }
     for i in 1..arms.length {
         let a = arms[i - 1]
         let b = arms[i]
-        if a.guard == null && b.guard == null && a.value.text() == b.value.text() { return b.value }
+        if a.guard == null && b.guard == null && a.value.text() == b.value.text() { return i }
     }
     null
 }
 
-fn one_body_arms_found(lit: Code) -> Fix {
-    let v = one_body_arm_pair(lit)!
-    Fix.Say(said(v.loc(), "two adjacent arms answer one body, `${v.text()}` — join their patterns with `or`; the alternatives may bind, each binding the same names at the same types", "this arm", null))
+/// The rewrite: every OTHER arm re-spliced as it already reads, the
+/// merged pair's own pattern LISTS concatenated (an already-`or`
+/// sibling's own alternatives ride along whole) under the shared
+/// body, subject to `merge_index`'s own text-equal answer alone.
+fn one_body_arms_fix(lit: Code) -> Fix {
+    let i = merge_index(lit)!
+    let arms = lit.arms()!
+    let subj = lit.kids().first()!.text()
+    Fix.Rewrite(name("match ${subj} { ${merged_arms_text(arms, i)} }"))
+}
+
+fn merged_arms_text(arms: List<ArmInfo>, i: int) -> string {
+    let merged = arm_text(ArmInfo { pats: arms[i - 1].pats.concat(arms[i].pats), guard: null, value: arms[i - 1].value })
+    let before = [arm_text(arms[k]) for k in 0..i - 1]
+    let after = [arm_text(arms[k]) for k in i + 1..arms.length]
+    before.concat([merged]).concat(after).join(", ")
+}
+
+/// One arm, re-spelled: its own patterns joined by `or`, its guard
+/// when it carries one, its value — the same text `avra fmt` would
+/// already print for an untouched arm.
+fn arm_text(a: ArmInfo) -> string {
+    let pats = [p.text() for p in a.pats].join(" or ")
+    let guard = match a.guard {
+        g? -> " if " + g.text()
+        null -> ""
+    }
+    pats + guard + " -> " + a.value.text()
 }

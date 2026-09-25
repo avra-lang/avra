@@ -1,6 +1,6 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use features.{Code, Fix, rule, said}
+use features.{Code, Fix, rule}
 use @std.meta.{name}
 
 /// A `for` loop whose WHOLE body is one `push` is a MAP — a
@@ -26,14 +26,13 @@ export rule push_loop {
 }
 
 /// `for j in 0..xs.length` that then reads `xs[j]` — that walk is
-/// `for (j, x) in xs.enumerate()`, which hands over both.
-///
-/// NO REWRITE: the fix reads every `${xs}[${j}]` inside `body` as
-/// bare `x` instead — a body-wide substitution across a run of
-/// statements this pattern only holds as OPAQUE re-splicable text,
-/// never as editable structure. Changing the loop head alone and
-/// leaving `body`'s indexing untouched would not teach the idiom it
-/// names; it would just add an unused second binder.
+/// `for (j, x) in xs.enumerate()`, which hands over both. The
+/// rewrite reads every exact `${xs}[${j}]` inside `body` as bare `x`
+/// — the same token-splice `let_else_guard`'s `unforced` and
+/// `pronoun_lambda`'s `renamed` already use for a substitution a hole
+/// only ever holds as OPAQUE re-splicable text, never as editable
+/// structure; a body this pattern cannot walk as structure it can
+/// still walk as characters.
 ///
 /// A BARE-HOLE ROOT, structural GUARD: `${lit}.for_range()` reads the
 /// range head off the declaration (`Code.for_range`, features/
@@ -41,9 +40,10 @@ export rule push_loop {
 /// match it again inside the desugared `cond`/`step`, which is what a
 /// literal `for ${j} in 0..${xs}.length { … }` pattern would need
 /// (avra-8sb5.25.45).
+@fixes("for j in 0..xs.length { out.push(xs[j]) }", "for (j, x) in xs.enumerate() { out.push(x) }")
 @keeps("for j in 0..xs.length { log(j) }")
 export rule index_walk {
-    quote { ${lit} } if index_walked(lit) -> index_walk_found(lit),
+    quote { ${lit} } if index_walked(lit) -> index_walk_fix(lit),
 }
 
 /// Whether `lit` is `for NAME in 0..E.length { …E[NAME]… }`.
@@ -59,8 +59,34 @@ fn indexes(body: List<Code>, xs: Code, j: string) -> bool {
     body.any(it.text().contains(xs.text() + "[" + j + "]"))
 }
 
-fn index_walk_found(lit: Code) -> Fix {
+fn index_walk_fix(lit: Code) -> Fix {
     let r = lit.for_range()!
     let xs = r.to.kids().first()!
-    Fix.Say(said(xs.loc(), "`for ${r.name} in 0..${xs.text()}.length` that then reads `${xs.text()}[${r.name}]` — that walk is `for (${r.name}, x) in ${xs.text()}.enumerate()`, which hands over both", "this loop", null))
+    let needle = xs.text() + "[" + r.name + "]"
+    let body_text = [subscript_read_bare(s.text(), needle) for s in r.body].join(" ")
+    Fix.Rewrite(name("for (${r.name}, x) in ${xs.text()}.enumerate() { ${body_text} }"))
+}
+
+/// Every exact `${needle}` occurrence in `text` read as `x` — never
+/// mid a longer subscript (`xxs[j]` left alone) and never after a
+/// `.` (a field of the same spelling on some other subject).
+fn subscript_read_bare(text: string, needle: string) -> string {
+    mut out = ""
+    mut i = 0
+    while i < text.length {
+        let hi = if i + needle.length > text.length { text.length } else { i + needle.length }
+        let boundary = i == 0 || !is_subscript_ident_char(text.char_code(i - 1)) && text.char_code(i - 1) != 46
+        if text.substring(i, hi) == needle && boundary {
+            out = out + "x"
+            i = hi
+        } else {
+            out = out + text.substring(i, i + 1)
+            i = i + 1
+        }
+    }
+    out
+}
+
+fn is_subscript_ident_char(c: int) -> bool {
+    c == 95 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122
 }
