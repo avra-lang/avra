@@ -754,18 +754,23 @@ fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
 /// when neither carries a guard and their VALUE Codes are text-equal
 /// — wider than the retired regex, which read single-line arms only.
 ///
-/// THE REWRITE TRUSTS THE PROOF, NOT THE GUARD: whether the join is
-/// SOUND is the alternatives-bind question — do the two patterns bind
-/// the same names at the same types (F2039)? — a TYPING fact this
-/// rule-side text scan does not carry, so the rewrite does not answer
-/// it either. `ir_proved` does: it lowers the AFTER text and writes
-/// nothing unless the result both TYPECHECKS and answers the SAME IR
-/// — a mismatched bind either refuses to typecheck (F2039) or lowers
-/// to a different program, and either way the join stays SHOWN, not
-/// applied, the same door `modified_copy_literal`'s `with` collapse
-/// already stands behind.
+/// THE LAW TRUSTS THE TYPE-CHECK, NEVER THE IR MATCH: whether the
+/// join is SOUND is the alternatives-bind question — do the two
+/// patterns bind the same names at the same types (F2039)? — a
+/// TYPING fact this rule-side text scan does not carry, so the
+/// rewrite does not answer it either. Two arms sharing one body lower
+/// as TWO copies of it, one per jump-table entry; the merged
+/// `or`-arm lowers as ONE — fewer instructions after every honest
+/// join, so `ir_proved`'s instruction-for-instruction comparison can
+/// never confirm this rewrite BY CONSTRUCTION, whether or not it is
+/// sound. `@law` trusts the equivalence and asks only that the
+/// splice still TYPECHECK: a mismatched bind refuses there (F2039)
+/// exactly as it would have under a full IR match, so the law costs
+/// nothing the proof was ever going to buy — the same door
+/// `modified_copy_literal`'s `with` collapse already stands behind.
 @fixes("match k { .Struct(d, _) -> d, .Enum(d, _) -> d }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
 @keeps("match k { .A -> 1, .B -> 2 }")
+@law("two match arms whose bodies are identical text answer the same value whichever pattern matched, so joining the patterns with `or` changes nothing but which arm parses the choice")
 export rule one_body_arms {
     quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit),
 }
