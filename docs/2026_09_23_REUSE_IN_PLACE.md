@@ -1162,3 +1162,101 @@ field (even one this function alone can reach, through its own `mut`
 seat) silently falls back to a full copy with no diagnostic
 distinguishing it from the reachable case. `avra-8sb5.10.107` is that
 ask, filed.
+
+## §29 As built — R15b, `defer`'s direct call reaches methods, managed captures, and non-void answers
+
+**The gap.** `lower_defer`'s no-closure fast path (`direct_call`,
+features/defers/lower.av) only ever matched ONE shape: a FREE call
+answering VOID, every argument a SCALAR literal or capture.
+Everything else — a METHOD call (`defer s.reset()`), a MANAGED
+argument or receiver (`defer avra_puts(s)` where `s` is a captured
+`string`), a non-void answer discarded (`defer s()` where `s() ->
+string`) — minted the lambda's closure box (`avra_array_sized(2)` +
+two owned pushes) and called it back through a pointer, on every
+exit. The ORM session hit it squarely: `defer s.reset()` on a
+managed `Stmt` receiver, inside `@model`'s generated `find()`, paid
+a heap closure on every call.
+
+**What widened, and what stayed narrow.** `direct_call` now tries
+two shapes — `direct_free_call` (the original, generalized) and
+`direct_method_call` (new) — sharing one predicate, `fixed_early`: an
+argument is fixed at the `defer` when it is a CAPTURE (any type now,
+not only a scalar) or a scalar literal. A method's receiver takes
+the same test. Both bail to the boxed path when `TypeFacts` marked
+the read `wants_alias_copy` or `wants_thaw` — the two special cases
+`reg_of` itself branches on before an ordinary read; this path never
+calls `reg_of`, so it asks the same two facts directly rather than
+silently skip the copy a written-through alias needs. A method only
+takes the fast path when it resolves through the impl table
+(`callee_of`'s `.Declared` arm) with an EXACT seat match (self
+included) — `declared_method` re-derives just that one arm's
+precedence (a struct/enum/App receiver, no fn-typed field of the
+same name shadowing it) locally, since `defers` cannot import
+`impls`' `callee_of` (features never import features) and the
+question is narrow enough not to earn a promotion to shared infra
+yet — noted below as a follow-up. Every other receiver kind
+(variant, static, contract/dyn, fn-field, row) still closes over the
+box. `DirectCall` grew a `ret: TypeId` field; `run_direct` calls
+through it instead of hardwiring `void` — a discarded managed answer
+is owned once by the call and released once by the frame's ordinary
+scope-close, the same path an unused `Load` or `Pack` destination
+already takes, so nothing new was added to the memory pass for it.
+
+**Correctness leans entirely on machinery already there.** No
+`Ins.Retain`/`Release` is emitted from this file — the memory pass's
+existing `borrow_outlives` scan (over a `.Load`, the SAME read
+`capture_regs` performs for a `mut` local) already answers "does
+this register need to survive a later cell store or bracket close",
+which is exactly the shape a captured receiver read at the `defer`
+and called at the exit takes. Proved rather than assumed: a
+`mut`-reassignment test (`direct_methods.av`'s `reassigns`) shows the
+deferred call sees the OLD receiver after the binding is
+reassigned, on both engines; a red-team scratch aliasing probe
+(`mut t = s; defer t.bump()`, `t.bump()`'s write escaping through the
+returned `s`) reproduces byte-for-byte under `build/avra.pre` (the
+pre-R15b compiler, boxed path) and the new compiler alike — a
+pre-existing property of how `alias_copy_law`'s walk does not reach
+into a lambda's own capture sources, unrelated to this slice, filed
+as feedback rather than fixed here.
+
+**Numbers.** `defer s.reset()` on a two-field managed struct, in a
+tight loop, 2,000,000 iterations (`/usr/bin/time -l`, `build/avra.pre`
+vs. the rebuilt compiler, same source, interleaved, 3 rounds, cache
+cleared between binaries):
+
+| | before (boxed) | after (direct) |
+|---|---|---|
+| instructions/run | 1,195,000,000 | 526,800,000 (−55.9%) |
+| wall time | 0.06s | 0.03s |
+| closure box per call | 1 (`avra_array_sized` + 2 pushes + `callptr`) | 0 |
+
+`avra ir` on the same source confirms the shape directly: the OLD
+compiler's `hot()` shows `avra_array_sized`, `avra_array_push_owned`
+×2 and `callptr`; the NEW compiler's shows one `call Stmt.reset(...)`
+and nothing else — the struct literal's own box (present in both,
+unrelated to this change) is the only `avra_array_sized` left.
+
+**Tests.** `features/defers/tests/direct_methods/` (program test,
+eval == native == expected): a method defer on a managed receiver
+reassigned after the `defer` (old value seen), several method defers
+in one scope (last-registered first), fall-through/`return`/`fail`/`?`
+exits, `errdefer` with a method call, a non-void answer discarded, a
+managed free-call argument. Two new `then` blocks in
+`defers_test.av` (receiver reassignment, non-void + ordering) and one
+IR-shape assertion (no `avra_array_sized`/`avra_array_new`/`callptr`
+for a method defer). The pre-existing `direct_shapes` (a callee
+answering a value) and two `defers_adversarial_test.av` cases (a
+managed capture, a `mut` string reassigned after the defer) now
+exercise the widened path unchanged — both stayed green, which is
+the regression proof for the generalization as much as the new tests
+are the proof for methods.
+
+What I wanted from the language while doing this: a promotable
+narrow slice of `callee_of` — today "does this receiver's impl table
+answer this name" is either the WHOLE dispatch precedence (import
+`impls`, refused by layering) or a hand-copied re-derivation of one
+arm (what `declared_method` is). A `pub(shared)`-shaped door — a
+feature marking one fn as answerable by ANY feature, distinct from
+both `export` (crosses packages) and package-private — would have
+let `defers` ask the real `callee_of` instead of keeping a second,
+narrower copy of its `.Declared` arm in sync by hand.
