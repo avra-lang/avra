@@ -457,10 +457,12 @@ fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
 }
 
 /// A nullable's machine type: the niche IS its value's pointer; a
-/// scalar pair is a first-class {present: i1, value} aggregate that
-/// lives in registers and never touches memory.
+/// WORD ENUM's nullable is its own register, the spare tag its
+/// absence; a scalar pair is a first-class {present: i1, value}
+/// aggregate that lives in registers and never touches memory.
 fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
     if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
+    if types.is_word_enum(inner) { return ll_type_of(lc, types, inner) }
     let arr = avra_llvm_type_array_new(2)
     avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
     avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))

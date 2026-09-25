@@ -377,9 +377,10 @@ fn before_ows(buf: Bytes, lo: int, hi: int) -> int {
 /// What the framing fields say, folded one field at a time — a VALUE
 /// RECORD, every field a scalar, so a request costs no allocation to
 /// fold its fields into. `length` means something once `lengths`
-/// counts a Content-Length line; `why` means something once `refused`
-/// is set — the first law broken, unread until then.
-type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codings: bool = false, hosts: int = 0, close: bool = false, keep: bool = false, expects: bool = false, refused: bool = false, why: Refusal = .LineEnd }
+/// counts a Content-Length line; `why` is the first law broken, or
+/// absent — a nullable WORD ENUM spends its own spare tag, so this
+/// stays a register too.
+type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codings: bool = false, hosts: int = 0, close: bool = false, keep: bool = false, expects: bool = false, why: Refusal? = null }
 
 /// EVERY FRAMING FIELD READ, folded one at a time — the walk a
 /// request and a reply share.
@@ -417,7 +418,7 @@ fn persists(fr: Framing, minor: int) -> bool {
 /// kept: the body's delimiting, persistence, and the expectation.
 fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fields: Fields, end: int, limits: Limits) -> Framed {
     let fr = framing_of(buf, fields)
-    if fr.refused { return .Refused(fr.why) }
+    if fr.why != null { return .Refused(fr.why!) }
     if fr.hosts > 1 || minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
@@ -444,7 +445,7 @@ fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fie
 /// in, the value it becomes out, never a write through a seat: that
 /// is what keeps `Framing` a register, not a box.
 fn noted(buf: Bytes, n: Span, v: Span, fr: Framing) -> Framing {
-    if fr.refused { return fr }
+    if fr.why != null { return fr }
     when {
         buf.ieq_at(n.lo, n.hi, content_length) -> took_length(buf, v, fr)
         buf.ieq_at(n.lo, n.hi, transfer_encoding) -> took_codings(buf, v, fr)
@@ -456,7 +457,7 @@ fn noted(buf: Bytes, n: Span, v: Span, fr: Framing) -> Framing {
 }
 
 /// The framing refused by the law `why` names.
-fn broke(fr: Framing, why: Refusal) -> Framing { fr with { refused: true, why: why } }
+fn broke(fr: Framing, why: Refusal) -> Framing { fr with { why: why } }
 
 /// A second Content-Length is refused even when it agrees — the
 /// permission to merge equal values is a MAY, and this is a server.
@@ -576,7 +577,7 @@ fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) 
 /// a 204 or a 304; then chunks; then a length; then the close.
 fn settled_reply(buf: Bytes, status: int, minor: int, fields: Fields, end: int, limits: Limits, asked: Method) -> FramedReply {
     let fr = framing_of(buf, fields)
-    if fr.refused { return .Refused(fr.why) }
+    if fr.why != null { return .Refused(fr.why!) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
     if broken != null { return .Refused(broken!) }

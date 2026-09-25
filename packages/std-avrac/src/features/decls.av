@@ -911,15 +911,21 @@ impl Decls {
     }
 
     /// A SCALAR FIELD: an `int`, a `bool` (the runtime's i64 seams
-    /// coerce it by shape), or a WORD ENUM — one whose own
-    /// declaration carries no payload anywhere, so its tag is its
-    /// whole value. Asked of the field's own declaration through
-    /// `carries_nothing`, never of the type registry's marks, so the
-    /// answer never depends on which of the two was declared first.
+    /// coerce it by shape), a WORD ENUM — one whose own declaration
+    /// carries no payload anywhere, so its tag is its whole value —
+    /// or a WORD ENUM's NULLABLE, which spends the spare tag -1 and
+    /// so is one register too. Asked of the field's own declaration
+    /// through `carries_nothing`, never of the type registry's marks,
+    /// so the answer never depends on which of the two was declared
+    /// first.
     fn scalar_field(t: TypeId) -> bool {
         match self.types.shape_of(t) {
             .Int or .Bool -> true,
             .Enum(e, _) -> self.carries_nothing(e),
+            .Opt(inner) -> match self.types.shape_of(inner) {
+                .Enum(e, _) -> self.carries_nothing(e),
+                rest -> false,
+            },
             rest -> false,
         }
     }

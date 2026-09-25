@@ -1,6 +1,6 @@
 // Golden renderings: the human text is a contract. Every code's
 // shape is asserted EXACTLY — a drifted gutter or caret fails here.
-use @std.errors.{Loc, Frame, Error, ErrorInfo, info}
+use @std.errors.{Loc, Frame, Error, ErrorInfo, info, Suggestion, Edit, Confidence}
 use @std.avrac.diagnostics.{Diag, DiagCode, error_at, render, SourceFile, new_source_file}
 
 enum Underlying { Bad }
@@ -200,6 +200,45 @@ caused by: loop
 caused by: loop
 caused by: loop — the chain continues past 16; an error answering itself as its own cause?"""
             render(d, rendered_registry(), two_lines()) == expected
+        }
+    }
+    given "a diagnostic's suggestions" {
+        then "one suggestion, one edit — its confidence and description, then the edit" {
+            let edit = Edit { loc: Loc { file: null, lo: 0, hi: 3 }, replacement: "y" }
+            let sg = Suggestion { confidence: Confidence.High, description: "replace `x` with `y`", edits: [edit] }
+            let d = error_at("language.defect", null, "m") with { suggestions: [sg] }
+            let expected = """error[F0900]: m
+fix (high): replace `x` with `y`
+  y"""
+            render(d, rendered_registry(), two_lines()) == expected
+        }
+        then "a suggestion with TWO edits shows both, never just the first" {
+            let e1 = Edit { loc: Loc { file: null, lo: 0, hi: 1 }, replacement: "a" }
+            let e2 = Edit { loc: Loc { file: null, lo: 2, hi: 3 }, replacement: "b" }
+            let sg = Suggestion { confidence: Confidence.Medium, description: "swap both", edits: [e1, e2] }
+            let d = error_at("language.defect", null, "m") with { suggestions: [sg] }
+            let expected = """error[F0900]: m
+fix (medium): swap both
+  a
+  b"""
+            render(d, rendered_registry(), two_lines()) == expected
+        }
+        then "TWO suggestions on one Diag both render, never just the first" {
+            let e1 = Edit { loc: Loc { file: null, lo: 0, hi: 1 }, replacement: "a" }
+            let e2 = Edit { loc: Loc { file: null, lo: 2, hi: 3 }, replacement: "b" }
+            let sg1 = Suggestion { confidence: Confidence.High, description: "first fix", edits: [e1] }
+            let sg2 = Suggestion { confidence: Confidence.Low, description: "second fix", edits: [e2] }
+            let d = error_at("language.defect", null, "m") with { suggestions: [sg1, sg2] }
+            let expected = """error[F0900]: m
+fix (high): first fix
+  a
+fix (low): second fix
+  b"""
+            render(d, rendered_registry(), two_lines()) == expected
+        }
+        then "no suggestions is no fix line at all" {
+            let d = error_at("language.defect", null, "m")
+            render(d, rendered_registry(), two_lines()) == "error[F0900]: m"
         }
     }
 }

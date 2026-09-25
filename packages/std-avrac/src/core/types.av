@@ -438,14 +438,42 @@ impl TypeRegistry {
         self.shape_of(id) is .Var
     }
 
+    /// A WORD ENUM: every variant carries nothing, so its value IS its
+    /// tag (`flatten_enum` marks it flat) — told apart from a flat
+    /// RECORD by its own declared shape, since only an enum's tag has
+    /// a spare value no variant will ever take.
+    fn is_word_enum(id: TypeId) -> bool {
+        match self.shape_of(id) {
+            .Enum(_, _) -> self.is_flat(id),
+            rest -> false,
+        }
+    }
+
+    /// A WORD ENUM's tag register, whichever type names it: the enum
+    /// itself, or its NULLABLE once insisted or unwrapped — `insisted`
+    /// and `carried_of` answer the SAME register the nullable held, so
+    /// a reader asking what that register IS must read the two types
+    /// alike, exactly as `valued_carrier` already does for a value
+    /// enum's Opt.
+    fn word_carrier(id: TypeId) -> bool {
+        if self.is_word_enum(id) { return true }
+        match self.shape_of(id) {
+            .Opt(inner) -> self.is_word_enum(inner),
+            rest -> false,
+        }
+    }
+
     /// Whether a NULLABLE of `inner` rides a pointer — the question
     /// the slot law and the machine type ask. A flat record answers
     /// YES though the bare record answers no: its nullable is a
-    /// one-slot box, because a word has no spare value for absence.
+    /// one-slot box, because a word has no spare value for absence. A
+    /// WORD ENUM answers NO: its nullable spends the spare tag -1
+    /// instead (the value enum's own trick, `Repr.Tagged`).
     fn opt_rides_pointer(inner: TypeId) -> bool {
         // a nullable over a nullable is a pair: the null pointer is
         // already the inner one's absence
         if self.seen_shape(inner) is .Opt { return false }
+        if self.is_word_enum(inner) { return false }
         self.rides_pointer(inner) || self.is_flat(inner)
     }
 

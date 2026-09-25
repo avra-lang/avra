@@ -1642,6 +1642,8 @@ warning[F2044]: `??` never fires — a `int` is never absent
   · ╰── this is `int`
 ──╯
 help: drop the `??` and its right side
+fix (high): drop the `??` and its right side
+  (removed)
 ```
 
 ## F2089 — type.format

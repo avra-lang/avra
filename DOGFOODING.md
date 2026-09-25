@@ -563,7 +563,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       from one arc — `unflatten` wearing `mark_flat`'s doc,
       `flat_at` wearing three paragraphs about `field_read` and
       `slot_read`, `unified_lift` wearing THE ASSIGNMENT LAW that
-      belongs to `accepts`, `flat_value` wearing `pack_value`'s, and
+      belongs to `accepts`, `bare_value` wearing `pack_value`'s, and
       `FlatRow` wearing the interner's. The smell is greppable: two
       or more `///` lines where an earlier line ENDS a sentence and a
       later one OPENS a new definition ("A ", "The ", "One ",
