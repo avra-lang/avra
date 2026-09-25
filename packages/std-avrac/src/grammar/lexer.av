@@ -101,7 +101,7 @@ export type LexError = { message: string, span: Span }
 export type DocComment = { lines: List<string>, before: int, at: int, line_ats: List<int>, pkg: bool }
 
 /// Every token, retained doc comment and problem from one pass.
-export type LexResult = { tokens: List<Token>, docs: List<DocComment>, remarks: List<Remark>, errors: List<LexError> }
+export type LexResult = { tokens: List<Token>, docs: List<DocComment>, file_doc: List<string>, remarks: List<Remark>, errors: List<LexError> }
 
 /// Membership in the single-char operator set; `-`, `<`, `>`, `!`,
 /// `.`, and `|` reach here only after their two-char munches have
@@ -515,7 +515,7 @@ fn rule_boundary(tokens: List<Token>, j: int) -> bool {
 
 /// Language source has no rule boundary: every break is a candidate,
 /// and `collapse_breaks` decides which survive.
-// LICENSED I23: conforms to a callback signature — the CONTRACT owns
+// LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
 fn line_boundary(tokens: List<Token>, j: int) -> bool {
     true
@@ -629,6 +629,8 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
         pending: [],
         pending_at: 0,
         pending_ats: [],
+        file_pending: [],
+        file_doc_open: true,
         errors: [],
         stack: [],
         frames: [],
@@ -645,7 +647,7 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
-    LexResult { tokens: tokens, docs: lx.docs, remarks: sorted_remarks(lx.remarks), errors: lx.errors }
+    LexResult { tokens: tokens, docs: lx.docs, file_doc: lx.file_pending, remarks: sorted_remarks(lx.remarks), errors: lx.errors }
 }
 
 /// `remarks`, by `at` ascending. Every push during a scan already
@@ -654,7 +656,7 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
 /// interleaved line already pushed straight to the list — so the
 /// list is sorted once, the printer's cursor being a single forward
 /// walk that a single out-of-order entry would desync for good.
-// LICENSED I4: a sort; the subset has no sort_by
+// LICENSED style.hand_rolled_scan: a sort; the subset has no sort_by
 fn sorted_remarks(rs: List<Remark>) -> List<Remark> {
     mut remaining = rs
     mut out: List<Remark> = []
@@ -731,6 +733,12 @@ type Lexing = {
     // one offset per pending line, so an orphaned group can still
     // replay each line at its own position when it turns into remarks
     pending_ats: List<int>,
+    // a leading run of `//!` lines — the file's own doc — collected
+    // only while file_doc_open holds
+    file_pending: List<string>,
+    // true until the first thing that isn't a leading `//!` line: a
+    // real token, a `///` line, or a plain remark
+    file_doc_open: bool,
     errors: List<LexError>,
     stack: List<Ctx>,
     frames: List<QuoteFrame>,
@@ -1017,7 +1025,7 @@ impl Lexing {
         self.push(brace)
         for g in fr.groups {
             self.push(token(TokenKind.HoleBegin, "\${", g.lo, g.lo + 2))
-            // LICENSED I3: `push` is the sink's verb — it routes each token by context, not a list write
+            // LICENSED loops.push_loop: `push` is the sink's verb — it routes each token by context, not a list write
             for t in g.tokens { self.push(t) }
             self.push(token(TokenKind.HoleEnd, "}", g.hi - 1, g.hi))
         }
@@ -1062,6 +1070,7 @@ impl Lexing {
             if !self.pending.is_empty() && !self.line_comment { self.orphan_pending() }
             self.line_comment = false
         } else {
+            self.file_doc_open = false
             if !self.pending.is_empty() {
                 if declaration_start(t) {
                     self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at, line_ats: self.pending_ats, pkg: t.kind == TokenKind.Pkg })
@@ -1125,7 +1134,10 @@ impl Lexing {
     }
 
     /// A `//` comment marks its line; only a `///` at line start is a
-    /// doc line, and only a blank line detaches a group.
+    /// doc line, and only a blank line detaches a group. A leading
+    /// run of `//!` lines — before anything else in the file — is the
+    /// FILE's own doc; `file_doc_open` stays true only until the
+    /// first thing that isn't one.
     mut fn noted_comment() {
         if !line_comment_at(self.src, self.n, self.i) { return }
         self.line_comment = true
@@ -1135,8 +1147,20 @@ impl Lexing {
             // same-line so the printer appends it to the code it
             // trails instead of giving it a line of its own.
             self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i, same_line: true })
+            self.file_doc_open = false
             return
         }
+        if self.i + 2 < self.n && self.src.char_code(self.i + 2) == 33 && self.file_doc_open {
+            // Recorded TWICE, deliberately: as a remark, byte-for-byte,
+            // so the printer's round trip is untouched — and as
+            // stripped content, so it answers a doc query. The two
+            // paths must never merge into one: a remark's text is
+            // exactly what was written, a doc line's is what it means.
+            self.remarks.push(self.own_line_remark())
+            self.file_pending.push(doc_line(self.src, self.n, self.i))
+            return
+        }
+        self.file_doc_open = false
         if self.i + 2 < self.n && self.src.char_code(self.i + 2) == 47 {
             if self.pending.is_empty() { self.pending_at = self.i }
             self.pending.push(doc_line(self.src, self.n, self.i))
@@ -1147,7 +1171,13 @@ impl Lexing {
         // no token — a token would put a skip in every grammar rule —
         // and it is never dropped, so a comment with no statement
         // after it survives as much as one with.
-        self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i })
+        self.remarks.push(self.own_line_remark())
+    }
+
+    /// The current line, kept whole and by position — a `//`, `///`
+    /// or `//!` comment that carries no other meaning at this site.
+    fn own_line_remark() -> Remark {
+        Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i }
     }
 
     /// A `///` GROUP THAT NEVER REACHES A DECLARATION IS NOT

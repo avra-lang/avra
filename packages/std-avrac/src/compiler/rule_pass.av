@@ -29,9 +29,27 @@ fn stmt_candidates(a: Analysed, entries: List<RuleEntry>, s: StmtId) -> List<Can
 
 /// Every node under (and including) `root`, children before owner —
 /// `core.every_expr`'s shape, generalized to every `At` kind, so a
-/// rule rooted at a statement reaches it too.
+/// rule rooted at a statement reaches it too. A `Pat.Quote`'s own
+/// BODY never descends: it is the pattern's TEXT, mirrored into an
+/// expr tree so a `quote{ ... }` pattern can be WRITTEN as code —
+/// never code a rule should fire ON. Without this guard, a rule's
+/// own declaration matches ITSELF: `if_start_raw`'s pattern spells
+/// `Ins.IfStart(${c})`, and that reads as a real `Ins.IfStart` call
+/// to every rule walking compiler/idioms.av (or any feature's own
+/// idioms.av) — a PRECISION bug, not debt to license away.
 fn every_at(store: NodeStore, root: At) -> List<At> {
+    if quote_pattern(store, root) { return [root] }
     flatten([every_at(store, k) for k in store.kids_at(root)]).concat([root])
+}
+
+/// Whether `at` is a `Pat.Quote` — the PATTERN position. A rewrite's
+/// own `-> quote { ... }` is an ordinary `Expr`, ANSWER position,
+/// real code the walk still reaches and rules may still fire on.
+fn quote_pattern(store: NodeStore, at: At) -> bool {
+    match at {
+        .Pat(id) -> store.pat(id) is .Quote,
+        _ -> false,
+    }
 }
 
 fn node_candidates(a: Analysed, entries: List<RuleEntry>, at: At) -> List<Candidate> {
@@ -50,16 +68,18 @@ export fn code_at(a: Analysed, at: At) -> Code {
     Code { of: a, at: at }
 }
 
-/// Every candidate as a `Diag` — `avra check`'s findings. A `Fix.Say`
-/// carries the rule's own voice unchanged; a `Fix.Rewrite` wraps in a
-/// `Suggestion` over one `Edit` at the matched node's own span.
+/// Every candidate as a `Diag` — `avra check`'s findings. A `Fix.Say`'s
+/// voice carries no kind of its own (`features/fix.av`'s `said`); this
+/// is the ONE place either fix shape's `Diag` is stamped with the
+/// firing rule's own identity (`rule_id`) — a `Fix.Rewrite` wraps in a
+/// `Suggestion` over one `Edit` at the matched node's own span besides.
 export fn rule_findings(a: Analysed, stmts: List<StmtId>) -> List<Diag> {
     flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
 }
 
 fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
     match c.fix {
-        .Say(voice) -> [voice],
+        .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
         .Rewrite(_) -> rewrite_diags(a, c.at, c.owner, c.fix),
     }
 }
@@ -79,5 +99,5 @@ fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
     let loc? = code_at(a, at).loc() else { return null }
     let edit = Edit { loc: loc, replacement: text }
     let sg = Suggestion { confidence: Confidence.High, description: "rewrite to `${text}`", edits: [edit] }
-    warning("rule.${rule_id(r)}", loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
+    warning(rule_id(r), loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
 }

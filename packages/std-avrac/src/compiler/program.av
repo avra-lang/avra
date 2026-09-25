@@ -7,7 +7,7 @@ use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
 use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type}
 use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_untold, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
-// LICENSED I24: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
+// LICENSED style.unused_import: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
 use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockWords}
 use features.expr_spine.{SpineSemantics}
@@ -56,6 +56,10 @@ export type Parsed = {
     source: SourceFile,
     voices: Voices,
 }
+
+/// `explain_doc`'s answer: the rendered text, and the files it read to
+/// say so — a durable cache of it needs both (compiler/db.av).
+export type DocAnswer = { text: string, files: List<string> }
 
 export fn new_dispatch() -> Dispatch {
     let enumpats: dyn PatSemantics = EnumPatSemantics {}
@@ -148,6 +152,7 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
     // needs it already standing to merge into.
     store.keep_remarks(lexed.remarks)
     attach_docs(store, lexed.docs)
+    if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
     // what a block's grammar refused speaks with the parse, at the block
     let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
@@ -249,6 +254,12 @@ impl Program {
         self.files[self.entry!.at]
     }
 
+    /// Every rule the compiler carries (rules_table.av's `rules`
+    /// collect), by module then name — `avra docs rules` (P7: the
+    /// rule table a native idiom finding's kind is checked against
+    /// is inspectable the same way any other registry is).
+    fn rule_listing() -> List<RuleEntry> { rules }
+
     /// An annotation fn's signature, which IS its effect — `avra
     /// explain @name`. Null when no declared fn wears the name.
     fn explain_annotation(name: string) -> string? {
@@ -263,19 +274,41 @@ impl Program {
 
     /// A declaration's `///` doc and its own `@name(args)` annotations,
     /// off the one door every declaration's parse facts answer through —
-    /// `avra explain <name>`'s general form. Null for a name no declared
-    /// fn, type, enum, trait or const of this package wears.
-    fn explain_doc(name: string) -> string? {
+    /// `avra docs <name>`'s general form. Null for a name no declared
+    /// fn, type, enum, trait or const of this package wears. A name
+    /// TWO modules both declare — legal, since each namespaces on its
+    /// own — is named as a collision rather than silently answered
+    /// from whichever one the compiler happened to reach first.
+    ///
+    /// The FILES an answer read ride along too — never the answer's own
+    /// business, but exactly what a durable cache of this answer needs
+    /// to know is still true (compiler/db.av's `DocFacts`).
+    fn explain_doc(name: string) -> DocAnswer? {
         let decls = self.ws.decls
-        let decl? = decls.decls.get().find((d: Decl) -> d.name == name) else { return null }
+        let matches = [d for d in decls.decls.get() if d.name == name]
+        if matches.length > 1 { return self.collision_answer(decls, name, matches) }
+        let decl? = matches.first() else { return null }
         let doc = decls.doc_of(decl.id) ?? []
         let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
         let lines = doc.concat(anns)
-        if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+        let text = if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+        DocAnswer { text: text, files: [decls.file(decl.file).path] }
+    }
+
+    /// `name` names more than one declaration — never guessed at. Every
+    /// matching declaration's own file backs the answer: a new module
+    /// declaring the same name changes it just as much as an edit to
+    /// one already listed.
+    fn collision_answer(decls: Decls, name: string, matches: List<Decl>) -> DocAnswer {
+        let qualified = [decls.module_of(d.id) + "." + name for d in matches].join(", ")
+        DocAnswer {
+            text: "`${name}` names more than one declaration in this package — qualify it: ${qualified}",
+            files: [decls.file(d.file).path for d in matches],
+        }
     }
 
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s
-    /// words (features/values.av) — `avra explain repr <type>` (P7: a
+    /// words (features/values.av) — `avra docs repr <type>` (P7: a
     /// representation the compiler chose is inspectable wherever a
     /// tool exists to ask). Resolves a built-in scalar, `List<…>` or
     /// `Map<…>` from the registry alone, or a declared STRUCT by
@@ -293,7 +326,7 @@ impl Program {
 
     /// A fn's seat-0 WRITE-FLOW CHAIN — a method's receiver, a free
     /// fn's first parameter — from `write_chain` (compiler/
-    /// receivers.av). `avra explain writes <fn>`. Null when no
+    /// receivers.av). `avra docs writes <fn>`. Null when no
     /// declared fn wears the name, its seat 0 is not written, or it
     /// has no seat 0 at all (a fn with no receiver and no parameters).
     /// A `mut` parameter PAST seat 0 is the pass's data too, not yet
@@ -428,12 +461,12 @@ impl Program {
     /// The rows the PACKAGE kinds among `ds` render under — one per
     /// diagnostic that wears one, its message the summary. A kind
     /// spoken is registered by being spoken; `kind_rows` is the
-    /// registry `avra explain` walks without a diagnostic in hand.
+    /// registry `avra docs` walks without a diagnostic in hand.
     fn spoken_codes(ds: List<Diag>) -> List<DiagCode> {
         [user_code(d.kind, d.message) for d in ds if is_user_kind(d.kind)]
     }
 
-    /// THE PACKAGE KINDS `avra explain @scope/name:E1` answers from:
+    /// THE PACKAGE KINDS `avra docs @scope/name:E1` answers from:
     /// every `refuse_as("E1", "…")` with a literal kind in the
     /// annotation fns the workspace holds (the complete walk — a
     /// dependency's fns are where a package's kinds are spelled, and

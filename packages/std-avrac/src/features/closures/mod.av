@@ -2,7 +2,15 @@
 //! captures outer names BY VALUE into the closure's box; the box
 //! is `[code address, captures…]` and a call rides CallPtr with
 //! the box at seat 0, exactly as `self` rides a method call.
-//! `fn(int) -> bool` is the type a fn value wears.
+//! `fn(int) -> bool` is the type a fn value wears (`fn(int)`
+//! answers nothing). An unannotated seat HEARS its slot's mark as
+//! it hears its type, so a trailing block on `fn(mut Cx) -> R`
+//! writes through the context it is handed. A trailing block of
+//! MATCH ARMS is a fn body too: `xs.filter { .Ok(v) -> v > 0, _ ->
+//! false }` is `xs.filter((it) -> match it { .Ok(v) -> v > 0, _ ->
+//! false })` — the first arm's pattern anchors the parse away from
+//! a lone bind (`{ x -> body }` stays the ordinary one-seat
+//! lambda, unchanged, both spellings one node).
 use features.{LanguageFeature, BuilderRow}
 use features.closures.{pronoun_lambda}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
@@ -21,7 +29,6 @@ export fn closures() -> LanguageFeature {
         "type.not_offered" | "a lambda takes a record seat's fields by name, and only the fields it offers"
     }
     LanguageFeature closures {
-        docs: "`(x: int) -> x * 2` closures capturing outer names by value; `fn(int) -> bool` fn-value types (`fn(int)` answers nothing); calls dispatch through fn-typed bindings. A seat written `mut` is one the lambda writes through, and an unannotated seat HEARS its slot's mark as it hears its type — so a trailing block on `fn(mut Cx) -> R` writes through the context it is handed. A trailing block of MATCH ARMS is a fn body too: `xs.filter { .Ok(v) -> v > 0, _ -> false }` is `xs.filter((it) -> match it { .Ok(v) -> v > 0, _ -> false })` — the first arm's pattern anchors the parse away from a lone bind (`{ x -> body }` stays the ordinary one-seat lambda, unchanged, both spellings one node)."
         gram: grammar {
             type = "fn" "(" ( ( fc:"const" )? ( fm:"mut" )? ft:type ( "," ( fc:"const" )? ( fm:"mut" )? ft:type )* ","? )? ")" ( "->" fr:type )? -> fn_type(fc, fm, ft, fr)
             primary = "(" ( ( lc:"const" )? ( lm:"mut" )? lp:NAME ( ":" lt:type )? ( "," ( lc:"const" )? ( lm:"mut" )? lp:NAME ( ":" lt:type )? )* ","? )? ")" "->" lb:expression -> lambda(lc, lm, lp, lt, lb)

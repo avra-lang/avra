@@ -122,7 +122,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
         let i = owned_form(types, reg_types, ins, at, raw)
         match i {
             .ScopeEnter(tier) -> {
-                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(Scope { tier: tier, managed: [], cells: [] })
                 out.push(i)
             },
@@ -131,14 +131,14 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // one scope; at the outermost it escapes to the caller).
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
-                // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for s in scope.settled(gives) { out.push(s) }
                 // SOMETHING ALWAYS RECEIVES A YIELD: an enclosing scope adopts
                 // it, or — at the outermost — the caller takes it as the
                 // answer. A yield the scope does not own takes its own
                 // reference either way: a param answered is the caller's
                 // to keep, and the param was never this body's.
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 adopts(types, reg_types, open_scopes, gives)
                 out.push(i)
@@ -147,25 +147,25 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // escapes to the merge: the branch never releases it —
             // the enclosing scope owns `dst`, the merge of both.
             .IfStart(_) or .SwitchStart(_, _) -> {
-                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
             },
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
-                // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for s in scope.settled(gives) { out.push(s) }
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
-                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
             },
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
-                // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for s in scope.settled(gives) { out.push(s) }
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
@@ -176,11 +176,11 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // same convention.
             .Call(_, _, _) or .CallPtr(_, _, _) -> {
                 let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) && !standing[ar.index] && !owned_open(open_scopes, ar)]
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for r in lent { out.push(Ins.Retain(r)) }
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for r in lent { out.push(Ins.Release(r)) }
             },
             // An EARLY exit settles EVERY open scope's debts at the
@@ -188,7 +188,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             .FnExit(gives) -> {
                 // an answer no scope owns is the caller's to keep: its own reference, first
                 if is_managed(types, reg_types[gives.index]) && !owned_open(open_scopes, gives) { out.push(Ins.Retain(gives)) }
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for c in exit_cells(open_scopes) { out.push(cell_settle(c)) }
                 for r in exit_releases(open_scopes, gives) { out.push(Ins.Release(r)) }
                 out.push(i)
@@ -239,13 +239,13 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // load leaks (and, holding a reference, turns each write
             // in the body into a copy).
             .LoopStart -> {
-                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
             },
             .LoopCond(_) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
-                // LICENSED I3: the pass's OUTPUT accumulates
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in scope.settled(null) { out.push(s) }
                 out.push(i)
             },
@@ -419,7 +419,7 @@ fn view_of(i: Ins) -> Reg? {
 /// first — the returned value excluded in every open scope.
 fn exit_releases(open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
     mut out: List<Reg> = []
-    // LICENSED I19: a REVERSE walk — innermost debts settle first
+    // LICENSED loops.index_walk: a REVERSE walk — innermost debts settle first
     mut j = open_scopes.depth() - 1
     while j >= 0 {
         let scope: Scope = open_scopes.at(j)
@@ -451,7 +451,7 @@ fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: 
     if gives == null { return [] }
     let r = gives!
     if !is_managed(types, reg_types[r.index]) { return [] }
-    // LICENSED I9: register identity, not type agreement
+    // LICENSED structs.index_compared: register identity, not type agreement
     if scope.managed.any(same_reg(it, r)) { return [] }
     [Ins.Retain(r)]
 }
@@ -474,7 +474,7 @@ impl Scope {
 fn kept_out(rs: List<Reg>, kept: Reg?) -> List<Reg> {
     mut out: List<Reg> = []
     mut spared = false
-    // LICENSED I3: exactly ONE entry is dropped; a filter drops every match
+    // LICENSED loops.push_loop: exactly ONE entry is dropped; a filter drops every match
     for r in rs {
         if !spared && !stays(r, kept) { spared = true } else { out.push(r) }
     }
@@ -483,7 +483,7 @@ fn kept_out(rs: List<Reg>, kept: Reg?) -> List<Reg> {
 
 /// Held by the scope — not the value escaping through the yield.
 fn stays(r: Reg, kept: Reg?) -> bool {
-    // LICENSED I9: register identity, not type agreement
+    // LICENSED structs.index_compared: register identity, not type agreement
     kept == null || r.index != kept!.index
 }
 
@@ -604,7 +604,7 @@ fn cell_forget(slot: Reg) -> Ins {
 /// Every open scope's cells at an early exit, innermost first.
 fn exit_cells(open_scopes: Stack<Scope>) -> List<Reg> {
     mut out: List<Reg> = []
-    // LICENSED I19: a REVERSE walk — innermost debts settle first
+    // LICENSED loops.index_walk: a REVERSE walk — innermost debts settle first
     mut j = open_scopes.depth() - 1
     while j >= 0 {
         let scope: Scope = open_scopes.at(j)

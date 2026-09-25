@@ -46,6 +46,13 @@ export type NodeStore = {
     annotations: Cell<List<List<Annotation>>>,
     // declaration-leading `///` lines; absent on synthesized nodes
     docs: Cell<List<List<string>?>>,
+    // the file's own `//!` header — a leading run before anything
+    // else, absent when the file opens with something other than
+    // one. Not folded into any statement's fingerprint yet: an
+    // edit to only this text is invisible to program_hash-keyed
+    // caches until a consumer needs that (today's one-shot `avra
+    // docs` never holds a stale cell across an edit).
+    file_doc: Cell<List<string>?>,
     // the offset each doc group's FIRST `///` was written at, and -1
     // for none, so the printer can put a remark between a doc and its
     // declaration back in the author's order
@@ -98,6 +105,7 @@ export type NodeStore = {
 }
 
 export fn new_node_store(file: string = "") -> NodeStore {
+    let no_file_doc: List<string>? = null
     NodeStore {
         file: file,
         exprs: new_arena(),
@@ -111,6 +119,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
+        file_doc: Cell.new(no_file_doc),
         doc_ats: list_cell(),
         remarks: list_cell(),
         pats: list_cell(),
@@ -613,6 +622,17 @@ impl NodeStore {
         self.docs.get()[s.index]
     }
 
+    /// The file's own `//!` header — set once, at most, per file.
+    fn document_file(lines: List<string>) {
+        self.file_doc.set(lines)
+    }
+
+    /// The file's own `//!` header, absent when it opened with
+    /// anything else.
+    fn file_doc() -> List<string>? {
+        self.file_doc.get()
+    }
+
     /// Where a declaration's doc group began, or -1 when it has none.
     fn doc_at(s: StmtId) -> int {
         self.doc_ats.get()[s.index]
@@ -631,7 +651,7 @@ impl NodeStore {
     /// The statement whose span begins at or after `at`, earliest
     /// first — where a doc group's anchor lands.
     fn statement_after(at: int) -> StmtId? {
-        // LICENSED I4: a min-by fold; the subset has no min_by
+        // LICENSED style.hand_rolled_scan: a min-by fold; the subset has no min_by
         mut best: StmtId? = null
         mut best_lo = 0
         for s in self.stmt_ids() {
@@ -827,7 +847,7 @@ impl NodeStore {
     }
 
     /// Every statement the store holds, in the order it was built.
-    // LICENSED I62: the one index walk every other reader asks for
+    // LICENSED style.stmt_index_walk: the one index walk every other reader asks for
     fn stmt_ids() -> List<StmtId> { [StmtId { index: i } for i in 0..self.stmts.count()] }
 
     /// A `use` statement's parts, when the statement is one.
