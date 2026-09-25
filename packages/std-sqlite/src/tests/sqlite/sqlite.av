@@ -3,8 +3,8 @@
 // bound, a row stepped and read by CLASS before value, the statement
 // finalized and the connection closed. Native only: the driver is FFI
 // and the evaluator cannot host an extern.
-use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, run, bind_int, slots, width, standing, class_at, int_at}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError, Storage}
 use @std.sqlite.{version}
 
@@ -20,7 +20,7 @@ fn class_word(c: Storage) -> string {
 
 /// The whole story, and every step of it can fail.
 fn story() -> Result<string, SqlError> {
-    mut db = memory()?
+    mut db = Db.memory()?
     let made = run(db, "create table fruit(name text, weight integer)")?
     let one = run(db, "insert into fruit(name, weight) values ('apple', 120)")?
     let many = run(db, "insert into fruit(name, weight) values ('pear', 180), ('fig', 40)")?
@@ -28,42 +28,42 @@ fn story() -> Result<string, SqlError> {
     let shape = shaped(db)?
     let walk = walked(db)?
     let total = run(db, "delete from fruit where weight < 50")?
-    let rc = close(db)
+    let rc = db.close()
     "version ${version()}\nmade ${made} rows, inserted ${one} then ${many}\n${heavy}\n${shape}\n${walk}\ndeleted ${total}, closed ${rc}"
 }
 
 /// A parameter bound, a row stepped, and the cell read CLASS FIRST.
 fn counted(db: Db, floor: int) -> Result<string, SqlError> {
-    mut s = prepare(db, "select count(*) from fruit where weight >= ?1")?
-    let n = slots(s)
-    let _ = bind_int(s, 1, floor)?
+    mut s = db.prepare("select count(*) from fruit where weight >= ?1")?
+    let n = s.slots()
+    let _ = s.bind_int(1, floor)?
     let word = read_one(s)?
-    let _ = finalize(s)
+    let _ = s.finalize()
     "one hole? ${n == 1} — ${word} fruit weigh ${floor} or more"
 }
 
 fn read_one(s: Stmt) -> Result<string, SqlError> {
-    let more = step(s)?
+    let more = s.step()?
     if !more { return "no" }
-    let c = class_at(s, 0)?
-    "${class_word(c)}:${int_at(s, 0)?}"
+    let c = s.class_at(0)?
+    "${class_word(c)}:${s.int_at(0)?}"
 }
 
 /// What a statement says about its own shape, before and after a step.
 fn shaped(db: Db) -> Result<string, SqlError> {
-    mut s = prepare(db, "select name, weight from fruit order by weight")?
-    let before = "width ${width(s)}, standing ${standing(s)}"
-    let more = step(s)?
-    let during = "after a step: standing ${standing(s)}, column 1 is ${class_word(class_at(s, 1)?)}"
-    let _ = finalize(s)
+    mut s = db.prepare("select name, weight from fruit order by weight")?
+    let before = "width ${s.width()}, standing ${s.standing()}"
+    let more = s.step()?
+    let during = "after a step: standing ${s.standing()}, column 1 is ${class_word(s.class_at(1)?)}"
+    let _ = s.finalize()
     "${before} — ${during} (row? ${more})"
 }
 
 /// Every row walked to DONE, the way a caller loops.
 fn walked(db: Db) -> Result<string, SqlError> {
-    mut s = prepare(db, "select weight from fruit order by weight")?
+    mut s = db.prepare("select weight from fruit order by weight")?
     let sum = summed(s, 0, 0)?
-    let _ = finalize(s)
+    let _ = s.finalize()
     "walked ${sum.rows} rows, weights total ${sum.total}"
 }
 
@@ -71,9 +71,9 @@ type Walk = { rows: int, total: int }
 
 /// The loop, written as the recursion the subset takes.
 fn summed(s: Stmt, rows: int, total: int) -> Result<Walk, SqlError> {
-    let more = step(s)?
+    let more = s.step()?
     if !more { return Walk { rows: rows, total: total } }
-    summed(s, rows + 1, total + int_at(s, 0)?)
+    summed(s, rows + 1, total + s.int_at(0)?)
 }
 
 fn told() -> string {

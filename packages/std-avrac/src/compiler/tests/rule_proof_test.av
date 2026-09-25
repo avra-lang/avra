@@ -6,7 +6,7 @@
 // but changes an operator's meaning.
 use @std.avrac.compiler.{avra, new_workspace, Program, Workspace, Analysis}
 use @std.avrac.compiler.host.{memory_host}
-use @std.avrac.core.{At, Ins, Reg, UnOp, BinOp, alpha_fps, same_fps, fp_str}
+use @std.avrac.core.{At, Ins, Reg, UnOp, BinOp, alpha_fps, alpha_renamed, same_fps, same_ins_list, fp_str}
 use @std.avrac.features.{Analysed}
 use @std.errors.{Edit, Loc}
 
@@ -56,6 +56,14 @@ spec "the IR proof" {
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
             !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn added(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+        }
+    }
+    given "a string literal replaced by one whose fp_str HASH COLLIDES with it" {
+        then "the enclosing declaration is REFUSED — a fingerprint match is a pre-filter, not a proof" {
+            mut ws = proof_ws_of("fn word() -> string {\n    \"aihhotaz\"\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn word() -> string {\n    \"eepturoq\"\n}\n0\n")
         }
     }
 }
@@ -252,6 +260,26 @@ spec "canon_not_if" {
             !same_fps(alpha_fps(add_ins(), 0), alpha_fps(sub_ins(), 0))
         }
     }
+}
+
+spec "same_ins_list, the fingerprint's structural fallback" {
+    given "two string constants whose fp_str HASH COLLIDES, held in otherwise identical instructions" {
+        then "the fingerprints AGREE — the un-keyed hash cannot tell them apart" {
+            same_fps(alpha_fps(word_ins("aihhotaz"), 0), alpha_fps(word_ins("eepturoq"), 0))
+        }
+        then "the structural walk DISAGREES — the actual strings differ" {
+            !same_ins_list(alpha_renamed(word_ins("aihhotaz"), 0), alpha_renamed(word_ins("eepturoq"), 0))
+        }
+    }
+    given "the same instructions, unchanged" {
+        then "the structural walk AGREES" {
+            same_ins_list(alpha_renamed(word_ins("aihhotaz"), 0), alpha_renamed(word_ins("aihhotaz"), 0))
+        }
+    }
+}
+
+fn word_ins(s: string) -> List<Ins> {
+    [Ins.ConstStr(Reg { index: 0 }, s), Ins.RetVal(Reg { index: 0 })]
 }
 
 // register 0 is the one param; registers from there on are minted in

@@ -1,8 +1,11 @@
 //! THE PROOF: a rewrite is SAFE when every declaration it lands
 //! inside lowers to the SAME IR before and after, register
-//! renumbering aside (`core.alpha_fps`) — never by trusting the
-//! rewrite's own claim. `avra fix` applies only what this proves;
-//! everything else is SHOWN, never written (design §3).
+//! renumbering aside (`core.alpha_renamed`) — never by trusting the
+//! rewrite's own claim, and never by a fingerprint match alone
+//! (`core.same_ins_list` walks the actual values — a fingerprint
+//! agreeing is a fast pre-filter, never the verdict). `avra fix`
+//! applies only what this proves; everything else is SHOWN, never
+//! written (design §3).
 //!
 //! TWO DOORS, ONE COMPARISON: a rule's own `Candidate` carries a node
 //! id (`At`) straight from the walk that found it (`ir_proved`); any
@@ -11,7 +14,7 @@
 //! at, since it was built far from any AST walk (`edits_proved`).
 //! Both end at `decl_ir_proved`, the one question either door asks:
 //! does this declaration answer the same program before and after.
-use core.{At, alpha_fps, same_fps, Span, DeclId}
+use core.{At, alpha_renamed, same_fps, same_ins_list, Span, DeclId}
 use features.{Analysed, enclosing_decl, FileView}
 use compiler.lower.{Body, Lowered}
 use @std.path.{normalized}
@@ -115,7 +118,14 @@ fn decl_at_span(view: FileView, sp: Span) -> DeclId? {
     view.decls.innermost(view.decls.owner_spans(view.file), sp)
 }
 
+// A fingerprint agreeing is a fast pre-filter, never the verdict: it
+// is an un-keyed rolling hash (core/fp.av) with no collision check,
+// so two different instruction lists can share one. `same_ins_list`
+// is the actual proof, over the same renamed values the hash folded.
+//
 // LICENSED I39: compares two independent Body VALUES, neither one's own state
 fn same_ir(a: Body, b: Body) -> bool {
-    same_fps(alpha_fps(a.ins, a.params.length), alpha_fps(b.ins, b.params.length))
+    let ra = alpha_renamed(a.ins, a.params.length)
+    let rb = alpha_renamed(b.ins, b.params.length)
+    same_fps([i.fingerprint() for i in ra], [i.fingerprint() for i in rb]) && same_ins_list(ra, rb)
 }
