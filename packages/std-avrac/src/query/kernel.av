@@ -54,7 +54,15 @@ type KernelState = {
 export type Kernel = { state: Cell<KernelState> }
 
 export fn new_kernel() -> Kernel {
-    let state = KernelState { rev: 1, cells: [], verifiers: [], pending: [], open: [], hits: 0, misses: 0 }
+    let state = KernelState {
+        rev: 1,
+        cells: [],
+        verifiers: [],
+        pending: [],
+        open: [],
+        hits: 0,
+        misses: 0,
+    }
     Kernel { state: Cell.new(state) }
 }
 
@@ -91,13 +99,26 @@ impl Kernel {
         mut s = self.snapshot()
         let prior: QueryCell? = state_cell(s, key)
         if prior != null && prior!.value_hash == value_hash {
-            write_cell(s, key, QueryCell { deps: [], changed_at: prior!.changed_at, verified_at: state_revision(s), value_hash: value_hash })
+            write_cell(
+                s,
+                key,
+                QueryCell {
+                    deps: [],
+                    changed_at: prior!.changed_at,
+                    verified_at: state_revision(s),
+                    value_hash: value_hash,
+                },
+            )
             self.replace(s)
             return
         }
         if prior != null { s.rev = state_revision(s) + 1 }
         let rev = state_revision(s)
-        write_cell(s, key, QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash })
+        write_cell(
+            s,
+            key,
+            QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash },
+        )
         self.replace(s)
     }
 
@@ -160,7 +181,16 @@ impl Kernel {
         let _ = s.open.pop()
         let prior: QueryCell? = state_cell(s, key)
         let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { state_revision(s) }
-        write_cell(s, key, QueryCell { deps: deps, changed_at: changed, verified_at: state_revision(s), value_hash: value_hash })
+        write_cell(
+            s,
+            key,
+            QueryCell {
+                deps: deps,
+                changed_at: changed,
+                verified_at: state_revision(s),
+                value_hash: value_hash,
+            },
+        )
         self.replace(s)
     }
 

@@ -84,26 +84,30 @@ export type Route = { method: Method, pattern: string, reach: Reach, serve: fn(R
 
 /// Whether a `{` in this pattern opens a hole or is an octet.
 fn holes_bind(reach: Reach) -> bool {
-    match reach {
-        .Literal -> false,
-        .Width or .Rest -> true,
-    }
+    match reach { .Literal -> false, .Width or .Rest -> true }
 }
 
 /// Whether this route's last hole takes the remaining segments.
 fn takes_rest(reach: Reach) -> bool {
-    match reach {
-        .Literal or .Width -> false,
-        .Rest -> true,
-    }
+    match reach { .Literal or .Width -> false, .Rest -> true }
 }
 
 /// A route from a grammar's reader and a TYPED handler. ABSENCE from
 /// `serve` means THIS ROUTE DOES NOT ANSWER THAT TARGET; a 404 the
 /// handler chose is a Response like any other, and the two must not
 /// be the same value.
-export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: .Width, serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve) }
+export fn routed<R>(
+    method: Method,
+    pattern: string,
+    read: fn(Bytes) -> R?,
+    serve: fn(Request<R>) -> Response,
+) -> Route {
+    Route {
+        method: method,
+        pattern: pattern,
+        reach: .Width,
+        serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+    }
 }
 
 /// A route with NO HOLES — `/health`, `/metrics`, `/`. A grammar
@@ -113,7 +117,12 @@ export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serv
 /// takes no record because there is nothing to read.
 export fn fixed(method: Method, path: string, serve: Handler) -> Route {
     let want = path.bytes()
-    Route { method: method, pattern: path, reach: .Literal, serve: (q: Request<Unrouted>, t: Bytes) -> if t == want { serve(q) } else { null } }
+    Route {
+        method: method,
+        pattern: path,
+        reach: .Literal,
+        serve: (q: Request<Unrouted>, t: Bytes) -> if t == want { serve(q) } else { null },
+    }
 }
 
 /// A ROUTE WHOSE LAST HOLE TAKES THE REST — `/static/{path...}`
@@ -128,16 +137,36 @@ export fn fixed(method: Method, path: string, serve: Handler) -> Route {
 /// what the hole does instead of changing it, the pattern reads
 /// EXACTLY as its grammar does, and the router is not reading a
 /// marker only it understands.
-export fn tailed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve) }
+export fn tailed<R>(
+    method: Method,
+    pattern: string,
+    read: fn(Bytes) -> R?,
+    serve: fn(Request<R>) -> Response,
+) -> Route {
+    Route {
+        method: method,
+        pattern: pattern,
+        reach: .Rest,
+        serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+    }
 }
 
 /// A route whose PATTERN declares its reach: a last hole marked `...`
 /// takes the rest, any other reaches its own width. The door a route
 /// written as a declaration (`get "/static/{path...}" { … }`) comes
 /// through, where the pattern is the whole declaration.
-export fn declared<R, T: Respond>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> T) -> Route {
-    Route { method: method, pattern: pattern, reach: if marks_rest(pattern) { .Rest } else { .Width }, serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve) }
+export fn declared<R, T: Respond>(
+    method: Method,
+    pattern: string,
+    read: fn(Bytes) -> R?,
+    serve: fn(Request<R>) -> T,
+) -> Route {
+    Route {
+        method: method,
+        pattern: pattern,
+        reach: if marks_rest(pattern) { .Rest } else { .Width },
+        serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve),
+    }
 }
 
 // ── Routes as declarations ──────────────────────────────────────
@@ -206,7 +235,8 @@ fn beneath(prefix: Bytes, serve: fn(Request<Unrouted>, Bytes) -> Response?) -> f
 /// target is not this route's.
 fn responded<R, T: Respond>(found: R?, q: Request<Unrouted>, serve: fn(Request<R>) -> T) -> Response? {
     let params? = found else { return null }
-    serve(Request { raw: q.raw, head: q.head, body: q.body, peer: q.peer, params: params }).response()
+    serve(Request { raw: q.raw, head: q.head, body: q.body, peer: q.peer, params: params })
+        .response()
 }
 
 // ── Segments ────────────────────────────────────────────────────
@@ -304,25 +334,40 @@ export fn compiled(routes: List<Route>) -> Table {
 /// A LITERAL KID CARRIES THE HOLES TOO: a route with a hole at `d`
 /// matches that literal segment as well, so it rides both branches
 /// and a step that finds a key needs no second look.
-fn built(mut nodes: List<Node>, shapes: List<List<Seg>>, cands: List<int>, d: int, carried: List<int>) -> int {
+fn built(
+    mut nodes: List<Node>,
+    shapes: List<List<Seg>>,
+    cands: List<int>,
+    d: int,
+    carried: List<int>,
+) -> int {
     let down = sorted_distinct(carried.concat([r for r in cands if tail_at(shapes[r]) == d]))
     let live = [r for r in cands if shapes[r].length > d && tail_at(shapes[r]) != d]
     let segs = [shapes[r][d] for r in live]
     let keys = sorted_distinct([s.key for s in segs if !s.hole])
     let kids = [built(nodes, shapes, [live[j] for j, s in segs if s.hole || s.key == k], d + 1, down) for k in keys]
     let holes = [live[j] for j, s in segs if s.hole]
-    nodes.push(Node {
-        rows: sorted_distinct(carried.concat([r for r in cands if shapes[r].length == d])),
-        keys: keys,
-        kids: kids,
-        wild: wild_of(nodes, shapes, holes, d, down),
-    })
+    nodes
+        .push(
+            Node {
+                rows: sorted_distinct(carried.concat([r for r in cands if shapes[r].length == d])),
+                keys: keys,
+                kids: kids,
+                wild: wild_of(nodes, shapes, holes, d, down),
+            },
+        )
     nodes.length - 1
 }
 
 /// The step for a segment no key names: the holes' subtree, else a
 /// node answering the carried routes forever, else nothing.
-fn wild_of(mut nodes: List<Node>, shapes: List<List<Seg>>, holes: List<int>, d: int, down: List<int>) -> int {
+fn wild_of(
+    mut nodes: List<Node>,
+    shapes: List<List<Seg>>,
+    holes: List<int>,
+    d: int,
+    down: List<int>,
+) -> int {
     if !holes.is_empty() { return built(nodes, shapes, holes, d + 1, down) }
     if down.is_empty() { return 0 - 1 }
     resting(nodes, down)
@@ -514,7 +559,10 @@ fn covers_seg(a: string, b: string) -> bool { open_hole(a) || a == b }
 /// unbuilt — it stays sound on the day they land, and UNDER-REPORTS
 /// rather than crying wolf.
 fn open_hole(seg: string) -> bool {
-    seg.starts_with("{") && seg.index_of("}") == seg.length - 1 && !seg.contains(":") && !seg.substring(1, seg.length).contains("{")
+    seg.starts_with("{") &&
+        seg.index_of("}") == seg.length - 1 &&
+        !seg.contains(":") &&
+        !seg.substring(1, seg.length).contains("{")
 }
 
 // ── Voices ──────────────────────────────────────────────────────

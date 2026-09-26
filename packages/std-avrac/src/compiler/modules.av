@@ -1,6 +1,16 @@
 //! Where source lives: module paths, their files, imports, and the
 //! package boundaries they cross. Moved out of the workspace god-object.
-use core.{ModulePath, module_path, key_spelled, DeclId, FileId, UseParts, joined, flatten, sorted_texts}
+use core.{
+    ModulePath,
+    module_path,
+    key_spelled,
+    DeclId,
+    FileId,
+    UseParts,
+    joined,
+    flatten,
+    sorted_texts,
+}
 use @std.path.{dir_of, under_dir, joined_path, normalized}
 use features.{Decl, Import, nothing}
 use diagnostics.{Diag, loc_at}
@@ -100,7 +110,10 @@ impl Workspace {
     /// manifest EXCLUDES.
     fn excluded(path: string) -> bool {
         let pkg = self.packages()[self.holder_of_path(path)]
-        self.manifest(pkg.ordinal).excludes.any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
+        self
+            .manifest(pkg.ordinal)
+            .excludes
+            .any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
     }
 
     /// A source file the package lists — `.av`, and not excluded.
@@ -218,9 +231,13 @@ impl Workspace {
     export fn build_inputs(named: string) -> List<string> {
         let covered = [line.split("\t") for line in self.closure(named)]
         let tree = self.toolchain_root()
-        let engine: List<string> = if tree == "" { [] } else { [joined_path(tree, "Makefile")].concat(self.engine_sources(joined_path(tree, "backend"))).concat(self.engine_sources(joined_path(tree, "runtime"))) }
+        let engine: List<string> = if tree == "" { [] } else { [joined_path(tree, "Makefile")]
+                .concat(self.engine_sources(joined_path(tree, "backend")))
+                .concat(self.engine_sources(joined_path(tree, "runtime"))) }
         let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.host.exists(joined_path(at[1], "avra.toml"))]
-        sorted_texts(flatten([self.all_files(at[0]) for at in covered]).concat(manifests).concat(engine))
+        sorted_texts(
+            flatten([self.all_files(at[0]) for at in covered]).concat(manifests).concat(engine),
+        )
     }
 
     /// A module's exported declarations, in file and declaration order.
@@ -254,7 +271,10 @@ impl Workspace {
         if self.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
         if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
         if m.package() != null && !self.reaches(from, m.package()!) {
-            return Imported { imports: [], diagnostics: [self.not_a_dependency(at, from, m.package()!)] }
+            return Imported {
+                imports: [],
+                diagnostics: [self.not_a_dependency(at, from, m.package()!)],
+            }
         }
         if self.ambiguous_module(m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
         if self.module_files(m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
@@ -279,7 +299,9 @@ impl Workspace {
     /// A name that is both a directory and a file under the source root.
     fn ambiguous_module(m: ModulePath) -> bool {
         let pkg: Package? = self.holder(m)
-        pkg != null && self.host.is_dir(m.dir_under(pkg!.src)) && self.host.exists(m.file_under(pkg!.src))
+        pkg != null &&
+            self.host.is_dir(m.dir_under(pkg!.src)) &&
+            self.host.exists(m.file_under(pkg!.src))
     }
 
     fn exported_names(m: ModulePath) -> List<string> {

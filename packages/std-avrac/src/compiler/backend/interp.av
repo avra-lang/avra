@@ -11,7 +11,29 @@
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle, and calls run on the
 //! machine's own stack, never the host's.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, RtKind, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_list, fp_str, StaticBox, Slot, debug}
+use core.{
+    copied,
+    Ins,
+    Reg,
+    BinOp,
+    UnOp,
+    RtSig,
+    RtKind,
+    Reach,
+    opens_region,
+    closes_region,
+    filled,
+    joined,
+    reversed,
+    rt_index,
+    hosted_symbol,
+    fp,
+    fp_list,
+    fp_str,
+    StaticBox,
+    Slot,
+    debug,
+}
 use @std.path.{joined_path}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
 use compiler.lower.{Body, Lowered}
@@ -178,7 +200,35 @@ fn no_named_type(_name: string) -> Lifted { crossed_answer(MetaVal.Absent, new_m
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], callers: [], tasks: [], running: -1, parking: false, arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], live: false, failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {}, named: named }
+    Machine {
+        l: l,
+        rt: rt_index(),
+        frames: [],
+        callers: [],
+        tasks: [],
+        running: -1,
+        parking: false,
+        arrays: [],
+        maps: [],
+        cells: [],
+        onces: {},
+        statics: {},
+        out: [],
+        live: false,
+        failures: [],
+        budget: unbudgeted,
+        asked: unbudgeted,
+        bytes: unbudgeted,
+        mem_base: avra_mem_live(),
+        mem_peak: 0,
+        exhausted: null,
+        base: null,
+        embeds: [],
+        staged: [],
+        libs: opened_libraries(l),
+        symbols: {},
+        named: named,
+    }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -247,10 +297,7 @@ fn body_named(l: Lowered, name: string) -> Body? {
 }
 
 fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
-    match v {
-        .B(b) -> .Ok(b),
-        _ -> .Err("`${symbol}` answered no bool"),
-    }
+    match v { .B(b) -> .Ok(b), _ -> .Err("`${symbol}` answered no bool") }
 }
 
 /// How often the memory ceiling is read, in steps: a read is a load,
@@ -286,7 +333,12 @@ const unbudgeted: int = 1000000000000000
 /// Refused BEFORE running when any body reaches the world, DURING
 /// it when the budget runs out or a body traps, and AFTER it when
 /// the body answers nothing.
-export fn run_settle(l: Lowered, budgets: Budgets, base: string, named: fn(string) -> Lifted = no_named_type) -> Result<Settled, Unsettled> {
+export fn run_settle(
+    l: Lowered,
+    budgets: Budgets,
+    base: string,
+    named: fn(string) -> Lifted = no_named_type,
+) -> Result<Settled, Unsettled> {
     // Every answer crosses into compiler-owned data now, so embed is
     // safe for aggregates as well as values with a source literal.
     let world: string? = world_reached(l, true)
@@ -313,7 +365,14 @@ fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
 /// A fn run at compile time over crossing values: the body under its
 /// arguments, its answer crossed back. The reach law holds here — no
 /// world, no embed.
-export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, budgets: Budgets, named: fn(string) -> Lifted = no_named_type) -> Result<Lifted, Unsettled> {
+export fn run_lifted(
+    l: Lowered,
+    symbol: string,
+    args: List<MetaVal>,
+    heap: MetaHeap,
+    budgets: Budgets,
+    named: fn(string) -> Lifted = no_named_type,
+) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, false)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     let target? = body_named(l, symbol) else { return .Err(Unsettled.Trap(no_body_named(symbol))) }
@@ -332,7 +391,12 @@ export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: Meta
 /// Unlike scalar const settlement, no source literal is synthesized:
 /// nested records, lists and maps remain values. Embed is permitted
 /// because the result exists only while the compiler call runs.
-export fn run_crossed(l: Lowered, budgets: Budgets, base: string, named: fn(string) -> Lifted = no_named_type) -> Result<Lifted, Unsettled> {
+export fn run_crossed(
+    l: Lowered,
+    budgets: Budgets,
+    base: string,
+    named: fn(string) -> Lifted = no_named_type,
+) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets, named)
@@ -426,11 +490,7 @@ fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> string? {
 fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
     let h? = hosted_symbol(i) else { return false }
     let row? = rows.get(h) else { return true }
-    match row.reach {
-        .Pure or .Lookup -> false,
-        .Embed -> !permits_embed,
-        .World -> true,
-    }
+    match row.reach { .Pure or .Lookup -> false, .Embed -> !permits_embed, .World -> true }
 }
 
 /// The deepest call the machine runs before it refuses. Calls live on
@@ -452,7 +512,13 @@ impl Machine {
             .Y(data) -> fp(10, data),
             .A(id) -> fp(6, [self.value_hash(x) for x in self.arrays[id]]),
             .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
-            .M(id) -> fp(8, [fp_list([fp_str(k) for k in self.maps[id].keys]), fp_list([self.value_hash(x) for x in self.maps[id].vals])]),
+            .M(id) -> fp(
+                8,
+                [
+                    fp_list([fp_str(k) for k in self.maps[id].keys]),
+                    fp_list([self.value_hash(x) for x in self.maps[id].vals]),
+                ],
+            ),
             .N -> fp(9, []),
             .Gone -> fp(11, []),
         }
@@ -486,12 +552,24 @@ impl Machine {
                     .RetVal(r) or .FnExit(r) -> { stepped = Stepped.Ended(self.at(r)) },
                     .Ret(_) -> { stepped = Stepped.Ended(null) },
                     .Call(d, callee, args) -> {
-                        let next = self.call_into(body_named(self.l, callee), resumed_at(body, pc, d), args, "a call without a body survived lowering")
+                        let next = self
+                            .call_into(
+                                body_named(self.l, callee),
+                                resumed_at(body, pc, d),
+                                args,
+                                "a call without a body survived lowering",
+                            )
                         body = next.body
                         pc = next.pc
                     },
                     .CallPtr(d, f, args) -> {
-                        let next = self.call_into(self.addressed(f), resumed_at(body, pc, d), args, "an indirect call through a non-address")
+                        let next = self
+                            .call_into(
+                                self.addressed(f),
+                                resumed_at(body, pc, d),
+                                args,
+                                "an indirect call through a non-address",
+                            )
                         body = next.body
                         pc = next.pc
                     },
@@ -519,7 +597,12 @@ impl Machine {
                     } else {
                         let back = self.callers.pop()
                         body = back.place.body
-                        pc = self.put_at(back.dst, gave ?? self.defect_val("a fn body answered nothing"), back.place.pc)
+                        pc = self
+                            .put_at(
+                                back.dst,
+                                gave ?? self.defect_val("a fn body answered nothing"),
+                                back.place.pc,
+                            )
                     }
                 },
             }
@@ -533,7 +616,10 @@ impl Machine {
     /// and the caller saved — or, when there is no callee, past the call
     /// with the defect in its register.
     fn call_into(target: Body?, caller: Resume, args: List<Reg>, missing: string) -> Place {
-        let callee? = target else { return Place { body: caller.place.body, pc: self.put_at(caller.dst, self.defect_val(missing), caller.place.pc) } }
+        let callee? = target else { return Place {
+                body: caller.place.body,
+                pc: self.put_at(caller.dst, self.defect_val(missing), caller.place.pc),
+            } }
         if !self.entered(callee, args, caller) { return caller.place }
         Place { body: callee, pc: 0 }
     }
@@ -594,7 +680,8 @@ impl Machine {
             .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) -> pc + 1,
             // the run loop owns calls and returns
             .RetVal(_) or .FnExit(_) or .Ret(_) or .Call(_, _, _) or .CallPtr(_, _, _) -> {
-                let _ = self.defect_val("a call or a return reached `step`, which the run loop owns")
+                let _ = self
+                    .defect_val("a call or a return reached `step`, which the run loop owns")
                 pc + 1
             },
         }
@@ -632,10 +719,7 @@ impl Machine {
 
     fn extract_val(b: Body, src: Reg, at: int) -> Val {
         if self.bare_reg(b, src) { return self.value(src) }
-        let id: int? = match self.value(src) {
-            .A(x) -> x,
-            _ -> null,
-        }
+        let id: int? = match self.value(src) { .A(x) -> x, _ -> null }
         if id == null { return self.defect_val("an extract from a non-pack") }
         let arr = self.arrays[id!]
         if at < 0 || at >= arr.length { return self.defect_val("an extract past a pack's end") }
@@ -670,7 +754,9 @@ impl Machine {
             .Octets(xs) -> Val.Y(xs),
             .Map(id) -> {
                 let row = heap.maps[id]
-                self.maps.push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
+                self
+                    .maps
+                    .push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
                 Val.M(self.maps.length - 1)
             },
         }
@@ -701,7 +787,10 @@ impl Machine {
     /// and recorded, so the build knows what the const read.
     fn embedded(rel: string) -> Val {
         if self.base == null {
-            self.trapped("`embed` reads a file at compile time, into a const — this run reached it outside one")
+            self
+                .trapped(
+                    "`embed` reads a file at compile time, into a const — this run reached it outside one",
+                )
             return Val.S("")
         }
         let path = if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) }
@@ -777,10 +866,7 @@ impl Machine {
     /// needs to. `rest ->` delegates everything that is not octets to
     /// `text_val`, which is exhaustive.
     fn byte_length(v: Val) -> int {
-        match v {
-            .Y(data) -> data.length,
-            rest -> self.text_val(v).length,
-        }
+        match v { .Y(data) -> data.length, rest -> self.text_val(v).length }
     }
 
     /// ONE BYTE OF A ROW'S BOX, WITHOUT DECODING — `byte_length`'s
@@ -790,10 +876,7 @@ impl Machine {
     /// than through `octets`, which would build the whole sequence
     /// for one question.
     fn byte_at(v: Val, i: int) -> int {
-        match v {
-            .Y(data) -> data[i],
-            rest -> self.text_val(v).char_code(i),
-        }
+        match v { .Y(data) -> data[i], rest -> self.text_val(v).char_code(i) }
     }
 
     /// Octets as text. THE DECODE IS LOSSLESS FOR UTF-8 AND ONLY FOR
@@ -808,7 +891,10 @@ impl Machine {
     /// The refusal above, spoken: the trap names the fault and the
     /// engine that has none.
     fn refused_octets() -> string {
-        self.trapped("octets that are not UTF-8 reached a text seat — the evaluator carries text as text and cannot hold these bytes; build natively")
+        self
+            .trapped(
+                "octets that are not UTF-8 reached a text seat — the evaluator carries text as text and cannot hold these bytes; build natively",
+            )
         ""
     }
 
@@ -904,9 +990,7 @@ impl Machine {
     }
 
     fn un_val(op: UnOp, src: Reg) -> Val {
-        match op {
-            .Not -> Val.B(!self.truth(src)),
-        }
+        match op { .Not -> Val.B(!self.truth(src)) }
     }
 
     /// THE defect phrase, worded once: everything here is impossible
@@ -937,10 +1021,7 @@ impl Machine {
         let v: Val? = self.at(gives)
         let end = b.ahead(pc, opens_region, closes_region, closes_region)
         if end < b.ins.length {
-            let d: Reg? = match b.ins[end] {
-                .RegionEnd(dst, _) -> dst,
-                _ -> null,
-            }
+            let d: Reg? = match b.ins[end] { .RegionEnd(dst, _) -> dst, _ -> null }
             if d != null { self.put(d!, v ?? Val.I(0)) }
         }
         end + 1
@@ -976,7 +1057,9 @@ impl Machine {
             .Slots(cells) -> self.fresh_array([self.slot_val(c, built) for c in cells]),
             .Octets(b) -> Val.Y([b.at(j) for j in 0..b.length]),
             .Table(keys, values) -> {
-                self.maps.push(MapVal { keys: keys, vals: [self.slot_val(c, built) for c in values] })
+                self
+                    .maps
+                    .push(MapVal { keys: keys, vals: [self.slot_val(c, built) for c in values] })
                 Val.M(self.maps.length - 1)
             },
         }
@@ -1002,10 +1085,7 @@ impl Machine {
 
     /// The body a code address names.
     fn addressed_val(v: Val) -> Body? {
-        let at? = match v {
-            .I(j) -> j,
-            rest -> null,
-        } else {
+        let at? = match v { .I(j) -> j, rest -> null } else {
             return null
         }
         if at < 0 || at >= self.l.fns.length { return null }
@@ -1059,10 +1139,7 @@ impl Machine {
         let raw = self.rt_dispatch(callee, [self.value(r) for r in args])
         let shape = self.l.types.machine_shape(b.reg_types[d.index])
         if shape is .Bool {
-            return match raw {
-                .I(n) -> Val.B(n != 0),
-                _ -> raw,
-            }
+            return match raw { .I(n) -> Val.B(n != 0), _ -> raw }
         }
         // A POINTER ANSWER IN A TEXT SEAT IS THE TEXT IT POINTS AT.
         // The frame answers every pointer as its address, because a
@@ -1131,7 +1208,10 @@ impl Machine {
             .StrEndsWith -> verdict(self.text_val(vals[0]).ends_with(self.text_val(vals[1]))),
             .StrIndexOf -> Val.I(self.text_val(vals[0]).index_of(self.text_val(vals[1]))),
             .StrSubstring -> self.str_substring_val(vals),
-            .StrSplit -> self.fresh_array([Val.S(piece) for piece in pieces_of(self.text_val(vals[0]), self.text_val(vals[1]))]),
+            .StrSplit -> self
+                .fresh_array(
+                    [Val.S(piece) for piece in pieces_of(self.text_val(vals[0]), self.text_val(vals[1]))],
+                ),
             .StrReplace -> Val.S(replaced(self.text_val(vals[0]), self.text_val(vals[1]), self.text_val(vals[2]))),
             .StrCharCode -> self.str_char_code_val(vals),
             .StrWordAt -> self.str_word_at_val(vals),
@@ -1156,7 +1236,14 @@ impl Machine {
             .BytesAdopted -> self.adopted_val(vals),
             .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
             .FdTaken -> Val.Y(octets_of_box(avra_fd_taken(self.whole(vals[0])))),
-            .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]).bytes()!, self.whole(vals[2]))),
+            .FdWrite -> Val
+                .I(
+                    avra_fd_write(
+                        self.whole(vals[0]),
+                        self.octets(vals[1]).bytes()!,
+                        self.whole(vals[2]),
+                    ),
+                ),
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             .NowNs -> Val.I(avra_now_ns()),
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
@@ -1346,19 +1433,12 @@ impl Machine {
     /// A word seat's value. A bool crosses as the word the runtime
     /// words it with, which is what every other seam does.
     fn word_of(v: Val) -> int {
-        match v {
-            .B(b) if b -> 1,
-            .B(_) or .N or .Gone -> 0,
-            rest -> self.whole(v),
-        }
+        match v { .B(b) if b -> 1, .B(_) or .N or .Gone -> 0, rest -> self.whole(v) }
     }
 
     /// A float's bits, which is how the evaluator holds one.
     fn bits_of_val(v: Val) -> int {
-        match v {
-            .F(bits) -> bits,
-            rest -> self.whole(v),
-        }
+        match v { .F(bits) -> bits, rest -> self.whole(v) }
     }
 
     /// HOW THE ANSWER CROSSES BACK — the evaluator's twin of the
@@ -1400,7 +1480,9 @@ impl Machine {
     /// for the life of the process, which is what makes remembering it
     /// correct rather than merely faster.
     fn looked_up(callee: string) -> int {
-        [avra_ffi_symbol_in(o.handle, callee) for o in self.libs].find(it != 0) ?? avra_ffi_symbol(callee)
+        [avra_ffi_symbol_in(o.handle, callee) for o in self.libs].find(it != 0) ?? avra_ffi_symbol(
+            callee,
+        )
     }
 
     /// ABSENCE IS REMEMBERED TOO. `0` is a real answer here and not a
@@ -1413,7 +1495,10 @@ impl Machine {
     }
 
     fn no_symbol(callee: string) -> Val {
-        self.trapped("`${callee}` is extern and this image does not carry it${self.unopened()} — build natively")
+        self
+            .trapped(
+                "`${callee}` is extern and this image does not carry it${self.unopened()} — build natively",
+            )
         Val.I(0)
     }
 
@@ -1460,14 +1545,18 @@ impl Machine {
     /// aggregate seat, so the words now name the remedy its writer
     /// can act on.
     fn unstageable(callee: string) -> Val {
-        self.trapped("`${callee}` has a seat the frame cannot carry — the evaluator holds one as a handle, not a box; stage the elements one at a time")
+        self
+            .trapped(
+                "`${callee}` has a seat the frame cannot carry — the evaluator holds one as a handle, not a box; stage the elements one at a time",
+            )
         Val.I(0)
     }
 
     /// Whether the declaration asks for more seats than one frame
     /// carries, in either register file.
     fn past_the_frame(sig: RtSig) -> bool {
-        [1 for k in sig.params if !rides_fp(k)].length > avra_ffi_max_int() || [1 for k in sig.params if rides_fp(k)].length > avra_ffi_max_f64()
+        [1 for k in sig.params if !rides_fp(k)].length > avra_ffi_max_int() ||
+            [1 for k in sig.params if rides_fp(k)].length > avra_ffi_max_f64()
     }
 
     fn array_new_val() -> Val {
@@ -1563,7 +1652,14 @@ impl Machine {
                 Val.A(self.arrays.length - 1)
             },
             .M(id) -> {
-                self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
+                self
+                    .maps
+                    .push(
+                        MapVal {
+                            keys: [k for k in self.maps[id].keys],
+                            vals: [x for x in self.maps[id].vals],
+                        },
+                    )
                 Val.M(self.maps.length - 1)
             },
             .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> v,
@@ -1772,10 +1868,7 @@ impl Machine {
 
     /// `v!` on a PAIR nullable — the flag guards, the value passes.
     fn insist_scalar_val(vals: List<Val>) -> Val {
-        let present: bool = match vals[0] {
-            .B(t) -> t,
-            _ -> false,
-        }
+        let present: bool = match vals[0] { .B(t) -> t, _ -> false }
         if !present { return self.absent_refused() }
         vals[1]
     }

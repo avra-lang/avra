@@ -38,10 +38,7 @@ fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
         let _ = unknowable_map(cx, mc.e, name)
         return null
     }
-    let held: TypeId? = match cx.seen_at(mc.subject) {
-        .Map(_, v) -> v,
-        _ -> null,
-    }
+    let held: TypeId? = match cx.seen_at(mc.subject) { .Map(_, v) -> v, _ -> null }
     held
 }
 
@@ -77,10 +74,11 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let k = cx.reg_of(key)
     let cell = cx.seeded_cell(opt, cx.absent_of(opt))
     let has = cx.map_has(Type.Bool, m, k)
-    cx.void_region(has) { cx ->
-        let raw = cx.map_value(m, k, cx.carried_type(opt))
-        cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
-    }
+    cx
+        .void_region(has) { cx ->
+            let raw = cx.map_value(m, k, cx.carried_type(opt))
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+        }
     cx.loaded(e, cell)
 }
 
@@ -95,7 +93,16 @@ fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: Expr
 // ── The voices ──
 
 fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx.spoken(refusal("type.map_value", cx.loc_of(e), "`{}.${name}` cannot know its values", "asked here", "bind the map under a declared type first — `let m: Map<string, int> = {}`"))
+    cx
+        .spoken(
+            refusal(
+                "type.map_value",
+                cx.loc_of(e),
+                "`{}.${name}` cannot know its values",
+                "asked here",
+                "bind the map under a declared type first — `let m: Map<string, int> = {}`",
+            ),
+        )
 }
 
 // ── The constructor and property rows' rules ──

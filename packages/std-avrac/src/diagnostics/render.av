@@ -13,18 +13,11 @@ use @std.errors.{Loc, Error, Suggestion, Confidence}
 use @std.text.{repeat}
 
 fn severity_word(s: Severity) -> string {
-    match s {
-        .Error -> "error",
-        .Warning -> "warning",
-    }
+    match s { .Error -> "error", .Warning -> "warning" }
 }
 
 fn confidence_word(c: Confidence) -> string {
-    match c {
-        .High -> "high",
-        .Medium -> "medium",
-        .Low -> "low",
-    }
+    match c { .High -> "high", .Medium -> "medium", .Low -> "low" }
 }
 
 /// One suggestion's own lines: its confidence and what it says to
@@ -33,7 +26,8 @@ fn confidence_word(c: Confidence) -> string {
 /// pay per rendering); `avra fix`'s own report is where PROVED is
 /// said.
 fn suggestion_lines(sg: Suggestion) -> List<string> {
-    ["fix (${confidence_word(sg.confidence)}): ${sg.description}"].concat([edit_line(e.replacement) for e in sg.edits])
+    ["fix (${confidence_word(sg.confidence)}): ${sg.description}"]
+        .concat([edit_line(e.replacement) for e in sg.edits])
 }
 
 /// A deleting edit answers "" — shown as its own word, never a bare
@@ -70,11 +64,16 @@ fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
     } else {
         ["${gutter} ·${indent} ╰── ${frame_label!}"]
     }
-    joined([
-        "${gutter} ╭─[${file}:${at.line}:${at.col}]",
-        "${num} │ ${src.line_text(at.line)}",
-        "${gutter} ·${indent} ┬",
-    ].concat(pointed).concat(["${repeat("─", num.length + 1)}╯"]), "\n")
+    joined(
+        [
+            "${gutter} ╭─[${file}:${at.line}:${at.col}]",
+            "${num} │ ${src.line_text(at.line)}",
+            "${gutter} ·${indent} ┬",
+        ]
+            .concat(pointed)
+            .concat(["${repeat("─", num.length + 1)}╯"]),
+        "\n",
+    )
 }
 
 const cause_chain_cap = 16
@@ -95,7 +94,9 @@ fn causes_of(e: dyn Error?, depth: int = cause_chain_cap) -> List<string> {
     let cur? = e else { return [] }
     let msg = cur.describe().message
     if depth <= 1 && cur.cause() != null {
-        return ["caused by: ${continued(msg)} — the chain continues past ${cause_chain_cap}; an error answering itself as its own cause?"]
+        return [
+            "caused by: ${continued(msg)} — the chain continues past ${cause_chain_cap}; an error answering itself as its own cause?",
+        ]
     }
     ["caused by: ${continued(msg)}"].concat(causes_of(cur.cause(), depth - 1))
 }
@@ -134,7 +135,8 @@ fn render_with(d: Diag, pick: fn(Loc) -> SourceFile) -> string {
     } else {
         parts = parts.concat(unplaced(d.primary.label))
     }
-    parts = parts.concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
+    parts = parts
+        .concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
     parts = parts.concat(causes_of(d.cause))
     if d.help != null { parts.push("help: ${d.help!}") }
     parts = parts.concat(flatten([suggestion_lines(sg) for sg in d.suggestions]))

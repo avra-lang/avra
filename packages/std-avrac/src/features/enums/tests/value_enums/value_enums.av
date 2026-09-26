@@ -12,7 +12,13 @@ enum Outer { Plain, Holding(Framed, int) }
 enum Tree { Leaf, Node(Tree) }
 type Req = { method: string, body: Body, last: Framed, maybe: Framed?, n: int }
 
-const fixed: Req = Req { method: "GET", body: Body.Length(9), last: Framed.Refused(7), maybe: null, n: 1 }
+const fixed: Req = Req {
+    method: "GET",
+    body: Body.Length(9),
+    last: Framed.Refused(7),
+    maybe: null,
+    n: 1,
+}
 
 fn head(i: int) -> Head { Head { name: "h${i}", n: i } }
 
@@ -34,51 +40,29 @@ fn word(i: int) -> Word {
 }
 
 fn shown(f: Framed) -> string {
-    match f {
-        .Partial -> "p",
-        .Complete(h) -> h.name,
-        .Refused(c) -> "r${c}",
-    }
+    match f { .Partial -> "p", .Complete(h) -> h.name, .Refused(c) -> "r${c}" }
 }
 
 fn worded(w: Word) -> string {
-    match w {
-        .A -> "a",
-        .B(n) -> "b${n}",
-        .C(s) -> s,
-        .D(xs) -> "d${xs.length}",
-    }
+    match w { .A -> "a", .B(n) -> "b${n}", .C(s) -> s, .D(xs) -> "d${xs.length}" }
 }
 
 fn body(b: Body) -> string {
-    match b {
-        .None -> "none",
-        .Chunked -> "chunked",
-        .Length(n) -> "len${n}",
-    }
+    match b { .None -> "none", .Chunked -> "chunked", .Length(n) -> "len${n}" }
 }
 
 fn outer(o: Outer) -> string {
-    match o {
-        .Plain -> "plain",
-        .Holding(f, k) -> "${shown(f)}+${k}",
-    }
+    match o { .Plain -> "plain", .Holding(f, k) -> "${shown(f)}+${k}" }
 }
 
 fn depth(t: Tree) -> int {
-    match t {
-        .Leaf -> 0,
-        .Node(inner) -> 1 + depth(inner),
-    }
+    match t { .Leaf -> 0, .Node(inner) -> 1 + depth(inner) }
 }
 
 /// A variant found inside a loop, answered from within it.
 fn first_complete(fs: List<Framed>) -> string {
     for f in fs {
-        match f {
-            .Complete(h) -> { return h.name },
-            .Partial or .Refused(_) -> nothing(),
-        }
+        match f { .Complete(h) -> { return h.name }, .Partial or .Refused(_) -> nothing() }
     }
     "none"
 }
@@ -96,11 +80,20 @@ fn records() -> string {
     mut out: List<string> = []
     mut reqs: List<Req> = []
     for i in 0..4 {
-        mut r = Req { method: "m${i}", body: if i % 2 == 0 { Body.None } else { Body.Length(i) }, last: Framed.Complete(head(i)), maybe: null, n: i }
+        mut r = Req {
+            method: "m${i}",
+            body: if i % 2 == 0 { Body.None } else { Body.Length(i) },
+            last: Framed.Complete(head(i)),
+            maybe: null,
+            n: i,
+        }
         r.last = if i == 2 { Framed.Refused(i) } else { Framed.Complete(head(i + 10)) }
         r.maybe = Framed.Complete(head(i + 20))
         let r2 = r with { body: Body.Chunked }
-        out.push("${body(r.body)}/${body(r2.body)}/${shown(r.last)}/${shown(r.maybe ?? Framed.Partial)}")
+        out
+            .push(
+                "${body(r.body)}/${body(r2.body)}/${shown(r.last)}/${shown(r.maybe ?? Framed.Partial)}",
+            )
         reqs.push(r)
     }
     out.push([shown(r.last) for r in reqs].join(","))

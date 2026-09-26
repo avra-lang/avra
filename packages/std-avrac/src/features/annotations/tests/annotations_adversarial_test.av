@@ -1,7 +1,15 @@
 // The annotation boundary: its callee, receiver, remaining seats,
 // answer effect, execution, and one-message discipline.
 use @std.avrac.compiler.{avra, new_workspace, parse_source, analyze_source, Program, Workspace}
-use @std.avrac.testing.{said, refused_n, refused_in, refused_with, refusals, vendored_meta, vendored_meta_paths}
+use @std.avrac.testing.{
+    said,
+    refused_n,
+    refused_in,
+    refused_with,
+    refusals,
+    vendored_meta,
+    vendored_meta_paths,
+}
 use compiler.host.{memory_host}
 use compiler.format.{render_source}
 
@@ -41,12 +49,22 @@ fn formatted(source: string) -> string {
 }
 
 fn packaged(source: string) -> Program {
-    let files = vendored_meta({
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
-        "/w/src/main.av": source,
-        "/w/vendor/meta/src/probes.av": meta_probes(),
-    })
-    let ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/src/probes.av"].concat(vendored_meta_paths())), "/w", avra())
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": source,
+            "/w/vendor/meta/src/probes.av": meta_probes(),
+        },
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/src/probes.av"]
+                .concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
     ws.program("/w/src/main.av")
 }
 
@@ -57,13 +75,28 @@ fn audit_source() -> string {
 
 /// The workspace with a second dependency, `@acme/audit`.
 fn audit_workspace(source: string) -> Workspace {
-    let files = vendored_meta({
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/audit\" = { path = \"vendor/audit\" }\n",
-        "/w/src/main.av": source,
-        "/w/vendor/audit/avra.toml": "[package]\nname = \"@acme/audit\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-        "/w/vendor/audit/src/audit.av": audit_source(),
-    })
-    new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/audit/avra.toml", "/w/vendor/audit/src/audit.av"].concat(vendored_meta_paths())), "/w", avra())
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/audit\" = { path = \"vendor/audit\" }\n",
+            "/w/src/main.av": source,
+            "/w/vendor/audit/avra.toml": "[package]\nname = \"@acme/audit\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/audit/src/audit.av": audit_source(),
+        },
+    )
+    new_workspace(
+        memory_host(
+            files,
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/audit/avra.toml",
+                "/w/vendor/audit/src/audit.av",
+            ]
+                .concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
 }
 
 fn audited(source: string) -> Program {
@@ -87,10 +120,7 @@ fn refused_at(source: string, phrase: string, line: int) -> bool {
 /// A clean program's warnings, rendered; a refusal's report when it
 /// refused — the whole check, whichever side.
 fn checked(p: Program) -> string {
-    match p.check() {
-        .Ok(warned) -> warned,
-        .Err(report) -> report,
-    }
+    match p.check() { .Ok(warned) -> warned, .Err(report) -> report }
 }
 
 /// `refused`, with a pinned COUNT — a refusal test proves both the
@@ -98,136 +128,243 @@ fn checked(p: Program) -> string {
 spec "features/annotations — the compile-time call's laws" {
     given "the callee and receiver" {
         then "a value is not an annotation fn" {
-            refused("let mark = 1\n@mark\nfn answer() -> int { 1 }\nanswer()", "an annotation names a fn")
+            refused(
+                "let mark = 1\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                "an annotation names a fn",
+            )
         }
         then "the fn's first seat must take this declaration" {
-            refused(meta_use() + "fn mark(f: Fn) { }\n@mark\ntype P = { x: int }\n1", "takes `Fn`, and this is a type")
+            refused(
+                meta_use() + "fn mark(f: Fn) { }\n@mark\ntype P = { x: int }\n1",
+                "takes `Fn`, and this is a type",
+            )
         }
         then "the fn must take the declaration" {
             refused("fn mark() { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "takes nothing")
         }
         then "a same-named user record cannot counterfeit the meta receiver" {
-            refused("type Fn = {}\nfn mark(f: Fn) { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "not `@std.meta.Fn`")
+            refused(
+                "type Fn = {}\nfn mark(f: Fn) { }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                "not `@std.meta.Fn`",
+            )
         }
     }
     given "the remaining seats and answer" {
         then "written arguments fill every remaining seat" {
-            refused(meta_use() + "fn mark(f: Fn, n: int) { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "takes 1 after the declaration, this writes 0")
+            refused(
+                meta_use() + "fn mark(f: Fn, n: int) { }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                "takes 1 after the declaration, this writes 0",
+            )
         }
         then "each argument has its seat's type" {
-            refused(meta_use() + "fn mark(f: Fn, n: int) { }\n@mark(\"three\")\nfn answer() -> int { 1 }\nanswer()", "this seat of `mark` takes `int`")
+            refused(
+                meta_use() +
+                    "fn mark(f: Fn, n: int) { }\n@mark(\"three\")\nfn answer() -> int { 1 }\nanswer()",
+                "this seat of `mark` takes `int`",
+            )
         }
         then "the answer declares the effect" {
-            refused(meta_use() + "fn mark(f: Fn) -> int { 1 }\n@mark\nfn answer() -> int { 1 }\nanswer()", "answers `int`")
+            refused(
+                meta_use() +
+                    "fn mark(f: Fn) -> int { 1 }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                "answers `int`",
+            )
         }
         then "a same-named user record cannot counterfeit diagnostics" {
-            let src = fn_use() + "type Diagnostic = { message: string }\n" + "fn mark(f: Fn) -> List<Diagnostic> { [] }\n" + "@mark\nfn answer() -> int { 1 }\nanswer()"
+            let src = fn_use() +
+                "type Diagnostic = { message: string }\n" +
+                "fn mark(f: Fn) -> List<Diagnostic> { [] }\n" +
+                "@mark\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "not `List<@std.meta.Diagnostic>`")
         }
         then "a lookalike answer does not declare — only `Directive` does" {
-            refused_n(packaged(meta_use() + "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()"), "answers an effect", 2)
+            refused_n(
+                packaged(
+                    meta_use() +
+                        "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                ),
+                "answers an effect",
+                2,
+            )
         }
     }
     given "declaration generation" {
         then "an annotation fn's signature IS its effect — `explain @name`" {
-            let p = packaged(directive_use() + "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            let p = packaged(
+                directive_use() +
+                    "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            )
             p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>\n\nThe trace directive's decoder: `@traced(\"label\")` on `fn sum`\nasks for a sibling named `sum_traced`."
         }
         then "a generated twin lists with its provenance" {
-            mut p = packaged(directive_use() + "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            mut p = packaged(
+                directive_use() +
+                    "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            )
             let lines = p.generated_lines(p.entry_file()!.view.file)
-            lines.length == 1 && lines[0] == "fn sum_traced(a: int, b: int) -> int {\n    let sum_traced__v = sum(a, b)\n    sum_traced__v\n}   // from @traced on sum"
+            lines.length == 1 &&
+                lines[0] == "fn sum_traced(a: int, b: int) -> int {\n    let sum_traced__v = sum(a, b)\n    sum_traced__v\n}   // from @traced on sum"
         }
         then "the expanded file inlines the generated body after its origin" {
-            mut p = packaged(directive_use() + "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            mut p = packaged(
+                directive_use() +
+                    "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            )
             let source = p.expanded_source(p.entry_file()!.view.file)
             source == "use @std.meta.{Fn, Directive, traced}\n\n@traced(\"x\")\nfn sum(a: int, b: int) -> int {\n    a + b\n}\n\n// from @traced on sum\nfn sum_traced(a: int, b: int) -> int {\n    let sum_traced__v = sum(a, b)\n    sum_traced__v\n}\n\nsum(1, 2)"
         }
         then "the expanded file parses" {
-            mut p = packaged(directive_use() + "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            mut p = packaged(
+                directive_use() +
+                    "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            )
             parse_source(p.expanded_source(p.entry_file()!.view.file)).voices.list.is_empty()
         }
         then "a declaration-making annotation fn in the same file is refused, not ignored" {
-            refused_n(packaged(directive_use() + "fn gen(f: Fn) -> List<Directive> { [] }\n" + "@gen\nfn sum() -> int { 1 }\nsum()"), "generates declarations and stands in this file", 1)
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "fn gen(f: Fn) -> List<Directive> { [] }\n" +
+                        "@gen\nfn sum() -> int { 1 }\nsum()",
+                ),
+                "generates declarations and stands in this file",
+                1,
+            )
         }
         then "an undeclared annotation name explains to nothing" {
             let p = packaged(directive_use() + "1")
             p.explain_annotation("ghost") == null
         }
         then "a declaration-making annotation reaches only literals" {
-            refused_n(packaged(sampled_use() + "@sampled([1, 2])\nfn answer() -> int { 1 }\nanswer()"), "generates declarations, so its arguments come from the source alone", 1)
+            refused_n(
+                packaged(sampled_use() + "@sampled([1, 2])\nfn answer() -> int { 1 }\nanswer()"),
+                "generates declarations, so its arguments come from the source alone",
+                1,
+            )
         }
     }
     given "validation" {
         then "a returned Diagnostic speaks once at the declaration" {
-            let src = meta_use() + "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: null }] }\n" + "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
+            let src = meta_use() +
+                "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: null }] }\n" +
+                "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
             refused(src, "`forbidden` is forbidden")
         }
         then "a diagnostic can point at the field that caused it" {
-            let src = meta_use() + "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" + "@reject\ntype P = {\n    x: int\n}\n1"
+            let src = meta_use() +
+                "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" +
+                "@reject\ntype P = {\n    x: int\n}\n1"
             refused_at(src, "bad field", 5)
         }
         then "a declaration's NAME in an argument list is its meta value" {
-            let src = "use @std.meta.{Type, Trait, Diagnostic}\n" + "trait Show {\n    fn show() -> int\n}\n" + "fn uses(t: Type, tr: Trait) -> List<Diagnostic> {\n    if t.name == \"P\" && tr.name == \"Show\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" + "@uses(Show)\ntype P = { x: int }\n1"
+            let src = "use @std.meta.{Type, Trait, Diagnostic}\n" +
+                "trait Show {\n    fn show() -> int\n}\n" +
+                "fn uses(t: Type, tr: Trait) -> List<Diagnostic> {\n    if t.name == \"P\" && tr.name == \"Show\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" +
+                "@uses(Show)\ntype P = { x: int }\n1"
             packaged(src).clean()
         }
         then "a TYPE name in an argument seat crosses the same way" {
-            let src = "use @std.meta.{Type, Diagnostic}\n" + "fn pair(t: Type, u: Type) -> List<Diagnostic> {\n    if t.name == \"P\" && u.name == \"Q\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" + "@pair(Q)\ntype P = { x: int }\ntype Q = { y: int }\n1"
+            let src = "use @std.meta.{Type, Diagnostic}\n" +
+                "fn pair(t: Type, u: Type) -> List<Diagnostic> {\n    if t.name == \"P\" && u.name == \"Q\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" +
+                "@pair(Q)\ntype P = { x: int }\ntype Q = { y: int }\n1"
             packaged(src).clean()
         }
     }
     given "warnings" {
         then "a deprecation warns at the use, not the declaration" {
-            let p = packaged(deprecation_use() + "@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            let p = packaged(
+                deprecation_use() +
+                    "@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            )
             let out = checked(p)
-            p.clean() && out.contains("annotation.warning") && out.contains("`sum` is deprecated — use add") && out.contains("main.av:4") && out.contains("used here")
+            p.clean() &&
+                out.contains("annotation.warning") &&
+                out.contains("`sum` is deprecated — use add") &&
+                out.contains("main.av:4") &&
+                out.contains("used here")
         }
         then "a use before the declaration still warns — the marks are a query" {
-            let p = packaged(deprecation_use() + "fn call() -> int { sum(1, 2) }\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\ncall()")
+            let p = packaged(
+                deprecation_use() +
+                    "fn call() -> int { sum(1, 2) }\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\ncall()",
+            )
             checked(p).contains("main.av:2")
         }
         then "a type deprecation reaches its uses too" {
-            let p = packaged(deprecation_use() + "@deprecated(\"use Pt\")\ntype Old = { x: int }\nOld { x: 1 }.x")
+            let p = packaged(
+                deprecation_use() + "@deprecated(\"use Pt\")\ntype Old = { x: int }\nOld { x: 1 }.x",
+            )
             checked(p).contains("`Old` is deprecated")
         }
     }
     given "argument evaluation" {
         then "an argument that reaches the world is refused before it runs" {
-            let src = meta_use() + "extern fn avra_puts(s: string)\n" + "fn noisy() -> int { avra_puts(\"x\")\n1 }\n" + "fn mark(f: Fn, n: int) { }\n" + "@mark(noisy())\nfn answer() -> int { 1 }\nanswer()"
+            let src = meta_use() +
+                "extern fn avra_puts(s: string)\n" +
+                "fn noisy() -> int { avra_puts(\"x\")\n1 }\n" +
+                "fn mark(f: Fn, n: int) { }\n" +
+                "@mark(noisy())\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "reaches `avra_puts`")
         }
         then "an argument trap is reported once at its annotation" {
-            let src = meta_use() + "fn boom() -> int { 1 / 0 }\n" + "fn mark(f: Fn, n: int) { }\n" + "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
+            let src = meta_use() +
+                "fn boom() -> int { 1 / 0 }\n" +
+                "fn mark(f: Fn, n: int) { }\n" +
+                "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "division by zero")
         }
     }
     given "@derive" {
         then "a trait's associated derive runs and its twin exists" {
-            packaged("use @std.meta.{derive, Show}\n@derive(Show)\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2) + gen_sum(1, 2)").clean()
+            packaged(
+                "use @std.meta.{derive, Show}\n@derive(Show)\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2) + gen_sum(1, 2)",
+            )
+                .clean()
         }
         then "an argument that is not a trait refuses" {
-            refused("use @std.meta.{derive}\n@derive(Point)\ntype Point = { x: int }\n1", "`Point` is not a trait")
+            refused(
+                "use @std.meta.{derive}\n@derive(Point)\ntype Point = { x: int }\n1",
+                "`Point` is not a trait",
+            )
         }
         then "a trait that declares no derive refuses" {
-            refused("use @std.meta.{derive, Empty}\n@derive(Empty)\nfn f() -> int { 1 }\nf()", "declares no `derive`")
+            refused(
+                "use @std.meta.{derive, Empty}\n@derive(Empty)\nfn f() -> int { 1 }\nf()",
+                "declares no `derive`",
+            )
         }
     }
     given "every mark owes a reader" {
         then "a mark nothing reads is refused where it was written, once" {
-            refused("enum E {\n    @typo A(x: int)\n}\nfn f() -> int { 1 }\nf()", "`@typo` — nothing on this declaration reads it")
+            refused(
+                "enum E {\n    @typo A(x: int)\n}\nfn f() -> int { 1 }\nf()",
+                "`@typo` — nothing on this declaration reads it",
+            )
         }
         then "a mark a derive claims stands" {
-            packaged("use @std.meta.{derive, Tagged}\n@derive(Tagged)\nenum E {\n    @frozen A(x: int)\n}\nfn f() -> int { 1 }\nf()").clean()
+            packaged(
+                "use @std.meta.{derive, Tagged}\n@derive(Tagged)\nenum E {\n    @frozen A(x: int)\n}\nfn f() -> int { 1 }\nf()",
+            )
+                .clean()
         }
         then "the unclaimed word alone is refused, and the help names the claims" {
-            let p = packaged("use @std.meta.{derive, Tagged}\n@derive(Tagged)\nenum E {\n    @frozen A(x: int)\n    @typo B(y: int)\n}\nfn f() -> int { 1 }\nf()")
-            refused_in(p, "`@typo` — nothing on this declaration reads it") && p.report().contains("the marks read here are `@frozen`, `@widened`")
+            let p = packaged(
+                "use @std.meta.{derive, Tagged}\n@derive(Tagged)\nenum E {\n    @frozen A(x: int)\n    @typo B(y: int)\n}\nfn f() -> int { 1 }\nf()",
+            )
+            refused_in(p, "`@typo` — nothing on this declaration reads it") &&
+                p.report().contains("the marks read here are `@frozen`, `@widened`")
         }
         then "a derive that declares no `marks` claims nothing" {
-            refused("use @std.meta.{derive, Plainly}\n@derive(Plainly)\nenum E {\n    @frozen A(x: int)\n}\nfn f() -> int { 1 }\nf()", "`@frozen` — nothing on this declaration reads it")
+            refused(
+                "use @std.meta.{derive, Plainly}\n@derive(Plainly)\nenum E {\n    @frozen A(x: int)\n}\nfn f() -> int { 1 }\nf()",
+                "`@frozen` — nothing on this declaration reads it",
+            )
         }
         then "a FIELD WITH A DEFAULT is asked once, not twice — its default is a declaration of its own on the same statement" {
-            packaged("use @std.meta.{derive, Tagged}\n@derive(Tagged)\ntype R = {\n    @frozen a: int = 1,\n    b: int,\n}\nfn f() -> int { 1 }\nf()").clean()
+            packaged(
+                "use @std.meta.{derive, Tagged}\n@derive(Tagged)\ntype R = {\n    @frozen a: int = 1,\n    b: int,\n}\nfn f() -> int { 1 }\nf()",
+            )
+                .clean()
         }
     }
     given "marks — degenerate shapes" {
@@ -238,7 +375,10 @@ spec "features/annotations — the compile-time call's laws" {
             refused_with("enum E { @m }\n0", "expected `}`")
         }
         then "a field's only mark still reaches the reader" {
-            refused_with("type R = { @m a: int }\n0", "`@m` — nothing on this declaration reads it")
+            refused_with(
+                "type R = { @m a: int }\n0",
+                "`@m` — nothing on this declaration reads it",
+            )
         }
     }
     given "marks — every wrong type in the word slot" {
@@ -287,18 +427,23 @@ spec "features/annotations — the compile-time call's laws" {
             src.contains("A(@m x: int, y: int)") && !src.contains("@m y")
         }
         then "a variant's mark and its first payload's are told apart" {
-            formatted("enum E {\n    @outer A(@inner x: int)\n}\n0").contains("@outer A(@inner x: int)")
+            formatted("enum E {\n    @outer A(@inner x: int)\n}\n0")
+                .contains("@outer A(@inner x: int)")
         }
         then "a payload-free variant between two marked ones takes neither" {
             let src = formatted("enum E {\n    @a A(x: int)\n    B\n    @c C(@d y: int)\n}\n0")
-            src.contains("@a A(x: int)") && src.contains("@c C(@d y: int)") && !src.contains("@a B") && !src.contains("@c B")
+            src.contains("@a A(x: int)") &&
+                src.contains("@c C(@d y: int)") &&
+                !src.contains("@a B") &&
+                !src.contains("@c B")
         }
         then "a one-line declaration aligns as the spread one does" {
             let src = formatted("enum E { @a A(@b x: int) @c C(@d y: int) }\n0")
             src.contains("@a A(@b x: int)") && src.contains("@c C(@d y: int)")
         }
         then "a payload's ANGLE BRACKETS do not move the window" {
-            formatted("enum E {\n    A(@m x: Map<string, int>, @n y: List<int>)\n}\n0").contains("A(@m x: Map<string, int>, @n y: List<int>)")
+            formatted("enum E {\n    A(@m x: Map<string, int>, @n y: List<int>)\n}\n0")
+                .contains("A(@m x: Map<string, int>, @n y: List<int>)")
         }
     }
     given "payload marks — malformed surface" {
@@ -332,25 +477,37 @@ spec "features/annotations — the compile-time call's laws" {
     }
     given "a derive's own seat" {
         then "a trait whose `derive` takes a `Type` refuses a fn, at the annotation" {
-            refused("use @std.meta.{derive, Tagged}\n@derive(Tagged)\nfn g() -> int { 2 }\nfn f() -> int { 1 }\nf()", "`Tagged`'s `derive` takes `Type`, and this is a fn")
+            refused(
+                "use @std.meta.{derive, Tagged}\n@derive(Tagged)\nfn g() -> int { 2 }\nfn f() -> int { 1 }\nf()",
+                "`Tagged`'s `derive` takes `Type`, and this is a fn",
+            )
         }
         then "a trait whose `derive` takes `Named` still crosses anything" {
-            packaged("use @std.meta.{derive, Show}\n@derive(Show)\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2) + gen_sum(1, 2)").clean()
+            packaged(
+                "use @std.meta.{derive, Show}\n@derive(Show)\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2) + gen_sum(1, 2)",
+            )
+                .clean()
         }
     }
     given "a package-namespaced kind" {
         then "a kinded refusal renders under the annotation's package, and is the one diagnostic" {
             let p = audited(audit_use() + "@audited\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:E1" && p.report().starts_with("error[@acme/audit:E1]: `f` is audited\n")
+            diagnostics.length == 1 &&
+                diagnostics[0].kind == "@acme/audit:E1" &&
+                p.report().starts_with("error[@acme/audit:E1]: `f` is audited\n")
         }
         then "a kind-less refusal stays annotation.said" {
             let p = audited(audit_use() + "@plain\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            diagnostics.length == 1 && diagnostics[0].kind == "annotation.said" && p.report().starts_with("error[annotation.said]: `f` is plain\n")
+            diagnostics.length == 1 &&
+                diagnostics[0].kind == "annotation.said" &&
+                p.report().starts_with("error[annotation.said]: `f` is plain\n")
         }
         then "a root program's kind wears its own manifest name" {
-            let p = packaged("use @std.meta.{Fn, Diagnostic, refuse_as}\nfn check(f: Fn) -> List<Diagnostic> { [refuse_as(\"E7\", \"`\${f.name}` is bare\")] }\n@check\nfn f() -> int {\n    1\n}\nf()\n")
+            let p = packaged(
+                "use @std.meta.{Fn, Diagnostic, refuse_as}\nfn check(f: Fn) -> List<Diagnostic> { [refuse_as(\"E7\", \"`\${f.name}` is bare\")] }\n@check\nfn f() -> int {\n    1\n}\nf()\n",
+            )
             p.report().starts_with("error[app:E7]: `f` is bare\n")
         }
         then "`explain` finds every kind the package's source spells, in a branch too, spoken or not — and misses one it does not" {
@@ -358,17 +515,27 @@ spec "features/annotations — the compile-time call's laws" {
             let rows = p.kind_rows()
             let e1 = rows.find(it.kind == "@acme/audit:E1")
             let e2 = rows.find(it.kind == "@acme/audit:E2")
-            p.clean() && e1 != null && e1!.summary == "spoken by `@audited`" && e2 != null && e2!.summary == "a quiet fn" && rows.find(it.kind == "@acme/audit:E9") == null
+            p.clean() &&
+                e1 != null &&
+                e1!.summary == "spoken by `@audited`" &&
+                e2 != null &&
+                e2!.summary == "a quiet fn" &&
+                rows.find(it.kind == "@acme/audit:E9") == null
         }
         then "a kind that is not a word is the annotation's mistake, spoken in place of its verdict" {
             let p = audited(audit_use() + "@blank\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            diagnostics.length == 1 && p.report().starts_with("error[annotation.kind]: an annotation's kind is a word\n") && p.report().contains("`@blank` named ``, saying: `f` is blank")
+            diagnostics.length == 1 &&
+                p.report().starts_with("error[annotation.kind]: an annotation's kind is a word\n") &&
+                p.report().contains("`@blank` named ``, saying: `f` is blank")
         }
         then "a kinded WARNING wears its package at the use" {
             let p = audited(audit_use() + "@old\nfn f() -> int {\n    1\n}\nf()\n")
             let diagnostics = said(p)
-            p.clean() && diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:W1" && p.warnings().starts_with("warning[@acme/audit:W1]: `f` is old\n")
+            p.clean() &&
+                diagnostics.length == 1 &&
+                diagnostics[0].kind == "@acme/audit:W1" &&
+                p.warnings().starts_with("warning[@acme/audit:W1]: `f` is old\n")
         }
         then "the registry reaches a dependency through the package's own entry, as `avra docs` does" {
             mut ws = audit_workspace(audit_use() + "fn f() -> int {\n    1\n}\nf()\n")
@@ -379,7 +546,10 @@ spec "features/annotations — the compile-time call's laws" {
             let p = audited(audit_use() + "@quiet\nfn never() -> int {\n    1\n}\nnever()\n")
             let rows = p.kind_rows()
             let e2 = rows.find(it.kind == "@acme/audit:E2")
-            !p.clean() && e2 != null && e2!.summary == "a quiet fn" && p.report().starts_with("error[@acme/audit:E2]: a quiet fn\n")
+            !p.clean() &&
+                e2 != null &&
+                e2!.summary == "a quiet fn" &&
+                p.report().starts_with("error[@acme/audit:E2]: a quiet fn\n")
         }
     }
 }

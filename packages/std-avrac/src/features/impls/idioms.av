@@ -27,9 +27,7 @@ use features.{Code, Fix, rule, Decl, Decls, NameFacts}
 @keeps("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 @keeps("impl Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 @law("an impl method identical to its trait's default answers the same as the default")
-export rule default_override {
-    quote { ${m} } if overrides_default(m) -> Fix.Delete(some_list(m.declaring())),
-}
+export rule default_override { quote { ${m} } if overrides_default(m) -> Fix.Delete(some_list(m.declaring())) }
 
 /// Whether `m` is a method statement standing in an `impl Trait for
 /// T` block, its trait naming a DEFAULT member of the same name, and
@@ -70,7 +68,10 @@ fn bodies_equivalent(os: NodeStore, ob: ExprId?, ds: NodeStore, db: ExprId?) -> 
     let dme? = db else { return false }
     let ok? = kept_block(os, ome) else { return false }
     let dk? = kept_block(ds, dme) else { return false }
-    ok.stmts.length == dk.stmts.length && same_tail(os, ok.tail, ds, dk.tail) && [i for i, s in ok.stmts if os.stmt_fingerprint(s) != ds.stmt_fingerprint(dk.stmts[i])].is_empty()
+    ok.stmts.length == dk.stmts.length &&
+        same_tail(os, ok.tail, ds, dk.tail) &&
+        [i for i, s in ok.stmts if os.stmt_fingerprint(s) != ds.stmt_fingerprint(dk.stmts[i])]
+            .is_empty()
 }
 
 /// A block's own statements with every written no-op DROPPED, and
@@ -96,10 +97,7 @@ fn same_tail(os: NodeStore, ot: ExprId?, ds: NodeStore, dt: ExprId?) -> bool {
 /// (`features.nothing`), which two otherwise-identical bodies may
 /// carry on either side, or neither.
 fn is_nothing_call(store: NodeStore, s: StmtId) -> bool {
-    match store.stmt(s) {
-        .ExprStmt(e) -> is_nothing_call_expr(store, e),
-        rest -> false,
-    }
+    match store.stmt(s) { .ExprStmt(e) -> is_nothing_call_expr(store, e), rest -> false }
 }
 
 fn is_nothing_call_expr(store: NodeStore, e: ExprId) -> bool {

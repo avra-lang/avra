@@ -6,7 +6,24 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Reg, body_symbol, hosted_symbol, static_symbol, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file, static_code_syms}
+use core.{
+    Reg,
+    body_symbol,
+    hosted_symbol,
+    static_symbol,
+    TypeId,
+    TypeRegistry,
+    RtKind,
+    RtSig,
+    rt_sigs,
+    rt_index,
+    Static,
+    StaticBox,
+    Slot,
+    FileId,
+    same_file,
+    static_code_syms,
+}
 use features.{nothing}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
@@ -80,11 +97,7 @@ export enum Owned { Whole, File(f: FileId), Program }
 
 impl Owned {
     fn defines(b: Body) -> bool {
-        match self {
-            .Whole -> true,
-            .File(f) -> owns(b, f),
-            .Program -> home_of(b) == null,
-        }
+        match self { .Whole -> true, .File(f) -> owns(b, f), .Program -> home_of(b) == null }
     }
 
     fn carries_entry() -> bool { !(self is .File) }
@@ -247,7 +260,11 @@ fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) ->
     let marks = avra_llvm_value_array_new(cells.length)
     for j, c in cells {
         avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c))
-        avra_llvm_value_array_set(marks, j, avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0))
+        avra_llvm_value_array_set(
+            marks,
+            j,
+            avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0),
+        )
     }
     let payload = avra_llvm_static_array(m, name, arr, marks, cells.length)
     avra_llvm_value_array_free(arr)
@@ -308,7 +325,13 @@ export fn program_closed(l: Lowered) -> string? {
 /// entry answered. The argument pair crosses the seam exactly here
 /// — a program reads it through the host from then on.
 fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
-    declare(m, "avra_args_init", avra_llvm_void_type(lc), [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(
+        m,
+        "avra_args_init",
+        avra_llvm_void_type(lc),
+        [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)],
+        false,
+    )
     declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
     let entry = avra_llvm_get_named_function(m, "av_entry")
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
@@ -319,14 +342,24 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> st
 /// `int main(int argc, char** argv)`: the arguments handed over,
 /// then the entry.
 fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
-    declare(m, "main", avra_llvm_int32_type(lc), [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(
+        m,
+        "main",
+        avra_llvm_int32_type(lc),
+        [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)],
+        false,
+    )
     let f = avra_llvm_get_named_function(m, "main")
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let init = avra_llvm_get_named_function(m, "avra_args_init")
     let args = avra_llvm_value_array_new(2)
     // argc is C's `int` and is never negative, so the widening is a
     // ZERO extend — said here because only this site knows the sign
-    avra_llvm_value_array_set(args, 0, avra_llvm_build_zext(b, avra_llvm_get_param(f, 0), avra_llvm_int64_type(lc), "argc"))
+    avra_llvm_value_array_set(
+        args,
+        0,
+        avra_llvm_build_zext(b, avra_llvm_get_param(f, 0), avra_llvm_int64_type(lc), "argc"),
+    )
     avra_llvm_value_array_set(args, 1, avra_llvm_get_param(f, 1))
     avra_llvm_build_call(b, avra_llvm_fn_type_of(init), init, args, 2, "")
     avra_llvm_value_array_free(args)
@@ -340,7 +373,16 @@ fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
 
 /// One body into one function: params seed the value table, every
 /// instruction emits, the verifier gates.
-fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>, rt: Map<string, RtSig>, bd: Body, f: ptr) -> string? {
+fn emit_body(
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    types: TypeRegistry,
+    externs: List<RtSig>,
+    rt: Map<string, RtSig>,
+    bd: Body,
+    f: ptr,
+) -> string? {
     mut vals: List<ptr> = []
     // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
@@ -416,7 +458,13 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
 
 /// One user fn's declaration, typed from its signature's shapes.
 fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
-    declare(m, mangled(bd.name), ll_type_of(lc, types, bd.ret), [ll_type_of(lc, types, pt) for pt in bd.params], false)
+    declare(
+        m,
+        mangled(bd.name),
+        ll_type_of(lc, types, bd.ret),
+        [ll_type_of(lc, types, pt) for pt in bd.params],
+        false,
+    )
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {

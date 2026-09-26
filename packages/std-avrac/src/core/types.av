@@ -188,7 +188,15 @@ export type LayoutStale = { id: TypeId, fact: LayoutFact, cause: string }
 export type TypeRegistry = { shapes: Cell<List<Type>>, ids: Cell<Map<string, TypeId>>, named: Cell<Map<string, TypeId>>, indexed: Cell<bool>, reps: Cell<List<RepRow>>, stale: Cell<List<LayoutStale>>, declare_hook: Cell<fn(TypeId) -> void> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: list_cell(), ids: map_cell(), named: map_cell(), indexed: Cell.new(false), reps: list_cell(), stale: list_cell(), declare_hook: Cell.new(nothing_declared) }
+    TypeRegistry {
+        shapes: list_cell(),
+        ids: map_cell(),
+        named: map_cell(),
+        indexed: Cell.new(false),
+        reps: list_cell(),
+        stale: list_cell(),
+        declare_hook: Cell.new(nothing_declared),
+    }
 }
 
 /// The declare hook's floor, before anything arms it — core cannot see a
@@ -259,10 +267,7 @@ impl TypeRegistry {
     /// A type's own member set — a `Union`'s members, or itself
     /// alone. `union_of`'s flattening reads through this.
     fn union_members(id: TypeId) -> List<TypeId> {
-        match self.shape_of(id) {
-            .Union(members) -> members,
-            _ -> [id],
-        }
+        match self.shape_of(id) { .Union(members) -> members, _ -> [id] }
     }
 
     /// `sub`'s member set inside `sup`'s — a plain type is its own
@@ -325,7 +330,15 @@ impl TypeRegistry {
             .Cell(inner) -> self.intern(Type.Cell(self.interned(inner))),
             .Map(k, v) -> self.intern(Type.Map(self.interned(k), self.interned(v))),
             .Res(ok, err) -> self.intern(Type.Res(self.interned(ok), self.interned(err))),
-            .Fn(ps, muts, consts, ret) -> self.intern(Type.Fn([self.interned(p) for p in ps], zip_marks(muts, consts), self.interned(ret))),
+            .Fn(ps, muts, consts, ret) -> self
+                .intern(
+                    Type
+                        .Fn(
+                            [self.interned(p) for p in ps],
+                            zip_marks(muts, consts),
+                            self.interned(ret),
+                        ),
+                ),
             .Id(id) -> id,
         }
     }
@@ -544,7 +557,8 @@ impl TypeRegistry {
         let r = self.reps.get()[id.index]
         if r.sealed { return }
         if r.valued && r.counted == counted { return }
-        if r.read_valued { return self.flag_stale(id, LayoutFact.Valued, "its value-enum layout was computed a second time") }
+        if r.read_valued { return self
+                .flag_stale(id, LayoutFact.Valued, "its value-enum layout was computed a second time") }
         self.reps.set_at(id.index, r with { valued: true, counted: counted })
     }
 
@@ -628,10 +642,7 @@ impl TypeRegistry {
     /// RECORD by its own declared shape, since only an enum's tag has
     /// a spare value no variant will ever take.
     fn is_word_enum(id: TypeId) -> bool {
-        match self.shape_of(id) {
-            .Enum(_, _) -> self.is_flat(id),
-            rest -> false,
-        }
+        match self.shape_of(id) { .Enum(_, _) -> self.is_flat(id), rest -> false }
     }
 
     /// A WORD ENUM's tag register, whichever type names it: the enum
@@ -642,10 +653,7 @@ impl TypeRegistry {
     /// enum's Opt.
     fn word_carrier(id: TypeId) -> bool {
         if self.is_word_enum(id) { return true }
-        match self.shape_of(id) {
-            .Opt(inner) -> self.is_word_enum(inner),
-            rest -> false,
-        }
+        match self.shape_of(id) { .Opt(inner) -> self.is_word_enum(inner), rest -> false }
     }
 
     /// Whether a NULLABLE of `inner` rides a pointer — the question
@@ -702,7 +710,9 @@ impl TypeRegistry {
         let r = self.reps.get()[id.index]
         let was_flat = !r.fields.is_empty()
         if was_flat && r.read_flat { return self.flag_stale(id, LayoutFact.Flat, "a `mut` seat sealed it") }
-        self.reps.set_at(id.index, r with { fields: [], sealed: true, boxed_flat: r.boxed_flat || was_flat })
+        self
+            .reps
+            .set_at(id.index, r with { fields: [], sealed: true, boxed_flat: r.boxed_flat || was_flat })
     }
 
     /// Mark a type FLAT: the value IS its fields, with no box of its
@@ -714,11 +724,21 @@ impl TypeRegistry {
         let r = self.reps.get()[id.index]
         if r.sealed {
             if r.boxed_flat { return }
-            if r.read_flat { return self.flag_stale(id, LayoutFact.Flat, "it was found flat after a `mut` seat had already sealed it") }
+            if r.read_flat { return self
+                    .flag_stale(
+                        id,
+                        LayoutFact.Flat,
+                        "it was found flat after a `mut` seat had already sealed it",
+                    ) }
             return self.reps.set_at(id.index, r with { boxed_flat: true })
         }
         if same_fields(r.fields, fields) { return }
-        if r.read_flat { return self.flag_stale(id, LayoutFact.Flat, "its fields were declared a second time (id=${id.index}, was [${joined(["${f.index}" for f in r.fields], ",")}], now [${joined(["${f.index}" for f in fields], ",")}])") }
+        if r.read_flat { return self
+                .flag_stale(
+                    id,
+                    LayoutFact.Flat,
+                    "its fields were declared a second time (id=${id.index}, was [${joined(["${f.index}" for f in r.fields], ",")}], now [${joined(["${f.index}" for f in fields], ",")}])",
+                ) }
         self.reps.set_at(id.index, r with { fields: fields })
     }
 
@@ -736,10 +756,7 @@ impl TypeRegistry {
     /// THE projection (values.av's `carried_type` is its cx-space
     /// mirror).
     fn carried(id: TypeId) -> TypeId? {
-        match self.shape_of(self.seen_through(id)) {
-            .Opt(inner) -> inner,
-            _ -> null,
-        }
+        match self.shape_of(self.seen_through(id)) { .Opt(inner) -> inner, _ -> null }
     }
 
     /// Whether a value of this type is one — `void` is the absence of
@@ -751,25 +768,16 @@ impl TypeRegistry {
     /// A list's element, or absent when the id is not one — the
     /// projection every walk and index reads.
     fn element(id: TypeId) -> TypeId? {
-        match self.shape_of(self.seen_through(id)) {
-            .List(t) -> t,
-            _ -> null,
-        }
+        match self.shape_of(self.seen_through(id)) { .List(t) -> t, _ -> null }
     }
 
     fn cell_inner(id: TypeId) -> TypeId? {
-        match self.shape_of(self.seen_through(id)) {
-            .Cell(t) -> t,
-            _ -> null,
-        }
+        match self.shape_of(self.seen_through(id)) { .Cell(t) -> t, _ -> null }
     }
 
     /// What a task answers once it has an answer.
     fn task_answer(id: TypeId) -> TypeId? {
-        match self.shape_of(self.seen_through(id)) {
-            .Task(t) -> t,
-            _ -> null,
-        }
+        match self.shape_of(self.seen_through(id)) { .Task(t) -> t, _ -> null }
     }
 
     /// Whether a value of this type holds a task ANYWHERE inside it —
@@ -802,10 +810,7 @@ impl TypeRegistry {
     /// A map's value type, or absent when the id is not one —
     /// `element`'s twin for a keyed aggregate.
     fn map_value(id: TypeId) -> TypeId? {
-        match self.shape_of(self.seen_through(id)) {
-            .Map(_, v) -> v,
-            _ -> null,
-        }
+        match self.shape_of(self.seen_through(id)) { .Map(_, v) -> v, _ -> null }
     }
 
     /// A Result's two sides, or absent when the id is not one —
@@ -829,10 +834,7 @@ impl TypeRegistry {
     /// so a settled const of it is a constant at every use; any other
     /// value is built once and called for.
     fn spells(id: TypeId) -> bool {
-        match self.shape_of(id) {
-            .Int or .Float or .Bool or .Str -> true,
-            _ -> false,
-        }
+        match self.shape_of(id) { .Int or .Float or .Bool or .Str -> true, _ -> false }
     }
 
     /// Does a value of this type RIDE A POINTER at runtime —
@@ -876,11 +878,24 @@ impl TypeRegistry {
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
             .Cell(inner) -> self.intern(Type.Cell(self.substituted(inner, target, args))),
             .Task(answer) -> self.intern(Type.Task(self.substituted(answer, target, args))),
-            .Map(k, v) -> self.intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
+            .Map(k, v) -> self
+                .intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
-            .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args), self.substituted(err, target, args))),
+            .Res(ok, err) -> self
+                .intern(
+                    Type
+                        .Res(self.substituted(ok, target, args), self.substituted(err, target, args)),
+                ),
             .App(decl, name, aa) -> self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
-            .Fn(ps, marks, ret) -> self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks, self.substituted(ret, target, args))),
+            .Fn(ps, marks, ret) -> self
+                .intern(
+                    Type
+                        .Fn(
+                            [self.substituted(a, target, args) for a in ps],
+                            marks,
+                            self.substituted(ret, target, args),
+                        ),
+                ),
             .Union(members) -> self.union_of([self.substituted(m, target, args) for m in members]),
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> ty,
         }
@@ -1098,10 +1113,7 @@ fn mark_letter(m: SeatMark) -> string {
 /// form, so `fn(T, U)` built with no marks and with two plain ones
 /// are the same type.
 fn trimmed_marks(t: Type) -> Type {
-    match t {
-        .Fn(ps, marks, ret) -> Type.Fn(ps, trimmed(marks), ret),
-        _ -> t,
-    }
+    match t { .Fn(ps, marks, ret) -> Type.Fn(ps, trimmed(marks), ret), _ -> t }
 }
 
 fn is_plain(m: SeatMark) -> bool {

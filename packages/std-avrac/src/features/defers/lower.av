@@ -42,7 +42,15 @@ fn direct_free_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
     let host: string? = cx.extern_callee(body)
     if host != null && !(cx.shape_at(body) is .Void) { return null }
     let captured = cx.capture_regs(lam)
-    built(cx, host ?? cx.callee_of(body, call.callee), host != null, captured, null, call.args, cx.type_at(body))
+    built(
+        cx,
+        host ?? cx.callee_of(body, call.callee),
+        host != null,
+        captured,
+        null,
+        call.args,
+        cx.type_at(body),
+    )
 }
 
 /// A METHOD call on the impl table — a callee whose first argument is
@@ -59,7 +67,15 @@ fn direct_method_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall?
     let seats = seats_of(cx, m)?
     if skips_a_default(seats, call.args, true) { return null }
     let captured = cx.capture_regs(lam)
-    built(cx, cx.method_symbol(m, body, recv_ty), false, captured, captured[j], call.args, cx.type_at(body))
+    built(
+        cx,
+        cx.method_symbol(m, body, recv_ty),
+        false,
+        captured,
+        captured[j],
+        call.args,
+        cx.type_at(body),
+    )
 }
 
 /// A declared fn or method's seat types — the impl table's `self`
@@ -79,7 +95,15 @@ fn skips_a_default(seats: List<TypeId>, args: List<ExprId>, self_seat: bool) -> 
 /// The tail free and method calls share: a resolved callee, its
 /// arguments already captured, the receiver riding seat 0 when there
 /// is one.
-fn built(mut cx: LowerCx, callee: string, host: bool, captured: List<Reg>, recv: Reg?, args: List<ExprId>, ret: TypeId) -> DirectCall {
+fn built(
+    mut cx: LowerCx,
+    callee: string,
+    host: bool,
+    captured: List<Reg>,
+    recv: Reg?,
+    args: List<ExprId>,
+    ret: TypeId,
+) -> DirectCall {
     let seated: List<Reg> = if recv != null { [recv!] } else { [] }
     DirectCall {
         callee: callee,
@@ -101,17 +125,11 @@ fn fixed_early(cx: LowerCx, a: ExprId) -> bool {
 
 /// The capture an argument reads, by its place in the lambda's list.
 fn captured_at(cx: LowerCx, a: ExprId) -> int? {
-    match cx.names.binding(a)? {
-        .Capture(_, j) -> j,
-        _ -> null,
-    }
+    match cx.names.binding(a)? { .Capture(_, j) -> j, _ -> null }
 }
 
 fn scalar(t: Type) -> bool {
-    match t {
-        .Int or .Bool or .Float -> true,
-        _ -> false,
-    }
+    match t { .Int or .Bool or .Float -> true, _ -> false }
 }
 
 /// An argument's register at the `defer`: the literal's, or the

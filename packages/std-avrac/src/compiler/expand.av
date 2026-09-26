@@ -1,11 +1,73 @@
 //! The expansion and crossing pass: macros, derives and marks that
 //! materialize generated declarations, and the meta value a crossing
 //! produces. Moved out of the workspace god-object.
-use core.{Expr, StmtId, Span, Param, Variant, Mark, same_stmt, DeclId, FileId, ExprId, fp, flatten, TypeId, Type, same_file, FnParts, TypeRef, source_spelled, named_ref, spelled, Scoped}
-use features.{Unsettled, unsettled_label, MetaVal, MetaHeap, new_meta_heap, Lifted, Namespace, FnSig, StructSig, EnumSig, nothing, FileView, spelled_type, DeclareWork, Generation}
+use core.{
+    Expr,
+    StmtId,
+    Span,
+    Param,
+    Variant,
+    Mark,
+    same_stmt,
+    DeclId,
+    FileId,
+    ExprId,
+    fp,
+    flatten,
+    TypeId,
+    Type,
+    same_file,
+    FnParts,
+    TypeRef,
+    source_spelled,
+    named_ref,
+    spelled,
+    Scoped,
+}
+use features.{
+    Unsettled,
+    unsettled_label,
+    MetaVal,
+    MetaHeap,
+    new_meta_heap,
+    Lifted,
+    Namespace,
+    FnSig,
+    StructSig,
+    EnumSig,
+    nothing,
+    FileView,
+    spelled_type,
+    DeclareWork,
+    Generation,
+}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Kind, Annotation as MetaAnnotation}
-use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, copier, hole_runs, quote_kind, all_codes, is_name_cont}
+use @std.meta.{
+    Directive,
+    Node,
+    Fn as MetaFn,
+    Type as MetaType,
+    Named,
+    Trait as MetaTrait,
+    Param as MetaParam,
+    Field as MetaField,
+    Variant as MetaVariant,
+    Kind,
+    Annotation as MetaAnnotation,
+}
+use core.{
+    Stmt,
+    StmtId,
+    Arm,
+    BodyView,
+    HoleKind,
+    Filled,
+    copier,
+    hole_runs,
+    quote_kind,
+    all_codes,
+    is_name_cont,
+}
 use diagnostics.{loc_at}
 use @std.testing.{words}
 
@@ -19,7 +81,10 @@ impl Workspace {
         // walks is itself a dependency of that resolve. The kernel's
         // recursion guard makes the re-entry a SMALLER view (an empty
         // expansion for the resolve in flight), never a trap.
-        match self.expanded_memo.start_recursive(f.index) { .Reuse(value) -> { return expanded_of(value) }, .Compute -> nothing() }
+        match self.expanded_memo.start_recursive(f.index) {
+            .Reuse(value) -> { return expanded_of(value) },
+            .Compute -> nothing(),
+        }
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
@@ -40,7 +105,9 @@ impl Workspace {
     /// name — never a computed value that needs this file's typed
     /// answers, which do not exist yet.
     fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
-        if !w.args.all((e: ExprId) -> source_spelled(p.store.expr(e)) || p.store.ident_name(e) != null) { return [] }
+        if !w
+            .args
+            .all((e: ExprId) -> source_spelled(p.store.expr(e)) || p.store.ident_name(e) != null) { return [] }
         // a loaded `@std/meta` the crossing cannot read generates
         // nothing; the annotation law speaks it
         if self.decls.meta_disagreement() != null { return [] }
@@ -56,7 +123,9 @@ impl Workspace {
 
     /// One directive: a `source` is generated CODE parsed and admitted
     /// beside the original, and a `twin` mints a fn beside it.
-    fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<DeclId> {
+    fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<
+        DeclId,
+    > {
         let ann = self.decls.decl(w.ann).name
         let source? = directive.source else { return self.twinned(f, w, directive, ann) }
         self.admit_code(f, source.node, ann, w.at, vis)
@@ -65,7 +134,11 @@ impl Workspace {
     /// The fn a directive asks for beside the original, when it asks.
     fn twinned(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
         if directive.twin.is_empty() { return [] }
-        [self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at)]
+        [
+            self
+                .decls
+                .mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at),
+        ]
     }
 
     /// A written fn's Declares annotation, as the materializer's
@@ -96,19 +169,24 @@ impl Workspace {
                         let asig: FnSig? = self.decls.sig(ann_decl)?.fn_sig()
                         if asig != null {
                             let sig = asig!
-                            if self.is_declares(sig.ret) || self.is_derived(sig.ret) || self.is_declared(sig.ret) {
-                                out.push(DeclareWork {
-                                    ann: ann_decl,
-                                    stmt: x.stmt,
-                                    callee: a.callee,
-                                    args: a.args,
-                                    ret: sig.ret,
-                                    tparams: tparams,
-                                    params: params,
-                                    answer: answer,
-                                    original: x.name,
-                                    at: a.span ?? p.store.stmt_span(x.stmt),
-                                })
+                            if self.is_declares(sig.ret) ||
+                                self.is_derived(sig.ret) ||
+                                self.is_declared(sig.ret) {
+                                out
+                                    .push(
+                                        DeclareWork {
+                                            ann: ann_decl,
+                                            stmt: x.stmt,
+                                            callee: a.callee,
+                                            args: a.args,
+                                            ret: sig.ret,
+                                            tparams: tparams,
+                                            params: params,
+                                            answer: answer,
+                                            original: x.name,
+                                            at: a.span ?? p.store.stmt_span(x.stmt),
+                                        },
+                                    )
                             }
                         }
                     }
@@ -121,7 +199,10 @@ impl Workspace {
     /// Whether a return type is `List<Directive>` — the Declares cue.
     fn is_declares(ret: TypeId) -> bool {
         let elem? = elem_of(self.decls.types, ret) else { return false }
-        match self.decls.types.shape_of(elem) { .Struct(d, _) -> self.decls.decl(d).name == "Directive", rest -> false }
+        match self.decls.types.shape_of(elem) {
+            .Struct(d, _) -> self.decls.decl(d).name == "Directive",
+            rest -> false,
+        }
     }
 
     /// Whether a return type is `@std.meta.Derived` — the `@derive`
@@ -155,7 +236,10 @@ impl Workspace {
 
     fn hold_the_marks_of(f: FileId, s: StmtId, written: List<Mark>, p: Parsed, vis: Namespace) {
         if written.is_empty() { return }
-        let owner? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return }
+        let owner? = self
+            .decls
+            .decls_of_file(f)
+            .find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return }
         let claimed? = self.claimed_marks(f, owner, p, vis) else { return }
         // LICENSED — matching a mark by its WORD: a mark crosses a
         // package boundary, where a foreign enum has no typed id, so
@@ -163,7 +247,12 @@ impl Workspace {
         // very line — the unknown speaks instead of falling through.
         let unread = [m for m in written if !claimed.contains(m.name)]
         if unread.is_empty() { return }
-        self.decls.speak_expansion(f, [unclaimed_mark(m, claimed, loc_at(self.decls.file(f).path, m.span)) for m in unread])
+        self
+            .decls
+            .speak_expansion(
+                f,
+                [unclaimed_mark(m, claimed, loc_at(self.decls.file(f).path, m.span)) for m in unread],
+            )
     }
 
     /// THE CLAIM SET, OR ABSENCE WHEN IT CANNOT BE KNOWN — and the two
@@ -216,7 +305,9 @@ impl Workspace {
         // namespace first. It speaks at the asking annotation instead.
         let taken = [n for n in [store.declared_name(s) ?? "" for s in stmts] if vis.names(n)]
         if !taken.is_empty() {
-            self.decls.speak_expansion(f, [generated_taken(ann, n, loc_at(self.decls.file(f).path, at)) for n in taken])
+            self
+                .decls
+                .speak_expansion(f, [generated_taken(ann, n, loc_at(self.decls.file(f).path, at)) for n in taken])
             return []
         }
         self.decls.note_generation(f, Generation { runs: took, at: at })
@@ -344,8 +435,14 @@ impl Workspace {
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
         mut rb = copier(src, self.decls.store_of(f), thunks, hole_runs(src, q))
-        let copied_stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, .None or .Expanded(_) -> [] }
-        let copied_arms: List<Arm> = match body.view { .Verbatim(_, arms) -> arms, .None or .Expanded(_) -> [] }
+        let copied_stmts: List<StmtId> = match body.view {
+            .Verbatim(ss, _) -> ss,
+            .None or .Expanded(_) -> [],
+        }
+        let copied_arms: List<Arm> = match body.view {
+            .Verbatim(_, arms) -> arms,
+            .None or .Expanded(_) -> [],
+        }
         let stmts = rb.stmts(copied_stmts)
         let arms = rb.arms(copied_arms)
         if !same_file(origin, f) { self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin) }
@@ -354,8 +451,12 @@ impl Workspace {
         for j, id in rb.made_exprs { self.note_foreign_origin(f, src, rb.made_from[j], id) }
         // A fill that did not fit its seat is the compiler's own
         // disagreement with its typing — spoken, never spliced quietly.
-        self.decls.speak_expansion(f, [misfit_defect(self.decls.file(origin).path, at, k) for k in rb.misfits])
-        self.decls.speak_expansion(f, [unplaceable_fill(self.decls.file(origin).path, at, u) for u in rb.unplaceable])
+        self
+            .decls
+            .speak_expansion(f, [misfit_defect(self.decls.file(origin).path, at, k) for k in rb.misfits])
+        self
+            .decls
+            .speak_expansion(f, [unplaceable_fill(self.decls.file(origin).path, at, u) for u in rb.unplaceable])
         Copied { stmts: stmts, arms: arms }
     }
 
@@ -367,7 +468,14 @@ impl Workspace {
     /// the only evidence was F3000 at the USE SITE of a name nobody
     /// minted — one mechanism with a loud door and a mute one, and
     /// the mute one is the door every `@derive` takes.
-    fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, at: Span?) -> List<Directive> {
+    fn lifted_directives(
+        d: DeclId,
+        f: FileId,
+        stmt: StmtId,
+        call: ExprId,
+        args: List<ExprId>,
+        at: Span?,
+    ) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
             .Ok(crossed) -> crossed.directives(),
             .Err(why) -> self.mute_lift(d, f, at, why),
@@ -377,7 +485,14 @@ impl Workspace {
     /// A `Declared` answer's `made` field, read by the same lift as
     /// `lifted_directives` — the OTHER Declares shape, generating code
     /// beside diagnostics `check_annotation` reads separately.
-    fn declared_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, at: Span?) -> List<Directive> {
+    fn declared_directives(
+        d: DeclId,
+        f: FileId,
+        stmt: StmtId,
+        call: ExprId,
+        args: List<ExprId>,
+        at: Span?,
+    ) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
             .Ok(crossed) -> crossed.declared_made(),
             .Err(why) -> self.mute_lift(d, f, at, why),
@@ -422,7 +537,10 @@ impl Workspace {
     /// for. Reads the PARSE store only: an expanded sibling is
     /// generated before this file's typed facts exist.
     fn crossed_decl(f: FileId, s: StmtId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let found? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return MetaVal.Absent }
+        let found? = self
+            .decls
+            .decls_of_file(f)
+            .find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return MetaVal.Absent }
         self.crossed_decl_of(found, want, heap)
     }
 
@@ -436,8 +554,29 @@ impl Workspace {
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
-            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d), doc: self.decl_doc_text(d), annotations: self.decl_annotations(v, d) }, heap),
-            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at, doc: self.decl_doc_text(d), annotations: self.decl_annotations(v, d) }, heap),
+            .Fn -> meta_of_fn(
+                MetaFn {
+                    name: x.name,
+                    params: self.crossed_params(v, x.stmt, d),
+                    answer: self.crossed_answer(v, x.stmt),
+                    at: at,
+                    answers: self.answer_kind(d),
+                    doc: self.decl_doc_text(d),
+                    annotations: self.decl_annotations(v, d),
+                },
+                heap,
+            ),
+            .Type -> meta_of_type(
+                MetaType {
+                    name: x.name,
+                    fields: self.crossed_fields(v, x.stmt, d),
+                    variants: self.crossed_variants(v, x.stmt, d),
+                    at: at,
+                    doc: self.decl_doc_text(d),
+                    annotations: self.decl_annotations(v, d),
+                },
+                heap,
+            ),
             .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
             .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
             .Other -> MetaVal.Absent,
@@ -502,7 +641,14 @@ impl Workspace {
     }
 
     fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
-        MetaParam { name: p.name.of, ty: typed_text(self.decls.types, p.ty), mutable: p.promises.mutable, settled: p.promises.settled, at: placed(v, p.span), kind: k }
+        MetaParam {
+            name: p.name.of,
+            ty: typed_text(self.decls.types, p.ty),
+            mutable: p.promises.mutable,
+            settled: p.promises.settled,
+            at: placed(v, p.span),
+            kind: k,
+        }
     }
 
     /// A fn's answer, spelled from its declared TypeRef — a store read

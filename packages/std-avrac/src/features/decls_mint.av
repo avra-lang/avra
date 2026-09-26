@@ -1,7 +1,30 @@
 //! The declaration table's mint half: files, modules, and the mint
 //! path that turns a statement into a declared id. The rest of the
 //! impl lives in decls.av.
-use core.{side_table, SideTable, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, Param, filled, flatten, same_decl, SpecParts, ImplParts, no_stmt, Type, TypeRef, Stmt, Expr, Scoped}
+use core.{
+    side_table,
+    SideTable,
+    DeclId,
+    FileId,
+    ModuleId,
+    DeclKind,
+    StmtId,
+    ExprId,
+    Span,
+    NodeStore,
+    Param,
+    filled,
+    flatten,
+    same_decl,
+    SpecParts,
+    ImplParts,
+    no_stmt,
+    Type,
+    TypeRef,
+    Stmt,
+    Expr,
+    Scoped,
+}
 use diagnostics.{Diag}
 use features.{generated_key, Decl, no_origins}
 
@@ -76,7 +99,19 @@ impl Decls {
                 let name = store.declared_name(s) ?? ""
                 let key = fresh_key("${path}::${kind_word(k)}::${name}", s, seen)
                 seen.push(key)
-                let d = self.mint(key, f, s, name, k, store.is_exported(s), "", null, false, store.fn_parts(s)?.body)
+                let d = self
+                    .mint(
+                        key,
+                        f,
+                        s,
+                        name,
+                        k,
+                        store.is_exported(s),
+                        "",
+                        null,
+                        false,
+                        store.fn_parts(s)?.body,
+                    )
                 by_stmt.set(s.index, d)
                 out.push(d)
                 made.push(d)
@@ -96,7 +131,8 @@ impl Decls {
                 let name = store.let_name(s) ?? ""
                 let key = fresh_key("${path}::const::${name}", s, seen)
                 seen.push(key)
-                let d = self.mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
+                let d = self
+                    .mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
                 by_stmt.set(s.index, d)
                 out.push(d)
                 made.push(d)
@@ -107,7 +143,22 @@ impl Decls {
                 let suite = sp!
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates — every branch of this walk pushes into the same list
                 for k, c in suite.cases {
-                    made.push(self.mint("${path}::case ${s.index}.${k}", f, s, c.name, DeclKind.Case, false, suite.name, null, false, c.body))
+                    made
+                        .push(
+                            self
+                                .mint(
+                                    "${path}::case ${s.index}.${k}",
+                                    f,
+                                    s,
+                                    c.name,
+                                    DeclKind.Case,
+                                    false,
+                                    suite.name,
+                                    null,
+                                    false,
+                                    c.body,
+                                ),
+                        )
                 }
             }
             let ip: ImplParts? = store.impl_parts(s)
@@ -115,21 +166,39 @@ impl Decls {
                 let block = ip!
                 let key = fresh_key("${path}::impl ${block.target}", s, seen)
                 seen.push(key)
-                let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+                let block_decl = self
+                    .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
                 by_stmt.set(s.index, block_decl)
                 made.push(block_decl)
                 self.orphan(block_decl)
                 for m in block.fns {
-                    let md = self.mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
+                    let md = self
+                        .mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
                     by_stmt.set(m.index, md)
                     made.push(md)
                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
                     let mname = self.decl(md).name
-                    made = made.concat(self.mint_defaults("${key}#${mname}", f, m, seats, "${block.target}.${mname}", md))
+                    made = made
+                        .concat(
+                            self
+                                .mint_defaults("${key}#${mname}", f, m, seats, "${block.target}.${mname}", md),
+                        )
                 }
             }
         }
-        let main = self.mint("${path}::main", f, stmts.first() ?? no_stmt, "main", DeclKind.Main, false, "", null, false, null)
+        let main = self
+            .mint(
+                "${path}::main",
+                f,
+                stmts.first() ?? no_stmt,
+                "main",
+                DeclKind.Main,
+                false,
+                "",
+                null,
+                false,
+                null,
+            )
         made.push(main)
         self.mains.set_at(f.index, main)
         // A declaration NESTED in a body is refused by its feature, but
@@ -141,7 +210,19 @@ impl Decls {
             let nested: DeclKind? = store.declared_kind(s)
             if by_stmt.get(i) == null && nested != null {
                 let name = store.declared_name(s) ?? ""
-                let nd = self.mint("${path}::nested ${i}::${name}", f, s, name, nested!, false, "", null, true, null)
+                let nd = self
+                    .mint(
+                        "${path}::nested ${i}::${name}",
+                        f,
+                        s,
+                        name,
+                        nested!,
+                        false,
+                        "",
+                        null,
+                        true,
+                        null,
+                    )
                 by_stmt.set(i, nd)
                 made.push(nd)
             }
@@ -311,16 +392,44 @@ impl Decls {
     }
 
     /// A trait's method has no body to lower; an impl's does.
-    fn mint_method(owner_key: string, f: FileId, store: NodeStore, m: StmtId, owner: string, parent: DeclId, root: ExprId?) -> DeclId {
+    fn mint_method(
+        owner_key: string,
+        f: FileId,
+        store: NodeStore,
+        m: StmtId,
+        owner: string,
+        parent: DeclId,
+        root: ExprId?,
+    ) -> DeclId {
         let name = store.fn_parts(m)?.name ?? ""
-        self.mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner, parent, false, root)
+        self
+            .mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner, parent, false, root)
     }
 
     /// Each default a record's fields or a fn's seats carry: a body
     /// under its owner, named by the field or seat, its statement the
     /// owner's.
-    fn mint_defaults(owner_key: string, f: FileId, s: StmtId, members: List<Param>, owner: string, parent: DeclId) -> List<DeclId> {
-        [self.mint("${owner_key}#${p.name}", f, s, p.name.of, DeclKind.Default, false, owner, parent, false, p.default) for p in members if p.default != null]
+    fn mint_defaults(
+        owner_key: string,
+        f: FileId,
+        s: StmtId,
+        members: List<Param>,
+        owner: string,
+        parent: DeclId,
+    ) -> List<DeclId> {
+        [self
+            .mint(
+                "${owner_key}#${p.name}",
+                f,
+                s,
+                p.name.of,
+                DeclKind.Default,
+                false,
+                owner,
+                parent,
+                false,
+                p.default,
+            ) for p in members if p.default != null]
     }
 
     /// A parent admitted again lists its members afresh.
@@ -333,10 +442,34 @@ impl Decls {
     /// next; a member joins its parent's children. Every table here is a
     /// Cell — `keys.put` writes the one shared map in place, so a captured
     /// hook and a live reader see the same row with no clone either way.
-    fn mint(key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?) -> DeclId {
+    fn mint(
+        key: string,
+        f: FileId,
+        s: StmtId,
+        name: string,
+        kind: DeclKind,
+        exported: bool,
+        owner: string,
+        parent: DeclId?,
+        nested: bool,
+        root: ExprId?,
+    ) -> DeclId {
         let known: DeclId? = self.known_id(key)
         let id: DeclId = known ?? DeclId { index: self.decls.get().length }
-        let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner, parent: parent, nested: nested, root: root, lo: 0, hi: 0 }
+        let d = Decl {
+            id: id,
+            file: f,
+            stmt: s,
+            name: name,
+            kind: kind,
+            exported: exported,
+            owner: owner,
+            parent: parent,
+            nested: nested,
+            root: root,
+            lo: 0,
+            hi: 0,
+        }
         if known == null {
             self.decls.push(d)
             self.keys.put(key, id)
@@ -405,17 +538,35 @@ impl Decls {
     /// Generated SOURCE admitted beside the declaration that asked for
     /// it: the code was parsed INTO this file's store (no copy), so the
     /// declarations mint from the same arena every pass already reads.
-    fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, tag: string, ann: string, at: Span?) -> List<DeclId> {
+    fn mint_generated_code(
+        f: FileId,
+        store: NodeStore,
+        stmts: List<StmtId>,
+        lo: int,
+        tag: string,
+        ann: string,
+        at: Span?,
+    ) -> List<DeclId> {
         // each statement keys under its place, so two impls of one
         // target in one generation mint two
-        let made = flatten([self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, lo) for j, s in stmts])
+        let made = flatten(
+            [self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, lo) for j, s in stmts],
+        )
         self.record_generated(f, made)
         made
     }
 
     /// One generated statement: its declaration and members, or its
     /// impl block and methods.
-    fn mint_code_stmt(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
+    fn mint_code_stmt(
+        f: FileId,
+        store: NodeStore,
+        s: StmtId,
+        tag: string,
+        ann: string,
+        at: Span?,
+        lo: int,
+    ) -> List<DeclId> {
         let kind: DeclKind? = store.declared_kind(s)
         if kind != null { return self.mint_code_decl(f, store, s, kind!, tag, ann, at, lo) }
         if store.const_value(s) != null { return [self.mint_code_const(f, store, s, tag, ann, at, lo)] }
@@ -426,11 +577,33 @@ impl Decls {
 
     /// A generated top-level `const`: a declaration like a written one,
     /// wearing the range of its own value.
-    fn mint_code_const(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> DeclId {
+    fn mint_code_const(
+        f: FileId,
+        store: NodeStore,
+        s: StmtId,
+        tag: string,
+        ann: string,
+        at: Span?,
+        lo: int,
+    ) -> DeclId {
         let name = store.let_name(s) ?? ""
-        let d = self.mint(generated_key(f, "${tag}\$${name}"), f, s, name, DeclKind.Const, false, "", null, false, null)
+        let d = self
+            .mint(
+                generated_key(f, "${tag}\$${name}"),
+                f,
+                s,
+                name,
+                DeclKind.Const,
+                false,
+                "",
+                null,
+                false,
+                null,
+            )
         self.note_provenance(d, ann, name, at)
-        self.decls.set_at(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
+        self
+            .decls
+            .set_at(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
         d
     }
 
@@ -442,7 +615,16 @@ impl Decls {
     /// own body — exactly the window `range_bodies` gives a written
     /// impl's methods, and the range whose absence left a generated
     /// pattern without its enum.
-    fn mint_code_decl(f: FileId, store: NodeStore, s: StmtId, kind: DeclKind, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
+    fn mint_code_decl(
+        f: FileId,
+        store: NodeStore,
+        s: StmtId,
+        kind: DeclKind,
+        tag: string,
+        ann: string,
+        at: Span?,
+        lo: int,
+    ) -> List<DeclId> {
         let name = store.declared_name(s) ?? ""
         let key = generated_key(f, "${tag}\$${name}")
         let body: ExprId? = store.fn_parts(s)?.body
@@ -466,9 +648,19 @@ impl Decls {
 
     /// A generated impl block, with its methods under it, each wearing
     /// its own expression range (see `mint_code_decl`).
-    fn mint_code_impl(f: FileId, store: NodeStore, s: StmtId, block: ImplParts, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
+    fn mint_code_impl(
+        f: FileId,
+        store: NodeStore,
+        s: StmtId,
+        block: ImplParts,
+        tag: string,
+        ann: string,
+        at: Span?,
+        lo: int,
+    ) -> List<DeclId> {
         let key = generated_key(f, "${tag}\$${block.target}\$\$impl")
-        let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+        let block_decl = self
+            .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
         self.note_provenance(block_decl, ann, block.target, at)
         mut cursor = lo
         mut methods: List<DeclId> = []
@@ -503,7 +695,16 @@ impl Decls {
     /// parameters and parameter seats, so it answers like the original,
     /// and its own expression range, so typing, resolution and lowering
     /// read it as written.
-    fn mint_generated(f: FileId, name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, original: string, ann: string, at: Span?) -> DeclId {
+    fn mint_generated(
+        f: FileId,
+        name: string,
+        tparams: List<Param>,
+        params: List<Param>,
+        ret: TypeRef,
+        original: string,
+        ann: string,
+        at: Span?,
+    ) -> DeclId {
         let key = generated_key(f, name)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }

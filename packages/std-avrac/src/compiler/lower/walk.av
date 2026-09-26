@@ -19,7 +19,8 @@ impl LowerCx {
         let born = when {
             self.facts.wants_alias_copy(e) -> self.unique_box(e)
             self.facts.wants_thaw(e) -> self.thawed_box(e)
-            _ -> self.spelled_static(e) ?? semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
+            _ -> self.spelled_static(e) ?? semantics_of(self.dispatch, self.view.store.expr(e))
+                .lower(self, e)
         }
         let r = self.widened(e, self.narrowed(e, born))
         self.body.set_reg(e, r)
@@ -84,7 +85,10 @@ impl LowerCx {
             return 0
         }
         let t? = sig.tag_of("Rewrite") else {
-            self.defect("`Fix` has no `Rewrite` variant — the compiler's own enum moved under this lowering")
+            self
+                .defect(
+                    "`Fix` has no `Rewrite` variant — the compiler's own enum moved under this lowering",
+                )
             return 0
         }
         t
@@ -135,11 +139,12 @@ impl LowerCx {
         // present arm's carry is identity
         let maybe = self.view.decls.types.type(answer?)
         let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
-        self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
-            let made = cx.reg_of(root)
-            cx.once_set(key, made)
-            made
-        }
+        self
+            .region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
+                let made = cx.reg_of(root)
+                cx.once_set(key, made)
+                made
+            }
     }
 
     /// A NULLABLE answer's null is an answer, so the cache holds it in a
@@ -149,11 +154,12 @@ impl LowerCx {
     mut fn once_boxed(key: Reg, root: ExprId, answer: TypeId) -> Reg {
         let maybe = self.view.decls.types.type(List<answer>?)
         let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
-        self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.slot_read(cx.carried_of(held, maybe), 0, answer) } else { cx ->
-            let made = cx.reg_of(root)
-            cx.once_set(key, cx.one_cell(made, answer))
-            made
-        }
+        self
+            .region_as(self.presence_of(held, maybe), answer) { cx -> cx.slot_read(cx.carried_of(held, maybe), 0, answer) } else { cx ->
+                let made = cx.reg_of(root)
+                cx.once_set(key, cx.one_cell(made, answer))
+                made
+            }
     }
 
     /// Statements in order, each through its own StmtSemantics — the
@@ -161,7 +167,8 @@ impl LowerCx {
     /// owns slots and the running last register.
     mut fn lower_stmts(stmts: List<StmtId>) {
         for s in stmts {
-            let r: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).lower_stmt(self, s)
+            let r: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
+                .lower_stmt(self, s)
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
         }
@@ -204,7 +211,15 @@ impl LowerCx {
         if !self.view.decls.types.owns_tasks(self.type_at(v)) { return }
         let slot = self.body.slot_of(s)
         let owner? = slot ?? r else { return }
-        self.deferred.push(Deferred { work: Deferral.Settle(owner, slot != null && self.body.is_boxed(s)), depth: self.depth, on_error: false })
+        self
+            .deferred
+            .push(
+                Deferred {
+                    work: Deferral.Settle(owner, slot != null && self.body.is_boxed(s)),
+                    depth: self.depth,
+                    on_error: false,
+                },
+            )
     }
 
     /// The program's answer, shown — printing IS lowering: the text
@@ -240,7 +255,13 @@ impl LowerCx {
     /// The refusal: an answer without a text projection names its
     /// type and the remedy.
     fn no_projection(tname: string) -> Diag {
-        refusal("lower.no_projection", self.answer_loc(), "the program's answer is a `${tname}`, which has no text projection yet", "this is the answer", "project a field instead — `p.x` prints")
+        refusal(
+            "lower.no_projection",
+            self.answer_loc(),
+            "the program's answer is a `${tname}`, which has no text projection yet",
+            "this is the answer",
+            "project a field instead — `p.x` prints",
+        )
     }
 
     /// The runtime printer for a list, by its element shape.
@@ -345,13 +366,17 @@ impl LowerCx {
     /// A fn box to run when the scope ends — or, `on_error`, only
     /// when the fn fails.
     mut fn at_exit(box: Reg, on_error: bool) {
-        self.deferred.push(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
+        self
+            .deferred
+            .push(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
     }
 
     /// A call to make when the scope ends, its arguments already in
     /// hand — or, `on_error`, only when the fn fails.
     mut fn call_at_exit(call: DirectCall, on_error: bool) {
-        self.deferred.push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
+        self
+            .deferred
+            .push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
     }
 
     /// An early exit that ANSWERS `answer`: every open frame's

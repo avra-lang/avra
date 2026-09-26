@@ -30,7 +30,22 @@
 //! Registers this pass does not model precisely (the exact credit an
 //! arm carries out of a region) are left unchecked rather than
 //! guessed at — a checker that cries wolf gets switched off.
-use core.{Ins, Reg, TypeId, TypeRegistry, SeatMark, consumed_mark, same_reg, reads_of, dst_of, owned_dst, lent_args, rt_owns, rt_lends, flatten}
+use core.{
+    Ins,
+    Reg,
+    TypeId,
+    TypeRegistry,
+    SeatMark,
+    consumed_mark,
+    same_reg,
+    reads_of,
+    dst_of,
+    owned_dst,
+    lent_args,
+    rt_owns,
+    rt_lends,
+    flatten,
+}
 use compiler.lower.{Body, Lowered}
 use diagnostics.{Diag, defect_at}
 
@@ -48,7 +63,12 @@ export fn checked(l: Lowered, managed: fn(TypeId) -> bool) -> List<Diag> {
     flatten([checked_body(b, l.types, by_name, managed) for b in l.fns.concat([l.entry])])
 }
 
-fn checked_body(b: Body, types: TypeRegistry, by_name: Map<string, List<SeatMark>>, managed: fn(TypeId) -> bool) -> List<Diag> {
+fn checked_body(
+    b: Body,
+    types: TypeRegistry,
+    by_name: Map<string, List<SeatMark>>,
+    managed: fn(TypeId) -> bool,
+) -> List<Diag> {
     let n = b.reg_types.length
     let immortal = immortal_regs(n, b.ins)
     let consuming = owned_param_regs(b.params.length, b.marks)
@@ -107,10 +127,7 @@ fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
 }
 
 fn immortal_dst(i: Ins) -> Reg? {
-    match i {
-        .ConstStr(dst, _) or .StaticAddr(dst, _) -> dst,
-        rest -> null,
-    }
+    match i { .ConstStr(dst, _) or .StaticAddr(dst, _) -> dst, rest -> null }
 }
 
 /// `r` is an OWNING definition: a fresh, managed, non-immortal box —
@@ -125,7 +142,13 @@ fn immortal_dst(i: Ins) -> Reg? {
 /// `owned_dst` as the whole answer here read every borrowed Load as
 /// a leaked box — `avra_array_get(load r8, ...)` with the load never
 /// retained, own reference correctly none, memory.av's own witness.
-fn owning_def(ins: List<Ins>, at: int, reg_types: List<TypeId>, immortal: List<bool>, managed: fn(TypeId) -> bool) -> Reg? {
+fn owning_def(
+    ins: List<Ins>,
+    at: int,
+    reg_types: List<TypeId>,
+    immortal: List<bool>,
+    managed: fn(TypeId) -> bool,
+) -> Reg? {
     let i = ins[at]
     let dst? = owned_dst(i) else { return null }
     if immortal[dst.index] || !managed(reg_types[dst.index]) { return null }
@@ -155,17 +178,20 @@ fn retained_next(ins: List<Ins>, at: int, dst: Reg) -> bool {
 /// `retained_next` alone cannot tell the two apart; this is the gate
 /// that keeps its deferral to the two shapes it was written for.
 fn defers_to_retain(ins: List<Ins>, at: int) -> bool {
-    match ins[at] {
-        .Load(_, _) or .Pack(_, _) -> true,
-        rest -> false,
-    }
+    match ins[at] { .Load(_, _) or .Pack(_, _) -> true, rest -> false }
 }
 
 fn is_retain_of(i: Ins, dst: Reg) -> bool {
     match i { .Retain(r) -> same_reg(r, dst), rest -> false }
 }
 
-fn owning_table(reg_types: List<TypeId>, immortal: List<bool>, ins: List<Ins>, managed: fn(TypeId) -> bool, owned_params: List<bool>) -> List<bool> {
+fn owning_table(
+    reg_types: List<TypeId>,
+    immortal: List<bool>,
+    ins: List<Ins>,
+    managed: fn(TypeId) -> bool,
+    owned_params: List<bool>,
+) -> List<bool> {
     mut out = [j < owned_params.length && owned_params[j] for j in 0..reg_types.length]
     for at, step in ins {
         let od: Reg? = owning_def(ins, at, reg_types, immortal, managed)
@@ -198,7 +224,12 @@ fn marks_by_name(fns: List<Body>) -> Map<string, List<SeatMark>> {
 /// A `.Call`/`.CallPtr`'s own callee's seat marks — memory.av's
 /// `callee_marks`, the same two doors: a direct call's SYMBOL, an
 /// indirect one's own register TYPE.
-fn callee_marks(types: TypeRegistry, reg_types: List<TypeId>, by_name: Map<string, List<SeatMark>>, i: Ins) -> List<SeatMark> {
+fn callee_marks(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    by_name: Map<string, List<SeatMark>>,
+    i: Ins,
+) -> List<SeatMark> {
     match i {
         .Call(_, callee, _) -> by_name.get(callee) ?? [],
         .CallPtr(_, f, _) -> types.arrow_parts(reg_types[f.index])?.marks ?? [],
@@ -259,7 +290,15 @@ type Walked = { sim: Sim, diags: List<Diag>, diverges: bool }
 /// because that path never reaches the fall-through release after the
 /// region — a local-only `born` never learns the outer register
 /// existed).
-fn walk(ctx: Ctx, lo: int, hi: int, sim0: Sim, escaping: Reg?, check_end: bool = true, outer: List<Reg> = []) -> Walked {
+fn walk(
+    ctx: Ctx,
+    lo: int,
+    hi: int,
+    sim0: Sim,
+    escaping: Reg?,
+    check_end: bool = true,
+    outer: List<Reg> = [],
+) -> Walked {
     // A `mut` SEAT cannot be answered whole (CLAUDE.md), and this walk
     // replaces its whole proof every step (a fresh `Sim` from `dispatch`,
     // a fresh one from a nested span) — so it stays a plain value, held
@@ -308,7 +347,15 @@ fn walk(ctx: Ctx, lo: int, hi: int, sim0: Sim, escaping: Reg?, check_end: bool =
 /// instruction's handling silently falls to another's).
 type Stepped = { sim: Sim, diags: List<Diag>, born: List<Reg>, diverges: bool, next: int }
 
-fn dispatch(ctx: Ctx, sim0: Sim, born0: List<Reg>, i: int, step: Ins, check_end: bool, outer: List<Reg>) -> Stepped {
+fn dispatch(
+    ctx: Ctx,
+    sim0: Sim,
+    born0: List<Reg>,
+    i: int,
+    step: Ins,
+    check_end: bool,
+    outer: List<Reg>,
+) -> Stepped {
     mut sim = sim0
     mut born = born0
     match step {
@@ -373,7 +420,13 @@ fn dispatch(ctx: Ctx, sim0: Sim, born0: List<Reg>, i: int, step: Ins, check_end:
             let gives = scope_gives(ctx.ins[close_at])
             let w = walk(ctx, i + 1, close_at, sim, gives, check_end, outer.concat(born))
             if gives != null && ctx.owning[gives!.index] { born.push(gives!) }
-            Stepped { sim: w.sim, diags: w.diags, born: born, diverges: w.diverges, next: close_at + 1 }
+            Stepped {
+                sim: w.sim,
+                diags: w.diags,
+                born: born,
+                diverges: w.diverges,
+                next: close_at + 1,
+            }
         },
         .IfStart(_) or .SwitchStart(_, _) -> {
             let arms = region_arms(ctx.ins, i)
@@ -381,12 +434,24 @@ fn dispatch(ctx: Ctx, sim0: Sim, born0: List<Reg>, i: int, step: Ins, check_end:
             let walked = [yielded(walk(ctx, a.lo, a.hi, sim, a.gives, check_end, outer.concat(born)), a.gives) for a in arms]
             let m = merged_region(ctx, i, last_arm.hi, sim, walked)
             if m.gives != null { born.push(m.gives!) }
-            Stepped { sim: m.sim, diags: m.diags, born: born, diverges: m.diverges, next: last_arm.hi + 1 }
+            Stepped {
+                sim: m.sim,
+                diags: m.diags,
+                born: born,
+                diverges: m.diverges,
+                next: last_arm.hi + 1,
+            }
         },
         .LoopStart -> {
             let bounds = loop_bounds(ctx.ins, i)
             let w = walk(ctx, i + 1, bounds.cond_at, sim, null, check_end, outer.concat(born))
-            Stepped { sim: w.sim, diags: w.diags, born: born, diverges: w.diverges, next: bounds.cond_at + 1 }
+            Stepped {
+                sim: w.sim,
+                diags: w.diags,
+                born: born,
+                diverges: w.diverges,
+                next: bounds.cond_at + 1,
+            }
         },
         .FnExit(gives) or .RetVal(gives) -> exited(ctx, sim, outer.concat(born), gives, i),
         .Ret(_) -> exited(ctx, sim, outer.concat(born), null, i),
@@ -409,7 +474,13 @@ fn stepped(sim: Sim, born: List<Reg>, next: int) -> Stepped {
 /// `Ret`): every span open at this point owes its leak check right
 /// here, and nothing on this path runs again.
 fn exited(ctx: Ctx, sim: Sim, born: List<Reg>, gives: Reg?, i: int) -> Stepped {
-    Stepped { sim: sim, diags: leak_diags(ctx, sim, born, gives, i), born: born, diverges: true, next: i + 1 }
+    Stepped {
+        sim: sim,
+        diags: leak_diags(ctx, sim, born, gives, i),
+        born: born,
+        diverges: true,
+        next: i + 1,
+    }
 }
 
 /// Every register `step` reads, checked against the proof carried in
@@ -443,7 +514,9 @@ fn dead_read_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
 /// not a use after release.
 fn birth_retain(ctx: Ctx, at: int, step: Ins) -> bool {
     match step {
-        .Retain(r) -> at > 0 && defers_to_retain(ctx.ins, at - 1) && births(owning_def(ctx.ins, at - 1, ctx.reg_types, ctx.immortal, ctx.managed), r),
+        .Retain(r) -> at > 0 &&
+            defers_to_retain(ctx.ins, at - 1) &&
+            births(owning_def(ctx.ins, at - 1, ctx.reg_types, ctx.immortal, ctx.managed), r),
         rest -> false,
     }
 }
@@ -537,10 +610,7 @@ fn scope_close(ins: List<Ins>, open_at: int) -> int {
 }
 
 fn scope_gives(i: Ins) -> Reg? {
-    match i {
-        .ScopeExit(gives) -> gives,
-        rest -> null,
-    }
+    match i { .ScopeExit(gives) -> gives, rest -> null }
 }
 
 /// A loop's own `LoopCond` and `LoopEnd`, at `LoopStart`'s own
@@ -716,21 +786,36 @@ fn is_moving_twin(callee: string) -> bool {
 // ── Voices — every refusal spoken here, never assembled elsewhere ──
 
 fn use_after_release(name: string, at: int, r: Reg) -> Diag {
-    defect_at(null, "in `${name}`, instruction ${at} reads r${r.index} after it was released — a use-after-free the memory pass's own output proves")
+    defect_at(
+        null,
+        "in `${name}`, instruction ${at} reads r${r.index} after it was released — a use-after-free the memory pass's own output proves",
+    )
 }
 
 fn releases_unowned(name: string, at: int, r: Reg) -> Diag {
-    defect_at(null, "in `${name}`, instruction ${at} releases r${r.index} — a parameter or a view, never this body's own reference to give up — a caller's own count goes wrong at the return")
+    defect_at(
+        null,
+        "in `${name}`, instruction ${at} releases r${r.index} — a parameter or a view, never this body's own reference to give up — a caller's own count goes wrong at the return",
+    )
 }
 
 fn region_disagreement(name: string, at: int, r: Reg) -> Diag {
-    defect_at(null, "in `${name}`, a region ending at instruction ${at} leaves r${r.index} released on one arm and not on another — the two paths must agree")
+    defect_at(
+        null,
+        "in `${name}`, a region ending at instruction ${at} leaves r${r.index} released on one arm and not on another — the two paths must agree",
+    )
 }
 
 fn unprotected_view(name: string, at: int, r: Reg) -> Diag {
-    defect_at(null, "in `${name}`, instruction ${at} hands r${r.index} — a view with no reference of its own — to a call whose callee may empty the box it looks into, uncounted")
+    defect_at(
+        null,
+        "in `${name}`, instruction ${at} hands r${r.index} — a view with no reference of its own — to a call whose callee may empty the box it looks into, uncounted",
+    )
 }
 
 fn leaked(name: string, at: int, r: Reg) -> Diag {
-    defect_at(null, "in `${name}`, r${r.index} is a fresh box still alive at instruction ${at} — never released, transferred, or answered on this path")
+    defect_at(
+        null,
+        "in `${name}`, r${r.index} is a fresh box still alive at instruction ${at} — never released, transferred, or answered on this path",
+    )
 }

@@ -54,10 +54,7 @@ impl Attempt {
 
 /// A refusal in the derivation's words is the attempt's refusal.
 fn or_refused<T>(r: Result<T, string>) -> Result<T, Turn> {
-    match r {
-        .Ok(v) -> .Ok(v),
-        .Err(why) -> .Err(Turn.Refused(why)),
-    }
+    match r { .Ok(v) -> .Ok(v), .Err(why) -> .Err(Turn.Refused(why)) }
 }
 
 /// What a file SAID the last time it parsed: its warnings, rendered, and the
@@ -84,7 +81,10 @@ const READ_NAMED: int = 12
 impl Derived {
     /// THE BUILD, by the workspace this derivation was made in — an
     /// identity, so it is written through and never copied.
-    fn linked(m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, BuildError> {
+    fn linked(m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
         self.program.ws.linked(self, m, under, binary, tools)
     }
 
@@ -92,7 +92,12 @@ impl Derived {
     /// the files a record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
         let counted = ["held ${self.held}/${self.files}", "attempt ${self.turns}"]
-        let spent = joined([ph.shown() for ph in grouped_phases(self.program.phases)].concat(counted).concat([ph.shown() for ph in grouped_phases(self.spans.concat(more))]), ", ")
+        let spent = joined(
+            [ph.shown() for ph in grouped_phases(self.program.phases)]
+                .concat(counted)
+                .concat([ph.shown() for ph in grouped_phases(self.spans.concat(more))]),
+            ", ",
+        )
         if self.read.is_empty() { return spent }
         let named = ["  ${relative_path(self.program.ws.root, r.path)} — ${r.why.says()}" for r in self.read.slice(0, READ_NAMED)]
         let rest = if self.read.length > READ_NAMED { ["  … and ${self.read.length - READ_NAMED} more"] } else { [] }
@@ -115,7 +120,12 @@ fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
 
 /// A `Said` as its row: the case count, a line per case, then the warnings.
 fn said_wire(s: Said) -> string {
-    joined(["${s.cases.length}"].concat(["${c.symbol}\t${field_text(c.label)}" for c in s.cases]).concat([s.warnings]), "\n")
+    joined(
+        ["${s.cases.length}"]
+            .concat(["${c.symbol}\t${field_text(c.label)}" for c in s.cases])
+            .concat([s.warnings]),
+        "\n",
+    )
 }
 
 /// `said_wire`, read back — null for a row that is not one.
@@ -125,13 +135,20 @@ fn said_of(path: string, raw: string) -> Said? {
     if n < 0 || lines.length < n + 1 { return null }
     let cases = [case_of(line) for line in lines.slice(1, n + 1)]
     if cases.any(it == null) { return null }
-    Said { path: path, warnings: joined(lines.slice(n + 1, lines.length), "\n"), cases: [c! for c in cases] }
+    Said {
+        path: path,
+        warnings: joined(lines.slice(n + 1, lines.length), "\n"),
+        cases: [c! for c in cases],
+    }
 }
 
 fn case_of(line: string) -> CaseCall? {
     let at = line.index_of("\t")
     if at < 0 { return null }
-    CaseCall { symbol: line.substring(0, at), label: text_of_field(line.substring(at + 1, line.length)) }
+    CaseCall {
+        symbol: line.substring(0, at),
+        label: text_of_field(line.substring(at + 1, line.length)),
+    }
 }
 
 /// Where a program's instantiation homes are remembered, by its entry.
@@ -209,7 +226,9 @@ impl Workspace {
     /// A derivation that only SPEAKS owes its instantiations' verdict: lowered now,
     /// unless these very instantiations lowered clean before.
     fn checked_whole(d: Derived) -> Result<Derived, string> {
-        if !(d.want is .Diagnostics) || d.unlowered.is_empty() || d.store.has(Stored.Unit, clean_key(d.asked)) { return d }
+        if !(d.want is .Diagnostics) ||
+            d.unlowered.is_empty() ||
+            d.store.has(Stored.Unit, clean_key(d.asked)) { return d }
         d.program.ws.whole(d, [])
     }
 
@@ -305,7 +324,11 @@ impl Workspace {
         self.settle_consts(p)
         at.having_read(self.bodies_asked())?
         let lo = or_refused(lowered)?
-        remember(store, homes_key(self.known_as(at)), distinct([self.decls.file(f).path for f in lo.homes]))
+        remember(
+            store,
+            homes_key(self.known_as(at)),
+            distinct([self.decls.file(f).path for f in lo.homes]),
+        )
         if at.homes && lo.homes.any((f) -> self.is_held(f)) { fail Turn.Again(at) }
         lo
     }
@@ -326,13 +349,25 @@ impl Workspace {
     /// What one read file's bodies ask, kept under the file's key.
     fn keep_asks(store: Store, lo: Lowered, a: Analysis) {
         let asks = [k.want for k in lo.asks if same_file(k.by, a.view.file)]
-        let _ = store.keep_once(Stored.Unit, self.asks_key(self.held_okey(store, a.view.source.file)), self.wanted_list_wire(asks))
+        let _ = store
+            .keep_once(
+                Stored.Unit,
+                self.asks_key(self.held_okey(store, a.view.source.file)),
+                self.wanted_list_wire(asks),
+            )
     }
 
     /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
     /// home owes are named, never lowered — and a derivation that owes none is
     /// marked clean.
-    fn stood(at: Attempt, store: Store, p: Program, lo: Lowered, said: List<Said>, spans: List<Phase>) -> Derived {
+    fn stood(
+        at: Attempt,
+        store: Store,
+        p: Program,
+        lo: Lowered,
+        said: List<Said>,
+        spans: List<Phase>,
+    ) -> Derived {
         let roots = self.hold.held_wants.get().concat([k.want for k in lo.asks])
         let asked = self.asked_print(store, self.known_as(at), roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
@@ -379,7 +414,13 @@ impl Workspace {
         // decided against what the store remembered, after the fact —
         // never the ask a later write must answer to
         if self.hold.held_flat.get().any((t) -> !self.decls.types.peek_flat(t)) { return true }
-        p.files.any((a: Analysis) -> self.kept_boxed(store, a.view.file).any((d: DeclId) -> !self.decls.types.peek_boxed_flat(self.decls.record_type(d))))
+        p
+            .files
+            .any(
+                (a: Analysis) -> self
+                    .kept_boxed(store, a.view.file)
+                    .any((d: DeclId) -> !self.decls.types.peek_boxed_flat(self.decls.record_type(d))),
+            )
     }
 
     /// The records of a parsed file its module's last record kept BOXED, as they
@@ -415,7 +456,10 @@ impl Workspace {
     /// module's record was written from.
     fn home_moved(store: Store, path: string) -> bool {
         if path.is_empty() || !self.host.exists(path) { return false }
-        !written_from(record_places(self, store, module_path(self.module_of(path).split("."))).get(path), self.text_digest(path))
+        !written_from(
+            record_places(self, store, module_path(self.module_of(path).split("."))).get(path),
+            self.text_digest(path),
+        )
     }
 
     /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
@@ -425,10 +469,21 @@ impl Workspace {
         mut reads: List<string> = distinct(self.hold.read_with.get())
         mut at = 0
         while at < reads.length {
-            for path in kept_runs(record_places(self, store, module_path(self.module_of(reads[at]).split("."))).get(reads[at])) {
+            for path in kept_runs(
+                record_places(self, store, module_path(self.module_of(reads[at]).split(".")))
+                    .get(reads[at]),
+            ) {
                 if !reads.contains(path) {
                     reads.push(path)
-                    if self.hold.hold_asked.get().contains(path) { self.hold.read_files.push(ReadFile { path: path, why: Reads.RunBy(relative_path(self.root, reads[at])) }) }
+                    if self.hold.hold_asked.get().contains(path) { self
+                            .hold
+                            .read_files
+                            .push(
+                                ReadFile {
+                                    path: path,
+                                    why: Reads.RunBy(relative_path(self.root, reads[at])),
+                                },
+                            ) }
                 }
             }
             at = at + 1
@@ -441,7 +496,13 @@ impl Workspace {
     /// it sees. An ask a home's own body makes is that home's content.
     fn asked_print(store: Store, known_as: string, roots: List<Wanted>) -> string {
         let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty()]
-        digest_of(joined(sorted_texts(distinct([self.wanted_wire(w) for w in roots])).concat(["${path}\t${self.held_okey(store, path)}" for path in homes]), "\n"))
+        digest_of(
+            joined(
+                sorted_texts(distinct([self.wanted_wire(w) for w in roots]))
+                    .concat(["${path}\t${self.held_okey(store, path)}" for path in homes]),
+                "\n",
+            ),
+        )
     }
 
     /// What every file said, in file order: a parsed file's KEPT, a held file's
@@ -460,7 +521,11 @@ impl Workspace {
     /// carries both and a later hold answers them alike.
     fn says(p: Program, a: Analysis) -> Said {
         let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
-        Said { path: a.view.source.file, warnings: p.warned(ds), cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)] }
+        Said {
+            path: a.view.source.file,
+            warnings: p.warned(ds),
+            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
+        }
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there

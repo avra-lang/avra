@@ -31,7 +31,12 @@ fn answer_of(rows: List<Route>, line: string) -> string {
 fn routes() -> List<Route> {
     [
         routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-        routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+        routed<Search>(
+            Method.Get,
+            "/search/{term}/{page}",
+            (t: Bytes) -> Search.parse(t),
+            serve_search,
+        ),
     ]
 }
 
@@ -66,38 +71,90 @@ spec "@std.http route" {
     given "a handler's own 404" {
 
         then "a handler answering 410 is its answer, not a miss" {
-            dispatch(compiled([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]), asked("GET /ideas/7 HTTP/1.1")!).status == 410
+            dispatch(
+                compiled(
+                    [
+                        routed<Idea>(
+                            Method.Get,
+                            "/ideas/{id}",
+                            (t: Bytes) -> Idea.parse(t),
+                            serve_gone,
+                        ),
+                    ],
+                ),
+                asked("GET /ideas/7 HTTP/1.1")!,
+            )
+                .status == 410
         }
         then "a route that does not match still falls through to the next" {
-            dispatch(compiled([
-                routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
-                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-            ]), asked("GET /ideas/7 HTTP/1.1")!).status == 200
+            dispatch(
+                compiled(
+                    [
+                        routed<Search>(
+                            Method.Get,
+                            "/search/{term}/{page}",
+                            (t: Bytes) -> Search.parse(t),
+                            serve_search,
+                        ),
+                        routed<Idea>(
+                            Method.Get,
+                            "/ideas/{id}",
+                            (t: Bytes) -> Idea.parse(t),
+                            serve_idea,
+                        ),
+                    ],
+                ),
+                asked("GET /ideas/7 HTTP/1.1")!,
+            )
+                .status == 200
         }
     }
     given "the law over a table" {
 
         then "two routes of one shape are named, later first" {
-            faults([
-                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone),
-            ]).length == 1
+            faults(
+                [
+                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> Idea.parse(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+                .length == 1
         }
         then "the refusal names both patterns and says which is unreachable" {
-            let found = faults([
-                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone),
-            ])
+            let found = faults(
+                [
+                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> Idea.parse(t),
+                        serve_gone,
+                    ),
+                ],
+            )
             found[0] == "`/ideas/{slug}` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
         }
         then "routes of different shapes do not conflict" {
             faults(routes()).is_empty()
         }
         then "one shape under two methods is two routes, not a conflict" {
-            faults([
-                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                routed<Idea>(Method.Post, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone),
-            ]).is_empty()
+            faults(
+                [
+                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Post,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+                .is_empty()
         }
     }
     given "a route matches the path, and the query rides beside it" {
@@ -148,46 +205,118 @@ spec "@std.http route" {
             answer_of([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
         }
         then "declaration order decides between a rest-taker and a path it covers" {
-            answer_of([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)], "GET /static/logo.svg HTTP/1.1") == "200 static logo.svg"
+            answer_of(
+                [r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)],
+                "GET /static/logo.svg HTTP/1.1",
+            ) == "200 static logo.svg"
         }
         then "and reversing them reverses the answer" {
-            answer_of([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()], "GET /static/logo.svg HTTP/1.1") == "200 word"
+            answer_of(
+                [fixed(Method.Get, "/static/logo.svg", serve_word), r_static()],
+                "GET /static/logo.svg HTTP/1.1",
+            ) == "200 word"
         }
     }
     given "what the law says about a rest-taker" {
 
         then "A DOOR THAT TAKES THE REST NEEDS A PATTERN THAT SAYS SO" {
-            faults([tailed<Static>(Method.Get, "/static/files", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+            faults(
+                [
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/files",
+                        (t: Bytes) -> Static.parse(t),
+                        serve_static,
+                    ),
+                ],
+            )[0] == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }
         then "and a pattern without the mark is named even when it has a hole" {
-            faults([tailed<Static>(Method.Get, "/static/{path}", (t: Bytes) -> Static.parse(t), serve_static)]).length == 1
+            faults(
+                [
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/{path}",
+                        (t: Bytes) -> Static.parse(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .length == 1
         }
         then "A PATTERN THAT SPELLS THE REST NEEDS A DOOR THAT TAKES IT" {
-            faults([routed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/{path...}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
+            faults(
+                [
+                    routed<Static>(
+                        Method.Get,
+                        "/static/{path...}",
+                        (t: Bytes) -> Static.parse(t),
+                        serve_static,
+                    ),
+                ],
+            )[0] == "`/static/{path...}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
         }
         then "a static path holding the three dots is neither, because its braces are octets" {
             faults([fixed(Method.Get, "/static/{a...}", serve_word)]).is_empty()
         }
         then "a mark on a hole that is not last is a greedy hole, not a claim on the rest" {
-            faults([routed<Search>(Method.Get, "/search/{term...}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]).is_empty()
+            faults(
+                [
+                    routed<Search>(
+                        Method.Get,
+                        "/search/{term...}/{page}",
+                        (t: Bytes) -> Search.parse(t),
+                        serve_search,
+                    ),
+                ],
+            )
+                .is_empty()
         }
         then "a rest-taker shadows a deeper path below it" {
             faults([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)])[0] == "`/static/logo.svg` is unreachable — `/static/{path...}` is declared above it and matches every target it does"
         }
         then "it shadows a route of greater width too, because it reaches every width" {
-            faults([r_static(), routed<Search>(Method.Get, "/static/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]).length == 1
+            faults(
+                [
+                    r_static(),
+                    routed<Search>(
+                        Method.Get,
+                        "/static/{term}/{page}",
+                        (t: Bytes) -> Search.parse(t),
+                        serve_search,
+                    ),
+                ],
+            )
+                .length == 1
         }
         then "a path above a rest-taker is reachable" {
             faults([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()]).is_empty()
         }
         then "NO ROUTE OF FIXED WIDTH CAN SHADOW A REST-TAKER — there is always a deeper target" {
-            faults([routed<Idea>(Method.Get, "/static/{x}", (t: Bytes) -> Idea.parse(t), serve_idea), r_static()]).is_empty()
+            faults(
+                [
+                    routed<Idea>(Method.Get, "/static/{x}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    r_static(),
+                ],
+            )
+                .is_empty()
         }
         then "a rest-taker anchoring its own end shadows nothing it does not reach" {
             faults([r_png(), fixed(Method.Get, "/img/a/b.jpg", serve_word)]).is_empty()
         }
         then "two rest-takers of one shape are named" {
-            faults([r_static(), tailed<Static>(Method.Get, "/static/{rest...}", (t: Bytes) -> Static.parse(t), serve_static)]).length == 1
+            faults(
+                [
+                    r_static(),
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/{rest...}",
+                        (t: Bytes) -> Static.parse(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .length == 1
         }
     }
 }

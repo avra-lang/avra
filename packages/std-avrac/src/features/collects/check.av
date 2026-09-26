@@ -45,7 +45,13 @@ fn checked_scope(mut cx: TypeCx, s: StmtId, scope: CollectScope) {
     }
 }
 
-fn checked_projection(mut cx: TypeCx, s: StmtId, proj: Projection, kind: CollectKind, entry_ty: TypeId) {
+fn checked_projection(
+    mut cx: TypeCx,
+    s: StmtId,
+    proj: Projection,
+    kind: CollectKind,
+    entry_ty: TypeId,
+) {
     let elem_name = cx.view.types.name_of(entry_ty)
     if proj.ty.name != elem_name { cx.emit(proj_mismatch(cx.stmt_loc(s), proj.ty.name, elem_name)) }
     let fields? = cx.fields_of(entry_ty) else { return cx.emit(not_a_record(cx.stmt_loc(s), proj.ty.name)) }
@@ -81,11 +87,7 @@ fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
 /// off, so nothing past `mark` is honest to accept. `UnknownKind`
 /// names no declarations at all, so it answers no word.
 fn kind_word(kind: CollectKind, word: string) -> bool {
-    match kind {
-        .Component(_) -> true,
-        .UnknownKind(_) -> false,
-        .Annotated(_) -> word == "mark",
-    }
+    match kind { .Component(_) -> true, .UnknownKind(_) -> false, .Annotated(_) -> word == "mark" }
 }
 
 fn path_word(path: List<Plain>) -> string {
@@ -96,31 +98,73 @@ fn path_word(path: List<Plain>) -> string {
 // ── voices ──
 
 fn unknown_kind(at: Loc?, kind: string) -> Diag {
-    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "an imported component's own name — `rule` among them — or `@name` for every declaration wearing that annotation")
+    refusal(
+        "collect.kind",
+        at,
+        "`${kind}` is not a declaration kind `collect` gathers yet",
+        "in this collect",
+        "an imported component's own name — `rule` among them — or `@name` for every declaration wearing that annotation",
+    )
 }
 
 fn unknown_scope(at: Loc?, scope: string) -> Diag {
-    refusal("collect.scope", at, "`${scope}` is not a collect scope", "in this collect", "the scopes are: self, package, closure")
+    refusal(
+        "collect.scope",
+        at,
+        "`${scope}` is not a collect scope",
+        "in this collect",
+        "the scopes are: self, package, closure",
+    )
 }
 
 fn order_required(at: Loc?, name: string) -> Diag {
-    refusal("collect.order", at, "a collection declares its order — `by …`", "`${name}` has none", "add `by it.field, …` — never file order")
+    refusal(
+        "collect.order",
+        at,
+        "a collection declares its order — `by …`",
+        "`${name}` has none",
+        "add `by it.field, …` — never file order",
+    )
 }
 
 fn not_a_list(at: Loc?, name: string) -> Diag {
-    refusal("collect.not_a_list", at, "`collect ${name}` must declare a `List<T>`", "declared here", "write `List<Row>` as the collection's type")
+    refusal(
+        "collect.not_a_list",
+        at,
+        "`collect ${name}` must declare a `List<T>`",
+        "declared here",
+        "write `List<Row>` as the collection's type",
+    )
 }
 
 fn not_a_record(at: Loc?, ty: string) -> Diag {
-    refusal("collect.not_a_record", at, "`${ty}` has no fields a projection can fill", "as this type", "project into a record type")
+    refusal(
+        "collect.not_a_record",
+        at,
+        "`${ty}` has no fields a projection can fill",
+        "as this type",
+        "project into a record type",
+    )
 }
 
 fn proj_mismatch(at: Loc?, written: string, elem: string) -> Diag {
-    refusal("collect.proj_type", at, "`as ${written}` disagrees with the declared element `${elem}`", "in this collect", "project `as ${elem}`, or declare `List<${written}>`")
+    refusal(
+        "collect.proj_type",
+        at,
+        "`as ${written}` disagrees with the declared element `${elem}`",
+        "in this collect",
+        "project `as ${elem}`, or declare `List<${written}>`",
+    )
 }
 
 fn field_mismatch(at: Loc?, ty: string, missing: List<string>, unknown: List<string>) -> Diag {
-    refusal("collect.fields", at, "`${ty}`'s fields are not each filled exactly once — ${field_gap_words(missing, unknown)}", "in this projection", "fill every declared field once, and no other")
+    refusal(
+        "collect.fields",
+        at,
+        "`${ty}`'s fields are not each filled exactly once — ${field_gap_words(missing, unknown)}",
+        "in this projection",
+        "fill every declared field once, and no other",
+    )
 }
 
 fn field_gap_words(missing: List<string>, unknown: List<string>) -> string {
@@ -133,5 +177,11 @@ fn some_word(label: string, names: List<string>) -> List<string> {
 }
 
 fn unknown_path(at: Loc?, path: List<Plain>) -> Diag {
-    refusal("collect.path", at, "`${path_word(path)}` is not a field this kind's declarations answer", "in this collect", "the generic fields are name, module, file, doc — a kind may add its own")
+    refusal(
+        "collect.path",
+        at,
+        "`${path_word(path)}` is not a field this kind's declarations answer",
+        "in this collect",
+        "the generic fields are name, module, file, doc — a kind may add its own",
+    )
 }

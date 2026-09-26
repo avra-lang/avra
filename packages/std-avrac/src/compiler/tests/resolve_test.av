@@ -35,16 +35,23 @@ spec "compiler/resolve" {
     }
     given "the shadowing chain — the lookup ORDER is the law" {
         then "innermost outward: an inner scope beats a param" {
-            shown("let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { n }\n}\nf(10) + n") == "101"
+            shown(
+                "let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { n }\n}\nf(10) + n",
+            ) == "101"
         }
         then "a param binds when no inner scope speaks" {
             shown("let n = 1\nfn f(n: int) -> int { n }\nf(41) + n") == "42"
         }
         then "the chain ends at the body floor — the top level's bindings are not a rung" {
-            refused_with("let n = 1\nfn f() -> int {\n    n\n}\nf()", "run-time binding of the top level")
+            refused_with(
+                "let n = 1\nfn f() -> int {\n    n\n}\nf()",
+                "run-time binding of the top level",
+            )
         }
         then "each scope's name dies at its exit" {
-            shown("let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { 0 } + n\n}\nf(41)") == "141"
+            shown(
+                "let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { 0 } + n\n}\nf(41)",
+            ) == "141"
         }
     }
     given "unresolved names" {
@@ -52,13 +59,20 @@ spec "compiler/resolve" {
             let a = analyze_source("x\nlet x = 1")
             let p = a.view
             let r = a.names
-            r.voices.list.length == 1 && r.voices.list[0].kind == "resolve.use_before_def" && r.voices.list[0].help != null
+            r.voices.list.length == 1 &&
+                r.voices.list[0].kind == "resolve.use_before_def" &&
+                r.voices.list[0].help != null
         }
         then "a typo one edit away suggests with High confidence" {
             let a = analyze_source("let value = 1 + valu")
             let p = a.view
             let r = a.names
-            r.voices.list.length == 1 && r.voices.list[0].kind == "resolve.unresolved" && r.voices.list[0].suggestions.length == 1 && r.voices.list[0].suggestions[0].confidence == Confidence.High && r.voices.list[0].suggestions[0].edits.length == 1 && r.voices.list[0].suggestions[0].edits[0].replacement == "value"
+            r.voices.list.length == 1 &&
+                r.voices.list[0].kind == "resolve.unresolved" &&
+                r.voices.list[0].suggestions.length == 1 &&
+                r.voices.list[0].suggestions[0].confidence == Confidence.High &&
+                r.voices.list[0].suggestions[0].edits.length == 1 &&
+                r.voices.list[0].suggestions[0].edits[0].replacement == "value"
         }
         then "two edits away is Medium; far away is silent" {
             let an = analyze_source("let value = 1\nvlaue")
@@ -67,7 +81,9 @@ spec "compiler/resolve" {
             let af = analyze_source("let alpha = 1\nzz")
             let far = af.view
             let rf = af.names
-            rn.voices.list[0].suggestions[0].confidence == Confidence.Medium && rf.voices.list[0].suggestions.is_empty() && rf.voices.list[0].help == null
+            rn.voices.list[0].suggestions[0].confidence == Confidence.Medium &&
+                rf.voices.list[0].suggestions.is_empty() &&
+                rf.voices.list[0].help == null
         }
     }
     given "reserved words" {

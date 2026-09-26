@@ -2,7 +2,21 @@
 // directory under TMPDIR: what stands at a path, a file written and
 // read whole, a directory listed in byte order, and every refusal in
 // its own words with its path.
-use @std.io.{IoError, Entry, kind_of, exists, is_file, is_dir, read_text, write_text, list_dir, make_dirs, remove, env, env_or}
+use @std.io.{
+    IoError,
+    Entry,
+    kind_of,
+    exists,
+    is_file,
+    is_dir,
+    read_text,
+    write_text,
+    list_dir,
+    make_dirs,
+    remove,
+    env,
+    env_or,
+}
 
 /// The scratch directory, made.
 fn scratch() -> string {
@@ -21,20 +35,12 @@ fn fresh(name: string) -> string {
 }
 
 fn message(r: Result<string, IoError>) -> string {
-    match r {
-        .Ok(t) -> "ok: ${t}",
-        .Err(e) -> e.describe().message,
-    }
+    match r { .Ok(t) -> "ok: ${t}", .Err(e) -> e.describe().message }
 }
 
 fn kind(r: Result<Entry, IoError>) -> string {
     match r {
-        .Ok(k) -> match k {
-            .Missing -> "missing",
-            .File -> "file",
-            .Dir -> "dir",
-            .Other -> "other",
-        },
+        .Ok(k) -> match k { .Missing -> "missing", .File -> "file", .Dir -> "dir", .Other -> "other" },
         .Err(e) -> e.describe().message,
     }
 }
@@ -104,10 +110,7 @@ spec "std/io" {
         }
         then "the refusal is a value: a match reads the variant" {
             let p = fresh("v.txt")
-            match read_text(p) {
-                .Ok(_) -> false,
-                .Err(e) -> e is .NotFound,
-            }
+            match read_text(p) { .Ok(_) -> false, .Err(e) -> e is .NotFound }
         }
     }
     given "directories" {
@@ -134,10 +137,7 @@ spec "std/io" {
         }
         then "listing what is not there" {
             let p = fresh("no-dir")
-            match list_dir(p) {
-                .Ok(_) -> false,
-                .Err(e) -> e is .NotFound,
-            }
+            match list_dir(p) { .Ok(_) -> false, .Err(e) -> e is .NotFound }
         }
         then "make_dirs makes the whole path, and again is fine" {
             let d = "${fresh("deep")}/a/b/c"
@@ -153,16 +153,16 @@ spec "std/io" {
             let _ = write_text(p, "")
             let d = fresh("rm-dir")
             let _ = make_dirs(d)
-            message(remove(p)) == "ok: ${p}" && message(remove(d)) == "ok: ${d}" && !exists(p) && !exists(d)
+            message(remove(p)) == "ok: ${p}" &&
+                message(remove(d)) == "ok: ${d}" &&
+                !exists(p) &&
+                !exists(d)
         }
         then "remove refuses a directory with contents, in the host's words" {
             let d = fresh("full")
             let _ = make_dirs(d)
             let _ = write_text("${d}/x", "")
-            match remove(d) {
-                .Ok(_) -> false,
-                .Err(e) -> e is .Failed,
-            }
+            match remove(d) { .Ok(_) -> false, .Err(e) -> e is .Failed }
         }
     }
     given "the environment" {

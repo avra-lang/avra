@@ -8,7 +8,21 @@
 //! `@recover` lands on the branch. The token named in the text never
 //! reaches the value model.
 use util.{want, all_codes, is_upper_name_cont}
-use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, BuildArg, Fixed, Expect, Recover, BranchStart}
+use ast.{
+    Grammar,
+    Rule,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    Build,
+    BuildArg,
+    Fixed,
+    Expect,
+    Recover,
+    BranchStart,
+}
 use executor.{Captured, RunOutcome}
 use lexeme.{Lexeme}
 use seed.{item, cap, seq, seq_to, alt, rule_def, rule_ref, lit, named, group}
@@ -57,17 +71,11 @@ fn ok<T>(g: GrammarNode) -> Result<Captured<T, GrammarNode>, string> {
 // and null otherwise. ──
 
 fn tok_of<T>(v: Captured<T, GrammarNode>) -> T? {
-    match v {
-        .Terminal(t) -> t,
-        _ -> null,
-    }
+    match v { .Terminal(t) -> t, _ -> null }
 }
 
 fn node_of<T>(v: Captured<T, GrammarNode>) -> GrammarNode? {
-    match v {
-        .Node(n) -> n,
-        _ -> null,
-    }
+    match v { .Node(n) -> n, _ -> null }
 }
 
 impl GrammarNode {
@@ -112,12 +120,7 @@ fn as_annots<T>(v: Captured<T, GrammarNode>) -> Result<List<PendingAnnot>, strin
 
 /// The repetition a notation suffix names — the inverse of `Rep.suffix`.
 fn rep_of_suffix(text: string) -> Rep? {
-    match text {
-        "*" -> Rep.Star,
-        "+" -> Rep.Plus,
-        "?" -> Rep.Opt,
-        _ -> null,
-    }
+    match text { "*" -> Rep.Star, "+" -> Rep.Plus, "?" -> Rep.Opt, _ -> null }
 }
 
 /// A postfix capture's repetition: absent is one, a terminal is its
@@ -138,7 +141,10 @@ fn call_args<T>(v: Captured<T, GrammarNode>) -> Result<List<BuildArg>, string> {
 /// A branch that NAMES A NODE: its arguments state payloads the rule
 /// carries in its own words, and nothing else — a captured payload
 /// reaches its slot by LABEL.
-fn node_build<T>(owner: string, variant: string, written: List<BuildArg>) -> Result<Captured<T, GrammarNode>, string> {
+fn node_build<T>(owner: string, variant: string, written: List<BuildArg>) -> Result<
+    Captured<T, GrammarNode>,
+    string,
+> {
     ok<T>(GrammarNode.NBuild(Build.Node(owner, variant, [fixed_arg(a)? for a in written], null)))
 }
 
@@ -193,7 +199,10 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
 /// The items with every one carrying `label` marked as a head or a
 /// trailer, groups opened — a label is captured at any depth. One
 /// the branch does not capture is the author's mistake, named.
-fn marked_by_label(items: List<Item>, label: string, word: string, as_head: bool) -> Result<List<Item>, string> {
+fn marked_by_label(items: List<Item>, label: string, word: string, as_head: bool) -> Result<
+    List<Item>,
+    string,
+> {
     if !seq(items).labels().contains(label) { return .Err("${word} names `${label}` but the branch captures no such label") }
     .Ok([marked_item(m, label, as_head) for m in items])
 }
@@ -201,7 +210,12 @@ fn marked_by_label(items: List<Item>, label: string, word: string, as_head: bool
 fn marked_item(m: Item, label: string, as_head: bool) -> Item {
     if m.label == label { return head_or_trailer(m, as_head) }
     match m.prim {
-        .Group(inner) -> m with { prim: Prim.Group(Alt { branches: [s with { items: [marked_item(x, label, as_head) for x in s.items] } for s in inner.branches] }) },
+        .Group(inner) -> m with { prim: Prim
+            .Group(
+                Alt {
+                    branches: [s with { items: [marked_item(x, label, as_head) for x in s.items] } for s in inner.branches],
+                },
+            ) },
         .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> m,
     }
 }
@@ -214,10 +228,7 @@ fn head_or_trailer(m: Item, as_head: bool) -> Item {
 /// Consumers use this instead of unwrapping GrammarNode themselves.
 export fn grammar_result<T>(o: RunOutcome<T, GrammarNode>) -> Grammar? {
     let res? = o.result else { return null }
-    match res {
-        .Node(.NGrammar(gr)) -> gr,
-        _ -> null,
-    }
+    match res { .Node(.NGrammar(gr)) -> gr, _ -> null }
 }
 
 /// The token at `args[i]`'s text, wanting `what` when absent.
@@ -235,7 +246,12 @@ fn opt_tok_text<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> string? {
 /// carry no spans, so the branch loc goes unused here. `lex` is `T`'s
 /// whole contract — this dispatch reads a captured token's text only
 /// through it.
-export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, GrammarNode>>, _loc: Loc?) -> Result<Captured<T, GrammarNode>, string> {
+export fn grammar_build<T>(
+    lex: Lexeme<T>,
+    name: string,
+    args: List<Captured<T, GrammarNode>>,
+    _loc: Loc?,
+) -> Result<Captured<T, GrammarNode>, string> {
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?

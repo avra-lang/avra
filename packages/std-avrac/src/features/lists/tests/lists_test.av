@@ -23,7 +23,9 @@ spec "features/lists" {
             shown("let flags = [true, false]\nflags[0]") == "true"
         }
         then "a range-for folds a list" {
-            shown("let xs = [3, 4, 5]\nmut total = 0\nfor i in 0..xs.length {\n    total = total + xs[i]\n}\ntotal") == "12"
+            shown(
+                "let xs = [3, 4, 5]\nmut total = 0\nfor i in 0..xs.length {\n    total = total + xs[i]\n}\ntotal",
+            ) == "12"
         }
     }
     given "wrong shapes" {
@@ -39,7 +41,8 @@ spec "features/lists" {
         }
         then "indexing a non-list points at the subject" {
             let a = analyze_source("1[0]\n2")
-            a.diagnostics.length == 1 && a.report().contains("`[...]` indexes a `List`, found `int`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`[...]` indexes a `List`, found `int`")
         }
         then "a non-int index points at the position" {
             let a = analyze_source("let xs = [1]\nxs[true]\n2")
@@ -47,7 +50,9 @@ spec "features/lists" {
         }
         then "an unknown property is named" {
             let a = analyze_source("let xs = [1]\nxs.size\n2")
-            a.diagnostics.length == 1 && a.report().contains("no property `size` on `List<int>`") && a.report().contains("a property is a record's field, or a measure like `length`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("no property `size` on `List<int>`") &&
+                a.report().contains("a property is a record's field, or a measure like `length`")
         }
         then "`==` on lists offers the alternatives" {
             let a = analyze_source("let xs = [1]\nlet ys = [1]\nxs == ys\n2")
@@ -68,7 +73,9 @@ spec "features/lists" {
             shown("mut t = 0\nfor x in [4, 5, 6] {\n    t = t + x\n}\nt") == "15"
         }
         then "struct elements ride the widened slot law" {
-            shown("type P = { x: int }\nmut t = 0\nfor p in [P { x: 2 }, P { x: 3 }] {\n    t = t + p.x\n}\nt") == "5"
+            shown(
+                "type P = { x: int }\nmut t = 0\nfor p in [P { x: 2 }, P { x: 3 }] {\n    t = t + p.x\n}\nt",
+            ) == "5"
         }
         then "nested lists nest their walks" {
             shown("mut t = 0\nfor row in [[1], [2, 3]] {\n    t = t + row.length\n}\nt") == "3"
@@ -77,13 +84,21 @@ spec "features/lists" {
             shown("mut t = 0\nfor i in 1..4 {\n    t = t + i\n}\nt") == "6"
         }
         then "walking a non-list refuses and names the range spelling" {
-            refused_with("mut t = 0\nfor x in 5 {\n    t = t + x\n}\nt", "`for … in` walks a `List`, this is `int`")
+            refused_with(
+                "mut t = 0\nfor x in 5 {\n    t = t + x\n}\nt",
+                "`for … in` walks a `List`, this is `int`",
+            )
         }
         then "walking `[]` refuses — the loop would never run" {
-            refused_with("mut t = 0\nfor x in [] {\n    t = t + x\n}\nt", "`for` walks an empty literal — nothing to bind")
+            refused_with(
+                "mut t = 0\nfor x in [] {\n    t = t + x\n}\nt",
+                "`for` walks an empty literal — nothing to bind",
+            )
         }
         then "`[]` Ok-wraps raw — the identity compound lift" {
-            shown("enum E {\n    boom\n}\nfn f() -> Result<List<int>, E> {\n    []\n}\nmatch f() {\n    .Ok(xs) -> xs.length\n    .Err(e) -> 0 - 1\n}") == "0"
+            shown(
+                "enum E {\n    boom\n}\nfn f() -> Result<List<int>, E> {\n    []\n}\nmatch f() {\n    .Ok(xs) -> xs.length\n    .Err(e) -> 0 - 1\n}",
+            ) == "0"
         }
     }
     given "the walk vocabulary (L2)" {
@@ -109,7 +124,9 @@ spec "features/lists" {
             shown("let xs: List<int> = []\nxs.find_index(it > 0) ?? 7") == "7"
         }
         then "a predicate over records finds by field" {
-            shown("type P = { n: int, s: string }\nlet ps = [P { n: 1, s: \"a\" }, P { n: 2, s: \"b\" }]\nps.find_index(it.s == \"b\") ?? 0 - 1") == "1"
+            shown(
+                "type P = { n: int, s: string }\nlet ps = [P { n: 1, s: \"a\" }, P { n: 2, s: \"b\" }]\nps.find_index(it.s == \"b\") ?? 0 - 1",
+            ) == "1"
         }
         then "any gives the empty walk's verdict" {
             shown("let none: List<int> = []\nnone.any((x: int) -> true)") == "false"
@@ -130,7 +147,10 @@ spec "features/lists" {
             refused_with("let x = it + 1\n2", "`it` rides a METHOD call's arguments")
         }
         then "a walk's fn seat must BE the element" {
-            refused_with("[1, 2].filter((s: string) -> true)\n2", "`filter`'s fn takes the element `int`")
+            refused_with(
+                "[1, 2].filter((s: string) -> true)\n2",
+                "`filter`'s fn takes the element `int`",
+            )
         }
         then "a predicate answers bool or refuses" {
             refused_with("[1, 2].filter(it + 1)\n2", "`filter`'s fn must answer `bool`")
@@ -141,10 +161,22 @@ spec "features/lists" {
     }
     given "growth — `push` mutates a place" {
         then "a mut list grows in place" {
-            shown("mut xs = [1]\nxs.push(2)\nxs.push(3)\n\"" + "\${xs.length}" + " " + "\${xs[2]}" + "\"") == "3 3"
+            shown(
+                "mut xs = [1]\nxs.push(2)\nxs.push(3)\n\"" +
+                    "\${xs.length}" +
+                    " " +
+                    "\${xs[2]}" +
+                    "\"",
+            ) == "3 3"
         }
         then "an alias taken before the push keeps its length" {
-            shown("mut xs = [1]\nlet ys = xs\nxs.push(2)\n\"" + "\${xs.length}" + " " + "\${ys.length}" + "\"") == "2 1"
+            shown(
+                "mut xs = [1]\nlet ys = xs\nxs.push(2)\n\"" +
+                    "\${xs.length}" +
+                    " " +
+                    "\${ys.length}" +
+                    "\"",
+            ) == "2 1"
         }
         then "a `let` list refuses — push mutates it" {
             refused_with("let xs = [1]\nxs.push(2)\n2", "`xs` is not `mut` — `push` mutates it")
@@ -153,13 +185,22 @@ spec "features/lists" {
             refused_with("[1].push(2)\n2", "`push` mutates a place, and this list is a value")
         }
         then "the element seat judges the argument" {
-            refused_with("mut xs = [1]\nxs.push(\"s\")\n2", "argument 1 of `push` wants `int`, found `string`")
+            refused_with(
+                "mut xs = [1]\nxs.push(\"s\")\n2",
+                "argument 1 of `push` wants `int`, found `string`",
+            )
         }
         then "push answers nothing — it cannot be bound" {
             refused_with("mut xs = [1]\nlet n = xs.push(2)\n2", "answers nothing")
         }
         then "a nested list grows through its path" {
-            shown("mut g = [[1], [2]]\ng[1].push(3)\n\"" + "\${g[1].length}" + " " + "\${g[0].length}" + "\"") == "2 1"
+            shown(
+                "mut g = [[1], [2]]\ng[1].push(3)\n\"" +
+                    "\${g[1].length}" +
+                    " " +
+                    "\${g[0].length}" +
+                    "\"",
+            ) == "2 1"
         }
     }
     given "the empty literal, adopted" {
@@ -167,33 +208,64 @@ spec "features/lists" {
             shown("let xs = [[1], [], [2]]\n\"" + "\${xs.length} " + "\${xs[1].length}\"") == "3 0"
         }
         then "`[]` fits a variant's list payload" {
-            shown("enum W {\n    Many(xs: List<int>)\n}\nmatch W.Many([]) {\n    .Many(xs) -> xs.length\n}") == "0"
+            shown(
+                "enum W {\n    Many(xs: List<int>)\n}\nmatch W.Many([]) {\n    .Many(xs) -> xs.length\n}",
+            ) == "0"
         }
         then "an if joins a list with `[]`" {
-            shown("fn f(b: bool) -> List<int> { if b { [7] } else { [] } }\n\"" + "\${f(true).length} " + "\${f(false).length}\"") == "1 0"
+            shown(
+                "fn f(b: bool) -> List<int> { if b { [7] } else { [] } }\n\"" +
+                    "\${f(true).length} " +
+                    "\${f(false).length}\"",
+            ) == "1 0"
         }
     }
     given "the vocabulary" {
         then "contains and index_of scan by value — strings by text, scalars by value" {
-            shown("let xs = [\"a\", \"b\"]\nlet ns = [4, 5, 6]\n\"" + "\${xs.contains(\"b\")} " + "\${xs.index_of(\"b\")} " + "\${ns.contains(7)} " + "\${ns.index_of(7)}\"") == "true 1 false -1"
+            shown(
+                "let xs = [\"a\", \"b\"]\nlet ns = [4, 5, 6]\n\"" +
+                    "\${xs.contains(\"b\")} " +
+                    "\${xs.index_of(\"b\")} " +
+                    "\${ns.contains(7)} " +
+                    "\${ns.index_of(7)}\"",
+            ) == "true 1 false -1"
         }
         then "pop removes the last element and answers it" {
             shown("mut xs = [1, 2, 3]\nlet last = xs.pop()\n\"" + "\${last} " + "\${xs.length}\"") == "3 2"
         }
         then "set rewrites one slot" {
-            shown("mut xs = [1, 2, 3]\nxs.set(1, 9)\n\"" + "\${xs[0]} " + "\${xs[1]} " + "\${xs[2]}\"") == "1 9 3"
+            shown(
+                "mut xs = [1, 2, 3]\nxs.set(1, 9)\n\"" + "\${xs[0]} " + "\${xs[1]} " + "\${xs[2]}\"",
+            ) == "1 9 3"
         }
         then "is_empty, first and last read the edges" {
-            shown("let xs = [7, 8]\nlet none: List<int> = []\n\"" + "\${xs.is_empty()} " + "\${none.is_empty()} " + "\${xs.first() ?? 0} " + "\${xs.last() ?? 0} " + "\${none.first() ?? 0}\"") == "false true 7 8 0"
+            shown(
+                "let xs = [7, 8]\nlet none: List<int> = []\n\"" +
+                    "\${xs.is_empty()} " +
+                    "\${none.is_empty()} " +
+                    "\${xs.first() ?? 0} " +
+                    "\${xs.last() ?? 0} " +
+                    "\${none.first() ?? 0}\"",
+            ) == "false true 7 8 0"
         }
         then "concat and slice are fresh copies" {
-            shown("let xs = [1, 2]\nlet ys = xs.concat([3, 4])\nlet mid = ys.slice(1, 3)\n\"" + "\${ys.length} " + "\${ys[3]} " + "\${mid.length} " + "\${mid[1]} " + "\${xs.length} " + "\${ys.slice(3, 9).length}\"") == "4 4 2 3 2 1"
+            shown(
+                "let xs = [1, 2]\nlet ys = xs.concat([3, 4])\nlet mid = ys.slice(1, 3)\n\"" +
+                    "\${ys.length} " +
+                    "\${ys[3]} " +
+                    "\${mid.length} " +
+                    "\${mid[1]} " +
+                    "\${xs.length} " +
+                    "\${ys.slice(3, 9).length}\"",
+            ) == "4 4 2 3 2 1"
         }
         then "join makes text of text" {
             shown("[\"a\", \"b\", \"c\"].join(\"-\")") == "a-b-c"
         }
         then "enumerate is the list, walked by a paired head" {
-            shown("let xs = [5, 6]\nmut total = 0\nfor i, x in xs {\n    total = total + i * x\n}\ntotal") == "6"
+            shown(
+                "let xs = [5, 6]\nmut total = 0\nfor i, x in xs {\n    total = total + i * x\n}\ntotal",
+            ) == "6"
         }
         then "the copies hold strings too" {
             shown("let xs = [\"p\", \"q\"]\nxs.concat([\"r\"]).slice(1, 3).join(\"\")") == "qr"
@@ -204,16 +276,25 @@ spec "features/lists" {
             refused_with("let xs = [1]\nxs.pop()", "`xs` is not `mut` — `pop` mutates it")
         }
         then "a wrong argument speaks in the seat's words" {
-            refused_with("let xs = [1]\nxs.contains(\"a\")", "argument 1 of `contains` wants `int`, found `string`")
+            refused_with(
+                "let xs = [1]\nxs.contains(\"a\")",
+                "argument 1 of `contains` wants `int`, found `string`",
+            )
         }
         then "the count is the row's" {
             refused_with("let xs = [1]\nxs.slice(1)", "`slice` takes 2 arguments, found 1")
         }
         then "a scan reads by value — a list of records refuses like `==` does" {
-            refused_with("type P = { n: int }\nlet ps = [P { n: 1 }]\nps.contains(P { n: 1 })", "`contains` scans by value — scalars and text for now, this list holds `P`")
+            refused_with(
+                "type P = { n: int }\nlet ps = [P { n: 1 }]\nps.contains(P { n: 1 })",
+                "`contains` scans by value — scalars and text for now, this list holds `P`",
+            )
         }
         then "enumerate stands only under a paired head" {
-            refused_with("let xs = [1]\nlet ys = xs.enumerate()\n2", "`enumerate` pairs only under a paired `for` head")
+            refused_with(
+                "let xs = [1]\nlet ys = xs.enumerate()\n2",
+                "`enumerate` pairs only under a paired `for` head",
+            )
         }
         then "pop answers the LAST element" {
             shown("mut ss = [\"p\", \"q\", \"r\"]\nss.pop()") == "r"

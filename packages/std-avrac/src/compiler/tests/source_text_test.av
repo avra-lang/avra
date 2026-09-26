@@ -13,7 +13,9 @@ fn stable(source: string) -> bool {
 fn same_tree(source: string, projected: string) -> bool {
     let before = parse_source(source)
     let after = parse_source(projected)
-    if !before.voices.list.is_empty() || !after.voices.list.is_empty() || before.stmts.length != after.stmts.length { return false }
+    if !before.voices.list.is_empty() ||
+        !after.voices.list.is_empty() ||
+        before.stmts.length != after.stmts.length { return false }
     for j, stmt in before.stmts {
         if before.store.stmt_fingerprint(stmt) != after.store.stmt_fingerprint(after.stmts[j]) { return false }
     }
@@ -34,19 +36,27 @@ spec "source text" {
             before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
         }
         then "an empty documentation line survives as `///`" {
-            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" && stable("///\nfn a() -> int { 1 }") && projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" && stable("/// a\n///\nfn a() -> int { 1 }")
+            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
+                stable("///\nfn a() -> int { 1 }") &&
+                projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
+                stable("/// a\n///\nfn a() -> int { 1 }")
         }
         then "documentation survives annotations, modifiers, and nested trait members" {
             let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
-            projected(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" && stable(source)
+            projected(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" &&
+                stable(source)
         }
         then "a generic impl keeps its own type parameters — LOSSLESS, not merely stable" {
             let plain = "impl Traced<E> {\n    fn get() -> E {\n        self.value\n    }\n}"
             let forred = "impl Convert<X> for Box<T> {\n    fn f() -> int {\n        1\n    }\n}"
-            projected(plain) == plain && stable(plain) && projected(forred) == forred && stable(forred)
+            projected(plain) == plain &&
+                stable(plain) &&
+                projected(forred) == forred &&
+                stable(forred)
         }
         then "declarations, control flow and effects reach a fixed point" {
-            stable("""
+            stable(
+                """
 @memo("key", 3)
 export fn choose<T: Show>(mut x: int, f: fn(mut int) -> bool) -> int {
     let plain = 1
@@ -110,13 +120,15 @@ spec "printer fixture" {
 }
 
 fail problem
-""")
+""",
+            )
         }
     }
     given "the expression surface" {
 
         then "literals, aggregates, branches and postfixes reach a fixed point" {
-            stable("""
+            stable(
+                """
 let scalar = 12 + 3.5 * 2
 let text = "before ${value} after"
 let truth = !false || true && false
@@ -162,10 +174,12 @@ let many = result catch {
     .worse -> 0
 }
 let pinned = convert<int>(called)
-""")
+""",
+            )
         }
         then "arithmetic and comparisons reach a fixed point" {
-            stable("""
+            stable(
+                """
 let sub = 8 - 3
 let div = 8 / 2
 let mod = 8 % 3
@@ -173,48 +187,65 @@ let ne = a != b
 let lt = a < b
 let le = a <= b
 let ge = a >= b
-""")
+""",
+            )
         }
         then "bitwise operators reach a fixed point" {
-            stable("""
+            stable(
+                """
 let bits = (a & b) | (c ^ d)
 let left = a << 2
 let right = a >> 2
-""")
+""",
+            )
         }
         then "binary grouping edges reach a fixed point" {
-            stable("""
+            stable(
+                """
 let product = (1 + 2) * 3
 let association = 1 - (2 - 3)
-""")
+""",
+            )
         }
         then "rest patterns, optional properties and catch-any reach a fixed point" {
-            stable("""
+            stable(
+                """
 let rest_arm = match value {
     .one(rest) -> 1
     _ -> 0
 }
 let chained_property = optional?.field
 let recovered = result catch 0
-""")
+""",
+            )
         }
         then "`.type(T)` read back over a `?.`-propagate chain, not only a plain receiver, reaches a fixed point" {
-            stable("""
+            stable(
+                """
 let plain = n.type(int)
 let chained = some?.type(List<string?>)
-""")
+""",
+            )
         }
         then "an `else if` chain in a block's tail position stays a chain, not a nested block — the answer's `lone_tail` wrap must not read as one" {
-            projected("fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}") == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}"
+            projected(
+                "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}",
+            ) == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}"
         }
         then "a comment in the chain's first branch does not block a later link from chaining" {
-            projected("fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}") == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}"
+            projected(
+                "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}",
+            ) == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}"
         }
         then "a WRITTEN `else { if … }`, in a block's tail position, keeps its braces — the chain link's lone_tail wrap and this one are the same shape, told apart only by whether a real brace sits past the nested if's own end" {
-            stable("fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else {\n        if b == 2 {\n            2\n        } else {\n            3\n        }\n    }\n}")
+            stable(
+                "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else {\n        if b == 2 {\n            2\n        } else {\n            3\n        }\n    }\n}",
+            )
         }
         then "a written `else { if … }` as an if-EXPRESSION's else value keeps its braces too" {
-            stable("let tag = if a < 15 {\n    \"small\"\n} else {\n    if b == 1 {\n        \"big-one\"\n    } else {\n        \"big\"\n    }\n}")
+            stable(
+                "let tag = if a < 15 {\n    \"small\"\n} else {\n    if b == 1 {\n        \"big-one\"\n    } else {\n        \"big\"\n    }\n}",
+            )
         }
     }
     given "degenerate shapes" {
@@ -223,7 +254,8 @@ let chained = some?.type(List<string?>)
             stable("")
         }
         then "empty and singleton containers and bodies reach a fixed point" {
-            stable("""
+            stable(
+                """
 fn empty() {}
 fn bare_return() {
     return
@@ -241,7 +273,8 @@ let one_list = [1]
 let empty_map = {}
 let one_map = {"one": 1}
 let one_when = when { _ -> 1 }
-""")
+""",
+            )
         }
     }
     given "recovery nodes" {
@@ -250,7 +283,9 @@ let one_when = when { _ -> 1 }
             mut store = new_node_store()
             let expr = store.alloc_expr(Expr.Error)
             let stmt = store.alloc_stmt(Stmt.Error)
-            render_expression(store, expr) == "__error" && render_statement(store, stmt) == "__error" && stable(render_statement(store, stmt))
+            render_expression(store, expr) == "__error" &&
+                render_statement(store, stmt) == "__error" &&
+                stable(render_statement(store, stmt))
         }
     }
     given "a value call whose subject is a name" {
@@ -272,7 +307,9 @@ let one_when = when { _ -> 1 }
     given "a format pattern with escaped braces" {
 
         then "a doubled brace keeps matching its own literal text, not a hole" {
-            stable("fn seen(line: string) -> string {\n    match line {\n        \"a{{b}}c\" -> \"escaped\",\n        _ -> \"other\",\n    }\n}")
+            stable(
+                "fn seen(line: string) -> string {\n    match line {\n        \"a{{b}}c\" -> \"escaped\",\n        _ -> \"other\",\n    }\n}",
+            )
         }
     }
     given "a trailing blank line before EOF" {
@@ -304,7 +341,9 @@ let one_when = when { _ -> 1 }
     given "a component declaration and instantiation" {
 
         then "the head, fields and fns survive, and the instantiation — not the record and the literal they make" {
-            kept("component C(h: int) {\n    a: int\n    b: int = 1\n    fn f() -> int {\n        1\n    }\n}")
+            kept(
+                "component C(h: int) {\n    a: int\n    b: int = 1\n    fn f() -> int {\n        1\n    }\n}",
+            )
         }
     }
     given "a table literal" {
@@ -322,26 +361,38 @@ let one_when = when { _ -> 1 }
             kept("let m = {\n    \"a\": 1,\n    // b next\n    \"b\": 2,\n}")
         }
         then "a wrapped struct literal keeps one field per line, a comment between two of them included" {
-            kept("type P = { a: int, b: int }\nlet p = P {\n    a: 1,\n    // b field\n    b: 2,\n}")
+            kept(
+                "type P = { a: int, b: int }\nlet p = P {\n    a: 1,\n    // b field\n    b: 2,\n}",
+            )
         }
         then "a flat list, map or struct literal stays flat" {
-            kept("let xs = [1, 2, 3]") && kept("let m = {\"a\": 1, \"b\": 2}") && kept("type P = { a: int, b: int }\nlet p = P { a: 1, b: 2 }")
+            kept("let xs = [1, 2, 3]") &&
+                kept("let m = {\"a\": 1, \"b\": 2}") &&
+                kept("type P = { a: int, b: int }\nlet p = P { a: 1, b: 2 }")
         }
     }
     given "a raw body's own span, when it holds a hole" {
 
         then "a quote's internal blank line stays inside it — never relocated past the closing brace it never reached" {
-            kept("fn generated(t: int) -> int {\n    quote {\n        impl \${t} {\n            fn a() -> int { 1 }\n\n            fn b() -> int { 2 }\n        }\n    }\n}")
+            kept(
+                "fn generated(t: int) -> int {\n    quote {\n        impl \${t} {\n            fn a() -> int { 1 }\n\n            fn b() -> int { 2 }\n        }\n    }\n}",
+            )
         }
         then "the same law with the hole trailing, and a comment in place of the blank line" {
-            kept("fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}")
+            kept(
+                "fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}",
+            )
         }
     }
     given "the width layout — a construct with no written form of its own decides against canonical_width" {
 
         then "a call whose arguments overflow the line wraps one per line, from its own exact column" {
             let source = "fn f() -> int {\n    some_function_call_name_that_is_fairly_long(argument_one, argument_two, argument_three, argument_four)\n}"
-            stable(source) && projected(source).contains("some_function_call_name_that_is_fairly_long(\n        argument_one,\n        argument_two,")
+            stable(source) &&
+                projected(source)
+                    .contains(
+                        "some_function_call_name_that_is_fairly_long(\n        argument_one,\n        argument_two,",
+                    )
         }
         then "the running column measures a statement's own prefix, not just its indent — a short call overflows only because of a long binding name before it" {
             let source = "fn f() -> int {\n    let this_is_a_rather_long_binding_name_for_testing_column = compute(alpha, beta, gamma, delta, epsilon, zeta_value)\n    0\n}"
@@ -349,15 +400,24 @@ let one_when = when { _ -> 1 }
         }
         then "a method chain that overflows the line breaks one link per line, leading its own dot" {
             let source = "fn f() -> int {\n    builder_object.first_method_call(alpha).second_method_call(beta).third_method_call(gamma).answer()\n}"
-            stable(source) && projected(source).contains("builder_object\n        .first_method_call(alpha)\n        .second_method_call(beta)")
+            stable(source) &&
+                projected(source)
+                    .contains(
+                        "builder_object\n        .first_method_call(alpha)\n        .second_method_call(beta)",
+                    )
         }
         then "a short chain that fits stays flat" {
             let source = "fn f() -> int {\n    builder_object.first_method_call(1).answer()\n}"
-            stable(source) && projected(source).contains("builder_object.first_method_call(1).answer()")
+            stable(source) &&
+                projected(source).contains("builder_object.first_method_call(1).answer()")
         }
         then "a type argument list that overflows the line wraps one type per line" {
             let source = "fn f() -> int {\n    let holder: Map<string, List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>> = {}\n    0\n}"
-            stable(source) && projected(source).contains("Map<\n        string,\n        List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>,\n    >")
+            stable(source) &&
+                projected(source)
+                    .contains(
+                        "Map<\n        string,\n        List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>,\n    >",
+                    )
         }
     }
 }

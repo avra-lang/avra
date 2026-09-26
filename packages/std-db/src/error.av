@@ -37,9 +37,7 @@ impl Error for ModelError {
     }
 
     fn cause() -> dyn Error? {
-        match self {
-            .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Other(sql) -> sql,
-        }
+        match self { .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Other(sql) -> sql }
     }
 }
 
@@ -69,10 +67,7 @@ fn at_suffix(at: Loc?) -> string {
 /// Whether a failure is the one cause this file resolves back through
 /// the schema.
 fn is_unique_violation(cause: Cause) -> bool {
-    match cause {
-        .Constraint(v) -> v == Violation.Unique,
-        rest -> false,
-    }
+    match cause { .Constraint(v) -> v == Violation.Unique, rest -> false }
 }
 
 /// A raw `SqlError` resolved back through a model's own `@unique`
@@ -123,19 +118,16 @@ fn is_ident_char(c: int) -> bool {
 
 /// A generated `insert`/`update`'s own SQL call, resolved through the
 /// model's `@unique` fields.
-export fn or_attributed<T>(r: Result<T, SqlError>, model: string, fields: List<UniqueField>) -> Result<T, ModelError> {
-    match r {
-        .Ok(v) -> .Ok(v),
-        .Err(e) -> .Err(attributed(e, model, fields)),
-    }
+export fn or_attributed<T>(r: Result<T, SqlError>, model: string, fields: List<UniqueField>) -> Result<
+    T,
+    ModelError,
+> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(attributed(e, model, fields)) }
 }
 
 /// Any other `SqlError`-returning call folded into the same
 /// `ModelError` pipeline — unenriched, since only a constraint
 /// violation resolved against a model's own fields names one.
 export fn modeled<T>(r: Result<T, SqlError>) -> Result<T, ModelError> {
-    match r {
-        .Ok(v) -> .Ok(v),
-        .Err(e) -> .Err(ModelError.Other(e)),
-    }
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(ModelError.Other(e)) }
 }

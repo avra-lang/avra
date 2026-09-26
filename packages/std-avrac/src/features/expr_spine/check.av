@@ -299,67 +299,198 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
 
 fn not_indexable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(subject), "`[...]` indexes a `List`, found `${n}`", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(subject),
+                "`[...]` indexes a `List`, found `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn index_not_int(mut cx: TypeCx, index: ExprId) {
-    cx.emit(refusal("type.mismatch", cx.loc_of(index), "an index is an `int`, found `${cx.name_at(index)}`", "this decides the position", null))
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(index),
+                "an index is an `int`, found `${cx.name_at(index)}`",
+                "this decides the position",
+                null,
+            ),
+        )
 }
 
 fn record_read(mut cx: TypeCx, e: ExprId, tname: string) -> TypeId {
-    cx.spoken(refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum", "read here", build_a_record(tname)))
+    cx
+        .spoken(
+            refusal(
+                "type.unknown_prop",
+                cx.loc_of(e),
+                "`${tname}` is a record, not an enum",
+                "read here",
+                build_a_record(tname),
+            ),
+        )
 }
 
 fn no_variant_read(mut cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
-    cx.spoken(refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${name}`", "read here", variants_are(sig)))
+    cx
+        .spoken(
+            refusal(
+                "type.unknown_prop",
+                cx.loc_of(e),
+                "`${tname}` has no variant `${name}`",
+                "read here",
+                variants_are(sig),
+            ),
+        )
 }
 
 fn named_without_payload(mut cx: TypeCx, e: ExprId, tname: string, name: string, carried: TypeId) -> TypeId {
-    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`${tname}.${name}` carries `${cx.view.types.name_of(carried)}`", "named without it here", "write `${tname}.${name}(<value>)`"))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "`${tname}.${name}` carries `${cx.view.types.name_of(carried)}`",
+                "named without it here",
+                "write `${tname}.${name}(<value>)`",
+            ),
+        )
 }
 
 fn wrong_operand(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
     let n = cx.name_at(e)
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${op_symbol(op)}` needs `${cx.view.types.name_of(cx.view.types.intern(want))}` operands, found `${n}`", this_is(n), null))
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "`${op_symbol(op)}` needs `${cx.view.types.name_of(cx.view.types.intern(want))}` operands, found `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn not_negatable(mut cx: TypeCx, v: ExprId) -> TypeId {
     let n = cx.name_at(v)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${n}`", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(v),
+                "`!` negates a `bool`, found `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn both_absent(mut cx: TypeCx, op: BinOp, l: ExprId) -> TypeId {
-    cx.spoken(refusal("type.mismatch", cx.loc_of(l), "both sides are always absent, so `${op_symbol(op)}` always answers", "always absent", "write the answer alone"))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(l),
+                "both sides are always absent, so `${op_symbol(op)}` always answers",
+                "always absent",
+                "write the answer alone",
+            ),
+        )
 }
 
 fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
     let n = cx.name_at(solid)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(solid), "`${op_symbol(op)} null` asks a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — it is never absent"))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(solid),
+                "`${op_symbol(op)} null` asks a nullable, this is `${n}`",
+                this_is(n),
+                "`${n}` is a guarantee — it is never absent",
+            ),
+        )
 }
 
 fn not_comparable(mut cx: TypeCx, op: BinOp, offender: ExprId) -> TypeId {
     let n = cx.name_at(offender)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(offender), "`${op_symbol(op)}` compares scalars for now", this_is(n), compare_help(cx.seen_at(offender))))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(offender),
+                "`${op_symbol(op)}` compares scalars for now",
+                this_is(n),
+                compare_help(cx.seen_at(offender)),
+            ),
+        )
 }
 
 fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let rn = cx.name_at(r)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(r), "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`", this_is(rn), null))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(r),
+                "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`",
+                this_is(rn),
+                null,
+            ),
+        )
 }
 
 /// A NAME MEETS ITS OWN SHAPE — the remedy is the conversion.
 fn mixed_with_shape(mut cx: TypeCx, e: ExprId, named: TypeId) {
     let n = cx.name_at(e)
-    cx.emit(cx.named_fix(refusal("type.mismatch", cx.loc_of(e), "an operand of `${cx.view.types.name_of(named)}` meets `${n}` — a named type never mixes with its shape", this_is(n), null), named, e))
+    cx
+        .emit(
+            cx
+                .named_fix(
+                    refusal(
+                        "type.mismatch",
+                        cx.loc_of(e),
+                        "an operand of `${cx.view.types.name_of(named)}` meets `${n}` — a named type never mixes with its shape",
+                        this_is(n),
+                        null,
+                    ),
+                    named,
+                    e,
+                ),
+        )
 }
 
 /// A NAME MEETS ANOTHER NAME. No wrap is honest — neither stands
 /// over the other — so the refusal offers none.
 fn two_names(mut cx: TypeCx, e: ExprId, named: TypeId) {
     let n = cx.name_at(e)
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${cx.view.types.name_of(named)}` and `${n}` are two types — a named type never mixes with another", this_is(n), null))
+    cx
+        .emit(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "`${cx.view.types.name_of(named)}` and `${n}` are two types — a named type never mixes with another",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn bad_shift_count(mut cx: TypeCx, r: ExprId, count: int) -> TypeId {
-    cx.spoken(refusal("type.shift_count", cx.loc_of(r), "a shift count must be between 0 and 63, this is ${count}", "shifted by this", "an `int` is 64 bits, so a wider shift has no answer to give"))
+    cx
+        .spoken(
+            refusal(
+                "type.shift_count",
+                cx.loc_of(r),
+                "a shift count must be between 0 and 63, this is ${count}",
+                "shifted by this",
+                "an `int` is 64 bits, so a wider shift has no answer to give",
+            ),
+        )
 }

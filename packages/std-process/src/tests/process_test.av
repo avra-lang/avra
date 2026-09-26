@@ -3,7 +3,21 @@
 // judges and `outcome` reads; both streams come back whole and apart;
 // stdin is fed; the deadline and the cap stop a child; the minimal
 // environment is what crosses. Every case here runs natively.
-use @std.process.{Tool, tool, cmd, Command, Exit, Stdin, Streams, Output, ProcessError, minimal, developer, exit_text, tool_from_env}
+use @std.process.{
+    Tool,
+    tool,
+    cmd,
+    Command,
+    Exit,
+    Stdin,
+    Streams,
+    Output,
+    ProcessError,
+    minimal,
+    developer,
+    exit_text,
+    tool_from_env,
+}
 use @std.time.{ms, secs}
 
 fn sh() -> Result<Tool, ProcessError> {
@@ -36,26 +50,16 @@ fn both_streams() -> Result<string, ProcessError> {
 fn judged_code(line: string) -> int {
     match shell_out(line) {
         .Ok(_) -> 0,
-        .Err(e) -> match e {
-            .Failed(x, _) -> code_of(x),
-            rest -> 0 - 1,
-        },
+        .Err(e) -> match e { .Failed(x, _) -> code_of(x), rest -> 0 - 1 },
     }
 }
 
 fn code_of(x: Exit) -> int {
-    match x {
-        .Clean -> 0,
-        .Code(n) -> n,
-        .Signal(s, _) -> 1000 + s,
-    }
+    match x { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 1000 + s }
 }
 
 fn read_code(line: string) -> int {
-    match shell_exit(line) {
-        .Ok(x) -> code_of(x),
-        .Err(_) -> 0 - 1,
-    }
+    match shell_exit(line) { .Ok(x) -> code_of(x), .Err(_) -> 0 - 1 }
 }
 
 fn lenient_exit_one() -> Result<Output, ProcessError> {
@@ -79,24 +83,15 @@ fn slow_child() -> Result<Output, ProcessError> {
 }
 
 fn timed_out(r: Result<Output, ProcessError>) -> bool {
-    match r {
-        .Ok(_) -> false,
-        .Err(e) -> is_timeout(e),
-    }
+    match r { .Ok(_) -> false, .Err(e) -> is_timeout(e) }
 }
 
 fn is_timeout(e: ProcessError) -> bool {
-    match e {
-        .TimedOut(_, _) -> true,
-        rest -> false,
-    }
+    match e { .TimedOut(_, _) -> true, rest -> false }
 }
 
 fn is_not_found(e: ProcessError) -> bool {
-    match e {
-        .NotFound(_, _) -> true,
-        rest -> false,
-    }
+    match e { .NotFound(_, _) -> true, rest -> false }
 }
 
 fn chatty_child() -> Result<Output, ProcessError> {
@@ -107,10 +102,7 @@ fn chatty_child() -> Result<Output, ProcessError> {
 fn capped_stdout(r: Result<Output, ProcessError>) -> bool {
     match r {
         .Ok(_) -> false,
-        .Err(e) -> match e {
-            .TooMuch(s, cap, _) -> s is .Stdout && cap == 1000,
-            rest -> false,
-        },
+        .Err(e) -> match e { .TooMuch(s, cap, _) -> s is .Stdout && cap == 1000, rest -> false },
     }
 }
 
@@ -131,10 +123,7 @@ fn in_root() -> Result<string, ProcessError> {
 }
 
 fn missing_tool() -> bool {
-    match tool("definitely-not-a-program-avra-xyz") {
-        .Ok(_) -> false,
-        .Err(e) -> is_not_found(e),
-    }
+    match tool("definitely-not-a-program-avra-xyz") { .Ok(_) -> false, .Err(e) -> is_not_found(e) }
 }
 
 fn echo_tool() -> Tool {
@@ -154,10 +143,7 @@ fn nowhere() -> Tool {
 fn placed(r: Result<Command, ProcessError>) -> string {
     match r {
         .Ok(c) -> c.args.join(" "),
-        .Err(e) -> match e {
-            .Unplaceable(w, _) -> "refused ${w}",
-            rest -> "other",
-        },
+        .Err(e) -> match e { .Unplaceable(w, _) -> "refused ${w}", rest -> "other" },
     }
 }
 
@@ -168,10 +154,7 @@ fn passed_through() -> Result<string, ProcessError> {
 }
 
 fn env_names_nothing() -> string {
-    match tool_from_env("PATH", "sh") {
-        .Ok(_) -> "found",
-        .Err(_) -> "refused",
-    }
+    match tool_from_env("PATH", "sh") { .Ok(_) -> "found", .Err(_) -> "refused" }
 }
 
 fn from_env() -> Result<string, ProcessError> {
@@ -180,10 +163,7 @@ fn from_env() -> Result<string, ProcessError> {
 }
 
 fn shown_run(r: Result<string, ProcessError>) -> string {
-    match r {
-        .Ok(s) -> s,
-        .Err(_) -> "error",
-    }
+    match r { .Ok(s) -> s, .Err(_) -> "error" }
 }
 
 spec "std/process" {
@@ -203,7 +183,8 @@ spec "std/process" {
             missing_tool()
         }
         then "a getopt tool ends its options at `--`; git at its own word; find has none" {
-            (tool("echo") catch dashless_tool()).terminator == "--" && (tool("find") catch echo_tool()).terminator == null
+            (tool("echo") catch dashless_tool()).terminator == "--" &&
+                (tool("find") catch echo_tool()).terminator == null
         }
     }
     given "words in positions" {
@@ -220,7 +201,8 @@ spec "std/process" {
             placed(cmd(dashless_tool(), []).after_options(["--evil"])) == "refused --evil"
         }
         then "a bare positional refuses a leading dash" {
-            placed(cmd(echo_tool(), []).word("-x")) == "refused -x" && placed(cmd(echo_tool(), []).word("x")) == "x"
+            placed(cmd(echo_tool(), []).word("-x")) == "refused -x" &&
+                placed(cmd(echo_tool(), []).word("x")) == "x"
         }
     }
     given "running a child" {
@@ -243,7 +225,9 @@ spec "std/process" {
             (lenient_exit_one() catch Output { stdout: "", stderr: "", truncated: true }).stdout == "fine\n"
         }
         then "the exit reads as a sentence's tail" {
-            exit_text(Exit.Clean) == "clean" && exit_text(Exit.Code(3)) == "with code 3" && exit_text(Exit.Signal(9, false)) == "by signal 9"
+            exit_text(Exit.Clean) == "clean" &&
+                exit_text(Exit.Code(3)) == "with code 3" &&
+                exit_text(Exit.Signal(9, false)) == "by signal 9"
         }
     }
     given "stdin" {

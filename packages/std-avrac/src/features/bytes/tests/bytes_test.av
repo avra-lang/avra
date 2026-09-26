@@ -18,7 +18,9 @@ spec "features/bytes" {
             shown("\"\".bytes() == [].bytes()!") == "true"
         }
         then "a Bytes? holds null or a value" {
-            shown("let b: Bytes? = null\nlet c: Bytes? = [1].bytes()\n\"\${b == null} \${c != null} \${c!.length}\"") == "true true 1"
+            shown(
+                "let b: Bytes? = null\nlet c: Bytes? = [1].bytes()\n\"\${b == null} \${c != null} \${c!.length}\"",
+            ) == "true true 1"
         }
     }
     given "equality" {
@@ -32,7 +34,10 @@ spec "features/bytes" {
             shown("[1].bytes()! != [2].bytes()!") == "true"
         }
         then "a Bytes and a string do not compare" {
-            refused_with("\"a\".bytes() == \"a\"", "`==` compares matching types, found `Bytes` and `string`")
+            refused_with(
+                "\"a\".bytes() == \"a\"",
+                "`==` compares matching types, found `Bytes` and `string`",
+            )
         }
     }
     given "text to bytes" {
@@ -86,13 +91,20 @@ spec "features/bytes" {
             shown("[0 - 1].bytes() == null") == "true"
         }
         then "a list of text refuses" {
-            refused_with("[\"a\"].bytes()", "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `List<string>`")
+            refused_with(
+                "[\"a\"].bytes()",
+                "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `List<string>`",
+            )
         }
         then "a list of Bytes gathers into one" {
-            shown("[\"ab\".bytes(), \"\".bytes(), [0, 99].bytes()!].bytes() == [97, 98, 0, 99].bytes()!") == "true"
+            shown(
+                "[\"ab\".bytes(), \"\".bytes(), [0, 99].bytes()!].bytes() == [97, 98, 0, 99].bytes()!",
+            ) == "true"
         }
         then "gathering nothing is the empty value" {
-            shown("let none: List<Bytes> = []\n\"\${none.bytes().length} \${none.bytes() == \"\".bytes()}\"") == "0 true"
+            shown(
+                "let none: List<Bytes> = []\n\"\${none.bytes().length} \${none.bytes() == \"\".bytes()}\"",
+            ) == "0 true"
         }
     }
     given "reads" {
@@ -109,16 +121,24 @@ spec "features/bytes" {
             shown("[1, 2, 3, 4].bytes()!.slice(1, 3) == [2, 3].bytes()!") == "true"
         }
         then "a slice past the end is the trap" {
-            refused_at_run("[1].bytes()!.slice(0, 2).length", "slice 0..2 is out of bounds (length 1)")
+            refused_at_run(
+                "[1].bytes()!.slice(0, 2).length",
+                "slice 0..2 is out of bounds (length 1)",
+            )
         }
         then "a slice that ends before it starts is the trap" {
-            refused_at_run("[1, 2].bytes()!.slice(2, 1).length", "slice 2..1 is out of bounds (length 2)")
+            refused_at_run(
+                "[1, 2].bytes()!.slice(2, 1).length",
+                "slice 2..1 is out of bounds (length 2)",
+            )
         }
         then "concat joins in order" {
             shown("[1].bytes()!.concat([2].bytes()!) == [1, 2].bytes()!") == "true"
         }
         then "index_of finds the needle at or after from" {
-            shown("let b = [1, 2, 1, 2].bytes()!\nlet n = [1, 2].bytes()!\n\"\${b.index_of(n, 0)} \${b.index_of(n, 1)} \${b.index_of([3].bytes()!, 0)}\"") == "0 2 -1"
+            shown(
+                "let b = [1, 2, 1, 2].bytes()!\nlet n = [1, 2].bytes()!\n\"\${b.index_of(n, 0)} \${b.index_of(n, 1)} \${b.index_of([3].bytes()!, 0)}\"",
+            ) == "0 2 -1"
         }
         then "a needle longer than the rest is not found" {
             shown("[1, 2].bytes()!.index_of([2, 3].bytes()!, 1)") == "-1"
@@ -127,53 +147,87 @@ spec "features/bytes" {
             shown("[1].bytes()!.index_of([].bytes()!, 1)") == "1"
         }
         then "a from past the length is the trap" {
-            refused_at_run("[1].bytes()!.index_of([1].bytes()!, 2)", "index 2 is out of bounds (length 1)")
+            refused_at_run(
+                "[1].bytes()!.index_of([1].bytes()!, 2)",
+                "index 2 is out of bounds (length 1)",
+            )
         }
     }
     given "scans" {
         then "run ends at the first byte the table refuses" {
-            shown("let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12b\".bytes().run(1, d)") == "3"
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12b\".bytes().run(1, d)",
+            ) == "3"
         }
         then "run at a refused byte answers from" {
-            shown("let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12b\".bytes().run(0, d)") == "0"
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12b\".bytes().run(0, d)",
+            ) == "0"
         }
         then "run over admitted bytes to the end answers the length" {
-            shown("let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12\".bytes().run(1, d)") == "3"
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12\".bytes().run(1, d)",
+            ) == "3"
         }
         then "run from the length answers the length" {
             shown("let d = [1 for i in 0..256].bytes()!\n\"ab\".bytes().run(2, d)") == "2"
         }
         then "a table of the wrong length is the trap" {
-            refused_at_run("let b = [1, 2, 3].bytes()!\nb.run(0, b)", "a class table holds 256 bytes (length 3)")
+            refused_at_run(
+                "let b = [1, 2, 3].bytes()!\nb.run(0, b)",
+                "a class table holds 256 bytes (length 3)",
+            )
         }
         then "eq_at compares a span exactly" {
-            shown("let l = \"Host: x\".bytes()\n\"\${l.eq_at(0, 4, \"Host\".bytes())} \${l.eq_at(0, 4, \"host\".bytes())} \${l.eq_at(0, 3, \"Host\".bytes())}\"") == "true false false"
+            shown(
+                "let l = \"Host: x\".bytes()\n\"\${l.eq_at(0, 4, \"Host\".bytes())} \${l.eq_at(0, 4, \"host\".bytes())} \${l.eq_at(0, 3, \"Host\".bytes())}\"",
+            ) == "true false false"
         }
         then "ieq_at folds ASCII letters and nothing else" {
-            shown("let l = \"Host: x\".bytes()\n\"\${l.ieq_at(0, 4, \"hOsT\".bytes())} \${l.ieq_at(0, 4, \"hos\".bytes())} \${\"É\".bytes().ieq_at(0, 2, \"é\".bytes())}\"") == "true false false"
+            shown(
+                "let l = \"Host: x\".bytes()\n\"\${l.ieq_at(0, 4, \"hOsT\".bytes())} \${l.ieq_at(0, 4, \"hos\".bytes())} \${\"É\".bytes().ieq_at(0, 2, \"é\".bytes())}\"",
+            ) == "true false false"
         }
         then "an empty span equals the empty needle" {
             shown("\"ab\".bytes().eq_at(2, 2, \"\".bytes())") == "true"
         }
         then "a span past the end is the trap" {
-            refused_at_run("let b = [1, 2, 3].bytes()!\nb.eq_at(1, 4, b)", "slice 1..4 is out of bounds (length 3)")
+            refused_at_run(
+                "let b = [1, 2, 3].bytes()!\nb.eq_at(1, 4, b)",
+                "slice 1..4 is out of bounds (length 3)",
+            )
         }
     }
     given "what a Bytes is not" {
         then "it does not print" {
-            refused_with("\"\${[1].bytes()!}\"", "an interpolation hole prints as a scalar or string, found `Bytes`")
+            refused_with(
+                "\"\${[1].bytes()!}\"",
+                "an interpolation hole prints as a scalar or string, found `Bytes`",
+            )
         }
         then "it does not fill a string seat" {
-            refused_with("fn f(s: string) -> int { s.length }\nf([1].bytes()!)", "argument 1 of `f` wants `string`, found `Bytes`")
+            refused_with(
+                "fn f(s: string) -> int { s.length }\nf([1].bytes()!)",
+                "argument 1 of `f` wants `string`, found `Bytes`",
+            )
         }
         then "a string does not fill a Bytes seat" {
-            refused_with("fn g(b: Bytes) -> int { b.length }\ng(\"x\")", "argument 1 of `g` wants `Bytes`, found `string`")
+            refused_with(
+                "fn g(b: Bytes) -> int { b.length }\ng(\"x\")",
+                "argument 1 of `g` wants `Bytes`, found `string`",
+            )
         }
         then "it is not indexed like a list" {
-            refused_with("let b = [1, 2].bytes()!\n\"\${b[0]}\"", "`[...]` indexes a `List`, found `Bytes`")
+            refused_with(
+                "let b = [1, 2].bytes()!\n\"\${b[0]}\"",
+                "`[...]` indexes a `List`, found `Bytes`",
+            )
         }
         then "it has no growth word" {
-            refused_with("let b = [1].bytes()!\nb.push(2)", "`.push(…)` calls a method, and `Bytes` has none")
+            refused_with(
+                "let b = [1].bytes()!\nb.push(2)",
+                "`.push(…)` calls a method, and `Bytes` has none",
+            )
         }
     }
 }

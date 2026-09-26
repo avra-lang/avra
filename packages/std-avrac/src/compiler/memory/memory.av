@@ -10,7 +10,29 @@
 //! count at all. The caller owns the call's result. Systems ownership
 //! lands here later as a strategy, touching neither lowering nor the
 //! backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, SeatMark, consumed_mark, Stack, new_stack, owned_dst, viewed_dst, dst_of, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, rt_reusing_twin, rt_moving_twin, reversed}
+use core.{
+    Ins,
+    Reg,
+    Level,
+    TypeId,
+    TypeRegistry,
+    SeatMark,
+    consumed_mark,
+    Stack,
+    new_stack,
+    owned_dst,
+    viewed_dst,
+    dst_of,
+    lent_args,
+    reads_of,
+    same_reg,
+    rt_owns,
+    rt_lends,
+    rt_owned_twin,
+    rt_reusing_twin,
+    rt_moving_twin,
+    reversed,
+}
 use compiler.lower.{Lowered, Body}
 use compiler.soundness.{checked}
 use @std.io.{env}
@@ -85,9 +107,23 @@ fn flat_managed(types: TypeRegistry, ty: TypeId) -> bool {
 /// entry, so `consuming_seats` seeds it into the entry scope the moment the first
 /// bracket opens, and every caller of THIS body reads `marks` by name to
 /// decide whether to hand its dying argument over or retain first.
-fn body_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seats: int, marks: List<SeatMark>, by_name: Map<string, List<SeatMark>>) -> List<Ins> {
+fn body_ins(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    seats: int,
+    marks: List<SeatMark>,
+    by_name: Map<string, List<SeatMark>>,
+) -> List<Ins> {
     let immortal = immortal_regs(reg_types.length, ins)
-    [i for i in memory_ins(types, reg_types, ins, standing_regs(immortal, ins, seats, marks), consuming_seats(seats, marks), by_name) if !retains_immortal(i, immortal)]
+    [i for i in memory_ins(
+        types,
+        reg_types,
+        ins,
+        standing_regs(immortal, ins, seats, marks),
+        consuming_seats(seats, marks),
+        by_name,
+    ) if !retains_immortal(i, immortal)]
 }
 
 /// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
@@ -96,7 +132,9 @@ fn body_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seats:
 /// it. What is left is a VIEW into a box, which a callee may empty. A CONSUMING
 /// param (R3) stands for nothing: the caller already handed this body its own
 /// reference, seeded owned instead (`consuming_seats`) — never both.
-fn standing_regs(immortal: List<bool>, ins: List<Ins>, seats: int, marks: List<SeatMark>) -> List<bool> {
+fn standing_regs(immortal: List<bool>, ins: List<Ins>, seats: int, marks: List<SeatMark>) -> List<
+    bool,
+> {
     mut out = [immortal[j] || j < seats && !consumed_mark(marks, j) for j in 0..immortal.length]
     for i in ins {
         let d: Reg? = loaded_dst(i)
@@ -121,10 +159,7 @@ fn marks_by_name(fns: List<Body>) -> Map<string, List<SeatMark>> {
 }
 
 fn loaded_dst(i: Ins) -> Reg? {
-    match i {
-        .Load(d, _) -> d,
-        _ -> null,
-    }
+    match i { .Load(d, _) -> d, _ -> null }
 }
 
 /// THE REGISTERS THAT HOLD THE BINARY'S OWN DATA — a string constant, a settled
@@ -140,17 +175,11 @@ fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
 }
 
 fn immortal_dst(i: Ins) -> Reg? {
-    match i {
-        .ConstStr(d, _) or .StaticAddr(d, _) -> d,
-        rest -> null,
-    }
+    match i { .ConstStr(d, _) or .StaticAddr(d, _) -> d, rest -> null }
 }
 
 fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
-    match i {
-        .Retain(r) -> immortal[r.index],
-        _ -> false,
-    }
+    match i { .Retain(r) -> immortal[r.index], _ -> false }
 }
 
 /// The memory instructions as every scope's strategy places them — the pass's
@@ -161,10 +190,24 @@ fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
 /// `FnExit`/`ScopeExit`'s existing release-what-the-scope-owns logic apply to
 /// it exactly as they do to any other locally-owned value: this pass adds no
 /// new rule for WHAT happens to a consuming param, only for WHERE it starts.
-fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, standing: List<bool>, consuming: List<Reg>, by_name: Map<string, List<SeatMark>>) -> List<Ins> {
+fn memory_ins(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    standing: List<bool>,
+    consuming: List<Reg>,
+    by_name: Map<string, List<SeatMark>>,
+) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
-    let life = Lives { types: types, reg_types: reg_types, ins: ins, last: last_reads(reg_types.length, ins), defs: def_sites(reg_types.length, ins), viewed: viewed_regs(types, reg_types, ins) }
+    let life = Lives {
+        types: types,
+        reg_types: reg_types,
+        ins: ins,
+        last: last_reads(reg_types.length, ins),
+        defs: def_sites(reg_types.length, ins),
+        viewed: viewed_regs(types, reg_types, ins),
+    }
     for at, raw in ins {
         let i = owned_form(types, reg_types, ins, at, raw)
         match i {
@@ -237,7 +280,10 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // not move. Independent of `lent` above, which exists for VIEWS
             // a standing/scope-owned argument is excluded from either way.
             .Call(_, _, _) or .CallPtr(_, _, _) -> {
-                let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) && !standing[ar.index] && !owned_open(open_scopes, ar) && root_handed(life, i, ar)]
+                let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) &&
+                    !standing[ar.index] &&
+                    !owned_open(open_scopes, ar) &&
+                    root_handed(life, i, ar)]
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for r in lent { out.push(Ins.Retain(r)) }
                 let marks: List<SeatMark> = callee_marks(types, reg_types, by_name, i)
@@ -295,7 +341,8 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // scope does not own is a release it must not emit.
             .Load(dst, slot) -> {
                 out.push(i)
-                if is_managed(types, reg_types[dst.index]) && borrow_outlives(types, reg_types, ins, at, dst, slot) {
+                if is_managed(types, reg_types[dst.index]) &&
+                    borrow_outlives(types, reg_types, ins, at, dst, slot) {
                     out.push(Ins.Retain(dst))
                     manages(types, reg_types, open_scopes, i)
                 }
@@ -383,7 +430,14 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
 /// law (CLAUDE.md) is what makes a stored borrow safe, and it held
 /// before this pass counted uses. A row that keeps without
 /// retaining is a dangling store whether the read owns or not.
-fn borrow_outlives(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, dst: Reg, slot: Reg) -> bool {
+fn borrow_outlives(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    at: int,
+    dst: Reg,
+    slot: Reg,
+) -> bool {
     mut views: List<Reg> = [dst]
     mut last = at
     mut j = at + 1
@@ -394,7 +448,9 @@ fn borrow_outlives(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>,
             last = j
             let d: Reg? = view_of(i)
             // a child that takes its OWN reference rides nobody's
-            if d != null && is_managed(types, reg_types[d!.index]) && !takes_twin(types, reg_types, ins, j, i) { views.push(d!) }
+            if d != null &&
+                is_managed(types, reg_types[d!.index]) &&
+                !takes_twin(types, reg_types, ins, j, i) { views.push(d!) }
         }
         j = j + 1
     }
@@ -464,7 +520,13 @@ fn turns(i: Ins) -> bool { i is .ArmEnd || i is .LoopCond }
 /// The uses that give a value UPWARD — out of its scope, into a
 /// cell, or into an aggregate. A borrow that escapes must own.
 fn gives_upward(i: Ins) -> bool {
-    i is .ScopeExit || i is .ArmEnd || i is .RegionEnd || i is .RetVal || i is .FnExit || i is .Store || i is .Pack
+    i is .ScopeExit ||
+        i is .ArmEnd ||
+        i is .RegionEnd ||
+        i is .RetVal ||
+        i is .FnExit ||
+        i is .Store ||
+        i is .Pack
 }
 
 /// A NON-OWNING read makes ANOTHER borrow of the same box — the
@@ -491,17 +553,11 @@ fn view_source(i: Ins) -> Reg? {
 }
 
 fn extract_source(i: Ins) -> Reg? {
-    match i {
-        .Extract(_, src, _) -> src,
-        rest -> null,
-    }
+    match i { .Extract(_, src, _) -> src, rest -> null }
 }
 
 fn lending_source(i: Ins) -> Reg? {
-    match i {
-        .CallRt(_, callee, args) if !rt_owns(callee) -> args.first(),
-        rest -> null,
-    }
+    match i { .CallRt(_, callee, args) if !rt_owns(callee) -> args.first(), rest -> null }
 }
 
 /// WHETHER THIS CALL IS HANDED `ar`'s ROOT: a write only ever lands
@@ -642,10 +698,7 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     // only when the REGISTRY says it owns one — a static answer
     // (bool_text) never earns a release. The one variant-specific
     // fact, so the rest delegates to the role the declaration holds.
-    match i {
-        .CallRt(_, callee, _) if !rt_owns(callee) -> null,
-        rest -> dst,
-    }
+    match i { .CallRt(_, callee, _) if !rt_owns(callee) -> null, rest -> dst }
 }
 
 /// The pack/read REWRITE — where compile-time type knowledge
@@ -672,7 +725,9 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
 /// declines only while the child stays a borrow.
 fn takes_twin(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, i: Ins) -> bool {
     match i {
-        .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null && is_managed(types, reg_types[dst.index]) && (!rt_lends(callee) || read_outlives(types, reg_types, ins, at, dst, args)),
+        .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
+            is_managed(types, reg_types[dst.index]) &&
+            (!rt_lends(callee) || read_outlives(types, reg_types, ins, at, dst, args)),
         rest -> false,
     }
 }
@@ -682,7 +737,14 @@ fn takes_twin(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
 /// read asks, with the SUBJECT register standing where the cell
 /// does. Declining the owned twin is what leaves the count at one,
 /// so the write that follows lands IN PLACE instead of cloning.
-fn read_outlives(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, dst: Reg, args: List<Reg>) -> bool {
+fn read_outlives(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    at: int,
+    dst: Reg,
+    args: List<Reg>,
+) -> bool {
     if args.is_empty() { return true }
     borrow_outlives(types, reg_types, ins, at, dst, args[0])
 }
@@ -722,13 +784,15 @@ impl Scope {
     /// What a closing scope owes: its cells settled, last bound first,
     /// then the releases its yield leaves behind.
     fn settled(gives: Reg?) -> List<Ins> {
-        [cell_settle(c) for c in reversed(self.cells)].concat([Ins.Release(r) for r in self.releases_for(gives)])
+        [cell_settle(c) for c in reversed(self.cells)]
+            .concat([Ins.Release(r) for r in self.releases_for(gives)])
     }
 }
 
 /// Whether an open scope owns the register — its box stands until that scope closes.
 fn owned_open(open_scopes: Stack<Scope>, r: Reg) -> bool {
-    [open_scopes.at(j) for j in 0..open_scopes.depth()].any((s: Scope) -> s.managed.any(same_reg(it, r)))
+    [open_scopes.at(j) for j in 0..open_scopes.depth()]
+        .any((s: Scope) -> s.managed.any(same_reg(it, r)))
 }
 
 /// HOW A CALL HANDS ITS FIRST SEAT to a reusing twin: not at all, as
@@ -773,7 +837,9 @@ impl Lives {
     /// WHETHER `r` DIES AT `at`: read there once and never after, and
     /// no view taken from it read there or after.
     fn dies_at(r: Reg, at: int) -> bool {
-        self.last[r.index] == at && [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 && self.views(r, at).all(self.last[it.index] < at)
+        self.last[r.index] == at &&
+            [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 &&
+            self.views(r, at).all(self.last[it.index] < at)
     }
 
     /// The views taken from `r` before `at`, and the views of those —
@@ -786,7 +852,10 @@ impl Lives {
         while j < at {
             let i = self.ins[j]
             let d: Reg? = view_of(i)
-            if d != null && reads_of(i).any(held_by(family, it)) && is_managed(self.types, self.reg_types[d!.index]) && !takes_twin(self.types, self.reg_types, self.ins, j, i) { family.push(d!) }
+            if d != null &&
+                reads_of(i).any(held_by(family, it)) &&
+                is_managed(self.types, self.reg_types[d!.index]) &&
+                !takes_twin(self.types, self.reg_types, self.ins, j, i) { family.push(d!) }
             j = j + 1
         }
         [v for v in family if !same_reg(v, r)]
@@ -819,7 +888,9 @@ impl Lives {
         if d < 0 { return null }
         let slot? = loaded_slot(self.ins[d]) else { return null }
         if borrow_outlives(self.types, self.reg_types, self.ins, d, r, slot) { return null }
-        if !self.level_with(slot, d, at) || !self.refilled(slot, at) || self.borrowed_past(slot, r, at) { return null }
+        if !self.level_with(slot, d, at) ||
+            !self.refilled(slot, at) ||
+            self.borrowed_past(slot, r, at) { return null }
         slot
     }
 
@@ -873,7 +944,9 @@ impl Lives {
     fn borrow_read_past(j: int, slot: Reg, r: Reg, at: int) -> bool {
         let s? = loaded_slot(self.ins[j]) else { return false }
         let d? = dst_of(self.ins[j]) else { return false }
-        same_reg(s, slot) && !same_reg(d, r) && (self.last[d.index] >= at || self.views(d, at).any(self.last[it.index] >= at))
+        same_reg(s, slot) &&
+            !same_reg(d, r) &&
+            (self.last[d.index] >= at || self.views(d, at).any(self.last[it.index] >= at))
     }
 }
 
@@ -886,7 +959,12 @@ impl Lives {
 /// answers plain for every seat, unconditionally, until an adapter
 /// closes that gap. Either way, an absent name (a runtime row, an
 /// unresolved target) answers plain too.
-fn callee_marks(types: TypeRegistry, reg_types: List<TypeId>, by_name: Map<string, List<SeatMark>>, i: Ins) -> List<SeatMark> {
+fn callee_marks(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    by_name: Map<string, List<SeatMark>>,
+    i: Ins,
+) -> List<SeatMark> {
     match i {
         .Call(_, callee, _) -> by_name.get(callee) ?? [],
         .CallPtr(_, f, _) -> types.arrow_parts(reg_types[f.index])?.marks ?? [],
@@ -912,26 +990,17 @@ fn moving_callee(i: Ins) -> string? {
 
 /// The value a slot write stores — its last seat.
 fn stored_value(i: Ins) -> Reg? {
-    match i {
-        .CallRtVoid(_, args) -> args.last(),
-        _ -> null,
-    }
+    match i { .CallRtVoid(_, args) -> args.last(), _ -> null }
 }
 
 /// The cell a load reads.
 fn loaded_slot(i: Ins) -> Reg? {
-    match i {
-        .Load(_, slot) -> slot,
-        _ -> null,
-    }
+    match i { .Load(_, slot) -> slot, _ -> null }
 }
 
 /// Whether `i` is a store into `slot`.
 fn stores_into(i: Ins, slot: Reg) -> bool {
-    match i {
-        .Store(s, _) -> same_reg(s, slot),
-        _ -> false,
-    }
+    match i { .Store(s, _) -> same_reg(s, slot), _ -> false }
 }
 
 /// THE REGISTERS A VIEW MAY BE TAKEN FROM — read by an instruction that

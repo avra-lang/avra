@@ -11,38 +11,77 @@ fn show_trait() -> string {
 spec "features/impls — trait impls on builtin types" {
     given "a scalar that implements a trait" {
         then "a string answers the trait's method directly" {
-            shown(show_trait() + "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\n\"a\".show()") == "<a>"
+            shown(
+                show_trait() +
+                    "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\n\"a\".show()",
+            ) == "<a>"
         }
         then "an int, a float and a bool each carry their own impl" {
-            shown(show_trait() + "impl Show for int {\n    fn show() -> string { \"i\${self}\" }\n}\nimpl Show for float {\n    fn show() -> string { \"f\" }\n}\nimpl Show for bool {\n    fn show() -> string { if self { \"t\" } else { \"n\" } }\n}\n7.show() + 1.5.show() + true.show()") == "i7ft"
+            shown(
+                show_trait() +
+                    "impl Show for int {\n    fn show() -> string { \"i\${self}\" }\n}\nimpl Show for float {\n    fn show() -> string { \"f\" }\n}\nimpl Show for bool {\n    fn show() -> string { if self { \"t\" } else { \"n\" } }\n}\n7.show() + 1.5.show() + true.show()",
+            ) == "i7ft"
         }
         then "a bounded generic takes a scalar that implements its bound" {
-            shown(show_trait() + "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\nfn twice<T: Show>(v: T) -> string {\n    v.show() + v.show()\n}\ntwice(\"z\")") == "<z><z>"
+            shown(
+                show_trait() +
+                    "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\nfn twice<T: Show>(v: T) -> string {\n    v.show() + v.show()\n}\ntwice(\"z\")",
+            ) == "<z><z>"
         }
         then "a `dyn` boxes scalars beside one another, managed text included" {
-            shown(show_trait() + "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\nimpl Show for int {\n    fn show() -> string { \"#\${self}\" }\n}\nlet xs: List<dyn Show> = [\"a\", \"b\" + \"c\", 7]\nxs[0].show() + xs[1].show() + xs[2].show()") == "<a><bc>#7"
+            shown(
+                show_trait() +
+                    "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\nimpl Show for int {\n    fn show() -> string { \"#\${self}\" }\n}\nlet xs: List<dyn Show> = [\"a\", \"b\" + \"c\", 7]\nxs[0].show() + xs[1].show() + xs[2].show()",
+            ) == "<a><bc>#7"
         }
     }
     given "the language owns its builtin types" {
         then "an inherent impl on a scalar is refused" {
-            refused_with("impl string {\n    fn shout() -> string { self + \"!\" }\n}\n\"a\".shout()", "`string` is the language's own type — a package adds to it only by implementing its own trait")
+            refused_with(
+                "impl string {\n    fn shout() -> string { self + \"!\" }\n}\n\"a\".shout()",
+                "`string` is the language's own type — a package adds to it only by implementing its own trait",
+            )
         }
         then "another package's trait is refused on a scalar" {
-            refused_n(provided("use @x.c.{Show}\nimpl Show for int {\n    fn show() -> string { \"i\" }\n}\n", "export " + show_trait()), "`impl Show for int` belongs in `Show`'s package", 1)
+            refused_n(
+                provided(
+                    "use @x.c.{Show}\nimpl Show for int {\n    fn show() -> string { \"i\" }\n}\n",
+                    "export " + show_trait(),
+                ),
+                "`impl Show for int` belongs in `Show`'s package",
+                1,
+            )
         }
         then "a method the scalar already answers is refused where the impl names it" {
-            refused_with("trait Sized {\n    fn length() -> int\n}\nimpl Sized for string {\n    fn length() -> int { 99 }\n}", "`string` already answers `length` — an impl on a builtin type adds names, it never changes one")
+            refused_with(
+                "trait Sized {\n    fn length() -> int\n}\nimpl Sized for string {\n    fn length() -> int { 99 }\n}",
+                "`string` already answers `length` — an impl on a builtin type adds names, it never changes one",
+            )
         }
         then "a second impl of one method on a scalar is refused as on any type" {
-            refused_with(show_trait() + "impl Show for string {\n    fn show() -> string { \"a\" }\n}\nimpl Show for string {\n    fn show() -> string { \"b\" }\n}\n\"x\".show()", "`string.show` is declared twice")
+            refused_with(
+                show_trait() +
+                    "impl Show for string {\n    fn show() -> string { \"a\" }\n}\nimpl Show for string {\n    fn show() -> string { \"b\" }\n}\n\"x\".show()",
+                "`string.show` is declared twice",
+            )
         }
     }
     given "a bound travels with its declaration" {
         then "a type parameter meets the bound it was declared with" {
-            shown(show_trait() + "type P = { n: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n}\nfn inner<T: Show>(v: T) -> string {\n    v.show()\n}\nfn outer<T: Show>(v: T) -> string {\n    inner(v)\n}\nouter(P { n: 1 })") == "p"
+            shown(
+                show_trait() +
+                    "type P = { n: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n}\nfn inner<T: Show>(v: T) -> string {\n    v.show()\n}\nfn outer<T: Show>(v: T) -> string {\n    inner(v)\n}\nouter(P { n: 1 })",
+            ) == "p"
         }
         then "a caller need not import the trait a callee is bounded by" {
-            answered(provided("use @x.c.{shown}\nshown(\"hi\")", "export " + show_trait() + "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\nexport fn shown<T: Show>(v: T) -> string {\n    v.show()\n}\n")) == "<hi>"
+            answered(
+                provided(
+                    "use @x.c.{shown}\nshown(\"hi\")",
+                    "export " +
+                        show_trait() +
+                        "impl Show for string {\n    fn show() -> string { \"<\" + self + \">\" }\n}\nexport fn shown<T: Show>(v: T) -> string {\n    v.show()\n}\n",
+                ),
+            ) == "<hi>"
         }
     }
 }

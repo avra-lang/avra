@@ -48,7 +48,10 @@ type Bed = { s: Server<App>, c: Conn }
 /// A server running `handle` under `lim` and `t`, with a client
 /// attached — THE ONE BED BUILDER. A suite that spells its own is
 /// testing its own scaffolding beside the server.
-fn bed_with(handle: fn(mut App, Request<Unrouted>) -> Response, lim: Limits, t: Timing) -> Result<Bed, NetError> {
+fn bed_with(handle: fn(mut App, Request<Unrouted>) -> Response, lim: Limits, t: Timing) -> Result<
+    Bed,
+    NetError,
+> {
     let l = listen("127.0.0.1", 0)?
     let c = connect("127.0.0.1", l.port, secs(2))?
     .Ok(Bed { s: served(l, () -> App { hits: Cell.new(0) }, lim, t, handle), c: c })
@@ -127,7 +130,9 @@ fn get_root() -> Result<bool, NetError> {
     spawn b.s.run(cores: 1)
     defer b.done()
     let r = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
-    .Ok(r == "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 10\r\n\r\ntrue /x  1")
+    .Ok(
+        r == "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 10\r\n\r\ntrue /x  1",
+    )
 }
 
 fn keep_alive_twice() -> Result<bool, NetError> {
@@ -143,7 +148,11 @@ fn pipelined() -> Result<bool, NetError> {
     let b = bed(timing())?
     spawn b.s.run(cores: 1)
     defer b.done()
-    let both = exchanged(b.c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 200)?
+    let both = exchanged(
+        b.c,
+        "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n",
+        200,
+    )?
     let t = both.text() ?? ""
     .Ok(t.index_of("true /a  1") < t.index_of("true /b  2") && t.index_of("true /b  2") > 0)
 }
@@ -160,7 +169,10 @@ fn body_in_two_reads() -> Result<bool, NetError> {
     let b = bed(timing())?
     spawn b.s.run(cores: 1)
     defer b.done()
-    let silent = unanswered(b.c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel".bytes())?
+    let silent = unanswered(
+        b.c,
+        "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel".bytes(),
+    )?
     let rest = reply(b.c, "lo")?
     .Ok(silent && rest.ends_with("false /p hello 1"))
 }
@@ -169,7 +181,10 @@ fn chunked_body() -> Result<bool, NetError> {
     let b = bed(timing())?
     spawn b.s.run(cores: 1)
     defer b.done()
-    let r = reply(b.c, "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n")?
+    let r = reply(
+        b.c,
+        "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n",
+    )?
     .Ok(r.ends_with("false /c hello 1"))
 }
 
@@ -179,7 +194,11 @@ fn refused_then_closed() -> Result<bool, NetError> {
     defer b.done()
     let got = exchanged(b.c, "GET  /x HTTP/1.1\r\nHost: a\r\n\r\n", 1000)?
     let t = got.text() ?? ""
-    .Ok(t.starts_with("HTTP/1.1 400 Bad Request\r\n") && t.contains("connection: close\r\n") && settles_to(b.s, 0))
+    .Ok(
+        t.starts_with("HTTP/1.1 400 Bad Request\r\n") &&
+            t.contains("connection: close\r\n") &&
+            settles_to(b.s, 0),
+    )
 }
 
 fn head_carries_no_body() -> Result<bool, NetError> {
@@ -194,7 +213,10 @@ fn expect_continue() -> Result<bool, NetError> {
     let b = bed(timing())?
     spawn b.s.run(cores: 1)
     defer b.done()
-    let first = reply(b.c, "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")?
+    let first = reply(
+        b.c,
+        "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n",
+    )?
     let second = reply(b.c, "ok")?
     .Ok(first == "HTTP/1.1 100 Continue\r\n\r\n" && second.ends_with("false /e ok 1"))
 }
@@ -257,10 +279,7 @@ fn routed_through_the_loop() -> Result<bool, NetError> {
 
 /// A verdict's bool, or false when the exchange itself failed.
 fn passes<E>(r: Result<bool, E>) -> bool {
-    match r {
-        .Ok(b) -> b,
-        .Err(_) -> false,
-    }
+    match r { .Ok(b) -> b, .Err(_) -> false }
 }
 
 spec "std.http server" {

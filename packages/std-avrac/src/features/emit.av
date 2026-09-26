@@ -168,10 +168,17 @@ impl LowerCx {
         if !self.view.types.travels_wide(ty) { return a }
         if self.valued(ty) {
             let v = self.opened_enum(a)
-            return self.enum_boxed(self.view.types.shape_of(self.type(List<int>)), self.extracted(v, 0, self.mint_shape(Type.Int)), self.extracted(v, 1, self.mint_shape(Type.Int)), self.const_int(self.view.types.counted_mask(ty)))
+            return self
+                .enum_boxed(
+                    self.view.types.shape_of(self.type(List<int>)),
+                    self.extracted(v, 0, self.mint_shape(Type.Int)),
+                    self.extracted(v, 1, self.mint_shape(Type.Int)),
+                    self.const_int(self.view.types.counted_mask(ty)),
+                )
         }
         let parts = self.leaves(a)
-        let dst = self.array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(parts.length))
+        let dst = self
+            .array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(parts.length))
         for r in parts { self.push_slot(dst, r) }
         dst
     }
@@ -183,7 +190,8 @@ impl LowerCx {
         if !self.view.types.lays_inline(ty) { return [a] }
         // a value enum is ONE leaf; the slot verbs lay its tag and word
         if self.valued(ty) { return [self.opened_enum(a)] }
-        if !self.view.types.is_wide(ty) { return self.leaves(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
+        if !self.view.types.is_wide(ty) { return self
+                .leaves(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
         [self.extracted(a, j, self.mint_ty(f)) for j, f in self.view.types.flat_fields(ty)]
     }
 
@@ -191,7 +199,15 @@ impl LowerCx {
     /// by every name over it.
     mut fn unboxed(held: Reg, ty: TypeId) -> Reg {
         // a value enum crossed a one-word seat as its tagged box
-        if self.valued(ty) { return self.named_over(ty, self.pack(self.view.types.machine_type(ty), [self.enum_tag(Type.Int, held), self.enum_word(Type.Int, held)])) }
+        if self.valued(ty) { return self
+                .named_over(
+                    ty,
+                    self
+                        .pack(
+                            self.view.types.machine_type(ty),
+                            [self.enum_tag(Type.Int, held), self.enum_word(Type.Int, held)],
+                        ),
+                ) }
         self.unboxed_at(held, 0, ty)
     }
 
@@ -200,10 +216,19 @@ impl LowerCx {
     mut fn unboxed_at(held: Reg, base: int, ty: TypeId) -> Reg {
         if self.valued(ty) {
             let word = self.type(int)
-            return self.named_over(ty, self.pack(self.view.types.machine_type(ty), [self.slot_read(held, base, word), self.slot_read(held, base + 1, word)]))
+            return self
+                .named_over(
+                    ty,
+                    self
+                        .pack(
+                            self.view.types.machine_type(ty),
+                            [self.slot_read(held, base, word), self.slot_read(held, base + 1, word)],
+                        ),
+                )
         }
         if !self.view.types.is_wide(ty) { return self.pack(ty, [self.unboxed_at(held, base, self.view.types.flat_fields(ty)[0])]) }
-        self.pack(ty, [self.slot_read(held, base + j, f) for j, f in self.view.types.flat_fields(ty)])
+        self
+            .pack(ty, [self.slot_read(held, base + j, f) for j, f in self.view.types.flat_fields(ty)])
     }
 
     /// Whether a value is a VALUE ENUM, seen through names.
@@ -266,14 +291,24 @@ impl LowerCx {
 
     /// A two-armed region as the node's value: `taken` when `cond`
     /// holds, else `other`.
-    mut fn region(cond: Reg, e: ExprId, taken: fn(mut LowerCx) -> Reg, other: fn(mut LowerCx) -> Reg) -> Reg {
+    mut fn region(
+        cond: Reg,
+        e: ExprId,
+        taken: fn(mut LowerCx) -> Reg,
+        other: fn(mut LowerCx) -> Reg,
+    ) -> Reg {
         self.open_region(cond)
         self.arm_end(taken(self))
         self.close_region(e, other(self))
     }
 
     /// The same, closed as a value of `ty`.
-    mut fn region_as(cond: Reg, ty: TypeId, taken: fn(mut LowerCx) -> Reg, other: fn(mut LowerCx) -> Reg) -> Reg {
+    mut fn region_as(
+        cond: Reg,
+        ty: TypeId,
+        taken: fn(mut LowerCx) -> Reg,
+        other: fn(mut LowerCx) -> Reg,
+    ) -> Reg {
         self.open_region(cond)
         self.arm_end(taken(self))
         self.close_region_as(ty, other(self))
@@ -354,7 +389,12 @@ impl LowerCx {
     /// `lo..hi` — the count starts at `lo` and stops before `hi`.
     mut fn counted(lo: ExprId, hi: ExprId) -> Walk {
         let int = self.type(int)
-        Walk { xs: null, len: self.reg_of(hi), idx: self.seeded_cell(int, self.reg_of(lo)), elem: int }
+        Walk {
+            xs: null,
+            len: self.reg_of(hi),
+            idx: self.seeded_cell(int, self.reg_of(lo)),
+            elem: int,
+        }
     }
 
     /// LoopStart, the condition, and the turn's scope.

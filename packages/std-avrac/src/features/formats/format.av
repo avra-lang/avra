@@ -35,10 +35,7 @@ export fn read_format(text: string) -> Format {
     let b = text.bytes()
     mut r = Reading { at: 0, head: null, parts: [], runs: [], pending: null }
     while true {
-        match stepped(b, text, r) {
-            .More(next) -> { r = next },
-            .Done(f) -> { return f },
-        }
+        match stepped(b, text, r) { .More(next) -> { r = next }, .Done(f) -> { return f } }
     }
     closed(r, "")
 }
@@ -51,26 +48,22 @@ export enum Reads { Text, Int }
 /// text reads as. An untyped hole reads text.
 export fn reads_of(h: Hole) -> Reads? {
     let ty? = h.ty else { return Reads.Text }
-    match ty.name {
-        "string" -> .Text,
-        "int" -> .Int,
-        _ -> null,
-    }
+    match ty.name { "string" -> .Text, "int" -> .Int, _ -> null }
 }
 
 /// The type a hole's reading binds, by its name.
 export fn read_type_name(r: Reads) -> string {
-    match r {
-        .Text -> "string",
-        .Int -> "int",
-    }
+    match r { .Text -> "string", .Int -> "int" }
 }
 
 /// A format spelled back as it is written — `read_format`'s inverse:
 /// the head, then each hole (`{name...: Type}`) and the literal after
 /// it, a literal brace doubled.
 export fn pattern_text(head: string, parts: List<FormatPart>) -> string {
-    joined([escaped_braces(head)].concat([hole_text(p.hole) + escaped_braces(p.piece) for p in parts]), "")
+    joined(
+        [escaped_braces(head)].concat([hole_text(p.hole) + escaped_braces(p.piece) for p in parts]),
+        "",
+    )
 }
 
 fn hole_text(h: Hole) -> string {
@@ -213,7 +206,9 @@ fn written_type(ty: string?) -> TypeRef? {
 
 /// Whether the text is identifier-shaped — a name, not a phrase.
 fn named(s: string) -> bool {
-    !s.is_empty() && name_start(s.char_code(0)) && [name_part(s.char_code(i)) for i in 0..s.length].all(it)
+    !s.is_empty() &&
+        name_start(s.char_code(0)) &&
+        [name_part(s.char_code(i)) for i in 0..s.length].all(it)
 }
 
 fn name_start(c: int) -> bool { c == 95 || c >= 65 && c <= 90 || c >= 97 && c <= 122 }

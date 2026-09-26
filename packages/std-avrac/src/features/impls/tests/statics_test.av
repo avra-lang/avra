@@ -16,7 +16,9 @@ spec "features/impls/statics" {
             shown("${pointed()}P.origin().sum()") == "0"
         }
         then "its seats are numbered from zero — no receiver spends one" {
-            shown("type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(7).x") == "7"
+            shown(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(7).x",
+            ) == "7"
         }
         then "it stands beside ordinary methods on the same type" {
             shown("${pointed()}let p = P { x: 1, y: 2 }\np.sum() + P.origin().sum()") == "3"
@@ -27,27 +29,43 @@ spec "features/impls/statics" {
     }
     given "a static and an enum" {
         then "a variant of the same type still constructs" {
-            shown("enum K { a, b }\nimpl K {\n    static fn many() -> int { 2 }\n}\nlet v = K.a\nif v is .a { K.many() } else { 0 }") == "2"
+            shown(
+                "enum K { a, b }\nimpl K {\n    static fn many() -> int { 2 }\n}\nlet v = K.a\nif v is .a { K.many() } else { 0 }",
+            ) == "2"
         }
         then "a static NAMED like a variant is refused where it is written" {
-            refused_with("enum K { a, b }\nimpl K {\n    static fn a() -> int { 7 }\n}\n1", "`K.a` is already a variant — a `static fn` of that name could never be called")
+            refused_with(
+                "enum K { a, b }\nimpl K {\n    static fn a() -> int { 7 }\n}\n1",
+                "`K.a` is already a variant — a `static fn` of that name could never be called",
+            )
         }
     }
     given "the receiver a static does not have" {
         then "`self` inside one refuses, and says why" {
-            refused_with("type P = { x: int }\nimpl P {\n    static fn get() -> int { self.x }\n}\n1", "`self` names a method's receiver — a `static fn` has none")
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    static fn get() -> int { self.x }\n}\n1",
+                "`self` names a method's receiver — a `static fn` has none",
+            )
         }
         then "`static fn` at the top level is a plain fn already" {
-            refused_with("static fn f() -> int { 1 }\nf()", "`static fn` marks a method with no receiver — `f` is already a plain fn")
+            refused_with(
+                "static fn f() -> int { 1 }\nf()",
+                "`static fn` marks a method with no receiver — `f` is already a plain fn",
+            )
         }
         then "a trait's associated fn is answered by the impl and called through the type" {
-            shown("trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn lifted(t: int) -> int { t + 1 }\n}\nP.lifted(3)") == "4"
+            shown(
+                "trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn lifted(t: int) -> int { t + 1 }\n}\nP.lifted(3)",
+            ) == "4"
         }
         then "an associated fn's signature names no `Self`" {
             refused_with("trait T {\n    static fn make() -> Self\n}\n1", "`Self` names no type")
         }
         then "an unanswered associated fn is the contract's refusal" {
-            refused_with("trait T {\n    static fn make() -> int\n}\ntype P = { x: int }\nimpl T for P {\n}\n1", "`impl T for P` must answer `make`")
+            refused_with(
+                "trait T {\n    static fn make() -> int\n}\ntype P = { x: int }\nimpl T for P {\n}\n1",
+                "`impl T for P` must answer `make`",
+            )
         }
     }
     given "a bodied associated fn — the trait's own name is a receiver too" {
@@ -55,21 +73,34 @@ spec "features/impls/statics" {
             shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\nFoo.make(41)") == "42"
         }
         then "two on one trait are both reachable that way" {
-            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n    static fn make2(n: int) -> int { n + 2 }\n}\nFoo.make(1) + Foo.make2(1)") == "5"
+            shown(
+                "trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n    static fn make2(n: int) -> int { n + 2 }\n}\nFoo.make(1) + Foo.make2(1)",
+            ) == "5"
         }
         then "reachable from inside another trait's own default body" {
-            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\ntrait Bar {\n    fn go(n: int) -> int { Foo.make(n) }\n}\ntype P = { x: int }\nimpl Bar for P {}\nP { x: 0 }.go(9)") == "10"
+            shown(
+                "trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\ntrait Bar {\n    fn go(n: int) -> int { Foo.make(n) }\n}\ntype P = { x: int }\nimpl Bar for P {}\nP { x: 0 }.go(9)",
+            ) == "10"
         }
         then "an abstract one has no single body to answer through the trait" {
-            refused_with("trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\nShow.lifted(3)", "`Show.lifted` has no one body — each signatory answers its own")
+            refused_with(
+                "trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\nShow.lifted(3)",
+                "`Show.lifted` has no one body — each signatory answers its own",
+            )
         }
     }
     given "a call that does not fit" {
         then "the arity refusal names no `self`" {
-            refused_with("type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(1, 2).x", "`P.of` takes 1 argument, found 2")
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.of(1, 2).x",
+                "`P.of` takes 1 argument, found 2",
+            )
         }
         then "an unknown name under a type is still the variant law's word" {
-            refused_with("type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.nope().x", "`P` is a record, not an enum")
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.nope().x",
+                "`P` is a record, not an enum",
+            )
         }
     }
 }

@@ -2,7 +2,18 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. Its type is recorded as
 //! a workspace fact; an annotation still holds what it declares.
-use core.{StmtId, ExprId, TypeId, TypeRef, Expr, DeclId, CollectParts, same_type, flatten, some_list}
+use core.{
+    StmtId,
+    ExprId,
+    TypeId,
+    TypeRef,
+    Expr,
+    DeclId,
+    CollectParts,
+    same_type,
+    flatten,
+    some_list,
+}
 use features.{TypeCx, declared_decl, bound_decl_of}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
@@ -31,7 +42,15 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     // gathers it is closure-scoped.
     let cycled: DeclId? = self_collect_read(cx, s, v)
     if cycled != null {
-        let _ = cx.spoken(self_read_refused(cx, cx.loc_of(v), cx.view.store.let_name(s) ?? "this value", cycled!))
+        let _ = cx
+            .spoken(
+                self_read_refused(
+                    cx,
+                    cx.loc_of(v),
+                    cx.view.store.let_name(s) ?? "this value",
+                    cycled!,
+                ),
+            )
         return
     }
     // OPEN WORLD CLOSES AT LINK (docs/2026_09_22_COLLECTIONS.md §4.1):
@@ -45,7 +64,9 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     if cx.refuses_void_value(v) { return }
     let held = declared ?? cx.type_at(v)
     // a top-level instance is built once per run, so it holds anything
-    if !written(cx.view.store.expr(v)) && !materializable(cx, held) && !cx.view.store.is_component_inst(s) {
+    if !written(cx.view.store.expr(v)) &&
+        !materializable(cx, held) &&
+        !cx.view.store.is_component_inst(s) {
         unformed(cx, v, cx.view.store.let_name(s) ?? "this const", held)
         return
     }
@@ -55,7 +76,10 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
 
 /// A value read straight off the page.
 fn written(value: Expr) -> bool {
-    value.int_of() != null || value.text_of() != null || value.bool_of() != null || value.bits_of() != null
+    value.int_of() != null ||
+        value.text_of() != null ||
+        value.bool_of() != null ||
+        value.bits_of() != null
 }
 
 /// Whether the annotation's own walk already spoke.
@@ -71,7 +95,8 @@ fn materializable(cx: TypeCx, ty: TypeId) -> bool {
     // absence, a plain `ConstInt` at every read; inside an aggregate
     // every slot keeps its own presence regardless
     let inner: TypeId? = cx.view.types.carried(ty)
-    if inner != null { return (cx.view.types.rides_pointer(ty) || cx.view.types.is_word_enum(inner!)) && formed(cx, inner!, []) }
+    if inner != null { return (cx.view.types.rides_pointer(ty) || cx.view.types.is_word_enum(inner!)) &&
+            formed(cx, inner!, []) }
     formed(cx, ty, [])
 }
 
@@ -130,15 +155,13 @@ fn self_collect_read(cx: TypeCx, s: StmtId, root: ExprId) -> DeclId? {
 }
 
 fn self_collect_words(cx: TypeCx, s: StmtId) -> List<string> {
-    some_list(cx.view.store.instance_of(s)).concat([a.name for a in cx.view.store.annotations_of(s)])
+    some_list(cx.view.store.instance_of(s))
+        .concat([a.name for a in cx.view.store.annotations_of(s)])
 }
 
 fn gathers(cx: TypeCx, word: string, d: DeclId) -> bool {
     let p? = collect_parts_of(cx, d) else { return false }
-    match p.kind {
-        .Component(w) or .Annotated(w) -> w == word,
-        .UnknownKind(_) -> false,
-    }
+    match p.kind { .Component(w) or .Annotated(w) -> w == word, .UnknownKind(_) -> false }
 }
 
 /// `d`'s own `CollectParts`, absent for anything not a `.Collect`
@@ -152,12 +175,24 @@ fn collect_parts_of(cx: TypeCx, d: DeclId) -> CollectParts? {
 // ── The voices ──
 
 fn closure_fold_refused(cx: TypeCx, at: Loc?, d: DeclId) -> Diag {
-    refusal("collect.closure_fold", at, "`${cx.view.decls.decl(d).name}` is closed only when a program links — read it at run time", "folded here", "read it from a fn's body, never from a const's compile-time value")
+    refusal(
+        "collect.closure_fold",
+        at,
+        "`${cx.view.decls.decl(d).name}` is closed only when a program links — read it at run time",
+        "folded here",
+        "read it from a fn's body, never from a const's compile-time value",
+    )
 }
 
 fn self_read_refused(cx: TypeCx, at: Loc?, name: string, d: DeclId) -> Diag {
     let coll = cx.view.decls.decl(d).name
-    refusal("collect.self_read", at, "`${name}` is collected into `${coll}`, so it cannot read `${coll}` while compiling", "reads it here", "an instance's own body sees what it is given directly, never the collection it joins")
+    refusal(
+        "collect.self_read",
+        at,
+        "`${name}` is collected into `${coll}`, so it cannot read `${coll}` while compiling",
+        "reads it here",
+        "an instance's own body sees what it is given directly, never the collection it joins",
+    )
 }
 
 /// A computed const needs a compile-time value form: a literal the
@@ -165,5 +200,14 @@ fn self_read_refused(cx: TypeCx, at: Loc?, name: string, d: DeclId) -> Diag {
 /// evaluator's crossed tree.
 fn unformed(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
     let form = "`${cx.view.types.name_of(held)}`"
-    let _ = cx.spoken(refusal("const.form", cx.loc_of(v), "a computed const needs a compile-time value form", "`${name}` declares ${form}", "use a scalar, text, octets, list, map, record, enum, result, or an optional over one of them — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance"))
+    let _ = cx
+        .spoken(
+            refusal(
+                "const.form",
+                cx.loc_of(v),
+                "a computed const needs a compile-time value form",
+                "`${name}` declares ${form}",
+                "use a scalar, text, octets, list, map, record, enum, result, or an optional over one of them — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance",
+            ),
+        )
 }

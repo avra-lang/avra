@@ -23,7 +23,9 @@ spec "features/expr_spine" {
             let tree_ok = match p.store.expr(p.root!) {
                 .Binary(op, left, right) -> {
                     let inner = match p.store.expr(left) {
-                        .Binary(iop, il, ir) -> iop == BinOp.Add && p.store.expr(il) is .IntLit && p.store.expr(ir) is .IntLit,
+                        .Binary(iop, il, ir) -> iop == BinOp.Add &&
+                            p.store.expr(il) is .IntLit &&
+                            p.store.expr(ir) is .IntLit,
                         _ -> false,
                     }
                     op == BinOp.Sub && inner && p.store.expr(right) is .Ident
@@ -50,10 +52,7 @@ spec "features/expr_spine" {
         then "literal payloads parse as integers" {
             let p = parse_expr("40 + 2")
             match p.store.expr(p.root!) {
-                .Binary(_, left, _) -> match p.store.expr(left) {
-                    .IntLit(v) -> v == 40,
-                    _ -> false,
-                },
+                .Binary(_, left, _) -> match p.store.expr(left) { .IntLit(v) -> v == 40, _ -> false },
                 _ -> false,
             }
         }
@@ -79,10 +78,17 @@ spec "features/expr_spine" {
             refused_with("\"a\" + 1", "`+` needs `string` operands, found `int`")
         }
         then "an enum carrying nothing compares by variant" {
-            shown("enum C {\n    red\n    blue\n}\nfn pick(b: bool) -> C { if b { C.red } else { C.blue } }\n\"" + "\${pick(true) == C.red} " + "\${pick(false) != C.blue}\"") == "true false"
+            shown(
+                "enum C {\n    red\n    blue\n}\nfn pick(b: bool) -> C { if b { C.red } else { C.blue } }\n\"" +
+                    "\${pick(true) == C.red} " +
+                    "\${pick(false) != C.blue}\"",
+            ) == "true false"
         }
         then "an enum carrying a payload still refuses" {
-            refused_with("enum E {\n    a(int)\n    b\n}\nE.b == E.b", "`==` compares scalars for now")
+            refused_with(
+                "enum E {\n    a(int)\n    b\n}\nE.b == E.b",
+                "`==` compares scalars for now",
+            )
         }
     }
     given "the operator ladder" {
@@ -116,7 +122,8 @@ spec "features/expr_spine" {
     given "the operators' laws" {
         then "a lazy op wants bools, in its own words" {
             let a = analyze_source("1 && true")
-            a.diagnostics.length == 1 && a.report().contains("`&&` needs `bool` operands, found `int`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`&&` needs `bool` operands, found `int`")
         }
         then "`!` wants a bool, in its own words" {
             let a = analyze_source("!5")
@@ -124,7 +131,8 @@ spec "features/expr_spine" {
         }
         then "`!=` compares matching types, in its own words" {
             let a = analyze_source("1 != \"a\"")
-            a.diagnostics.length == 1 && a.report().contains("`!=` compares matching types, found `int` and `string`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`!=` compares matching types, found `int` and `string`")
         }
     }
 }

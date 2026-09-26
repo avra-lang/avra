@@ -15,7 +15,11 @@ use core.{TypeRef}
 
 /// This feature subset: programs of lets only.
 fn parse_prog(source: string) -> Parsed {
-    parse_program(assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]), new_source_file("<source>", source), BlockWords {})
+    parse_program(
+        assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]),
+        new_source_file("<source>", source),
+        BlockWords {},
+    )
 }
 
 /// The binding is named `x` and declares `int?`.
@@ -29,10 +33,11 @@ spec "features/let_stmt" {
         then "one Let lands in the arena with the expression tree under it" {
             let p = parse_prog("let x = 1 + y")
             let tree_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, _, value) -> name == "x" && match p.store.expr(value) {
-                    .Binary(op, l, r) -> op == BinOp.Add && p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
-                    _ -> false,
-                },
+                .Let(name, _, value) -> name == "x" &&
+                    match p.store.expr(value) {
+                        .Binary(op, l, r) -> op == BinOp.Add && p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
+                        _ -> false,
+                    },
                 _ -> false,
             }
             p.voices.list.is_empty() && p.stmts.length == 1 && tree_ok
@@ -46,8 +51,14 @@ spec "features/let_stmt" {
     given "several statements" {
         then "lets accumulate in source order" {
             let p = parse_prog("let a = 1\nlet b = 2")
-            let a_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _, _) -> name == "a", _ -> false }
-            let b_ok = match p.store.stmt(p.stmts[1]) { .Let(name, _, _) -> name == "b", _ -> false }
+            let a_ok = match p.store.stmt(p.stmts[0]) {
+                .Let(name, _, _) -> name == "a",
+                _ -> false,
+            }
+            let b_ok = match p.store.stmt(p.stmts[1]) {
+                .Let(name, _, _) -> name == "b",
+                _ -> false,
+            }
             p.voices.list.is_empty() && p.stmts.length == 2 && a_ok && b_ok
         }
     }
@@ -61,15 +72,13 @@ spec "features/let_stmt" {
         }
         then "an unannotated let carries NO type — absence is its own value" {
             let p = parse_prog("let x = 1")
-            match p.store.stmt(p.stmts[0]) {
-                .Let(_, t, _) -> t == null,
-                _ -> false,
-            }
+            match p.store.stmt(p.stmts[0]) { .Let(_, t, _) -> t == null, _ -> false }
         }
     }
     given "the declared-binding law" {
         then "the SPEC'S OWN SENTENCE: `let x: int = null` refuses; `let x: int? = null` is fine" {
-            refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") && analyze_source("let x: int? = null\nx ?? 7").diagnostics.is_empty()
+            refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") &&
+                analyze_source("let x: int? = null\nx ?? 7").diagnostics.is_empty()
         }
         then "a mismatch names the binding and both sides" {
             refused_with("let x: int = \"s\"\nx", "`x` declares `int`, this is `string`")
@@ -88,14 +97,22 @@ spec "features/let_stmt" {
             a.diagnostics.length == 1 && a.report().contains("`User` is a type, not a value")
         }
         then "a niche annotation adopts a call's answer" {
-            shown("fn g(b: bool) -> string? { if b { \"x\" } else { null } }\nlet s: string? = g(true)\ns ?? \"d\"") == "x"
+            shown(
+                "fn g(b: bool) -> string? { if b { \"x\" } else { null } }\nlet s: string? = g(true)\ns ?? \"d\"",
+            ) == "x"
         }
     }
     given "a broken statement between good ones" {
         then "one diagnostic, a visible hole, and whole neighbors" {
             let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
-            let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _, _) -> name == "y", _ -> false }
-            p.voices.list.length == 1 && p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error && tail_ok
+            let tail_ok = match p.store.stmt(p.stmts[2]) {
+                .Let(name, _, _) -> name == "y",
+                _ -> false,
+            }
+            p.voices.list.length == 1 &&
+                p.stmts.length == 3 &&
+                p.store.stmt(p.stmts[1]) is .Error &&
+                tail_ok
         }
     }
     given "the discard — `let _ = v`" {
@@ -106,7 +123,10 @@ spec "features/let_stmt" {
             shown("fn f() {\n    let _ = 5\n}\nf()\n2") == "2"
         }
         then "so a fn declaring an answer refuses to end on it" {
-            refused_with("fn f() -> int {\n    let _ = 5\n}\nf()", "the body answers `void` but `f` declares `int`")
+            refused_with(
+                "fn f() -> int {\n    let _ = 5\n}\nf()",
+                "the body answers `void` but `f` declares `int`",
+            )
         }
     }
 }

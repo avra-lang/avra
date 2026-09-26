@@ -48,7 +48,13 @@ export fn quote_pat_holes(store: NodeStore, body: ExprId) -> List<QuoteHole> {
 /// typing refuses against — this is the loose, kind-only test
 /// `quote_pat_names` dedupes with).
 export fn quote_hole_ok(h: QuoteHole) -> bool {
-    h.name != null && (h.kind is .Expression || h.kind is .Statement || h.kind is .Name || h.kind is .Binder || h.kind is .Run || h.kind is .Type)
+    h.name != null &&
+        (h.kind is .Expression ||
+            h.kind is .Statement ||
+            h.kind is .Name ||
+            h.kind is .Binder ||
+            h.kind is .Run ||
+            h.kind is .Type)
 }
 
 /// Whether a hole's kind binds TEXT (a name's own written text)
@@ -186,10 +192,7 @@ export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
 /// (avra-8sb5.25.21); `compiler/rule_examples.av`'s `example_root`
 /// shares this door for exactly that reason.
 export fn root_of(store: NodeStore, s: StmtId) -> At {
-    match store.stmt(s) {
-        .ExprStmt(v) -> At.Expr(v),
-        rest -> At.Stmt(s),
-    }
+    match store.stmt(s) { .ExprStmt(v) -> At.Expr(v), rest -> At.Stmt(s) }
 }
 
 /// The quote pattern's own Shape: like `shape_at`, but a hole is
@@ -222,7 +225,8 @@ export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, name
 /// order, when it carries both (`let ${x}: ${T} = ...`).
 fn node_opens(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> List<Open> {
     let named = [Open.Name(binder_index(holes, names, i)) for i in some_list(name_hole_at(store, at))]
-    named.concat([Open.Type(binder_index(holes, names, i)) for i in some_list(type_hole_at(store, at))])
+    named
+        .concat([Open.Type(binder_index(holes, names, i)) for i in some_list(type_hole_at(store, at))])
 }
 
 fn binder_index(holes: List<QuoteHole>, names: List<string>, i: int) -> int {

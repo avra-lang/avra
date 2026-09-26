@@ -7,7 +7,19 @@
 //! file the References relation says a deleted declaration alone kept
 //! alive. Proved through the rule's own `@law`, never the IR proof: a
 //! deletion answers no code for that comparison to read.
-use core.{At, StmtId, DeclId, FileId, NodeStore, Span, same_decl, same_stmt, same_file, flatten, joined}
+use core.{
+    At,
+    StmtId,
+    DeclId,
+    FileId,
+    NodeStore,
+    Span,
+    same_decl,
+    same_stmt,
+    same_file,
+    flatten,
+    joined,
+}
 use features.{Analysed, Decls, Decl, Ref, Fix, nothing}
 use diagnostics.{spliced, loc_at}
 use @std.errors.{Edit, Loc}
@@ -19,9 +31,15 @@ impl Program {
     /// rewrite answers to, then trusted on the rule's own `@law`
     /// (`rule_proof.av`'s `law_proved`: the after-text still
     /// type-checks) since no IR comparison applies to a removal.
-    fn delete_application(path: string, a: Analysed, text: string, c: Candidate, what: List<DeclId>) -> List<Application> {
+    fn delete_application(path: string, a: Analysed, text: string, c: Candidate, what: List<DeclId>) -> List<
+        Application,
+    > {
         let edits? = delete_edits(a, text, what) else { return [] }
-        if edits.any((e: Edit) -> holds_remark(a.view.store, e.loc) || licensed_just_above(a.view.store, e.loc.lo)) { return [] }
+        if edits
+            .any(
+                (e: Edit) -> holds_remark(a.view.store, e.loc) ||
+                    licensed_just_above(a.view.store, e.loc.lo),
+            ) { return [] }
         let after? = spliced(text, edits) else { return [] }
         let by_law = self.law_proved(path, after, declared_law(c.owner))
         [Application { kind: rule_id(c.owner), edits: edits, proved: false, by_law: by_law }]
@@ -34,10 +52,7 @@ impl Program {
 /// candidate's edits through this ONE builder, never a second
 /// derivation.
 export fn deleted(f: Fix) -> List<DeclId>? {
-    match f {
-        .Delete(what) -> what,
-        .Rewrite(_) or .Say(_) -> null,
-    }
+    match f { .Delete(what) -> what, .Rewrite(_) or .Say(_) -> null }
 }
 
 /// Every edit ONE `Fix.Delete` needs: each ordinary-declaration
@@ -58,7 +73,9 @@ export fn delete_edits(a: Analysed, text: string, what: List<DeclId>) -> List<Ed
     let import_decl_ids = [r.decl for r in import_rows]
     let decl_targets = [d for d in what if !decl_in(import_decl_ids, d)]
     let named_imports = [d for d in what if decl_in(import_decl_ids, d)]
-    let cascaded = flatten([decls.orphaned_imports(store, file, decls.decl(d), import_rows) for d in decl_targets])
+    let cascaded = flatten(
+        [decls.orphaned_imports(store, file, decls.decl(d), import_rows) for d in decl_targets],
+    )
     let import_targets = distinct_decls(named_imports.concat(cascaded))
     let decl_edits = [decl_delete_edit(store, text, src_file, decls.decl(d)) for d in decl_targets]
     if decl_edits.any(it == null) { return null }
@@ -77,7 +94,9 @@ impl Decls {
     /// one such use — an import nobody in this file ever read is a
     /// DIFFERENT rule's own finding (`modules.unused_import`), never
     /// this cascade's to claim.
-    fn orphaned_imports(store: NodeStore, file: FileId, target: Decl, rows: List<Ref>) -> List<DeclId> {
+    fn orphaned_imports(store: NodeStore, file: FileId, target: Decl, rows: List<Ref>) -> List<
+        DeclId,
+    > {
         let sp? = decl_span(store, target.stmt) else { return [] }
         [r.decl for r in rows if self.orphaned_by(store, file, sp, r)]
     }
@@ -124,7 +143,13 @@ fn distinct_decls(ds: List<DeclId>) -> List<DeclId> {
 /// Every affected `use` line's own edit: its targeted items dropped,
 /// well-formed either way — the line rewritten around the survivors,
 /// or the whole line gone when none are left.
-fn use_line_edits(store: NodeStore, text: string, file: string?, rows: List<Ref>, targets: List<DeclId>) -> List<Edit>? {
+fn use_line_edits(
+    store: NodeStore,
+    text: string,
+    file: string?,
+    rows: List<Ref>,
+    targets: List<DeclId>,
+) -> List<Edit>? {
     if targets.is_empty() { return [] }
     let hit_rows = [r for r in rows if decl_in(targets, r.decl)]
     let stmts = distinct_stmts([r.at for r in hit_rows])
@@ -147,7 +172,14 @@ fn distinct_stmts(ats: List<At>) -> List<StmtId> {
 /// One `use` line's own edit — `null` when its written item count no
 /// longer matches its own References rows for this statement, the
 /// honest miss a resolve error already spoke elsewhere.
-fn use_stmt_edit(store: NodeStore, text: string, file: string?, s: StmtId, rows: List<Ref>, targets: List<DeclId>) -> Edit? {
+fn use_stmt_edit(
+    store: NodeStore,
+    text: string,
+    file: string?,
+    s: StmtId,
+    rows: List<Ref>,
+    targets: List<DeclId>,
+) -> Edit? {
     let u? = store.use_parts(s) else { return null }
     let stmt_rows = [r for r in rows if stmt_at(r.at, s)]
     if stmt_rows.length != u.items.length { return null }
@@ -157,7 +189,10 @@ fn use_stmt_edit(store: NodeStore, text: string, file: string?, s: StmtId, rows:
     if kept.is_empty() { return deletion_edit(loc, text) }
     let new_items = [u.items[j] for j in kept]
     let new_aliases = [u.aliases[j] for j in kept]
-    Edit { loc: loc, replacement: use_line_text(u.path, new_items, new_aliases) + swallowed_break(text, loc) }
+    Edit {
+        loc: loc,
+        replacement: use_line_text(u.path, new_items, new_aliases) + swallowed_break(text, loc),
+    }
 }
 
 fn stmt_at(at: At, s: StmtId) -> bool {
