@@ -163,12 +163,12 @@ export type Workspace = {
     // fingerprinted and indexed once. A host that changes under a
     // running workspace (Era IV's live editing) invalidates these
     // with the revision; today no host does.
-    sources: Memo<SourceFile>,
+    sources: Memo<Stage>,
     manifests: Memo<Manifest>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
-    programs: Memo<Parsed>,
+    programs: Memo<Stage>,
     plain: Memo<Parsed>,
     file_items: Memo<List<DeclId>>,
     module_names: Memo<ModuleNames>,
@@ -182,7 +182,7 @@ export type Workspace = {
     folds: Memo<TypeFacts>,
     analyses: Memo<Analysis>,
     asks: Cell<List<Wanted>>,
-    units: Memo<Unit>,
+    units: Memo<Stage>,
     lift_asks: Cell<List<LiftAsk>>,
     lift_results: Memo<LiftResult>,
     generated: Memo<List<DeclId>>,
@@ -340,6 +340,14 @@ enum Family {
     References
 }
 
+/// `Parsed`'s fingerprint over a `Stage` value — the words a block
+/// import brings in are folded so a dependency's grammar appearing
+/// re-parses this file.
+fn parsed_fingerprint(s: Stage) -> int {
+    let p = parsed_of(s)
+    fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))])
+}
+
 fn key(f: Family, arg: int) -> Key {
     Key { family: ordinal(f), arg: arg }
 }
@@ -462,10 +470,10 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         db: db,
         decls: language_decls(lang),
         store: Cell.new(no_store),
-        sources: new_memo<SourceFile>(db, ordinal(Family.Source)),
+        sources: new_memo<Stage>(db, ordinal(Family.Source)),
         manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)),
         externs: new_table<ExternNames>(),
-        programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
+        programs: new_memo<Stage>(db, ordinal(Family.Parsed)),
         plain: new_memo<Parsed>(db, ordinal(Family.Plain)),
         file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
         module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
@@ -478,7 +486,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         method_diags: Cell.new(no_method_diags),
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)),
-        units: new_memo<Unit>(db, ordinal(Family.Lowered)),
+        units: new_memo<Stage>(db, ordinal(Family.Lowered)),
         asks: Cell.new(no_asks),
         lift_asks: Cell.new(no_lifts),
         lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
@@ -757,10 +765,11 @@ impl Workspace {
     /// An INPUT: the file's text, hashed; the revision moves only when
     /// the text did.
     fn source(f: FileId) -> SourceFile {
-        self.sources.input(f.index, () -> {
+        let staged = self.sources.input(f.index, () -> {
             let path = self.decls.file(f).path
-            new_source_file(path, self.host.read(path))
-        }, (src: SourceFile) -> fp_str(src.text))
+            Stage.Source(new_source_file(path, self.host.read(path)))
+        }, (s: Stage) -> fp_str(source_of(s).text))
+        source_of(staged)
     }
 
     /// The file parsed — pure in its text.
@@ -772,7 +781,7 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        self.programs.demand(f.index, () -> self.parsed_under_blocks(f), (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
+        parsed_of(self.programs.demand(f.index, () -> Stage.Parsed(self.parsed_under_blocks(f)), parsed_fingerprint))
     }
 
     /// A file parsed under NO block words — its own words alone: the

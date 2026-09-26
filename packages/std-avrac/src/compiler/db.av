@@ -23,6 +23,8 @@
 //! derive, the wire format IS the value.
 use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape}
 use compiler.store.{Store, Stored, node_key}
+use diagnostics.{SourceFile}
+use compiler.lower.{Unit}
 use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
 use @std.text.{parse_int}
@@ -77,6 +79,74 @@ export fn decoded_docfacts(text: string) -> DocFacts? {
         listing_digest: wire_unescape(lines[1]),
         answer: wire_unescape(lines[2]),
         files: [f! for f in files_opt],
+    }
+}
+
+/// A COMPILE'S OWN IN-MEMORY STAGES — never durable, never string-keyed,
+/// dying with the `Workspace` that computed them. `DbRow` (below) answers
+/// "give me this fact by NAME, valid across processes"; `Stage` answers
+/// "give me this fact by the dense (family, arg) key `Kernel` already
+/// tracks" — the value a `Memo<T>` holds, with `T` now ONE shared enum
+/// instead of one bespoke type per family, so every stage's cached value
+/// is read the same way. Kept a SEPARATE enum from `DbRow` on purpose: a
+/// durable row's identity is a string a fresh process can ask for before
+/// anything else exists; a stage's identity is a `DeclId`/`FileId` that
+/// only exists inside a live compile — forcing them into one enum with
+/// one `key() -> string` method would be the same false unification the
+/// Obj/Bin file-path shape already refused for the durable side.
+///
+/// RECORDED TRIGGER: only three of `Workspace`'s families are folded in
+/// here (`Source`, `Parsed`, `Lowered`) — proof the pattern holds for an
+/// INPUT (`Source`), a plain derived query (`Parsed`), and a RECURSIVE
+/// one (`Lowered`, which re-enters itself for specializations). The
+/// other ~17 families (`Items`, `Namespace`, `Typed`, `Analysis`, ...)
+/// are NOT migrated: several carry extra side-tables beyond a single
+/// value (`Methods` has `sig_voices`/`method_clashes` alongside it) and
+/// `Sig`'s own in-memory answer already lives in `Decls.sigs`, not a
+/// `Memo` at all — each needs its own look before folding in, not a
+/// mechanical sweep. `Workspace.db` stays `Kernel`-typed until every
+/// family shares `Stage`; renaming it to `Db` is a final, purely
+/// mechanical step, not something safe to do with 17 families still
+/// on their own bespoke types.
+export enum Stage {
+    Source(SourceFile)
+    Parsed(Parsed)
+    Lowered(Unit)
+}
+
+extern fn avra_trap(message: string)
+
+/// A `Stage` read as the ONE variant its caller's own family can ever
+/// mint — a wrong variant reaching here is a defect the `Memo` layer
+/// already prevents by construction (one `Memo<Stage>` per family, one
+/// variant minted per family), so this is a belt, never a guess.
+fn source_of(s: Stage) -> SourceFile {
+    match s {
+        .Source(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Source expected")
+            source_of(s)
+        },
+    }
+}
+
+fn parsed_of(s: Stage) -> Parsed {
+    match s {
+        .Parsed(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Parsed expected")
+            parsed_of(s)
+        },
+    }
+}
+
+fn lowered_of(s: Stage) -> Unit {
+    match s {
+        .Lowered(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Lowered expected")
+            lowered_of(s)
+        },
     }
 }
 
