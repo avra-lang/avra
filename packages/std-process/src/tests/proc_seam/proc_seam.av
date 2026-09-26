@@ -56,7 +56,7 @@ let _ = avra_proc_close(merged)
 let s = avra_proc_spawn(avra_proc_stage(), "/bin/cat", "", 1 + 2 + 4 + 1024, 0 - 1)
 let wrote = avra_fd_write(avra_proc_fd(s, 0), "abc".bytes(), 0)
 let closed = avra_proc_shut(s, 0)
-mut said: List<Bytes> = []
+let said: List<Bytes> = []
 // A reap retry budget is a DEADLINE, never a turn count: `avra_proc_ready`
 // reports a closed, unused stream's HUP as ready and stops waiting out
 // its own timeout once that fires, so a turn's cost is not bounded below
@@ -68,14 +68,14 @@ let deadline = avra_now_ns() + budget_ns
 while avra_now_ns() < deadline && avra_proc_reap(s) == 0 {
     let ready = avra_proc_ready(s, 25)
     if ready & 1 == 1 {
-        mut token = avra_fd_read(avra_proc_fd(s, 1), 65536)
+        let token = avra_fd_read(avra_proc_fd(s, 1), 65536)
         while token > 0 {
             said.push(avra_fd_taken(token))
             token = avra_fd_read(avra_proc_fd(s, 1), 65536)
         }
     }
 }
-mut last = avra_fd_read(avra_proc_fd(s, 1), 65536)
+let last = avra_fd_read(avra_proc_fd(s, 1), 65536)
 while last > 0 {
     said.push(avra_fd_taken(last))
     last = avra_fd_read(avra_proc_fd(s, 1), 65536)
