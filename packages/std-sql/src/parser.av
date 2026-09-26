@@ -67,7 +67,11 @@ export type FromClause = { first: TableRef, joins: List<JoinItem> }
 
 export type OrderItem = { expr: SqlExpr, desc: bool }
 
+/// One `WITH name AS (subquery)` binding.
+export type CteDef = { name: string, query: SqlSelect }
+
 export type SqlSelect = {
+    ctes: List<CteDef>,
     columns: List<SelectItem>,
     from: FromClause,
     where: SqlExpr?,
@@ -109,6 +113,7 @@ export enum SqlNode {
     Assign(a: Assignment)
     Upd(u: UpdateStmt)
     Del(d: DeleteStmt)
+    Cte(c: CteDef)
 }
 
 fn text_of(c: Captured<LexToken, SqlNode>) -> string {
@@ -168,6 +173,7 @@ impl SqlNode {
     fn as_update() -> UpdateStmt? { match self { .Upd(u) -> u, _ -> null } }
     fn as_delete() -> DeleteStmt? { match self { .Del(d) -> d, _ -> null } }
     fn as_select() -> SqlSelect? { match self { .Sel(s) -> s, _ -> null } }
+    fn as_cte() -> CteDef? { match self { .Cte(c) -> c, _ -> null } }
 }
 
 fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
@@ -230,6 +236,16 @@ fn when_items_of(c: Captured<LexToken, SqlNode>) -> Result<List<WhenClause>, str
         .Many(items) -> .Ok([want(node_of(i)?.as_when(), "a when clause")? for i in items]),
         .Absent -> .Ok([]),
         .Terminal(_) or .Node(_) -> .Err("expected a list of when clauses"),
+    }
+}
+
+/// `select_stmt`'s own `c:cte_def (\",\" c:cte_def)*` — absent when
+/// there is no `WITH` clause at all.
+fn cte_items_of(c: Captured<LexToken, SqlNode>) -> Result<List<CteDef>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_cte(), "a WITH binding")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of WITH bindings"),
     }
 }
 
@@ -630,7 +646,26 @@ fn having_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<Lex
     .Ok(caps[0])
 }
 
-@grammar_rule("\"SELECT\" cols:column_list \"FROM\" f:from_clause w:where_clause? g:group_by_clause? h:having_clause? o:order_by_clause? (\"LIMIT\" lim:NUMBER)?")
+/// One `WITH` binding — `name AS (subquery)`.
+@grammar_rule("n:IDENT \"AS\" \"(\" s:select_stmt \")\"")
+fn cte_def(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let name = text_of(caps[0])
+    let sub? = node_of(caps[1])?.as_select() else { return .Err("cte: subquery did not build") }
+    .Ok(node(SqlNode.Cte(CteDef { name: name, query: sub })))
+}
+
+/// The leading `(\"WITH\" ...)? ` group is NESTED (a parenthesized
+/// group, not a direct label), same as the trailing `(\"LIMIT\" ...)?`
+/// group already was — so BOTH land after every direct top-level
+/// label (`cols`/`f`/`w`/`g`/`h`/`o`, six of them, `caps[0..5]`), in
+/// the order their OWN groups appear relative to each other: `c` at
+/// `caps[6]`, `lim` at `caps[7]` — pushed one slot later than before
+/// this change, `WITH` coming first in the text notwithstanding. Same
+/// rule as `not_expr`'s `e`/`n` ordering, applied to a bigger rule;
+/// a first attempt assumed `w:where_clause?` and `(\"LIMIT\"...)?`'s
+/// own `lim` were equally "direct" and got this backwards — verified,
+/// and corrected, by direct probe rather than trusted on inspection.
+@grammar_rule("(\"WITH\" c:cte_def (\",\" c:cte_def)*)? \"SELECT\" cols:column_list \"FROM\" f:from_clause w:where_clause? g:group_by_clause? h:having_clause? o:order_by_clause? (\"LIMIT\" lim:NUMBER)?")
 fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     let cols = cols_of(caps[0])
     let from? = from_of(caps[1]) else { return .Err("select: FROM did not build") }
@@ -638,8 +673,10 @@ fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
     let group_by = ex_list_of(caps[3])
     let having = ex_of(caps[4])
     let order = order_items_of(caps[5])
-    let limit = match caps[6] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Number(text_of(caps[6])) }
+    let ctes = cte_items_of(caps[6])?
+    let limit = match caps[7] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Number(text_of(caps[7])) }
     .Ok(node(SqlNode.Sel(SqlSelect {
+        ctes: ctes,
         columns: cols,
         from: from,
         where: where_,

@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, FromSource, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, FromSource, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource, CteDef}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -165,6 +165,15 @@ fn limit_shape(source: string) -> string? {
     let s? = select_of(selected(source)) else { return null }
     let lim? = s.limit else { return null }
     render_expr(lim)
+}
+
+fn cte_shape(c: CteDef) -> string {
+    "${c.name} AS (${render_select(c.query)})"
+}
+
+fn ctes_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    [cte_shape(c) for c in s.ctes].join(", ")
 }
 
 fn group_by_shape(source: string) -> string? {
@@ -583,6 +592,30 @@ spec "sql/subqueries" {
     given "a plain named table, unaffected" {
         then "still builds as FromSource.Named" {
             from_shape("SELECT a FROM posts AS p") == "posts AS p"
+        }
+    }
+}
+
+spec "sql/ctes" {
+    given "one WITH binding" {
+        then "its name and subquery both build" {
+            ctes_shape("WITH recent AS (SELECT id FROM posts WHERE published) SELECT id FROM recent AS r") == "recent AS (SELECT id FROM posts WHERE published)"
+        }
+    }
+    given "several WITH bindings" {
+        then "every one, in order" {
+            ctes_shape("WITH a AS (SELECT id FROM t1), b AS (SELECT id FROM t2) SELECT a.id FROM a JOIN b ON a.id = b.id") == "a AS (SELECT id FROM t1), b AS (SELECT id FROM t2)"
+        }
+    }
+    given "no WITH clause" {
+        then "an empty list" {
+            ctes_shape("SELECT a FROM t WHERE id = 1") == ""
+        }
+    }
+    given "WITH together with LIMIT" {
+        then "both build — the trailing optional group did not steal WITH's slot" {
+            let s = select_of(selected("WITH recent AS (SELECT id FROM posts) SELECT id FROM recent AS r LIMIT 5"))
+            s != null && s!.ctes.length == 1 && limit_shape("WITH recent AS (SELECT id FROM posts) SELECT id FROM recent AS r LIMIT 5") == "5"
         }
     }
 }
