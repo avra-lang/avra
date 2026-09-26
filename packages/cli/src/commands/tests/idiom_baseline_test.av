@@ -1,0 +1,87 @@
+//! `avra check --baseline_accept` — a row is kept only when a FRESH
+//! check of the package that reaches its file still fires it; a row
+//! for a file no package here reached is left untouched; a row whose
+//! file is gone from disk entirely is dropped outright, since no
+//! future check will ever reach it either.
+use @std.io.{make_dirs, write_text, read_text}
+use @std.avrac.compiler.{rules, rule_id, Checked}
+use @std.avrac.core.{joined}
+use commands.{accepted, checked_at, sites_in, Site}
+
+/// `root`'s live `Checked` — absent reads as clean, which no probe
+/// fixture here should ever hit.
+fn checked_of(root: string) -> Checked {
+    match checked_at(root) {
+        .Ok(c) -> c,
+        .Err(_) -> Checked { warnings: "", reused: false, timed: "" },
+    }
+}
+
+/// A package root of one file under `src/`, holding `text`.
+fn probe_root(name: string, text: string) -> string {
+    let root = "/tmp/avra-idiom-baseline-test/${name}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", text)
+    root
+}
+
+/// One site a live check of `root` reports, of `kind` — its OWN
+/// `file`/`text` fields, never a hand-typed guess at what `here()`
+/// resolves to under the test runner.
+fn live_site(root: string, kind: string) -> Site {
+    sites_in(report_of(root), [rule_id(r) for r in rules]).find(it.kind == kind)!
+}
+
+fn baseline_of(root: string, sites: List<Site>) -> string {
+    let path = "${root}/baseline.txt"
+    let _ = write_text(path, "# header\n" + joined([site_line(s) for s in sites], "\n") + "\n")
+    path
+}
+
+fn site_line(s: Site) -> string { "${s.kind}\t${s.file}\t${s.text}" }
+
+fn baseline_text(path: string) -> string { read_text(path) catch "" }
+
+const unmutated_mut: string = "let_stmt.unmutated_mut"
+
+spec "commands/check idiom_baseline_accept" {
+    given "a row whose site still fires" {
+        then "it is kept" {
+            let root = probe_root("still_firing", "mut a = 0\na\n")
+            let site = live_site(root, unmutated_mut)
+            let baseline = baseline_of(root, [site])
+            let _ = accepted(root, baseline, checked_of(root))
+            baseline_text(baseline).contains(unmutated_mut)
+        }
+    }
+    given "a row whose site stopped firing — the code was fixed, the rule no longer fires there" {
+        then "it is dropped, not kept merely because the OLD text still reads verbatim on disk" {
+            let root = probe_root("stopped_firing", "mut a = 0\na\n")
+            let site = live_site(root, unmutated_mut)
+            let baseline = baseline_of(root, [site])
+            let _ = write_text("${root}/src/main.av", "let a = 0\na\n")
+            let _ = accepted(root, baseline, checked_of(root))
+            !baseline_text(baseline).contains(unmutated_mut)
+        }
+    }
+    given "a row for a file OUTSIDE the package this accept call checks" {
+        then "it is left untouched, even though this call never confirms it still fires" {
+            let elsewhere = probe_root("elsewhere", "mut z = 0\nz\n")
+            let foreign_site = live_site(elsewhere, unmutated_mut)
+            let root = probe_root("outside_reach", "let a = 0\na\n")
+            let baseline = baseline_of(root, [foreign_site])
+            let _ = accepted(root, baseline, checked_of(root))
+            baseline_text(baseline).contains(unmutated_mut)
+        }
+    }
+    given "a row whose file is gone from disk entirely" {
+        then "it is dropped — no future check will ever reach it either" {
+            let root = probe_root("file_gone", "let a = 0\na\n")
+            let ghost = Site { kind: unmutated_mut, file: "${root}/src/does_not_exist.av", text: "mut z = 0" }
+            let baseline = baseline_of(root, [ghost])
+            let _ = accepted(root, baseline, checked_of(root))
+            !baseline_text(baseline).contains(unmutated_mut)
+        }
+    }
+}

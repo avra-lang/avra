@@ -560,13 +560,41 @@ impl Code {
     /// (`methods_of`/`writes_receiver`), a BUILT-IN one (`push`,
     /// `set`, `set_at` — List/Map/Cell/Bytes/Str) through its own
     /// vocabulary ROW, the same one `pure()` reads for the opposite
-    /// question.
+    /// question, and a receiver `declaring_decl` names no type for
+    /// (`unproven_method_writes`).
     fn method_writes(subject: ExprId, name: string) -> bool {
         let sh = self.of.view.types.seen_shape(self.of.facts.type_at(subject))
         match declaring_decl(sh) {
             d? -> self.user_method_writes(d, name)
-            null -> builtin_method_writes(self.of.view.lang.methods, sh, name)
+            null -> self.unproven_method_writes(sh, name)
         }
+    }
+
+    /// A receiver whose SHAPE names no single declaring type. A `dyn`
+    /// box still names its TRAIT (`.Dyn`'s own decl), whose member is
+    /// a bodiless SIGNATURE (`trait_member`) rather than an impl's own
+    /// method — `declares_writing` is the mark it can answer, the same
+    /// one a contract's seat answers by (receivers.av's `.Contract`
+    /// arm); `writes_receiver`'s inferred half has no body here to
+    /// read. A GENERIC seat (`.Var`) proves nothing — its bound is not
+    /// asked here, and no impl is in hand to read — so it CANNOT be
+    /// proven non-writing, and counts as a write, the same law a
+    /// seat-rooted argument this pass cannot type answers by
+    /// (`method_evidence`'s own `ty == null` branch, compiler/
+    /// receivers.av). Only the vocabulary rows below (List/Map/Cell/
+    /// Bytes/Str) are a PROVEN answer either way, so the rest of the
+    /// registry still delegates to them.
+    fn unproven_method_writes(sh: Type, name: string) -> bool {
+        match sh {
+            .Dyn(decl, _) -> self.trait_method_writes(decl, name),
+            .Var(_, _, _) -> true,
+            rest -> builtin_method_writes(self.of.view.lang.methods, sh, name),
+        }
+    }
+
+    fn trait_method_writes(tdecl: DeclId, name: string) -> bool {
+        let m? = self.of.view.decls.trait_member(tdecl, name) else { return false }
+        self.of.view.decls.declares_writing(m)
     }
 
     fn user_method_writes(target: DeclId, name: string) -> bool {
@@ -800,10 +828,17 @@ fn seat_declared(of: Analysed, at: At, i: int) -> Ty? {
 }
 
 /// The declaration whose body's range holds `at` — the smallest
-/// range-owning declaration whose span covers it.
+/// range-owning declaration whose span covers it, or the file's own
+/// Main when none does: a run-time statement at the top level sits
+/// in no written `{ }` of its own, and `range_bodies` (features/
+/// decls_mint.av) already answers this same "no match" with Main
+/// for exactly that reason — this door owes callers the same
+/// answer, or a local declared at the top level reads as belonging
+/// to nothing, its own uses invisible to `Code`'s whole vocabulary
+/// (`is_unwritten_mut()` among them).
 export fn enclosing_decl(view: FileView, at: At) -> DeclId? {
     let sp? = view.store.span_at(at) else { return null }
-    view.decls.innermost(view.decls.owner_spans(view.file), sp)
+    view.decls.innermost(view.decls.owner_spans(view.file), sp) ?? view.decls.main_of(view.file)
 }
 
 // ── pure(): a registry over Expr, folded through kids_at ──

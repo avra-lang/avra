@@ -11,7 +11,8 @@ use @std.meta.{name}
 /// assignment's absence is.
 @fixes("fn f() {\n    mut n = 0\n}", "let n = 0")
 @keeps("fn f() {\n    mut n = 0\n    n = n + 1\n}")
-@law("dropping `mut` from a binding nothing ever writes changes no later read — the memory pass opens a cell unique only for a write it will never make, exactly as `type.mut_fn_unused` already reads for a `mut fn`")
+@keeps("trait Grow {\n    mut fn grow()\n}\ntype R = { n: int }\nimpl Grow for R {\n    mut fn grow() { self.n = self.n + 1 }\n}\nfn f(d: dyn Grow) {\n    mut q = d\n    q.grow()\n}")
+@law("dropping `mut` from a binding nothing ever writes changes no later read — the memory pass opens a cell unique only for a write it will never make, exactly as `type.mut_fn_unused` already reads for a `mut fn`; a write reached through a `dyn` receiver is the same write, so `mut q = d` keeps its `mut` when `q`'s own trait method is declared `mut fn` — never `let`, which would ALIAS `d` instead of the copy spec 11.5 promises (features/tests/borrow_dyn)")
 export rule unmutated_mut {
     quote { ${m} } if m.is_unwritten_mut() -> unmutated_mut_fix(m),
 }

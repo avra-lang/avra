@@ -478,12 +478,24 @@ impl NodeStore {
     }
 
     /// A chain answers when it has an else and both sides answer.
+    /// THE ELSE SIDE'S OWN AMBIGUITY: `else if` and `else { if … }`
+    /// capture the identical one-statement list (no node marks which
+    /// was written), so `branch_value`'s lone-tail wrap seeds its
+    /// `written_close` from that ONE statement's own span either way.
+    /// This statement's OWN span is the only place a real brace still
+    /// shows: parsed straight through to wherever the else side ends,
+    /// it lands past the branch's single statement exactly when one
+    /// stands there, and exactly there when none does — so it
+    /// overwrites the branch's seed once the branch turns out to have
+    /// been that single, promotable statement.
     fn chain_value(s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
         if e.is_empty() { return null }
         let tv: ExprId? = self.branch_value(t)
         let ev: ExprId? = self.branch_value(e)
         if tv == null || ev == null { return null }
-        self.alloc_expr(Expr.If(c, tv!, ev!), self.stmt_span(s))
+        let span = self.stmt_span(s)
+        if e.length == 1 && span != null { self.mark_written_close(ev!, span!.hi) }
+        self.alloc_expr(Expr.If(c, tv!, ev!), span)
     }
 
     /// THE TAIL LAW: a scope's tail STATEMENT already answered a
@@ -680,7 +692,6 @@ impl NodeStore {
     /// The statement whose span begins at or after `at`, earliest
     /// first — where a doc group's anchor lands.
     fn statement_after(at: int) -> StmtId? {
-        // LICENSED style.hand_rolled_scan: a min-by fold; the subset has no min_by
         mut best: StmtId? = null
         mut best_lo = 0
         for s in self.stmt_ids() {
@@ -876,13 +887,13 @@ impl NodeStore {
     }
 
     /// Every statement the store holds, in the order it was built.
-    // LICENSED style.stmt_index_walk: the one index walk every other reader asks for
+    // LICENSED compiler.stmt_index_walk: the one index walk every other reader asks for
     fn stmt_ids() -> List<StmtId> { [StmtId { index: i } for i in 0..self.stmts.count()] }
 
     /// Every expression the store holds, in the order it was built —
     /// `stmt_ids`'s own twin, the whole file's arena, never one
     /// declaration's range alone.
-    // LICENSED style.stmt_index_walk: the one index walk every other reader asks for
+    // LICENSED compiler.stmt_index_walk: the one index walk every other reader asks for
     fn expr_ids() -> List<ExprId> { [ExprId { index: i } for i in 0..self.exprs.count()] }
 
     /// A `use` statement's parts, when the statement is one.

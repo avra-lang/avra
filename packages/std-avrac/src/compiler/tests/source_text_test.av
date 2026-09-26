@@ -204,6 +204,18 @@ let plain = n.type(int)
 let chained = some?.type(List<string?>)
 """)
         }
+        then "an `else if` chain in a block's tail position stays a chain, not a nested block — the answer's `lone_tail` wrap must not read as one" {
+            projected("fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}") == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else if b == 2 {\n        2\n    } else {\n        3\n    }\n}"
+        }
+        then "a comment in the chain's first branch does not block a later link from chaining" {
+            projected("fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}") == "fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        // first branch\n        let x = 1\n        x\n    } else if b == 2 {\n        // second branch\n        2\n    } else {\n        3\n    }\n}"
+        }
+        then "a WRITTEN `else { if … }`, in a block's tail position, keeps its braces — the chain link's lone_tail wrap and this one are the same shape, told apart only by whether a real brace sits past the nested if's own end" {
+            stable("fn ladder(a: int, b: int) -> int {\n    if a == 1 {\n        1\n    } else {\n        if b == 2 {\n            2\n        } else {\n            3\n        }\n    }\n}")
+        }
+        then "a written `else { if … }` as an if-EXPRESSION's else value keeps its braces too" {
+            stable("let tag = if a < 15 {\n    \"small\"\n} else {\n    if b == 1 {\n        \"big-one\"\n    } else {\n        \"big\"\n    }\n}")
+        }
     }
     given "degenerate shapes" {
 
@@ -323,6 +335,29 @@ let one_when = when { _ -> 1 }
         }
         then "the same law with the hole trailing, and a comment in place of the blank line" {
             kept("fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}")
+        }
+    }
+    given "the width layout — a construct with no written form of its own decides against canonical_width" {
+
+        then "a call whose arguments overflow the line wraps one per line, from its own exact column" {
+            let source = "fn f() -> int {\n    some_function_call_name_that_is_fairly_long(argument_one, argument_two, argument_three, argument_four)\n}"
+            stable(source) && projected(source).contains("some_function_call_name_that_is_fairly_long(\n        argument_one,\n        argument_two,")
+        }
+        then "the running column measures a statement's own prefix, not just its indent — a short call overflows only because of a long binding name before it" {
+            let source = "fn f() -> int {\n    let this_is_a_rather_long_binding_name_for_testing_column = compute(alpha, beta, gamma, delta, epsilon, zeta_value)\n    0\n}"
+            stable(source) && projected(source).contains("compute(\n        alpha,\n        beta,")
+        }
+        then "a method chain that overflows the line breaks one link per line, leading its own dot" {
+            let source = "fn f() -> int {\n    builder_object.first_method_call(alpha).second_method_call(beta).third_method_call(gamma).answer()\n}"
+            stable(source) && projected(source).contains("builder_object\n        .first_method_call(alpha)\n        .second_method_call(beta)")
+        }
+        then "a short chain that fits stays flat" {
+            let source = "fn f() -> int {\n    builder_object.first_method_call(1).answer()\n}"
+            stable(source) && projected(source).contains("builder_object.first_method_call(1).answer()")
+        }
+        then "a type argument list that overflows the line wraps one type per line" {
+            let source = "fn f() -> int {\n    let holder: Map<string, List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>> = {}\n    0\n}"
+            stable(source) && projected(source).contains("Map<\n        string,\n        List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>,\n    >")
         }
     }
 }

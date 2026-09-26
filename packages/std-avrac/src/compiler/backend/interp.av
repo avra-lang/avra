@@ -468,7 +468,6 @@ impl Machine {
         self.frames.push(self.frame_for(b, args))
         mut body = b
         mut pc = 0
-        // LICENSED style.hand_rolled_scan: the run loop's answer, not a scan
         mut answer: Val? = null
         mut going = true
         while going && self.failures.is_empty() {
@@ -1498,10 +1497,7 @@ impl Machine {
     }
 
     mut fn popped(id: int) -> Val {
-        if self.arrays[id].is_empty() {
-            self.trapped("pop on an empty list")
-            return Val.I(0)
-        }
+        if self.arrays[id].is_empty() { return self.empty_list() }
         read_out(self.arrays[id].pop())
     }
 
@@ -1681,6 +1677,11 @@ impl Machine {
         Val.I(0)
     }
 
+    fn empty_list() -> Val {
+        self.trapped("pop on an empty list")
+        Val.I(0)
+    }
+
     fn array_push_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a push into a non-array") }
         self.pushed(id, vals[1])
@@ -1711,10 +1712,7 @@ impl Machine {
 
     fn last_present_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.unread_presence() }
-        let last? = self.arrays[id].last() else {
-            self.trapped("pop on an empty list")
-            return Val.I(0)
-        }
+        let last? = self.arrays[id].last() else { return self.empty_list() }
         Val.I(if last is .Gone { 0 } else { 1 })
     }
 

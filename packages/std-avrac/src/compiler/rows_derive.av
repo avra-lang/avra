@@ -1,25 +1,36 @@
-//! `@derive(Rows)` — one typed accessor pair per `DbRow` variant, generated
-//! onto `Db` (never onto `DbRow` itself): a caller reads and writes a
-//! named method for each kind and never sees `DbRow`, `DbKind`, or a
-//! `match` by hand. Every variant is `Variant(key: string, facts:
-//! SomeType)` — the two-field shape every `DbRow` kind holds to, so the
-//! generated pair is the same shape whatever the kind: `fn
-//! ${kind}(store, key) -> Facts?` reads, `fn insert_${kind}(store, key,
-//! facts)` writes. The store rides as a parameter, never a captured
-//! global: `compiler/db.av` sits below the layer that knows how to find
-//! one (the CLI's own host and root). The generated seats are named
-//! `key`/`facts` literally rather than from the variant's own field
-//! names — a caller fills them positionally, so the names are the
+//! `@derive(Rows)` — one typed accessor pair per DURABLE `Row` variant,
+//! generated onto `Db` (never onto `Row` itself): a caller reads and
+//! writes a named method for each kind and never sees `Row`, `Kind`, or
+//! a `match` by hand. A DURABLE variant is `Variant(key: string, facts:
+//! SomeType)` — exactly two fields — so the generated pair is the same
+//! shape whatever the kind: `fn ${kind}(store, key) -> Facts?` reads,
+//! `fn insert_${kind}(store, key, facts)` writes. A variant with any
+//! OTHER field count is a DENSE, `Memo<Row>`-addressed one (`@derive
+//! (Unwrap)`'s job, in the same file, not this trait's) — skipped here
+//! on purpose, not a coverage gap: nothing ever calls a durable-shaped
+//! accessor on a dense variant, since `Memo<Row>` addresses by `arg:
+//! int`, never by name. The store rides as a parameter, never a
+//! captured global: `compiler/db.av` sits below the layer that knows
+//! how to find one (the CLI's own host and root). The generated seats
+//! are named `key`/`facts` literally rather than from the variant's own
+//! field names — a caller fills them positionally, so the names are the
 //! method body's alone, and holding them static sidesteps a template
 //! seam (a name spliced at a declaration is not yet resolvable from a
 //! second hole referencing it in the same body).
+//!
+//! `Kind` STAYS HAND-WRITTEN, not derived: an enum-variant list refuses
+//! a spliced `List<Code>` the same way a struct-literal's field list
+//! does (confirmed against the real compiler while attempting it) —
+//! neither has the "Many"-joining a Statement or Arms hole gets. Two
+//! sibling enums kept in sync by hand is the honest state until that
+//! hole gets support for a run of names.
 use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive}
 use @std.text.{codepoints, from_codepoints}
 
-/// The compiler's derive for `Db`'s row accessors.
+/// The compiler's derive for `Db`'s durable row accessors.
 export trait Rows {
     static fn derive(t: MetaType) -> List<Directive> {
-        [accessors(t, v) for v in t.variants]
+        [accessors(t, v) for v in t.variants if v.fields.length == 2]
     }
 
     /// The words this derive reads off a variant — none: every accessor
@@ -27,7 +38,7 @@ export trait Rows {
     static fn marks(t: MetaType) -> List<string> { [] }
 }
 
-/// One variant's read/write pair, as one `impl Db` block.
+/// One durable variant's read/write pair, as one `impl Db` block.
 fn accessors(_t: MetaType, v: MetaVariant) -> Directive {
     let key_ty = v.fields[0].ty
     let facts_ty = v.fields[1].ty

@@ -1,0 +1,66 @@
+//! WIRE ENCODING PRIMITIVES — a single-pass, correctly-reversible
+//! escape/unescape pair, replacing the fragile "the trailing field
+//! gobbles the rest of the text" trick `compiler/db.av`'s original
+//! `encoded_decl`/`decoded_decl` used. Escaping (not positional
+//! trailing-field capture) is what lets ANY field hold embedded
+//! newlines safely, in any position, not only the last.
+//!
+//! NOT A FULL `@derive(Wire)`: a generic derive generating an entire
+//! encode/decode pair per struct was attempted and abandoned within
+//! this slice — struct-literal field lists (and, so far as tried,
+//! N-ary call argument lists) refuse a spliced `List<Code>` the way
+//! match arms and statement runs do (confirmed against the real
+//! compiler: "a hole in expression position takes `Code`... found
+//! `List<Code>`"), and building a dynamic-field struct constructor
+//! through the hole system has no working precedent this session
+//! found in time. What ships here is the safe, shared PRIMITIVE; the
+//! per-type `encoded_x`/`decoded_x` pairs stay hand-written, short,
+//! and mechanical, each one line of escaping per field.
+use @std.text.{codepoints, from_codepoints}
+
+/// A single-pass scanner, not two independent `.replace` calls: an
+/// escaped backslash immediately followed by a literal `n` would read
+/// wrong under two ordered replaces, whichever order they ran in.
+export fn wire_escape(s: string) -> string {
+    from_codepoints(flatten_pairs([escape_code(c) for c in codepoints(s)]))
+}
+
+fn escape_code(c: int) -> List<int> {
+    when {
+        c == 92 -> [92, 92]
+        c == 10 -> [92, 110]
+        _ -> [c]
+    }
+}
+
+fn flatten_pairs(xs: List<List<int>>) -> List<int> {
+    mut out: List<int> = []
+    for x in xs { out = out.concat(x) }
+    out
+}
+
+export fn wire_unescape(s: string) -> string {
+    let codes = codepoints(s)
+    mut out: List<int> = []
+    mut i = 0
+    while i < codes.length {
+        let c = codes[i]
+        if c == 92 && i + 1 < codes.length {
+            let next = codes[i + 1]
+            if next == 110 {
+                out.push(10)
+                i = i + 2
+            } else if next == 92 {
+                out.push(92)
+                i = i + 2
+            } else {
+                out.push(c)
+                i = i + 1
+            }
+        } else {
+            out.push(c)
+            i = i + 1
+        }
+    }
+    from_codepoints(out)
+}
