@@ -339,8 +339,9 @@ impl Code {
 
     fn local_uses(want_write: bool) -> List<Code> {
         let b? = self.introduces() else { return [] }
-        let roots = self.write_roots()
-        [Code { of: self.of, at: At.Expr(e) } for e in self.local_range() if self.names_this(e, b) && roots.any((r: ExprId) -> same_expr(r, e)) == want_write]
+        let range = self.local_range()
+        let roots = self.write_roots(range)
+        [Code { of: self.of, at: At.Expr(e) } for e in range if self.names_this(e, b) && roots.any((r: ExprId) -> same_expr(r, e)) == want_write]
     }
 
     /// Whether `e`'s own binding is the local `b` names — resolved
@@ -380,16 +381,18 @@ impl Code {
         [ExprId { index: i } for i in x.lo..x.hi]
     }
 
-    /// Every place a WRITE lands on, in this file: an assignment's
-    /// own target, and a KNOWN-WRITING method's own receiver
-    /// (`x.push(v)` writes `x` exactly as `x = …` does) — the write
-    /// side of `local_uses`' split.
-    fn write_roots() -> List<ExprId> {
+    /// Every place a WRITE lands on, WITHIN `range` (`local_range()`'s
+    /// own bound — a local's uses never leave its enclosing
+    /// declaration, so a write to it never can either): an
+    /// assignment's own target, and a KNOWN-WRITING method's own
+    /// receiver (`x.push(v)` writes `x` exactly as `x = …` does) —
+    /// the write side of `local_uses`' split.
+    fn write_roots(range: List<ExprId>) -> List<ExprId> {
         // THE WHOLE ARENA, never `self.of.view.stmts` (the file's TOP
         // LEVEL alone): an assignment almost always nests inside a
         // fn's body, which the top-level list does not reach.
         let assigns = flatten([some_list(self.write_root_of(s)) for s in self.of.view.store.stmt_ids()])
-        let calls = flatten([some_list(self.method_write_root(ExprId { index: i })) for i in 0..self.of.view.store.exprs.count()])
+        let calls = flatten([some_list(self.method_write_root(e)) for e in range])
         assigns.concat(calls)
     }
 

@@ -97,13 +97,17 @@ impl Workspace {
         Ref { decl: d, file: f, at: At.Expr(e), kind: kind }
     }
 
-    /// A method call's own target, resolved through the WHOLE-
-    /// PROGRAM method table (`methods(target)`) the same way a
-    /// caller's typed answer is — the subject's STATIC type names
-    /// its declaring type, and the call's own name picks the member.
+    /// A method call's own target, read off the ALREADY-SETTLED
+    /// method table (`Decls.methods_of`) — the subject's STATIC type
+    /// names its declaring type, and the call's own name picks the
+    /// member. `folded(f)` (`file_refs`'s own caller) already forced
+    /// this file's typing, which forced every type it calls a method
+    /// on to be signed; `self.methods(target)` (the QUERY, not the
+    /// table) would re-walk that type's whole impl closure per call
+    /// site even on a cache hit — the table read never does.
     fn method_ref(f: FileId, facts: TypeFacts, store: NodeStore, e: ExprId, subject: ExprId, name: string) -> Ref? {
         let target? = declaring_decl(self.decls.types.shape_of(facts.type_at(subject))) else { return null }
-        let m? = self.methods(target).find((d: DeclId) -> self.decls.decl(d).name == name) else { return null }
+        let m? = self.decls.methods_of(target).find((d: DeclId) -> self.decls.decl(d).name == name) else { return null }
         Ref { decl: m, file: f, at: At.Expr(e), kind: UseKind.MethodCall }
     }
 
