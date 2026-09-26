@@ -26,7 +26,7 @@
 //! moved, or one this compiler has never seen, pays for either.
 use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{exists, write_text, is_dir, list_dir}
-use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total, db}
+use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total}
 use @std.avrac.compiler.store.{Store, store_at}
 use @std.avrac.core.{FileId, digest_of, joined, distinct}
 use @std.path.{dir_of, joined_path}
@@ -215,7 +215,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
     let source_ns = now_ns() - t0
     let t1 = now_ns()
     let key = canon_key(src.text)
-    mut rows = db()
+    mut rows = ws.db
     let hit = rows.canon(store, key) != null
     let base = [
         Phase { name: "source", ns: source_ns },
@@ -256,7 +256,7 @@ fn written_one(
     match ws.write_checked_source(f) {
         .Ok(text) -> {
             let after = "${text}\n"
-            mut rows = db()
+            mut rows = ws.db
             rows.insert_canon(store, canon_key(after), "")
             if after == before { return ended(Outcome.Canonical, base) }
             match write_text(path, after) {
