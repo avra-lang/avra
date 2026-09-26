@@ -334,6 +334,9 @@ enum Family {
     /// a file parsed under NO sublanguage words — what the block
     /// pre-scan reads of a provider, depending on its source alone
     Plain
+    /// a `Result<T, _>`'s inferred error set — the whole-program
+    /// fixpoint, one key for the entire program
+    Failures
 }
 
 fn key(f: Family, arg: int) -> Key {
@@ -361,6 +364,7 @@ fn ordinal(f: Family) -> int {
         .Receivers -> 16,
         .Expanded -> 17,
         .Plain -> 18,
+        .Failures -> 19,
     }
 }
 
@@ -386,6 +390,7 @@ fn families() -> List<Family> {
         Family.Receivers,
         Family.Expanded,
         Family.Plain,
+        Family.Failures,
     ]
     all
 }
@@ -506,6 +511,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
@@ -562,6 +568,10 @@ impl Workspace {
 
     fn writes_ensured() {
         let _ = self.receivers()
+    }
+
+    fn failures_ensured() {
+        let _ = self.failures()
     }
 
     fn marks_ensured(d: DeclId) {
@@ -631,6 +641,7 @@ impl Workspace {
             .Receivers -> touch(self.receivers()),
             .Expanded -> touch(self.expanded(file_at(arg))),
             .Plain -> touch(self.plain_parsed(file_at(arg))),
+            .Failures -> touch(self.failures()),
         }
         self.db.changed_at(key(f, arg))
     }

@@ -1,0 +1,85 @@
+// proves: `Result<T, _>` end to end — a single direct `fail` site
+// (collapses to a plain type, never a one-member union), two direct
+// `fail` sites (a real inferred union), an EDGE through `?` into
+// another `_`-declared fn (the whole-program fixpoint), MUTUAL
+// recursion between two `_`-declared fns, and an edge into an
+// EXPLICITLY-unioned callee (Phase 1's form) all landing in the same
+// inferred set.
+enum InfNotFound { InfNotFound(name: string) }
+enum InfTimeout { InfTimeout(ms: int) }
+
+// ONE fail site: the inferred answer is the PLAIN type, not a union.
+fn one_site(name: string) -> Result<int, _> {
+    fail InfNotFound.InfNotFound(name)
+}
+
+fn read_one(name: string) -> int {
+    one_site(name) catch e -> 1
+}
+
+// TWO fail sites: a real inferred union.
+fn two_sites(kind: int) -> Result<int, _> {
+    if kind == 0 { fail InfNotFound.InfNotFound("widget") }
+    if kind == 1 { fail InfTimeout.InfTimeout(30) }
+    42
+}
+
+fn read_two(kind: int) -> int {
+    two_sites(kind) catch {
+        e: InfNotFound -> 1
+        e: InfTimeout -> 2
+    }
+}
+
+// AN EDGE: `edge_g`'s inferred set (just `InfNotFound`) flows into
+// `edge_f` through `?`, with no `fail` of its own.
+fn edge_g() -> Result<int, _> {
+    fail InfNotFound.InfNotFound("from g")
+}
+
+fn edge_f() -> Result<int, _> {
+    edge_g()?
+}
+
+fn read_edge() -> int {
+    edge_f() catch e -> 3
+}
+
+// MUTUAL RECURSION: each fn's own set is empty without the other's;
+// the fixpoint settles both to `InfNotFound or InfTimeout`.
+fn mutual_a(n: int) -> Result<int, _> {
+    if n <= 0 { fail InfNotFound.InfNotFound("a") }
+    mutual_b(n - 1)?
+}
+
+fn mutual_b(n: int) -> Result<int, _> {
+    if n <= 0 { fail InfTimeout.InfTimeout(n) }
+    mutual_a(n - 1)?
+}
+
+fn read_mutual(n: int) -> int {
+    mutual_a(n) catch {
+        e: InfNotFound -> 4
+        e: InfTimeout -> 5
+    }
+}
+
+// AN EDGE INTO AN EXPLICITLY-UNIONED CALLEE (Phase 1's form): the
+// explicit union is a DIRECT contribution, not another edge.
+fn explicit_union(kind: int) -> Result<int, InfNotFound or InfTimeout> {
+    if kind == 0 { fail InfNotFound.InfNotFound("x") }
+    fail InfTimeout.InfTimeout(1)
+}
+
+fn edge_to_explicit(kind: int) -> Result<int, _> {
+    explicit_union(kind)?
+}
+
+fn read_edge_explicit(kind: int) -> int {
+    edge_to_explicit(kind) catch {
+        e: InfNotFound -> 6
+        e: InfTimeout -> 7
+    }
+}
+
+"one ${read_one("x")} two ${read_two(0)} ${read_two(1)} ${read_two(2)} edge ${read_edge()} mutual ${read_mutual(4)} ${read_mutual(5)} explicit ${read_edge_explicit(0)} ${read_edge_explicit(1)}"
