@@ -3,7 +3,7 @@
 //! function that builds it, nothing spelled twice. See
 //! `@std/grammar`'s `collected.av` for the mechanism this reuses.
 
-use @std.grammar.{grammar_rule, synthesized, Grammar, Rule, Captured, parse_grammar_text, run_grammar, ready, RunOutcome, LexToken, Lexeme, lex}
+use @std.grammar.{grammar_rule, Grammar, Rule, Captured, parse_grammar_text, run_grammar, ready, RunOutcome, LexToken, Lexeme, lex}
 use lexicon.{SQL}
 use @std.meta.{Annotation}
 use @std.errors.{Loc}
@@ -86,16 +86,20 @@ type RuleSource = {
 
 collect sql_sources: List<RuleSource> = @grammar_rule in self as RuleSource { name: it.name, mark: it.mark, handler: it } by it.name
 
-fn built_rule(s: RuleSource) -> Rule {
-    let parsed = parse_grammar_text(s.name, s.mark.args[0]).built!
-    let r = parsed.rules[0]
-    r with { body: synthesized(r.body, s.name) }
+impl RuleSource {
+    /// This source's rule, its body's build directives synthesized
+    /// from its own captured labels.
+    fn built() -> Rule {
+        let parsed = parse_grammar_text(self.name, self.mark.args[0]).built!
+        let r = parsed.rules[0]
+        r with { body: r.body.synthesized_build(self.name) }
+    }
 }
 
 /// The assembled parser grammar — one rule per `@grammar_rule`d
 /// function in this file, no hand-written `Grammar` literal.
 export fn sql_parser_grammar() -> Grammar {
-    Grammar { name: "sql_parser", start: "select_stmt", rules: [built_rule(s) for s in sql_sources] }
+    Grammar { name: "sql_parser", start: "select_stmt", rules: [s.built() for s in sql_sources] }
 }
 
 fn dispatch(name: string, caps: List<Captured<LexToken, SqlNode>>, _at: Loc?) -> Result<Captured<LexToken, SqlNode>, string> {

@@ -27,37 +27,41 @@ use util.{distinct}
 
 export fn grammar_rule(f: Fn, text: string) {}
 
-/// `body`, with every branch's build directive replaced by a call to
-/// `fn_name` passing its own captured labels, in the order they
-/// appear — never written by hand, since the labels are already
-/// right there in the rule's own text.
-export fn synthesized(body: Alt, fn_name: string) -> Alt {
-    body with { branches: [branch_synthesized(b, fn_name) for b in body.branches] }
+impl Seq {
+    /// This branch's captured labels, deduped: a label repeating
+    /// itself across a repetition (`c:IDENT (\",\" c:IDENT)*`) names
+    /// ONE accumulated binding (the executor's capture accumulation),
+    /// so it is one build argument, not one per occurrence — `labels`
+    /// (validate.av's coherence check) already walks nested groups for
+    /// this same reason; here it is deduped too.
+    fn distinct_labels() -> List<string> {
+        distinct(self.labels())
+    }
+
+    /// This branch, its sole item labeled when nothing else names it.
+    /// `atom = IDENT` carries no label for a build to reference — it
+    /// wears one (`_0`) so the builder still receives it as its one
+    /// argument; a branch that names nothing at all otherwise passes
+    /// nothing, which is what the hand-authored `no build, one item`
+    /// passthrough (validate.av) is for elsewhere.
+    fn sole_labeled() -> Seq {
+        if self.items.length != 1 || self.items[0].label != null { return self }
+        self with { items: [self.items[0] with { label: "_0" }] }
+    }
+
+    /// This branch, with its build directive replaced by a call to
+    /// `fn_name` passing its own captured labels, in the order they
+    /// appear — never written by hand, since the labels are already
+    /// right there in the rule's own text.
+    fn synthesized_build(fn_name: string) -> Seq {
+        let labeled = self.sole_labeled()
+        labeled with { build: Build.Call(fn_name, labeled.distinct_labels()) }
+    }
 }
 
-/// A branch's SOLE item, unlabeled (`atom = IDENT`), carries no name
-/// for a build to reference — it wears one (`_0`) so the builder still
-/// receives it as its one argument; a branch that names nothing at all
-/// otherwise passes nothing, which is what the hand-authored `no build,
-/// one item` passthrough (validate.av) is for elsewhere.
-fn sole_labeled(s: Seq) -> Seq {
-    if s.items.length != 1 || s.items[0].label != null { return s }
-    s with { items: [s.items[0] with { label: "_0" }] }
-}
-
-fn branch_synthesized(s: Seq, fn_name: string) -> Seq {
-    let labeled = sole_labeled(s)
-    labeled with { build: Build.Call(fn_name, labels_of(labeled)) }
-}
-
-/// Labels in the order the ENGINE binds them: a repeated or optional
-/// group carries its inner labels out to the branch's own scope (the
-/// executor's capture accumulation), so a label nested in one is an
-/// argument here exactly as a top-level one is — `deep_items` is the
-/// same walk `Seq.labels` (validate.av's coherence check) already
-/// trusts for this. A label repeating itself across a repetition
-/// (`c:IDENT (\",\" c:IDENT)*`) names ONE accumulated binding, so it
-/// is one argument, not one per occurrence.
-fn labels_of(s: Seq) -> List<string> {
-    distinct([m.label! for m in s.deep_items() if m.label != null])
+impl Alt {
+    /// Every branch, its build directive synthesized the same way.
+    fn synthesized_build(fn_name: string) -> Alt {
+        self with { branches: [b.synthesized_build(fn_name) for b in self.branches] }
+    }
 }

@@ -40,6 +40,9 @@ type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool, order
 // forty places is walked once, not forty times
 type FirstCx = { g: Grammar, visiting: List<string>, firsts: Map<string, FirstSet>, defects: List<Diagnostic> }
 
+/// A fresh walk over `g` — nothing visited, nothing memoized yet.
+fn fresh_cx(g: Grammar) -> FirstCx { FirstCx { g: g, visiting: [], firsts: {}, defects: [] } }
+
 /// The empty first set — nothing matchable, nothing skippable.
 const no_first: FirstSet = FirstSet { lits: [], terms: [], nullable: false }
 
@@ -206,7 +209,7 @@ fn start_word(p: Prim) -> string {
 /// the words it would have contributed are closed here, so a skip
 /// still says what it expected.
 export fn with_branch_starts(g: Grammar) -> Grammar {
-    mut cx = FirstCx { g: g, visiting: [], firsts: {}, defects: [] }
+    mut cx = fresh_cx(g)
     cx.started(g)
 }
 
@@ -231,7 +234,7 @@ fn subsuming_term(text: string) -> string? {
 
 /// Every dead branch in the grammar, each defect saying why.
 export fn first_defects(g: Grammar) -> List<Diagnostic> {
-    mut cx = FirstCx { g: g, visiting: [], firsts: {}, defects: [] }
+    mut cx = fresh_cx(g)
     for r in g.rules {
         let firsts = [cx.seq_first(r.name, s) for s in r.body.branches]
         let commit_flags = [cx.commits(r.name, s) for s in r.body.branches]

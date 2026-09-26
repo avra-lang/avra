@@ -196,14 +196,27 @@ fn far_merge(a: FarthestFailure?, b: FarthestFailure?) -> FarthestFailure? {
 /// list an earlier snapshot still references.
 fn accumulate<T, N>(prev: Captured<T, N>, v: Captured<T, N>) -> Captured<T, N> {
     match prev {
-        .Many(items) -> {
-            mut xs = [x for x in items]
-            xs.push(v)
-            Captured.Many(xs)
-        },
+        .Many(items) -> Captured.Many(items.concat([v])),
         .Terminal(t) -> Captured.Many([Captured.Terminal(t), v]),
         .Node(n) -> Captured.Many([Captured.Node(n), v]),
         .Absent -> Captured.Many([v]),
+    }
+}
+
+impl Binding<T, N> {
+    /// This binding, updated when its own label is `target`:
+    /// accumulating `v` inside a repetition, replacing outright
+    /// otherwise. Any other label passes through unchanged.
+    fn rebound(target: string, v: Captured<T, N>, acc: bool) -> Binding<T, N> {
+        if self.label != target { return self }
+        self with { value: if acc { accumulate(self.value, v) } else { v } }
+    }
+
+    /// `rebound`'s whole-run twin: every value in `vs` folded in at
+    /// once, for the label a repetition's own capture binds under.
+    fn rebound_all(target: string, vs: List<Captured<T, N>>) -> Binding<T, N> {
+        if self.label != target { return self }
+        self with { value: accumulated_all(self.value, vs) }
     }
 }
 
@@ -211,20 +224,10 @@ fn accumulate<T, N>(prev: Captured<T, N>, v: Captured<T, N>) -> Captured<T, N> {
 /// last-wins otherwise.
 fn bind_label<T, N>(bindings: List<Binding<T, N>>, label: string, v: Captured<T, N>, acc: bool) -> List<Binding<T, N>> {
     if !bindings.any(it.label == label) {
-        mut out = [b for b in bindings]
         let bound: Binding<T, N> = Binding { label: label, value: if acc { captured_many<T, N>([v]) } else { v } }
-        out.push(bound)
-        return out
+        return bindings.concat([bound])
     }
-    mut out: List<Binding<T, N>> = []
-    for b in bindings {
-        if b.label == label {
-            out.push(b with { value: if acc { accumulate<T, N>(b.value, v) } else { v } })
-        } else {
-            out.push(b)
-        }
-    }
-    out
+    [b.rebound(label, v, acc) for b in bindings]
 }
 
 /// `bind_label`'s REPETITION-SHAPED twin: an outer `label:item*`'s
@@ -237,19 +240,9 @@ fn bind_label<T, N>(bindings: List<Binding<T, N>>, label: string, v: Captured<T,
 /// computed with one copy instead of N.
 fn bind_label_all<T, N>(bindings: List<Binding<T, N>>, label: string, vs: List<Captured<T, N>>) -> List<Binding<T, N>> {
     if !bindings.any(it.label == label) {
-        mut out = [b for b in bindings]
-        out.push(Binding { label: label, value: captured_many<T, N>(vs) })
-        return out
+        return bindings.concat([Binding { label: label, value: captured_many<T, N>(vs) }])
     }
-    mut out: List<Binding<T, N>> = []
-    for b in bindings {
-        if b.label == label {
-            out.push(b with { value: accumulated_all<T, N>(b.value, vs) })
-        } else {
-            out.push(b)
-        }
-    }
-    out
+    [b.rebound_all(label, vs) for b in bindings]
 }
 
 /// `accumulate`, folded over a whole run at once.
