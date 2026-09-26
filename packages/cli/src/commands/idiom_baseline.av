@@ -1,0 +1,134 @@
+//! `avra check --baseline <file>` — the idiom debt ratchet, read by
+//! the compiler itself: every rule finding is a WARNING, never an
+//! error, and a baseline file names which sites are already accepted.
+//! A site the baseline does not list refuses the check; `avra check
+//! --baseline <file> --baseline_accept` prunes the file down to sites
+//! still found and never adds one — the same two laws tools/idioms.py
+//! once kept in Python, read here from the compiler's own rendering.
+use @std.io.{read_text, write_text, exists}
+use @std.path.{relative_path}
+use @std.text.{parse_int}
+
+/// One accepted (or newly found) site: the rule's own kind, the file
+/// it stands in, and the SOURCE LINE'S OWN TEXT — never a line number
+/// alone, so an edit above a kept site does not churn the baseline.
+export type Site = { kind: string, file: string, text: string }
+
+fn site_key(s: Site) -> string { "${s.kind}\t${s.file}\t${s.text}" }
+
+/// The file's own header — rewritten whole on every `--baseline_accept`
+/// write, never carried through `baseline_keys`' read (a `#` line is
+/// prose, not a site to prune against).
+export const baseline_header: string = "# KNOWN idiom debt, one TAB-separated site per line: a rule's kind, its\n# file, and its own source line trimmed. This file only ever SHRINKS —\n# `avra check --baseline_accept` prunes what a fix made gone, and no\n# path through it ADDS a line: a new site is fixed in the code, or a\n# human adds the line here, reviewed at adoption and every time after\n# (CLAUDE.md's baseline law). `avra check --baseline <this file>` gates.\n"
+
+/// Every site an `avra check` rendering reports — one `warning[kind]`
+/// header, followed immediately by its own `╭─[file:line:col]`. A
+/// scan, not a comprehension: each site needs its OWN look-ahead line,
+/// which one hole cannot bind alongside the run it scans.
+///
+/// `kinds` is the ratchet's own boundary: ONLY a `warning[kind]` whose
+/// kind IS a declared `rule`'s id counts as a site. A COMPILER-LAW
+/// warning (`type.alias_copy`, `fns.dead_parameter`, …) prints the
+/// same `warning[kind]: …` shape but names no `rule` — it is the
+/// compiler's own gate's finding, never this ratchet's, and nothing
+/// about the TEXT tells the two apart, only membership in the rule
+/// table itself (compiler/rules_table.av's `rules` collect, read
+/// in-process by the caller — never a kind-string SHAPE like "has a
+/// dot in it").
+export fn sites_in(warnings: string, kinds: List<string>) -> List<Site> {
+    let lines = warnings.split("\n")
+    mut out: List<Site> = []
+    mut i = 0
+    while i < lines.length {
+        let s = site_at(lines, i, kinds)
+        if s != null { out.push(s!) }
+        i = i + 1
+    }
+    out
+}
+
+fn site_at(lines: List<string>, i: int, kinds: List<string>) -> Site? {
+    let kind? = kind_of(lines[i]) else { return null }
+    if !kinds.contains(kind) { return null }
+    let loc? = location_after(lines, i) else { return null }
+    let text? = source_line(loc.file, loc.line) else { return null }
+    Site { kind: kind, file: relative_path(here(), loc.file), text: text }
+}
+
+/// A line's own `warning[kind]` header — absent for any other line,
+/// `help:`/`fix (high):` follow-ons included.
+fn kind_of(line: string) -> string? {
+    if !line.starts_with("warning[") { return null }
+    let close = line.index_of("]")
+    if close < 0 { return null }
+    line.substring(8, close)
+}
+
+type Marked = { file: string, line: int }
+
+/// The `╭─[file:line:col]` marker the line right after a header
+/// carries — absent when the render's own shape ever changes under
+/// this one assumption.
+fn location_after(lines: List<string>, i: int) -> Marked? {
+    if i + 1 >= lines.length { return null }
+    let l = lines[i + 1]
+    let marker = "╭─["
+    let at = l.index_of(marker)
+    if at < 0 { return null }
+    let start = at + marker.length
+    let close = l.index_of("]")
+    if close < 0 || close <= start { return null }
+    let parts = l.substring(start, close).split(":")
+    if parts.length < 3 { return null }
+    let n? = parse_int(parts[parts.length - 2]) else { return null }
+    Marked { file: parts.slice(0, parts.length - 2).join(":"), line: n }
+}
+
+/// `file`'s own line `n` (1-based), trimmed — absent for a file the
+/// disk no longer holds, or a line past its end.
+fn source_line(file: string, n: int) -> string? {
+    if !exists(file) { return null }
+    let text = read_text(file) catch ""
+    let lines = text.split("\n")
+    if n < 1 || n > lines.length { return null }
+    lines[n - 1].trim()
+}
+
+/// The baseline file's own accepted keys — "" (never created yet)
+/// reads as none, the way a fresh ratchet starts. A `#`-led line is
+/// the file's own header prose, never a site.
+export fn baseline_keys(path: string) -> List<string> {
+    if path == "" || !exists(path) { return [] }
+    let text = read_text(path) catch ""
+    [l for l in text.split("\n") if l != "" && !l.starts_with("#")]
+}
+
+/// Every site `warnings` reports that `keys` does not already accept
+/// — what the gate refuses on.
+export fn new_sites(warnings: string, kinds: List<string>, keys: List<string>) -> List<Site> {
+    [s for s in sites_in(warnings, kinds) if !keys.contains(site_key(s))]
+}
+
+/// `keys`, pruned to the ones whose own site is STILL PRESENT ON DISK
+/// — never grown, and never answered from `warnings` alone: a single
+/// `avra check <pkg>` only ever reaches ITS OWN package plus what it
+/// depends on, so pruning against ONE run's findings would silently
+/// drop every OTHER package's accepted debt from this ONE SHARED
+/// file. Reading the FILE ITSELF instead makes the prune correct from
+/// any package's invocation — a fix rewrites the line, which is what
+/// "gone" means here; a rule that simply stops firing on an
+/// UNCHANGED line stays counted, which only widens the accepted set,
+/// never narrows it unsoundly.
+export fn pruned_baseline(keys: List<string>) -> List<string> {
+    [k for k in keys if site_still_present(k)]
+}
+
+fn site_still_present(key: string) -> bool {
+    let parts = key.split("\t")
+    if parts.length != 3 { return false }
+    let file = parts[1]
+    let text = parts[2]
+    if !exists(file) { return false }
+    let lines = (read_text(file) catch "").split("\n")
+    lines.any(it.trim() == text)
+}

@@ -2,11 +2,12 @@
 //! a grammar inspectable (P7) and comparable: two grammars are
 //! structurally equal exactly when their renders are equal. Renders
 //! the rules only; a grammar's name is packaging, not structure.
-use core.{quoted_text, joined}
 
+use util.{quoted_text}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed}
 /// The whole grammar, one rule per line, in rule order.
 export fn render_grammar(g: Grammar) -> string {
-    joined([render_rule(r) for r in g.rules], "\n")
+    [render_rule(r) for r in g.rules].join("\n")
 }
 
 fn render_rule(r: Rule) -> string {
@@ -14,7 +15,7 @@ fn render_rule(r: Rule) -> string {
 }
 
 fn render_alt(a: Alt) -> string {
-    joined([render_seq(s) for s in a.branches], " | ")
+    [render_seq(s) for s in a.branches].join(" | ")
 }
 
 /// Items, then annotations (expects in item order, then recover), then
@@ -30,11 +31,11 @@ fn render_seq(s: Seq) -> string {
     if s.build != null {
         match s.build! {
             .Var(name) -> parts.push("-> ${name}"),
-            .Call(name, args) -> parts.push("-> ${name}(${joined(args, ", ")})"),
+            .Call(name, args) -> parts.push("-> ${name}(${args.join(", ")})"),
             .Node(owner, variant, fixed, _) -> parts.push("-> ${owner}.${variant}${stated_payloads(fixed)}"),
         }
     }
-    joined(parts, " ")
+    parts.join(" ")
 }
 
 impl Rep {
@@ -64,11 +65,12 @@ fn render_prim(p: Prim) -> string {
         .Named(term) -> term,
         .Lit(text) -> quoted_text(text),
         .Group(inner) -> "( ${render_alt(inner)} )",
+        .NotChar(inner) -> "not(${render_prim(inner)})",
     }
 }
 
 /// The payloads a node build STATES, as the notation writes them.
 fn stated_payloads(fixed: List<Fixed>) -> string {
     if fixed.is_empty() { return "" }
-    "(${joined(["${f.name} = ${f.text}" for f in fixed], ", ")})"
+    "(${["${f.name} = ${f.text}" for f in fixed].join(", ")})"
 }

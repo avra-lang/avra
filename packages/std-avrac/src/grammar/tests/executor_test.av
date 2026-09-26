@@ -1,10 +1,12 @@
 // The engine's contracts, each proven on a toy grammar over the DSL
 // lexer's own token shapes. Builders render to S-expressions so every
 // outcome asserts as a plain string.
-use @std.avrac.core.{joined, Span}
-use @std.avrac.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule_def, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, lex_source, Captured, RunOutcome, run_grammar, ready, parse_grammar}
+use @std.errors.{Loc}
+use @std.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule_def, seq, seq_to, item, cap, rule_ref, lit, named, Captured, RunOutcome, run_grammar, ready}
+use @std.avrac.grammar.{Token, lex_grammar, lex_source, avra_known_terminals, avra_lexeme, parse_grammar}
+use @std.avrac.core.{joined}
 
-fn render(v: Captured<string>) -> string {
+fn render(v: Captured<Token, string>) -> string {
     match v {
         .Terminal(t) -> t.text,
         .Node(n) -> n,
@@ -15,33 +17,35 @@ fn render(v: Captured<string>) -> string {
 
 // LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
-fn sx_build(name: string, args: List<Captured<string>>, span: Span?) -> Result<Captured<string>, string> {
+fn sx_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<Captured<Token, string>, string> {
     if name == "boom" { return Result.Err("boom") }
     mut out = "(${name}"
     for a in args { out = "${out} ${render(a)}" }
-    Result.Ok(Captured.Node("${out})"))
+    let built: Captured<Token, string> = Captured.Node("${out})")
+    Result.Ok(built)
 }
 
-fn run_sx(g: Grammar, src: string) -> RunOutcome<string> {
-    run_grammar<string>(ready(g), lex_grammar(src).tokens, sx_build)
+fn run_sx(g: Grammar, src: string) -> RunOutcome<Token, string> {
+    run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_grammar(src).tokens, avra_lexeme(), sx_build)
 }
 
 /// `run_sx`'s twin over LANGUAGE line breaks: `lex_source`'s BREAK
 /// survives after every line, not only at a rule boundary — the
 /// shape a `{ … }` body actually sees.
-fn run_src(g: Grammar, src: string) -> RunOutcome<string> {
-    run_grammar<string>(ready(g), lex_source(src).tokens, sx_build)
+fn run_src(g: Grammar, src: string) -> RunOutcome<Token, string> {
+    run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_source(src).tokens, avra_lexeme(), sx_build)
 }
 
 /// Renders only the branch span, proving the engine attributes it.
 // LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
-fn sp_build(name: string, args: List<Captured<string>>, span: Span?) -> Result<Captured<string>, string> {
-    let s = if span == null { "none" } else { "${span!.lo}..${span!.hi}" }
-    Result.Ok(Captured.Node(s))
+fn sp_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<Captured<Token, string>, string> {
+    let s = if loc == null { "none" } else { "${loc!.lo}..${loc!.hi}" }
+    let built: Captured<Token, string> = Captured.Node(s)
+    Result.Ok(built)
 }
 
-fn result_str(o: RunOutcome<string>) -> string {
+fn result_str(o: RunOutcome<Token, string>) -> string {
     if o.result == null { return "<none>" }
     render(o.result!)
 }
@@ -87,7 +91,7 @@ spec "grammar/executor" {
                     seq_to([cap("a", named("NAME")), cap("b", named("NAME"))], Build.Call("sp", ["a", "b"])),
                 ]),
             ])
-            let o = run_grammar<string>(ready(g), lex_grammar("ab cd").tokens, sp_build)
+            let o = run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_grammar("ab cd").tokens, avra_lexeme(), sp_build)
             result_str(o) == "0..5"
         }
         then "the same label in and out of a repeated group accumulates in order" {

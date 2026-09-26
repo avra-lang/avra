@@ -16,7 +16,8 @@
 //! the compiler accepting what the class says it must refuse — is a
 //! missing law and makes the case RED, never a pinned expectation.
 use core.{joined, flatten, quoted_text, distinct}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, TokenKind, term_kind}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
+use grammar.{TokenKind, term_kind}
 use compiler.{analyze_source}
 
 /// The class a case belongs to.
@@ -118,7 +119,7 @@ type Repeat = { path: List<int>, many: bool }
 fn many_ok(m: Item) -> bool {
     match m.prim {
         .Group(inner) -> !inner.branches.any(is_separator),
-        .Ref(_) or .Lit(_) or .Named(_) -> true,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> true,
     }
 }
 
@@ -126,7 +127,7 @@ fn is_separator(s: Seq) -> bool {
     if s.items.length != 1 { return false }
     match s.items[0].prim {
         .Named(term) -> term == "BREAK",
-        .Ref(_) or .Lit(_) or .Group(_) -> false,
+        .Ref(_) or .Lit(_) or .Group(_) or .NotChar(_) -> false,
     }
 }
 
@@ -252,6 +253,9 @@ fn prim_sample(g: Grammar, p: Prim, seen: List<string>, vary: Vary?, path: List<
         // expanded text.
         .Ref(name) -> if seen.contains(name) { "x" } else { rule_sample(g, name, seen.concat([name]), null, []) },
         .Group(inner) -> alt_sample(g, inner, seen, vary, path),
+        // A lexicon's own atom never reaches a parsing grammar's attack
+        // sample — a placeholder character, never asked to be exact.
+        .NotChar(_) -> "x",
     }
 }
 
@@ -269,7 +273,7 @@ fn repeat_in_item(m: Item, path: List<int>) -> List<Repeat> {
 fn group_repeats(p: Prim, path: List<int>) -> List<Repeat> {
     match p {
         .Group(inner) if !inner.branches.is_empty() -> repeats_of(inner.branches[0], path),
-        .Group(_) or .Ref(_) or .Lit(_) or .Named(_) -> [],
+        .Group(_) or .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> [],
     }
 }
 

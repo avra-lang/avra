@@ -1,7 +1,9 @@
-//! The grammar module's one diagnostic currency, and the vocabulary
+//! The grammar engine's one diagnostic currency, and the vocabulary
 //! that renders expectations into prose. Structured first (P11):
-//! `span` is null for defects with no source anchor.
-use core.{Span, distinct}
+//! `loc` is null for defects with no source anchor.
+use util.{distinct}
+use ast.{Prim}
+use @std.errors.{Loc}
 
 /// Why a diagnostic exists — the structured discriminator consumers
 /// dispatch on; prose never carries it alone.
@@ -11,11 +13,11 @@ export enum Cause { Expected, Trailing, Builder, Defect, Lex, Block }
 
 /// One structured diagnostic: why, what went wrong, where, what would
 /// have been accepted, and inside which rule.
-export type Diagnostic = { cause: Cause, message: string, span: Span?, expected: List<string>, in_rule: string }
+export type Diagnostic = { cause: Cause, message: string, loc: Loc?, expected: List<string>, in_rule: string }
 
 /// A source-anchorless coherence diagnostic, attributed by name.
 export fn defect(in_rule: string, message: string) -> Diagnostic {
-    Diagnostic { cause: Cause.Defect, message: message, span: null, expected: [], in_rule: in_rule }
+    Diagnostic { cause: Cause.Defect, message: message, loc: null, expected: [], in_rule: in_rule }
 }
 
 /// Two expected sets APPENDED — no dedup, and the name says so. A
@@ -42,6 +44,7 @@ export fn describe_prim(p: Prim) -> string {
         .Named(term) -> term,
         .Ref(target) -> "a ${target}",
         .Group(_) -> "one of the group",
+        .NotChar(inner) -> "a character other than ${describe_prim(inner)}",
     }
 }
 
@@ -49,12 +52,12 @@ export fn describe_prim(p: Prim) -> string {
 export fn join_expected(xs: List<string>) -> string {
     if xs.is_empty() { return "input" }
     if xs.length == 1 { return xs[0] }
-    mut out = xs[0]
-    for i in 1..xs.length - 1 { out = "${out}, ${xs[i]}" }
-    "${out} or ${xs.last()!}"
+    "${xs.slice(0, xs.length - 1).join(", ")} or ${xs.last()!}"
 }
 
-/// A lexer error as a diagnostic — lexing happens in no rule.
-export fn lex_diagnostic(e: LexError) -> Diagnostic {
-    Diagnostic { cause: Cause.Lex, message: e.message, span: e.span, expected: [], in_rule: "(lexing)" }
+/// A lexer error as a diagnostic — lexing happens in no rule. The
+/// caller's own lex-error shape crosses as a plain message and loc;
+/// this package holds no lexer of its own to define one against.
+export fn lex_diagnostic(message: string, loc: Loc) -> Diagnostic {
+    Diagnostic { cause: Cause.Lex, message: message, loc: loc, expected: [], in_rule: "(lexing)" }
 }
