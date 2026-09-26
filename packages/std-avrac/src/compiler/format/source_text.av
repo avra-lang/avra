@@ -838,10 +838,12 @@ impl SourceText {
         let body = flatten([self.trait_member(s, depth + 1) for s in fns])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${exported}trait ${source_name(name)} {}") }
-        if one_line && body.length == 1 { return source_line(
+        if one_line && body.length == 1 {
+            return source_line(
                 depth,
                 "${exported}trait ${source_name(name)} { ${unpadded(body[0], depth + 1)} }",
-            ) }
+            )
+        }
         "${source_line(depth, "${exported}trait ${source_name(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -971,10 +973,12 @@ impl SourceText {
     ) -> string {
         let head = "${exported}type ${source_name(name)}${self.named_type_params(tparams)}"
         if fields.is_empty() { return source_line(depth, "${head} = {}") }
-        if one_line { return source_line(
+        if one_line {
+            return source_line(
                 depth,
                 "${head} = { ${joined([self.param(f, depth) for f in fields], ", ")} }",
-            ) }
+            )
+        }
         let body = flatten(
             [self
                 .trivia_before(start_of(f.span), depth + 1)
@@ -995,10 +999,12 @@ impl SourceText {
     ) -> string {
         let head = "${exported}enum ${source_name(name)}${self.named_type_params(tparams)}"
         if variants.is_empty() { return source_line(depth, "${head} {}") }
-        if one_line { return source_line(
+        if one_line {
+            return source_line(
                 depth,
                 "${head} { ${joined([self.variant(v, depth) for v in variants], ", ")} }",
-            ) }
+            )
+        }
         let body = flatten(
             [self
                 .trivia_before(start_of(v.span), depth + 1)
@@ -1018,10 +1024,12 @@ impl SourceText {
         let body = flatten([self.given_lines(g, one_line, depth + 1) for g in grouped_cases(cases)])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
-        if one_line && body.length == 1 { return source_line(
+        if one_line && body.length == 1 {
+            return source_line(
                 depth,
                 "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }",
-            ) }
+            )
+        }
         "${source_line(depth, "spec ${quoted_text(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -1069,9 +1077,11 @@ impl SourceText {
         if g.group.is_empty() { return self.then_line(g.cases[0], depth) }
         let at = depth + 1
         let thens = flatten([self.then_line(c, at) for c in g.cases])
-        if one_line && thens.length == 1 { return [
+        if one_line && thens.length == 1 {
+            return [
                 source_line(depth, "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }"),
-            ] }
+            ]
+        }
         [source_line(depth, "given ${quoted_text(g.group)} {")]
             .concat(thens)
             .concat([source_line(depth, "}")])
@@ -1362,7 +1372,8 @@ impl SourceText {
         let tbl? = self.store.table_of(id) else {
             if elems.is_empty() { return "[]" }
             let span = self.store.expr_span(id)
-            if self.width_decides(span) { return self
+            if self.width_decides(span) {
+                return self
                     .wrapped_list(
                         "[",
                         [self.expression(e, loosest_tier, depth + 1) for e in elems],
@@ -1370,7 +1381,8 @@ impl SourceText {
                         false,
                         depth,
                         col,
-                    ) }
+                    )
+            }
             if self.span_flat(span) { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
             let body = flatten(
                 [self
@@ -1401,7 +1413,8 @@ impl SourceText {
     ) -> string {
         if keys.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
-        if self.width_decides(span) { return self
+        if self.width_decides(span) {
+            return self
                 .wrapped_list(
                     "{",
                     ["${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, k in keys],
@@ -1409,7 +1422,8 @@ impl SourceText {
                     false,
                     depth,
                     col,
-                ) }
+                )
+        }
         if self.span_flat(span) { return "{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}" }
         let body = flatten(
             [self
@@ -1484,7 +1498,8 @@ impl SourceText {
     ) -> string {
         if fields.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
-        if self.width_decides(span) { return self
+        if self.width_decides(span) {
+            return self
                 .wrapped_list(
                     "{",
                     ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, f in fields],
@@ -1492,7 +1507,8 @@ impl SourceText {
                     true,
                     depth,
                     col,
-                ) }
+                )
+        }
         if self.span_flat(span) { return "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }
         let body = flatten(
             [self
@@ -1557,7 +1573,11 @@ impl SourceText {
             // synthetic wrap's end IS that span — see through only then.
             .Block(stmts, value) -> if stmts.is_empty() &&
                 value != null &&
-                self.block_end(no) == end_of(self.store.expr_span(value!)) { self.chained_if(value!, depth) } else { null },
+                self.block_end(no) == end_of(self.store.expr_span(value!)) {
+                self.chained_if(value!, depth)
+            } else {
+                null
+            },
             rest -> null,
         }
     }

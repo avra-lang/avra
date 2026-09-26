@@ -47,76 +47,104 @@ spec "features/bytes adversarial" {
         then "at takes one argument, not none" { refused_with(one() + "b.at()", "`at` takes 1 arguments, found 0") }
         then "at takes one argument, not two" { refused_with(one() + "b.at(0, 1)", "`at` takes 1 arguments, found 2") }
         then "slice takes two arguments" { refused_with(one() + "b.slice(0).length", "`slice` takes 2 arguments, found 1") }
-        then "slice wants ints" { refused_with(
+        then "slice wants ints" {
+            refused_with(
                 one() + "b.slice(\"a\", 1).length",
                 "argument 1 of `slice` wants `int`, found `string`",
-            ) }
-        then "concat wants Bytes, not text" { refused_with(
+            )
+        }
+        then "concat wants Bytes, not text" {
+            refused_with(
                 one() + "b.concat(\"x\").length",
                 "argument 1 of `concat` wants `Bytes`, found `string`",
-            ) }
-        then "concat wants Bytes, not an int" { refused_with(
+            )
+        }
+        then "concat wants Bytes, not an int" {
+            refused_with(
                 one() + "b.concat(1).length",
                 "argument 1 of `concat` wants `Bytes`, found `int`",
-            ) }
-        then "index_of wants a Bytes needle" { refused_with(
+            )
+        }
+        then "index_of wants a Bytes needle" {
+            refused_with(
                 one() + "b.index_of(\"x\", 0)",
                 "argument 1 of `index_of` wants `Bytes`, found `string`",
-            ) }
+            )
+        }
         then "index_of takes its from" { refused_with(one() + "b.index_of(b)", "`index_of` takes 2 arguments, found 1") }
         then "text takes nothing" { refused_with(one() + "b.text(1)", "`text` takes 0 arguments, found 1") }
         then "bytes takes nothing" { refused_with("\"x\".bytes(1).length", "`bytes` takes 0 arguments, found 1") }
-        then "a list of bools is not octets" { refused_with(
+        then "a list of bools is not octets" {
+            refused_with(
                 "[true].bytes()",
                 "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `List<bool>`",
-            ) }
-        then "a list of lists is not octets" { refused_with(
+            )
+        }
+        then "a list of lists is not octets" {
+            refused_with(
                 "[[1]].bytes()",
                 "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `List<List<int>>`",
-            ) }
+            )
+        }
         then "== against an int refuses" { refused_with(one() + "b == 1", "`==` compares matching types, found `Bytes` and `int`") }
         then "+ refuses per operand, as the spine does for text" { refusals(one() + "(b.concat(b)) == b + b") == 2 }
         then "! refuses" { refused_with(one() + "!b", "`!` negates a `bool`, found `Bytes`") }
-        then "length is a property, not a method" { refused_with(
+        then "length is a property, not a method" {
+            refused_with(
                 one() + "b.length()",
                 "`.length(…)` calls a method, and `Bytes` has none",
-            ) }
-        then "length is measured, not stored" { refused_with(
+            )
+        }
+        then "length is measured, not stored" {
+            refused_with(
                 "mut b = [1].bytes()!\nb.length = 3\nb.length",
                 "`length` is measured, not stored — `Bytes` has no such slot",
-            ) }
-        then "no index write, so no path ever clones a Bytes" { refused_with(
+            )
+        }
+        then "no index write, so no path ever clones a Bytes" {
+            refused_with(
                 "mut b = [1].bytes()!\nb[0] = 2\nb.length",
                 "`[...]` indexes a `List`, found `Bytes`",
-            ) }
-        then "a Bytes does not fill a string let" { refused_with(
+            )
+        }
+        then "a Bytes does not fill a string let" {
+            refused_with(
                 "let s: string = [1].bytes()!\ns.length",
                 "`s` declares `string`, this is `Bytes`",
-            ) }
+            )
+        }
         then "a string does not fill a Bytes let" { refused_with("let b: Bytes = \"x\"\nb.length", "`b` declares `Bytes`, this is `string`") }
-        then "a list does not fill a Bytes let" { refused_with(
+        then "a list does not fill a Bytes let" {
+            refused_with(
                 "let b: Bytes = [1]\nb.length",
                 "`b` declares `Bytes`, this is `List<int>`",
-            ) }
+            )
+        }
         then "== null asks a nullable" { refused_with(one() + "b == null", "`== null` asks a nullable, this is `Bytes`") }
     }
     given "malformed surface" {
         then "the type is spelled Bytes" { refused_with("let b: bytes = \"x\".bytes()\nb.length", "`bytes` names no type") }
-        then "Bytes takes no type arguments" { refused_with(
+        then "Bytes takes no type arguments" {
+            refused_with(
                 "let b: Bytes<int> = \"x\".bytes()\nb.length",
                 "`Bytes` takes no type arguments",
-            ) }
+            )
+        }
         then "Bytes is not a struct to construct" { refused_with("let b = Bytes { }\nb.length", "no `type Bytes` is declared") }
         then "Bytes is not a value" { refused_with("let x = Bytes\nx", "`Bytes` is not defined") }
         then "bytes is a method, not a property" { refused_with("let b = \"x\".bytes\nb.length", "no property `bytes` on `string`") }
-        then "a Bytes? is unwrapped before it is read" { refused_with(
+        then "a Bytes? is unwrapped before it is read" {
+            refused_with(
                 "let b = [1].bytes()\nb.length",
                 "`.length` reads a guarantee, this is `Bytes?`",
-            ) }
-        then "a user type may not take the built-in's name" { refused_with(
+            )
+        }
+        then "a user type may not take the built-in's name" {
+            refused_with(
                 "type Bytes = { v: int }\nlet b = Bytes { v: 3 }\nb.v",
                 "`Bytes` is a built-in type",
-            ) }
+            )
+        }
     }
     given "crossing every feature" {
         then "seats, tails and lists of Bytes" {
@@ -184,33 +212,45 @@ spec "features/bytes adversarial" {
                 "fn rev(b: Bytes) -> Bytes {\n    if b.length <= 1 { return b }\n    rev(b.slice(1, b.length)).concat(b.slice(0, 1))\n}\n\"\${rev(\"abc\".bytes()).text()!} \${rev(\"\".bytes()).length}\"",
             ) == "cba 0"
         }
-        then "two lists of Bytes do not compare" { refused_with(
+        then "two lists of Bytes do not compare" {
+            refused_with(
                 "let a = [\"a\".bytes()]\nlet b = [\"a\".bytes()]\na == b",
                 "`==` compares scalars for now",
-            ) }
-        then "a program's answer cannot be a Bytes" { refused_at_run(
+            )
+        }
+        then "a program's answer cannot be a Bytes" {
+            refused_at_run(
                 "\"ab\".bytes()",
                 "the program's answer is a `Bytes`, which has no text projection yet",
-            ) }
-        then "join reads text, not Bytes" { refused_with(
+            )
+        }
+        then "join reads text, not Bytes" {
+            refused_with(
                 "[\"a\".bytes()].join(\",\")",
                 "`join` reads a list of text, this one holds `Bytes`",
-            ) }
+            )
+        }
     }
     given "names against names" {
         then "a fn named bytes and the method coexist" { shown("fn bytes() -> int { 4 }\nlet b = \"ab\".bytes()\n\"\${bytes()} \${b.length}\"") == "4 2" }
-        then "fields named bytes and at are fields" { shown(
+        then "fields named bytes and at are fields" {
+            shown(
                 "type T = { bytes: int, at: int }\nlet t = T { bytes: 5, at: 6 }\n\"\${t.bytes} \${t.at}\"",
-            ) == "5 6" }
+            ) == "5 6"
+        }
         then "a binding named at is an argument" { shown("let at = 1\n\"xy\".bytes().at(at)") == "121" }
         then "a variant named Bytes is a variant" { shown("enum K { Bytes, Text }\nlet k = K.Bytes\n\"\${k is .Bytes} \${k == K.Text}\"") == "true false" }
         then "a value named Bytes is a value, as one named string is" { shown("let Bytes = 1\nlet string = 2\n\"\${Bytes} \${string}\"") == "1 2" }
-        then "an inner let shadows an outer Bytes" { shown(
+        then "an inner let shadows an outer Bytes" {
+            shown(
                 "let b = \"a\".bytes()\nfn f() -> int {\n    let b = \"bcd\".bytes()\n    b.length\n}\n\"\${b.length} \${f()}\"",
-            ) == "1 3" }
-        then "use before definition refuses" { refused_with(
+            ) == "1 3"
+        }
+        then "use before definition refuses" {
+            refused_with(
                 "let n = b.length\nlet b = \"a\".bytes()\nn",
                 "`b` is used before its definition",
-            ) }
+            )
+        }
     }
 }
