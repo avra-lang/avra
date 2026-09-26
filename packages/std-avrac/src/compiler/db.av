@@ -1,14 +1,36 @@
-//! THE DB — every heterogeneous durable thing the compiler can answer
-//! about a package, addressed by kind and name. An in-memory hit
-//! answers within this process at once; a durable hit is re-validated
-//! against the package's CURRENT state before it is trusted, so a
-//! stale answer is never returned; a miss is the caller's to derive
-//! and `insert`.
+//! THE DB — every heterogeneous thing the compiler can answer about a
+//! package, one `DbRow` per kind of fact, addressed one of two ways: a
+//! dense `(family, arg)` key inside one compile (`Memo<DbRow>`, the
+//! `Kernel`'s own addressing — `query/kernel.av`), or a durable string
+//! name that survives across processes (`Db.get`/`insert`, below).
 //!
-//! NAMED `DbRow`/`DbKind`, NEVER `Row`/`Kind`: `compiler/record.av`
-//! and `compiler/voices.av` already declare their own, unrelated
-//! `Row` — `compiler/` is one module, so a same-named export here
-//! would silently shadow theirs rather than refuse to compile.
+//! ONE ENUM, NOT TWO: the earlier split (`Stage` for the dense half,
+//! `DbRow` for the durable half) rested on a claim — that `Db` must be
+//! a process-wide singleton to answer before a `Workspace` exists —
+//! checked against the real code and found FALSE: `Workspace`'s own
+//! constructor (`compiler/workspace.av`'s `built`) is a cheap struct
+//! literal, no parsing or I/O, so nothing stops `Db` from living
+//! per-`Workspace` like everything else. Once that fell, the two enums
+//! were the same idea told twice; `DbRow` is both halves, told once.
+//!
+//! `Kernel` (query/kernel.av) STAYS A SEPARATE TYPE, permanently — not
+//! an unfinished merge. `query/` sits BELOW `compiler/` in this tree's
+//! one-way layering (core -> query -> grammar -> features -> compiler),
+//! and `Memo<T>` (query/memo.av) is instantiated generically from
+//! `Workspace` with `T = DbRow` — `Workspace.db`'s own type must stay
+//! whatever `query/kernel.av` exports, or `query` would depend on
+//! `compiler`, backwards. `DbRow` living here, in `compiler/`, is exactly
+//! why it CAN merge across its two former enums (both already lived in
+//! this package) while `Kernel` cannot join it (it does not).
+//!
+//! NAMED `DbRow`/`DbKind` here on purpose: `compiler/record.av` and
+//! `compiler/voices.av` declare their OWN, unrelated `DbRow` types too —
+//! `compiler/` is one module, so this would silently shadow theirs.
+//! Accepted anyway, now that `DbRow` folded the dense half in and the
+//! name finally matches the design's own vocabulary; callers reach
+//! this file's `DbRow` through `compiler.db.{DbRow, ...}` explicitly where
+//! the ambiguity could bite, same as any other cross-file same-name
+//! pair in one module already requires.
 //!
 //! DECL CARRIES THE ORIGINAL PHASE 1 WITNESS DESIGN: `avra docs
 //! <name>`'s answer validity rests on two witnesses recorded at
@@ -84,36 +106,97 @@ export fn decoded_docfacts(text: string) -> DocFacts? {
     }
 }
 
-/// A COMPILE'S OWN IN-MEMORY STAGES — never durable, never string-keyed,
-/// dying with the `Workspace` that computed them. `DbRow` (below) answers
-/// "give me this fact by NAME, valid across processes"; `Stage` answers
-/// "give me this fact by the dense (family, arg) key `Kernel` already
-/// tracks" — the value a `Memo<T>` holds, with `T` now ONE shared enum
-/// instead of one bespoke type per family, so every stage's cached value
-/// is read the same way. Kept a SEPARATE enum from `DbRow` on purpose: a
-/// durable row's identity is a string a fresh process can ask for before
-/// anything else exists; a stage's identity is a `DeclId`/`FileId` that
-/// only exists inside a live compile — forcing them into one enum with
-/// one `key() -> string` method would be the same false unification the
-/// Obj/Bin file-path shape already refused for the durable side.
+/// `DbRow`'s own tags — hand-written, not derived: an enum's variant
+/// list refuses a spliced `List<Code>` the same way a struct literal's
+/// field list does (confirmed against the real compiler while
+/// attempting it, twice) — neither has the "Many"-joining a Statement
+/// or Arms hole gets. Grows exactly when `DbRow` does.
+export enum DbKind {
+    Source
+    Parsed
+    Lowered
+    Manifest
+    Plain
+    Items
+    Namespace
+    Visible
+    Resolved
+    Typed
+    ConstTyped
+    Folded
+    Analysis
+    Lifted
+    Expanded
+    Settled
+    Decl
+    Sig
+    Warn
+}
+
+impl DbKind {
+    fn tag() -> string {
+        match self {
+            .Source -> "Source",
+            .Parsed -> "Parsed",
+            .Lowered -> "Lowered",
+            .Manifest -> "Manifest",
+            .Plain -> "Plain",
+            .Items -> "Items",
+            .Namespace -> "Namespace",
+            .Visible -> "Visible",
+            .Resolved -> "Resolved",
+            .Typed -> "Typed",
+            .ConstTyped -> "ConstTyped",
+            .Folded -> "Folded",
+            .Analysis -> "Analysis",
+            .Lifted -> "Lifted",
+            .Expanded -> "Expanded",
+            .Settled -> "Settled",
+            .Decl -> "Decl",
+            .Sig -> "Sig",
+            .Warn -> "Warn",
+        }
+    }
+}
+
+extern fn avra_trap(message: string)
+
+/// EVERY FACT THE COMPILER PRODUCES, one enum. The first sixteen
+/// variants are `Memo<DbRow>`'s own value — a compile's in-memory
+/// stages, dense-`(family, arg)`-keyed by `Kernel`, dying with the
+/// `Workspace` that computed them, proven across every `Memo` access
+/// pattern that exists (an INPUT — `Source`, `Manifest`; a plain
+/// derived query — `Parsed`, `Plain`, `Items`; a RECURSIVE one —
+/// `Lowered`, `Namespace`, `Visible`, `Resolved`, `Typed`, `Folded`,
+/// `Analysis`, `Expanded`, each re-entering itself or a peer; a manual
+/// ask/begin/finish one folding real work between the two —
+/// `ConstTyped`, `Lifted`, `Settled`). The last three (`Decl`, `Sig`,
+/// `Warn`) are `Db`'s own durable rows, string-keyed, surviving across
+/// processes on disk (`Stored.Rows`) — `key()` is only ever asked of
+/// these three; a dense variant reaching it is a defect, since nothing
+/// ever calls it on one (`Memo<DbRow>` addresses by `arg: int` alone).
 ///
-/// Every `Workspace` family with a plain "one value, one Memo" shape is
-/// folded in here — proof the pattern holds for an INPUT (`Source`,
-/// `Manifest`), a plain derived query (`Parsed`, `Plain`, `Items`), a
-/// RECURSIVE one (`Lowered`, `Namespace`, `Visible`, `Resolved`,
-/// `Typed`, `Folded`, `Analysis`, `Expanded` — each re-enters itself or
-/// a peer), and a manual ask/begin/finish one that folds real work
-/// between the two (`ConstTyped`, `Lifted`, `Settled`). NOT folded in,
-/// each for a real reason named at the site rather than skipped
-/// quietly: `Methods` carries `sig_voices`/`method_clashes` alongside
-/// its value, not a single value; `Sig`'s own in-memory answer lives in
-/// `Decls.sigs`, not a `Memo` at all; `Receivers` uses the raw kernel
-/// verbs directly over a side-effecting whole-program pass, not a typed
-/// value cache. `Workspace.db` stays `Kernel`-typed until every
-/// `Memo` field shares `Stage` — renaming it to `Db` is a final,
-/// purely mechanical step, unsafe while any family still holds its own
-/// bespoke type.
-export enum Stage {
+/// NOT FOLDED IN, each for a real reason: `Methods` carries
+/// `sig_voices`/`method_clashes` alongside its value (a struct payload
+/// would fit, not attempted this pass); `Sig`'s own IN-MEMORY answer
+/// lives in `Decls.sigs`, a different mechanism from its DURABLE row
+/// here; `Receivers` uses the raw kernel verbs directly over a
+/// side-effecting whole-program pass, never a typed value cache.
+///
+/// `@derive(Unwrap)` (a `${variant}_of` helper per dense variant) was
+/// attempted and abandoned, confirmed twice: `avra expand` on this
+/// file alone generates every one of the sixteen correctly, but
+/// compiled as part of the full package, a DIFFERENT SUBSET of them
+/// resolve as undefined each time — the set moved when this file's own
+/// size changed, which means it is a real recursive-expansion
+/// correctness issue (a self-referential `expanded()` re-entry served
+/// a smaller view mid-derive, per compiler/expand.av's own documented
+/// mechanism, apparently mis-sized here), not a per-type problem to
+/// route around piecemeal. All sixteen are hand-written below instead
+/// — worth a real bug report against the derive/quote system; not
+/// blocking a working `DbRow` on it.
+@derive(Rows)
+export enum DbRow {
     Source(SourceFile)
     Parsed(Parsed)
     Lowered(Unit)
@@ -130,188 +213,6 @@ export enum Stage {
     Lifted(LiftResult)
     Expanded(List<DeclId>)
     Settled(Settlement)
-}
-
-extern fn avra_trap(message: string)
-
-/// A `Stage` read as the ONE variant its caller's own family can ever
-/// mint — a wrong variant reaching here is a defect the `Memo` layer
-/// already prevents by construction (one `Memo<Stage>` per family, one
-/// variant minted per family), so this is a belt, never a guess.
-fn source_of(s: Stage) -> SourceFile {
-    match s {
-        .Source(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Source expected")
-            source_of(s)
-        },
-    }
-}
-
-fn parsed_of(s: Stage) -> Parsed {
-    match s {
-        .Parsed(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Parsed expected")
-            parsed_of(s)
-        },
-    }
-}
-
-fn lowered_of(s: Stage) -> Unit {
-    match s {
-        .Lowered(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Lowered expected")
-            lowered_of(s)
-        },
-    }
-}
-
-fn manifest_of(s: Stage) -> Manifest {
-    match s {
-        .Manifest(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Manifest expected")
-            manifest_of(s)
-        },
-    }
-}
-
-fn plain_of(s: Stage) -> Parsed {
-    match s {
-        .Plain(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Plain expected")
-            plain_of(s)
-        },
-    }
-}
-
-fn items_of(s: Stage) -> List<DeclId> {
-    match s {
-        .Items(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Items expected")
-            items_of(s)
-        },
-    }
-}
-
-fn namespace_of(s: Stage) -> ModuleNames {
-    match s {
-        .Namespace(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Namespace expected")
-            namespace_of(s)
-        },
-    }
-}
-
-fn visible_of(s: Stage) -> Namespace {
-    match s {
-        .Visible(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Visible expected")
-            visible_of(s)
-        },
-    }
-}
-
-fn resolved_of(s: Stage) -> NameFacts {
-    match s {
-        .Resolved(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Resolved expected")
-            resolved_of(s)
-        },
-    }
-}
-
-fn typed_of(s: Stage) -> TypeFacts {
-    match s {
-        .Typed(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Typed expected")
-            typed_of(s)
-        },
-    }
-}
-
-fn const_typed_of(s: Stage) -> TypeId {
-    match s {
-        .ConstTyped(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.ConstTyped expected")
-            const_typed_of(s)
-        },
-    }
-}
-
-fn folded_of(s: Stage) -> TypeFacts {
-    match s {
-        .Folded(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Folded expected")
-            folded_of(s)
-        },
-    }
-}
-
-fn analysis_of(s: Stage) -> Analysis {
-    match s {
-        .Analysis(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Analysis expected")
-            analysis_of(s)
-        },
-    }
-}
-
-fn lifted_of(s: Stage) -> LiftResult {
-    match s {
-        .Lifted(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Lifted expected")
-            lifted_of(s)
-        },
-    }
-}
-
-fn expanded_of(s: Stage) -> List<DeclId> {
-    match s {
-        .Expanded(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Expanded expected")
-            expanded_of(s)
-        },
-    }
-}
-
-fn settled_of(s: Stage) -> Settlement {
-    match s {
-        .Settled(v) -> v,
-        _ -> {
-            avra_trap("defect: Stage.Settled expected")
-            settled_of(s)
-        },
-    }
-}
-
-export enum DbKind { Decl, Sig, Warn }
-
-impl DbKind {
-    fn tag() -> string {
-        match self {
-            .Decl -> "Decl",
-            .Sig -> "Sig",
-            .Warn -> "Warn",
-        }
-    }
-}
-
-@derive(Rows)
-export enum DbRow {
     /// `avra docs <name>` — witness-validated, see `DocFacts`.
     Decl(name: string, facts: DocFacts)
     /// A module's interface record (`record.av`) — already flat,
@@ -326,14 +227,205 @@ export enum DbRow {
 impl DbRow {
     fn kind() -> DbKind {
         match self {
+            .Source(_) -> DbKind.Source,
+            .Parsed(_) -> DbKind.Parsed,
+            .Lowered(_) -> DbKind.Lowered,
+            .Manifest(_) -> DbKind.Manifest,
+            .Plain(_) -> DbKind.Plain,
+            .Items(_) -> DbKind.Items,
+            .Namespace(_) -> DbKind.Namespace,
+            .Visible(_) -> DbKind.Visible,
+            .Resolved(_) -> DbKind.Resolved,
+            .Typed(_) -> DbKind.Typed,
+            .ConstTyped(_) -> DbKind.ConstTyped,
+            .Folded(_) -> DbKind.Folded,
+            .Analysis(_) -> DbKind.Analysis,
+            .Lifted(_) -> DbKind.Lifted,
+            .Expanded(_) -> DbKind.Expanded,
+            .Settled(_) -> DbKind.Settled,
             .Decl(_, _) -> DbKind.Decl,
             .Sig(_, _) -> DbKind.Sig,
             .Warn(_, _) -> DbKind.Warn,
         }
     }
 
+    /// Only the three durable variants carry a name; a dense variant
+    /// reaching here is a defect (`Memo<DbRow>` never calls this — it
+    /// addresses by `arg: int`, not by name).
     fn key() -> string {
-        match self { .Decl(name, _) or .Sig(name, _) or .Warn(name, _) -> name }
+        match self {
+            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) -> name,
+            rest -> {
+                avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
+                ""
+            },
+        }
+    }
+}
+
+/// Every dense variant's unwrapper — hand-written (see the enum's own
+/// doc comment on why `@derive(Unwrap)` was abandoned here), same
+/// trap-and-recurse pattern `query/memo.av`'s `missing_value<T>`
+/// already uses: a wrong variant reaching one is a defect the `Memo`
+/// layer already prevents by construction, so the trap is a belt,
+/// never a guess.
+fn source_of(r: DbRow) -> SourceFile {
+    match r {
+        .Source(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Source expected")
+            source_of(r)
+        },
+    }
+}
+
+fn parsed_of(r: DbRow) -> Parsed {
+    match r {
+        .Parsed(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Parsed expected")
+            parsed_of(r)
+        },
+    }
+}
+
+fn manifest_of(r: DbRow) -> Manifest {
+    match r {
+        .Manifest(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Manifest expected")
+            manifest_of(r)
+        },
+    }
+}
+
+fn plain_of(r: DbRow) -> Parsed {
+    match r {
+        .Plain(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Plain expected")
+            plain_of(r)
+        },
+    }
+}
+
+fn items_of(r: DbRow) -> List<DeclId> {
+    match r {
+        .Items(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Items expected")
+            items_of(r)
+        },
+    }
+}
+
+fn namespace_of(r: DbRow) -> ModuleNames {
+    match r {
+        .Namespace(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Namespace expected")
+            namespace_of(r)
+        },
+    }
+}
+
+fn const_typed_of(r: DbRow) -> TypeId {
+    match r {
+        .ConstTyped(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.ConstTyped expected")
+            const_typed_of(r)
+        },
+    }
+}
+
+fn expanded_of(r: DbRow) -> List<DeclId> {
+    match r {
+        .Expanded(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Expanded expected")
+            expanded_of(r)
+        },
+    }
+}
+
+fn visible_of(r: DbRow) -> Namespace {
+    match r {
+        .Visible(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Visible expected")
+            visible_of(r)
+        },
+    }
+}
+
+fn resolved_of(r: DbRow) -> NameFacts {
+    match r {
+        .Resolved(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Resolved expected")
+            resolved_of(r)
+        },
+    }
+}
+
+fn typed_of(r: DbRow) -> TypeFacts {
+    match r {
+        .Typed(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Typed expected")
+            typed_of(r)
+        },
+    }
+}
+
+fn folded_of(r: DbRow) -> TypeFacts {
+    match r {
+        .Folded(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Folded expected")
+            folded_of(r)
+        },
+    }
+}
+
+fn analysis_of(r: DbRow) -> Analysis {
+    match r {
+        .Analysis(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Analysis expected")
+            analysis_of(r)
+        },
+    }
+}
+
+fn lowered_of(r: DbRow) -> Unit {
+    match r {
+        .Lowered(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Lowered expected")
+            lowered_of(r)
+        },
+    }
+}
+
+fn settled_of(r: DbRow) -> Settlement {
+    match r {
+        .Settled(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Settled expected")
+            settled_of(r)
+        },
+    }
+}
+
+fn lifted_of(r: DbRow) -> LiftResult {
+    match r {
+        .Lifted(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Lifted expected")
+            lifted_of(r)
+        },
     }
 }
 
@@ -343,8 +435,8 @@ export type Db = { rows: Map<string, DbRow> }
 
 export once fn db() -> Db { Db { rows: {} } }
 
-/// A row's name, over the package it belongs to — every `DbRow` key is
-/// one package's alone, and two packages never share a row by
+/// A row's name, over the package it belongs to — every durable `DbRow`
+/// key is one package's alone, and two packages never share a row by
 /// coincidence of a bare name colliding.
 export fn db_qualified(root: string, name: string) -> string { "${root}::${name}" }
 
@@ -383,11 +475,17 @@ fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [ki
 /// Whether a recalled row's witnesses still hold. `Sig`/`Warn` carry
 /// their own validity in the caller's key (a module/program identity
 /// that changes when its inputs do) and hold unconditionally here;
-/// `Decl` alone has a witness pair to re-check.
+/// `Decl` alone has a witness pair to re-check. Only the three durable
+/// kinds ever reach this door — a dense variant is never written
+/// through `insert`'s durable half in the first place.
 fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) && facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
         .Sig(_, _) or .Warn(_, _) -> true,
+        rest -> {
+            avra_trap("defect: still_valid asked of a non-durable DbRow")
+            false
+        },
     }
 }
 
@@ -420,8 +518,17 @@ export fn current_file_digest(path: string) -> string {
 /// `Decl` folds through `encoded_docfacts` (core/wire.av's escaping
 /// primitives); `Sig`/`Warn` are already text, so encoding them is
 /// identity — the wire format IS the value, not a second copy of it.
+/// Only the three durable kinds are ever encoded — `insert`'s durable
+/// half is never reached for a dense variant.
 fn encoded(row: DbRow) -> string {
-    match row { .Decl(_, facts) -> encoded_docfacts(facts), .Sig(_, text) or .Warn(_, text) -> text }
+    match row {
+        .Decl(_, facts) -> encoded_docfacts(facts),
+        .Sig(_, text) or .Warn(_, text) -> text,
+        rest -> {
+            avra_trap("defect: encoded asked of a non-durable DbRow")
+            ""
+        },
+    }
 }
 
 fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
@@ -432,5 +539,9 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         },
         .Sig -> DbRow.Sig(name, text),
         .Warn -> DbRow.Warn(name, text),
+        rest -> {
+            avra_trap("defect: decoded asked of a non-durable DbKind")
+            null
+        },
     }
 }
