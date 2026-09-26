@@ -1,0 +1,159 @@
+// Stable encodings: a hash and a byte codec that answer from content
+// alone. The pairs that a flat or linear encoding would collide are
+// written first, each as its own case.
+use @std.avrac.query.{mix, stable_hasher, text_hash, set_hash, writer, reader, CodecFault}
+use @std.text.{from_codepoint}
+
+/// Two fields hashed in order under one seed.
+fn pair_hash(a: string, b: string) -> int {
+    stable_hasher(7).text(a).text(b).finish()
+}
+
+fn row_hash(a: int, b: int) -> int {
+    stable_hasher(7).int(a).int(b).finish()
+}
+
+/// A value written then read back, through one encoding.
+fn int_round_trips(v: int) -> bool {
+    mut w = writer()
+    w.int(v)
+    match reader(w.bytes()).int() { .Ok(back) -> back == v, .Err(_) -> false }
+}
+
+fn text_round_trips(s: string) -> bool {
+    mut w = writer()
+    w.text(s)
+    match reader(w.bytes()).text() { .Ok(back) -> back == s, .Err(_) -> false }
+}
+
+/// How many octets one count, or one int, takes.
+fn count_length(n: int) -> int {
+    mut w = writer()
+    w.count(n)
+    w.bytes().length
+}
+
+fn int_length(v: int) -> int {
+    mut w = writer()
+    w.int(v)
+    w.bytes().length
+}
+
+fn fault_of(b: Bytes) -> string {
+    match reader(b).text() { .Ok(_) -> "none", .Err(f) -> f.word() }
+}
+
+fn int_fault_of(b: Bytes) -> string {
+    match reader(b).int() { .Ok(_) -> "none", .Err(f) -> f.word() }
+}
+
+fn bool_fault_of(b: Bytes) -> string {
+    match reader(b).bool() { .Ok(_) -> "none", .Err(f) -> f.word() }
+}
+
+/// The two texts a reader answers in turn, and whether it then stands at the end.
+fn read_in_order(first: string, second: string) -> bool {
+    mut w = writer()
+    w.text(first)
+    w.text(second)
+    mut r = reader(w.bytes())
+    let a = r.text()
+    let b = r.text()
+    same_text(a, first) && same_text(b, second) && r.done()
+}
+
+fn same_text(got: Result<string, CodecFault>, want: string) -> bool {
+    match got { .Ok(s) -> s == want, .Err(_) -> false }
+}
+
+spec "query/stable" {
+    given "the mix" {
+        then "it is splitmix64's finalizer — seed 0's first output" {
+            mix(-7046029254386353131) == -2152535657050944081
+        }
+    }
+    given "the hash's boundaries" {
+        then "moving a character across a field boundary changes the hash" {
+            pair_hash("a.b", "c") != pair_hash("a", "b.c")
+        }
+        then "two fields of equal kind swapped change the hash" {
+            row_hash(1, 2) != row_hash(2, 1)
+        }
+        then "an empty text is not an absent one" {
+            stable_hasher(7).present(true).text("").finish() != stable_hasher(7).present(false).finish()
+        }
+        then "a present null is not an absent value" {
+            stable_hasher(7).present(true).present(false).finish() != stable_hasher(7).present(false).finish()
+        }
+        then "a trailing NUL is data, not padding" {
+            text_hash("a") != text_hash("a" + from_codepoint(0))
+        }
+        then "a text exactly one word long differs from its eight-byte prefix plus one" {
+            text_hash("abcdefgh") != text_hash("abcdefghi")
+        }
+        then "the seed separates two relations holding the same row" {
+            stable_hasher(1).int(5).finish() != stable_hasher(2).int(5).finish()
+        }
+    }
+    given "the set hash" {
+        then "order does not matter" {
+            set_hash([row_hash(1, 2), row_hash(3, 4)]) == set_hash([row_hash(3, 4), row_hash(1, 2)])
+        }
+        then "rows whose fields swap between them are a different set" {
+            set_hash([row_hash(1, 1), row_hash(2, 2)]) != set_hash([row_hash(1, 2), row_hash(2, 1)])
+        }
+        then "a duplicate row counts twice" {
+            set_hash([row_hash(1, 2), row_hash(1, 2)]) != set_hash([row_hash(1, 2)])
+        }
+        then "the empty set is zero" {
+            set_hash([]) == 0
+        }
+    }
+    given "the codec's empty cases, written first" {
+        then "the empty text round-trips" {
+            text_round_trips("")
+        }
+        then "an empty list is its count alone" {
+            count_length(0) == 1
+        }
+        then "zero round-trips as one byte" {
+            int_round_trips(0) && int_length(0) == 1
+        }
+    }
+    given "the codec's integers" {
+        then "small, negative, and the varint's seven-bit edges round-trip" {
+            [0, 1, -1, 63, -64, 64, -65, 127, 128, 300, -300].all(int_round_trips(it))
+        }
+        then "the widest ints round-trip" {
+            int_round_trips(9223372036854775807) && int_round_trips(-9223372036854775807 - 1)
+        }
+    }
+    given "the codec's text" {
+        then "a NUL is data" {
+            text_round_trips("a" + from_codepoint(0) + "b")
+        }
+        then "multi-byte text round-trips" {
+            text_round_trips("héllo — ✓")
+        }
+        then "two texts read back in order, and the reader stands at the end" {
+            read_in_order("a.b", "c")
+        }
+    }
+    given "a malformed record" {
+        then "a length past the end is truncated" {
+            fault_of([5, 97].bytes()!) == "truncated"
+        }
+        then "no bytes at all is truncated" {
+            fault_of("".bytes()) == "truncated"
+        }
+        then "invalid UTF-8 is not text" {
+            fault_of([1, 255].bytes()!) == "not_text"
+        }
+        then "a varint past ten bytes is overlong" {
+            int_fault_of([128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 1].bytes()!) == "overlong"
+        }
+        then "a flag byte other than 0 or 1 is refused" {
+            bool_fault_of([2].bytes()!) == "not_flag"
+        }
+    }
+}
