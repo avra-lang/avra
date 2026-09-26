@@ -25,7 +25,7 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
 /// build has already asked, else from the store. An absent record is cached too, so a
 /// module with no record is asked ONCE rather than at every consumer.
-// LICENSED style.free_state_verb: a Workspace method here trips the compiler's declaration-order defect (F2010).
+// LICENSED compiler.free_state_verb: a Workspace method here trips the compiler's declaration-order defect (F2010).
 fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     let key = record_key(ws, m)
     let known = ws.records.record_texts.get().get(key)
@@ -43,7 +43,7 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
 type Placed = { file: List<string>, lo: int, hi: int }
 
 /// A record's files, each placed — memoized for the build.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_places(ws: Workspace, store: Store, m: ModulePath) -> Map<string, Placed> {
     let key = record_key(ws, m)
     let known: Map<string, Placed>? = ws.records.record_places.get().get(key)
@@ -72,7 +72,7 @@ fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
 }
 
 /// THE RECORD AS LINES — cached, so every phase that needs them gets a pre-split list.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_lines(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
     let key = record_key(ws, m)
     let cached = ws.records.record_lines.get().get(key)
@@ -84,7 +84,7 @@ fn record_lines(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
 
 /// THE RECORD AS TAB-SPLIT FIELDS — each line split once per module, so mint and fill
 /// get pre-parsed fields without a per-declaration tab split.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_fields(ws: Workspace, store: Store, m: ModulePath) -> List<List<string>> {
     let key = record_key(ws, m)
     let cached = ws.records.record_fields.get().get(key)
@@ -203,7 +203,7 @@ impl Row {
 }
 
 /// A record as this build now knows it: its words, its lines and their fields.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_known(ws: Workspace, m: ModulePath, text: string) {
     let key = record_key(ws, m)
     let lines = text.split("\n")
@@ -234,7 +234,7 @@ fn memoized<T>(mut cache: Map<string, T>, key: string, make: fn() -> T) -> T {
 }
 
 /// A MODULE'S INTERFACE DIGEST, memoized for the build.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn bytes_key_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     let known: string? = ws.keys.bytes_keys.get().get(m.text())
     if known != null { return known! }
@@ -245,7 +245,7 @@ fn bytes_key_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
 
 /// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
 /// the file's path, so a module-level ask and a file-level ask do not collide.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     let key = "${m.text()}\t${path}"
     let known: string? = ws.keys.object_keys.get().get(key)
@@ -289,14 +289,14 @@ fn on_top(top: List<DeclId>, d: DeclId) -> bool { top.any(same_decl(it, d)) }
 /// whitespace edit moves, the statement/expression indices, and the `writes` bits the
 /// receivers pass recomputes. A body edit therefore does not move a dependent's key; a
 /// seat or shape change does, because both are in the digest.
-// LICENSED style.free_state_verb: a pure PROJECTION — a module's declaration lines in, its interface digest out.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a module's declaration lines in, its interface digest out.
 export fn iface_digest(items: List<string>) -> string {
     digest_of(joined([interface_form(line) for line in sorted_texts(items)], "\n"))
 }
 
 /// ONE DECLARATION'S CONTRACT, as one line: the fields a caller can see, and never the
 /// span, the statement/expression indices, or the `writes` bits.
-// LICENSED style.free_state_verb: a pure PROJECTION — a record line in, its contract out.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a record line in, its contract out.
 fn interface_form(line: string) -> string {
     let p = line.split("\t")
     if p.length < 13 { return "" }
@@ -467,7 +467,7 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
 }
 
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
-// LICENSED style.free_state_verb: THE RECORD STEP — a workspace, a store and a module list in, the records written.
+// LICENSED compiler.free_state_verb: THE RECORD STEP — a workspace, a store and a module list in, the records written.
 export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>) {
     mut seen_moved = false
     mut cache = db()
@@ -589,7 +589,7 @@ impl Reads {
 
 /// Why a file a record knows is read — null when its hold may be asked. The entry
 /// is read: its law over every other file is spoken from its parse.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn read_why(ws: Workspace, store: Store, m: ModulePath, f: string, at: Placed?, is_entry: bool, want: Want) -> Reads? {
     if is_entry { return Reads.Entry }
     if ws.hold.homes.get().get(f) != null { return Reads.Home }
@@ -616,7 +616,7 @@ fn declares(parts: List<string>) -> bool { parts[0] != "import" && parts[0] != "
 /// held, over the SAME decoder the mint uses. A field the writer adds that this
 /// reader does not know makes the record short, and a short record refuses the
 /// module rather than contributing a declaration nobody can see.
-// LICENSED style.free_state_verb: a pure PREDICATE — a record's lines in, whether all of them decode out.
+// LICENSED compiler.free_state_verb: a pure PREDICATE — a record's lines in, whether all of them decode out.
 fn record_complete(fields: List<List<string>>) -> bool {
     // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
     // held declaration to its file, so a hole is a record where a declaration would be
@@ -696,7 +696,7 @@ fn name_of_field(pair: string) -> string {
 }
 
 /// A variant's PAYLOAD, from its `name:t1,t2` pair — no types when it carries none.
-// LICENSED style.free_state_verb: a RECORD DECODER — a workspace and one arm's text in, the payload's types out.
+// LICENSED compiler.free_state_verb: a RECORD DECODER — a workspace and one arm's text in, the payload's types out.
 fn payload_of(ws: Workspace, arm: string) -> List<TypeId> {
     [ws.interface_type(t) for t in name_of_field(arm).split("|") if t != ""]
 }
@@ -739,7 +739,7 @@ fn kind_of_word(word: string) -> DeclKind? {
 // ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
 
 /// A module with no record yet, as its files' bytes: it over-invalidates, never under.
-// LICENSED style.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
 export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
     mut d = new_digest()
     for path in sorted_texts(ws.module_files(m)) {
@@ -762,7 +762,7 @@ export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
 /// text, the texts its compile-time runs read, and the interfaces its bodies can see.
-// LICENSED style.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     mut d = new_digest()
     d = digest_text(d, m.text())
@@ -782,7 +782,7 @@ fn kept_runs(at: Placed?) -> List<string> {
 
 /// THE INTERFACES A MODULE'S FILES SEE, as one digest — memoized for the build, since
 /// every file of a module sees the same ones.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn view_key(ws: Workspace, store: Store, m: ModulePath) -> string {
     let known: string? = ws.keys.view_keys.get().get(m.text())
     if known != null { return known! }
@@ -792,7 +792,7 @@ fn view_key(ws: Workspace, store: Store, m: ModulePath) -> string {
 }
 
 /// The modules a module's record says it imports — memoized for the build.
-// LICENSED style.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
     let known: List<string>? = ws.import_lists.get().get(name)
     if known != null { return known! }
@@ -804,7 +804,7 @@ fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
 /// EVERY MODULE A FILE OF `m` CAN SEE A TYPE OF: its own — a sibling file's names need no
 /// import — and the closure of its imports, since a type reaches a body through a
 /// signature the body never names. In name order.
-// LICENSED style.free_state_verb: a pure PROJECTION — the workspace, a store and a module in, the modules it sees out.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, a store and a module in, the modules it sees out.
 fn seen_modules(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
     // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
     mut seen: List<string> = [m.text()]
@@ -822,14 +822,14 @@ fn seen_modules(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
 /// a FILE is held is `load_interface`'s question, asked per file of its object and its
 /// asks; a module is walked for its record alone, because the entry's object is keyed
 /// by its own bytes and a root that is only an entry has no other.
-// LICENSED style.free_state_verb: THE HELD WALK — a workspace and a store in, the modules worth loading out.
+// LICENSED compiler.free_state_verb: THE HELD WALK — a workspace and a store in, the modules worth loading out.
 export fn held_modules(ws: Workspace, store: Store) -> List<ModulePath> {
     [m for m in [module_path(n.split(".")) for n in distinct([ws.module_of(p) for p in ws.root_files()])] if record_cached(ws, store, m) != ""]
 }
 
 /// EVERY HELD FILE, by path — ONE derivation for the stubs, the objects and the
 /// interface writes, so no list of modules can disagree with the files actually held.
-// LICENSED style.free_state_verb: a pure PROJECTION — the workspace in, its held files' paths out.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace in, its held files' paths out.
 export fn held_paths(ws: Workspace) -> List<string> {
     [ws.decls.file(fi.id).path for fi in ws.decls.files.get() if ws.is_held(fi.id)]
 }
@@ -849,7 +849,7 @@ export fn held_paths(ws: Workspace) -> List<string> {
 /// AND A HELD FILE MAY BE AN IMPORT — the modules `held_modules` walks are the ROOT's,
 /// while `load_interface` holds imported files too — so the stub set is EVERY held file,
 /// never the root's module list.
-// LICENSED style.free_state_verb: A STUB — the workspace in, the bodies every held file lets a caller name.
+// LICENSED compiler.free_state_verb: A STUB — the workspace in, the bodies every held file lets a caller name.
 export fn held_stubs(ws: Workspace) -> List<Body> {
     mut out: List<Body> = []
     for d in ws.decls.decls.get() {

@@ -10,7 +10,7 @@ type RulesCmd = {}
 impl Runnable for RulesCmd {
     fn run(args: CliResult) -> int {
         let entries = root_program(here()).rule_listing()
-        println(if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in entries])) } else { rules_listing(entries) })
+        println(if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in entries])) } else if args.has_flag("markdown") { rules_markdown(entries) } else { rules_listing(entries) })
         0
     }
 }
@@ -38,8 +38,24 @@ export fn rules_listing(entries: List<RuleEntry>) -> string {
     ["rules this package declares — ${entries.length}"].concat(["${rule_id(r)} — ${r.doc}" for r in entries]).join("\n")
 }
 
+/// DOGFOODING.md's generated registry block — one bullet per
+/// DOCUMENTED rule, in the doc's own established bullet shape (`- id
+/// prose`, no separator: the hand-written entries this replaces
+/// never used one). An UNDOCUMENTED rule is a sibling of a
+/// documented one that already carries the family's doc (the
+/// `_defaulted` family, the raw region Ins, the raw mint-emit Ins) —
+/// it earns its own bullet the day it earns its own `///`.
+export fn rules_markdown(entries: List<RuleEntry>) -> string {
+    [documented_bullet(r) for r in entries if r.doc != ""].join("\n")
+}
+
+fn documented_bullet(r: RuleEntry) -> string {
+    "- ${rule_id(r)} ${r.doc}"
+}
+
 export command rules {
     description: "Every rule the compiler carries, by identity — the ground truth a native idiom finding's kind is checked against"
     flag json { description: "one JSON array of {id, module, name, doc, law}" }
+    flag markdown { description: "DOGFOODING.md's generated registry block: one bullet per documented rule" }
     run: RulesCmd {}
 }

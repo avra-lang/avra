@@ -1,0 +1,62 @@
+// The document algebra: a group renders flat when it fits, broken
+// otherwise; a nested group decides on its own; the LINE LAW holds
+// for a broken chain.
+use @std.avrac.compiler.format.{Doc, text, line as dline, softline, hardline, seq, group, nest, if_break, doc_joined, chain_doc, comma_list, render_doc, render_doc_at}
+
+fn items(strs: List<string>) -> List<Doc> {
+    [text(s) for s in strs]
+}
+
+spec "doc" {
+    given "a group that fits" {
+        then "text and line render as one flat line" {
+            render_doc(group(seq([text("a"), dline(), text("b")])), 80) == "a b"
+        }
+        then "an empty comma list ignores spacing" {
+            render_doc(comma_list("(", [], ")", false), 80) == "()"
+        }
+        then "a tight comma list has no padding" {
+            render_doc(comma_list("(", items(["a", "b", "c"]), ")", false), 80) == "(a, b, c)"
+        }
+        then "a spaced comma list pads once inside each bracket" {
+            render_doc(comma_list("{", items(["a", "b"]), "}", true), 80) == "{ a, b }"
+        }
+    }
+    given "a group that does not fit" {
+        then "a tight comma list breaks one item per line with a trailing comma" {
+            render_doc(comma_list("(", items(["aaaa", "bbbb", "cccc"]), ")", false), 10) == "(\n    aaaa,\n    bbbb,\n    cccc,\n)"
+        }
+        then "a spaced comma list breaks the same way, still one comma per item" {
+            render_doc(comma_list("{", items(["aaaa", "bbbb"]), "}", true), 8) == "{\n    aaaa,\n    bbbb,\n}"
+        }
+        then "nesting raises the indent every broken line lands at" {
+            render_doc_at(comma_list("(", items(["aaaa", "bbbb"]), ")", false), 10, 4, 4) == "(\n        aaaa,\n        bbbb,\n    )"
+        }
+    }
+    given "nested groups" {
+        then "an inner group that fits stays flat even though the outer one breaks" {
+            let inner = comma_list("(", items(["x", "y"]), ")", false)
+            let outer = comma_list("[", [text("aaaaaaaaaa"), inner, text("bbbbbbbbbb")], "]", false)
+            render_doc(outer, 12) == "[\n    aaaaaaaaaa,\n    (x, y),\n    bbbbbbbbbb,\n]"
+        }
+        then "a hardline forces its own group to break regardless of width" {
+            render_doc(group(seq([text("a"), hardline(), text("b")])), 80) == "a\nb"
+        }
+    }
+    given "the LINE LAW over a chain" {
+        then "a chain that fits stays one line" {
+            render_doc(chain_doc("&&", items(["a", "b", "c"])), 80) == "a && b && c"
+        }
+        then "a broken chain trails the operator, never leads it" {
+            render_doc(chain_doc("&&", items(["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"])), 12) == "aaaaaaaaaa &&\n    bbbbbbbbbb &&\n    cccccccccc"
+        }
+    }
+    given "if_break" {
+        then "answers its flat side inside a flat group" {
+            render_doc(group(seq([text("a"), if_break(text("!"), text("?"))])), 80) == "a?"
+        }
+        then "answers its broken side inside a broken group" {
+            render_doc(group(seq([text("aaaaaaaaaa"), hardline(), if_break(text("!"), text("?"))])), 80) == "aaaaaaaaaa\n!"
+        }
+    }
+}
