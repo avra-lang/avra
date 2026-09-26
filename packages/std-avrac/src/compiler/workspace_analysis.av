@@ -57,9 +57,9 @@ impl Workspace {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
         if self.closed.get() { return self.analyzed(f) }
-        match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return analysis_of(value) }, .Compute -> nothing() }
         let out = self.analyzed(f)
-        self.analyses.finish(f.index, out, self.db.revision())
+        analysis_of(self.analyses.finish(f.index, Stage.Analysis(out), self.db.revision()))
     }
 
     /// The record itself: every pass's facts for the file, and the way
@@ -226,7 +226,7 @@ impl Workspace {
         // only a const's statement has a type to publish
         let held: StmtId? = const_stmt(ask.root)
         if held == null {
-            let _ = self.const_type_facts.finish(id, error, error.index)
+            let _ = self.const_type_facts.finish(id, Stage.ConstTyped(error), error.index)
             return false
         }
         let s = held!
@@ -239,14 +239,14 @@ impl Workspace {
         let cyclic = d != null && self.decl_facts.open(d!.index)
         if d != null && !cyclic { touch(self.typed(d!)) }
         let ty = self.decls.held_const_type(ask.file, s) ?? error
-        let _ = self.const_type_facts.finish(id, ty, ty.index)
+        let _ = self.const_type_facts.finish(id, Stage.ConstTyped(ty), ty.index)
         cyclic
     }
 
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
         match self.settlements.ask(id) {
             .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
-            .Reuse(held) -> { return reused_settlement(held) },
+            .Reuse(held) -> { return reused_settlement(settled_of(held)) },
             .Compute -> self.settlements.begin(id),
         }
         let ask = self.settle_asks.get()[id]
@@ -266,7 +266,7 @@ impl Workspace {
             .Ok(x) -> Settlement.Held(x),
             .Err(why) -> Settlement.Refused(why),
         }
-        let _ = self.settlements.finish(id, held, settlement_hash(held))
+        let _ = self.settlements.finish(id, Stage.Settled(held), settlement_hash(held))
         r
     }
 
@@ -326,7 +326,7 @@ impl Workspace {
     fn lifted_at(id: int) -> Result<Lifted, Unsettled> {
         match self.lift_results.ask(id) {
             .Cycle -> { return .Err(Unsettled.Recursive) },
-            .Reuse(held) -> { return reused_lift(held) },
+            .Reuse(held) -> { return reused_lift(lifted_of(held)) },
             .Compute -> self.lift_results.begin(id),
         }
         let ask = self.lift_asks.get()[id]
@@ -335,7 +335,7 @@ impl Workspace {
             .Ok(crossed) -> LiftResult.Crossed(crossed),
             .Err(why) -> LiftResult.Refused(why),
         }
-        let _ = self.lift_results.finish(id, held, lift_hash(held))
+        let _ = self.lift_results.finish(id, Stage.Lifted(held), lift_hash(held))
         r
     }
 
