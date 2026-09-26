@@ -51,7 +51,15 @@ export type SelectItem = { expr: SqlExpr, as_name: string? }
 /// read `JOIN` itself as `Post`'s alias, since keywords are ordinary
 /// IDENT-kind tokens here, not a lexer class) — real SQL parsers close
 /// this with a reserved-word list; this engine has none yet.
-export type TableRef = { name: string, as_name: string? }
+export enum FromSource {
+    Named(name: string)
+    /// A derived table — `FROM (SELECT ...) AS alias`. Unlike a named
+    /// table's alias, this one is not optional: nothing else could
+    /// name the columns a derived table exposes.
+    Derived(sub: SqlSelect)
+}
+
+export type TableRef = { source: FromSource, as_name: string? }
 
 export type JoinItem = { kind: string, other: TableRef, on: SqlExpr }
 
@@ -312,12 +320,25 @@ fn column_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
     .Ok(node(SqlNode.Cols(sel_items_of(caps[0])?)))
 }
 
-/// One `FROM`/`JOIN` table, `AS`-named or bare.
-@grammar_rule("n:IDENT (\"AS\" a:IDENT)?")
+/// One `FROM`/`JOIN` table — `AS`-named or bare, or a derived table
+/// (`(SELECT ...) AS alias`). The two branches share no first token
+/// (`"("` vs a bare `IDENT`), so unlike `atom`'s own parenthesized
+/// forms there is nothing here for the checker to refuse. Both
+/// branches happen to answer `caps.length == 2` — a coincidence of
+/// their own shapes, not something this dispatch relies on — so
+/// telling them apart reads `caps[0]`'s SHAPE (an already-built
+/// `.Node` for the derived form, a raw `.Terminal` for a bare name),
+/// the same idiom `atom` uses one level up.
+@grammar_rule("\"(\" s:select_stmt \")\" \"AS\" a:IDENT | n:IDENT (\"AS\" a:IDENT)?")
 fn table_ref(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let derived = node_of(caps[0])
+    if derived != null {
+        let sub? = derived!.as_select() else { return .Err("derived table: subquery did not build") }
+        return .Ok(node(SqlNode.Table(TableRef { source: FromSource.Derived(sub), as_name: text_of(caps[1]) })))
+    }
     let name = text_of(caps[0])
     let as_name = match caps[1] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> text_of(caps[1]) }
-    .Ok(node(SqlNode.Table(TableRef { name: name, as_name: as_name })))
+    .Ok(node(SqlNode.Table(TableRef { source: FromSource.Named(name), as_name: as_name })))
 }
 
 /// `INNER`/`LEFT`/`RIGHT` all optional (bare `JOIN` is `INNER`).

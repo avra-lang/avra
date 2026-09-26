@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, FromSource, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -135,8 +135,15 @@ fn columns_shape(items: List<SelectItem>) -> string {
     [if i.as_name == null { render_expr(i.expr) } else { "${render_expr(i.expr)} AS ${i.as_name!}" } for i in items].join(",")
 }
 
+fn source_shape(source: FromSource) -> string {
+    match source {
+        .Named(name) -> name,
+        .Derived(sub) -> "(${render_select(sub)})",
+    }
+}
+
 fn table_shape(t: TableRef) -> string {
-    if t.as_name == null { t.name } else { "${t.name} AS ${t.as_name!}" }
+    if t.as_name == null { source_shape(t.source) } else { "${source_shape(t.source)} AS ${t.as_name!}" }
 }
 
 fn join_shape(j: JoinItem) -> string {
@@ -556,6 +563,26 @@ spec "sql/subqueries" {
     given "NOT EXISTS" {
         then "the outer NOT wraps Exists — no case of its own" {
             where_shape("SELECT a FROM t WHERE NOT EXISTS (SELECT 1 FROM comments)") == "(NOT EXISTS (SELECT 1 FROM comments))"
+        }
+    }
+    given "a derived table in FROM" {
+        then "builds as FromSource.Derived, carrying the subquery" {
+            from_shape("SELECT a FROM (SELECT id AS a FROM posts WHERE published) AS p") == "(SELECT id AS a FROM posts WHERE published) AS p"
+        }
+    }
+    given "a derived table joined with a named one" {
+        then "both sides build, the derived one still on the left" {
+            from_shape("SELECT a FROM (SELECT id AS a FROM posts) AS p JOIN users AS u ON u.id = p.a") == "(SELECT id AS a FROM posts) AS p INNER JOIN users AS u ON (u.id = p.a)"
+        }
+    }
+    given "a derived table with no AS" {
+        then "refused — a derived table's alias is not optional" {
+            selected("SELECT a FROM (SELECT id AS a FROM posts)") == null
+        }
+    }
+    given "a plain named table, unaffected" {
+        then "still builds as FromSource.Named" {
+            from_shape("SELECT a FROM posts AS p") == "posts AS p"
         }
     }
 }
