@@ -8,7 +8,7 @@
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
 use core.{At, ExprId, StmtId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at, own_type_at, Arm, same_stmt, same_expr, flatten, some_list}
-use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, MethodRow, AnnotationFact}
+use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, MethodRow, AnnotationFact, bound_decl_of}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
@@ -393,7 +393,8 @@ impl Code {
         // fn's body, which the top-level list does not reach.
         let assigns = flatten([some_list(self.write_root_of(s)) for s in self.of.view.store.stmt_ids()])
         let calls = flatten([some_list(self.method_write_root(e)) for e in range])
-        assigns.concat(calls)
+        let seated = flatten([self.seat_write_roots(e) for e in range])
+        assigns.concat(calls).concat(seated)
     }
 
     fn write_root_of(s: StmtId) -> ExprId? {
@@ -409,6 +410,50 @@ impl Code {
         let mp? = self.of.view.store.method_parts(e) else { return null }
         if !self.method_writes(mp.subject, mp.name) { return null }
         self.of.view.store.place_root(mp.subject)
+    }
+
+    /// Every argument placed at a declared `mut` SEAT — a call's own
+    /// seat law demands the caller's place already be `mut`
+    /// (CLAUDE.md's "A PARAMETER IS BORROWED"), so filling one is as
+    /// much a write as an assignment is (receivers.av's `feed`, the
+    /// same law read here for a LOCAL rather than for flow analysis).
+    fn seat_write_roots(e: ExprId) -> List<ExprId> {
+        let call_roots = match self.of.view.store.call_parts(e) {
+            cp? -> self.named_call_roots(e, cp.args)
+            null -> []
+        }
+        let method_roots = match self.of.view.store.method_parts(e) {
+            mp? -> self.method_call_roots(mp.subject, mp.name, mp.args)
+            null -> []
+        }
+        call_roots.concat(method_roots)
+    }
+
+    fn named_call_roots(e: ExprId, args: List<ExprId>) -> List<ExprId> {
+        match bound_decl_of(self.of.names, e) {
+            callee? -> self.marked_arg_roots(callee, args, 0)
+            null -> []
+        }
+    }
+
+    fn method_call_roots(subject: ExprId, name: string, args: List<ExprId>) -> List<ExprId> {
+        let target? = declaring_decl(self.of.view.types.shape_of(self.of.facts.type_at(subject))) else { return [] }
+        let m? = self.of.view.decls.methods_of(target).find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else { return [] }
+        // seat 0 is the receiver; a method's own arguments start at 1.
+        self.marked_arg_roots(m, args, 1)
+    }
+
+    /// `args`, seat-ordered (a named argument fills the seat its name
+    /// picks — `store.seated_args`), each kept only when `callee`'s
+    /// own seat at that position is declared `mut`.
+    fn marked_arg_roots(callee: DeclId, args: List<ExprId>, base: int) -> List<ExprId> {
+        let seats = self.of.view.decls.facts_of(callee)?.seats ?? []
+        flatten([some_list(self.marked_root(callee, base, j, a)) for j, a in self.of.view.store.seated_args(args, seats)])
+    }
+
+    fn marked_root(callee: DeclId, base: int, j: int, a: ExprId) -> ExprId? {
+        if !self.of.view.decls.seat_mark(callee, base + j).mutable { return null }
+        self.of.view.store.place_root(a)
     }
 
     /// Whether `subject.name(...)` writes its receiver — a
