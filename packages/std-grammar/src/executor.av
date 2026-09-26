@@ -251,8 +251,17 @@ fn bind_label_all<T, N>(bindings: List<Binding<T, N>>, label: string, vs: List<C
 fn accumulated_all<T, N>(prev: Captured<T, N>, vs: List<Captured<T, N>>) -> Captured<T, N> {
     match prev {
         .Many(items) -> Captured.Many(items.concat(vs)),
-        .Terminal(t) -> Captured.Many([captured_terminal<T, N>(t)].concat(vs)),
-        .Node(n) -> Captured.Many([Captured.Node(n)].concat(vs)),
+        // The subset today: a two-parameter generic call as a list
+        // literal's sole element cannot pin `T` from the payload alone —
+        // a typed local pins it first.
+        .Terminal(t) -> {
+            let one: Captured<T, N> = captured_terminal<T, N>(t)
+            Captured.Many([one].concat(vs))
+        },
+        .Node(n) -> {
+            let one: Captured<T, N> = Captured.Node(n)
+            Captured.Many([one].concat(vs))
+        },
         .Absent -> Captured.Many(vs),
     }
 }
