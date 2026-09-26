@@ -3,10 +3,14 @@
 # the NEW printer before the reformat commit is merged, so both sides share
 # one layout and only real edits can conflict.
 #
-#   tools/reformat_lane.sh <printer-commit> <reformat-commit>
+#   tools/reformat_lane.sh [<printer-commit> <reformat-commit>]
+#
+# The 100-column change is P 2b5cb3c (the printer, the tree-walking
+# `fmt --write`, the lexer fix) and R a72146d (the tree reformat); with no
+# arguments the script carries a lane across exactly that pair.
 set -eu
-P=${1:?usage: tools/reformat_lane.sh <printer-commit> <reformat-commit>}
-R=${2:?usage: tools/reformat_lane.sh <printer-commit> <reformat-commit>}
+P=${1:-2b5cb3c86b258861c653575b11a50bcabcecc0d1}
+R=${2:-a72146de86bdba68d4e941c33c78d40a5d068072}
 export LLVM_PREFIX=${LLVM_PREFIX:-/opt/homebrew/opt/llvm} AVRA_WATCH_HELD=1
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then

@@ -46,7 +46,7 @@ use core.{
     At,
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
-use core.{Fingerprint, fp, list_cell, map_cell, same_type}
+use core.{Fingerprint, fp, list_cell, map_cell, same_type, Table, new_table}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -371,6 +371,14 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> void>,
+    // an inferred `Result<T, _>`'s growing error set, dense by DeclId
+    // — the error-unions Phase 2 fixpoint's own table, settled by the
+    // armed hook on first ask
+    inferred_errs: Table<List<TypeId>>,
+    // whether that fn's own walk hit a site whose type it could not
+    // structurally resolve — a refusal, never a silently missing member
+    inferred_unresolved: Table<bool>,
+    ensure_failures: Cell<fn() -> void>,
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -384,6 +392,8 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_marks(d: DeclId) {}
+
+fn no_failures_ensure() {}
 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
@@ -483,6 +493,9 @@ export fn new_decls() -> Decls {
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_ensure),
+        inferred_errs: new_table(),
+        inferred_unresolved: new_table(),
+        ensure_failures: Cell.new(no_failures_ensure),
         lifter: Cell.new(no_lifter),
         refs_by_file: Cell.new(no_refs_by_file),
         refs_by_decl: Cell.new(no_refs_by_decl),
@@ -888,6 +901,14 @@ impl Decls {
         held
     }
 
+    /// `sig`'s table read alone, NEVER triggering the hook: for a
+    /// caller that is itself INSIDE `d`'s own signing (or a fixpoint
+    /// `d` itself belongs to) and must not recurse back into it —
+    /// null answers "not settled yet," never "not there is an error."
+    fn sig_so_far(d: DeclId) -> DeclSig? {
+        self.sigs.get()[d.index]
+    }
+
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them
     /// once every declaration it will ever ask about is signed; a
@@ -901,6 +922,7 @@ impl Decls {
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
+        self.ensure_failures.set(no_failures_ensure)
         self.lifter.set(no_lifter)
     }
 
@@ -1255,6 +1277,49 @@ impl Decls {
         }
     }
 
+    /// A `_`-declared fn's growing error set, as the fixpoint found it
+    /// so far — deduped by type identity, the pass's own read, hook-free.
+    fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
+        self.inferred_errs.at(d.index) ?? []
+    }
+
+    /// One contribution recorded, unless already present.
+    fn record_inferred_error(d: DeclId, ty: TypeId) {
+        let cur = self.inferred_errors_so_far(d)
+        if !cur.any(same_type(it, ty)) { self.inferred_errs.keep(d.index, cur.concat([ty])) }
+    }
+
+    /// Whether `d`'s own walk hit a site it could not structurally
+    /// resolve — a real refusal of `_`, never a silently missing member.
+    fn inferred_is_unresolved(d: DeclId) -> bool {
+        self.inferred_unresolved.at(d.index) ?? false
+    }
+
+    fn mark_inferred_unresolved(d: DeclId) {
+        self.inferred_unresolved.keep(d.index, true)
+    }
+
+    /// The pass starts over: every `_`-declared fn's set falls, and
+    /// the fixpoint re-earns it. Held files are exempt for the same
+    /// reason `clear_written` exempts them: a held fn's union rode its
+    /// interface, never this pass.
+    fn clear_inferred() {
+        for j, x in self.decls.get() {
+            if self.held.get().get(self.file(x.file).path) == null {
+                self.inferred_errs.keep(j, [])
+                self.inferred_unresolved.keep(j, false)
+            }
+        }
+    }
+
+    /// A `_`-declared fn's SETTLED error set — asking IS the query:
+    /// the hook runs the whole-program fixpoint once, and this table
+    /// holds every fn's answer after.
+    fn inferred_errors(d: DeclId) -> List<TypeId> {
+        (self.ensure_failures.get())()
+        self.inferred_errors_so_far(d)
+    }
+
     /// Whether a method WRITES its receiver: declared, or found by
     /// the receivers pass — asking IS the query; the hook runs the
     /// pass and records the dependency.
@@ -1346,6 +1411,11 @@ impl Decls {
     /// The workspace arms the references hook once.
     fn arm_references(ensure: fn() -> void) {
         self.ensure_refs.set(ensure)
+    }
+
+    /// The workspace arms the failures hook once.
+    fn arm_failures(ensure: fn() -> void) {
+        self.ensure_failures.set(ensure)
     }
 
     fn record_target(impl_decl: DeclId, target: DeclId) {
@@ -1551,10 +1621,9 @@ impl Decls {
 
     /// A record field's default, when the field declares one.
     fn default_named(record: DeclId, field: string) -> DeclId? {
-        for c in self.children_of(record) {
-            if self.decl(c).name == field { return c }
-        }
-        null
+        self
+            .children_of(record)
+            .find((c) -> self.decl(c).kind is .Default && self.decl(c).name == field)
     }
 
     /// Each written seat's default body, in seat order — null where
@@ -1607,7 +1676,8 @@ impl Decls {
         let x = self.decl(d)
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
-            .Method or .Default -> "${x.owner}.${x.name}",
+            .Method -> "${x.owner}.${x.name}",
+            .Default -> "${x.owner}.${x.name}\$default",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect -> x.name,
         }
