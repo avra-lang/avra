@@ -109,26 +109,41 @@ export fn new_sites(warnings: string, kinds: List<string>, keys: List<string>) -
     [s for s in sites_in(warnings, kinds) if !keys.contains(site_key(s))]
 }
 
-/// `keys`, pruned to the ones whose own site is STILL PRESENT ON DISK
-/// — never grown, and never answered from `warnings` alone: a single
-/// `avra check <pkg>` only ever reaches ITS OWN package plus what it
-/// depends on, so pruning against ONE run's findings would silently
-/// drop every OTHER package's accepted debt from this ONE SHARED
-/// file. Reading the FILE ITSELF instead makes the prune correct from
-/// any package's invocation — a fix rewrites the line, which is what
-/// "gone" means here; a rule that simply stops firing on an
-/// UNCHANGED line stays counted, which only widens the accepted set,
-/// never narrows it unsoundly.
-export fn pruned_baseline(keys: List<string>) -> List<string> {
-    [k for k in keys if site_still_present(k)]
+/// The keys `warnings` currently reports — a fresh check's OWN
+/// answer to "does this site still fire", in the one currency a
+/// baseline key is kept or dropped by.
+export fn fresh_keys(warnings: string, kinds: List<string>) -> List<string> {
+    [site_key(s) for s in sites_in(warnings, kinds)]
 }
 
-fn site_still_present(key: string) -> bool {
-    let parts = key.split("\t")
-    if parts.length != 3 { return false }
-    let file = parts[1]
-    let text = parts[2]
+/// `keys`, pruned against a FRESH check that reached `reached` (its
+/// own package's files and everything it depends on) and currently
+/// fires `fresh` (`fresh_keys` of that same check). A key whose file
+/// this check REACHED is kept only when `fresh` still names it — a
+/// rule that stops firing on an UNCHANGED line is gone, the same as
+/// a rewritten one, so a detector fix pays down the debt it resolved
+/// instead of banking it forever. A key whose file this check never
+/// reached is left UNTOUCHED: a single `avra check <pkg>` only ever
+/// reaches its own package plus what it depends on, so judging a
+/// file no package here examined would silently drop another
+/// package's accepted debt from this one shared file — the same
+/// cross-package safety the old disk-text check wanted, kept here by
+/// asking what THIS check reached rather than what the disk still
+/// shows. A key whose file is gone from disk entirely is dropped
+/// outright: no future check will ever reach it either.
+export fn pruned_baseline(keys: List<string>, reached: List<string>, fresh: List<string>) -> List<string> {
+    [k for k in keys if kept_key(k, reached, fresh)]
+}
+
+fn kept_key(key: string, reached: List<string>, fresh: List<string>) -> bool {
+    let file? = key_file(key) else { return false }
     if !exists(file) { return false }
-    let lines = (read_text(file) catch "").split("\n")
-    lines.any(it.trim() == text)
+    if !reached.contains(file) { return true }
+    fresh.contains(key)
+}
+
+fn key_file(key: string) -> string? {
+    let parts = key.split("\t")
+    if parts.length != 3 { return null }
+    parts[1]
 }

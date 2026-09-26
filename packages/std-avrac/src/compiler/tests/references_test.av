@@ -14,10 +14,11 @@
 //! argument, a `dyn` type) — every position below witnessed FAILING
 //! against the tree's pre-fix binary (`unused_imports()` naming the
 //! import) before `type_use_refs` (compiler/references.av) landed.
-use compiler.{analyze_source, new_workspace, avra}
+use compiler.{analyze_source, new_workspace, avra, Program}
 use compiler.host.{memory_host}
 use core.{At, DeclKind, StmtId}
 use features.{Code}
+use @std.avrac.testing.{provided}
 
 fn top_level(source: string, i: int) -> Code {
     let a = analyze_source(source)
@@ -49,6 +50,21 @@ fn first_mut(source: string) -> Code {
     let a = analyze_source(source)
     let id = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .MutLet)!
     a.code_at(At.Stmt(id))
+}
+
+/// A provider declaring one template-form component, `named` — a
+/// `within`/`get`-shaped word, instantiated only through its own
+/// word-headed block, never a struct literal.
+fn word_provider(named: string) -> string {
+    "export component ${named}(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n"
+}
+
+/// `main`'s first statement's `Code` — the `use` line importing the
+/// word-headed component, over a program that actually built it.
+fn main_use(main: string, named: string) -> Code {
+    let p = provided(main, word_provider(named))
+    let a = p.entry_file()!
+    a.code_at(At.Stmt(a.view.stmts[0]))
 }
 
 spec "compiler/references — the relation and its Code facts" {
@@ -96,6 +112,17 @@ spec "compiler/references — the relation and its Code facts" {
     given "a `mut` local an ordinary assignment writes" {
         then "is_unwritten_mut() answers false" {
             !first_mut("fn f() {\n    mut n = 0\n    n = n + 1\n}").is_unwritten_mut()
+        }
+    }
+    given "a component imported and instanced only through its own word-headed block (`within deadline { }`)" {
+        then "unused_imports() does not name it — the word IS the use, `Expr.Component`'s payload though it is" {
+            main_use("use @x.c.{within}\nwithin 1 { 2 }", "within").unused_imports().is_empty()
+        }
+    }
+    given "the SAME component, imported but never instanced at all" {
+        then "unused_imports() still names it — the fix does not widen what counts as a use" {
+            let dead = main_use("use @x.c.{within}\nlet ignored = 1\nignored", "within").unused_imports()
+            dead.length == 1 && dead.first() == "within"
         }
     }
 }
