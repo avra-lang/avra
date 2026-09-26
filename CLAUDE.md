@@ -64,23 +64,18 @@ the body exists, answer:
    fear of traps is how ugly-but-safe drafts happen, and every
    probe result gets recorded so the fear shrinks.
 
-DOGFOODING.md is the full rulebook; `make idioms` FAILS the gate on
-any NEW violation — the baseline lists sites, never counts, and no
-tool path can add to it. An idiom the LANGUAGE can now state is a
-`rule` declaration (the formatter), found by `avra check` itself;
-tools/idioms.py reads that finding rather than racing it with a
-second regex, and ratchets it on the SAME baseline. Two honest exits
-for a REGEX finding: write the idiomatic form, or annotate `//
-LICENSED <module>.<rule>: reason` AT the site — that debt is zero,
-keep it there. A NATIVE finding has no license window (a rule reads
-no comment of its own); accepted debt for one lives in the baseline
-only, reviewed at adoption and every time after. A new idiom lands
-in DOGFOODING's registry AT DISCOVERY **with its matcher** (or an
-UNRATCHETED reason — the tool refuses a registry entry that has
-neither), NAMED BY ITS RULE — `<module>.<rule>`, never
-a number: a counter let two lanes land one number the
-same day and silently drop a rule. The tool refuses a
-repeated NAME, reading its own source.
+DOGFOODING.md is the full rulebook; `avra check --baseline
+tools/idioms.baseline` FAILS on any NEW site — the baseline lists
+sites, never counts, and no tool path can add to it (`make idioms`
+runs every package, `make idioms-accept` prunes what a fix made
+gone). Every idiom the language can state is a `rule` declaration,
+found by `avra check` itself, and the gate counts a RULE's finding
+only — `type.alias_copy` wears the same `warning[kind]` shape and is
+the compiler's own law, never a rule, so the gate reads the rule
+table (`avra rules --json`), never a kind-string shape. Accepted
+debt lives in the baseline alone, reviewed at adoption and every
+time after. A new idiom lands in DOGFOODING's registry AT DISCOVERY,
+named by its rule — `<module>.<rule>`, never a number.
 
 ## Style
 
@@ -148,9 +143,9 @@ change that hit it. Request your own features: the backlog feeds the
 spec. The same discipline runs one level down: a PATTERN discovered
 while writing (a beautiful form, a smell, a licensed exception) is
 an IDIOM — it lands in DOGFOODING.md's registry at discovery, and
-the greppable ones grow ratchet rules in tools/idioms.py (the
-`tools/idioms.sh` shim runs it). The registry is the idiom
-engine's spec, written by dogfooding.
+the greppable ones become `rule` declarations `avra check` finds
+directly (compiler/idioms.av, or a feature's own idioms.av). The
+registry is the idiom engine's spec, written by dogfooding.
 
 ## Rules
 
