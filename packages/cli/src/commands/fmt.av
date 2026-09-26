@@ -26,8 +26,8 @@
 //! moved, or one this compiler has never seen, pays for either.
 use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{exists, write_text, is_dir, list_dir}
-use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total}
-use @std.avrac.compiler.store.{Store, Stored, store_at}
+use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total, db}
+use @std.avrac.compiler.store.{Store, store_at}
 use @std.avrac.core.{FileId, digest_of, joined, distinct}
 use @std.path.{dir_of, joined_path}
 use @std.time.{now_ns}
@@ -64,10 +64,6 @@ impl Runnable for FmtCmd {
 }
 
 // ── --check / --write: one process over a tree ──
-
-/// A canonical file's marker: no derivation reads it, so no edges —
-/// the row exists or it does not.
-fn no_edges() -> List<string> { [] }
 
 /// This compiler's answer, remembered against the file's OWN bytes —
 /// never the path, which a rename would falsely invalidate, and
@@ -219,7 +215,8 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
     let source_ns = now_ns() - t0
     let t1 = now_ns()
     let key = canon_key(src.text)
-    let hit = store.get(Stored.Unit, key) != null
+    mut rows = db()
+    let hit = rows.canon(store, key) != null
     let base = [
         Phase { name: "source", ns: source_ns },
         Phase { name: "digest", ns: now_ns() - t1 },
@@ -233,7 +230,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
             let compare = Phase { name: "compare", ns: now_ns() - t2 }
             if matches {
                 let t3 = now_ns()
-                let _ = store.keep(Stored.Unit, key, "1", no_edges())
+                rows.insert_canon(store, key, "")
                 Checked1 {
                     outcome: Outcome.Canonical,
                     phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]),
@@ -259,7 +256,8 @@ fn written_one(
     match ws.write_checked_source(f) {
         .Ok(text) -> {
             let after = "${text}\n"
-            let _ = store.keep(Stored.Unit, canon_key(after), "1", no_edges())
+            mut rows = db()
+            rows.insert_canon(store, canon_key(after), "")
             if after == before { return ended(Outcome.Canonical, base) }
             match write_text(path, after) {
                 .Ok(_) -> ended(Outcome.Differs, base),
