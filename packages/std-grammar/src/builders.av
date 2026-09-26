@@ -7,6 +7,11 @@
 //! item matching `tok` (a missing target is a parse-time error), and
 //! `@recover` lands on the branch. The token named in the text never
 //! reaches the value model.
+use util.{want, all_codes, is_upper_name_cont}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, BuildArg, Fixed, Expect, Recover, BranchStart}
+use executor.{Captured, RunOutcome}
+use lexeme.{Lexeme}
+use seed.{item, cap, seq, seq_to, alt, rule_def, rule_ref, lit, named, group}
 use @std.errors.{Loc}
 
 /// What grammar-DSL builders construct — one variant per node kind.
@@ -266,8 +271,7 @@ fn opt_tok_text<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> string? {
 /// carry no spans, so the branch loc goes unused here. `lex` is `T`'s
 /// whole contract — this dispatch reads a captured token's text only
 /// through it.
-export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, GrammarNode>>,
-                        _loc: Loc?) -> Result<Captured<T, GrammarNode>, string> {
+export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, GrammarNode>>, _loc: Loc?) -> Result<Captured<T, GrammarNode>, string> {
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?
@@ -310,8 +314,11 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
         },
         "build_prim_name" -> {
             let text = tok_text(lex, args[0], "a name")?
-            if is_terminal_name(text) { ok<T>(GrammarNode.NPrim(named(text))) }
-            else { ok<T>(GrammarNode.NPrim(rule_ref(text))) }
+            if is_terminal_name(text) {
+                ok<T>(GrammarNode.NPrim(named(text)))
+            } else {
+                ok<T>(GrammarNode.NPrim(rule_ref(text)))
+            }
         },
         "build_lit" -> {
             let text = tok_text(lex, args[0], "a quoted terminal")?

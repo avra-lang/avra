@@ -9,6 +9,10 @@
 //! (NAME, NUMBER, STRING, BREAK, END, EOF, ...); a future SQL grammar
 //! passes its own.
 
+use util.{flatten, some_list}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim}
+use diagnostics.{Diagnostic, defect}
+use first.{first_defects}
 impl Seq {
     /// This branch's capture labels, including those inside nested
     /// groups — capture accumulation makes them all visible to the
@@ -20,12 +24,16 @@ impl Seq {
 
 fn prim_defects(rule_name: string, p: Prim, names: List<string>, known_terminals: List<string>, labeled: bool) -> List<Diagnostic> {
     match p {
-        .Ref(target) ->
-            if names.contains(target) { [] }
-            else { [defect(rule_name, "references undefined rule `${target}`")] },
-        .Named(term) ->
-            if known_terminals.contains(term) { [] }
-            else { [defect(rule_name, "unknown terminal `${term}`")] },
+        .Ref(target) -> if names.contains(target) {
+            []
+        } else {
+            [defect(rule_name, "references undefined rule `${target}`")]
+        },
+        .Named(term) -> if known_terminals.contains(term) {
+            []
+        } else {
+            [defect(rule_name, "unknown terminal `${term}`")]
+        },
         .Lit(_) -> [],
         // A labeled group is consumed for its value; an unlabeled one
         // is structural (its value is Absent, its captures escape).
@@ -61,8 +69,7 @@ fn alt_defects(rule_name: string, a: Alt, names: List<string>, known_terminals: 
 
 /// One branch's defects: its items', then its build's.
 fn seq_defects(rule_name: string, s: Seq, names: List<string>, known_terminals: List<string>, value_needed: bool) -> List<Diagnostic> {
-    flatten([prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items])
-        .concat(build_defects(rule_name, s, value_needed))
+    flatten([prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items]).concat(build_defects(rule_name, s, value_needed))
 }
 
 impl Grammar {
@@ -86,7 +93,6 @@ impl Grammar {
                 seen.push(r.name)
             }
         }
-        out.concat(flatten([alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules]))
-            .concat(first_defects(self))
+        out.concat(flatten([alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules])).concat(first_defects(self))
     }
 }

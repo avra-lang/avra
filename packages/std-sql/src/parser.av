@@ -1,0 +1,123 @@
+//! SQL's PARSER grammar, assembled from its own builder functions —
+//! each rule's text lives on `@grammar_rule`, right beside the
+//! function that builds it, nothing spelled twice. See
+//! `@std/grammar`'s `collected.av` for the mechanism this reuses.
+
+use @std.grammar.{grammar_rule, synthesized, Grammar, Rule, Captured, parse_grammar_text, run_grammar, ready, RunOutcome, LexToken, Lexeme, lex}
+use lexicon.{SQL}
+use @std.meta.{Annotation}
+use @std.errors.{Loc}
+
+export enum SqlExpr {
+    Ident(name: string)
+    Number(text: string)
+    Str(text: string)
+    Hole(name: string)
+    BinOp(op: string, lhs: SqlExpr, rhs: SqlExpr)
+}
+
+export type SqlSelect = { columns: List<string>, from_table: string, where: SqlExpr? }
+
+/// The one node type every rule in this file builds into — the
+/// engine is monomorphic over it, so one wrapper spans every rule's
+/// own answer shape, the same way the compiler's own DSL parser has
+/// one `GrammarNode` for its whole grammar.
+export enum SqlNode { Cols(names: List<string>), Ex(e: SqlExpr), Sel(s: SqlSelect) }
+
+fn text_of(c: Captured<LexToken, SqlNode>) -> string {
+    match c {
+        .Terminal(t) -> t.text,
+        .Node(_) or .Many(_) or .Absent -> "",
+    }
+}
+
+fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
+    match c {
+        .Node(n) -> match n { .Ex(e) -> e, .Cols(_) or .Sel(_) -> null },
+        .Terminal(_) or .Many(_) or .Absent -> null,
+    }
+}
+
+fn cols_of(c: Captured<LexToken, SqlNode>) -> List<string> {
+    match c {
+        .Node(n) -> match n { .Cols(names) -> names, .Ex(_) or .Sel(_) -> [] },
+        .Many(items) -> [text_of(i) for i in items],
+        .Terminal(_) or .Absent -> [],
+    }
+}
+
+fn node(n: SqlNode) -> Captured<LexToken, SqlNode> { Captured.Node(n) }
+
+@grammar_rule("c:IDENT (\",\" c:IDENT)*")
+fn column_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(node(SqlNode.Cols(cols_of(caps[0]))))
+}
+
+@grammar_rule("\"WHERE\" e:expr")
+fn where_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(caps[0])
+}
+
+@grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\"|\"!=\") r:atom)?")
+fn expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let l? = ex_of(caps[0]) else { return .Err("expr: left side did not build") }
+    let op = text_of(caps[1])
+    if op.is_empty() { return .Ok(node(SqlNode.Ex(l))) }
+    let r? = ex_of(caps[2]) else { return .Err("expr: right side did not build") }
+    .Ok(node(SqlNode.Ex(SqlExpr.BinOp(op, l, r))))
+}
+
+@grammar_rule("IDENT")
+fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(node(SqlNode.Ex(SqlExpr.Ident(text_of(caps[0])))))
+}
+
+@grammar_rule("\"SELECT\" cols:column_list \"FROM\" t:IDENT w:where_clause?")
+fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let where_ = ex_of(caps[2])
+    .Ok(node(SqlNode.Sel(SqlSelect { columns: cols_of(caps[0]), from_table: text_of(caps[1]), where: where_ })))
+}
+
+type RuleSource = {
+    name: string,
+    mark: Annotation,
+    handler: fn(List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string>,
+}
+
+collect sql_sources: List<RuleSource> = @grammar_rule in self as RuleSource { name: it.name, mark: it.mark, handler: it } by it.name
+
+fn built_rule(s: RuleSource) -> Rule {
+    let parsed = parse_grammar_text(s.name, s.mark.args[0]).built!
+    let r = parsed.rules[0]
+    r with { body: synthesized(r.body, s.name) }
+}
+
+/// The assembled parser grammar — one rule per `@grammar_rule`d
+/// function in this file, no hand-written `Grammar` literal.
+export fn sql_parser_grammar() -> Grammar {
+    Grammar { name: "sql_parser", start: "select_stmt", rules: [built_rule(s) for s in sql_sources] }
+}
+
+fn dispatch(name: string, caps: List<Captured<LexToken, SqlNode>>, _at: Loc?) -> Result<Captured<LexToken, SqlNode>, string> {
+    let found? = sql_sources.find(it.name == name) else { return .Err("no rule named ${name}") }
+    found.handler(caps)
+}
+
+fn sql_lexeme() -> Lexeme<LexToken> {
+    Lexeme {
+        lit_matches: (t: LexToken, text: string) -> t.text == text,
+        is_eof: (t: LexToken) -> t.kind == "EOF",
+        ends_statement: (t: LexToken) -> false,
+        wears: (t: LexToken, term: string) -> t.kind == term,
+        text: (t: LexToken) -> t.text,
+        loc: (t: LexToken) -> t.loc,
+        stated: (text: string, loc: Loc?) -> LexToken { kind: "STATED", text: text, loc: loc ?? Loc { file: null, lo: 0, hi: 0 } },
+    }
+}
+
+const SQL_KNOWN_TERMINALS: List<string> = ["IDENT", "NUMBER", "STRING", "QUOTED_IDENT", "HOLE"]
+
+export fn parse_sql(source: string) -> RunOutcome<LexToken, SqlNode> {
+    let tokens = lex(SQL, source, ["WS", "LINE_COMMENT", "BLOCK_COMMENT"]).tokens
+    run_grammar<LexToken, SqlNode>(ready(sql_parser_grammar(), SQL_KNOWN_TERMINALS), tokens, sql_lexeme(), dispatch)
+}

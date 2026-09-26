@@ -1,0 +1,100 @@
+//! A generic, string-based convenience over `parse_grammar<T>`: text
+//! in, a Grammar out, for a caller with no lexer of its own. Built
+//! from the SAME `lex()`/`LexToken` mechanism any consumer already
+//! has — the DSL notation is tokenized as its OWN small lexicon (NAME,
+//! STRING, the notation's punctuation), never a second lexing
+//! mechanism. Avra's own compiler doesn't use this — its `bridge.av`
+//! stays on its real `Token`/`lex_grammar` for its own reasons — this
+//! is for everyone else, the common case of "I have DSL text in a
+//! string, I want a Grammar back."
+
+use @std.errors.{Loc}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
+use lexeme.{Lexeme}
+use lexing.{lex, LexToken}
+use parse.{parse_grammar, GrammarParse}
+use seed.{item, seq, alt, rule_def, rule_ref, lit, group}
+
+fn one_of(chars: List<string>) -> Prim { Prim.Group(alt([seq([item(lit(c))]) for c in chars])) }
+
+/// The DSL notation's own lexicon: identifiers, quoted literals
+/// (Avra's own `\"`-escaping, since that's the notation's own string
+/// convention), and its punctuation. Built from `seed.av`'s data
+/// constructors — the same vocabulary `grammar_of_grammars` itself
+/// is authored with — never the `grammar { }` sugar: that literal is
+/// desugared at COMPILE TIME by the standing compiler's own baked-in
+/// `grammar_lit` feature, a different (and differently-aged) copy of
+/// this engine than the one this package ships; data construction
+/// runs the CURRENT engine, the one this file's tests actually cover.
+const ALPHA_CHARS: List<string> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "_"]
+const DIGIT_CHARS: List<string> = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+// Rule order is tie-break order (see `lexing.av`'s `longest_rule_match`):
+// among equal-length matches the first-listed rule wins, so a composite
+// token rule is listed BEFORE the single-character fragment it is built
+// from — otherwise a one-character NAME ties `alpha`'s own one-character
+// match and reads as an `alpha` token instead.
+const DSL_NOTATION: Grammar = Grammar {
+    name: "dsl_notation",
+    start: "NAME",
+    rules: [
+        rule_def("NAME", [
+            seq([
+                item(rule_ref("alpha")),
+                item(group([seq([item(rule_ref("alpha"))]), seq([item(rule_ref("digit"))])])) with { rep: Rep.Star },
+            ]),
+        ]),
+        rule_def("STRING", [
+            seq([
+                item(lit("\"")),
+                item(group([
+                    seq([item(lit("\\")), item(lit("\""))]),
+                    seq([item(Prim.NotChar(lit("\"")))]),
+                ])) with { rep: Rep.Star },
+                item(lit("\"")),
+            ]),
+        ]),
+        rule_def("WS", [seq([item(one_of([" ", "\t", "\n", "\r"])) with { rep: Rep.Plus }])]),
+        rule_def("OP", [seq([item(one_of(["=", "|", "(", ")", "*", "+", "?", ":", ",", "@"]))])]),
+        rule_def("alpha", [seq([item(one_of(ALPHA_CHARS))])]),
+        rule_def("digit", [seq([item(one_of(DIGIT_CHARS))])]),
+    ],
+}
+
+/// A STRING token's raw text still carries its surrounding quotes and
+/// the notation's one escape (`\"`); every OTHER kind's text is
+/// already the bare value the grammar needs. `lex()` is generic over
+/// any lexicon and does no unescaping of its own — a STRING's quoting
+/// convention belongs to the ONE consumer that reads it as a literal.
+fn dsl_token_text(t: LexToken) -> string {
+    if t.kind != "STRING" { return t.text }
+    t.text.substring(1, t.text.length - 1).replace("\\\"", "\"")
+}
+
+fn dsl_lexeme() -> Lexeme<LexToken> {
+    Lexeme {
+        lit_matches: (t: LexToken, text: string) -> t.text == text,
+        is_eof: (t: LexToken) -> t.kind == "EOF",
+        ends_statement: (t: LexToken) -> t.kind == "BREAK",
+        wears: (t: LexToken, term: string) -> t.kind == term,
+        text: dsl_token_text,
+        loc: (t: LexToken) -> t.loc,
+        stated: (text: string, loc: Loc?) -> LexToken { kind: "STATED", text: text, loc: loc ?? Loc { file: null, lo: 0, hi: 0 } },
+    }
+}
+
+/// One rule of DSL text, tokenized and parsed — `text` is the RHS
+/// only (`alpha (alpha | digit)*`), never the `NAME = ` prefix; the
+/// caller supplies the name once, at the call site, rather than
+/// spelling it twice inside the text too.
+export fn parse_grammar_text(name: string, text: string) -> GrammarParse {
+    // `lex` always appends its own EOF marker at the end; a BREAK
+    // belongs BEFORE that, not after, so it's inserted by splitting
+    // the token list rather than just concatenating onto it.
+    let lexed = lex(DSL_NOTATION, "${name} = ${text}", ["WS"])
+    let n = lexed.tokens.length
+    let body = lexed.tokens.slice(0, n - 1)
+    let eof = lexed.tokens[n - 1]
+    let tokens = body.concat([LexToken { kind: "BREAK", text: "", loc: eof.loc }, eof])
+    parse_grammar<LexToken>(tokens, dsl_lexeme())
+}
