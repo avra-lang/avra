@@ -685,27 +685,14 @@ impl Workspace {
     /// are no bar: a formatter is most wanted on code that does not
     /// check yet.
     fn formatted_source(f: FileId) -> Result<string, string> {
-        self.formatted_source_at(f, null)
-    }
-
-    /// `formatted_source`, deciding a group's layout by `width` rather
-    /// than by the form it was written in (`avra fmt --width`) — a
-    /// construct with no written form of its own (call arguments, a
-    /// parameter list, a chainable operator run) has never had a
-    /// layout to give it before this.
-    fn formatted_source_width(f: FileId, width: int) -> Result<string, string> {
-        self.formatted_source_at(f, width)
-    }
-
-    fn formatted_source_at(f: FileId, width: int?) -> Result<string, string> {
         let parsed = self.parsed(f)
-        if !has_errors(parsed.voices.list) { return .Ok(self.clocked_print(parsed, f, width)) }
+        if !has_errors(parsed.voices.list) { return .Ok(self.clocked_print(parsed, f)) }
         .Err(joined([render_among(d, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
     }
 
-    fn clocked_print(parsed: Parsed, f: FileId, width: int?) -> string {
+    fn clocked_print(parsed: Parsed, f: FileId) -> string {
         let t0 = self.clock()
-        let text = render_source_of(parsed.store, parsed.stmts, self.source(f).text, width)
+        let text = render_source_of(parsed.store, parsed.stmts, self.source(f).text)
         self.timed("print", self.clock() - t0)
         text
     }
@@ -722,11 +709,6 @@ impl Workspace {
     /// itself, it only answers the safe text.
     fn write_checked_source(f: FileId) -> Result<string, string> {
         self.write_checked_from(f, self.formatted_source(f))
-    }
-
-    /// `write_checked_source`, over a width-decided text.
-    fn write_checked_source_width(f: FileId, width: int) -> Result<string, string> {
-        self.write_checked_from(f, self.formatted_source_width(f, width))
     }
 
     fn write_checked_from(f: FileId, formatted: Result<string, string>) -> Result<string, string> {

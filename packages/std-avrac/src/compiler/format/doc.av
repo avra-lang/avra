@@ -54,6 +54,19 @@ export fn chain_doc(sym: string, operands: List<Doc>) -> Doc {
     group(nest(4, doc_joined(operands, seq([text(" ${sym}"), line()]))))
 }
 
+/// A postfix chain's links, LEADING-separator style — the mirror of
+/// `chain_doc`'s trailing form: flat concatenates `root` and every
+/// link with no separator at all, since each link already spells its
+/// own connector (`.b()`, a property's `.c`); broken puts each link
+/// at the START of its own line, one per link, at `depth + 1`. A
+/// LEADING `.` is legal here only because the lexer continues a line
+/// that BEGINS with `.name` (the grammar's own `continued_by`) —
+/// `&&`/`||`/`+` have no such exception, which is why their own chain
+/// trails instead.
+export fn postfix_chain_doc(root: Doc, links: List<Doc>) -> Doc {
+    group(seq([root, nest(4, seq([seq([softline(), l]) for l in links]))]))
+}
+
 /// A bracketed comma list: flat joins with `", "` and no padding past
 /// `open`/`close` when `spaced` is false (`(a, b)`), one space in when
 /// it is (`{ a, b }`); broken puts one item per line, every one — the
@@ -126,7 +139,7 @@ fn render_seq(parts: List<Doc>, width: int, indent: int, col: int, mode: Mode) -
 /// already-rendered string that a NESTED group broke on its own: the
 /// leaf is opaque to this renderer, so its last line is what the
 /// next sibling measures from.
-fn col_after(s: string, col: int) -> int {
+export fn col_after(s: string, col: int) -> int {
     if !s.contains("\n") { return col + s.length }
     s.split("\n").last()!.length
 }
