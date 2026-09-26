@@ -1,0 +1,72 @@
+// A FLAT RECORD IS ITS ONE FIELD, ALL THE WAY DOWN — a value enum's
+// payload seat sees straight through it (`machine_type`), so an
+// id-shaped record joins a value enum exactly as `int` does, riding a
+// register, UNLESS some `mut` seat anywhere in the program still
+// writes through it — then it rides a counted pointer instead. Every
+// seal that will ever land must land before anything reads the
+// record's flatness, or the read is refused rather than silently
+// wrong (L1, avra-8sb5.34.30.1): `seal_mut_seats` is what makes that
+// true regardless of which the source declares first (R11c,
+// avra-8sb5.34.21).
+
+type Id = { index: int }
+enum Node { A(Id), B(string) }
+
+fn bump(mut i: Id) {
+    i.index = i.index + 1
+}
+
+fn make(i: int) -> Node { Node.A(Id { index: i }) }
+fn named(s: string) -> Node { Node.B(s) }
+
+fn shown(n: Node) -> string {
+    match n {
+        .A(id) -> "A${id.index}",
+        .B(s) -> "B${s}",
+    }
+}
+
+// `Tag` carries no `mut` seat anywhere: it stays flat, riding a plain
+// int register rather than a box — declared AFTER the enum that reads
+// it, so the answer cannot depend on declaration order either.
+enum Word { W(Tag), Empty }
+type Tag = { n: int }
+
+fn worded(i: int) -> Word { Word.W(Tag { n: i }) }
+
+fn shown_word(w: Word) -> string {
+    match w {
+        .W(t) -> "W${t.n}",
+        .Empty -> "empty",
+    }
+}
+
+/// Absence is a tag no variant has — the empty case first.
+fn maybe(i: int) -> Node? {
+    if i < 0 { return null }
+    make(i)
+}
+
+fn from_result(i: int) -> Result<Node, string> {
+    if i < 0 { return .Err("bad") }
+    .Ok(make(i))
+}
+
+fn propagated(i: int) -> Result<string, string> {
+    let n = from_result(i)?
+    .Ok(shown(n))
+}
+
+const fixed: Node = Node.A(Id { index: 9 })
+
+/// Every seat a box used to be: a list, a map, a Cell, a payload.
+fn seats() -> string {
+    mut kept: List<Node> = []
+    for i in 0..3 { kept.push(make(i)) }
+    let m: Map<string, Node> = {"x": make(7)}
+    let c = Cell.new(make(10))
+    c.set(make(11))
+    "${shown(kept[0])} ${shown(kept[1])} ${shown(kept[2])} ${shown(m.get("x") ?? named("none"))} ${shown(c.get())}"
+}
+
+"${shown(maybe(-1) ?? named("absent"))} ${shown(maybe(4) ?? named("absent"))} | ${seats()} | ${shown_word(worded(20))} ${shown_word(Word.Empty)} | ${shown(fixed)} | ${propagated(5) catch e -> e}"
