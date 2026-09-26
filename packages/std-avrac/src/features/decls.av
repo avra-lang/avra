@@ -18,7 +18,10 @@ use features.{TypeRow, TypeArgs, Unsettled, Lifted, Settled, MetaHeap, MetaVal, 
 use @std.meta.{Diagnostic, derive}
 
 /// A file's path facts — known at first mention, before its parse.
-export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
+/// `test` is the caller's structural fact (the package's own test
+/// root, `Workspace.is_test_path`), never recomputed here by
+/// matching the path.
+export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bool }
 
 /// One declaration: where it lives, what it is, the expression its
 /// body IS (a fn's, a default's; absent for the rest), and the
@@ -336,7 +339,7 @@ export fn new_decls() -> Decls {
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
-    Decls {
+    let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
         paths: Cell.new(no_paths),
@@ -384,6 +387,10 @@ export fn new_decls() -> Decls {
         ensure_writes: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
     }
+    // the registry cannot reach a declaration on its own — a struct or
+    // enum's layout answers the blank default until this runs
+    d.types.arm_declare((t: TypeId) -> d.declared_first(t))
+    d
 }
 
 /// A row's type parameters — `T1`, `T2`, … by arity; the ordinal
@@ -545,12 +552,12 @@ impl Decls {
     fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last()! }
 
     /// Every declaration of `k` admitted so far — a fixture proving
-    /// one (`/tests/`) is not the program's own, `is_test_path`'s law
-    /// here too. Admission is the caller's: a closure-scoped
-    /// `collect` forces its own package's files in first
-    /// (`Workspace.collect_admit`, `gathered`'s hook).
+    /// one (`FileInfo.test`) is not the program's own. Admission is
+    /// the caller's: a closure-scoped `collect` forces its own
+    /// package's files in first (`Workspace.collect_admit`,
+    /// `gathered`'s hook).
     fn decls_of_kind(k: DeclKind) -> List<Decl> {
-        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).path.contains("/tests/")]
+        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).test]
     }
 
     /// THE COLLECT INDEX: every declaration `collect` can gather, by
@@ -628,16 +635,18 @@ impl Decls {
     }
 
     /// Every indexed declaration of `word`, admitted so far —
-    /// `decls_of_kind`'s law here too: a fixture (`/tests/`) is not
-    /// the program's own.
+    /// `decls_of_kind`'s law here too: a fixture (`FileInfo.test`) is
+    /// not the program's own. Unscoped, so it answers alike for
+    /// every caller; `gathered`'s owner-scoped door is `collectible`,
+    /// not this.
     fn decls_of_word(word: string) -> List<Decl> {
-        [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).path.contains("/tests/")]
+        [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).test]
     }
 
     /// Every indexed declaration wearing `@name`, `decls_of_word`'s
     /// mark twin.
     fn decls_of_mark(name: string) -> List<Decl> {
-        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if !self.file(d.file).path.contains("/tests/")]
+        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if !self.file(d.file).test]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -789,15 +798,29 @@ impl Decls {
     /// SCOPE FILTERS what is already reached, it never widens it —
     /// `closure` answers everything the program links, `package`
     /// narrows to the owner's own package, `self` to the owner's own
-    /// file.
+    /// file. Filtered through `collectible`, never `decls_of_word`:
+    /// that door excludes EVERY test-tree declaration, unconditionally,
+    /// which would hide a program test's own `collect` from its own
+    /// sibling declarations — the one caller that must see them.
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
-        [d for d in self.decls_of_word(word) if self.in_scope(d, scope, owner)]
+        [d for d in [self.decl(id) for id in self.indexed(word)] if self.collectible(d, scope, owner)]
     }
 
     /// `gathered`'s mark twin: every declaration wearing `@name`,
     /// filtered to `scope` the same way.
     fn gathered_by_mark(name: string, scope: CollectScope, owner: FileId) -> List<Decl> {
-        [d for d in self.decls_of_mark(name) if self.in_scope(d, scope, owner)]
+        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if self.collectible(d, scope, owner)]
+    }
+
+    /// Whether `owner`'s collect may gather `d`: `in_scope`'s law,
+    /// and — for a declaration a package's own test tree holds — ONLY
+    /// when `owner` stands in that SAME FILE. A fixture written to
+    /// test the collect mechanism itself must never leak into another
+    /// file's collect (`rules`, closure-scoped, gathers no component-
+    /// test fixture); a program test's own `collect` gathers its own
+    /// sibling declarations all the same, since they share its file.
+    fn collectible(d: Decl, scope: CollectScope, owner: FileId) -> bool {
+        self.in_scope(d, scope, owner) && (!self.file(d.file).test || same_file(d.file, owner))
     }
 
     /// A REGISTRY match over `CollectScope`: `self` is the owner's own
@@ -919,6 +942,23 @@ impl Decls {
         self.payload_word(d, t)
     }
 
+    /// A STRUCT or ENUM's layout answers the blank default — not flat,
+    /// not valued, not settled — until its OWN declaration has run;
+    /// asking a layout fact of one that has not is asking a different
+    /// question from every later ask (CLAUDE.md, "a slot's seed is
+    /// computed the same way as its updates"). Force it first: a
+    /// registry reader outside the type's own declare pass never
+    /// knows whether demand has reached it yet, and the crossing
+    /// machinery — `materialized`'s whole family, deep in const and
+    /// `@derive` settlement — reads layout facts on exactly the types
+    /// demand order has not forced.
+    fn declared_first(t: TypeId) {
+        match self.types.shape_of(t) {
+            .Struct(r, _) or .Enum(r, _) -> { let _ = self.sig(r) },
+            rest -> nothing_asked(),
+        }
+    }
+
     /// A payload's word, asked of its own declaration first so the
     /// answer never depends on which was declared first: 0 an int or
     /// a word enum, 1 a pointer that is counted, absent for anything
@@ -930,10 +970,7 @@ impl Decls {
     /// cause not yet found. Widening this arm to match needs that
     /// cause found first.
     fn payload_word(d: DeclId, t: TypeId) -> int? {
-        match self.types.shape_of(t) {
-            .Struct(r, _) -> { let _ = self.sig(r) },
-            rest -> nothing_asked(),
-        }
+        self.declared_first(t)
         // a FLAT record is a word a `mut` seat may still box — out
         if self.types.shape_of(t) is .Struct && self.types.is_flat(t) { return null }
         let m = self.types.machine_type(t)

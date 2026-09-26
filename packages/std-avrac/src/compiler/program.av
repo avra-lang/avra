@@ -122,13 +122,16 @@ export fn new_dispatch() -> Dispatch {
 }
 
 /// Parse a source into a FRESH store — the whole-file entry — under
-/// the block words the file imports (none for a file that imports
-/// none).
+/// the block words the file imports (`BlockWords {}` for a file that
+/// imports none). No default: an omitted `words` parses a NARROWER
+/// language than the file was written in, silently — the caller
+/// states which words it parses under, even when that answer is
+/// none.
 ///
 /// THE UNTOLD RUN FIRST: a file that parses clean is parsed once, with no miss
 /// keeping its story. Anything spoken is spoken again by the telling run, over a
 /// store of its own — the builders wrote into the first.
-export fn parse_program(lang: Language, src: SourceFile, words: BlockWords = BlockWords {}) -> Parsed {
+export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> Parsed {
     let quiet = parsed_fresh(lang, src, words, false)
     if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
 }
@@ -581,6 +584,8 @@ impl Program {
     fn files_checked() -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_as(null, true, true)
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         let spoken = lo.diagnostics.concat(self.ws.decls.outside_entry(self.files, self.entry?.at))
         if !spoken.is_empty() { return .Err(self.rendered(spoken)) }
         .Ok(lo)
@@ -589,8 +594,20 @@ impl Program {
     fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_from(entry, every)
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
         .Ok(lo)
+    }
+
+    /// A layout fact moved under lowering, the way typing's own
+    /// `Workspace.program` already checked it did not — MONO can
+    /// still mint a fresh combination (R11c, avra-8sb5.34.21). `?`
+    /// reads odd here on purpose: absence is the clean case.
+    fn layout_report() -> string? {
+        let stale = self.ws.decls.types.drain_stale()
+        if stale.is_empty() { return null }
+        joined(stale, "\n\n")
     }
 
     fn run() -> Result<string, string> {
@@ -620,6 +637,8 @@ impl Program {
     fn check_bodies(every: bool) -> Result<string, string> {
         if !self.clean() { return .Err(self.report()) }
         let lowered = self.lowered_from(self.entry?.at, every).diagnostics
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         if has_errors(lowered) { return .Err(self.rendered(lowered)) }
         .Ok(self.warnings())
     }

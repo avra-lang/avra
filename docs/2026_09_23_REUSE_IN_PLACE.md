@@ -2067,3 +2067,135 @@ to answer different questions, sharing one counter that only one of
 them owns — D4 is that seam showing up as a false positive, and the
 fix belongs to whichever of the two is willing to stop reading the
 other's number.
+## §32 As built — L1, a layout fact is write-once-after-read (SOUND BY CONSTRUCTION, avra-8sb5.34.30.1)
+
+**The bug class.** R11c (avra-8sb5.34.21) computed a value enum's
+counted mask from a payload record's FLATNESS, and a LATER `mut`
+seat sealed that record — the mask went stale, silently, and a list
+of those enums use-after-freed natively. CLAUDE.md already names the
+law this breaks twice over ("WHETHER A VALUE RIDES A POINTER IS ITS
+DECLARATION'S ANSWER", "A NAME … ITS MARK IS MADE AT ITS
+DECLARATION"): a fact answered by declaration order is wrong the
+moment something reads it before that order settles. The fix makes
+the read side of that law a COMPILER DEFECT instead of a hope.
+
+**D1. RepRow gains four read-tracking bits, one per fact bucket.**
+`fields`/`boxed_flat` share ONE bucket (`Flat` — sealing moves both
+in the same step), and `valued`/`counted` share another (`Valued`).
+`Settled` and `Named` (`stands_for`) are their own. `LayoutFact` is
+the registry (four variants, `note`/`was_read`/`fact_word` spell
+every arm — no `_ ->`). Every PUBLIC read (`flat_fields`, `is_flat`,
+`is_wide`, `boxed_flat`, `is_valued`, `counted_mask`, `is_settled`,
+`stands_for`) routes through `note(id, fact)`, which marks the
+bucket read ONCE — the guard every reader already pays (`if
+!was_read`) is the SAME guard that makes the mark cheap: after the
+first ask, every later one is a bit test. Reads a write method takes
+of its OWN gate (`sealed`, in `mark_flat`/`mark_valued`; `stands_for`
+as `unflatten`'s early-out) stay on the raw field — the registry's
+own bookkeeping is not a consumer relying on the answer.
+
+**D2. Every write is checked-and-refused, never checked-and-warned.**
+`mark_flat`, `mark_valued`, `mark_settled`, `mark_named`, `unflatten`
+each: read the current row, decide whether the write actually
+CHANGES anything (a same-value write is always let through, matching
+the ticket's "a write that doesn't change the answer is fine"), and
+if the bucket was already read AND the value would move, call
+`flag_stale(id, fact, cause)` and RETURN — the corrupting write never
+lands, so the fact a caller already holds cannot go stale under it.
+`flag_stale` appends a `LayoutStale { id, fact, cause }` to a new
+`stale: Cell<List<LayoutStale>>` on `TypeRegistry` — plain data, no
+diagnostic machinery, because `unflatten` fires from `intern()`,
+which is CORE and cannot see a `Diagnostic` (layering: core -> query
+-> grammar -> features -> compiler). `drain_stale()` turns the log
+into worded strings (`\`Id\`'s flatness was read before a \`mut\`
+seat sealed it`) — the ONE place a `TypeId` becomes prose in a file
+that otherwise never prints one.
+
+**D3. THE LAYERING WALL WAS THE REAL FIND.** The obvious write sites
+(`decls.av`'s `flatten`/`laid_out`, `declare.av`'s `keep_boxed`,
+`impls.av`'s receiver seal, `interface.av`'s held-record loading) are
+all FEATURES or COMPILER layer, with `self.defect`-style diagnostics
+in reach — but the READ that actually raced them, on main's own
+source, was `side_word`'s `.Opt(inner)` arm asking
+`opt_rides_pointer(inner)`, reached from `judge_result` INSIDE
+`intern()` while comptime-settling `core.Fingerprint.derive`'s own
+generated code for a declaration whose fields included `core.Reg` —
+a CORE-layer read, with NO path to a `Decls`/`self.sig(...)` call at
+all. `payload_word`'s own two-line guard (`match shape_of(t) {
+.Struct(r,_) -> {let _ = self.sig(r)}, ...}`) is exactly the right
+fix at every site THAT CAN SEE `Decls` — I generalized it into
+`Decls.declared_first(t)` and used it at three (`payload_word` itself,
+`literal_record`, `Emitter.mint_ty`) — but `judge_result`/`side_word`
+cannot call it, and neither can any future core-layer reader. THE
+FIX IS A HOOK: `TypeRegistry` gains `declare_hook: Cell<fn(TypeId) ->
+void>`, defaulted to a no-op (`nothing_declared`) so a bare registry
+(a unit test's `new_decls()`) behaves exactly as before this door
+existed; `arm_declare` lets a HIGHER layer wire itself in without
+core naming a type it cannot see. `new_decls()` arms it once,
+closing over its OWN identity (`d.types.arm_declare((t) ->
+d.declared_first(t))` — the same "NOT `mut`, hooks capture the
+identity" shape `Decls.arm_marks`/`Workspace.anew` already use).
+`note()` calls the hook on the FIRST ask of any bucket, before
+marking it read — so `Reg`'s declaration is forced the moment
+anything, anywhere, asks about its layout, whichever layer is
+asking. This closes the gap `payload_word`'s three per-site copies
+never could: a hook works from core, a per-site guard cannot.
+
+**Guard witnessed failing, then fixed.** The negative witness is a
+program, not a removed line — a 14-line source
+(`type Small = {index:int}`, an enum carrying `Small` as one variant's
+payload, and a SIBLING fn taking `mut s: Small`) reproduces R11c's
+shape directly: the enum's layout reads `Small`'s flatness at
+declare time, and the sibling's `mut` seat would seal it after.
+Before D1–D3 this compiles silently (wrong mask, same as R11c).
+With them: `error[language.defect]: \`Small\`'s flatness was read
+before a \`mut\` seat sealed it` — pinned as a golden test in
+`compiler/tests/language_test.av` (`lang.check(new_source_file(...))
+==` the exact rendered line), CLAUDE.md's "a check whose failure has
+never been witnessed is untested" paid literally: the case was run
+red (no hook armed) before it was run green.
+
+**A real bug found on the way, independent of D1–D3.** `unflatten`
+rebuilt the RepRow from a bare literal (`RepRow { fields: [], sealed:
+true, boxed_flat: … }`) instead of `r with { … }` — every OTHER field
+a prior pass had set (`valued`, `counted`, `settled`) silently reset
+to its declared default on every seal. The only types this could
+touch are `Result<T,E>` sides (the one shape `mark_valued` marks
+outside `flatten_enum`, which `unflatten` already excludes via its
+own `.Enum` guard) sealed by a LATER `mut` seat — `fn f(mut r:
+Result<int, string>)` after `Result<int,string>` was already judged
+a value enum elsewhere. Fixed by the same `r with { … }` every other
+write method already used; D1–D3's read-tracking would have caught
+this too (a write moving an already-read `Valued` bucket) had the
+race been reachable, but the write itself is wrong on its own terms
+regardless.
+
+**Proof.** `build/avra test packages/std-avrac`: 146 examples + 195
+program tests, eval == native == expected, ZERO defects — including
+one self-check that races EXACTLY this shape inside the compiler's
+own comptime settlement of `@derive(Fingerprint)` over `core.Reg`, a
+type this same test run touches thousands of times. `build/avra test
+packages/cli`, `packages/std-testing`: clean. `python3
+tools/idioms.py`: no new violations (one `style.dead_parameter` on
+the hook's floor fn, fixed by naming the unread param `_t`, per I23).
+`make cited`: pre-existing failure (`fn_params` licence, from
+`e7a0f48`, untouched by this slice — a pure-Python check independent
+of the compiler binary; verified unrelated). `build/avra fmt`
+identical on all eight touched files. Fixed point: three successive
+`make avra`, byte-identical, `.avra-cache` cleared before each.
+Instructions retired on `build/avra check packages/cli`, old vs new,
+interleaved: 208.16B -> 209.40B (+0.6%) — the cost of one bit-test
+per (type, fact) pair's first ask, paid once per compile, against a
+package check that does far more besides.
+
+What I wanted from the language while doing this: the layering wall
+(D3) is a real, load-bearing law (core cannot see a declaration), and
+I paid it with a hand-armed callback because that is the idiom this
+tree already uses for the same shape (`Decls.arm_marks`,
+`Workspace.anew`'s hooks) — but there is no NAMED CONCEPT for "a
+lower layer needs one upcall it cannot import," so the pattern gets
+re-invented at its call site every time rather than declared once
+where the doctrine already lives. A `hook<T>` primitive — a typed,
+self-documenting one-shot upcall slot with its OWN entry in the
+layering rule ("a hook is not an import") — would have turned this
+from four lines of comment justifying the shape into a phrase.
