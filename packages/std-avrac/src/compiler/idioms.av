@@ -947,3 +947,94 @@ fn arm_text(a: ArmInfo) -> string {
     }
     pats + guard + " -> " + a.value.text()
 }
+
+/// A long string literal written twice in one PRODUCT file — a
+/// message repeated rather than named. Guarded to a SHARED-SENTENCE
+/// shape (20+ characters, starting lowercase, the house style every
+/// diagnostic and fixture message already wears) so a short symbolic
+/// literal repeated by coincidence (a type name, a key) never fires;
+/// `fingerprint_siblings()` answers by STRUCTURE, never by re-reading
+/// `.text()`. Tests are exempt: a repeated fixture there is not a
+/// message that can drift.
+///
+/// NO REWRITE: the fix is a fn the caller names — a judgement call
+/// this pattern's one bound literal cannot make on its own.
+@keeps("\"a message long enough to be shared\"")
+export rule duplicated_message {
+    quote { ${lit} } if is_shared_message(lit) -> duplicated_message_found(lit),
+}
+
+fn is_shared_message(lit: Code) -> bool {
+    if lit.of.view.source.file.contains("/tests/") { return false }
+    let v? = lit.str_lit_value() else { return false }
+    // A MESSAGE READS AS PROSE, A CODE READS AS A KEY: `.contains(" ")`
+    // is what tells "pop on an empty list" from "type.derive_contract"
+    // or a builder row's own name — a diagnostic kind and a grammar's
+    // build-call target are MEANT to repeat their one name everywhere
+    // they are read, which is the opposite of the smell this rule
+    // names.
+    v.length >= 20 && v.contains(" ") && starts_lowercase(v) && !lit.fingerprint_siblings().is_empty()
+}
+
+fn starts_lowercase(s: string) -> bool {
+    if s.is_empty() { return false }
+    let c = s.char_code(0)
+    c >= 97 && c <= 122
+}
+
+fn duplicated_message_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "a long string duplicated in this file — a shared message is a fn", "this literal", null))
+}
+
+/// A struct literal written twice in one PRODUCT file, field for
+/// field — a fixture built by hand rather than named. Tests are
+/// exempt: a fixture built twice there is the test being explicit.
+///
+/// NO REWRITE: the fix names a constructor fn — a judgement call
+/// this pattern's one bound literal cannot make on its own.
+@keeps("Span { lo: 0, hi: 1 }")
+@keeps("fn f() {\n    let a = Empty {}\n    let b = Empty {}\n}")
+@keeps("fn f() {\n    let a = ExprId { index: 0 }\n    let b = ExprId { index: 0 }\n}")
+export rule duplicated_literal {
+    quote { ${lit} } if is_shared_literal(lit) -> duplicated_literal_found(lit),
+}
+
+fn is_shared_literal(lit: Code) -> bool {
+    if lit.of.view.source.file.contains("/tests/") { return false }
+    // A fixture worth naming carries at least two fields — an empty
+    // literal (`BlockWords {}`) and a one-field newtype wrap
+    // (`ExprId { index: i }`) are not built, they are spelled, and
+    // every seat wants its own.
+    lit.is_struct_lit() && lit.kids().length >= 2 && !lit.fingerprint_siblings().is_empty()
+}
+
+fn duplicated_literal_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "an identical struct literal written twice in this file — name its constructor", "this literal", null))
+}
+
+/// The same method call computed twice on both sides of one `&&`/
+/// `||` — `cx.shape_at(e) && cx.shape_at(e)` — where the second call
+/// answers exactly what the first already holds. Guarded by
+/// FINGERPRINT, so `cx.shape_at(e) && cx.shape_at(f)` (a different
+/// argument) never fires.
+///
+/// NO REWRITE: `pure()` (features/code.av) answers a purity FACT only
+/// for the built-in vocabulary (List/Map/Cell/Bytes/Str) — "a
+/// user-declared method carries no purity fact yet, so it stays
+/// impure like any other call" — and `cx.shape_at` is exactly such a
+/// method. Folding `a && a` into `a` is sound only when `a` runs no
+/// side effect worth running twice; without that fact, the honest
+/// answer is to ask the reader, not the compiler.
+@keeps("let ok = cx.shape_at(e) && cx.shape_at(other)")
+export rule repeated_projection {
+    quote { ${a} && ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
+    quote { ${a} || ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
+}
+
+fn is_repeated_call(a: Code, b: Code) -> bool {
+    a.is_method_call() && a.fp() == b.fp()
+}
+
+fn repeated_projection_found(a: Code) -> Fix {
+    Fix.Say(said(a.loc(), "`${a.text()}` computed twice on one line — bind it once and read the name", "this projection", null))
+}

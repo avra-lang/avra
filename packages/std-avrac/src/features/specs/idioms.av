@@ -1,0 +1,56 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use core.{Case, ExprId, StmtId, NodeStore, same_expr, flatten}
+use features.{Code, Fix, rule, said}
+
+/// A `then` case asserting only `.report().contains(...)` — the
+/// shape that lets a cascade of refusals hide behind a message that
+/// happens to appear. Pin the count too (`diagnostics.length`,
+/// `refusals(...) == n`, `refused_with`/`refused_n`/`refused_in`).
+///
+/// A BARE-HOLE ROOT, structural GUARD: a `Case`'s own `body` is an
+/// ExprId with no grammar seat a quote pattern could bind (`then`
+/// cases live in a `Stmt.Spec`'s own list, never one at a time), so
+/// the case a bound Expr belongs to is found by asking every `.Spec`
+/// in the file which case owns this id — the same reverse lookup
+/// `stmt_index_walk`/`nullable_flag_local` already read off a
+/// declaration's own fields.
+///
+/// NO REWRITE: the RIGHT count is exactly what this shape refused to
+/// say — mining it back out would mean running the very check this
+/// assertion exists to guard, which a static pattern cannot do.
+@keeps("spec \"s\" {\n    then \"k\" {\n        a.report().contains(\"x\") && a.diagnostics.length == 1\n    }\n}")
+export rule refusal_uncounted_contains {
+    quote { ${lit} } if is_uncounted_case(lit) -> refusal_uncounted_contains_found(lit),
+}
+
+fn is_uncounted_case(lit: Code) -> bool {
+    match lit.at {
+        .Expr(id) -> is_case_body(lit.of.view.store, id) && uncounted(lit.text()),
+        .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+    }
+}
+
+fn is_case_body(store: NodeStore, id: ExprId) -> bool {
+    all_cases(store).any((c: Case) -> same_expr(c.body, id))
+}
+
+fn all_cases(store: NodeStore) -> List<Case> {
+    flatten([spec_cases(store, s) for s in store.stmt_ids()])
+}
+
+fn spec_cases(store: NodeStore, s: StmtId) -> List<Case> {
+    match store.stmt(s) { .Spec(_, cases) -> cases, rest -> [] }
+}
+
+/// Every count-pinning shape the tree already spells — a case naming
+/// any one of these has spoken a count, whatever else it also reads.
+const counted_markers: List<string> = ["diagnostics.length ==", "voices.length ==", "refused_with(", "refused_n(", "refused_in("]
+
+fn uncounted(text: string) -> bool {
+    text.contains(".report().contains(") && !counted_markers.any((m) -> text.contains(m)) && !(text.contains("refusals(") && text.contains(") =="))
+}
+
+fn refusal_uncounted_contains_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "a `then` case asserting only `.report().contains(...)` — a cascade of refusals can hide behind a message that happens to appear; pin the count too (diagnostics.length, refusals(...) == n, refused_with/refused_n/refused_in)", "this case", null))
+}

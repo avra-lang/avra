@@ -37,8 +37,14 @@ commit). When a review round or a milestone discovers a NEW idiom,
 it lands here AT DISCOVERY, with its smell, its licensed
 exceptions, and — where greppable — a ratchet rule.
 
-THE BAR (tools/idioms.py) rests on five laws, and the first three
-exist because the old ratchet had a hole under each:
+THE BAR rests on five laws, and the first three exist because the
+old ratchet had a hole under each. Every idiom the language can
+state is a `rule` declaration now, found by `avra check` itself
+(compiler/idioms.av, or a feature's own idioms.av) — `tools/idioms.py`,
+the regex tool this section originally described, is gone, ported
+out to the last shape (avra-8sb5.25.16); `tools/idioms.baseline` and
+`avra check --baseline` (wired into `make idioms`/`make idioms-accept`)
+carry the five laws below now.
 
   1. THE BASELINE LISTS SITES, NEVER COUNTS. The old tool compared
      totals, so fixing one smell while adding another passed
@@ -80,8 +86,10 @@ of 99 laws found 17 stale decorations, 5 of them names a grep
 finds and 12 counts, line numbers and attributions no tool can
 see. Licences live in `tools/cited.allow`, each with its reason.
 
-Ratcheted: `python3 tools/idioms.py --rules` answers, from the tool's own
-`RULES` keys — never a hand copy here.
+Ratcheted: `avra rules --json` answers every native rule the compiler
+carries, by its `<module>.<rule>` id. The list below is a HAND COPY
+until a printer generates this section from that answer directly
+(RECORDED TRIGGER: avra-8sb5.25.16's own follow-up) —
 Unratcheted, read by a human: style.dedupe_union_fold (a matcher cannot see whether a
 predicate has effects), style.doc_run_stolen (a stolen doc and a legitimate
 multi-paragraph header are the same shape).

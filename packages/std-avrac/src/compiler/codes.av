@@ -3,8 +3,9 @@
 //! kind-free — and every projected kind is checked against the
 //! assembled registry. Passes never pass through this table: they
 //! emit Diag directly with their own registered kinds.
-use core.{flatten}
-use grammar.{Diagnostic, Cause}
+use core.{flatten, Span}
+use @std.errors.{Loc}
+use @std.grammar.{Diagnostic, Cause}
 use diagnostics.{Diag, DiagCode, error_at, registered, loc_at, defect_at, defect_kind}
 
 /// One engine cause's projection row.
@@ -34,7 +35,15 @@ fn kind_for(c: Cause) -> string {
 /// subject up front; parse messages already carry their rule.
 export fn project(d: Diagnostic, file: string?) -> Diag {
     let message = if d.cause is .Defect { in_rule(d) } else { d.message }
-    error_at(kind_for(d.cause), loc_at(file, d.span), message)
+    error_at(kind_for(d.cause), loc_at(file, engine_span(d.loc)), message)
+}
+
+/// The engine's own Loc, worn as a Span — its `file` is always null
+/// (the engine tokenizes no file of its own) and `loc_at` stamps the
+/// real one.
+fn engine_span(l: Loc?) -> Span? {
+    if l == null { return null }
+    span_of(l!.lo, l!.hi)
 }
 
 /// An engine message with the rule it came from up front.

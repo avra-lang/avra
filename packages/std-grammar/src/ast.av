@@ -1,5 +1,5 @@
-//! Grammar values: the tree a `grammar { }` block becomes, and the one
-//! input the grammar engine runs.
+//! Grammar values: the tree DSL text becomes, and the one input the
+//! grammar engine runs.
 //!
 //! A Grammar is rules; a rule is alternatives; an alternative is a
 //! sequence; a sequence is items; an item is an atom with modifiers.
@@ -22,8 +22,7 @@
 //! token) are resolved at parse time into explicit fields (`start`,
 //! `Item.expect`), so consumers read structure, never conventions.
 
-use core.{is_name_start, flatten, distinct}
-
+use util.{flatten, distinct, is_name_start}
 /// A named bag of rules and which one parsing begins at. `start` always
 /// names a rule in `rules`.
 export type Grammar = { name: string, start: string, rules: List<Rule> }
@@ -44,7 +43,7 @@ fn alt_words(a: Alt) -> List<string> {
 fn item_words(x: Item) -> List<string> {
     match x.prim {
         .Lit(text) if !text.is_empty() && is_name_start(text.char_code(0)) -> [text],
-        .Lit(_) or .Ref(_) or .Named(_) or .Group(_) -> [],
+        .Lit(_) or .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> [],
     }
 }
 
@@ -133,7 +132,7 @@ fn own_binding(m: Item, label: string) -> int {
 fn group_bindings(p: Prim, label: string) -> int {
     match p {
         .Group(inner) -> most_of([s.binding_count(label) for s in inner.branches]),
-        .Ref(_) or .Lit(_) or .Named(_) -> 0,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> 0,
     }
 }
 
@@ -173,7 +172,7 @@ fn listed_item(s: Seq, m: Item) -> Item {
 fn listed_prim(s: Seq, p: Prim) -> Prim {
     match p {
         .Group(inner) -> Prim.Group(inner with { branches: [nested_seq(s, b) for b in inner.branches] }),
-        .Ref(_) or .Lit(_) or .Named(_) -> p,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
     }
 }
 
@@ -186,7 +185,9 @@ fn nested_seq(outer: Seq, inner: Seq) -> Seq {
 /// `+` one or more, `?` optional.
 export enum Rep { One, Star, Plus, Opt }
 
-/// What an Item actually is.
+/// What an Item actually is. `NotChar` is a LEXICON's own —
+/// character-level matching, the way `Lit`/`Named` work at the token
+/// level; a parsing grammar's rules never carry it.
 export enum Prim {
     /// Another rule's name — recurse into it.
     Ref(rule: string)
@@ -197,15 +198,19 @@ export enum Prim {
     Named(term: string)
     /// Parentheses in the grammar: a nested Alt as one atom.
     Group(inner: Alt)
+    /// One character NOT matching `inner` — negation over an open
+    /// character set, which has no finite-alternation equivalent.
+    NotChar(inner: Prim)
 }
 
 impl Prim {
     /// The token this atom answers to by name — what an `@expect`
-    /// names. Rules and groups have no single token.
+    /// names. Rules, groups, and a lexicon's character atom have no
+    /// single token.
     fn token_name() -> string? {
         match self {
             .Lit(text) or .Named(text) -> text,
-            .Ref(_) or .Group(_) -> null,
+            .Ref(_) or .Group(_) or .NotChar(_) -> null,
         }
     }
 
@@ -244,7 +249,7 @@ impl Alt {
 fn group_seqs(p: Prim) -> List<Seq> {
     match p {
         .Group(inner) -> inner.seqs(),
-        .Ref(_) or .Lit(_) or .Named(_) -> [],
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> [],
     }
 }
 

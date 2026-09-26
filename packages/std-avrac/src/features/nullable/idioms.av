@@ -124,3 +124,23 @@ export rule nullable_flag_local {
 fn nullable_flag_found(lit: Code) -> Fix {
     Fix.Say(said(lit.loc(), "a nullable flag local — is this scan a find/index_of?", "this local", null))
 }
+
+/// A `let` LOCAL forced open (`!`) three or more times within its own
+/// declaration — a value the code already knows it has, insisted on
+/// again and again instead of guarded once. A `mut` never matches
+/// (`forces()`'s own law): it changes every turn, so there is no one
+/// value to bind.
+///
+/// NO REWRITE: the fix guards once and reads the bare name at every
+/// later force — a judgement call about WHERE to guard (the
+/// declaration itself, an early exit right after it, or the first
+/// read) that this pattern's one bound local cannot make on its own.
+@keeps("fn f() {\n    let held = get()\n    take(held!)\n}")
+@keeps("fn f() {\n    mut held = get()\n    use(held!)\n    use(held!)\n    use(held!)\n}")
+export rule repeated_unwrap {
+    quote { ${lit} } if lit.is_repeatedly_forced() -> repeated_unwrap_found(lit),
+}
+
+fn repeated_unwrap_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "forced open three or more times in its own declaration — guard once, bind once, and read the name", "this local", null))
+}

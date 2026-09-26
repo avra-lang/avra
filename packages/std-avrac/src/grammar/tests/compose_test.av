@@ -1,8 +1,9 @@
 // Rule merging: same-name rules from separate fragments become one
 // rule with branches in first-appearance order — and the executor
 // refuses an unmerged grammar, so silent shadowing is unrepresentable.
-use @std.avrac.core.{Span}
-use @std.avrac.grammar.{Grammar, Captured, parse_grammar, lex_grammar, run_grammar, ready}
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Captured, run_grammar, ready}
+use @std.avrac.grammar.{Token, lex_grammar, avra_known_terminals, avra_lexeme, parse_grammar}
 
 fn composed(src: string) -> Grammar {
     parse_grammar(src).built!
@@ -11,18 +12,19 @@ fn composed(src: string) -> Grammar {
 /// Renders the build name and its argument's text.
 // LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
-fn name_build(name: string, args: List<Captured<string>>, span: Span?) -> Result<Captured<string>, string> {
+fn name_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<Captured<Token, string>, string> {
     let arg = match args[0] {
         .Terminal(t) -> t.text,
         .Node(n) -> n,
         .Many(_) -> "?",
         .Absent -> "_",
     }
-    Result.Ok(Captured.Node("${name}:${arg}"))
+    let built: Captured<Token, string> = Captured.Node("${name}:${arg}")
+    Result.Ok(built)
 }
 
 fn run_merged(g: Grammar, src: string) -> string {
-    let o = run_grammar<string>(ready(g.merged()), lex_grammar(src).tokens, name_build)
+    let o = run_grammar<Token, string>(ready(g.merged(), avra_known_terminals()), lex_grammar(src).tokens, avra_lexeme(), name_build)
     if o.result == null { return "<none>" }
     match o.result! {
         .Node(n) -> n,
@@ -55,12 +57,13 @@ spec "grammar/compose" {
     given "an unmerged grammar" {
         then "duplicate declarations are a defect naming the rule" {
             let g = composed("s = NAME\ns = NUMBER")
-            let ds = g.defects()
-            ds.length == 1 && ds[0].in_rule == "s" && ds[0].message == "declared more than once — merge same-name rules first"
+            let ds = g.defects(avra_known_terminals())
+            ds.length == 1 && ds[0].in_rule == "s" &&
+                ds[0].message == "declared more than once — merge same-name rules first"
         }
         then "the executor refuses to run it" {
             let g = composed("s = n:NAME BREAK -> only(n)\ns = NUMBER")
-            let o = run_grammar<string>(ready(g), lex_grammar("y").tokens, name_build)
+            let o = run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_grammar("y").tokens, avra_lexeme(), name_build)
             o.result == null && o.diagnostics.length == 1
         }
     }

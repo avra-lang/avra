@@ -1,0 +1,82 @@
+// The SQL lexicon tokenizes its own vocabulary, the assembled parser
+// grammar (built from `@grammar_rule`-annotated functions) carries no
+// coherence defects, and `parse_sql` builds a real `SqlSelect` from a
+// SELECT statement — the end-to-end proof the `@grammar_rule` +
+// `collect` + `@std/grammar` assembly actually works.
+use @std.sql.lexicon.{SQL}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect}
+use @std.grammar.{lex}
+
+fn kinds_of(source: string) -> string {
+    [t.kind for t in lex(SQL, source, ["WS"]).tokens if t.kind != "EOF"].join(",")
+}
+
+spec "sql/lexicon" {
+    given "SQL's own token vocabulary" {
+        then "a single-letter identifier is IDENT, not the alpha fragment" {
+            kinds_of("a") == "IDENT"
+        }
+        then "a single digit is NUMBER, not the digit fragment" {
+            kinds_of("5") == "NUMBER"
+        }
+        then "a statement's shape tokenizes as keywords, idents and punctuation" {
+            kinds_of("SELECT a, b FROM t") == "IDENT,IDENT,OP,IDENT,IDENT,IDENT"
+        }
+        then "a line comment is its own token" {
+            kinds_of("-- a comment\na") == "LINE_COMMENT,IDENT"
+        }
+    }
+}
+
+spec "sql/parser_grammar" {
+    given "the assembled parser grammar" {
+        then "every @grammar_rule text parsed and cross-references resolved" {
+            sql_parser_grammar().defects(["IDENT", "NUMBER", "STRING", "QUOTED_IDENT", "HOLE"]).is_empty()
+        }
+    }
+}
+
+fn selected(source: string) -> SqlNode? {
+    let o = parse_sql(source)
+    if !o.diagnostics.is_empty() || o.result == null { return null }
+    match o.result! {
+        .Node(n) -> n,
+        _ -> null,
+    }
+}
+
+fn where_ident(e: SqlExpr?) -> string? {
+    if e == null { return null }
+    match e! {
+        .Ident(name) -> name,
+        _ -> null,
+    }
+}
+
+fn select_of(n: SqlNode?) -> SqlSelect? {
+    if n == null { return null }
+    match n! {
+        .Sel(s) -> s,
+        _ -> null,
+    }
+}
+
+spec "sql/parse_sql" {
+    given "a plain SELECT" {
+        then "columns, table and no WHERE" {
+            let s = select_of(selected("SELECT title FROM Post"))
+            s != null && s!.columns.join(",") == "title" && s!.from_table == "Post" && s!.where == null
+        }
+    }
+    given "a SELECT with several columns and a WHERE" {
+        then "every column, the table, and the WHERE identifier" {
+            let s = select_of(selected("SELECT title, author FROM Post WHERE title"))
+            s != null && s!.columns.join(",") == "title,author" && s!.from_table == "Post" && where_ident(s!.where) == "title"
+        }
+    }
+    given "malformed input" {
+        then "a diagnostic, not a crash" {
+            !parse_sql("SELECT").diagnostics.is_empty()
+        }
+    }
+}

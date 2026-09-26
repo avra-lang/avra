@@ -1,8 +1,12 @@
 //! `avra check` — everything wrong with a source file, or with every file
 //! of a package root. The program is DERIVED as a build derives it, so a
 //! file the store stands in for is not read and still speaks its warnings.
-use @std.cli.{CliResult, Runnable, command}
-use @std.avrac.compiler.{Checked}
+//! `--baseline <file>` turns the rule findings (warnings) into a ratchet:
+//! a site the file does not list refuses the check, and `--baseline_accept`
+//! prunes it down to sites still found — never grows it (idiom_baseline.av).
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{write_text}
+use @std.avrac.compiler.{Checked, rule_id}
 
 type CheckCmd = {}
 
@@ -10,7 +14,7 @@ impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
         let path? = argued_path(args) else { return 2 }
         match checked_at(path) {
-            .Ok(c) -> said(args, c),
+            .Ok(c) -> said(args, path, c),
             .Err(report) -> {
                 println(report)
                 1
@@ -19,16 +23,62 @@ impl Runnable for CheckCmd {
     }
 }
 
-/// A clean program's warnings, printed; exit 0.
-fn said(args: CliResult, c: Checked) -> int {
+/// A clean program's warnings, printed; exit 0 — unless `--baseline`
+/// asks for the ratchet instead.
+fn said(args: CliResult, path: string, c: Checked) -> int {
+    let baseline = args.option("baseline")
+    if args.has_flag("baseline_accept") { return accepted(baseline) }
+    if baseline != "" {
+        let bad = new_sites(c.warnings, rule_kinds(path), baseline_keys(baseline))
+        if !bad.is_empty() { return refused_sites(bad) }
+    }
     if !c.warnings.is_empty() { println(c.warnings) }
     if timed(args) { eprintln(if c.reused { "time: check · cache hit" } else { "time: ${c.timed}" }) }
     0
 }
 
+/// Every rule the compiler carries, by its `<module>.<rule>` id — the
+/// ONLY kinds the ratchet counts (idiom_baseline.av's `sites_in`).
+/// Read from the SAME rule table `avra rules` answers
+/// (compiler/rules_table.av's `rules` collect), never a shape guessed
+/// from the kind string itself.
+fn rule_kinds(path: string) -> List<string> {
+    [rule_id(r) for r in root_program(path).rule_listing()]
+}
+
+/// `--baseline_accept`'s whole verb: prune, write, report — exit 0
+/// whatever it kept, since pruning never fails the gate on its own.
+fn accepted(path: string) -> int {
+    let kept = pruned_baseline(baseline_keys(path))
+    let _ = write_text(path, baseline_header + joined_lines(kept))
+    println("baseline: ${kept.length} site(s) kept")
+    0
+}
+
+fn joined_lines(lines: List<string>) -> string {
+    if lines.is_empty() { "" } else { lines.join("\n") + "\n" }
+}
+
+/// A new site is a REFUSAL, the same shape `make idioms` always gave:
+/// named, with what it names, never silently absorbed.
+fn refused_sites(bad: List<Site>) -> int {
+    println("idioms: ${bad.length} NEW violation(s) — the baseline never grows:")
+    for s in bad { println("  ${s.file}\t[${s.kind}]\t${s.text}") }
+    1
+}
+
+export flag baseline_accept {
+    description: "prune the idiom baseline to sites still found — never adds one"
+    aliases: ["--baseline-accept"]
+}
+export option baseline {
+    description: "an idiom baseline file: refuse any rule finding it does not already list"
+}
+
 export command check {
     description: "Report everything wrong with a source file or a package root"
-    flags: [time]
+    flags: [time, baseline_accept]
+    options: [baseline]
     args: [file]
     run: CheckCmd {}
 }
