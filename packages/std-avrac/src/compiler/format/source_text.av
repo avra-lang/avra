@@ -15,6 +15,9 @@ extern fn avra_float_text_bits(bits: int) -> string
 /// the same layout.
 export const canonical_width: int = 100
 
+/// A width no line reaches, for a group that must stay on one line.
+const unbounded_width: int = 1000000000
+
 /// The renderer with NO remarks — one statement, or one expression.
 ///
 /// A REMARK IS AN OFFSET INTO THE FILE IT WAS WRITTEN IN, and these
@@ -97,7 +100,9 @@ export fn render_expression(store: NodeStore, expr: ExprId) -> string {
     out.expression(expr, loosest_tier, 0)
 }
 
-type SourceText = { store: NodeStore, trivia: List<Remark>, next: int, text: string? }
+/// `unbroken` counts the enclosing places a line break cannot stand in — an
+/// interpolation hole — where every group prints on one line.
+type SourceText = { store: NodeStore, trivia: List<Remark>, next: int, text: string?, unbroken: int = 0 }
 
 /// A postfix `.` chain's own root (the first subject that is not
 /// itself a `.Prop`/`.MethodCall`) and its links, outermost last —
@@ -852,7 +857,7 @@ impl SourceText {
     /// where `open` itself begins on the physical line — exact when
     /// the caller knows it, `resolved_col`'s fallback otherwise.
     fn wrapped_list(open: string, items: List<string>, close: string, spaced: bool, depth: int, col: int = -1) -> string {
-        render_doc_at(comma_list(open, [text(it) for it in items], close, spaced), canonical_width, depth * 4, resolved_col(col, depth))
+        render_doc_at(comma_list(open, [text(it) for it in items], close, spaced), self.layout_width(), depth * 4, resolved_col(col, depth))
     }
 
     /// A parameter list's parentheses — a fn's, a lambda's, a
@@ -899,7 +904,7 @@ impl SourceText {
     mut fn chain_grouped(op: BinOp, left: ExprId, right: ExprId, p: int, parent: int, depth: int, col: int = -1) -> string {
         let operands = self.chain_operands(op, left).concat([right])
         let docs = [text(self.expression(operands[j], if j == 0 { p } else { p + 1 }, depth + 1)) for j in 0..operands.length]
-        let rendered = render_doc_at(chain_doc(op_symbol(op), docs), canonical_width, depth * 4, resolved_col(col, depth))
+        let rendered = render_doc_at(chain_doc(op_symbol(op), docs), self.layout_width(), depth * 4, resolved_col(col, depth))
         if p < parent { "(${rendered})" } else { rendered }
     }
 
@@ -1102,7 +1107,9 @@ impl SourceText {
         out.push(parts[0])
         for j, hole in holes {
             out.push("\${")
+            self.unbroken = self.unbroken + 1
             out.push(self.expression(hole, loosest_tier, depth))
+            self.unbroken = self.unbroken - 1
             out.push("}")
             out.push(parts[j + 1])
         }
@@ -1131,7 +1138,9 @@ impl SourceText {
         out.push(unquoted(parts[0]))
         for j, hole in holes {
             out.push("\${")
+            self.unbroken = self.unbroken + 1
             out.push(self.expression(hole, loosest_tier, depth))
+            self.unbroken = self.unbroken - 1
             out.push("}")
             out.push(unquoted(parts[j + 1]))
         }
@@ -1396,7 +1405,7 @@ impl SourceText {
         let root = self.expression(walk.root, postfix_tier, depth, c)
         let head = if self.store.expr(walk.root) is .Propagate { "(${root})" } else { root }
         if walk.links.is_empty() { return grouped(head, postfix_tier, parent) }
-        grouped(render_doc_at(postfix_chain_doc(text(head), [text(l) for l in walk.links]), canonical_width, depth * 4, c), postfix_tier, parent)
+        grouped(render_doc_at(postfix_chain_doc(text(head), [text(l) for l in walk.links]), self.layout_width(), depth * 4, c), postfix_tier, parent)
     }
 
     /// A postfix chain's subject (`.Chain`, `.Propagate`) — parenthesised
@@ -1502,6 +1511,10 @@ fn numeric(text: string, parent: int) -> string {
 }
 
 impl SourceText {
+    /// The width a group decides against: the canonical one, or no limit
+    /// where a line break cannot stand.
+    fn layout_width() -> int { if self.unbroken > 0 { unbounded_width } else { canonical_width } }
+
     /// A fn's answer, spelled — never for `void`, which nobody writes:
     /// the grammar's `( "->" r:type )?` defaults the unwritten slot to
     /// `void`, and the tree's own convention leaves it out.
