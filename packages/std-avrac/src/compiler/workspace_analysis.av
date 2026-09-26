@@ -57,9 +57,9 @@ impl Workspace {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
         if self.closed.get() { return self.analyzed(f) }
-        match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return analysis_of(value) }, .Compute -> nothing() }
+        match self.analysis_memo.start_recursive(f.index) { .Reuse(value) -> { return analysis_of(value) }, .Compute -> nothing() }
         let out = self.analyzed(f)
-        analysis_of(self.analyses.finish(f.index, DbRow.Analysis(out), self.db.revision()))
+        analysis_of(self.analysis_memo.finish(f.index, DbRow.Analysis(out), self.db.revision()))
     }
 
     /// The record itself: every pass's facts for the file, and the way
@@ -107,8 +107,8 @@ impl Workspace {
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit {
-        match self.units.start_recursive(id) { .Reuse(value) -> { return lowered_of(value) }, .Compute -> nothing() }
-        lowered_of(self.units.finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()))
+        match self.lowered_memo.start_recursive(id) { .Reuse(value) -> { return lowered_of(value) }, .Compute -> nothing() }
+        lowered_of(self.lowered_memo.finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()))
     }
 
     /// The store, attached by a build; null outside one.
@@ -217,16 +217,16 @@ impl Workspace {
     /// the const's own type.
     fn const_type_at(id: int) -> bool {
         let error = self.decls.types.intern(Type.Error)
-        match self.const_type_facts.ask(id) {
+        match self.const_typed_memo.ask(id) {
             .Cycle -> { return true },
             .Reuse(_) -> { return false },
-            .Compute -> self.const_type_facts.begin(id),
+            .Compute -> self.const_typed_memo.begin(id),
         }
         let ask = self.settle_asks.get()[id]
         // only a const's statement has a type to publish
         let held: StmtId? = const_stmt(ask.root)
         if held == null {
-            let _ = self.const_type_facts.finish(id, DbRow.ConstTyped(error), error.index)
+            let _ = self.const_typed_memo.finish(id, DbRow.ConstTyped(error), error.index)
             return false
         }
         let s = held!
@@ -236,18 +236,18 @@ impl Workspace {
         // Its typing already OPEN is the same cycle seen from the
         // other side — the value is asking for the const's own type.
         let d: DeclId? = self.decls.decl_of(ask.file, s)
-        let cyclic = d != null && self.decl_facts.open(d!.index)
+        let cyclic = d != null && self.typed_memo.open(d!.index)
         if d != null && !cyclic { touch(self.typed(d!)) }
         let ty = self.decls.held_const_type(ask.file, s) ?? error
-        let _ = self.const_type_facts.finish(id, DbRow.ConstTyped(ty), ty.index)
+        let _ = self.const_typed_memo.finish(id, DbRow.ConstTyped(ty), ty.index)
         cyclic
     }
 
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
-        match self.settlements.ask(id) {
+        match self.settled_memo.ask(id) {
             .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
             .Reuse(held) -> { return reused_settlement(settled_of(held)) },
-            .Compute -> self.settlements.begin(id),
+            .Compute -> self.settled_memo.begin(id),
         }
         let ask = self.settle_asks.get()[id]
         let root: ExprId = match ask.root {
@@ -266,7 +266,7 @@ impl Workspace {
             .Ok(x) -> Settlement.Held(x),
             .Err(why) -> Settlement.Refused(why),
         }
-        let _ = self.settlements.finish(id, DbRow.Settled(held), settlement_hash(held))
+        let _ = self.settled_memo.finish(id, DbRow.Settled(held), settlement_hash(held))
         r
     }
 
@@ -324,10 +324,10 @@ impl Workspace {
     /// lowering pass seeing the annotation it is currently proving,
     /// so that recursive view contributes nothing.
     fn lifted_at(id: int) -> Result<Lifted, Unsettled> {
-        match self.lift_results.ask(id) {
+        match self.lifted_memo.ask(id) {
             .Cycle -> { return .Err(Unsettled.Recursive) },
             .Reuse(held) -> { return reused_lift(lifted_of(held)) },
-            .Compute -> self.lift_results.begin(id),
+            .Compute -> self.lifted_memo.begin(id),
         }
         let ask = self.lift_asks.get()[id]
         let r = self.lifted_once(ask.decl, ask.file, ask.stmt, ask.args)
@@ -335,7 +335,7 @@ impl Workspace {
             .Ok(crossed) -> LiftResult.Crossed(crossed),
             .Err(why) -> LiftResult.Refused(why),
         }
-        let _ = self.lift_results.finish(id, DbRow.Lifted(held), lift_hash(held))
+        let _ = self.lifted_memo.finish(id, DbRow.Lifted(held), lift_hash(held))
         r
     }
 
