@@ -7,7 +7,7 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, StmtId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, own_name_at, own_type_at, Arm, same_stmt, same_expr, flatten, some_list}
+use core.{At, ExprId, StmtId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, NodeStore, own_name_at, own_type_at, Arm, same_stmt, same_expr, flatten, some_list}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, MethodRow, AnnotationFact, bound_decl_of}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
@@ -101,6 +101,35 @@ impl Code {
     fn is_block() -> bool {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) { .Block(_, _) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// Whether this node is a plain string literal — false for every
+    /// other seat, an interpolated one (`Expr.Format`) included: a
+    /// rule reads `str_lit_value()` only once this answers true.
+    fn is_str_lit() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .StrLit(_) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// This string literal's own decoded value — null for every
+    /// other seat. `Expr.StrLit` carries the value already unescaped,
+    /// so no quote-stripping of its own `.text()` is needed.
+    fn str_lit_value() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .StrLit(v) -> v, _ -> null },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// Whether this node is a method call (`subject.name(args)`) —
+    /// false for every other seat, a plain `Call` by NAME included.
+    fn is_method_call() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .MethodCall(_, _, _) -> true, _ -> false },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
@@ -315,6 +344,76 @@ impl Code {
         }
     }
 
+    /// This node's own structural fingerprint — the identity `make
+    /// fingerprints` gates the tree on; null for a seat fingerprinting
+    /// does not cover.
+    fn fp() -> int? {
+        match self.at {
+            .Expr(id) -> self.of.view.store.expr_fingerprint(id),
+            .Stmt(id) -> self.of.view.store.stmt_fingerprint(id),
+            .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// Every OTHER expression in this FILE sharing this node's own
+    /// fingerprint — never itself, and never raw text: two sites
+    /// answering the same fingerprint answer the same STRUCTURE, the
+    /// identity a hash-based dedup names rather than re-derives.
+    /// Empty for every seat but `.Expr`.
+    ///
+    /// A SIBLING SHARING THIS NODE'S OWN SPAN IS THE SAME TEXT, NOT A
+    /// SECOND COPY: a `grammar { … }` literal desugars into hundreds
+    /// of `Rule`/`Alt`/`Seq`/`Item` struct literals that all carry the
+    /// DSL string's ONE span (features/grammar_lit/builders.av), so a
+    /// grammar with two rules taking a bare `NAME` looks, to a
+    /// span-blind reader, like the same `Item{…}` written a thousand
+    /// times over. Filtering by span costs nothing a human-authored
+    /// duplicate has: two hand-written sites never share one span.
+    /// A SIBLING WITH NO SPAN AT ALL IS NOT A SECOND COPY EITHER — a
+    /// node minted with none is compiler-generated, invisible in the
+    /// source a reader would dedupe, so nothing here is written twice.
+    fn fingerprint_siblings() -> List<Code> {
+        match self.at {
+            .Expr(id) -> {
+                let want = self.of.view.store.expr_fingerprint(id)
+                let mine = self.of.view.store.expr_span(id)
+                [self.coded(e) for e in self.of.view.store.expr_ids() if !same_expr(e, id) && self.of.view.store.expr_fingerprint(e) == want && sibling_span(mine, self.of.view.store.expr_span(e))]
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+        }
+    }
+
+    /// `e`, still carrying this node's own facts — the wrap every
+    /// Expr-returning walk shares (`fingerprint_siblings`, `forces`,
+    /// `local_uses`).
+    fn coded(e: ExprId) -> Code { Code { of: self.of, at: At.Expr(e) } }
+
+    /// Every FORCE (`!`) whose subject is the local this node's own
+    /// `let`/`mut`/param seat declares — the value it insists on,
+    /// never the identifier read. Three or more says the code already
+    /// knows the value is present and should guard once, not insist
+    /// again and again.
+    fn forces() -> List<Code> {
+        let b? = self.introduces() else { return [] }
+        let range = self.local_range()
+        let subjects = flatten([some_list(force_subject(self.of.view.store, e)) for e in range])
+        [self.coded(s) for s in subjects if self.names_this(s, b)]
+    }
+
+    /// Whether this is a plain `let` LOCAL — never `mut`, never a
+    /// param, which changes every turn and answers to no one value —
+    /// forced open (`!`) three or more times within its own
+    /// declaration.
+    fn is_repeatedly_forced() -> bool {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .Let(_, _, _) -> self.forces().length >= 3,
+                rest -> false,
+            },
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
     /// Every CALL or METHOD CALL naming this declaration, across the
     /// program — THE REFERENCES RELATION's own door (compiler/
     /// references.av), read through `Decls`.
@@ -341,7 +440,7 @@ impl Code {
         let b? = self.introduces() else { return [] }
         let range = self.local_range()
         let roots = self.write_roots(range)
-        [Code { of: self.of, at: At.Expr(e) } for e in range if self.names_this(e, b) && roots.any((r: ExprId) -> same_expr(r, e)) == want_write]
+        [self.coded(e) for e in range if self.names_this(e, b) && roots.any((r: ExprId) -> same_expr(r, e)) == want_write]
     }
 
     /// Whether `e`'s own binding is the local `b` names — resolved
@@ -520,6 +619,28 @@ impl Code {
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
+}
+
+/// Whether two spans are the same range — never both absent counted
+/// equal to a present one.
+fn same_span(a: Span?, b: Span?) -> bool {
+    let av? = a else { return b == null }
+    let bv? = b else { return false }
+    av.lo == bv.lo && av.hi == bv.hi
+}
+
+/// Whether `other` is a REAL, DIFFERENT span from `mine` — absent
+/// (a generated node) is never a sibling, and neither is one sharing
+/// `mine`'s own span.
+fn sibling_span(mine: Span?, other: Span?) -> bool {
+    let ov? = other else { return false }
+    !same_span(mine, ov)
+}
+
+/// `e`'s own FORCE subject — the value under `!` — null for every
+/// other expression shape.
+fn force_subject(store: NodeStore, e: ExprId) -> ExprId? {
+    match store.expr(e) { .Force(value) -> value, _ -> null }
 }
 
 /// Whether a ref's own site is the given statement — the seat every
