@@ -4,8 +4,8 @@
 //! merges values and never parses text.
 use core.{Expr, ExprId, Span, Nominal, Plain, Scoped}
 use features.{LangNode, Builder}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Expect, Recover, Diagnostic, parse_grammar}
-
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Expect, Recover, Diagnostic}
+use grammar.{parse_grammar}
 fn build_grammar_lit(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let gp = parse_grammar(t.text)
@@ -60,6 +60,10 @@ fn prim_expr(mut b: Builder, p: Prim, sp: Span?) -> ExprId {
         .Lit(text) -> variant(b, "Prim", "Lit", [text_expr(b, text, sp)], sp),
         .Named(term) -> variant(b, "Prim", "Named", [text_expr(b, term, sp)], sp),
         .Group(inner) -> variant(b, "Prim", "Group", [alt_expr(b, inner, sp)], sp),
+        .CharRange(lo, hi) -> variant(b, "Prim", "CharRange", [text_expr(b, lo, sp), text_expr(b, hi, sp)], sp),
+        .AnyChar -> unit(b, "Prim", "AnyChar", sp),
+        .NotChar(inner) -> variant(b, "Prim", "NotChar", [prim_expr(b, inner, sp)], sp),
+        .Until(closer) -> variant(b, "Prim", "Until", [prim_expr(b, closer, sp)], sp),
     }
 }
 

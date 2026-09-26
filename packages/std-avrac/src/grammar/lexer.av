@@ -37,22 +37,6 @@ export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, 
 export type Token = { kind: TokenKind, text: string, span: Span }
 
 impl Token {
-    /// True when a grammar Lit matches this token: text equality, and
-    /// never against quoted input — quoted text is data, not syntax.
-    fn lit_matches(text: string) -> bool {
-        match self.kind {
-            .Name or .Num or .Op or .Break or .Pkg -> self.text == text,
-            .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd or .Block or .Body -> false,
-        }
-    }
-
-    /// Whether this token is of a grammar's named kind. A template's
-    /// `Hole` stands wherever a NAME may: every builder mints its
-    /// ordinary node with the placeholder name.
-    fn kind_is(k: TokenKind) -> bool {
-        self.kind == k || (k == TokenKind.Name && self.kind == TokenKind.Hole)
-    }
-
     /// The BITS of the real this number denotes. A fraction only —
     /// `is_fraction` is the guard, and the text the scanner shaped is
     /// exactly what `strtod` reads.
@@ -1083,6 +1067,10 @@ impl Lexing {
             self.errors.push(LexError { message: if fr.raw { "a block is never closed" } else { "a `quote` block is never closed" }, span: span_of(fr.lo, self.n) })
         }
     }
+}
+
+/// A match arm with nothing to do.
+fn nothing_noted() {
 }
 
 fn is_brace(t: Token) -> bool {

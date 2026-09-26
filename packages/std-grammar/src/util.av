@@ -1,0 +1,100 @@
+//! Small infrastructure helpers this package needs and owns — no
+//! shared "core" package exists below `@std/*` to hold them, so they
+//! live here rather than reaching up into a compiler-internal module.
+
+/// Any number of lists, in order.
+export fn flatten<T>(xs: List<List<T>>) -> List<T> {
+    mut out: List<T> = []
+    for x in xs {
+        // LICENSED I3: an accumulator; `.concat()` here is quadratic
+        for v in x { out.push(v) }
+    }
+    out
+}
+
+/// A list of `n` copies of `v`.
+export fn filled<T>(n: int, v: T) -> List<T> {
+    [v for i in 0..n]
+}
+
+/// An optional as a 0/1-element list.
+export fn some_list<T>(x: T?) -> List<T> {
+    if x == null { return [] }
+    [x!]
+}
+
+/// The list with each string's FIRST appearance kept, order intact.
+export fn distinct(xs: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<string> = []
+    for x in xs {
+        if seen.get(x) == null {
+            seen.set(x, true)
+            out.push(x)
+        }
+    }
+    out
+}
+
+/// Elements joined with `sep`.
+export fn joined(xs: List<string>, sep: string) -> string {
+    if xs.is_empty() { return "" }
+    mut runs: List<string> = xs
+    while runs.length > 1 {
+        mut merged: List<string> = []
+        mut i = 0
+        while i < runs.length {
+            if i + 1 < runs.length {
+                merged.push("${runs[i]}${sep}${runs[i + 1]}")
+            } else {
+                merged.push(runs[i])
+            }
+            i = i + 2
+        }
+        runs = merged
+    }
+    runs[0]
+}
+
+/// A present extraction, or "expected <what>".
+export fn want<T>(x: T?, what: string) -> Result<T, string> {
+    if x == null { .Err("expected ${what}") } else { .Ok(x!) }
+}
+
+/// A letter or `_`.
+export fn is_name_start(c: int) -> bool {
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+/// An ASCII digit.
+export fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
+
+/// An uppercase letter, digit, or `_`.
+export fn is_upper_name_cont(c: int) -> bool {
+    (c >= 65 && c <= 90) || c == 95 || is_digit(c)
+}
+
+/// Whether EVERY byte of `s` satisfies `pred`.
+export fn all_codes(s: string, pred: fn(int) -> bool) -> bool {
+    for i in 0..s.length {
+        if !pred(s.char_code(i)) { return false }
+    }
+    true
+}
+
+/// A string as SOURCE spells it, quotes included.
+export fn quoted_text(s: string) -> string {
+    "\"" + [escaped_char(s.char_code(i), s.substring(i, i + 1)) for i in 0..s.length].join("") + "\""
+}
+
+fn escaped_char(c: int, raw: string) -> string {
+    when {
+        c == 34 -> "\\\""
+        c == 92 -> "\\\\"
+        c == 36 -> "\\$"
+        c == 10 -> "\\n"
+        c == 9 -> "\\t"
+        c == 13 -> "\\r"
+        _ -> raw
+    }
+}

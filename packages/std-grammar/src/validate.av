@@ -2,32 +2,12 @@
 //! surface later as confusing parse failures. The executor refuses to
 //! run a grammar with defects, so every check here is a guarantee the
 //! matcher can lean on.
-
-use core.{flatten, some_list}
-
-/// The TokenKind a terminal name denotes, or null for an unknown name.
-/// `END` is a statement's end — a Break consumed, or a `}` left for
-/// the body that opened it — and answers to the Break class here.
-export fn term_kind(term: string) -> TokenKind? {
-    match term {
-        "NAME" -> TokenKind.Name,
-        "NUMBER" -> TokenKind.Num,
-        "STRING" -> TokenKind.Str,
-        "ISTR_BEGIN" -> TokenKind.IStrBegin,
-        "ISTR_MID" -> TokenKind.IStrMid,
-        "ISTR_END" -> TokenKind.IStrEnd,
-        "BREAK" -> TokenKind.Break,
-        "END" -> TokenKind.Break,
-        "EOF" -> TokenKind.Eof,
-        "PKG" -> TokenKind.Pkg,
-        "HOLE" -> TokenKind.Hole,
-        "HOLE_BEGIN" -> TokenKind.HoleBegin,
-        "HOLE_END" -> TokenKind.HoleEnd,
-        "BLOCK" -> TokenKind.Block,
-        "BODY" -> TokenKind.Body,
-        _ -> null,
-    }
-}
+//!
+//! A `.Named` terminal's class name is checked against the CALLER'S
+//! own vocabulary — this package tokenizes nothing and so names no
+//! terminal of its own. Avra's compiler passes its fixed list
+//! (NAME, NUMBER, STRING, BREAK, END, EOF, ...); a future SQL grammar
+//! passes its own.
 
 impl Seq {
     /// This branch's capture labels, including those inside nested
@@ -38,18 +18,24 @@ impl Seq {
     }
 }
 
-fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) -> List<Diagnostic> {
+fn prim_defects(rule_name: string, p: Prim, names: List<string>, known_terminals: List<string>, labeled: bool) -> List<Diagnostic> {
     match p {
         .Ref(target) ->
             if names.contains(target) { [] }
             else { [defect(rule_name, "references undefined rule `${target}`")] },
         .Named(term) ->
-            if term_kind(term) != null { [] }
+            if known_terminals.contains(term) { [] }
             else { [defect(rule_name, "unknown terminal `${term}`")] },
         .Lit(_) -> [],
         // A labeled group is consumed for its value; an unlabeled one
         // is structural (its value is Absent, its captures escape).
-        .Group(inner) -> alt_defects(rule_name, inner, names, labeled),
+        .Group(inner) -> alt_defects(rule_name, inner, names, known_terminals, labeled),
+        // A lexicon's own atoms: `NotChar`/`Until` wrap one Prim
+        // that may itself be a rule reference, so it is checked the
+        // same way; `CharRange`/`AnyChar` name nothing to check.
+        .NotChar(inner) -> prim_defects(rule_name, inner, names, known_terminals, labeled),
+        .Until(closer) -> prim_defects(rule_name, closer, names, known_terminals, labeled),
+        .CharRange(_, _) or .AnyChar -> [],
     }
 }
 
@@ -72,20 +58,21 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
     }
 }
 
-fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: bool) -> List<Diagnostic> {
-    flatten([seq_defects(rule_name, s, names, value_needed) for s in a.branches])
+fn alt_defects(rule_name: string, a: Alt, names: List<string>, known_terminals: List<string>, value_needed: bool) -> List<Diagnostic> {
+    flatten([seq_defects(rule_name, s, names, known_terminals, value_needed) for s in a.branches])
 }
 
 /// One branch's defects: its items', then its build's.
-fn seq_defects(rule_name: string, s: Seq, names: List<string>, value_needed: bool) -> List<Diagnostic> {
-    flatten([prim_defects(rule_name, m.prim, names, m.label != null) for m in s.items])
+fn seq_defects(rule_name: string, s: Seq, names: List<string>, known_terminals: List<string>, value_needed: bool) -> List<Diagnostic> {
+    flatten([prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items])
         .concat(build_defects(rule_name, s, value_needed))
 }
 
 impl Grammar {
     /// Every defect in this grammar; empty means the matcher's
-    /// assumptions all hold.
-    fn defects() -> List<Diagnostic> {
+    /// assumptions all hold. `known_terminals` is the caller's own
+    /// vocabulary of `.Named` class names — this engine names none.
+    fn defects(known_terminals: List<string>) -> List<Diagnostic> {
         let names = self.rules.map(it.name)
         mut out: List<Diagnostic> = []
         if !names.contains(self.start) {
@@ -102,7 +89,7 @@ impl Grammar {
                 seen.push(r.name)
             }
         }
-        out.concat(flatten([alt_defects(r.name, r.body, names, true) for r in self.rules]))
+        out.concat(flatten([alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules]))
             .concat(first_defects(self))
     }
 }

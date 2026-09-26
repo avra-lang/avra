@@ -15,8 +15,7 @@
 //! ASSEMBLY. That is what lets one rule cover `{ }` and `{ k: v }`.
 use core.{flatten, joined, PayloadRow, row_for}
 use @std.meta.{Field}
-use grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
-
+use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
 /// A grammar with every node build bound, and what binding refused.
 export type NodeBinding = { g: Grammar, defects: List<Diagnostic> }
 
@@ -48,7 +47,7 @@ fn bound_seq(rule: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 fn bound_prim(rule: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
     match p {
         .Group(inner) -> Prim.Group(inner with { branches: [bound_seq(rule, b, outer, rows) for b in inner.branches] }),
-        .Ref(_) or .Lit(_) or .Named(_) -> p,
+        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> p,
     }
 }
 
@@ -184,8 +183,9 @@ fn carrier_of(p: Prim) -> Carrier? {
         .Ref(_) -> Carrier.Built,
         .Named(_) -> Carrier.Text,
         // A literal captures nothing a payload wants, and a group may
-        // answer either — neither proves a mismatch.
-        .Lit(_) or .Group(_) -> null,
+        // answer either — neither proves a mismatch. A lexicon's own
+        // atoms never reach a node build either.
+        .Lit(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> null,
     }
 }
 

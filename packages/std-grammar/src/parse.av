@@ -1,0 +1,22 @@
+//! `parse_grammar` — grammar-DSL tokens in, a Grammar value out. The
+//! executor running the data seed: no hand-written parser for the DSL
+//! exists. A caller tokenizes the notation text itself (this package
+//! owns no lexer) and hands the tokens here; Avra's own compiler
+//! desugars a `grammar { ... }` block this way.
+use @std.errors.{Loc}
+
+/// The parse outcome: the grammar when one was built (partial trees
+/// included), plus every diagnostic — parsing, and the built
+/// grammar's own coherence defects, in that order.
+export type GrammarParse = { built: Grammar?, diagnostics: List<Diagnostic> }
+
+/// Parse already-lexed DSL-notation tokens. The grammar's name is its
+/// start rule's name. `lex` is `T`'s whole contract.
+export fn parse_grammar<T>(tokens: List<T>, lex: Lexeme<T>) -> GrammarParse {
+    let build = (name: string, args: List<Captured<T, GrammarNode>>, loc: Loc?) -> grammar_build(lex, name, args, loc)
+    let o = run_grammar<T, GrammarNode>(ready(grammar_of_grammars, dsl_terminals), tokens, lex, build)
+    let g: Grammar? = grammar_result(o)
+    if g == null { return GrammarParse { built: null, diagnostics: o.diagnostics } }
+    let named_g = g! with { name: g!.start }
+    GrammarParse { built: named_g, diagnostics: o.diagnostics.concat(named_g.defects(dsl_terminals)) }
+}

@@ -1,6 +1,6 @@
 // Hand-builds the module doc's calculator grammar and checks every
 // type's shape once.
-use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect}
 
 /// term = NUMBER
 ///      | "(" e:expression ")" @expect(")", "expected ')'") -> e
@@ -99,12 +99,12 @@ spec "grammar/ast" {
         }
         then "an uncaptured Named atom has no label" {
             let first = term_rule().body.branches[0].items[0]
-            let named = match first.prim { .Named(term) -> term, .Ref(_) or .Lit(_) or .Group(_) -> "" }
+            let named = match first.prim { .Named(term) -> term, .Ref(_) or .Lit(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> "" }
             first.label == null && named == "NUMBER"
         }
         then "a captured Ref carries its label" {
             let e = term_rule().body.branches[1].items[1]
-            let target = match e.prim { .Ref(rule) -> rule, .Named(_) or .Lit(_) or .Group(_) -> "" }
+            let target = match e.prim { .Ref(rule) -> rule, .Named(_) or .Lit(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> "" }
             e.label == "e" && target == "expression"
         }
         then "an Expect lives on the item it guards" {

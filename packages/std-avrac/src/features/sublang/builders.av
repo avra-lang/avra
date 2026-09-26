@@ -4,9 +4,18 @@
 //! and every action mints a call of the library's fn, the captures as
 //! arguments — so the expansion's nodes stand right before the block's,
 //! as a parsed child does, and every range law holds.
-use core.{Expr, Stmt, ExprId, NodeStore, Span, hole_name, flatten, some_list, BlockVoice, Scoped, BodyView}
+use core.{Expr, Stmt, ExprId, NodeStore, Span, span_of, hole_name, flatten, some_list, BlockVoice, Scoped, BodyView}
+use @std.errors.{Loc}
 use features.{LangNode, Builder, zip_defect_of}
-use grammar.{run_from, lex_body, runs, Captured, TokenKind, Token, Grammar, Seq, Item, Build}
+use @std.grammar.{run_from, Captured, Grammar, Seq, Item, Build}
+use grammar.{lex_body, runs, TokenKind, Token, avra_lexeme}
+
+/// The engine's own Loc, worn as this store's Span — the sublanguage's
+/// grammar runs over a byte range inside ITS file, never another.
+fn loc_span(l: Loc?) -> Span? {
+    if l == null { return null }
+    span_of(l!.lo, l!.hi)
+}
 
 /// The declaration always mints; its notation is judged by its typing
 /// (`check_syntax`), which speaks the DSL's own words at the statement.
@@ -43,16 +52,16 @@ fn expanded(mut b: Builder, word: string, body: Token, holes: List<ExprId>) -> E
     let lo = b.store.exprs.count()
     mut sink = b.store
     let g = block.ready.g
-    let build = (name: string, args: List<Captured<ExprId>>, span: Span?) -> sink.minted_action(name, listed_seats(g, name, args.length), args, span, holes)
+    let build = (name: string, args: List<Captured<Token, ExprId>>, loc: Loc?) -> sink.minted_action(name, listed_seats(g, name, args.length), args, loc_span(loc), holes)
     let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
-    let o = run_from<ExprId>(block.ready, block.ready.g.start, tokens, build)
+    let o = run_from<Token, ExprId>(block.ready, block.ready.g.start, tokens, avra_lexeme(), build)
     // sink is a copy of b.store, minted into across the closure above —
     // write it back before b.store is read again, or every node the
     // closure minted is invisible past this line (F2096's own alias-copy
     // law, on a copy made to cross the closure boundary).
     b.store = sink
     b.store.note_foreign(lo, b.store.exprs.count(), block.origin)
-    for d in o.diagnostics { b.store.speak_block(BlockVoice { message: d.message, lo: d.span?.lo ?? at, hi: d.span?.hi ?? at, expected: d.expected, in_rule: d.in_rule }) }
+    for d in o.diagnostics { b.store.speak_block(BlockVoice { message: d.message, lo: d.loc?.lo ?? at, hi: d.loc?.hi ?? at, expected: d.expected, in_rule: d.in_rule }) }
     if !o.diagnostics.is_empty() || o.result == null { return null }
     b.store.captured_expr(o.result!, holes)
 }
@@ -97,7 +106,7 @@ fn item_accumulates(it: Item, label: string, under: bool) -> bool {
     if it.label == label && repeated { return true }
     match it.prim {
         .Group(inner) -> inner.branches.any(accumulates(it.items, label, repeated)),
-        .Ref(_) or .Lit(_) or .Named(_) -> false,
+        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> false,
     }
 }
 
@@ -105,12 +114,12 @@ impl NodeStore {
     /// A grammar's action minted as a call of the library's fn, its
     /// captures as the arguments — a listed seat's one or none as a
     /// list of one or of none.
-    mut fn minted_action(name: string, listed: List<bool>, args: List<Captured<ExprId>>, span: Span?, holes: List<ExprId>) -> Result<Captured<ExprId>, string> {
+    mut fn minted_action(name: string, listed: List<bool>, args: List<Captured<Token, ExprId>>, span: Span?, holes: List<ExprId>) -> Result<Captured<Token, ExprId>, string> {
         let ids = [self.seated(a, listed[j], span, holes) for j, a in args]
         .Ok(Captured.Node(self.alloc_expr(Expr.Call(Scoped(name), [], ids), span)))
     }
 
-    mut fn seated(a: Captured<ExprId>, listed: bool, span: Span?, holes: List<ExprId>) -> ExprId {
+    mut fn seated(a: Captured<Token, ExprId>, listed: bool, span: Span?, holes: List<ExprId>) -> ExprId {
         if !listed { return self.captured_expr(a, holes) ?? self.alloc_expr(Expr.NullLit, span) }
         match a {
             .Many(_) -> self.captured_expr(a, holes) ?? self.alloc_expr(Expr.ListLit([]), span),
@@ -126,7 +135,7 @@ impl NodeStore {
     /// user's expression, a number a literal, any other token its text
     /// as a string literal, a repeated capture a list, an absent one
     /// null.
-    mut fn captured_expr(c: Captured<ExprId>, holes: List<ExprId>) -> ExprId? {
+    mut fn captured_expr(c: Captured<Token, ExprId>, holes: List<ExprId>) -> ExprId? {
         match c {
             .Node(e) -> e,
             .Absent -> null,

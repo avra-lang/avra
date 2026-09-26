@@ -1,12 +1,13 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, TypeId, flatten, BlockVoice, DeclId, FileId, joined, is_user_kind, same_decl, user_kind}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, span_of, Param, Variant, Case, TypeRef, TypeId, flatten, BlockVoice, DeclId, FileId, joined, is_user_kind, same_decl, user_kind}
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
 use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type}
-use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_untold, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
+use @std.grammar.{Captured, RunOutcome, run_grammar, run_untold, run_from, lex_diagnostic, Diagnostic, Cause}
+use grammar.{Token, DocComment, lex_source, lex_blocks, TokenKind, avra_lexeme}
 // LICENSED I24: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
 use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockGrammar}
@@ -102,15 +103,15 @@ fn parsed_as(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_blocks(src.text, [b.word for b in blocks])
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, blocks)
-    let o = if telling { run_grammar<LangNode>(lang.syntax!, lexed.tokens, build) } else { run_untold<LangNode>(lang.syntax!, lexed.tokens, build) }
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), src.text, blocks)
+    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
     attach_docs(store, lexed.docs)
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written
     store.keep_remarks(lexed.remarks)
     // what a block's grammar refused speaks with the parse, at the block
     let blocked = [block_diagnostic(v) for v in store.block_voices]
-    let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
+    let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
     Parsed {
         store: store,
         stmts: program_stmts(store, o),
@@ -121,7 +122,18 @@ fn parsed_as(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List
 
 /// A block grammar's refusal as the engine's diagnostic it was.
 fn block_diagnostic(v: BlockVoice) -> Diagnostic {
-    Diagnostic { cause: Cause.Block, message: v.message, span: Span { lo: v.lo, hi: v.hi }, expected: v.expected, in_rule: v.in_rule }
+    Diagnostic { cause: Cause.Block, message: v.message, loc: Loc { file: null, lo: v.lo, hi: v.hi }, expected: v.expected, in_rule: v.in_rule }
+}
+
+/// The engine's own Loc, worn as this store's Span.
+fn loc_span(l: Loc?) -> Span? {
+    if l == null { return null }
+    span_of(l!.lo, l!.hi)
+}
+
+/// A byte range in this file, worn as the engine's own Loc.
+fn span_loc(s: Span) -> Loc {
+    Loc { file: null, lo: s.lo, hi: s.hi }
 }
 
 /// A type SPELLING (`List<ExprId>?`) as the written type it spells —
@@ -133,8 +145,8 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     mut store = new_node_store()
     let lexed = lex_source(text)
     if !lexed.errors.is_empty() { return null }
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text, [])
-    let o = run_from<LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], build)
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), text, [])
+    let o = run_from<Token, LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], avra_lexeme(), build)
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
 }
@@ -163,7 +175,7 @@ fn attach_docs(mut store: NodeStore, docs: List<DocComment>) {
 
 /// The program's statements in order. A recovery hole becomes an
 /// explicit Stmt.Error node — the tree survives bad input visibly.
-fn program_stmts(mut store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
+fn program_stmts(mut store: NodeStore, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
     mut out: List<StmtId> = []
     if o.result == null { return out }
     let items = list_at([o.result!], 0)
