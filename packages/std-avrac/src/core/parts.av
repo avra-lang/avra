@@ -381,6 +381,38 @@ impl NodeStore {
             _ -> null,
         }
     }
+
+    /// Every written type this statement's own signature carries: a
+    /// binding's annotation (`binding_ty` already answers `Collect`'s
+    /// too), a type parameter's bound, a seat's or a field's type, a
+    /// variant's payloads, the shape a `type`/`alias` names. Empty
+    /// for a statement that declares no type at all — through the
+    /// EXISTING projections, never a second match over the enum.
+    fn type_roots(s: StmtId) -> List<TypeRef> {
+        flatten([
+            some_list(self.binding_ty(s)),
+            param_types(self.decl_tbounds(s)),
+            param_types(self.declared_params(s)),
+            some_list(self.fn_parts(s)?.ret),
+            some_list(self.extern_parts(s)?.ret),
+            param_types(self.declared_fields(s)),
+            variant_types(self.declared_variants(s)),
+            some_list(self.named_parts(s)?.of),
+            some_list(self.alias_parts(s)?.of),
+        ])
+    }
+}
+
+/// A seat list's own written types — absent for an untyped one (a
+/// unit enum variant, an unbounded type parameter, an unannotated
+/// param).
+fn param_types(ps: List<Param>) -> List<TypeRef> {
+    flatten([some_list(p.ty) for p in ps])
+}
+
+/// Every variant's own payload types, folded across the whole enum.
+fn variant_types(vs: List<Variant>) -> List<TypeRef> {
+    flatten([param_types(v.payloads) for v in vs])
 }
 
 /// What an extern fn declares, projected once.
