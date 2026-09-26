@@ -1551,10 +1551,9 @@ impl Decls {
 
     /// A record field's default, when the field declares one.
     fn default_named(record: DeclId, field: string) -> DeclId? {
-        for c in self.children_of(record) {
-            if self.decl(c).name == field { return c }
-        }
-        null
+        self
+            .children_of(record)
+            .find((c) -> self.decl(c).kind is .Default && self.decl(c).name == field)
     }
 
     /// Each written seat's default body, in seat order — null where
@@ -1607,7 +1606,8 @@ impl Decls {
         let x = self.decl(d)
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
-            .Method or .Default -> "${x.owner}.${x.name}",
+            .Method -> "${x.owner}.${x.name}",
+            .Default -> "${x.owner}.${x.name}\$default",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect -> x.name,
         }
