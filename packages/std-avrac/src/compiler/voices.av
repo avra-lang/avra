@@ -34,7 +34,7 @@ use features.{
 }
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind, Annotation as MetaAnnotation}
-use core.{StmtId, Arm, HoleKind, Unplaced, is_name_cont}
+use core.{StmtId, Arm, HoleKind, Unplaced, is_name_cont, digest_of}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
@@ -430,12 +430,24 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
     let known = ws.records.grammar_scanned.get().get(path)
     if known != null { return known! }
     let text = ws.host.read(path)
-    // THE CHEAPEST GATE FIRST: no `grammar` substring anywhere, no
-    // token stream worth building.
-    let found = (text.contains("grammar") || text.contains("component") || text.contains("export")) &&
-        opens_block(lex_source(text).tokens, ws.lang.keywords)
+    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
+    // row under its digest holds for every process that reads these bytes.
+    let store = store_at(build_cache_root(ws))
+    let key = digest_of("scan\n${text}")
+    mut rows = db()
+    let kept = rows.scan(store, key)
+    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
+    if kept == null { rows.insert_scan(store, key, if found { "1" } else { "0" }) }
     ws.records.grammar_scanned.put(path, found)
     found
+}
+
+/// Whether a file's text may declare a block word. THE CHEAPEST GATE
+/// FIRST: no `grammar`/`component`/`export` substring anywhere, no token
+/// stream worth building.
+fn text_opens_block(text: string, keywords: List<string>) -> bool {
+    (text.contains("grammar") || text.contains("component") || text.contains("export")) &&
+        opens_block(lex_source(text).tokens, keywords)
 }
 
 /// Whether the stream may declare a block word: a `grammar` token
