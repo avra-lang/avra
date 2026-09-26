@@ -30,7 +30,14 @@ export enum SqlExpr {
     /// or `IN (SELECT ...)`'s own right side.
     Subquery(s: SqlSelect)
     Exists(s: SqlSelect)
+    /// A window function — `e` is the call it modifies (`ROW_NUMBER()`,
+    /// `SUM(amount)`), never a value on its own.
+    Over(e: SqlExpr, over: OverClause)
 }
+
+/// A window function's own frame — `PARTITION BY`/`ORDER BY` only;
+/// an explicit frame (`ROWS`/`RANGE BETWEEN ...`) has no spelling yet.
+export type OverClause = { partition_by: List<SqlExpr>, order_by: List<OrderItem> }
 
 /// `IN`'s own right side — a literal value list, or a subquery
 /// answering the rows to compare against.
@@ -114,6 +121,7 @@ export enum SqlNode {
     Upd(u: UpdateStmt)
     Del(d: DeleteStmt)
     Cte(c: CteDef)
+    Over(o: OverClause)
 }
 
 fn text_of(c: Captured<LexToken, SqlNode>) -> string {
@@ -174,6 +182,7 @@ impl SqlNode {
     fn as_delete() -> DeleteStmt? { match self { .Del(d) -> d, _ -> null } }
     fn as_select() -> SqlSelect? { match self { .Sel(s) -> s, _ -> null } }
     fn as_cte() -> CteDef? { match self { .Cte(c) -> c, _ -> null } }
+    fn as_over() -> OverClause? { match self { .Over(o) -> o, _ -> null } }
 }
 
 fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
@@ -481,6 +490,15 @@ fn call_args(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
     .Ok(node(SqlNode.ExList(exprs_of(caps[0])?)))
 }
 
+/// A window function's own frame — both halves optional, neither
+/// directly labeled at this level (each is its own parenthesized
+/// group), so `pb` and `ob` land in the order their groups appear:
+/// `caps[0]`, `caps[1]`.
+@grammar_rule("\"OVER\" \"(\" (\"PARTITION\" \"BY\" pb:expr_list)? (\"ORDER\" \"BY\" ob:order_item (\",\" ob:order_item)*)? \")\"")
+fn over_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(node(SqlNode.Over(OverClause { partition_by: ex_list_of(caps[0]), order_by: ord_items_of(caps[1])? })))
+}
+
 @grammar_rule("\"WHEN\" w:or_expr \"THEN\" t:or_expr")
 fn when_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     let w? = ex_of(caps[0]) else { return .Err("when: condition did not build") }
@@ -541,7 +559,7 @@ fn when_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
 /// from a bare terminal (NUMBER/STRING/HOLE) is. `ex` leads `n:IDENT`
 /// for the same reason `"CASE"` does — `EXISTS` is exactly as
 /// IDENT-shaped as any other identifier here.
-@grammar_rule("p:paren_expr | ex:exists_expr | \"CASE\" (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | \"CASE\" op:or_expr (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")? | NUMBER | STRING | HOLE")
+@grammar_rule("p:paren_expr | ex:exists_expr | \"CASE\" (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | \"CASE\" op:or_expr (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")? (ov:over_clause)? | NUMBER | STRING | HOLE")
 fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     if caps.length == 2 {
         let whens = when_items_of(caps[0])?
@@ -554,15 +572,18 @@ fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, Sq
         let else_branch = ex_of(caps[2])
         return .Ok(node(SqlNode.Ex(SqlExpr.Case(operand, whens, else_branch))))
     }
-    if caps.length == 4 {
+    if caps.length == 5 {
         let name = text_of(caps[0])
-        return match caps[2] {
+        let inner = match caps[2] {
             .Absent -> match caps[1] {
-                .Absent -> .Ok(node(SqlNode.Ex(SqlExpr.Column(null, name)))),
-                .Terminal(_) or .Node(_) or .Many(_) -> .Ok(node(SqlNode.Ex(SqlExpr.Column(name, text_of(caps[1]))))),
+                .Absent -> SqlExpr.Column(null, name),
+                .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Column(name, text_of(caps[1])),
             },
-            .Terminal(_) or .Node(_) or .Many(_) -> .Ok(node(SqlNode.Ex(SqlExpr.Call(name, node_of(caps[3])?.as_ex_list() ?? [])))),
+            .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Call(name, node_of(caps[3])?.as_ex_list() ?? []),
         }
+        if !present(caps[4]) { return .Ok(node(SqlNode.Ex(inner))) }
+        let over? = node_of(caps[4])?.as_over() else { return .Err("window function: OVER clause did not build") }
+        return .Ok(node(SqlNode.Ex(SqlExpr.Over(inner, over))))
     }
     let already_built = node_of(caps[0])
     if already_built != null {

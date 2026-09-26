@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, FromSource, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource, CteDef}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, FromSource, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource, CteDef, OverClause}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -96,6 +96,17 @@ fn render_expr(e: SqlExpr) -> string {
         .Case(operand, whens, else_branch) -> render_case(operand, whens, else_branch),
         .Subquery(s) -> "(${render_select(s)})",
         .Exists(s) -> "EXISTS (${render_select(s)})",
+        .Over(inner, over) -> "${render_expr(inner)} OVER (${render_over(over)})",
+    }
+}
+
+fn render_over(over: OverClause) -> string {
+    let pb = if over.partition_by.is_empty() { "" } else { "PARTITION BY ${[render_expr(e) for e in over.partition_by].join(", ")}" }
+    let ob = if over.order_by.is_empty() { "" } else { "ORDER BY ${[if o.desc { "${render_expr(o.expr)} DESC" } else { render_expr(o.expr) } for o in over.order_by].join(", ")}" }
+    when {
+        pb.is_empty() -> ob
+        ob.is_empty() -> pb
+        _ -> "${pb} ${ob}"
     }
 }
 
@@ -616,6 +627,45 @@ spec "sql/ctes" {
         then "both build — the trailing optional group did not steal WITH's slot" {
             let s = select_of(selected("WITH recent AS (SELECT id FROM posts) SELECT id FROM recent AS r LIMIT 5"))
             s != null && s!.ctes.length == 1 && limit_shape("WITH recent AS (SELECT id FROM posts) SELECT id FROM recent AS r LIMIT 5") == "5"
+        }
+    }
+}
+
+spec "sql/window_functions" {
+    given "PARTITION BY and ORDER BY together" {
+        then "both build, in the OVER clause" {
+            let s = select_of(selected("SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM emp"))
+            s != null && render_expr(s!.columns[0].expr) == "ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)"
+        }
+    }
+    given "PARTITION BY alone" {
+        then "no ORDER BY half" {
+            let s = select_of(selected("SELECT SUM(amount) OVER (PARTITION BY customer_id) FROM orders"))
+            s != null && render_expr(s!.columns[0].expr) == "SUM(amount) OVER (PARTITION BY customer_id)"
+        }
+    }
+    given "ORDER BY alone" {
+        then "no PARTITION BY half" {
+            let s = select_of(selected("SELECT RANK() OVER (ORDER BY score DESC) FROM t"))
+            s != null && render_expr(s!.columns[0].expr) == "RANK() OVER (ORDER BY score DESC)"
+        }
+    }
+    given "an empty OVER ()" {
+        then "both halves empty, not absent" {
+            let s = select_of(selected("SELECT ROW_NUMBER() OVER () FROM t"))
+            s != null && render_expr(s!.columns[0].expr) == "ROW_NUMBER() OVER ()"
+        }
+    }
+    given "a call with no OVER, unaffected" {
+        then "still builds as a plain Call" {
+            let s = select_of(selected("SELECT COUNT(*) FROM t"))
+            s != null && render_expr(s!.columns[0].expr) == "COUNT(*)"
+        }
+    }
+    given "a bare and a qualified column, unaffected" {
+        then "the new trailing optional group did not disturb either" {
+            let s = select_of(selected("SELECT id, t.id FROM t"))
+            s != null && columns_shape(s!.columns) == "id,t.id"
         }
     }
 }
