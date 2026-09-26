@@ -85,7 +85,7 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{Kernel, new_kernel, Key, Memo, new_memo}
+use query.{new_kernel, Key, Memo, new_memo}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -232,7 +232,7 @@ export type Workspace = {
     host: Host,
     root: string,
     lang: Language,
-    db: Kernel,
+    db: Db,
     decls: Decls,
     /// THE ARTIFACT STORE, when a BUILD attached one. A unit's edges are persisted so a
     /// held unit can contribute them without a body; outside a build there is none and
@@ -539,7 +539,7 @@ fn built(
     lone: bool,
     per_file: bool,
 ) -> Workspace {
-    let db = new_kernel()
+    let kernel = new_kernel()
     let no_asks: List<Wanted> = []
     let no_lifts: List<LiftAsk> = []
     let no_settles: List<SettleAsk> = []
@@ -557,32 +557,32 @@ fn built(
         host: host,
         root: root,
         lang: lang,
-        db: db,
+        db: new_db(kernel),
         decls: language_decls(lang),
         store: Cell.new(no_store),
-        source_memo: new_memo<DbRow>(db, ordinal(Family.Source)),
-        manifest_memo: new_memo<DbRow>(db, ordinal(Family.Manifest)),
+        source_memo: new_memo<DbRow>(kernel, ordinal(Family.Source)),
+        manifest_memo: new_memo<DbRow>(kernel, ordinal(Family.Manifest)),
         externs: new_table<ExternNames>(),
-        parsed_memo: new_memo<DbRow>(db, ordinal(Family.Parsed)),
-        plain_memo: new_memo<DbRow>(db, ordinal(Family.Plain)),
-        items_memo: new_memo<DbRow>(db, ordinal(Family.Items)),
-        namespace_memo: new_memo<DbRow>(db, ordinal(Family.Namespace)),
-        visible_memo: new_memo<DbRow>(db, ordinal(Family.Visible)),
-        resolved_memo: new_memo<DbRow>(db, ordinal(Family.Resolved)),
+        parsed_memo: new_memo<DbRow>(kernel, ordinal(Family.Parsed)),
+        plain_memo: new_memo<DbRow>(kernel, ordinal(Family.Plain)),
+        items_memo: new_memo<DbRow>(kernel, ordinal(Family.Items)),
+        namespace_memo: new_memo<DbRow>(kernel, ordinal(Family.Namespace)),
+        visible_memo: new_memo<DbRow>(kernel, ordinal(Family.Visible)),
+        resolved_memo: new_memo<DbRow>(kernel, ordinal(Family.Resolved)),
         sig_voices: new_table<Voices>(),
-        typed_memo: new_memo<DbRow>(db, ordinal(Family.Typed)),
-        const_typed_memo: new_memo<DbRow>(db, ordinal(Family.ConstTyped)),
+        typed_memo: new_memo<DbRow>(kernel, ordinal(Family.Typed)),
+        const_typed_memo: new_memo<DbRow>(kernel, ordinal(Family.ConstTyped)),
         method_clashes: new_table<List<Clash>>(),
         method_diags: Cell.new(no_method_diags),
-        folded_memo: new_memo<DbRow>(db, ordinal(Family.Folded)),
-        analysis_memo: new_memo<DbRow>(db, ordinal(Family.Analysis)),
-        lowered_memo: new_memo<DbRow>(db, ordinal(Family.Lowered)),
+        folded_memo: new_memo<DbRow>(kernel, ordinal(Family.Folded)),
+        analysis_memo: new_memo<DbRow>(kernel, ordinal(Family.Analysis)),
+        lowered_memo: new_memo<DbRow>(kernel, ordinal(Family.Lowered)),
         asks: Cell.new(no_asks),
         lift_asks: Cell.new(no_lifts),
-        lifted_memo: new_memo<DbRow>(db, ordinal(Family.Lifted)),
-        expanded_memo: new_memo<DbRow>(db, ordinal(Family.Expanded)),
+        lifted_memo: new_memo<DbRow>(kernel, ordinal(Family.Lifted)),
+        expanded_memo: new_memo<DbRow>(kernel, ordinal(Family.Expanded)),
         settle_asks: Cell.new(no_settles),
-        settled_memo: new_memo<DbRow>(db, ordinal(Family.Settled)),
+        settled_memo: new_memo<DbRow>(kernel, ordinal(Family.Settled)),
         records: new_records(),
         keys: new_keys(),
         module_names_of: Cell.new(no_module_names_of),
