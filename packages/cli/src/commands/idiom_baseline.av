@@ -25,20 +25,31 @@ export const baseline_header: string = "# KNOWN idiom debt, one TAB-separated si
 /// header, followed immediately by its own `╭─[file:line:col]`. A
 /// scan, not a comprehension: each site needs its OWN look-ahead line,
 /// which one hole cannot bind alongside the run it scans.
-export fn sites_in(warnings: string) -> List<Site> {
+///
+/// `kinds` is the ratchet's own boundary: ONLY a `warning[kind]` whose
+/// kind IS a declared `rule`'s id counts as a site. A COMPILER-LAW
+/// warning (`type.alias_copy`, `fns.dead_parameter`, …) prints the
+/// same `warning[kind]: …` shape but names no `rule` — it is the
+/// compiler's own gate's finding, never this ratchet's, and nothing
+/// about the TEXT tells the two apart, only membership in the rule
+/// table itself (compiler/rules_table.av's `rules` collect, read
+/// in-process by the caller — never a kind-string SHAPE like "has a
+/// dot in it").
+export fn sites_in(warnings: string, kinds: List<string>) -> List<Site> {
     let lines = warnings.split("\n")
     mut out: List<Site> = []
     mut i = 0
     while i < lines.length {
-        let s = site_at(lines, i)
+        let s = site_at(lines, i, kinds)
         if s != null { out.push(s!) }
         i = i + 1
     }
     out
 }
 
-fn site_at(lines: List<string>, i: int) -> Site? {
+fn site_at(lines: List<string>, i: int, kinds: List<string>) -> Site? {
     let kind? = kind_of(lines[i]) else { return null }
+    if !kinds.contains(kind) { return null }
     let loc? = location_after(lines, i) else { return null }
     let text? = source_line(loc.file, loc.line) else { return null }
     Site { kind: kind, file: relative_path(here(), loc.file), text: text }
@@ -94,8 +105,8 @@ export fn baseline_keys(path: string) -> List<string> {
 
 /// Every site `warnings` reports that `keys` does not already accept
 /// — what the gate refuses on.
-export fn new_sites(warnings: string, keys: List<string>) -> List<Site> {
-    [s for s in sites_in(warnings) if !keys.contains(site_key(s))]
+export fn new_sites(warnings: string, kinds: List<string>, keys: List<string>) -> List<Site> {
+    [s for s in sites_in(warnings, kinds) if !keys.contains(site_key(s))]
 }
 
 /// `keys`, pruned to the ones whose own site is STILL PRESENT ON DISK
