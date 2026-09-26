@@ -66,6 +66,9 @@ fn render_expr(e: SqlExpr) -> string {
         .BinOp(op, lhs, rhs) -> "(${render_expr(lhs)} ${op} ${render_expr(rhs)})",
         .Call(fn_name, args) -> "${fn_name}(${[render_expr(a) for a in args].join(", ")})",
         .Star -> "*",
+        .IsNull(inner, negated) -> "(${render_expr(inner)} IS ${if negated { "NOT " } else { "" }}NULL)",
+        .Between(inner, lo, hi, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}BETWEEN ${render_expr(lo)} AND ${render_expr(hi)})",
+        .In(inner, list, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}IN (${[render_expr(a) for a in list].join(", ")}))",
     }
 }
 
@@ -330,6 +333,54 @@ spec "sql/group_having" {
             let source = "SELECT customer, COUNT(*) AS n FROM Orders AS o WHERE o.placed_at > \${cutoff} GROUP BY customer HAVING COUNT(*) >= 3 ORDER BY n DESC LIMIT 10"
             let s = select_of(selected(source))
             s != null && columns_shape(s!.columns) == "customer,COUNT(*) AS n" && group_by_shape(source) == "customer" && having_shape(source) == "(COUNT(*) >= 3)" && order_shape(source) == "n DESC" && limit_shape(source) == "10"
+        }
+    }
+}
+
+spec "sql/predicates" {
+    given "LIKE" {
+        then "builds as a LIKE comparison" {
+            where_shape("SELECT a FROM t WHERE name LIKE 'a%'") == "(name LIKE 'a%')"
+        }
+    }
+    given "NOT LIKE" {
+        then "carries the negation in the operator" {
+            where_shape("SELECT a FROM t WHERE name NOT LIKE 'a%'") == "(name NOT LIKE 'a%')"
+        }
+    }
+    given "IN with several values" {
+        then "every value, in order" {
+            where_shape("SELECT a FROM t WHERE id IN (1, 2, 3)") == "(id IN (1, 2, 3))"
+        }
+    }
+    given "NOT IN" {
+        then "negated" {
+            where_shape("SELECT a FROM t WHERE id NOT IN (1, 2)") == "(id NOT IN (1, 2))"
+        }
+    }
+    given "BETWEEN" {
+        then "both bounds, in order" {
+            where_shape("SELECT a FROM t WHERE age BETWEEN 1 AND 10") == "(age BETWEEN 1 AND 10)"
+        }
+    }
+    given "NOT BETWEEN" {
+        then "negated" {
+            where_shape("SELECT a FROM t WHERE age NOT BETWEEN 1 AND 10") == "(age NOT BETWEEN 1 AND 10)"
+        }
+    }
+    given "IS NULL" {
+        then "builds as IsNull" {
+            where_shape("SELECT a FROM t WHERE deleted_at IS NULL") == "(deleted_at IS NULL)"
+        }
+    }
+    given "IS NOT NULL" {
+        then "negated" {
+            where_shape("SELECT a FROM t WHERE deleted_at IS NOT NULL") == "(deleted_at IS NOT NULL)"
+        }
+    }
+    given "a predicate beside an ordinary comparison" {
+        then "both sides of AND build independently" {
+            where_shape("SELECT a FROM t WHERE age > 1 AND deleted_at IS NULL") == "((age > 1) AND (deleted_at IS NULL))"
         }
     }
 }

@@ -18,6 +18,9 @@ export enum SqlExpr {
     Call(fn_name: string, args: List<SqlExpr>)
     /// The bare `*` argument (`COUNT(*)`) — never a real column value.
     Star
+    IsNull(e: SqlExpr, negated: bool)
+    Between(e: SqlExpr, lo: SqlExpr, hi: SqlExpr, negated: bool)
+    In(e: SqlExpr, list: List<SqlExpr>, negated: bool)
 }
 
 /// One `SELECT` item: an expression, optionally named (`AS alias`).
@@ -71,6 +74,12 @@ fn text_of(c: Captured<LexToken, SqlNode>) -> string {
         .Terminal(t) -> t.text,
         .Node(_) or .Many(_) or .Absent -> "",
     }
+}
+
+/// Whether an optional capture matched at all — a marker slot's whole
+/// job (`ink`/`isk`/`lp`), never the payload itself.
+fn present(c: Captured<LexToken, SqlNode>) -> bool {
+    match c { .Absent -> false, .Terminal(_) or .Node(_) or .Many(_) -> true }
 }
 
 /// The captured token's own KIND (`IDENT`/`NUMBER`/`STRING`/`HOLE`) —
@@ -181,10 +190,11 @@ fn cols_of(c: Captured<LexToken, SqlNode>) -> List<SelectItem> {
     node_of(c)?.as_cols() ?? []
 }
 
-/// `select_stmt`'s own `g:group_by_clause?` / a single optional
-/// reference, same shape as `cols_of`/`order_items_of` — absent when
-/// there is no `GROUP BY` at all.
-fn group_by_of(c: Captured<LexToken, SqlNode>) -> List<SqlExpr> {
+/// A single optional reference to a rule that already aggregated its
+/// own `ExList` — `select_stmt`'s `g:group_by_clause?`, same shape as
+/// `cols_of`/`order_items_of`, and the `IN (...)` predicate's own
+/// `list:expr_list?`. Absent reads as the empty list.
+fn ex_list_of(c: Captured<LexToken, SqlNode>) -> List<SqlExpr> {
     node_of(c)?.as_ex_list() ?? []
 }
 
@@ -277,13 +287,42 @@ fn not_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken
     }
 }
 
-@grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\"|\"!=\") r:atom)?")
+/// A comparison, or one of the negatable keyword predicates (`LIKE`,
+/// `IN (...)`, `BETWEEN … AND …`, `IS [NOT] NULL`) — five independent
+/// optional suffixes after one shared `l:atom`, the same reason
+/// `atom` itself uses two: each starts on a different first token
+/// (an operator symbol, `LIKE`, `IN`, `BETWEEN`, `IS`), so none
+/// competes with the others or with `l`.
+///
+/// Each group's own REQUIRED item is its presence marker — `rl`,
+/// `ink`, `lo`, `isk` are never optional inside their own group, so
+/// unlike `list` (an empty `IN ()`) or a bare `NOT`, they can never
+/// read Absent for a reason other than "this group did not match".
+@grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\"|\"!=\") r:atom)? ((nl:\"NOT\")? \"LIKE\" rl:atom)? ((ni:\"NOT\")? ink:\"IN\" \"(\" list:expr_list? \")\")? ((nb:\"NOT\")? \"BETWEEN\" lo:atom \"AND\" hi:atom)? (isk:\"IS\" (nn:\"NOT\")? \"NULL\")?")
 fn cmp_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     let l? = ex_of(caps[0]) else { return .Err("expr: left side did not build") }
     let op = text_of(caps[1])
-    if op.is_empty() { return .Ok(node(SqlNode.Ex(l))) }
-    let r? = ex_of(caps[2]) else { return .Err("expr: right side did not build") }
-    .Ok(node(SqlNode.Ex(SqlExpr.BinOp(op, l, r))))
+    if !op.is_empty() {
+        let r? = ex_of(caps[2]) else { return .Err("expr: right side did not build") }
+        return .Ok(node(SqlNode.Ex(SqlExpr.BinOp(op, l, r))))
+    }
+    if present(caps[3]) {
+        let rl? = ex_of(caps[3]) else { return .Err("like: right side did not build") }
+        let kw = if present(caps[4]) { "NOT LIKE" } else { "LIKE" }
+        return .Ok(node(SqlNode.Ex(SqlExpr.BinOp(kw, l, rl))))
+    }
+    if present(caps[5]) {
+        return .Ok(node(SqlNode.Ex(SqlExpr.In(l, ex_list_of(caps[6]), present(caps[7])))))
+    }
+    if present(caps[8]) {
+        let lo? = ex_of(caps[8]) else { return .Err("between: lower bound did not build") }
+        let hi? = ex_of(caps[9]) else { return .Err("between: upper bound did not build") }
+        return .Ok(node(SqlNode.Ex(SqlExpr.Between(l, lo, hi, present(caps[10])))))
+    }
+    if present(caps[11]) {
+        return .Ok(node(SqlNode.Ex(SqlExpr.IsNull(l, present(caps[12])))))
+    }
+    .Ok(node(SqlNode.Ex(l)))
 }
 
 /// One function-call argument: the bare `*` (`COUNT(*)`) delivers as
@@ -335,9 +374,16 @@ fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, Sq
     }
 }
 
-@grammar_rule("\"GROUP\" \"BY\" e:or_expr (\",\" e:or_expr)*")
-fn group_by_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+/// A bare comma-separated expression list — `GROUP BY`'s own columns,
+/// and the `IN (...)` predicate's own set.
+@grammar_rule("e:or_expr (\",\" e:or_expr)*")
+fn expr_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     .Ok(node(SqlNode.ExList(exprs_of(caps[0])?)))
+}
+
+@grammar_rule("\"GROUP\" \"BY\" e:expr_list")
+fn group_by_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(caps[0])
 }
 
 @grammar_rule("\"HAVING\" e:or_expr")
@@ -350,7 +396,7 @@ fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
     let cols = cols_of(caps[0])
     let from? = from_of(caps[1]) else { return .Err("select: FROM did not build") }
     let where_ = ex_of(caps[2])
-    let group_by = group_by_of(caps[3])
+    let group_by = ex_list_of(caps[3])
     let having = ex_of(caps[4])
     let order = order_items_of(caps[5])
     let limit = match caps[6] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Number(text_of(caps[6])) }
