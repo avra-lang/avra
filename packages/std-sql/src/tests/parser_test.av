@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -45,14 +45,6 @@ fn selected(source: string) -> SqlNode? {
     }
 }
 
-fn where_ident(e: SqlExpr?) -> string? {
-    if e == null { return null }
-    match e! {
-        .Ident(name) -> name,
-        _ -> null,
-    }
-}
-
 fn select_of(n: SqlNode?) -> SqlSelect? {
     if n == null { return null }
     match n! {
@@ -61,12 +53,12 @@ fn select_of(n: SqlNode?) -> SqlSelect? {
     }
 }
 
-/// A canonical, parenthesized rendering of an expression tree — for
-/// asserting on WHERE-clause shape (precedence, operator nesting)
+/// A canonical rendering of an expression tree — for asserting on
+/// clause shape (precedence, operator nesting, qualified columns)
 /// without hand-unwrapping `SqlExpr` in every test.
 fn render_expr(e: SqlExpr) -> string {
     match e {
-        .Ident(name) -> name,
+        .Column(qualifier, name) -> if qualifier == null { name } else { "${qualifier!}.${name}" },
         .Number(text) -> text,
         .Str(text) -> "'${text}'",
         .Hole(name) -> "\${${name}}",
@@ -75,23 +67,57 @@ fn render_expr(e: SqlExpr) -> string {
     }
 }
 
+fn where_ident(e: SqlExpr?) -> string? {
+    if e == null { return null }
+    render_expr(e!)
+}
+
 fn where_shape(source: string) -> string? {
     let s? = select_of(selected(source)) else { return null }
     let w? = s.where else { return null }
     render_expr(w)
 }
 
+fn columns_shape(items: List<SelectItem>) -> string {
+    [if i.as_name == null { render_expr(i.expr) } else { "${render_expr(i.expr)} AS ${i.as_name!}" } for i in items].join(",")
+}
+
+fn table_shape(t: TableRef) -> string {
+    if t.as_name == null { t.name } else { "${t.name} AS ${t.as_name!}" }
+}
+
+fn join_shape(j: JoinItem) -> string {
+    "${j.kind} JOIN ${table_shape(j.other)} ON ${render_expr(j.on)}"
+}
+
+fn from_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let joins = [join_shape(j) for j in s.from.joins].join(" ")
+    if joins.is_empty() { table_shape(s.from.first) } else { "${table_shape(s.from.first)} ${joins}" }
+}
+
+fn order_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    [if o.desc { "${render_expr(o.expr)} DESC" } else { render_expr(o.expr) } for o in s.order_by].join(",")
+}
+
+fn limit_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let lim? = s.limit else { return null }
+    render_expr(lim)
+}
+
 spec "sql/parse_sql" {
     given "a plain SELECT" {
         then "columns, table and no WHERE" {
             let s = select_of(selected("SELECT title FROM Post"))
-            s != null && s!.columns.join(",") == "title" && s!.from_table == "Post" && s!.where == null
+            s != null && columns_shape(s!.columns) == "title" && from_shape("SELECT title FROM Post") == "Post" && s!.where == null
         }
     }
     given "a SELECT with several columns and a WHERE" {
         then "every column, the table, and the WHERE identifier" {
             let s = select_of(selected("SELECT title, author FROM Post WHERE title"))
-            s != null && s!.columns.join(",") == "title,author" && s!.from_table == "Post" && where_ident(s!.where) == "title"
+            s != null && columns_shape(s!.columns) == "title,author" && where_ident(s!.where) == "title"
         }
     }
     given "malformed input" {
@@ -115,6 +141,11 @@ spec "sql/atoms" {
     given "a hole placeholder" {
         then "builds as Hole, name only, no braces" {
             where_shape("SELECT a FROM t WHERE \${id}") == "\${id}"
+        }
+    }
+    given "a table-qualified column" {
+        then "builds as Column(qualifier, name)" {
+            where_shape("SELECT a FROM t WHERE p.title") == "p.title"
         }
     }
 }
@@ -143,6 +174,85 @@ spec "sql/boolean_expr" {
     given "NOT binding tighter than AND" {
         then "NOT a AND b groups as (NOT a) AND b" {
             where_shape("SELECT a FROM t WHERE NOT a AND b") == "((NOT a) AND b)"
+        }
+    }
+}
+
+spec "sql/select_list" {
+    given "a column with AS" {
+        then "aliases correctly" {
+            let s = select_of(selected("SELECT u.name AS author_name FROM User AS u"))
+            s != null && columns_shape(s!.columns) == "u.name AS author_name"
+        }
+    }
+    given "an expression column" {
+        then "builds like any other WHERE expression" {
+            let s = select_of(selected("SELECT p.published FROM Post AS p"))
+            s != null && columns_shape(s!.columns) == "p.published"
+        }
+    }
+}
+
+spec "sql/from_join" {
+    given "a bare table" {
+        then "no joins" {
+            from_shape("SELECT a FROM Post") == "Post"
+        }
+    }
+    given "a table with AS" {
+        then "the alias renders" {
+            from_shape("SELECT a FROM Post AS p") == "Post AS p"
+        }
+    }
+    given "an INNER JOIN, keyword omitted" {
+        then "defaults to INNER" {
+            from_shape("SELECT a FROM Post AS p JOIN User AS u ON u.id = p.author_id") == "Post AS p INNER JOIN User AS u ON (u.id = p.author_id)"
+        }
+    }
+    given "an explicit LEFT JOIN" {
+        then "the kind carries through" {
+            from_shape("SELECT a FROM Post AS p LEFT JOIN User AS u ON u.id = p.author_id") == "Post AS p LEFT JOIN User AS u ON (u.id = p.author_id)"
+        }
+    }
+    given "two joins" {
+        then "both appear in order" {
+            let expect = "Post AS p INNER JOIN User AS u ON (u.id = p.author_id) INNER JOIN Tag AS t ON (t.post_id = p.id)"
+            from_shape("SELECT a FROM Post AS p JOIN User AS u ON u.id = p.author_id JOIN Tag AS t ON t.post_id = p.id") == expect
+        }
+    }
+}
+
+spec "sql/order_limit" {
+    given "ORDER BY with no direction" {
+        then "defaults to ascending (not DESC)" {
+            order_shape("SELECT a FROM t ORDER BY a") == "a"
+        }
+    }
+    given "ORDER BY DESC" {
+        then "the direction renders" {
+            order_shape("SELECT a FROM t ORDER BY a DESC") == "a DESC"
+        }
+    }
+    given "ORDER BY two columns" {
+        then "both appear in order" {
+            order_shape("SELECT a FROM t ORDER BY a DESC, b") == "a DESC,b"
+        }
+    }
+    given "LIMIT" {
+        then "builds as a Number" {
+            limit_shape("SELECT a FROM t LIMIT 20") == "20"
+        }
+    }
+    given "no LIMIT" {
+        then "absent" {
+            limit_shape("SELECT a FROM t") == null
+        }
+    }
+    given "the user's own worked example" {
+        then "everything together — columns, aliases, join, WHERE, ORDER BY, LIMIT" {
+            let source = "SELECT p.title, u.name AS author_name FROM Post AS p JOIN User AS u ON u.id = p.author_id WHERE p.published AND p.created_at > \${ninety_days_ago} ORDER BY p.created_at DESC LIMIT 20"
+            let s = select_of(selected(source))
+            s != null && columns_shape(s!.columns) == "p.title,u.name AS author_name" && from_shape(source) == "Post AS p INNER JOIN User AS u ON (u.id = p.author_id)" && where_shape(source) == "(p.published AND (p.created_at > \${ninety_days_ago}))" && order_shape(source) == "p.created_at DESC" && limit_shape(source) == "20"
         }
     }
 }
