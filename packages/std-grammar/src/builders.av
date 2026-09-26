@@ -233,7 +233,7 @@ fn marked_item(m: Item, label: string, as_head: bool) -> Item {
     if m.label == label { return head_or_trailer(m, as_head) }
     match m.prim {
         .Group(inner) -> m with { prim: Prim.Group(Alt { branches: [s with { items: [marked_item(x, label, as_head) for x in s.items] } for s in inner.branches] }) },
-        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> m,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> m,
     }
 }
 
@@ -320,6 +320,10 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
         "build_group" -> {
             let inner = want(alt_of(args[0]), "an alternation")?
             ok<T>(GrammarNode.NPrim(Prim.Group(inner)))
+        },
+        "build_not" -> {
+            let inner = want(prim_of(args[0]), "an atom")?
+            ok<T>(GrammarNode.NPrim(Prim.NotChar(inner)))
         },
         "build_build" -> {
             let name_text = tok_text(lex, args[0], "a builder name")?

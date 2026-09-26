@@ -42,7 +42,7 @@ fn alt_words(a: Alt) -> List<string> {
 fn item_words(x: Item) -> List<string> {
     match x.prim {
         .Lit(text) if !text.is_empty() && is_name_start(text.char_code(0)) -> [text],
-        .Lit(_) or .Ref(_) or .Named(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> [],
+        .Lit(_) or .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> [],
     }
 }
 
@@ -131,7 +131,7 @@ fn own_binding(m: Item, label: string) -> int {
 fn group_bindings(p: Prim, label: string) -> int {
     match p {
         .Group(inner) -> most_of([s.binding_count(label) for s in inner.branches]),
-        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> 0,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> 0,
     }
 }
 
@@ -171,7 +171,7 @@ fn listed_item(s: Seq, m: Item) -> Item {
 fn listed_prim(s: Seq, p: Prim) -> Prim {
     match p {
         .Group(inner) -> Prim.Group(inner with { branches: [nested_seq(s, b) for b in inner.branches] }),
-        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> p,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
     }
 }
 
@@ -184,9 +184,9 @@ fn nested_seq(outer: Seq, inner: Seq) -> Seq {
 /// `+` one or more, `?` optional.
 export enum Rep { One, Star, Plus, Opt }
 
-/// What an Item actually is. The last four are a LEXICON's own —
+/// What an Item actually is. `NotChar` is a LEXICON's own —
 /// character-level matching, the way `Lit`/`Named` work at the token
-/// level; a parsing grammar's rules never carry them.
+/// level; a parsing grammar's rules never carry it.
 export enum Prim {
     /// Another rule's name — recurse into it.
     Ref(rule: string)
@@ -197,27 +197,19 @@ export enum Prim {
     Named(term: string)
     /// Parentheses in the grammar: a nested Alt as one atom.
     Group(inner: Alt)
-    /// One character in `[lo, hi]`, inclusive.
-    CharRange(lo: string, hi: string)
-    /// Any one character.
-    AnyChar
-    /// One character NOT matching `inner`.
+    /// One character NOT matching `inner` — negation over an open
+    /// character set, which has no finite-alternation equivalent.
     NotChar(inner: Prim)
-    /// Characters up to and including the first match of `closer` — a
-    /// block comment's or a raw string's own shape (a multi-character
-    /// closer is not one `NotChar`, which is why this is its own
-    /// primitive rather than sugar over `NotChar`/`Star`).
-    Until(closer: Prim)
 }
 
 impl Prim {
     /// The token this atom answers to by name — what an `@expect`
-    /// names. Rules, groups, and a lexicon's character atoms have no
+    /// names. Rules, groups, and a lexicon's character atom have no
     /// single token.
     fn token_name() -> string? {
         match self {
             .Lit(text) or .Named(text) -> text,
-            .Ref(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> null,
+            .Ref(_) or .Group(_) or .NotChar(_) -> null,
         }
     }
 
@@ -256,7 +248,7 @@ impl Alt {
 fn group_seqs(p: Prim) -> List<Seq> {
     match p {
         .Group(inner) -> inner.seqs(),
-        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> [],
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> [],
     }
 }
 

@@ -362,7 +362,7 @@ fn takes_term<T>(lex: Lexeme<T>, p: Prim, t: T) -> bool {
     match p {
         .Lit(text) -> lex.lit_matches(t, text),
         .Named(term) -> lex.wears(t, term) || (is_end(term) && closes_body(lex, t)),
-        .Ref(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> false,
+        .Ref(_) or .Group(_) or .NotChar(_) -> false,
     }
 }
 
@@ -554,7 +554,7 @@ fn consumed_loc<T>(lex: Lexeme<T>, tokens: List<T>, from: int, until: int) -> Lo
 fn opens(p: Prim) -> bool {
     match p {
         .Lit(text) -> text == "(" || text == "[" || text == "{",
-        .Ref(_) or .Named(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> false,
+        .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> false,
     }
 }
 
@@ -677,7 +677,7 @@ fn match_prim<T, N>(mut cx: MatchContext<T, N>, rule_name: string, member: Item,
             let v = if member.label != null { r.value } else { cx.absent }
             r with { value: v }
         },
-        .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) ->
+        .NotChar(_) ->
             // A lexicon's own atom, over a token stream — a grammar
             // authoring mistake, not an input failure.
             broke<T, N>(cx, cursor, bindings, [defect(rule_name, "a character primitive reached the token engine — this atom belongs to a lexicon, not a parsing grammar")], null),
@@ -716,7 +716,7 @@ export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
         match p {
             .Lit(text) -> lits.set(text, lit_expected(text)),
             .Named(term) -> kinds.set(term, [expected_word(term)]),
-            .Ref(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> nothing_noted(),
+            .Ref(_) or .Group(_) or .NotChar(_) -> nothing_noted(),
         }
     }
     Ready {
@@ -738,7 +738,7 @@ fn terminals_of(a: Alt) -> List<Prim> {
 fn terminal_prims(p: Prim) -> List<Prim> {
     match p {
         .Lit(_) or .Named(_) -> [p],
-        .Ref(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> [],
+        .Ref(_) or .Group(_) or .NotChar(_) -> [],
     }
 }
 

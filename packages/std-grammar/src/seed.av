@@ -123,8 +123,18 @@ export const grammar_of_grammars: Grammar = Grammar {
             ], Build.Call("build_postfix", ["inner", "rep"])),
         ]),
 
-        // primary = NAME | STRING | "(" alt ")"
+        // primary = "not" "(" primary ")" | NAME | STRING | "(" alt ")"
+        // The `not(...)` branch anchors on the LITERAL "not" ahead of
+        // the bare-NAME branch it shares a leading NAME token with —
+        // a rule genuinely named `not` still resolves there when no
+        // `(` follows (the anchor's own committed break defers to it).
         rule_def("primary", [
+            seq_to([
+                item(lit("not")),
+                item(lit("(")),
+                cap("inner", rule_ref("primary")),
+                expecting(lit(")"), "expected ')' to close not(...)"),
+            ], Build.Call("build_not", ["inner"])),
             seq_to([cap("name", named("NAME"))], Build.Call("build_prim_name", ["name"])),
             seq_to([cap("text", named("STRING"))], Build.Call("build_lit", ["text"])),
             seq_to([
