@@ -6,6 +6,7 @@
 //! prunes it down to sites still found — never grows it (idiom_baseline.av).
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
+use @std.path.{relative_path, under_dir}
 use @std.avrac.compiler.{Checked, rule_id}
 
 type CheckCmd = {}
@@ -27,7 +28,7 @@ impl Runnable for CheckCmd {
 /// asks for the ratchet instead.
 fn said(args: CliResult, path: string, c: Checked) -> int {
     let baseline = args.option("baseline")
-    if args.has_flag("baseline_accept") { return accepted(baseline) }
+    if args.has_flag("baseline_accept") { return accepted(path, baseline, c) }
     if baseline != "" {
         let bad = new_sites(c.warnings, rule_kinds(path), baseline_keys(baseline))
         if !bad.is_empty() { return refused_sites(bad) }
@@ -48,9 +49,32 @@ fn rule_kinds(path: string) -> List<string> {
 
 /// `--baseline_accept`'s whole verb: prune, write, report — exit 0
 /// whatever it kept, since pruning never fails the gate on its own.
-fn accepted(path: string) -> int {
-    let kept = pruned_baseline(baseline_keys(path))
-    let _ = write_text(path, baseline_header + joined_lines(kept))
+/// `c` is the SAME checked answer `said` already holds for `path` —
+/// the ratchet's "does it still fire" reads the one rendering
+/// `avra check` itself trusts, never a second derivation that could
+/// disagree (a bare `root_program` here once answered `unused_import`
+/// wrong: its own analysis skips the cross-file References a full
+/// check populates).
+///
+/// REACHED IS `path`'S OWN FILES, NEVER EVERY FILE ITS PROGRAM
+/// ANALYZED: `root_program(path).files` also holds every dependency
+/// `path` reaches — `packages/cli` alone pulls in `@std/grammar` — and
+/// `c.warnings` never reports on a dependency's own diagnostics, only
+/// `path`'s. Counting a dependency file as REACHED then reads its
+/// silence as "stopped firing" and drops another package's own
+/// accepted row out from under it; narrowed to files under `path`
+/// itself, a dependency is simply never asked.
+export fn accepted(path: string, baseline: string, c: Checked) -> int {
+    // `path` ARRIVES ABSOLUTE (`argued_path` roots every path argument
+    // there); a reached file's own key is `here()`-relative
+    // (`site_at`'s convention, idiom_baseline.av) — the same currency
+    // on both sides, or an absolute `path` never matches a relative
+    // `f` and every file reads as outside the package.
+    let own = relative_path(here(), path)
+    let reached = [f for f in [relative_path(here(), a.view.source.file) for a in root_program(path).files] if f == own || under_dir(f, own)]
+    let fresh = fresh_keys(c.warnings, rule_kinds(path))
+    let kept = pruned_baseline(baseline_keys(baseline), reached, fresh)
+    let _ = write_text(baseline, baseline_header + joined_lines(kept))
     println("baseline: ${kept.length} site(s) kept")
     0
 }
