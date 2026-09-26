@@ -64,6 +64,8 @@ fn render_expr(e: SqlExpr) -> string {
         .Hole(name) -> "\${${name}}",
         .Not(inner) -> "(NOT ${render_expr(inner)})",
         .BinOp(op, lhs, rhs) -> "(${render_expr(lhs)} ${op} ${render_expr(rhs)})",
+        .Call(fn_name, args) -> "${fn_name}(${[render_expr(a) for a in args].join(", ")})",
+        .Star -> "*",
     }
 }
 
@@ -105,6 +107,17 @@ fn limit_shape(source: string) -> string? {
     let s? = select_of(selected(source)) else { return null }
     let lim? = s.limit else { return null }
     render_expr(lim)
+}
+
+fn group_by_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    [render_expr(e) for e in s.group_by].join(",")
+}
+
+fn having_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let h? = s.having else { return null }
+    render_expr(h)
 }
 
 spec "sql/parse_sql" {
@@ -253,6 +266,70 @@ spec "sql/order_limit" {
             let source = "SELECT p.title, u.name AS author_name FROM Post AS p JOIN User AS u ON u.id = p.author_id WHERE p.published AND p.created_at > \${ninety_days_ago} ORDER BY p.created_at DESC LIMIT 20"
             let s = select_of(selected(source))
             s != null && columns_shape(s!.columns) == "p.title,u.name AS author_name" && from_shape(source) == "Post AS p INNER JOIN User AS u ON (u.id = p.author_id)" && where_shape(source) == "(p.published AND (p.created_at > \${ninety_days_ago}))" && order_shape(source) == "p.created_at DESC" && limit_shape(source) == "20"
+        }
+    }
+}
+
+spec "sql/functions" {
+    given "COUNT(*)" {
+        then "the bare star builds as Star" {
+            where_shape("SELECT a FROM t WHERE COUNT(*) > 0") == "(COUNT(*) > 0)"
+        }
+    }
+    given "a call with one real argument" {
+        then "builds as Call with one expression arg" {
+            where_shape("SELECT a FROM t WHERE AVG(price) > 10") == "(AVG(price) > 10)"
+        }
+    }
+    given "a call with several arguments" {
+        then "every argument, in order" {
+            where_shape("SELECT a FROM t WHERE date(created_at, '-90 days') > 0") == "(date(created_at, '-90 days') > 0)"
+        }
+    }
+    given "a zero-argument call" {
+        then "an empty argument list, not absence" {
+            where_shape("SELECT a FROM t WHERE now() > 0") == "(now() > 0)"
+        }
+    }
+    given "a call as a SELECT item" {
+        then "aliases like any other expression" {
+            let s = select_of(selected("SELECT COUNT(*) AS n FROM Post"))
+            s != null && columns_shape(s!.columns) == "COUNT(*) AS n"
+        }
+    }
+}
+
+spec "sql/group_having" {
+    given "GROUP BY one column" {
+        then "builds the list" {
+            group_by_shape("SELECT a, COUNT(*) FROM t GROUP BY a") == "a"
+        }
+    }
+    given "GROUP BY two columns" {
+        then "both, in order" {
+            group_by_shape("SELECT a, b, COUNT(*) FROM t GROUP BY a, b") == "a,b"
+        }
+    }
+    given "no GROUP BY" {
+        then "an empty list" {
+            group_by_shape("SELECT a FROM t") == ""
+        }
+    }
+    given "HAVING" {
+        then "builds like any other boolean expression" {
+            having_shape("SELECT a, COUNT(*) FROM t GROUP BY a HAVING COUNT(*) >= 3") == "(COUNT(*) >= 3)"
+        }
+    }
+    given "no HAVING" {
+        then "absent" {
+            having_shape("SELECT a FROM t GROUP BY a") == null
+        }
+    }
+    given "GROUP BY and HAVING together with everything else" {
+        then "all clauses build, in the right order" {
+            let source = "SELECT customer, COUNT(*) AS n FROM Orders AS o WHERE o.placed_at > \${cutoff} GROUP BY customer HAVING COUNT(*) >= 3 ORDER BY n DESC LIMIT 10"
+            let s = select_of(selected(source))
+            s != null && columns_shape(s!.columns) == "customer,COUNT(*) AS n" && group_by_shape(source) == "customer" && having_shape(source) == "(COUNT(*) >= 3)" && order_shape(source) == "n DESC" && limit_shape(source) == "10"
         }
     }
 }
