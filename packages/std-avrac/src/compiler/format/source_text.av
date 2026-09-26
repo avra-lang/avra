@@ -823,6 +823,11 @@ impl SourceText {
         if self.pending_before(start_of(self.store.expr_span(no))) { return null }
         match self.store.expr(no) {
             .If(c2, y2, n2) -> self.if_group(c2, y2, n2, no, depth),
+            // A single "else if" branch answers through `tail_scoped`'s
+            // lone-tail wrap (core/store.av), so the chain link this
+            // sees is `Block([], If(...))`, never `If(...)` bare — see
+            // through it exactly when it holds nothing else.
+            .Block(stmts, value) -> if stmts.is_empty() && value != null { self.chained_if(value!, depth) } else { null },
             rest -> null,
         }
     }
