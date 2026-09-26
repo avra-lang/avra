@@ -352,6 +352,20 @@ impl TypeRegistry {
 
     fn is_flat(id: TypeId) -> bool { !self.flat_fields(id).is_empty() }
 
+    /// `is_flat`, UNTRACKED — a peek at what the fact answers RIGHT NOW,
+    /// for a caller comparing it against a STORED belief rather than
+    /// relying on the answer forever. A held file's interface loading
+    /// asks this to decide whether a type is worth watching for drift
+    /// (`Workspace.held_flat`); the drift check itself (`layouts_moved`,
+    /// compiler/derive.av) asks it again once typing has finished, to
+    /// see whether THIS attempt sealed what the store remembered flat.
+    /// Both reads are the mechanism a hold already has for catching a
+    /// stale layout and retrying unheld — marking either one read would
+    /// make the LATER seal (a fresh file's own `mut` seat, elsewhere
+    /// than the record's declaration) refuse itself instead of landing,
+    /// which starves that retry of the very drift it exists to see.
+    fn peek_flat(id: TypeId) -> bool { !self.reps.get()[id.index].fields.is_empty() }
+
     /// A VALUE RECORD: flat over more than one field, so it rides
     /// REGISTERS as an aggregate — and a one-word seat holds it boxed.
     fn is_wide(id: TypeId) -> bool { self.flat_fields(id).length > 1 }
@@ -715,6 +729,9 @@ impl TypeRegistry {
         self.note(id, LayoutFact.Flat)
         self.reps.get()[id.index].boxed_flat
     }
+
+    /// `boxed_flat`'s untracked twin — `peek_flat`'s own reason.
+    fn peek_boxed_flat(id: TypeId) -> bool { self.reps.get()[id.index].boxed_flat }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space

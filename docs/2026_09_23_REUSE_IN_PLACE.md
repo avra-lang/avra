@@ -2199,3 +2199,24 @@ where the doctrine already lives. A `hook<T>` primitive — a typed,
 self-documenting one-shot upcall slot with its OWN entry in the
 layering rule ("a hook is not an import") — would have turned this
 from four lines of comment justifying the shape into a phrase.
+
+**Follow-up — the hold's own drift check needed an untracked read.**
+`make cache-attacks` (a2c99e0) turned red on landing: a library's
+`Tick` record, held flat from the shared store, gets a `mut` seat in
+a SIBLING package's file that never declares it — exactly the
+scenario `Workspace.held_flat` + `layouts_moved` (compiler/derive.av)
+already exist to catch, by comparing a held belief against a fresh
+one and RETRYING UNHELD when they disagree. Both of those reads
+(`interface.av`'s `fill_record`, which populates `held_flat`, and
+`layouts_moved`'s own comparison) were going through the tracked
+`is_flat`/`boxed_flat` — so the FIRST one marked the bucket read, and
+the seal that should have landed (letting `layouts_moved` see the
+drift and retry) refused itself instead, loudly and correctly by
+D1-D3's own rule, but starving a mechanism that was never a
+"consumer relying on the answer forever" — it exists BECAUSE the
+answer is expected to move. Two new untracked twins, `peek_flat` and
+`peek_boxed_flat` (read the row, mark nothing), used at exactly those
+two sites: the drift detector polls without becoming a stakeholder in
+what it detects. `make cache-attacks`: 65 builds, 27 under a hold, 0
+failed. `build/avra test packages/std-avrac`: 156 examples + 196
+programs, clean. Fixed point: 3x byte-identical `make avra`.

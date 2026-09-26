@@ -374,8 +374,11 @@ impl Workspace {
     /// two ways — and only the sources whole can say which.
     fn layouts_moved(store: Store, p: Program) -> bool {
         if held_paths(self).is_empty() { return false }
-        if self.hold.held_flat.get().any((t) -> !self.decls.types.is_flat(t)) { return true }
-        p.files.any((a: Analysis) -> self.kept_boxed(store, a.view.file).any((d: DeclId) -> !self.decls.types.boxed_flat(self.decls.record_type(d))))
+        // peek, not the tracked read: this compares what typing just
+        // decided against what the store remembered, after the fact —
+        // never the ask a later write must answer to
+        if self.hold.held_flat.get().any((t) -> !self.decls.types.peek_flat(t)) { return true }
+        p.files.any((a: Analysis) -> self.kept_boxed(store, a.view.file).any((d: DeclId) -> !self.decls.types.peek_boxed_flat(self.decls.record_type(d))))
     }
 
     /// The records of a parsed file its module's last record kept BOXED, as they
