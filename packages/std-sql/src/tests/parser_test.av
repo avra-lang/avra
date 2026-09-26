@@ -61,6 +61,26 @@ fn select_of(n: SqlNode?) -> SqlSelect? {
     }
 }
 
+/// A canonical, parenthesized rendering of an expression tree — for
+/// asserting on WHERE-clause shape (precedence, operator nesting)
+/// without hand-unwrapping `SqlExpr` in every test.
+fn render_expr(e: SqlExpr) -> string {
+    match e {
+        .Ident(name) -> name,
+        .Number(text) -> text,
+        .Str(text) -> "'${text}'",
+        .Hole(name) -> "\${${name}}",
+        .Not(inner) -> "(NOT ${render_expr(inner)})",
+        .BinOp(op, lhs, rhs) -> "(${render_expr(lhs)} ${op} ${render_expr(rhs)})",
+    }
+}
+
+fn where_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let w? = s.where else { return null }
+    render_expr(w)
+}
+
 spec "sql/parse_sql" {
     given "a plain SELECT" {
         then "columns, table and no WHERE" {
@@ -77,6 +97,52 @@ spec "sql/parse_sql" {
     given "malformed input" {
         then "a diagnostic, not a crash" {
             !parse_sql("SELECT").diagnostics.is_empty()
+        }
+    }
+}
+
+spec "sql/atoms" {
+    given "a number literal" {
+        then "builds as Number" {
+            where_shape("SELECT a FROM t WHERE 5") == "5"
+        }
+    }
+    given "a string literal" {
+        then "unquoted, and a doubled quote unescapes to one" {
+            where_shape("SELECT a FROM t WHERE 'it''s'") == "'it's'"
+        }
+    }
+    given "a hole placeholder" {
+        then "builds as Hole, name only, no braces" {
+            where_shape("SELECT a FROM t WHERE \${id}") == "\${id}"
+        }
+    }
+}
+
+spec "sql/boolean_expr" {
+    given "NOT" {
+        then "wraps its comparison" {
+            where_shape("SELECT a FROM t WHERE NOT a = 1") == "(NOT (a = 1))"
+        }
+    }
+    given "an AND chain of three" {
+        then "folds left-associatively" {
+            where_shape("SELECT a FROM t WHERE a AND b AND c") == "((a AND b) AND c)"
+        }
+    }
+    given "an OR chain of three" {
+        then "folds left-associatively" {
+            where_shape("SELECT a FROM t WHERE a OR b OR c") == "((a OR b) OR c)"
+        }
+    }
+    given "AND binding tighter than OR" {
+        then "a AND b OR c groups as (a AND b) OR c" {
+            where_shape("SELECT a FROM t WHERE a AND b OR c") == "((a AND b) OR c)"
+        }
+    }
+    given "NOT binding tighter than AND" {
+        then "NOT a AND b groups as (NOT a) AND b" {
+            where_shape("SELECT a FROM t WHERE NOT a AND b") == "((NOT a) AND b)"
         }
     }
 }
