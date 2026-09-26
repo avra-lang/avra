@@ -2,14 +2,14 @@
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{NodeStore, found_at, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
 use @std.meta.{Field}
-use grammar.{Captured, Token, Ready}
-
+use @std.grammar.{Captured, Ready}
+use grammar.{Token}
 /// One build call's world: the store, the captured arguments in
 /// grammar order, the engine-attributed span of the branch that
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [] }
+export type Builder = { store: NodeStore, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [] }
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
@@ -237,12 +237,12 @@ impl Builder {
 }
 
 // ── Capture extractors behind the methods. All take the argument LIST
-// plus an index: a Captured<LangNode> passed by itself as a fn
+// plus an index: a Captured<Token, LangNode> passed by itself as a fn
 // argument misreads in the callee (see the subset note), while
 // list-carried values stay intact. ──
 
 /// The expression id at `args[i]`, when that capture is one.
-export fn expr_id_at(args: List<Captured<LangNode>>, i: int) -> ExprId? {
+export fn expr_id_at(args: List<Captured<Token, LangNode>>, i: int) -> ExprId? {
     match args[i] {
         .Node(.NExpr(id)) -> id,
         _ -> null,
@@ -250,7 +250,7 @@ export fn expr_id_at(args: List<Captured<LangNode>>, i: int) -> ExprId? {
 }
 
 /// The statement id at `args[i]`, when that capture is one.
-export fn stmt_id_at(args: List<Captured<LangNode>>, i: int) -> StmtId? {
+export fn stmt_id_at(args: List<Captured<Token, LangNode>>, i: int) -> StmtId? {
     match args[i] {
         .Node(.NStmt(id)) -> id,
         _ -> null,
@@ -258,7 +258,7 @@ export fn stmt_id_at(args: List<Captured<LangNode>>, i: int) -> StmtId? {
 }
 
 /// The written type at `args[i]`, when that capture is one.
-export fn type_ref_at(args: List<Captured<LangNode>>, i: int) -> TypeRef? {
+export fn type_ref_at(args: List<Captured<Token, LangNode>>, i: int) -> TypeRef? {
     match args[i] {
         .Node(.NType(t)) -> t,
         _ -> null,
@@ -269,7 +269,7 @@ export fn type_ref_at(args: List<Captured<LangNode>>, i: int) -> TypeRef? {
 export const void_ref: TypeRef = named_ref("void")
 
 /// The pattern at `args[i]`, when that capture is one.
-export fn pat_id_at(args: List<Captured<LangNode>>, i: int) -> PatId? {
+export fn pat_id_at(args: List<Captured<Token, LangNode>>, i: int) -> PatId? {
     match args[i] {
         .Node(.NPat(id)) -> id,
         _ -> null,
@@ -277,19 +277,19 @@ export fn pat_id_at(args: List<Captured<LangNode>>, i: int) -> PatId? {
 }
 
 /// The repeated pattern capture at `args[i]`, as pattern ids.
-export fn pat_ids_at(args: List<Captured<LangNode>>, i: int) -> List<PatId> {
+export fn pat_ids_at(args: List<Captured<Token, LangNode>>, i: int) -> List<PatId> {
     let items = list_at(args, i)
     flatten([some_list(pat_id_at(items, j)) for j in 0..items.length])
 }
 
 /// The repeated mark capture at `args[i]`, as marks — in source
 /// order, across every member the rule matched.
-export fn marks_at(args: List<Captured<LangNode>>, i: int) -> List<Mark> {
+export fn marks_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Mark> {
     let items = list_at(args, i)
     flatten([some_list(mark_of(items, j)) for j in 0..items.length])
 }
 
-fn mark_of(args: List<Captured<LangNode>>, i: int) -> Mark? {
+fn mark_of(args: List<Captured<Token, LangNode>>, i: int) -> Mark? {
     match args[i] {
         .Node(.NMark(m)) -> m,
         _ -> null,
@@ -297,26 +297,26 @@ fn mark_of(args: List<Captured<LangNode>>, i: int) -> Mark? {
 }
 
 /// The repeated arm capture at `args[i]`, as arms.
-export fn arms_at(args: List<Captured<LangNode>>, i: int) -> List<Arm> {
+export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
     flatten([some_list(arm_at(items, j)) for j in 0..items.length])
 }
 
 /// The repeated case capture at `args[i]`, flattened — a `given`
 /// group's cases and a lone `then`'s alike.
-export fn cases_at(args: List<Captured<LangNode>>, i: int) -> List<Case> {
+export fn cases_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Case> {
     let items = list_at(args, i)
     flatten([cases_of(items, j) for j in 0..items.length])
 }
 
-fn cases_of(args: List<Captured<LangNode>>, i: int) -> List<Case> {
+fn cases_of(args: List<Captured<Token, LangNode>>, i: int) -> List<Case> {
     match args[i] {
         .Node(.NCases(cs)) -> cs,
         _ -> [],
     }
 }
 
-fn arm_at(args: List<Captured<LangNode>>, i: int) -> Arm? {
+fn arm_at(args: List<Captured<Token, LangNode>>, i: int) -> Arm? {
     match args[i] {
         .Node(.NArm(a)) -> a,
         _ -> null,
@@ -324,7 +324,7 @@ fn arm_at(args: List<Captured<LangNode>>, i: int) -> Arm? {
 }
 
 /// The token at `args[i]`, when that capture is one.
-export fn token_at(args: List<Captured<LangNode>>, i: int) -> Token? {
+export fn token_at(args: List<Captured<Token, LangNode>>, i: int) -> Token? {
     match args[i] {
         .Terminal(t) -> t,
         _ -> null,
@@ -341,7 +341,7 @@ export fn scoped_at(t: Token?) -> Scoped? {
 
 /// List delivery for the repeated capture at `args[i]` (scalar and
 /// absent normalize).
-export fn list_at(args: List<Captured<LangNode>>, i: int) -> List<Captured<LangNode>> {
+export fn list_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Captured<Token, LangNode>> {
     match args[i] {
         .Many(xs) -> xs,
         .Absent -> [],

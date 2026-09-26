@@ -11,6 +11,8 @@
 //! repeated group that fails midway rolls back cleanly (`labeled`'s
 //! leading `(NAME ":")?` needs it).
 
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect}
+
 /// An unlabeled item matched exactly once.
 export fn item(p: Prim) -> Item {
     Item { label: null, prim: p, rep: Rep.One, expect: null }
@@ -57,6 +59,10 @@ export fn named(term: string) -> Prim { Prim.Named(term) }
 
 /// A grouped alternation atom.
 export fn group(branches: List<Seq>) -> Prim { Prim.Group(alt(branches)) }
+
+/// The terminal classes this grammar's own notation names — the
+/// vocabulary `ready` is given when validating and running it.
+export const dsl_terminals: List<string> = ["NAME", "NUMBER", "STRING", "BREAK"]
 
 /// The DSL's grammar. Rule names mirror the notation's own vocabulary;
 /// builder names resolve in the executor's registry.
@@ -119,8 +125,18 @@ export const grammar_of_grammars: Grammar = Grammar {
             ], Build.Call("build_postfix", ["inner", "rep"])),
         ]),
 
-        // primary = NAME | STRING | "(" alt ")"
+        // primary = "not" "(" primary ")" | NAME | STRING | "(" alt ")"
+        // The `not(...)` branch anchors on the LITERAL "not" ahead of
+        // the bare-NAME branch it shares a leading NAME token with —
+        // a rule genuinely named `not` still resolves there when no
+        // `(` follows (the anchor's own committed break defers to it).
         rule_def("primary", [
+            seq_to([
+                item(lit("not")),
+                item(lit("(")),
+                cap("inner", rule_ref("primary")),
+                expecting(lit(")"), "expected ')' to close not(...)"),
+            ], Build.Call("build_not", ["inner"])),
             seq_to([cap("name", named("NAME"))], Build.Call("build_prim_name", ["name"])),
             seq_to([cap("text", named("STRING"))], Build.Call("build_lit", ["text"])),
             seq_to([
