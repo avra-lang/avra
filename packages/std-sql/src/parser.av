@@ -20,12 +20,23 @@ export enum SqlExpr {
     Star
     IsNull(e: SqlExpr, negated: bool)
     Between(e: SqlExpr, lo: SqlExpr, hi: SqlExpr, negated: bool)
-    In(e: SqlExpr, list: List<SqlExpr>, negated: bool)
+    In(e: SqlExpr, source: InSource, negated: bool)
     /// `CASE operand WHEN ... THEN ... ELSE ... END` — `operand` null
     /// is the searched form (`CASE WHEN cond THEN ... END`), where
     /// each `WhenClause.when` is a full boolean condition rather than
     /// a value compared against `operand`.
     Case(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?)
+    /// A parenthesized `SELECT` used as a value — a scalar subquery,
+    /// or `IN (SELECT ...)`'s own right side.
+    Subquery(s: SqlSelect)
+    Exists(s: SqlSelect)
+}
+
+/// `IN`'s own right side — a literal value list, or a subquery
+/// answering the rows to compare against.
+export enum InSource {
+    Values(items: List<SqlExpr>)
+    Subquery(s: SqlSelect)
 }
 
 /// One `WHEN ... THEN ...` arm of a `CASE` expression.
@@ -148,6 +159,7 @@ impl SqlNode {
     fn as_assign() -> Assignment? { match self { .Assign(a) -> a, _ -> null } }
     fn as_update() -> UpdateStmt? { match self { .Upd(u) -> u, _ -> null } }
     fn as_delete() -> DeleteStmt? { match self { .Del(d) -> d, _ -> null } }
+    fn as_select() -> SqlSelect? { match self { .Sel(s) -> s, _ -> null } }
 }
 
 fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
@@ -271,6 +283,20 @@ fn ex_list_of(c: Captured<LexToken, SqlNode>) -> List<SqlExpr> {
     node_of(c)?.as_ex_list() ?? []
 }
 
+/// `IN`'s own `list:in_source?` — a subquery if `in_source` matched
+/// `select_stmt`, a value list if it matched `expr_list`, and an
+/// empty value list for a bare `IN ()` (nothing between the parens
+/// is neither, and reads absent the same way an empty list always
+/// has).
+fn in_source_of(c: Captured<LexToken, SqlNode>) -> InSource {
+    let n? = node_of(c) else { return InSource.Values([]) }
+    match n {
+        .Sel(s) -> InSource.Subquery(s),
+        .ExList(items) -> InSource.Values(items),
+        rest -> InSource.Values([]),
+    }
+}
+
 fn node(n: SqlNode) -> Captured<LexToken, SqlNode> { Captured.Node(n) }
 
 /// One `SELECT` list entry: an expression, optionally `AS`-named.
@@ -371,7 +397,7 @@ fn not_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken
 /// `ink`, `lo`, `isk` are never optional inside their own group, so
 /// unlike `list` (an empty `IN ()`) or a bare `NOT`, they can never
 /// read Absent for a reason other than "this group did not match".
-@grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\"|\"!=\") r:atom)? ((nl:\"NOT\")? \"LIKE\" rl:atom)? ((ni:\"NOT\")? ink:\"IN\" \"(\" list:expr_list? \")\")? ((nb:\"NOT\")? \"BETWEEN\" lo:atom \"AND\" hi:atom)? (isk:\"IS\" (nn:\"NOT\")? \"NULL\")?")
+@grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\"|\"!=\") r:atom)? ((nl:\"NOT\")? \"LIKE\" rl:atom)? ((ni:\"NOT\")? ink:\"IN\" \"(\" list:in_source? \")\")? ((nb:\"NOT\")? \"BETWEEN\" lo:atom \"AND\" hi:atom)? (isk:\"IS\" (nn:\"NOT\")? \"NULL\")?")
 fn cmp_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     let l? = ex_of(caps[0]) else { return .Err("expr: left side did not build") }
     let op = text_of(caps[1])
@@ -385,7 +411,7 @@ fn cmp_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken
         return .Ok(node(SqlNode.Ex(SqlExpr.BinOp(kw, l, rl))))
     }
     if present(caps[5]) {
-        return .Ok(node(SqlNode.Ex(SqlExpr.In(l, ex_list_of(caps[6]), present(caps[7])))))
+        return .Ok(node(SqlNode.Ex(SqlExpr.In(l, in_source_of(caps[6]), present(caps[7])))))
     }
     if present(caps[8]) {
         let lo? = ex_of(caps[8]) else { return .Err("between: lower bound did not build") }
@@ -465,7 +491,20 @@ fn when_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
 /// through to the simple-form branch. Confirmed empirically: the
 /// naive one-branch form silently broke the searched case with
 /// "unexpected input after `select_stmt`" before this split.
-@grammar_rule("\"CASE\" (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | \"CASE\" op:or_expr (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")? | NUMBER | STRING | HOLE")
+///
+/// `p`/`ex` each delegate to a rule that fully builds its own
+/// `Ex(...)` before atom ever sees it — `paren_expr`, `exists_expr`
+/// — rather than inlining their bodies here as bare items. Inlining
+/// would give every one of them the SAME arity problem CASE's operand
+/// did: several branches all reducing to one label apiece are
+/// indistinguishable by `caps.length` alone (all answer 1).
+/// Delegating sidesteps it entirely — whichever of these two fires,
+/// atom sees exactly one `.Node(SqlNode.Ex(...))` already built, so
+/// telling THEM apart is unnecessary; only telling a built node apart
+/// from a bare terminal (NUMBER/STRING/HOLE) is. `ex` leads `n:IDENT`
+/// for the same reason `"CASE"` does — `EXISTS` is exactly as
+/// IDENT-shaped as any other identifier here.
+@grammar_rule("p:paren_expr | ex:exists_expr | \"CASE\" (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | \"CASE\" op:or_expr (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")? | NUMBER | STRING | HOLE")
 fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     if caps.length == 2 {
         let whens = when_items_of(caps[0])?
@@ -488,6 +527,11 @@ fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, Sq
             .Terminal(_) or .Node(_) or .Many(_) -> .Ok(node(SqlNode.Ex(SqlExpr.Call(name, node_of(caps[3])?.as_ex_list() ?? [])))),
         }
     }
+    let already_built = node_of(caps[0])
+    if already_built != null {
+        let e? = already_built!.as_ex() else { return .Err("atom: parenthesized form did not build") }
+        return .Ok(node(SqlNode.Ex(e)))
+    }
     let text = text_of(caps[0])
     match kind_of(caps[0]) {
         "NUMBER" -> .Ok(node(SqlNode.Ex(SqlExpr.Number(text)))),
@@ -496,11 +540,63 @@ fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, Sq
     }
 }
 
+/// A scalar subquery, or a plain parenthesized grouping — `select_stmt`
+/// and `or_expr` share ONE `"("`, never two competing
+/// `"(" select_stmt ")" | "(" or_expr ")"` branches, which the checker
+/// correctly refuses (`branches 1 and 2 both begin with "(" — branch 2
+/// is unreachable`): both would be single-item, rule-reference
+/// branches, and both commit on their shared leading literal, not just
+/// the first. `select_stmt` leads inside the ONE shared `"("`, for the
+/// same reason `in_source` orders it first: a bare `or_expr` would
+/// otherwise read `SELECT` as a column.
+///
+/// A NESTED alt used as a plain (unrepeated) item inside a larger
+/// sequence is NOT the same shape as a whole rule's own top-level
+/// alt (`atom`'s, which gives each branch its OWN, possibly different,
+/// arity — confirmed by direct probe, `caps.length` 1/2/3/4 depending
+/// which of atom's branches fired). Nested this way, the engine
+/// reserves ONE FIXED SLOT PER DISTINCT LABEL across every branch
+/// (`s` at 0, `e` at 1, always both, only the one that matched ever
+/// non-Absent) — so `caps[0]` is not "whichever fired," and reading it
+/// as such silently misread `(a = 1)` as an unbuilt subquery. `present`
+/// on each slot is the correct — and, for this shape, only — way to
+/// tell which one fired, the same marker idiom `atom`'s own `lp`/`isk`/
+/// `ink` already use for a different reason (there, an optional
+/// payload that can't tell "matched empty" from "didn't match"; here,
+/// a nested alt's fixed-but-sparse slots).
+@grammar_rule("\"(\" (s:select_stmt | e:or_expr) \")\"")
+fn paren_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    if present(caps[0]) {
+        let s? = node_of(caps[0])?.as_select() else { return .Err("subquery: did not build") }
+        return .Ok(node(SqlNode.Ex(SqlExpr.Subquery(s))))
+    }
+    let e? = ex_of(caps[1]) else { return .Err("paren: grouped expression did not build") }
+    .Ok(node(SqlNode.Ex(e)))
+}
+
+/// `NOT EXISTS (...)` needs no case of its own — `not_expr`'s own
+/// leading `NOT` already wraps any `cmp_expr`, and `EXISTS (...)` is
+/// an ordinary atom to it, same as a bare column would be.
+@grammar_rule("\"EXISTS\" \"(\" s:select_stmt \")\"")
+fn exists_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let s? = node_of(caps[0])?.as_select() else { return .Err("exists: subquery did not build") }
+    .Ok(node(SqlNode.Ex(SqlExpr.Exists(s))))
+}
+
 /// A bare comma-separated expression list — `GROUP BY`'s own columns,
 /// and the `IN (...)` predicate's own set.
 @grammar_rule("e:or_expr (\",\" e:or_expr)*")
 fn expr_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     .Ok(node(SqlNode.ExList(exprs_of(caps[0])?)))
+}
+
+/// `IN`'s own right side — `select_stmt` leads, ahead of `expr_list`,
+/// for the same reason `atom`'s parenthesized branches order a
+/// subquery first: `expr_list`'s own underlying `atom` would
+/// otherwise swallow a bare `SELECT` token as a column.
+@grammar_rule("s:select_stmt | e:expr_list")
+fn in_source(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(caps[0])
 }
 
 @grammar_rule("\"GROUP\" \"BY\" e:expr_list")

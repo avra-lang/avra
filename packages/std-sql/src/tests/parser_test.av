@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt, InSource}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -92,9 +92,25 @@ fn render_expr(e: SqlExpr) -> string {
         .Star -> "*",
         .IsNull(inner, negated) -> "(${render_expr(inner)} IS ${if negated { "NOT " } else { "" }}NULL)",
         .Between(inner, lo, hi, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}BETWEEN ${render_expr(lo)} AND ${render_expr(hi)})",
-        .In(inner, list, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}IN (${[render_expr(a) for a in list].join(", ")}))",
+        .In(inner, source, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}IN (${render_in_source(source)}))",
         .Case(operand, whens, else_branch) -> render_case(operand, whens, else_branch),
+        .Subquery(s) -> "(${render_select(s)})",
+        .Exists(s) -> "EXISTS (${render_select(s)})",
     }
+}
+
+fn render_in_source(source: InSource) -> string {
+    match source {
+        .Values(items) -> [render_expr(a) for a in items].join(", "),
+        .Subquery(s) -> render_select(s),
+    }
+}
+
+fn render_select(s: SqlSelect) -> string {
+    let joins = [join_shape(j) for j in s.from.joins].join(" ")
+    let from = if joins.is_empty() { table_shape(s.from.first) } else { "${table_shape(s.from.first)} ${joins}" }
+    let where_part = if s.where == null { "" } else { " WHERE ${render_expr(s.where!)}" }
+    "SELECT ${columns_shape(s.columns)} FROM ${from}${where_part}"
 }
 
 fn render_case(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> string {
@@ -506,6 +522,40 @@ spec "sql/dml" {
         then "builds like a SELECT list" {
             let d = delete_of(selected("DELETE FROM posts WHERE id = 5 RETURNING id, title"))
             d != null && columns_shape(d!.returning) == "id,title"
+        }
+    }
+}
+
+spec "sql/subqueries" {
+    given "IN with a subquery" {
+        then "builds InSource.Subquery, not a value list" {
+            let w = where_shape("SELECT a FROM t WHERE id IN (SELECT post_id FROM comments)")
+            w != null && w! == "(id IN (SELECT post_id FROM comments))"
+        }
+    }
+    given "IN with a literal list, unaffected" {
+        then "still builds InSource.Values" {
+            where_shape("SELECT a FROM t WHERE id IN (1, 2, 3)") == "(id IN (1, 2, 3))"
+        }
+    }
+    given "a scalar subquery in a comparison" {
+        then "builds as Subquery" {
+            where_shape("SELECT a FROM t WHERE (SELECT MAX(x) FROM y) > 10") == "((SELECT MAX(x) FROM y) > 10)"
+        }
+    }
+    given "a parenthesized grouping" {
+        then "overrides the default AND/OR precedence" {
+            where_shape("SELECT a FROM t WHERE (a = 1 OR b = 2) AND c = 3") == "(((a = 1) OR (b = 2)) AND (c = 3))"
+        }
+    }
+    given "EXISTS" {
+        then "builds as Exists, carrying the subquery" {
+            where_shape("SELECT a FROM t WHERE EXISTS (SELECT 1 FROM comments)") == "EXISTS (SELECT 1 FROM comments)"
+        }
+    }
+    given "NOT EXISTS" {
+        then "the outer NOT wraps Exists — no case of its own" {
+            where_shape("SELECT a FROM t WHERE NOT EXISTS (SELECT 1 FROM comments)") == "(NOT EXISTS (SELECT 1 FROM comments))"
         }
     }
 }
