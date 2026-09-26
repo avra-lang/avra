@@ -146,6 +146,7 @@ export enum DbKind {
     Sig
     Warn
     Scan
+    Canon
 }
 
 impl DbKind {
@@ -171,6 +172,7 @@ impl DbKind {
             .Sig -> "Sig",
             .Warn -> "Warn",
             .Scan -> "Scan",
+            .Canon -> "Canon",
         }
     }
 }
@@ -258,6 +260,9 @@ export enum DbRow {
     /// lex-level pre-filter), under that text's own digest — so no
     /// process lexes the same bytes twice.
     Scan(name: string, text: string)
+    /// A file's bytes known to be canonical `avra fmt` output, under
+    /// their own digest — present or absent, the text is unused.
+    Canon(name: string, text: string)
 }
 
 impl DbRow {
@@ -283,6 +288,7 @@ impl DbRow {
             .Sig(_, _) -> DbKind.Sig,
             .Warn(_, _) -> DbKind.Warn,
             .Scan(_, _) -> DbKind.Scan,
+            .Canon(_, _) -> DbKind.Canon,
         }
     }
 
@@ -291,7 +297,7 @@ impl DbRow {
     /// addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) -> name,
+            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -550,7 +556,7 @@ fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) &&
             facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
-        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) -> true,
+        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) -> true,
         rest -> {
             avra_trap("defect: still_valid asked of a non-durable DbRow")
             false
@@ -592,7 +598,7 @@ export fn current_file_digest(path: string) -> string {
 fn encoded(row: DbRow) -> string {
     match row {
         .Decl(_, facts) -> encoded_docfacts(facts),
-        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) -> text,
+        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -609,6 +615,7 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         .Sig -> DbRow.Sig(name, text),
         .Warn -> DbRow.Warn(name, text),
         .Scan -> DbRow.Scan(name, text),
+        .Canon -> DbRow.Canon(name, text),
         rest -> {
             avra_trap("defect: decoded asked of a non-durable DbKind")
             null
