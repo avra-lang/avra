@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -45,14 +45,6 @@ fn selected(source: string) -> SqlNode? {
     }
 }
 
-fn where_ident(e: SqlExpr?) -> string? {
-    if e == null { return null }
-    match e! {
-        .Ident(name) -> name,
-        _ -> null,
-    }
-}
-
 fn select_of(n: SqlNode?) -> SqlSelect? {
     if n == null { return null }
     match n! {
@@ -61,22 +53,334 @@ fn select_of(n: SqlNode?) -> SqlSelect? {
     }
 }
 
+/// A canonical rendering of an expression tree — for asserting on
+/// clause shape (precedence, operator nesting, qualified columns)
+/// without hand-unwrapping `SqlExpr` in every test.
+fn render_expr(e: SqlExpr) -> string {
+    match e {
+        .Column(qualifier, name) -> if qualifier == null { name } else { "${qualifier!}.${name}" },
+        .Number(text) -> text,
+        .Str(text) -> "'${text}'",
+        .Hole(name) -> "\${${name}}",
+        .Not(inner) -> "(NOT ${render_expr(inner)})",
+        .BinOp(op, lhs, rhs) -> "(${render_expr(lhs)} ${op} ${render_expr(rhs)})",
+        .Call(fn_name, args) -> "${fn_name}(${[render_expr(a) for a in args].join(", ")})",
+        .Star -> "*",
+        .IsNull(inner, negated) -> "(${render_expr(inner)} IS ${if negated { "NOT " } else { "" }}NULL)",
+        .Between(inner, lo, hi, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}BETWEEN ${render_expr(lo)} AND ${render_expr(hi)})",
+        .In(inner, list, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}IN (${[render_expr(a) for a in list].join(", ")}))",
+    }
+}
+
+fn where_ident(e: SqlExpr?) -> string? {
+    if e == null { return null }
+    render_expr(e!)
+}
+
+fn where_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let w? = s.where else { return null }
+    render_expr(w)
+}
+
+fn columns_shape(items: List<SelectItem>) -> string {
+    [if i.as_name == null { render_expr(i.expr) } else { "${render_expr(i.expr)} AS ${i.as_name!}" } for i in items].join(",")
+}
+
+fn table_shape(t: TableRef) -> string {
+    if t.as_name == null { t.name } else { "${t.name} AS ${t.as_name!}" }
+}
+
+fn join_shape(j: JoinItem) -> string {
+    "${j.kind} JOIN ${table_shape(j.other)} ON ${render_expr(j.on)}"
+}
+
+fn from_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let joins = [join_shape(j) for j in s.from.joins].join(" ")
+    if joins.is_empty() { table_shape(s.from.first) } else { "${table_shape(s.from.first)} ${joins}" }
+}
+
+fn order_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    [if o.desc { "${render_expr(o.expr)} DESC" } else { render_expr(o.expr) } for o in s.order_by].join(",")
+}
+
+fn limit_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let lim? = s.limit else { return null }
+    render_expr(lim)
+}
+
+fn group_by_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    [render_expr(e) for e in s.group_by].join(",")
+}
+
+fn having_shape(source: string) -> string? {
+    let s? = select_of(selected(source)) else { return null }
+    let h? = s.having else { return null }
+    render_expr(h)
+}
+
 spec "sql/parse_sql" {
     given "a plain SELECT" {
         then "columns, table and no WHERE" {
             let s = select_of(selected("SELECT title FROM Post"))
-            s != null && s!.columns.join(",") == "title" && s!.from_table == "Post" && s!.where == null
+            s != null && columns_shape(s!.columns) == "title" && from_shape("SELECT title FROM Post") == "Post" && s!.where == null
         }
     }
     given "a SELECT with several columns and a WHERE" {
         then "every column, the table, and the WHERE identifier" {
             let s = select_of(selected("SELECT title, author FROM Post WHERE title"))
-            s != null && s!.columns.join(",") == "title,author" && s!.from_table == "Post" && where_ident(s!.where) == "title"
+            s != null && columns_shape(s!.columns) == "title,author" && where_ident(s!.where) == "title"
         }
     }
     given "malformed input" {
         then "a diagnostic, not a crash" {
             !parse_sql("SELECT").diagnostics.is_empty()
+        }
+    }
+}
+
+spec "sql/atoms" {
+    given "a number literal" {
+        then "builds as Number" {
+            where_shape("SELECT a FROM t WHERE 5") == "5"
+        }
+    }
+    given "a string literal" {
+        then "unquoted, and a doubled quote unescapes to one" {
+            where_shape("SELECT a FROM t WHERE 'it''s'") == "'it's'"
+        }
+    }
+    given "a hole placeholder" {
+        then "builds as Hole, name only, no braces" {
+            where_shape("SELECT a FROM t WHERE \${id}") == "\${id}"
+        }
+    }
+    given "a table-qualified column" {
+        then "builds as Column(qualifier, name)" {
+            where_shape("SELECT a FROM t WHERE p.title") == "p.title"
+        }
+    }
+}
+
+spec "sql/boolean_expr" {
+    given "NOT" {
+        then "wraps its comparison" {
+            where_shape("SELECT a FROM t WHERE NOT a = 1") == "(NOT (a = 1))"
+        }
+    }
+    given "an AND chain of three" {
+        then "folds left-associatively" {
+            where_shape("SELECT a FROM t WHERE a AND b AND c") == "((a AND b) AND c)"
+        }
+    }
+    given "an OR chain of three" {
+        then "folds left-associatively" {
+            where_shape("SELECT a FROM t WHERE a OR b OR c") == "((a OR b) OR c)"
+        }
+    }
+    given "AND binding tighter than OR" {
+        then "a AND b OR c groups as (a AND b) OR c" {
+            where_shape("SELECT a FROM t WHERE a AND b OR c") == "((a AND b) OR c)"
+        }
+    }
+    given "NOT binding tighter than AND" {
+        then "NOT a AND b groups as (NOT a) AND b" {
+            where_shape("SELECT a FROM t WHERE NOT a AND b") == "((NOT a) AND b)"
+        }
+    }
+}
+
+spec "sql/select_list" {
+    given "a column with AS" {
+        then "aliases correctly" {
+            let s = select_of(selected("SELECT u.name AS author_name FROM User AS u"))
+            s != null && columns_shape(s!.columns) == "u.name AS author_name"
+        }
+    }
+    given "an expression column" {
+        then "builds like any other WHERE expression" {
+            let s = select_of(selected("SELECT p.published FROM Post AS p"))
+            s != null && columns_shape(s!.columns) == "p.published"
+        }
+    }
+}
+
+spec "sql/from_join" {
+    given "a bare table" {
+        then "no joins" {
+            from_shape("SELECT a FROM Post") == "Post"
+        }
+    }
+    given "a table with AS" {
+        then "the alias renders" {
+            from_shape("SELECT a FROM Post AS p") == "Post AS p"
+        }
+    }
+    given "an INNER JOIN, keyword omitted" {
+        then "defaults to INNER" {
+            from_shape("SELECT a FROM Post AS p JOIN User AS u ON u.id = p.author_id") == "Post AS p INNER JOIN User AS u ON (u.id = p.author_id)"
+        }
+    }
+    given "an explicit LEFT JOIN" {
+        then "the kind carries through" {
+            from_shape("SELECT a FROM Post AS p LEFT JOIN User AS u ON u.id = p.author_id") == "Post AS p LEFT JOIN User AS u ON (u.id = p.author_id)"
+        }
+    }
+    given "two joins" {
+        then "both appear in order" {
+            let expect = "Post AS p INNER JOIN User AS u ON (u.id = p.author_id) INNER JOIN Tag AS t ON (t.post_id = p.id)"
+            from_shape("SELECT a FROM Post AS p JOIN User AS u ON u.id = p.author_id JOIN Tag AS t ON t.post_id = p.id") == expect
+        }
+    }
+}
+
+spec "sql/order_limit" {
+    given "ORDER BY with no direction" {
+        then "defaults to ascending (not DESC)" {
+            order_shape("SELECT a FROM t ORDER BY a") == "a"
+        }
+    }
+    given "ORDER BY DESC" {
+        then "the direction renders" {
+            order_shape("SELECT a FROM t ORDER BY a DESC") == "a DESC"
+        }
+    }
+    given "ORDER BY two columns" {
+        then "both appear in order" {
+            order_shape("SELECT a FROM t ORDER BY a DESC, b") == "a DESC,b"
+        }
+    }
+    given "LIMIT" {
+        then "builds as a Number" {
+            limit_shape("SELECT a FROM t LIMIT 20") == "20"
+        }
+    }
+    given "no LIMIT" {
+        then "absent" {
+            limit_shape("SELECT a FROM t") == null
+        }
+    }
+    given "the user's own worked example" {
+        then "everything together — columns, aliases, join, WHERE, ORDER BY, LIMIT" {
+            let source = "SELECT p.title, u.name AS author_name FROM Post AS p JOIN User AS u ON u.id = p.author_id WHERE p.published AND p.created_at > \${ninety_days_ago} ORDER BY p.created_at DESC LIMIT 20"
+            let s = select_of(selected(source))
+            s != null && columns_shape(s!.columns) == "p.title,u.name AS author_name" && from_shape(source) == "Post AS p INNER JOIN User AS u ON (u.id = p.author_id)" && where_shape(source) == "(p.published AND (p.created_at > \${ninety_days_ago}))" && order_shape(source) == "p.created_at DESC" && limit_shape(source) == "20"
+        }
+    }
+}
+
+spec "sql/functions" {
+    given "COUNT(*)" {
+        then "the bare star builds as Star" {
+            where_shape("SELECT a FROM t WHERE COUNT(*) > 0") == "(COUNT(*) > 0)"
+        }
+    }
+    given "a call with one real argument" {
+        then "builds as Call with one expression arg" {
+            where_shape("SELECT a FROM t WHERE AVG(price) > 10") == "(AVG(price) > 10)"
+        }
+    }
+    given "a call with several arguments" {
+        then "every argument, in order" {
+            where_shape("SELECT a FROM t WHERE date(created_at, '-90 days') > 0") == "(date(created_at, '-90 days') > 0)"
+        }
+    }
+    given "a zero-argument call" {
+        then "an empty argument list, not absence" {
+            where_shape("SELECT a FROM t WHERE now() > 0") == "(now() > 0)"
+        }
+    }
+    given "a call as a SELECT item" {
+        then "aliases like any other expression" {
+            let s = select_of(selected("SELECT COUNT(*) AS n FROM Post"))
+            s != null && columns_shape(s!.columns) == "COUNT(*) AS n"
+        }
+    }
+}
+
+spec "sql/group_having" {
+    given "GROUP BY one column" {
+        then "builds the list" {
+            group_by_shape("SELECT a, COUNT(*) FROM t GROUP BY a") == "a"
+        }
+    }
+    given "GROUP BY two columns" {
+        then "both, in order" {
+            group_by_shape("SELECT a, b, COUNT(*) FROM t GROUP BY a, b") == "a,b"
+        }
+    }
+    given "no GROUP BY" {
+        then "an empty list" {
+            group_by_shape("SELECT a FROM t") == ""
+        }
+    }
+    given "HAVING" {
+        then "builds like any other boolean expression" {
+            having_shape("SELECT a, COUNT(*) FROM t GROUP BY a HAVING COUNT(*) >= 3") == "(COUNT(*) >= 3)"
+        }
+    }
+    given "no HAVING" {
+        then "absent" {
+            having_shape("SELECT a FROM t GROUP BY a") == null
+        }
+    }
+    given "GROUP BY and HAVING together with everything else" {
+        then "all clauses build, in the right order" {
+            let source = "SELECT customer, COUNT(*) AS n FROM Orders AS o WHERE o.placed_at > \${cutoff} GROUP BY customer HAVING COUNT(*) >= 3 ORDER BY n DESC LIMIT 10"
+            let s = select_of(selected(source))
+            s != null && columns_shape(s!.columns) == "customer,COUNT(*) AS n" && group_by_shape(source) == "customer" && having_shape(source) == "(COUNT(*) >= 3)" && order_shape(source) == "n DESC" && limit_shape(source) == "10"
+        }
+    }
+}
+
+spec "sql/predicates" {
+    given "LIKE" {
+        then "builds as a LIKE comparison" {
+            where_shape("SELECT a FROM t WHERE name LIKE 'a%'") == "(name LIKE 'a%')"
+        }
+    }
+    given "NOT LIKE" {
+        then "carries the negation in the operator" {
+            where_shape("SELECT a FROM t WHERE name NOT LIKE 'a%'") == "(name NOT LIKE 'a%')"
+        }
+    }
+    given "IN with several values" {
+        then "every value, in order" {
+            where_shape("SELECT a FROM t WHERE id IN (1, 2, 3)") == "(id IN (1, 2, 3))"
+        }
+    }
+    given "NOT IN" {
+        then "negated" {
+            where_shape("SELECT a FROM t WHERE id NOT IN (1, 2)") == "(id NOT IN (1, 2))"
+        }
+    }
+    given "BETWEEN" {
+        then "both bounds, in order" {
+            where_shape("SELECT a FROM t WHERE age BETWEEN 1 AND 10") == "(age BETWEEN 1 AND 10)"
+        }
+    }
+    given "NOT BETWEEN" {
+        then "negated" {
+            where_shape("SELECT a FROM t WHERE age NOT BETWEEN 1 AND 10") == "(age NOT BETWEEN 1 AND 10)"
+        }
+    }
+    given "IS NULL" {
+        then "builds as IsNull" {
+            where_shape("SELECT a FROM t WHERE deleted_at IS NULL") == "(deleted_at IS NULL)"
+        }
+    }
+    given "IS NOT NULL" {
+        then "negated" {
+            where_shape("SELECT a FROM t WHERE deleted_at IS NOT NULL") == "(deleted_at IS NOT NULL)"
+        }
+    }
+    given "a predicate beside an ordinary comparison" {
+        then "both sides of AND build independently" {
+            where_shape("SELECT a FROM t WHERE age > 1 AND deleted_at IS NULL") == "((age > 1) AND (deleted_at IS NULL))"
         }
     }
 }

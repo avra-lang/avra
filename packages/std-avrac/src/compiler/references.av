@@ -12,11 +12,16 @@
 //! of their own, no whole-program relation needed — this pass only
 //! ever settles rows keyed by `DeclId`, which is what crosses files.
 //!
-//! TYPE-ANNOTATION-ONLY USES ARE NOT YET SEEN: a declaration named
-//! only in a `let`/param/field's WRITTEN TYPE, never constructed or
-//! read as a value, answers unused here. Recorded as the follow-up
-//! at avra-8sb5.25.9.
-use core.{DeclId, FileId, ExprId, StmtId, At, NodeStore, Nominal, UseParts, touch, fp, fp_list, flatten, some_list}
+//! A WRITTEN TYPE NAMES A DECLARATION TOO: a param's, a field's, a
+//! `let`'s annotation, a bound, a return — none of them a nested
+//! EXPRESSION, so `expr_refs`'s walk never sees them on its own.
+//! `type_use_refs` reads `NodeStore.type_roots` (core/parts.av) and
+//! resolves every name it reaches — arguments and `or` alternatives
+//! included — through the file's namespace, exactly as a written
+//! type resolves under typing (`declare.av`'s `named_type`/
+//! `trait_decl_named` both bottom out at `names.type_decl`). A name
+//! bound as the STATEMENT's OWN type parameter names no declaration.
+use core.{DeclId, FileId, ExprId, StmtId, At, NodeStore, Nominal, TypeRef, UseParts, touch, fp, fp_list, flatten, some_list}
 use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
 
 impl Workspace {
@@ -55,7 +60,8 @@ impl Workspace {
         let expr_rows = flatten([self.expr_refs(f, names, facts, store, ExprId { index: i }) for i in 0..store.exprs.count()])
         let write_rows = flatten([self.write_refs(f, names, store, s) for s in store.stmt_ids()])
         let impl_rows = flatten([self.impl_refs(f, names, d) for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Impl])
-        expr_rows.concat(write_rows).concat(impl_rows).concat(self.import_refs(f))
+        let type_rows = flatten([self.type_use_refs(f, names, store, s) for s in store.stmt_ids()])
+        expr_rows.concat(write_rows).concat(impl_rows).concat(type_rows).concat(self.import_refs(f))
     }
 
     /// An `impl … for` block's own TRAIT, and an impl's own TARGET
@@ -129,6 +135,14 @@ impl Workspace {
         some_list(self.use_of(f, names, root, UseKind.Write))
     }
 
+    /// Every written type on this statement's own signature, one row
+    /// per declaration it names — the statement is the site, since a
+    /// type has no expression id of its own to point at.
+    fn type_use_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+        let tparams = store.decl_tparams(s)
+        flatten([[Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.TypeUse } for d in type_use_decls(names, tparams, t)] for t in store.type_roots(s)])
+    }
+
     /// Every `use` line's own imports, one row per item — the site is
     /// the `use` STATEMENT: several items on one line share it, since
     /// no finer position exists yet for an import specifier.
@@ -140,6 +154,16 @@ impl Workspace {
     fn one_use_refs(f: FileId, p: Parsed, u: UseParts) -> List<Ref> {
         [Ref { decl: i.decl, file: f, at: At.Stmt(u.stmt), kind: UseKind.Import } for i in self.imported_line(p, u).imports]
     }
+}
+
+/// A written type's own declarations — recursing through its
+/// arguments and its `or` alternatives, so `List<Foo>`, `Map<string,
+/// Foo>` and `fn(Foo) -> Bar` are seen the way a bare `Foo` is.
+/// Resolved through the file's namespace alone, as `named_type_ref`
+/// resolves a struct literal's name — never a second resolver.
+fn type_use_decls(names: NameFacts, tparams: List<string>, t: TypeRef) -> List<DeclId> {
+    let here = if t.name.is_empty() || tparams.contains(t.name) { [] } else { some_list(names.names.type_decl(t.name)) }
+    here.concat(flatten([type_use_decls(names, tparams, a) for a in t.args])).concat(flatten([type_use_decls(names, tparams, a) for a in t.alternatives]))
 }
 
 /// One row's own fingerprint — what the pass settles the whole
@@ -155,5 +179,6 @@ fn kind_ord(k: UseKind) -> int {
         .Read -> 2,
         .Write -> 3,
         .Import -> 4,
+        .TypeUse -> 5,
     }
 }
