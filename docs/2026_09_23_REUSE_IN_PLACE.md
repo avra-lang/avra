@@ -2220,3 +2220,173 @@ two sites: the drift detector polls without becoming a stakeholder in
 what it detects. `make cache-attacks`: 65 builds, 27 under a hold, 0
 failed. `build/avra test packages/std-avrac`: 156 examples + 196
 programs, clean. Fixed point: 3x byte-identical `make avra`.
+## §33 As built — L2, an independent reference-count checker over the memory pass's own output
+
+`compiler/soundness/soundness.av` is a second, DELIBERATELY SIMPLE
+proof that never asks WHY `memory.av` chose to retain or elide a
+count — it re-derives, from the FINAL instruction stream alone, what
+SHOULD hold, and turns a wrong elision into a compile-time defect
+instead of a run-time use-after-free. `memory()` calls it once, after
+its own rewrite (`compiler/memory/memory.av`'s one new line), so a
+wrong answer anywhere downstream of the memory pass has one more
+independent witness before it ever reaches C.
+
+The walk carries ONE proof per body: `refs[r]`, the same currency the
+runtime's own refcount is (`Sim`, soundness.av). An owning definition
+births at 1, `Retain` adds, `Release` takes; a read of an owning
+register already at zero is the use-after-free (`Release`'s own
+second call included — "a SECOND Release is a read of a fully-
+released register by exactly this rule"); a span's end (a scope, an
+arm, the body itself) owes every register it bore released,
+transferred, or answered; an `IfStart`/`SwitchStart` region's arms
+must leave every register born before it in the SAME state; a VIEW
+(`Extract`, a lending `CallRt`, a bare cell `Load`) handed to an Avra
+call needs its own reference exactly when the call's own seats may
+also reach its root — R5's own shape, re-checked independently of
+the pass that protects it. Registers this walk cannot model precisely
+(a loop's SECOND turn, an arm's own local credit) are left unchecked
+rather than guessed at, by design — see "Be CONSERVATIVE" below.
+
+**A false positive found and fixed while proving it clean.** The
+walk's own birth-crediting defers a register's +1 to the ONE `Retain`
+that `memory.av` mints immediately after an owning definition that
+must outlive its cell (a `Load`) or that is always retained by
+construction (a managed `Pack` — PACK IS IDENTITY). The deferral was
+right; the READ-CHECK on that SAME `Retain` was not told about it, so
+every managed struct literal and every `mut` accumulator folded
+across a loop (`mut acc = head; for p in rest { acc = acc.concat(p)
+}` — `built`'s own shape, `core.listed`'s real one) read as a
+use-after-free on its OWN birth credit arriving. Fixed by
+`birth_retain` (soundness.av): a `Retain` whose immediately preceding
+instruction is the very owning definition it credits is exempt from
+the dead-read check; every other `Retain` and every `Release` still
+answers for itself. Found by `python3 tools/idioms.py`-clean but
+`make bootstrap`-red on the compiler's OWN `@derive(Fingerprint)`
+machinery (`core.listed`), which every derive in the tree runs
+through — the doctrine's "A DIAGNOSTIC IS THE THIRD KIND" arriving
+exactly as written: a refusal added to the compiler firing on the
+compiler's own source during the very build that adds it.
+
+**A near-miss worth recording.** Mid-session, a saved intermediate
+binary was compiled FROM a source carrying the R5 witness bug (below)
+and never rebuilt after the bug was reverted in the SOURCE — the
+generation law (CLAUDE.md: "A CHANGE THE COMPILER MUST THEN READ
+REACHES THE PRODUCT ON THE SECOND BUILD") applied to a REGRESSION
+too: the STALE binary's own `root_of` stayed buggy across every later
+build and test invocation, under-protecting views throughout its OWN
+self-compilation, and the checker (correctly, given what it was fed)
+then reported hundreds of "unprotected view" defects across
+`compiler.Workspace.*`, `compiler.backend.*`, `grammar.*` and
+`features.*` — a plausible-looking checker regression that was in
+fact a stale compiler reading its own reintroduced bug. Traced by
+`cmp`ing the suspect binary against the last proven fixed point
+(`build/avra.gen3`, saved before the edit) rather than reasoning
+about the diagnostics; restoring the saved binary and rebuilding from
+the (correctly reverted) source made every one of them vanish. The
+tell, in hindsight, was exactly CLAUDE.md's own "PROFILE, DON'T
+REASON" one register over: a divergence between two runs of "the same
+checker" is found by diffing the BINARIES, not by re-reading the
+check's logic.
+
+**Negative witnesses (mandatory, each reverted and the fixed point
+re-proven after).** All three built the buggy binary with the
+LAST KNOWN-GOOD `build/avra`, checked `packages/std-avrac` with it,
+then restored the saved good binary and rebuilt to confirm
+byte-identity with the pre-witness fixed point before touching
+anything else.
+- **R5's first-draft bug** — `memory.av`'s `Lives.root_of` with its
+  `if self.ins[d] is .Load { return null }` guard removed, so a view
+  crossing a cell load compares register IDENTITY instead of
+  answering "unknown, could alias another load of the same box." L2
+  refused THREE real programs it protects today: `borrowed_params`
+  (`emptied`'s own shape, the ticket's named witness), plus
+  `nullable/tests/nested_slots` and `loops/tests/pairing` — found
+  only because this run additionally checked the whole package rather
+  than one file, which the earlier probe had not.
+- **A dropped Release** — `kept_out` (memory.av) made to spare the
+  FIRST bound register in a scope unconditionally instead of the one
+  that escapes, so every OTHER managed binding in a multi-binding
+  scope leaks. Caught immediately and broadly: dozens of "r_ is a
+  fresh box still alive... never released, transferred, or answered"
+  defects, cascading through the compiler's own `@derive`-generated
+  code (`core.holding`, `core.arm_of`, `core.as_list_expr`) on the
+  very first `check packages/std-avrac`.
+- **A double Release** — `.ScopeExit`'s handling (memory.av) made to
+  emit `scope.settled(gives)` twice, so every scope-exit releases its
+  bindings twice. Caught immediately: "instruction _ reads r_ after
+  it was released — a use-after-free the memory pass's own output
+  proves", again first surfacing inside `@derive`-generated code
+  (`core.body_of`, `features.projection_of`).
+
+**Permanent tests.** `compiler/soundness/tests/soundness_test.av`
+pins the exact words of all FIVE voices (`leaked`, `use_after_release`,
+`releases_unowned`, `region_disagreement`, `unprotected_view`) over
+HAND-BUILT `Ins` streams a correct memory pass never emits — the only
+way to reach a double Release or a dropped Release deterministically,
+without leaving a real bug in the tree to trigger them — plus three
+`ir_of`-compiled REAL programs that must stay clean: a managed struct
+`Pack`'s own birth-retain, a `mut` accumulator folded across a loop,
+and `emptied`'s own borrowed-view shape. All eight are part of
+`packages/std-avrac`'s ordinary spec run now, so a future regression
+in any of these five defect classes fails the gate on its own,
+independent of stumbling onto a real program that happens to exercise
+it.
+
+**Be CONSERVATIVE where the IR is ambiguous.** The walk answers
+"unknown, protect it" rather than "safe" whenever it cannot be sure:
+a view crossing a cell `Load` (a `mut` cell may be loaded twice, each
+load its own register for the same box — R5's own reason), a region
+arm that diverges (excluded from the merge rather than guessed), and
+a body lowered a way the walk does not claim to know the ending of
+(a const's settlement unit, which answers through no terminal at
+all) skips its own top-level leak check while every NESTED span
+inside it is still checked exactly as before.
+
+**Cost — gated, not always on.** Instructions retired on `build/avra
+check packages/cli`, checker on vs off, three rounds interleaved,
+`.avra-cache` cleared before each: checked 288.39B / 289.04B / 288.90B
+(avg 288.77B) vs unchecked 235.00B / 233.97B / 234.06B (avg 234.34B)
+— **+23.2%**. Far past the ~3% "always on" line, so `memory()` gates
+the whole pass behind `AVRA_SOUND_CHECK=1` (read via `@std.io.env`,
+the same opt-in shape as `AVRA_RC_GUARD`/`AVRA_MEM_STATS`/
+`AVRA_QTRACE`): off by default for an ordinary `avra check`/`avra
+build`, on for `make test`/`make gate` (the `test:` target now
+exports it for every suite) and for anyone probing by hand. Confirmed
+both ways on the SAME rebuilt binary: default run over a
+reintroduced R5 bug reports nothing; `AVRA_SOUND_CHECK=1` over the
+identical binary and source reports `borrowed_params` by name.
+
+**Proof.** Fixed point: three successive `make avra` byte-identical
+(`.avra-cache` cleared before each), proven twice — once before the
+`AVRA_SOUND_CHECK` gate landed, once after. Critical checks, all with
+`AVRA_SOUND_CHECK=1`, zero soundness defects: `packages/std-avrac`
+196 program tests + 6841/6841 spec cases; `packages/cli` 77/77;
+`packages/std-http` 468/468 + 4 programs; `packages/std-sqlite`
+505/505 + 2 programs. `python3 tools/idioms.py`: no new violations
+(one native `compiler.raw_rt_call` finding, in the witness file's own
+hand-built `CallRt` — no `cx` to emit through in a bare unit test —
+accepted into the baseline; one `style.dead_parameter` fixed by
+naming the checker's unread `managed` stand-in `_t`). `make cited`:
+clean. `build/avra fmt`: identical on all three touched `.av` files.
+A red-team pass over the compiled (never interpreted) output of
+small programs under `AVRA_RC_GUARD=1 AVRA_MEM_STATS=1` — dyn
+dispatch, a loop folding a `mut` accumulator, recursion, an early
+`return`, a `const` static — reports 0 MB in every category at exit,
+eval == native, confirming the checker's own presence changes
+nothing about what is emitted. `packages/std-meta`'s native LINK
+(a pre-existing, unrelated `av_type_named` duplicate-symbol failure
+surfaced only when testing a single file's full transitive closure,
+reproduced with the checker fully disabled) reported to the team
+separately — outside this ticket's scope, not caused by this change.
+
+What I wanted from the language while doing this: a hand-built `Ins`
+stream is the only way to reach a double Release or a dropped Release
+on purpose, and building one costs a full `Lowered`/`Body`/
+`TypeRegistry` scaffold for five lines of instructions that matter —
+`new_type_registry()`, empty `externs`/`statics`/`diagnostics` lists,
+a `managed` predicate nobody but this file needs. A tiny `Ins`
+FIXTURE builder — `body([...ins], reg_count)` answering a minimal,
+already-`Lowered`-wrapped unit — belongs in `@std/avrac/testing`
+itself, next to `ir_of`: every future pass that wants to test its own
+malformed-input handling (a checker, a keeper, a second verifier)
+will hand-roll the same four lines otherwise.
