@@ -21,7 +21,8 @@ use core.{
     TypeRegistry,
     joined,
     flatten,
-    sorted_texts,
+    sorted_by,
+    tuple_before,
     doc_first_paragraph,
     root_kind_of,
     NodeStore,
@@ -891,11 +892,17 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
     lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
+/// A member beside its `by` key — one text per `by` field, a TUPLE, so
+/// two different keys never read as one and a tie keeps both members.
+type SortedMember = { key: List<string>, decl: Decl }
+
 fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<Decl> {
     let found = collect_members(a, p.kind, p.scope, owner)
-    let keys = sorted_texts([collect_sort_key(a, p, d) for d in found])
-    [found.find(collect_sort_key(a, p, it) == k)! for k in keys]
+    let keyed = [SortedMember { key: collect_sort_key(a, p, d), decl: d } for d in found]
+    [m.decl for m in sorted_by(keyed, member_before)]
 }
+
+fn member_before(x: SortedMember, y: SortedMember) -> bool { tuple_before(x.key, y.key) }
 
 /// The kind's own gathering door — A REGISTRY, exhaustive over
 /// `CollectKind`: the next kind (fn, case) answers here, never a
@@ -914,8 +921,8 @@ fn collect_members(a: Analysis, kind: CollectKind, scope: CollectScope, owner: F
     }
 }
 
-fn collect_sort_key(a: Analysis, p: CollectParts, d: Decl) -> string {
-    joined([collect_field_text(a, d, [k]) for k in p.order], ".")
+fn collect_sort_key(a: Analysis, p: CollectParts, d: Decl) -> List<string> {
+    [collect_field_text(a, d, [k]) for k in p.order]
 }
 
 /// One entry: its fields read by NAME off the projected type's own
