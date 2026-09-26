@@ -81,16 +81,20 @@ impl Db {
     fn prepare(sql: string) -> Result<Stmt, SqlError> {
         let _ = barred(self.closed_fault())?
         let parts = statements(sql)?
-        if parts.length > 1 { fail SqlError
+        if parts.length > 1 {
+            fail SqlError
                 .refused(
                     Cause.ManyStatements,
                     "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many",
-                ) }
-        if parts.is_empty() { fail SqlError
+                )
+        }
+        if parts.is_empty() {
+            fail SqlError
                 .refused(
                     Cause.NoStatement,
                     "the text holds no statement — it is empty or nothing but comments",
-                ) }
+                )
+        }
         self.compiled(parts[0])
     }
 
@@ -115,8 +119,10 @@ impl Db {
         // the only thing that can answer. For a verb that takes ONE
         // statement the answer is a refusal; a script verb skips the
         // segment instead. Same fact, two verbs, opposite answers.
-        if handle == null { fail SqlError
-                .refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
+        if handle == null {
+            fail SqlError
+                .refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank")
+        }
         Stmt { raw: Cell.new(handle), conn: Cell.new(self.raw.get()) }
     }
 }
@@ -145,11 +151,13 @@ impl Stmt {
     /// `sqlite_stmt_adversarial_test.av` pins the behaviour.
     fn step() -> Result<bool, SqlError> {
         let _ = barred(self.finalized_fault())?
-        if self.done.get() { fail SqlError
+        if self.done.get() {
+            fail SqlError
                 .refused(
                     Cause.Done,
                     "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean",
-                ) }
+                )
+        }
         let rc = sqlite3_step(self.raw.get())
         if rc == row_code { return true }
         if rc == done_code {
@@ -188,14 +196,18 @@ impl Stmt {
     /// one through a verb that answers a count would throw the rows away
     /// silently — which is the whole reason this verb refuses instead.
     fn drained(db: Db) -> Result<int, SqlError> {
-        if sqlite3_column_count(self.raw.get()) > 0 { fail SqlError
+        if sqlite3_column_count(self.raw.get()) > 0 {
+            fail SqlError
                 .refused(
                     Cause.RowsDiscarded,
                     "this statement answers rows and this verb answers a count — read it instead",
-                ) }
+                )
+        }
         let more = self.step()?
-        if more { fail SqlError
-                .refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
+        if more {
+            fail SqlError
+                .refused(Cause.RowsDiscarded, "this statement answered a row where none was expected")
+        }
         sqlite3_changes64(db.raw.get())
     }
 

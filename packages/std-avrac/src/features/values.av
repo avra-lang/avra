@@ -234,7 +234,9 @@ impl LowerCx {
         let ty = self.facts.type_at(e)
         if !self.view.types.rides_pointer(ty) ||
             self.view.types.shape_of(ty) is .Map ||
-            !same_type(self.concrete(ty), ty) { return null }
+            !same_type(self.concrete(ty), ty) {
+            return null
+        }
         mut heap = new_meta_heap()
         let v? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap) else { return null }
         mut build = self.static_build()
@@ -254,10 +256,14 @@ impl LowerCx {
     /// A value record lives in registers: each field crosses as its
     /// own register, and the record is their pack.
     mut fn wide_crossed(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
-        if self.valued(ty) { return self
-                .named_over(ty, self.valued_crossed(v, heap, self.view.types.machine_type(ty), name)) }
-        if !self.view.types.is_wide(ty) { return self
-                .pack(ty, [self.materialized(v, heap, self.view.types.flat_fields(ty)[0], name)]) }
+        if self.valued(ty) {
+            return self
+                .named_over(ty, self.valued_crossed(v, heap, self.view.types.machine_type(ty), name))
+        }
+        if !self.view.types.is_wide(ty) {
+            return self
+                .pack(ty, [self.materialized(v, heap, self.view.types.flat_fields(ty)[0], name)])
+        }
         let slots = heap.slots(v)
         let fields = self.view.types.flat_fields(ty)
         if slots.length != fields.length { return self.meta_defect(ty) }
@@ -659,8 +665,12 @@ impl LowerCx {
         self
             .failed(
                 into,
-                if agrees { payload } else { self
-                        .tagged_value(self.view.types.shape_of(isides.err), fsides.err.index, [payload]) },
+                if agrees {
+                    payload
+                } else {
+                    self
+                        .tagged_value(self.view.types.shape_of(isides.err), fsides.err.index, [payload])
+                },
             )
     }
 
@@ -924,7 +934,8 @@ impl LowerCx {
     mut fn hollow_of(inner: TypeId) -> Reg {
         // a value record's hollow is its fields' hollows, packed — and a
         // name over one wears that pack
-        if self.valued(inner) { return self
+        if self.valued(inner) {
+            return self
                 .named_over(
                     inner,
                     self
@@ -932,7 +943,8 @@ impl LowerCx {
                             self.view.types.machine_type(inner),
                             [self.const_int(absent_tag), self.const_int(0)],
                         ),
-                ) }
+                )
+        }
         if self.view.types.travels_wide(inner) { return self.pack(inner, [self.hollow_of(f) for f in self.view.types.flat_fields(inner)]) }
         if self.view.types.seen_shape(inner) is .Bool {
             // LICENSED — `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
