@@ -29,6 +29,8 @@ impl Runnable for CheckCmd {
 fn said(args: CliResult, path: string, c: Checked) -> int {
     let baseline = args.option("baseline")
     if args.has_flag("baseline_accept") { return accepted(path, baseline, c) }
+    let stale = stale_licenses(root_program(path), rule_kinds(path))
+    if !stale.is_empty() { return refused_licenses(stale) }
     if baseline != "" {
         let bad = new_sites(c.warnings, rule_kinds(path), baseline_keys(baseline))
         if !bad.is_empty() { return refused_sites(bad) }
@@ -45,6 +47,15 @@ fn said(args: CliResult, path: string, c: Checked) -> int {
 /// from the kind string itself.
 fn rule_kinds(path: string) -> List<string> {
     [rule_id(r) for r in root_program(path).rule_listing()]
+}
+
+/// A stale `// LICENSED` id refuses unconditionally, baseline or not
+/// — it is never idiom debt to ratchet, it is a claim nothing backs
+/// (license_check.av).
+fn refused_licenses(stale: List<string>) -> int {
+    println("licenses: ${stale.length} stale `// LICENSED` id(s):")
+    for s in stale { println("  ${s}") }
+    1
 }
 
 /// `--baseline_accept`'s whole verb: prune, write, report — exit 0

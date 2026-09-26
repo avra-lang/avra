@@ -1,6 +1,6 @@
 //! `avra rules` — every rule the compiler carries
 //! (compiler/rules_table.av's `rules` collect), by identity and doc.
-use commands.{rules_listing}
+use commands.{rules_listing, rules_markdown}
 use @std.avrac.compiler.{RuleEntry, rules, rule_id}
 
 /// A minimal `RuleEntry` — `run` answers nothing, since the listing
@@ -43,5 +43,31 @@ spec "commands/rules" {
         }
     }
 }
+
+spec "commands/rules — the markdown printer (DOGFOODING.md's generated block)" {
+    given "an undocumented rule beside a documented one" {
+        then "only the documented one gets a bullet, in the doc's own bare shape" {
+            let text = rules_markdown([entry("loops", "push_loop", "a for-loop that is one push is a MAP"), entry("nullable", "if_null_ternary", "")])
+            text == "- loops.push_loop a for-loop that is one push is a MAP"
+        }
+    }
+    given "no rules carry a doc" {
+        then "the block is empty" {
+            rules_markdown([entry("a", "b", "")]) == ""
+        }
+    }
+    given "the compiler's own live rule table" {
+        then "every documented rule's bullet round-trips, one line each" {
+            let text = rules_markdown(rules)
+            [documented_line(r) for r in rules if r.doc != ""].all((line) -> text.contains(line))
+        }
+        then "an undocumented rule contributes no bullet at all" {
+            let r? = rules.find(rule_id(it) == "compiler.arm_end_raw") else { return false }
+            !rules_markdown(rules).contains("compiler.arm_end_raw ")
+        }
+    }
+}
+
+fn documented_line(r: RuleEntry) -> string { "- ${rule_id(r)} ${r.doc}" }
 
 fn entry_line(r: RuleEntry) -> string { "${rule_id(r)} — ${r.doc}" }

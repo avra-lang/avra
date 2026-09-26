@@ -350,8 +350,6 @@ impl Db {
     /// hottest call on the cached path — every `run`/`one`/`first`/
     /// `all`/`scalar` reaches it once.
     fn cached(text: string) -> Stmt? {
-        // LICENSED style.hand_rolled_scan: `.find(it.text == text)` closes over `text`, minting a
-        // lambda per call; a plain loop does not, and this runs on every call.
         for c in self.cache.get() {
             if c.text == text { return c.stmt }
         }
@@ -372,7 +370,7 @@ impl Db {
 /// that closes only on success leaks one per failure, and the leak is
 /// invisible because the caller has an error in hand.
 fn opened(path: string, flags: int) -> Result<Db, SqlError> {
-    mut handle: ptr? = null // LICENSED style.hand_rolled_scan: an out-parameter cell C fills
+    mut handle: ptr? = null
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail SqlError.refused(Cause.CantOpen, "SQLite answered success and no handle") }
