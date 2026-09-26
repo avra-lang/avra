@@ -1,13 +1,9 @@
-//! `avra docs` — the documentation associated with a thing, one
-//! address space: what a diagnostic code means, a declared symbol's
-//! own `///` doc, an annotation's signature, `rules` — every rule the
-//! compiler carries, by identity — or `dump` — every exported
-//! symbol's own facts, one row each. Compiler introspection that is
-//! not documentation (a type's representation, a write-flow chain, a
-//! package's declared tools) lives in its own command — `repr`,
-//! `writes`, `process`.
+//! `avra docs` — the documentation associated with a thing. No name:
+//! every exported symbol in this package, dumped. A name: that one
+//! thing's own doc — a diagnostic's meaning, or a declared symbol's
+//! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{avra, RuleEntry, rule_id, declared_law, DocRow, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.{avra, DocRow, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
 use @std.avrac.compiler.store.{Store, store_at}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.compiler.dev.{shown_code}
@@ -17,20 +13,28 @@ type DocsCmd = {}
 
 impl Runnable for DocsCmd {
     fn run(args: CliResult) -> int {
-        let q = args.arg("address")
-        if q == "rules" { return listed_rules(args.has_flag("json")) }
-        if q == "dump" { return dumped(args.has_flag("json")) }
-        if q.contains(":") { return explained_kind(q) }
-        if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
-        let hit: DiagCode? = avra().rows.codes.find(it.kind == q)
+        let json = args.has_flag("json")
+        let name = args.arg("name")
+        if name == "" { return dumped(json) }
+        let hit: DiagCode? = avra().rows.codes.find(it.kind == name)
         if hit != null {
             let c = hit!
+            if json { return print_json(kind_json(c)) }
             println("${c.kind} — ${c.summary}")
             shown_witness(c.kind)
             return 0
         }
-        explained_decl(q)
+        explained_decl(name, json)
     }
+}
+
+fn kind_json(c: DiagCode) -> Json {
+    Json.Obj([field("kind", Json.Str(c.kind)), field("summary", Json.Str(c.summary))])
+}
+
+fn print_json(j: Json) -> int {
+    println(to_text(j))
+    0
 }
 
 /// WHAT THE CODE LOOKS LIKE. The registry's witness, run: the source
@@ -46,53 +50,29 @@ fn shown_witness(kind: string) {
     println(shown.rendered)
 }
 
-/// `avra docs @scope/name:E1` — a PACKAGE's diagnostic kind, from
-/// the annotation fns the package you stand in reaches: registered by
-/// spelling the kind as a literal in `refuse_as`.
-fn explained_kind(q: string) -> int {
-    // the package's own refusals are not in the way: the kind asked
-    // about may be the one they wear
-    mut p = root_program(here())
-    let hit: DiagCode? = p.kind_rows().find(it.kind == q)
-    if hit == null {
-        eprintln("avra: no annotation this package reaches registers `${q}` — a kind registers when `refuse_as` spells it as a literal, or when an annotation speaks it")
-        return 1
-    }
-    println("${hit!.kind} — ${hit!.summary}")
-    0
-}
-
-/// `avra docs @name` — the annotation fn's signature, which IS
-/// its effect (§3.3 of the comptime design). The package is the
-/// directory the command stands in.
-fn explained_annotation(name: string) -> int {
-    let p? = clean_program() else { return 1 }
-    answered(p.explain_annotation(name), "no fn `${name}` is declared in this package")
-}
-
 /// `avra docs <name>` — a declared fn/type/enum/trait/const's own
-/// `///` doc and `@name(args)` annotations, the fallback every other
-/// form of the command misses through. The package is the directory
-/// the command stands in, as every other form here reads it.
+/// `///` doc and `@name(args)` annotations, when `name` is not a
+/// known diagnostic kind. The package is the directory the command
+/// stands in.
 ///
 /// THE FAST PATH: a row this package's own db already holds, once its
 /// witnesses still hold, answers with no program built at all — the
 /// whole point of a durable `Db` (compiler/db.av). A miss falls back
 /// to today's derivation and remembers what it found for the process
 /// after this one.
-fn explained_decl(name: string) -> int {
+fn explained_decl(name: string, json: bool) -> int {
     let root = here()
     let store = store_at(build_cache_root(root_workspace(root)))
     mut d = db()
-    let cached? = d.decl(store, db_qualified(root, name)) else { return derived_decl(d, store, root, name) }
-    println(cached.answer)
+    let cached? = d.decl(store, db_qualified(root, name)) else { return derived_decl(d, store, root, name, json) }
+    print_decl(name, cached.answer, json)
     0
 }
 
-fn derived_decl(mut d: Db, store: Store, root: string, name: string) -> int {
+fn derived_decl(mut d: Db, store: Store, root: string, name: string, json: bool) -> int {
     let p? = clean_program() else { return 1 }
     let found? = p.explain_doc(name) else {
-        eprintln("avra: nothing registered under `${name}` — no diagnostic code, kind, or declared fn/type/enum/trait/const wears it")
+        eprintln("avra: nothing registered under `${name}` — no diagnostic kind or declared fn/type/enum/trait/const wears it")
         return 1
     }
     d.insert_decl(store, db_qualified(root, name), DocFacts {
@@ -101,47 +81,20 @@ fn derived_decl(mut d: Db, store: Store, root: string, name: string) -> int {
         listing_digest: current_listing_digest(root),
         files: [FileWitness { path: f, digest: current_file_digest(f) } for f in found.files],
     })
-    println(found.text)
+    print_decl(name, found.text, json)
     0
 }
 
-/// `avra docs rules` — every rule the compiler carries (the `rules`
-/// collect), by identity: the ground truth a native idiom finding's
-/// kind is checked against. `--json` answers `[{id, module, name,
-/// doc, law}]` — `law` is `null` for a rule whose rewrite (if any)
-/// stays behind `avra fix`'s IR proof alone, else the rule's own
-/// equivalence claim (`RuleEntry.law`, compiler/rules_table.av).
-fn listed_rules(json: bool) -> int {
-    let entries = root_program(here()).rule_listing()
-    println(if json { to_text(Json.Arr([rule_json(r) for r in entries])) } else { rules_listing(entries) })
-    0
-}
-
-fn rule_json(r: RuleEntry) -> Json {
-    Json.Obj([
-        field("id", Json.Str(rule_id(r))),
-        field("module", Json.Str(r.module)),
-        field("name", Json.Str(r.name)),
-        field("doc", Json.Str(r.doc)),
-        field("law", law_json(declared_law(r))),
-    ])
-}
-
-fn law_json(law: string?) -> Json {
-    match law {
-        s? -> Json.Str(s)
-        null -> Json.Null
+fn print_decl(name: string, text: string, json: bool) {
+    if json {
+        println(to_text(Json.Obj([field("address", Json.Str(name)), field("text", Json.Str(text))])))
+        return
     }
+    println(text)
 }
 
-/// Every rule's identity and doc, one per line in the collect's own
-/// order, under a header naming the count.
-export fn rules_listing(entries: List<RuleEntry>) -> string {
-    ["rules this package declares — ${entries.length}"].concat(["${rule_id(r)} — ${r.doc}" for r in entries]).join("\n")
-}
-
-/// `avra docs dump` — every EXPORTED declaration's own facts, this
-/// package's own, one row per symbol: `{address, kind, signature,
+/// `avra docs` with no name — every EXPORTED declaration's own facts,
+/// this package's own, one row per symbol: `{address, kind, signature,
 /// prose_lines, package}`. A pure read, deliberately: caching each row
 /// into `Db` the way a single lookup does would need the same
 /// collision grouping `explain_doc` already does, and doing that
@@ -165,17 +118,14 @@ fn dump_json(r: DocRow) -> Json {
 }
 
 /// Every exported symbol's address and signature, one per line, under
-/// a header naming the count — `rules_listing`'s shape.
+/// a header naming the count.
 export fn dump_listing(rows: List<DocRow>) -> string {
     ["this package exports — ${rows.length}"].concat(["${r.address} — ${r.signature}" for r in rows]).join("\n")
 }
 
 export command docs {
-    description: "The documentation associated with a thing: an F-code, a kind, a declared symbol's own doc, an annotation's signature, a package kind (`@scope/name:E1`), `rules`, or `dump`"
-    arg address {
-        description: "an F-code, a kind, a declared name, `@name`, a package kind (`@scope/name:E1`), `rules`, or `dump`"
-        required: true
-    }
-    flag json { description: "for `rules`: one JSON array of {id, module, name, doc, law}; for `dump`: one JSON array of {address, kind, signature, prose_lines, package}" }
+    description: "The documentation associated with a thing: no name dumps every exported symbol in this package, a name looks up one (a diagnostic kind or a declared fn/type/enum/trait/const)"
+    arg name { description: "a diagnostic kind or a declared name — every exported symbol in this package when absent" }
+    flag json { description: "JSON instead of text: an array of {address, kind, signature, prose_lines, package} when absent, one object for a name" }
     run: DocsCmd {}
 }

@@ -1007,16 +1007,16 @@ def licensed(lines, i, code):
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
 def collected_rule_ids(binary):
-    """Every rule the compiler carries, by identity — `avra docs rules
+    """Every rule the compiler carries, by identity — `avra rules
     --json` over the cli, whose closure links every rule. An empty
     answer is a failure, never an empty set: a filter that examined
     nothing would count nothing."""
     env = dict(os.environ, AVRA_WATCH_HELD="1", AVRA_CWD=os.path.join(ROOT, "packages", "cli"))
-    out = subprocess.run([binary, "docs", "rules", "--json"], cwd=os.path.join(ROOT, "packages", "cli"),
+    out = subprocess.run([binary, "rules", "--json"], cwd=os.path.join(ROOT, "packages", "cli"),
                          env=env, capture_output=True, text=True, timeout=300).stdout
     ids = {r["id"] for r in json.loads(out or "[]")}
     if not ids:
-        sys.exit("idioms: `avra docs rules --json` answered no rules — refusing to count native findings blind")
+        sys.exit("idioms: `avra rules --json` answered no rules — refusing to count native findings blind")
     return ids
 
 def native_findings():
