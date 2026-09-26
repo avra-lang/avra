@@ -10,9 +10,10 @@
 //! reads them (features/components/lower.av's `augmented`), never a
 //! second read of the declaration's own annotations.
 use core.{root_of, flatten}
-use features.{Code, Fix, Decl, Decls}
+use features.{Code, Fix, Fixes, Decl, Decls, Analysed}
 use compiler.{analyze_source, Analysis}
 use compiler.lower.{component_root_kind}
+use diagnostics.{spliced}
 
 /// The first hit `applied` finds at `root` or under it, depth-first,
 /// or absence when nothing in the whole subtree fires.
@@ -55,6 +56,21 @@ export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
     nearest_fix(applied, root) == null
 }
 
+/// An `@fixes(before)` example with no "after": the rule answers a
+/// `Fix.Delete` at `before`'s nearest hit, and deleting what it names
+/// (`rule_delete.av`'s `delete_edits` — the SAME builder `avra fix`
+/// splices) leaves a file that still analyses clean. There is no
+/// rewritten form to fingerprint against, unlike `checks_fixes`.
+export fn checks_delete(applied: fn(Code) -> Fix?, before: string) -> bool {
+    let a = analyze_source(before)
+    let root? = example_root(a) else { return false }
+    let hit? = nearest_fix(applied, root) else { return false }
+    let what? = deleted(hit) else { return false }
+    let edits? = delete_edits(Analysed { view: a.view, names: a.names, facts: a.facts }, a.view.source.text, what) else { return false }
+    let after? = spliced(a.view.source.text, edits) else { return false }
+    analyze_source(after).clean()
+}
+
 fn same_fingerprint(rendered: string, after: string) -> bool {
     let r? = example_root(analyze_source(rendered)) else { return false }
     let a? = example_root(analyze_source(after)) else { return false }
@@ -95,8 +111,17 @@ impl Decls {
     fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
         let d? = found.find(named(r, it)) else { return [] }
         let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", component_root_kind(self, d) == r.root)
-        [root_check].concat([checked("${rule_id(r)} @fixes", checks_fixes(r.run, f.before, f.after)) for f in r.fixes]).concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
+        [root_check].concat([checked("${rule_id(r)} @fixes", fixes_checked(r.run, f)) for f in r.fixes]).concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
     }
 }
 
 fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
+
+/// One `@fixes` example, whichever form it wrote: an `after` proves a
+/// rewrite, its absence a `Fix.Delete`.
+fn fixes_checked(applied: fn(Code) -> Fix?, f: Fixes) -> bool {
+    match f.after {
+        after? -> checks_fixes(applied, f.before, after)
+        null -> checks_delete(applied, f.before)
+    }
+}

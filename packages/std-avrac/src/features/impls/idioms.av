@@ -1,8 +1,7 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use core.{StmtId, ExprId, NodeStore}
+use core.{StmtId, ExprId, NodeStore, some_list}
 use features.{Code, Fix, rule, Decl, Decls, NameFacts}
-use @std.meta.{name}
 
 /// An `impl Trait for T` method whose body is the trait's own
 /// DEFAULT body for that name, span-blind and with a written no-op
@@ -16,24 +15,20 @@ use @std.meta.{name}
 /// same door `for_range`/`is_nullable_flag_mut` already open for a
 /// structural read a pattern's own grammar cannot hold.
 ///
-/// NO `@fixes` EXAMPLE: the rewrite answers NO CODE at all (a
-/// deletion), and the example harness's own proof
-/// (`compiler/rule_examples.av`'s `same_fingerprint`) reads a
-/// rewrite's rendered text as a PROGRAM to pull a root out of — an
-/// empty one parses to no statements and has none. `avra fix` still
-/// applies this rewrite, proved through `@law` alone
-/// (`compiler/rule_proof.av`'s `law_proved`: the after-text still
-/// type-checks, which it does — nothing calls a method by static
-/// symbol, so a caller reaches the identical default either way),
-/// never through this harness. The impl block matched stands FIRST
+/// A `Fix.Delete`, never a rewrite: the method — its own doc and
+/// trailing break included — is gone whole, never replaced by empty
+/// code standing in its place. The impl block matched stands FIRST
 /// in each example below: `example_root` reads only the file's FIRST
-/// statement, and a `keeps` whose trait sits ahead of its impl would
-/// never reach the impl's own method to test it at all.
+/// statement, and a `keeps`/`fixes` whose trait sits ahead of its
+/// impl would never reach the impl's own method to test it at all.
+// LICENSED style.duplicated_message: a fixture and its near-twin, held as strings under test — not a message that can drift
+@fixes("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
+// LICENSED style.duplicated_message: a fixture and its near-twin, held as strings under test — not a message that can drift
 @keeps("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 @keeps("impl Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
 @law("an impl method identical to its trait's default answers the same as the default")
 export rule default_override {
-    quote { ${m} } if overrides_default(m) -> Fix.Rewrite(name("")),
+    quote { ${m} } if overrides_default(m) -> Fix.Delete(some_list(m.declaring())),
 }
 
 /// Whether `m` is a method statement standing in an `impl Trait for

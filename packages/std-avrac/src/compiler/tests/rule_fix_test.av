@@ -16,6 +16,17 @@ fn fix_ws_of(main: string) -> Workspace {
     new_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w", avra())
 }
 
+/// A multi-file package's own `avra fix` applications over its entry
+/// file — `unused_import`'s own fixtures need a SECOND file to import
+/// from, since a memory-hosted workspace carries no `@std` root of
+/// its own.
+fn fix_apps_of_files(files: Map<string, string>, names: List<string>) -> List<Application> {
+    let ws = new_workspace(memory_host(files, names), "/w", avra())
+    let p: Program = ws.program("/w/src/main.av")
+    let a = p.entry_file()!
+    p.fix_applications("/w/src/main.av", analysed(a), null)
+}
+
 // `edit_over` is rule_proof_test.av's own — the tests module is one
 // namespace, so it is not redefined here.
 
@@ -165,6 +176,27 @@ spec "avra fix" {
     given "two PROVED applications whose edits do not overlap" {
         then "fighting_pair answers absence" {
             fighting_pair(disjoint_apps()) == null
+        }
+    }
+    given "an impl method identical to its trait's own default" {
+        then "one Application, ACCEPTED by law — the method is gone, its own indent left behind the way any whole-statement deletion leaves the line it stood on" {
+            let text = "impl Greeter for Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}\n\"\"\n"
+            let apps = fix_apps_of(text)
+            apps.length == 1 && apps[0].by_law != null && apps[0].kind == "impls.default_override" && fix_applied(text, apps) == "impl Greeter for Loud {\n    \n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}\n\"\"\n"
+        }
+    }
+    given "a `use` line naming two items, one of them read nowhere" {
+        then "one Application, ACCEPTED by law — the line rewritten around the one item still read" {
+            let text = "use lib.{Thing, Other}\nfn f() -> Thing {\n    Thing { x: 0 }\n}\n0\n"
+            let apps = fix_apps_of_files({"/w/src/main.av": text, "/w/src/lib.av": "export type Thing = { x: int }\nexport type Other = { y: int }\n"}, ["/w/src/main.av", "/w/src/lib.av"])
+            apps.length == 1 && apps[0].by_law != null && apps[0].kind == "modules.unused_import" && fix_applied(text, apps) == "use lib.{Thing}\nfn f() -> Thing {\n    Thing { x: 0 }\n}\n0\n"
+        }
+    }
+    given "a `use` line whose only item is read nowhere" {
+        then "the whole line is gone — its own trailing break kept, same as any statement's deletion" {
+            let text = "use lib.{Other}\n0\n"
+            let apps = fix_apps_of_files({"/w/src/main.av": text, "/w/src/lib.av": "export type Other = { y: int }\n"}, ["/w/src/main.av", "/w/src/lib.av"])
+            apps.length == 1 && fix_applied(text, apps) == "\n0\n"
         }
     }
 }
