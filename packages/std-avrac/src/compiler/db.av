@@ -183,6 +183,20 @@ extern fn avra_trap(message: string)
 /// here; `Receivers` uses the raw kernel verbs directly over a
 /// side-effecting whole-program pass, never a typed value cache.
 ///
+/// `Workspace`'s OTHER caches (`Keys`, `module_names_of`/`files_of`/
+/// `surfaces`/`import_lists`, `externs`, `asks`/`lift_asks`/
+/// `settle_asks`) stay there too, and not as an oversight: `db()` is a
+/// process singleton (`once`), shared by every caller in the process,
+/// while every one of those is seeded EMPTY inside `built()` — fresh
+/// per `Workspace`, never invalidated by a witness or a revision. Two
+/// workspaces over different roots in one process (a whole-tree test
+/// run, `avra test packages/*`) would read each other's answers for a
+/// name that means something else in the other package — the durable
+/// rows here are safe to share BECAUSE `still_valid` re-checks them
+/// and `db_qualified` scopes them by root; a raw scratch cache has
+/// neither and would silently leak across builds. THE ANSWER STANDS
+/// UNTIL A WORKSPACE-SCOPED `Db` REPLACES THE SINGLETON — not before.
+///
 /// `@derive(Unwrap)` (a `${variant}_of` helper per dense variant) was
 /// attempted and abandoned, confirmed twice: `avra expand` on this
 /// file alone generates every one of the sixteen correctly, but
