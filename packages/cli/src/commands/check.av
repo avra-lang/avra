@@ -6,7 +6,7 @@
 //! prunes it down to sites still found — never grows it (idiom_baseline.av).
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
-use @std.avrac.compiler.{Checked, rule_id}
+use @std.avrac.compiler.{Checked, Program, rule_id}
 
 type CheckCmd = {}
 
@@ -28,8 +28,12 @@ impl Runnable for CheckCmd {
 fn said(args: CliResult, path: string, c: Checked) -> int {
     let baseline = args.option("baseline")
     if args.has_flag("baseline_accept") { return accepted(baseline) }
+    let prog = root_program(path)
+    let kinds = rule_kinds(prog)
+    let stale = stale_licenses(prog, kinds)
+    if !stale.is_empty() { return refused_licenses(stale) }
     if baseline != "" {
-        let bad = new_sites(c.warnings, rule_kinds(path), baseline_keys(baseline))
+        let bad = new_sites(c.warnings, kinds, baseline_keys(baseline))
         if !bad.is_empty() { return refused_sites(bad) }
     }
     if !c.warnings.is_empty() { println(c.warnings) }
@@ -42,8 +46,17 @@ fn said(args: CliResult, path: string, c: Checked) -> int {
 /// Read from the SAME rule table `avra rules` answers
 /// (compiler/rules_table.av's `rules` collect), never a shape guessed
 /// from the kind string itself.
-fn rule_kinds(path: string) -> List<string> {
-    [rule_id(r) for r in root_program(path).rule_listing()]
+fn rule_kinds(p: Program) -> List<string> {
+    [rule_id(r) for r in p.rule_listing()]
+}
+
+/// A stale `// LICENSED` id refuses unconditionally, baseline or not
+/// — it is never idiom debt to ratchet, it is a claim nothing backs
+/// (license_check.av).
+fn refused_licenses(stale: List<string>) -> int {
+    println("licenses: ${stale.length} stale `// LICENSED` id(s):")
+    for s in stale { println("  ${s}") }
+    1
 }
 
 /// `--baseline_accept`'s whole verb: prune, write, report — exit 0
