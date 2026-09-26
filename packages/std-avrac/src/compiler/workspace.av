@@ -85,7 +85,7 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{Kernel, new_kernel, Key, Memo, new_memo}
+use query.{new_kernel, Key, Memo, new_memo}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -232,7 +232,7 @@ export type Workspace = {
     host: Host,
     root: string,
     lang: Language,
-    db: Kernel,
+    db: Db,
     decls: Decls,
     /// THE ARTIFACT STORE, when a BUILD attached one. A unit's edges are persisted so a
     /// held unit can contribute them without a body; outside a build there is none and
@@ -407,6 +407,9 @@ enum Family {
     /// named use of a declaration, folded from every file's own rows
     /// (compiler/references.av).
     References
+    /// a `Result<T, _>`'s inferred error set — the whole-program
+    /// fixpoint, one key for the entire program
+    Failures
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -443,6 +446,7 @@ fn ordinal(f: Family) -> int {
         .Expanded -> 17,
         .Plain -> 18,
         .References -> 19,
+        .Failures -> 20,
     }
 }
 
@@ -469,6 +473,7 @@ fn families() -> List<Family> {
         Family.Expanded,
         Family.Plain,
         Family.References,
+        Family.Failures,
     ]
     all
 }
@@ -534,7 +539,7 @@ fn built(
     lone: bool,
     per_file: bool,
 ) -> Workspace {
-    let db = new_kernel()
+    let kernel = new_kernel()
     let no_asks: List<Wanted> = []
     let no_lifts: List<LiftAsk> = []
     let no_settles: List<SettleAsk> = []
@@ -552,32 +557,32 @@ fn built(
         host: host,
         root: root,
         lang: lang,
-        db: db,
+        db: new_db(kernel),
         decls: language_decls(lang),
         store: Cell.new(no_store),
-        source_memo: new_memo<DbRow>(db, ordinal(Family.Source)),
-        manifest_memo: new_memo<DbRow>(db, ordinal(Family.Manifest)),
+        source_memo: new_memo<DbRow>(kernel, ordinal(Family.Source)),
+        manifest_memo: new_memo<DbRow>(kernel, ordinal(Family.Manifest)),
         externs: new_table<ExternNames>(),
-        parsed_memo: new_memo<DbRow>(db, ordinal(Family.Parsed)),
-        plain_memo: new_memo<DbRow>(db, ordinal(Family.Plain)),
-        items_memo: new_memo<DbRow>(db, ordinal(Family.Items)),
-        namespace_memo: new_memo<DbRow>(db, ordinal(Family.Namespace)),
-        visible_memo: new_memo<DbRow>(db, ordinal(Family.Visible)),
-        resolved_memo: new_memo<DbRow>(db, ordinal(Family.Resolved)),
+        parsed_memo: new_memo<DbRow>(kernel, ordinal(Family.Parsed)),
+        plain_memo: new_memo<DbRow>(kernel, ordinal(Family.Plain)),
+        items_memo: new_memo<DbRow>(kernel, ordinal(Family.Items)),
+        namespace_memo: new_memo<DbRow>(kernel, ordinal(Family.Namespace)),
+        visible_memo: new_memo<DbRow>(kernel, ordinal(Family.Visible)),
+        resolved_memo: new_memo<DbRow>(kernel, ordinal(Family.Resolved)),
         sig_voices: new_table<Voices>(),
-        typed_memo: new_memo<DbRow>(db, ordinal(Family.Typed)),
-        const_typed_memo: new_memo<DbRow>(db, ordinal(Family.ConstTyped)),
+        typed_memo: new_memo<DbRow>(kernel, ordinal(Family.Typed)),
+        const_typed_memo: new_memo<DbRow>(kernel, ordinal(Family.ConstTyped)),
         method_clashes: new_table<List<Clash>>(),
         method_diags: Cell.new(no_method_diags),
-        folded_memo: new_memo<DbRow>(db, ordinal(Family.Folded)),
-        analysis_memo: new_memo<DbRow>(db, ordinal(Family.Analysis)),
-        lowered_memo: new_memo<DbRow>(db, ordinal(Family.Lowered)),
+        folded_memo: new_memo<DbRow>(kernel, ordinal(Family.Folded)),
+        analysis_memo: new_memo<DbRow>(kernel, ordinal(Family.Analysis)),
+        lowered_memo: new_memo<DbRow>(kernel, ordinal(Family.Lowered)),
         asks: Cell.new(no_asks),
         lift_asks: Cell.new(no_lifts),
-        lifted_memo: new_memo<DbRow>(db, ordinal(Family.Lifted)),
-        expanded_memo: new_memo<DbRow>(db, ordinal(Family.Expanded)),
+        lifted_memo: new_memo<DbRow>(kernel, ordinal(Family.Lifted)),
+        expanded_memo: new_memo<DbRow>(kernel, ordinal(Family.Expanded)),
         settle_asks: Cell.new(no_settles),
-        settled_memo: new_memo<DbRow>(db, ordinal(Family.Settled)),
+        settled_memo: new_memo<DbRow>(kernel, ordinal(Family.Settled)),
         records: new_records(),
         keys: new_keys(),
         module_names_of: Cell.new(no_module_names_of),
@@ -606,6 +611,7 @@ fn built(
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
     ws.decls.arm_references(() -> ws.refs_ensured())
+    ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
         d: DeclId,
@@ -680,6 +686,10 @@ impl Workspace {
         let _ = self.references()
     }
 
+    fn failures_ensured() {
+        let _ = self.failures()
+    }
+
     fn marks_ensured(d: DeclId) {
         let _ = self.computed_marks(d)
     }
@@ -750,6 +760,7 @@ impl Workspace {
             .Expanded -> touch(self.expanded(file_at(arg))),
             .Plain -> touch(self.plain_parsed(file_at(arg))),
             .References -> touch(self.references()),
+            .Failures -> touch(self.failures()),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1033,7 +1044,9 @@ impl Workspace {
         // (`maybe_declares_block`), and only a file that survives THAT
         // reaches the parse below.
         if !module_names_block_word(self, m, self.module_files(m), u.items) { return BlockWords {} }
-        let declared = [self.provided_words(path) for path in self.module_files(m)]
+        // Only a file that can OPEN a block word is parsed for its words;
+        // the rest of the module never is.
+        let declared = [self.provided_words(path) for path in self.module_files(m) if file_lexes_block(self, path)]
         let grammars = flatten([d.grammars for d in declared])
         let components = flatten([d.components for d in declared])
         let instances = flatten([d.instances for d in declared])

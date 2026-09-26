@@ -12,16 +12,24 @@
 //! literal, no parsing or I/O, so nothing stops `Db` from living
 //! per-`Workspace` like everything else. Once that fell, the two enums
 //! were the same idea told twice; `DbRow` is both halves, told once.
+//! `Db` itself now lives per-`Workspace` too (`new_db`, below,
+//! called once from `built()`), never a process-wide `once`.
 //!
-//! `Kernel` (query/kernel.av) STAYS A SEPARATE TYPE, permanently — not
-//! an unfinished merge. `query/` sits BELOW `compiler/` in this tree's
-//! one-way layering (core -> query -> grammar -> features -> compiler),
-//! and `Memo<T>` (query/memo.av) is instantiated generically from
-//! `Workspace` with `T = DbRow` — `Workspace.db`'s own type must stay
-//! whatever `query/kernel.av` exports, or `query` would depend on
-//! `compiler`, backwards. `DbRow` living here, in `compiler/`, is exactly
-//! why it CAN merge across its two former enums (both already lived in
-//! this package) while `Kernel` cannot join it (it does not).
+//! `Kernel` (query/kernel.av) STAYS A SEPARATE TYPE: `query/` sits
+//! BELOW `compiler/` in this tree's one-way layering (core -> query ->
+//! grammar -> features -> compiler), and `Memo<T>` (query/memo.av) is a
+//! concrete `{ db: Kernel, ... }` — never generic over what a
+//! `Workspace` calls its own database — so `query/` must never learn
+//! `Db`'s name. `Db` HOLDS a `Kernel` (the `kernel` field, below)
+//! rather than becoming one: `Workspace.db` reads as one type to every
+//! other file, and the raw handle `new_memo` wants is `ws.db.kernel`,
+//! unwrapped once at construction, so `query/` never sees past its own
+//! export. Holding is the legal direction (`compiler` already depends
+//! on `query`); a merge that made `Kernel` disappear was the one this
+//! file rejects — `Db` WRAPS it, verbatim, forwarding every verb a
+//! caller already spelled (`ask`/`begin`/`settle`/`family`/
+//! `family_active`/`revision`/`active`/`changed_at`/`disarm`/`stats`)
+//! so no existing `self.db.ask(...)`-shaped call site moves at all.
 //!
 //! NAMED `DbRow`/`DbKind` here on purpose: `compiler/record.av` and
 //! `compiler/voices.av` declare their OWN, unrelated `DbRow` types too —
@@ -44,6 +52,7 @@
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
 use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape, DeclId, TypeId}
+use query.{Kernel, Key, Verdict as KernelVerdict, new_kernel}
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest}
 use diagnostics.{SourceFile}
@@ -136,6 +145,8 @@ export enum DbKind {
     Decl
     Sig
     Warn
+    Scan
+    Canon
 }
 
 impl DbKind {
@@ -160,6 +171,8 @@ impl DbKind {
             .Decl -> "Decl",
             .Sig -> "Sig",
             .Warn -> "Warn",
+            .Scan -> "Scan",
+            .Canon -> "Canon",
         }
     }
 }
@@ -190,17 +203,19 @@ extern fn avra_trap(message: string)
 ///
 /// `Workspace`'s OTHER caches (`Keys`, `module_names_of`/`files_of`/
 /// `surfaces`/`import_lists`, `externs`, `asks`/`lift_asks`/
-/// `settle_asks`) stay there too, and not as an oversight: `db()` is a
-/// process singleton (`once`), shared by every caller in the process,
-/// while every one of those is seeded EMPTY inside `built()` — fresh
-/// per `Workspace`, never invalidated by a witness or a revision. Two
-/// workspaces over different roots in one process (a whole-tree test
-/// run, `avra test packages/*`) would read each other's answers for a
-/// name that means something else in the other package — the durable
-/// rows here are safe to share BECAUSE `still_valid` re-checks them
-/// and `db_qualified` scopes them by root; a raw scratch cache has
-/// neither and would silently leak across builds. THE ANSWER STANDS
-/// UNTIL A WORKSPACE-SCOPED `Db` REPLACES THE SINGLETON — not before.
+/// `settle_asks`) stay there too, and not because `Db` was once a
+/// process singleton (it no longer is — see `new_db`, below) but
+/// because they answer a DIFFERENT QUESTION than a row does. A row is
+/// addressed one of two ways, both spelled above: densely by
+/// `(family, arg)` through a `Memo<DbRow>`, or durably by a NAME that
+/// survives a witness check across processes. Every one of `Keys`'
+/// fields and the ask/lift/settle registries is keyed by a STRING
+/// this build computed on the fly (a digest, a path, a call site) and
+/// answers straight from memory with no witness to re-check and no
+/// disk to fall back to — a THIRD addressing scheme neither `Memo`'s
+/// dense arg nor `Db`'s witnessed name was built for. Folding them in
+/// would mean inventing that third scheme inside `DbRow`, not
+/// widening one that already exists.
 ///
 /// `@derive(Unwrap)` (a `${variant}_of` helper per dense variant) was
 /// attempted and abandoned, confirmed twice: `avra expand` on this
@@ -241,6 +256,13 @@ export enum DbRow {
     /// A program's rendered warnings (`derive.av`'s `checked()`) —
     /// already-rendered text, kept under the program's own key.
     Warn(name: string, text: string)
+    /// Whether a file's text can open a block word (voices.av's
+    /// lex-level pre-filter), under that text's own digest — so no
+    /// process lexes the same bytes twice.
+    Scan(name: string, text: string)
+    /// A file's bytes known to be canonical `avra fmt` output, under
+    /// their own digest — present or absent, the text is unused.
+    Canon(name: string, text: string)
 }
 
 impl DbRow {
@@ -265,6 +287,8 @@ impl DbRow {
             .Decl(_, _) -> DbKind.Decl,
             .Sig(_, _) -> DbKind.Sig,
             .Warn(_, _) -> DbKind.Warn,
+            .Scan(_, _) -> DbKind.Scan,
+            .Canon(_, _) -> DbKind.Canon,
         }
     }
 
@@ -273,7 +297,7 @@ impl DbRow {
     /// addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) -> name,
+            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -448,11 +472,19 @@ fn lifted_of(r: DbRow) -> LiftResult {
     }
 }
 
-/// One process's rows, in memory. `once`: every caller in this process
-/// shares the same answers, the way every other process-wide table does.
-export type Db = { rows: Map<string, DbRow> }
+/// One `Workspace`'s rows, in memory, plus the `Kernel` handle every
+/// dense family's `Memo<DbRow>` was built over — held, not merged, so
+/// `Workspace.db` reads as one type while `query/` still exports the
+/// only `Kernel` there is.
+export type Db = { kernel: Kernel, rows: Map<string, DbRow> }
 
-export once fn db() -> Db { Db { rows: {} } }
+export fn new_db(kernel: Kernel) -> Db { Db { kernel: kernel, rows: {} } }
+
+/// A `Db` for a caller with no `Workspace` to read one from — the
+/// docs fast path (`avra docs <name>`) answers from the durable store
+/// alone, deliberately before a `Workspace` is built, so it mints its
+/// own kernel rather than waiting on one.
+export fn fresh_db() -> Db { new_db(new_kernel()) }
 
 /// A row's name, over the package it belongs to — every durable `DbRow`
 /// key is one package's alone, and two packages never share a row by
@@ -487,6 +519,29 @@ impl Db {
         if !still_valid(row) { return null }
         row
     }
+
+    /// The `Kernel` verbs a `Workspace` calls directly (`self.db.ask(...)`
+    /// and its siblings) — forwarded verbatim so every such call site
+    /// reads `Db` as if it always answered these itself.
+    fn ask(key: Key) -> KernelVerdict { self.kernel.ask(key) }
+
+    fn begin(key: Key) { self.kernel.begin(key) }
+
+    fn settle(key: Key, value_hash: int) { self.kernel.settle(key, value_hash) }
+
+    fn family(verify: fn(int) -> int) -> int { self.kernel.family(verify) }
+
+    fn family_active(family: int) -> bool { self.kernel.family_active(family) }
+
+    fn revision() -> int { self.kernel.revision() }
+
+    fn active(key: Key) -> bool { self.kernel.active(key) }
+
+    fn changed_at(key: Key) -> int { self.kernel.changed_at(key) }
+
+    fn disarm() { self.kernel.disarm() }
+
+    fn stats() -> string { self.kernel.stats() }
 }
 
 fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [kind.tag(), name]) }
@@ -501,7 +556,7 @@ fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) &&
             facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
-        .Sig(_, _) or .Warn(_, _) -> true,
+        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) -> true,
         rest -> {
             avra_trap("defect: still_valid asked of a non-durable DbRow")
             false
@@ -543,7 +598,7 @@ export fn current_file_digest(path: string) -> string {
 fn encoded(row: DbRow) -> string {
     match row {
         .Decl(_, facts) -> encoded_docfacts(facts),
-        .Sig(_, text) or .Warn(_, text) -> text,
+        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -559,6 +614,8 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         },
         .Sig -> DbRow.Sig(name, text),
         .Warn -> DbRow.Warn(name, text),
+        .Scan -> DbRow.Scan(name, text),
+        .Canon -> DbRow.Canon(name, text),
         rest -> {
             avra_trap("defect: decoded asked of a non-durable DbKind")
             null
