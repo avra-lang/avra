@@ -172,7 +172,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -461,6 +461,12 @@ suites:
 cited:
 	@python3 tools/cited.py
 
+# DOGFOODING.md's own registry keeps a GENERATED block current
+# against `avra rules --markdown` — a rule's doc changes here or the
+# block does not, and this is what notices.
+dogfooding-rules:
+	@sh tools/dogfooding_rules.sh
+
 idioms:
 	@STATUS=0; CHECKED=0; \
 	for pkg in packages/*/; do \
@@ -632,7 +638,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited fmt-lossless attack tested runtime-tests traps witness cache-attacks
+gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true
