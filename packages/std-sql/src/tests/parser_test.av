@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem, WhenClause}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -69,7 +69,15 @@ fn render_expr(e: SqlExpr) -> string {
         .IsNull(inner, negated) -> "(${render_expr(inner)} IS ${if negated { "NOT " } else { "" }}NULL)",
         .Between(inner, lo, hi, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}BETWEEN ${render_expr(lo)} AND ${render_expr(hi)})",
         .In(inner, list, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}IN (${[render_expr(a) for a in list].join(", ")}))",
+        .Case(operand, whens, else_branch) -> render_case(operand, whens, else_branch),
     }
+}
+
+fn render_case(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> string {
+    let head = if operand == null { "CASE" } else { "CASE ${render_expr(operand!)}" }
+    let arms = [" WHEN ${render_expr(w.cond)} THEN ${render_expr(w.result)}" for w in whens].join("")
+    let tail = if else_branch == null { "" } else { " ELSE ${render_expr(else_branch!)}" }
+    "${head}${arms}${tail} END"
 }
 
 fn where_ident(e: SqlExpr?) -> string? {
@@ -381,6 +389,30 @@ spec "sql/predicates" {
     given "a predicate beside an ordinary comparison" {
         then "both sides of AND build independently" {
             where_shape("SELECT a FROM t WHERE age > 1 AND deleted_at IS NULL") == "((age > 1) AND (deleted_at IS NULL))"
+        }
+    }
+}
+
+spec "sql/case" {
+    given "the searched form, no operand" {
+        then "each WHEN is its own boolean condition" {
+            where_shape("SELECT a FROM t WHERE CASE WHEN x > 1 THEN 1 ELSE 0 END = 1") == "(CASE WHEN (x > 1) THEN 1 ELSE 0 END = 1)"
+        }
+    }
+    given "the searched form with no ELSE" {
+        then "else_branch is absent, not a defaulted value" {
+            where_shape("SELECT a FROM t WHERE CASE WHEN x > 1 THEN 1 END = 1") == "(CASE WHEN (x > 1) THEN 1 END = 1)"
+        }
+    }
+    given "the simple form, with an operand" {
+        then "each WHEN compares a value against the operand" {
+            where_shape("SELECT a FROM t WHERE CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END = 'one'") == "(CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END = 'one')"
+        }
+    }
+    given "CASE as a SELECT item" {
+        then "aliases like any other expression" {
+            let s = select_of(selected("SELECT CASE WHEN a > 0 THEN 'pos' ELSE 'non' END AS sign FROM t"))
+            s != null && columns_shape(s!.columns) == "CASE WHEN (a > 0) THEN 'pos' ELSE 'non' END AS sign"
         }
     }
 }

@@ -21,7 +21,15 @@ export enum SqlExpr {
     IsNull(e: SqlExpr, negated: bool)
     Between(e: SqlExpr, lo: SqlExpr, hi: SqlExpr, negated: bool)
     In(e: SqlExpr, list: List<SqlExpr>, negated: bool)
+    /// `CASE operand WHEN ... THEN ... ELSE ... END` — `operand` null
+    /// is the searched form (`CASE WHEN cond THEN ... END`), where
+    /// each `WhenClause.when` is a full boolean condition rather than
+    /// a value compared against `operand`.
+    Case(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?)
 }
+
+/// One `WHEN ... THEN ...` arm of a `CASE` expression.
+export type WhenClause = { cond: SqlExpr, result: SqlExpr }
 
 /// One `SELECT` item: an expression, optionally named (`AS alias`).
 export type SelectItem = { expr: SqlExpr, as_name: string? }
@@ -67,6 +75,7 @@ export enum SqlNode {
     /// A plain expression list — a function call's arguments, or a
     /// `GROUP BY` clause's own columns.
     ExList(items: List<SqlExpr>)
+    When(w: WhenClause)
 }
 
 fn text_of(c: Captured<LexToken, SqlNode>) -> string {
@@ -120,6 +129,7 @@ impl SqlNode {
     fn as_order_item() -> OrderItem? { match self { .Ord(o) -> o, _ -> null } }
     fn as_order_list() -> List<OrderItem>? { match self { .OrderList(items) -> items, _ -> null } }
     fn as_ex_list() -> List<SqlExpr>? { match self { .ExList(items) -> items, _ -> null } }
+    fn as_when() -> WhenClause? { match self { .When(w) -> w, _ -> null } }
 }
 
 fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
@@ -172,6 +182,16 @@ fn ord_items_of(c: Captured<LexToken, SqlNode>) -> Result<List<OrderItem>, strin
         .Many(items) -> .Ok([want(node_of(i)?.as_order_item(), "an order item")? for i in items]),
         .Absent -> .Ok([]),
         .Terminal(_) or .Node(_) -> .Err("expected a list of order items"),
+    }
+}
+
+/// `CASE`'s own `(w:when_clause)+` — one `WhenClause` per arm, always
+/// at least one (`+`, never `*`).
+fn when_items_of(c: Captured<LexToken, SqlNode>) -> Result<List<WhenClause>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_when(), "a when clause")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of when clauses"),
     }
 }
 
@@ -345,6 +365,13 @@ fn call_args(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
     .Ok(node(SqlNode.ExList(exprs_of(caps[0])?)))
 }
 
+@grammar_rule("\"WHEN\" w:or_expr \"THEN\" t:or_expr")
+fn when_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let w? = ex_of(caps[0]) else { return .Err("when: condition did not build") }
+    let t? = ex_of(caps[1]) else { return .Err("when: result did not build") }
+    .Ok(node(SqlNode.When(WhenClause { cond: w, result: t })))
+}
+
 /// An IDENT-headed atom is a bare column (`title`), a qualified one
 /// (`p.title`), or a call (`COUNT(*)`) — all three share `IDENT` as
 /// their first token, so they cannot be separate `|` branches (the
@@ -354,8 +381,50 @@ fn call_args(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
 /// INDEPENDENT optional suffixes after one shared `n:IDENT` sidesteps
 /// it: `.` and `(` are different first tokens, so neither suffix
 /// competes with the other or with `n` itself.
-@grammar_rule("n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")? | NUMBER | STRING | HOLE")
+///
+/// `CASE` leads the alternation, ahead of `n:IDENT` — both share
+/// `IDENT` as their lexer-level first token (a keyword is just an
+/// ordinary IDENT-shaped literal here), and `n:IDENT`'s own branch
+/// has exactly one required item, which this engine's first-set
+/// checker treats as committing: an earlier committing branch
+/// swallows every later one sharing its first token. A literal match
+/// carries no such hazard in the other direction (it fails outright
+/// and cleanly falls through), so ordering `"CASE"` first is what
+/// makes this safe, not the (silent, unrelated) absence of a
+/// checker diagnostic — confirmed by reading `first.av`'s own
+/// `subsuming_term`, which only recognizes the compiler's own
+/// `NAME`/`NUMBER` terminal names and is blind to this grammar's
+/// `IDENT`, not by trusting that silence.
+///
+/// The searched form (`CASE WHEN … THEN … END`, no operand) and the
+/// simple form (`CASE x WHEN … THEN … END`) are TWO branches, not one
+/// with an optional operand — an optional `op:or_expr?` would greedily
+/// match the searched form's own `WHEN` as a bare column (nothing
+/// distinguishes a keyword from an identifier at this lexer's level,
+/// same reason `TableRef`'s bare alias is unsupported), and a
+/// successfully-matched optional never backtracks just because a
+/// later required item then fails. Ordering the searched form FIRST
+/// works with no lookahead: its own first required item after `CASE`
+/// is `(w:when_clause)+`, whose own first required token is the
+/// literal `WHEN` — on the simple form's input that fails outright,
+/// atomically, with nothing consumed (nothing optional sits before it
+/// to have greedily eaten anything), so the engine falls straight
+/// through to the simple-form branch. Confirmed empirically: the
+/// naive one-branch form silently broke the searched case with
+/// "unexpected input after `select_stmt`" before this split.
+@grammar_rule("\"CASE\" (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | \"CASE\" op:or_expr (w:when_clause)+ (\"ELSE\" e:or_expr)? \"END\" | n:IDENT (\".\" m:IDENT)? (lp:\"(\" args:call_args? \")\")? | NUMBER | STRING | HOLE")
 fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    if caps.length == 2 {
+        let whens = when_items_of(caps[0])?
+        let else_branch = ex_of(caps[1])
+        return .Ok(node(SqlNode.Ex(SqlExpr.Case(null, whens, else_branch))))
+    }
+    if caps.length == 3 {
+        let operand = ex_of(caps[0])
+        let whens = when_items_of(caps[1])?
+        let else_branch = ex_of(caps[2])
+        return .Ok(node(SqlNode.Ex(SqlExpr.Case(operand, whens, else_branch))))
+    }
     if caps.length == 4 {
         let name = text_of(caps[0])
         return match caps[2] {
