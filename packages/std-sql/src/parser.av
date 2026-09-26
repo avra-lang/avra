@@ -3,7 +3,7 @@
 //! function that builds it, nothing spelled twice. See
 //! `@std/grammar`'s `collected.av` for the mechanism this reuses.
 
-use @std.grammar.{grammar_rule, Grammar, Rule, Captured, parse_grammar_text, run_grammar, ready, RunOutcome, LexToken, Lexeme, lex}
+use @std.grammar.{grammar_rule, Grammar, Rule, Captured, parse_grammar_text, run_grammar, ready, RunOutcome, LexToken, Lexeme, lex, want}
 use lexicon.{SQL}
 use @std.meta.{Annotation}
 use @std.errors.{Loc}
@@ -13,6 +13,7 @@ export enum SqlExpr {
     Number(text: string)
     Str(text: string)
     Hole(name: string)
+    Not(e: SqlExpr)
     BinOp(op: string, lhs: SqlExpr, rhs: SqlExpr)
 }
 
@@ -29,6 +30,27 @@ fn text_of(c: Captured<LexToken, SqlNode>) -> string {
         .Terminal(t) -> t.text,
         .Node(_) or .Many(_) or .Absent -> "",
     }
+}
+
+/// The captured token's own KIND (`IDENT`/`NUMBER`/`STRING`/`HOLE`) —
+/// `atom` reads this to decide which `SqlExpr` variant a bare
+/// terminal becomes.
+fn kind_of(c: Captured<LexToken, SqlNode>) -> string {
+    match c {
+        .Terminal(t) -> t.kind,
+        .Node(_) or .Many(_) or .Absent -> "",
+    }
+}
+
+/// A `STRING` token's raw text still carries its surrounding quotes
+/// and SQL's own escape (a doubled quote, `''`, for a literal one).
+fn unquote_sql_string(text: string) -> string {
+    text.substring(1, text.length - 1).replace("''", "'")
+}
+
+/// A `HOLE` token's raw text is `${name}` — the parameter's bare name.
+fn hole_name(text: string) -> string {
+    text.substring(2, text.length - 1)
 }
 
 fn node_of(c: Captured<LexToken, SqlNode>) -> SqlNode? {
@@ -54,6 +76,16 @@ fn cols_of(c: Captured<LexToken, SqlNode>) -> List<string> {
     }
 }
 
+/// A repeated operand capture (`(\"AND\" r:not_expr)*`'s accumulated
+/// `r`), each already built into its own `SqlExpr`.
+fn exprs_of(c: Captured<LexToken, SqlNode>) -> Result<List<SqlExpr>, string> {
+    match c {
+        .Many(items) -> .Ok([want(ex_of(i), "an operand")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of operands"),
+    }
+}
+
 fn node(n: SqlNode) -> Captured<LexToken, SqlNode> { Captured.Node(n) }
 
 @grammar_rule("c:IDENT (\",\" c:IDENT)*")
@@ -61,13 +93,47 @@ fn column_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
     .Ok(node(SqlNode.Cols(cols_of(caps[0]))))
 }
 
-@grammar_rule("\"WHERE\" e:expr")
+@grammar_rule("\"WHERE\" e:or_expr")
 fn where_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     .Ok(caps[0])
 }
 
+/// Lowest precedence: `a AND b OR c AND d` groups as `(a AND b) OR (c
+/// AND d)` — left-associative, folded from the repeated tail.
+@grammar_rule("l:and_expr (\"OR\" r:and_expr)*")
+fn or_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let l? = ex_of(caps[0]) else { return .Err("or: left operand did not build") }
+    let rest = exprs_of(caps[1])?
+    mut acc = l
+    for r in rest { acc = SqlExpr.BinOp("OR", acc, r) }
+    .Ok(node(SqlNode.Ex(acc)))
+}
+
+@grammar_rule("l:not_expr (\"AND\" r:not_expr)*")
+fn and_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let l? = ex_of(caps[0]) else { return .Err("and: left operand did not build") }
+    let rest = exprs_of(caps[1])?
+    mut acc = l
+    for r in rest { acc = SqlExpr.BinOp("AND", acc, r) }
+    .Ok(node(SqlNode.Ex(acc)))
+}
+
+/// `NOT` binds tighter than `AND`/`OR`, looser than a comparison.
+/// Labels bind in `deep_items` order — the OUTER sequence's own items
+/// first, a nested group's after — so `e` (the outer item) is
+/// `caps[0]` and `n` (nested inside the optional group) is `caps[1]`,
+/// not source order (confirmed by direct probe, not assumed).
+@grammar_rule("(n:\"NOT\")? e:cmp_expr")
+fn not_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let e? = ex_of(caps[0]) else { return .Err("not: operand did not build") }
+    match caps[1] {
+        .Absent -> .Ok(node(SqlNode.Ex(e))),
+        _ -> .Ok(node(SqlNode.Ex(SqlExpr.Not(e)))),
+    }
+}
+
 @grammar_rule("l:atom (op:(\"=\"|\"<\"|\">\"|\"<=\"|\">=\"|\"<>\"|\"!=\") r:atom)?")
-fn expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn cmp_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     let l? = ex_of(caps[0]) else { return .Err("expr: left side did not build") }
     let op = text_of(caps[1])
     if op.is_empty() { return .Ok(node(SqlNode.Ex(l))) }
@@ -75,9 +141,15 @@ fn expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, Sq
     .Ok(node(SqlNode.Ex(SqlExpr.BinOp(op, l, r))))
 }
 
-@grammar_rule("IDENT")
+@grammar_rule("IDENT|NUMBER|STRING|HOLE")
 fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
-    .Ok(node(SqlNode.Ex(SqlExpr.Ident(text_of(caps[0])))))
+    let text = text_of(caps[0])
+    match kind_of(caps[0]) {
+        "NUMBER" -> .Ok(node(SqlNode.Ex(SqlExpr.Number(text)))),
+        "STRING" -> .Ok(node(SqlNode.Ex(SqlExpr.Str(unquote_sql_string(text))))),
+        "HOLE" -> .Ok(node(SqlNode.Ex(SqlExpr.Hole(hole_name(text))))),
+        _ -> .Ok(node(SqlNode.Ex(SqlExpr.Ident(text)))),
+    }
 }
 
 @grammar_rule("\"SELECT\" cols:column_list \"FROM\" t:IDENT w:where_clause?")
