@@ -1,9 +1,30 @@
 // The driver seam: the canonical language assembles clean, programs
 // parse through one fn, recovery holes are VISIBLE Stmt.Error nodes,
 // and lex errors ride the same diagnostics list.
-use @std.avrac.compiler.{avra, assemble, language_features, parse_source, project, builtin_codes, analyze_source}
+use @std.avrac.compiler.{
+    avra,
+    assemble,
+    language_features,
+    parse_source,
+    project,
+    builtin_codes,
+    analyze_source,
+}
 use @std.avrac.testing.{shown}
-use @std.grammar.{Diagnostic, Cause, Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{
+    Diagnostic,
+    Cause,
+    Grammar,
+    Rule,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    Build,
+    Expect,
+    Recover,
+}
 use @std.avrac.diagnostics.{registered, new_source_file}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.features.{LanguageFeature, feature}
@@ -27,11 +48,21 @@ spec "language" {
     given "the canonical language" {
         then "it assembles with no defects and the builtin registry" {
             let lang = avra()
-            lang.syntax != null && lang.diagnostics.is_empty() && registered(lang.rows.codes, "parse.expected") && registered(lang.rows.codes, "resolve.unresolved") && registered(lang.rows.codes, "type.mismatch") && registered(lang.rows.codes, "type.case") && registered(lang.rows.codes, "resolve.nested_spec") && registered(lang.rows.codes, "resolve.duplicate_case")
+            lang.syntax != null &&
+                lang.diagnostics.is_empty() &&
+                registered(lang.rows.codes, "parse.expected") &&
+                registered(lang.rows.codes, "resolve.unresolved") &&
+                registered(lang.rows.codes, "type.mismatch") &&
+                registered(lang.rows.codes, "type.case") &&
+                registered(lang.rows.codes, "resolve.nested_spec") &&
+                registered(lang.rows.codes, "resolve.duplicate_case")
         }
         then "a feature registering a taken kind refuses assembly" {
             let lang = assemble(language_features().concat([clashing()]))
-            lang.syntax == null && lang.diagnostics.length == 1 && lang.diagnostics[0].kind == "language.defect" && lang.diagnostics[0].message == "`lex.error`: diagnostic kind is registered more than once"
+            lang.syntax == null &&
+                lang.diagnostics.length == 1 &&
+                lang.diagnostics[0].kind == "language.defect" &&
+                lang.diagnostics[0].message == "`lex.error`: diagnostic kind is registered more than once"
         }
         then "a real parse error checks end to end" {
             let lang = avra()
@@ -40,7 +71,8 @@ spec "language" {
 2 │ let = 3
   ·     ┬
 ──╯"""
-            lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected && lang.check(new_source_file("<source>", "let a = 1")) == ""
+            lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected &&
+                lang.check(new_source_file("<source>", "let a = 1")) == ""
         }
         then "a layout fact read before a `mut` seat moves it is a named compiler defect, not a silently wrong mask (R11c, avra-8sb5.34.21)" {
             let lang = avra()
@@ -76,15 +108,24 @@ fn seal(mut s: Small) {
     given "a well-formed program" {
         then "lets and expression statements land in order" {
             let p = parse_source("let x = 1 + y\nx")
-            let let_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _, _) -> name == "x", _ -> false }
-            p.voices.list.is_empty() && p.stmts.length == 2 && let_ok && p.store.stmt(p.stmts[1]) is .ExprStmt
+            let let_ok = match p.store.stmt(p.stmts[0]) {
+                .Let(name, _, _) -> name == "x",
+                _ -> false,
+            }
+            p.voices.list.is_empty() &&
+                p.stmts.length == 2 &&
+                let_ok &&
+                p.store.stmt(p.stmts[1]) is .ExprStmt
         }
     }
     given "a broken statement between good ones" {
         then "the hole is an explicit Error node, the neighbors are whole" {
             let p = parse_source("let a = 1\nlet = 3\nlet y = 2")
             let hole_ok = p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error
-            let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _, _) -> name == "y", _ -> false }
+            let tail_ok = match p.store.stmt(p.stmts[2]) {
+                .Let(name, _, _) -> name == "y",
+                _ -> false,
+            }
             p.voices.list.length == 1 && hole_ok && tail_ok
         }
     }

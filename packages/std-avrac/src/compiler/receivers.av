@@ -8,8 +8,33 @@
 //! has a declared type along its whole path, so no body is typed to
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, MethodParts, fp, fp_list, touch, filled, SeatMark, mut_mark, same_decl}
-use features.{NameFacts, Decls, Decl, bound_decl_of, row_writes, nothing, property_row, declared_decl}
+use core.{
+    DeclId,
+    ExprId,
+    StmtId,
+    TypeId,
+    Type,
+    Arrow,
+    NodeStore,
+    MethodParts,
+    fp,
+    fp_list,
+    touch,
+    filled,
+    SeatMark,
+    mut_mark,
+    same_decl,
+}
+use features.{
+    NameFacts,
+    Decls,
+    Decl,
+    bound_decl_of,
+    row_writes,
+    nothing,
+    property_row,
+    declared_decl,
+}
 
 /// One fn's own evidence: which of its seats the body writes
 /// directly, and the flows from its seats into other fns' seats —
@@ -99,7 +124,18 @@ impl Workspace {
         if x.root == null { return Summary { own: filled(n, false), edges: [] } }
         let receiver: TypeId? = self.receiver_type(x)
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
-        mut cx = Survey { ws: self, decls: self.decls, store: self.decls.store(d), names: self.resolved(x.file), receiver: receiver, seats: seats, lo: x.lo, hi: x.hi, own: filled(n, false), edges: [] }
+        mut cx = Survey {
+            ws: self,
+            decls: self.decls,
+            store: self.decls.store(d),
+            names: self.resolved(x.file),
+            receiver: receiver,
+            seats: seats,
+            lo: x.lo,
+            hi: x.hi,
+            own: filled(n, false),
+            edges: [],
+        }
         cx.assigns()
         for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
         Summary { own: cx.own, edges: cx.edges }
@@ -173,10 +209,7 @@ impl Survey {
     fn called_seat(e: ExprId) -> int? {
         if self.call_args(e).is_empty() { return null }
         let b? = self.names.binding(e) else { return null }
-        match b {
-            .Param(i) -> i,
-            _ -> null,
-        }
+        match b { .Param(i) -> i, _ -> null }
     }
 
     /// A fn type's marks — none for any other type.
@@ -188,10 +221,7 @@ impl Survey {
     /// A named call's arguments; empty for every other node.
     fn call_args(e: ExprId) -> List<ExprId> {
         // one arm answers — a projection over the core node
-        match self.store.expr(e) {
-            .Call(_, _, args) -> args,
-            _ -> [],
-        }
+        match self.store.expr(e) { .Call(_, _, args) -> args, _ -> [] }
     }
 
     mut fn method_evidence(mp: MethodParts) {
@@ -241,7 +271,12 @@ impl Survey {
         match step {
             .Field(subject, name) -> {
                 let holder: TypeId? = self.place_type(subject)
-                holder != null && property_row(self.ws.lang.rows.properties, name.of, self.decls.types.shape_of(holder!)) != null
+                holder != null &&
+                    property_row(
+                        self.ws.lang.rows.properties,
+                        name.of,
+                        self.decls.types.shape_of(holder!),
+                    ) != null
             },
             .Root(_) or .At(_, _) or .Unwrap(_) -> false,
         }
@@ -411,10 +446,7 @@ impl Survey {
 
     fn element_type(holder: TypeId?) -> TypeId? {
         if holder == null { return null }
-        match self.decls.types.shape_of(holder!) {
-            .List(elem) -> elem,
-            _ -> null,
-        }
+        match self.decls.types.shape_of(holder!) { .List(elem) -> elem, _ -> null }
     }
 }
 
@@ -465,7 +497,11 @@ impl Workspace {
         let s = self.summary(d)
         if i == 0 && decls.declares_writing(d) || s.own[i] { return [hop] }
         if seen.any(same_decl(it, d)) { return null }
-        let edge? = s.edges.find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else { return null }
+        let edge? = s
+            .edges
+            .find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else {
+            return null
+        }
         let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }
         [hop].concat(rest)
     }

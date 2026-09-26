@@ -1,7 +1,23 @@
 // THE GRAMMAR NAMES THE NODE, against a node model of three made-up
 // variants — so these cases prove the BINDING and never the compiler's
 // own payloads, which move.
-use @std.grammar.{Grammar, Prim, Build, Slot, Diagnostic, Captured, RunOutcome, render_grammar, run_grammar, ready, rule_def, seq_to, item, cap, named}
+use @std.grammar.{
+    Grammar,
+    Prim,
+    Build,
+    Slot,
+    Diagnostic,
+    Captured,
+    RunOutcome,
+    render_grammar,
+    run_grammar,
+    ready,
+    rule_def,
+    seq_to,
+    item,
+    cap,
+    named,
+}
 use @std.avrac.grammar.{parse_grammar, lex_grammar, Token, avra_known_terminals, avra_lexeme}
 use @std.avrac.features.{bind_nodes}
 use @std.avrac.core.{PayloadRow}
@@ -12,7 +28,11 @@ use @std.errors.{Loc}
 /// payload, two same-typed node payloads, a list and a nullable.
 fn rows() -> List<PayloadRow> {
     [
-        PayloadRow { owner: "E", variant: "Lit", payloads: [Field { name: "value", ty: "string", at: null, kind: .Str }] },
+        PayloadRow {
+            owner: "E",
+            variant: "Lit",
+            payloads: [Field { name: "value", ty: "string", at: null, kind: .Str }],
+        },
         PayloadRow {
             owner: "E",
             variant: "Pair",
@@ -25,7 +45,12 @@ fn rows() -> List<PayloadRow> {
             owner: "E",
             variant: "Many",
             payloads: [
-                Field { name: "elems", ty: "List<ExprId>", at: null, kind: .List(.Named("ExprId", [])) },
+                Field {
+                    name: "elems",
+                    ty: "List<ExprId>",
+                    at: null,
+                    kind: .List(.Named("ExprId", [])),
+                },
                 Field { name: "tag", ty: "Scoped?", at: null, kind: .Opt(.Named("Scoped", [])) },
             ],
         },
@@ -50,20 +75,13 @@ fn slots_of(src: string) -> List<Slot>? {
     let g = bind_nodes(grammar_of(src), rows()).g
     if g.rules.is_empty() { return null }
     let held? = g.rules[0].body.branches[0].build else { return null }
-    match held {
-        .Node(_, _, _, slots) -> slots,
-        .Call(_, _) or .Var(_) -> null,
-    }
+    match held { .Node(_, _, _, slots) -> slots, .Call(_, _) or .Var(_) -> null }
 }
 
 fn label_at(src: string, j: int) -> string {
     let slots = slots_of(src)
     if slots == null || j >= slots!.length { return "" }
-    match slots![j] {
-        .Label(name) -> name,
-        .Fixed(text) -> "=${text}",
-        .Empty -> "-",
-    }
+    match slots![j] { .Label(name) -> name, .Fixed(text) -> "=${text}", .Empty -> "-" }
 }
 
 spec "features/node_grammar" {
@@ -113,10 +131,16 @@ spec "features/node_grammar" {
     given "a label whose shape the payload cannot hold" {
 
         then "a rule reference cannot fill a text payload" {
-            refuses("r = value:expr -> E.Lit\nexpr = NAME\n", "gives `E.Lit`'s `value: string` a built node, and it holds a token's text")
+            refuses(
+                "r = value:expr -> E.Lit\nexpr = NAME\n",
+                "gives `E.Lit`'s `value: string` a built node, and it holds a token's text",
+            )
         }
         then "a terminal cannot fill a node payload" {
-            refuses("r = left:NAME right:expr -> E.Pair\nexpr = NAME\n", "a token's text, and it holds a built node")
+            refuses(
+                "r = left:NAME right:expr -> E.Pair\nexpr = NAME\n",
+                "a token's text, and it holds a built node",
+            )
         }
         then "a literal proves no mismatch — it captures nothing a payload wants" {
             !refuses("r = elems:\"x\" -> E.Many\n", "holds")
@@ -128,7 +152,8 @@ spec "features/node_grammar" {
             render_grammar(grammar_of("r = value:STRING -> E.Lit\n")).contains("-> E.Lit")
         }
         then "a stated payload renders with its value" {
-            render_grammar(grammar_of("r = \"t\" -> E.Lit(value = true)\n")).contains("-> E.Lit(value = true)")
+            render_grammar(grammar_of("r = \"t\" -> E.Lit(value = true)\n"))
+                .contains("-> E.Lit(value = true)")
         }
     }
     given "a node build nested in a group" {
@@ -158,10 +183,14 @@ spec "features/node_grammar" {
     given "what the notation itself refuses" {
 
         then "a bare name in a node build's arguments is no argument" {
-            parse_grammar("r = a:NAME -> E.Lit(a)\n").diagnostics.any(it.message.contains("names no value here"))
+            parse_grammar("r = a:NAME -> E.Lit(a)\n")
+                .diagnostics
+                .any(it.message.contains("names no value here"))
         }
         then "a stated value in a builder call has no payload to fill" {
-            parse_grammar("r = a:NAME -> made(a = 1)\n").diagnostics.any(it.message.contains("a fixed value fills a NODE's payload"))
+            parse_grammar("r = a:NAME -> made(a = 1)\n")
+                .diagnostics
+                .any(it.message.contains("a fixed value fills a NODE's payload"))
         }
     }
 }
@@ -173,17 +202,31 @@ fn unbound_run() -> RunOutcome<Token, string> {
         name: "r",
         start: "r",
         rules: [
-            rule_def("r", [
-                seq_to([cap("value", named("NAME")), item(named("BREAK"))], Build.Node("E", "Lit", [], null)),
-            ]),
+            rule_def(
+                "r",
+                [
+                    seq_to(
+                        [cap("value", named("NAME")), item(named("BREAK"))],
+                        Build.Node("E", "Lit", [], null),
+                    ),
+                ],
+            ),
         ],
     }
-    run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_grammar("x").tokens, avra_lexeme(), never_built)
+    run_grammar<Token, string>(
+        ready(g, avra_known_terminals()),
+        lex_grammar("x").tokens,
+        avra_lexeme(),
+        never_built,
+    )
 }
 
 // LICENSED fns.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
-fn never_built(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<Captured<Token, string>, string> {
+fn never_built(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
     let built: Captured<Token, string> = Captured.Node(name)
     .Ok(built)
 }
@@ -207,9 +250,5 @@ fn group_build(p: Prim) -> Build? {
 
 fn first_label(slots: List<Slot>?) -> string {
     if slots == null { return "<unbound>" }
-    match slots![0] {
-        .Label(name) -> name,
-        .Fixed(text) -> "=${text}",
-        .Empty -> "-",
-    }
+    match slots![0] { .Label(name) -> name, .Fixed(text) -> "=${text}", .Empty -> "-" }
 }

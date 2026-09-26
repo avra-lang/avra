@@ -87,7 +87,12 @@ export type DocFacts = {
 }
 
 export fn encoded_docfacts(facts: DocFacts) -> string {
-    let header = [wire_escape(facts.root), wire_escape(facts.listing_digest), wire_escape(facts.answer), "${facts.files.length}"]
+    let header = [
+        wire_escape(facts.root),
+        wire_escape(facts.listing_digest),
+        wire_escape(facts.answer),
+        "${facts.files.length}",
+    ]
     joined(header.concat([wire_escape(encoded_filewitness(w)) for w in facts.files]), "\n")
 }
 
@@ -494,7 +499,8 @@ fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [ki
 /// through `insert`'s durable half in the first place.
 fn still_valid(row: DbRow) -> bool {
     match row {
-        .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) && facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
+        .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) &&
+            facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
         .Sig(_, _) or .Warn(_, _) -> true,
         rest -> {
             avra_trap("defect: still_valid asked of a non-durable DbRow")

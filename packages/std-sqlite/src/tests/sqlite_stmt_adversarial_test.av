@@ -11,7 +11,12 @@ use @std.sqlite.open.{Db}
 use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{memory_used}
-use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_hard_heap_limit64}
+use @std.sqlite.c.{
+    sqlite3_column_type,
+    sqlite3_column_blob,
+    sqlite3_column_bytes,
+    sqlite3_hard_heap_limit64,
+}
 
 // ── The fixtures, so each case shows only its attack ─────────────
 
@@ -63,10 +68,7 @@ fn no_row_here() -> SqlError {
 /// AN INSERT STEPPED THREE TIMES. Every step answers DONE, and each one
 /// RUNS THE STATEMENT AGAIN.
 fn insert_thrice() -> string {
-    match fresh() {
-        .Ok(db) -> thrice(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> thrice(db), .Err(e) -> e.cause.kind() }
 }
 
 fn thrice(db: Db) -> string {
@@ -87,10 +89,7 @@ fn stepped_thrice(s: Stmt) -> string {
 
 /// A SELECT stepped past DONE hands its rows out AGAIN.
 fn select_past_done() -> string {
-    match fresh() {
-        .Ok(db) -> two_passes(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> two_passes(db), .Err(e) -> e.cause.kind() }
 }
 
 fn two_passes(db: Db) -> string {
@@ -111,10 +110,7 @@ fn five_steps(s: Stmt) -> string {
 
 /// A BIND after a STEP, with no RESET between them.
 fn rebound_late() -> string {
-    match fresh() {
-        .Ok(db) -> late(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> late(db), .Err(e) -> e.cause.kind() }
 }
 
 fn late(db: Db) -> string {
@@ -136,17 +132,11 @@ fn bind_step_bind(s: Stmt) -> string {
 
 /// EVERY VERB AFTER FINALIZE.
 fn after_finalize() -> string {
-    match fresh() {
-        .Ok(db) -> dead(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> dead(db), .Err(e) -> e.cause.kind() }
 }
 
 fn dead(db: Db) -> string {
-    let word = match db.prepare("select 1") {
-        .Ok(s) -> used_after(s),
-        .Err(e) -> e.cause.kind(),
-    }
+    let word = match db.prepare("select 1") { .Ok(s) -> used_after(s), .Err(e) -> e.cause.kind() }
     let _ = db.close()
     word
 }
@@ -156,17 +146,11 @@ fn dead(db: Db) -> string {
 /// not swallow it: `width=1` says the statement is there, `standing=0`
 /// says no row is, and the refusal must name the ROW.
 fn live_before_step() -> string {
-    match fresh() {
-        .Ok(db) -> unstepped(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> unstepped(db), .Err(e) -> e.cause.kind() }
 }
 
 fn unstepped(db: Db) -> string {
-    let word = match db.prepare("select 1") {
-        .Ok(s) -> read_early(s),
-        .Err(e) -> e.cause.kind(),
-    }
+    let word = match db.prepare("select 1") { .Ok(s) -> read_early(s), .Err(e) -> e.cause.kind() }
     let _ = db.close()
     word
 }
@@ -179,7 +163,10 @@ fn read_early(s: Stmt) -> string {
 
 fn used_after(s: Stmt) -> string {
     let rc = s.finalize()
-    "finalize=${rc} step=${sk(s.step())} reset=${s.reset()}" + " width=${s.width()} standing=${s.standing()} slots=${s.slots()}" + " class=${ck(s.class_at(0))} int=${ik(s.int_at(0))}" + " bind_int=${ik(s.bind_int(1, 1))} bind_text=${ik(s.bind_text(1, "x"))}"
+    "finalize=${rc} step=${sk(s.step())} reset=${s.reset()}" +
+        " width=${s.width()} standing=${s.standing()} slots=${s.slots()}" +
+        " class=${ck(s.class_at(0))} int=${ik(s.int_at(0))}" +
+        " bind_int=${ik(s.bind_int(1, 1))} bind_text=${ik(s.bind_text(1, "x"))}"
 }
 
 // ── The copy at the boundary ─────────────────────────────────────
@@ -188,10 +175,7 @@ fn used_after(s: Stmt) -> string {
 /// copy. Read row one, step to row two, and row one's text must still
 /// be row one's text.
 fn text_survives_a_step() -> string {
-    match fresh() {
-        .Ok(db) -> two_rows(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> two_rows(db), .Err(e) -> e.cause.kind() }
 }
 
 fn two_rows(db: Db) -> string {
@@ -238,10 +222,7 @@ fn stepped_blob(s: Stmt) -> string {
 fn text_holds_a_nul() -> string { in_memory(nul_round_trip) }
 
 fn nul_round_trip(db: Db) -> string {
-    let word = match db.prepare("select ?") {
-        .Ok(s) -> bound_nul(s),
-        .Err(e) -> e.cause.kind(),
-    }
+    let word = match db.prepare("select ?") { .Ok(s) -> bound_nul(s), .Err(e) -> e.cause.kind() }
     let _ = db.close()
     word
 }
@@ -284,10 +265,7 @@ fn bk(r: Result<Bytes, SqlError>) -> string {
 
 /// RESET REWINDS AND KEEPS THE BINDINGS.
 fn reset_keeps() -> string {
-    match fresh() {
-        .Ok(db) -> kept(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> kept(db), .Err(e) -> e.cause.kind() }
 }
 
 fn kept(db: Db) -> string {
@@ -363,10 +341,7 @@ fn bound_with_nul(s: Stmt) -> string {
 /// form: the connection is marked and freed when the last derived object
 /// goes, so the statement keeps working.
 fn outlives() -> string {
-    match fresh() {
-        .Ok(db) -> across(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> across(db), .Err(e) -> e.cause.kind() }
 }
 
 fn across(db: Db) -> string {
@@ -403,10 +378,7 @@ fn dup(s: string, n: int) -> string { [s for i in 0..n].join("") }
 fn cell_of(sql: string) -> string { in_memory((db) -> celled(db, sql)) }
 
 fn celled(db: Db, sql: string) -> string {
-    let word = match db.prepare(sql) {
-        .Ok(s) -> three_questions(s),
-        .Err(e) -> e.cause.kind(),
-    }
+    let word = match db.prepare(sql) { .Ok(s) -> three_questions(s), .Err(e) -> e.cause.kind() }
     let _ = db.close()
     word
 }
@@ -554,7 +526,10 @@ spec "std/sqlite statement adversarial" {
         // order is a law and not a style.
         then "SQL NULL is class 5 with a NULL pointer" { cell_of("select null") == "class=5 blob=NULL bytes=0" }
         then "a zero-length blob is class 4 with the SAME NULL pointer" { cell_of("select x''") == "class=4 blob=NULL bytes=0" }
-        then "so the pointer alone cannot tell them apart" { cell_of("select null").contains("blob=NULL") && cell_of("select x''").contains("blob=NULL") }
+        then "so the pointer alone cannot tell them apart" {
+            cell_of("select null").contains("blob=NULL") &&
+                cell_of("select x''").contains("blob=NULL")
+        }
         then "and a real blob is class 4 WITH a pointer" { cell_of("select x'00ff'") == "class=4 blob=ptr bytes=2" }
         // THE THIRD MEANING IS NOT REACHED HERE, and saying so is the
         // point: an allocation failure would need the memory counters,

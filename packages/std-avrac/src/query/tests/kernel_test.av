@@ -10,7 +10,13 @@ type Toy = { db: Kernel, input: int, double_family: int, runs: Cell<int>, values
 fn toy() -> Toy {
     let db = new_kernel()
     let input = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
-    let t = Toy { db: db, input: input, double_family: 0, runs: Cell.new(0), values: Cell.new([0, 0, 0, 0]) }
+    let t = Toy {
+        db: db,
+        input: input,
+        double_family: 0,
+        runs: Cell.new(0),
+        values: Cell.new([0, 0, 0, 0]),
+    }
     let double_family = db.family(verified_double(t, it))
     t with { double_family: double_family }
 }
@@ -113,7 +119,8 @@ spec "query/db" {
             put(t, 0, 3)
             let _ = double_of(t, 0)
             t.db.sweep()
-            t.db.cell(Key { family: t.double_family, arg: 1 }) == null && t.db.cell(Key { family: t.double_family, arg: 0 }) != null
+            t.db.cell(Key { family: t.double_family, arg: 1 }) == null &&
+                t.db.cell(Key { family: t.double_family, arg: 0 }) != null
         }
     }
     given "the open stack — `active` is the bracket, seen from outside" {
@@ -150,7 +157,8 @@ spec "query/db" {
             mut t = toy()
             put(t, 0, 4)
             t.db.set_input(Key { family: t.input, arg: 300 }, 7)
-            t.db.changed_at(Key { family: t.input, arg: 0 }) == 1 && t.db.changed_at(Key { family: t.input, arg: 300 }) == 1
+            t.db.changed_at(Key { family: t.input, arg: 0 }) == 1 &&
+                t.db.changed_at(Key { family: t.input, arg: 300 }) == 1
         }
         then "two families at one arg keep apart" {
             mut t = toy()
@@ -158,7 +166,8 @@ spec "query/db" {
             t.db.set_input(Key { family: t.input, arg: 5 }, 2)
             t.db.set_input(Key { family: t.double_family, arg: 5 }, 9)
             t.db.set_input(Key { family: t.input, arg: 5 }, 3)
-            t.db.changed_at(Key { family: t.double_family, arg: 5 }) == 2 && t.db.changed_at(Key { family: t.input, arg: 5 }) == 3
+            t.db.changed_at(Key { family: t.double_family, arg: 5 }) == 2 &&
+                t.db.changed_at(Key { family: t.input, arg: 5 }) == 3
         }
         then "a key the kernel never saw is as new as now, wherever it would sit" {
             let t = toy()
@@ -175,14 +184,24 @@ spec "query/memo" {
             let memo = new_memo<int>(db, family)
             let copy = memo
             let runs = Cell.new(0)
-            let first = copy.demand(0, () -> {
-                runs.set(runs.get() + 1)
-                21
-            }, (v: int) -> v)
-            let second = memo.demand(0, () -> {
-                runs.set(runs.get() + 1)
-                99
-            }, (v: int) -> v)
+            let first = copy
+                .demand(
+                    0,
+                    () -> {
+                        runs.set(runs.get() + 1)
+                        21
+                    },
+                    (v: int) -> v,
+                )
+            let second = memo
+                .demand(
+                    0,
+                    () -> {
+                        runs.set(runs.get() + 1)
+                        99
+                    },
+                    (v: int) -> v,
+                )
             first == 21 && second == 21 && runs.get() == 1
         }
         then "a memo's query is open between begin and finish, and not after" {
@@ -212,7 +231,8 @@ spec "query/memo" {
             let _ = left.demand(0, () -> 11, (v: int) -> v)
             let _ = right.demand(0, () -> 22, (v: int) -> v)
             left.evict()
-            left.demand(0, () -> 33, (v: int) -> v) == 33 && right.demand(0, () -> 44, (v: int) -> v) == 22
+            left.demand(0, () -> 33, (v: int) -> v) == 33 &&
+                right.demand(0, () -> 44, (v: int) -> v) == 22
         }
     }
 }

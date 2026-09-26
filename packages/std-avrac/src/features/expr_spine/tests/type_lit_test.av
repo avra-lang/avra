@@ -17,10 +17,18 @@ spec "features/expr_spine (type literal)" {
             let shape = match p.store.expr(p.root!) {
                 .MethodCall(subject, name, args) -> {
                     let inner = match p.store.expr(args[0]) {
-                        .VariantLit(v, vargs) -> v == "Opt" && vargs.length == 1 && match p.store.expr(vargs[0]) { .VariantLit(w, wargs) -> w == "Int" && wargs.is_empty(), _ -> false },
+                        .VariantLit(v, vargs) -> v == "Opt" &&
+                            vargs.length == 1 &&
+                            match p.store.expr(vargs[0]) {
+                                .VariantLit(w, wargs) -> w == "Int" && wargs.is_empty(),
+                                _ -> false,
+                            },
                         _ -> false,
                     }
-                    p.store.expr(subject) is .Ident && name == "interned" && args.length == 1 && inner
+                    p.store.expr(subject) is .Ident &&
+                        name == "interned" &&
+                        args.length == 1 &&
+                        inner
                 },
                 _ -> false,
             }
@@ -41,7 +49,8 @@ spec "features/expr_spine (type literal)" {
             let hole = match p.store.expr(p.root!) {
                 .MethodCall(_, _, args) -> match p.store.expr(args[0]) {
                     .VariantLit(_, vargs) -> match p.store.expr(vargs[0]) {
-                        .VariantLit(v, wargs) -> v == "Id" && match p.store.expr(wargs[0]) { .Ident(n) -> n == "held", _ -> false },
+                        .VariantLit(v, wargs) -> v == "Id" &&
+                            match p.store.expr(wargs[0]) { .Ident(n) -> n == "held", _ -> false },
                         _ -> false,
                     },
                     _ -> false,
@@ -57,13 +66,19 @@ spec "features/expr_spine (type literal)" {
     }
     given "what a literal spells, folded by a receiver" {
         then "the six words" {
-            shown(names() + "\"\${n.type(int)} \${n.type(string)} \${n.type(bool)} \${n.type(float)} \${n.type(ptr)} \${n.type(void)}\"") == "int string bool float ptr void"
+            shown(
+                names() +
+                    "\"\${n.type(int)} \${n.type(string)} \${n.type(bool)} \${n.type(float)} \${n.type(ptr)} \${n.type(void)}\"",
+            ) == "int string bool float ptr void"
         }
         then "`?` wraps, at any depth" {
             shown(names() + "\"\${n.type(int?)} \${n.type(List<int?>?)}\"") == "int? List<int?>?"
         }
         then "the three constructors" {
-            shown(names() + "\"\${n.type(List<bool>)} \${n.type(Map<string, int>)} \${n.type(Result<int, string>)}\"") == "List<bool> Map<string, int> Result<int, string>"
+            shown(
+                names() +
+                    "\"\${n.type(List<bool>)} \${n.type(Map<string, int>)} \${n.type(Result<int, string>)}\"",
+            ) == "List<bool> Map<string, int> Result<int, string>"
         }
         then "a fn type carries its seats, their marks and its answer — an unwritten answer is void" {
             shown(names() + "\"\${n.type(fn(int, mut string) -> bool)} \${n.type(fn())}\"") == "fn22 -> bool fn00 -> void"
@@ -72,12 +87,17 @@ spec "features/expr_spine (type literal)" {
             shown(names() + "\"\${n.type(h)} \${n.type(List<h>)}\"") == "H List<H>"
         }
         then "the receiver is read ONCE — a counting receiver counts one" {
-            shown("type C = { n: int }\nenum Sp { Int, Opt(inner: Sp), Id(id: int) }\nimpl C {\n    mut fn interned(t: Sp) -> int { self.n = self.n + 1\n        self.n }\n}\nmut c = C { n: 0 }\nlet a = c.type(int?)\n\"\${a} \${c.n}\"") == "1 1"
+            shown(
+                "type C = { n: int }\nenum Sp { Int, Opt(inner: Sp), Id(id: int) }\nimpl C {\n    mut fn interned(t: Sp) -> int { self.n = self.n + 1\n        self.n }\n}\nmut c = C { n: 0 }\nlet a = c.type(int?)\n\"\${a} \${c.n}\"",
+            ) == "1 1"
         }
     }
     given "what a literal refuses" {
         then "`dyn Show` names a declaration — its id is a binding" {
-            refused_with(names() + "n.type(dyn Show)", "a type literal spells a structural type — `dyn Show` names a declaration")
+            refused_with(
+                names() + "n.type(dyn Show)",
+                "a type literal spells a structural type — `dyn Show` names a declaration",
+            )
         }
         then "an applied name that is no constructor" {
             refused_with(names() + "n.type(Box<int>)", "`Box<…>` names a declaration")
@@ -86,22 +106,34 @@ spec "features/expr_spine (type literal)" {
             refused_with(names() + "n.type(int<bool>)", "`int` takes no type arguments")
         }
         then "a constructor's arity is the type grammar's" {
-            refused_with(names() + "n.type(List<int, int>)", "`List` is applied to 2 types; it takes 1")
+            refused_with(
+                names() + "n.type(List<int, int>)",
+                "`List` is applied to 2 types; it takes 1",
+            )
         }
         then "an unclosed literal names its closer" {
             refused_with(names() + "n.type(int", "expected `)` to close the type literal")
         }
         then "a receiver with no `interned` refuses in the LITERAL's words, not the expansion's" {
-            refused_with("type R = { n: int }\nlet r = R { n: 0 }\nr.type(int)", "`.type(…)` interns into its receiver, and `R` has no `interned`")
+            refused_with(
+                "type R = { n: int }\nlet r = R { n: 0 }\nr.type(int)",
+                "`.type(…)` interns into its receiver, and `R` has no `interned`",
+            )
         }
         then "a scalar receiver refuses in the literal's words too" {
-            refused_with("let r = 1\nr.type(int)", "`.type(…)` interns into its receiver, and `int` has no `interned`")
+            refused_with(
+                "let r = 1\nr.type(int)",
+                "`.type(…)` interns into its receiver, and `int` has no `interned`",
+            )
         }
         then "a hole that names nothing refuses at the NAME" {
             refused_with(names() + "n.type(List<nothing>)", "`nothing` is not defined")
         }
         then "a hole of the wrong type refuses as a HOLE — the expansion's seat stays behind the words" {
-            refused_with(names() + "let s = \"x\"\nn.type(List<s>)", "`s` is a type literal's hole — it names an id, and this `s` holds `string`")
+            refused_with(
+                names() + "let s = \"x\"\nn.type(List<s>)",
+                "`s` is a type literal's hole — it names an id, and this `s` holds `string`",
+            )
         }
     }
 }

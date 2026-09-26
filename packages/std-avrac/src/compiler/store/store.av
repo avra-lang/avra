@@ -89,10 +89,7 @@ impl Store {
     fn uncommit(family: Stored, key: string) -> bool {
         let edge = self.edge_path(family, key)
         if !exists(edge) { return true }
-        match remove(edge) {
-            .Ok(_) -> true,
-            .Err(_) -> false,
-        }
+        match remove(edge) { .Ok(_) -> true, .Err(_) -> false }
     }
 
     /// HAS THIS CHANGED? Two `exists` calls, NOTHING read.
@@ -103,10 +100,7 @@ impl Store {
     /// The bytes a key names, or nothing when the row is not committed.
     fn get(family: Stored, key: string) -> string? {
         if !self.has(family, key) { return null }
-        match read_text(self.path(family, key)) {
-            .Ok(text) -> text,
-            .Err(why) -> null,
-        }
+        match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(why) -> null }
     }
 
     /// REMEMBER A ROW: the DATA first, then the EDGES, so the second write is what makes
@@ -114,7 +108,10 @@ impl Store {
     fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
         if !self.uncommit(family, key) { return false }
-        match write_text(self.path(family, key), bytes) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        match write_text(self.path(family, key), bytes) {
+            .Ok(_) -> {},
+            .Err(_) -> { return false },
+        }
         match write_text(self.edge_path(family, key), joined(read, "\n")) {
             .Ok(_) -> true,
             .Err(_) -> false,
@@ -137,12 +134,12 @@ impl Store {
     /// edges are the commit here too.
     fn keep_file(family: Stored, key: string, from: string, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
-        let bytes = match read_bytes(from) {
-            .Ok(b) -> b,
-            .Err(why) -> { return false },
-        }
+        let bytes = match read_bytes(from) { .Ok(b) -> b, .Err(why) -> { return false } }
         if !self.uncommit(family, key) { return false }
-        match write_bytes(self.path(family, key), bytes) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        match write_bytes(self.path(family, key), bytes) {
+            .Ok(_) -> {},
+            .Err(_) -> { return false },
+        }
         match write_text(self.edge_path(family, key), joined(read, "\n")) {
             .Ok(_) -> true,
             .Err(_) -> false,
@@ -157,9 +154,6 @@ impl Store {
             .Ok(b) -> b,
             .Err(why) -> { return false },
         }
-        match write_bytes(to, bytes) {
-            .Ok(_) -> true,
-            .Err(_) -> false,
-        }
+        match write_bytes(to, bytes) { .Ok(_) -> true, .Err(_) -> false }
     }
 }

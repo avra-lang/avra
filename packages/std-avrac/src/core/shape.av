@@ -106,7 +106,13 @@ impl NodeStore {
             .Expr(id) -> self.expr_fingerprint(id),
             .Stmt(id) -> self.stmt_fingerprint(id),
             .Pat(id) -> self.pat_fingerprint(id),
-            .Field(owner, index) -> fp(305, [fp_str(field_name_of(self, owner, index)), self.expr_fingerprint(field_value_of(self, owner, index))]),
+            .Field(owner, index) -> fp(
+                305,
+                [
+                    fp_str(field_name_of(self, owner, index)),
+                    self.expr_fingerprint(field_value_of(self, owner, index)),
+                ],
+            ),
             .Param(owner, index) -> shallow_param(self, owner, index),
         }
     }
@@ -131,10 +137,7 @@ impl NodeStore {
 /// `At.Field` is minted under: `owner` is always a `StructLit`,
 /// exactly as `kids_at` builds it.
 fn field_name_of(store: NodeStore, owner: ExprId, index: int) -> string {
-    match store.expr(owner) {
-        .StructLit(_, fields, _) -> fields[index].of,
-        rest -> "",
-    }
+    match store.expr(owner) { .StructLit(_, fields, _) -> fields[index].of, rest -> "" }
 }
 
 /// A struct literal's `index`-th field VALUE — `field_name_of`'s twin.
@@ -155,7 +158,14 @@ fn shallow_field(name: string) -> int { fp(304, [fp_str(name)]) }
 fn param_of(store: NodeStore, owner: StmtId, index: int) -> Param {
     match store.stmt(owner) {
         .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> params[index],
-        rest -> Param { name: Scoped(""), ty: null, default: null, promises: plain_mark, span: null, marks: [] },
+        rest -> Param {
+            name: Scoped(""),
+            ty: null,
+            default: null,
+            promises: plain_mark,
+            span: null,
+            marks: [],
+        },
     }
 }
 
@@ -218,10 +228,7 @@ export fn own_type_at(store: NodeStore, at: At) -> TypeRef? {
             .Let(_, ty, _) or .MutLet(_, ty, _) or .ConstDecl(_, ty, _) -> ty,
             rest -> null,
         },
-        .Expr(id) -> match store.expr(id) {
-            .Call(_, pins, _) -> pins.first(),
-            rest -> null,
-        },
+        .Expr(id) -> match store.expr(id) { .Call(_, pins, _) -> pins.first(), rest -> null },
         .Param(owner, index) -> param_of(store, owner, index).ty,
         .Pat(_) or .Field(_, _) -> null,
     }
@@ -271,9 +278,12 @@ export fn typed_node_shallow_at(store: NodeStore, at: At, kids: List<Shape>, ope
 /// blanking the node's own written-type field when `blank_type`.
 fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool) -> Stmt {
     match s {
-        .Let(name, ty, value) -> Stmt.Let(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
-        .MutLet(name, ty, value) -> Stmt.MutLet(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
-        .ConstDecl(name, ty, value) -> Stmt.ConstDecl(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+        .Let(name, ty, value) -> Stmt
+            .Let(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+        .MutLet(name, ty, value) -> Stmt
+            .MutLet(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
+        .ConstDecl(name, ty, value) -> Stmt
+            .ConstDecl(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
         .For(name, from, to, cond, step, stmts) -> Stmt.For(if blank_name { Scoped("") } else { name }, from, to, cond, step, stmts),
         .ForEach(index, name, subject, stmts) -> Stmt.ForEach(index, if blank_name { Scoped("") } else { name }, subject, stmts),
         rest -> s,
@@ -294,8 +304,14 @@ fn folded_pat(p: Pat, blank_name: bool) -> Pat {
 /// TYPE-openable field.
 fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> Expr {
     match e {
-        .Call(callee, pins, args) -> Expr.Call(if blank_name { Scoped("") } else { callee }, if blank_type { [] } else { pins }, if blank_run { [] } else { args }),
-        .MethodCall(subject, name, args) -> Expr.MethodCall(subject, if blank_name { Plain("") } else { name }, if blank_run { [] } else { args }),
+        .Call(callee, pins, args) -> Expr
+            .Call(
+                if blank_name { Scoped("") } else { callee },
+                if blank_type { [] } else { pins },
+                if blank_run { [] } else { args },
+            ),
+        .MethodCall(subject, name, args) -> Expr
+            .MethodCall(subject, if blank_name { Plain("") } else { name }, if blank_run { [] } else { args }),
         .Prop(subject, name) -> Expr.Prop(subject, if blank_name { Plain("") } else { name }),
         .Comp(elem, index, name, source, hi, cond) -> Expr.Comp(elem, index, if blank_name { Scoped("") } else { name }, source, hi, cond),
         // BOTH lists blanked, never `fields` alone: a run among a
@@ -304,7 +320,12 @@ fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> 
         // owner's shallow fold must be blind to `values`' too, or an
         // empty run compared against a subject with FEWER fields
         // disagrees on a count neither field's run actually pins.
-        .StructLit(name, fields, values) -> Expr.StructLit(if blank_name { Nominal("") } else { name }, if blank_run { [] } else { fields }, if blank_run { [] } else { values }),
+        .StructLit(name, fields, values) -> Expr
+            .StructLit(
+                if blank_name { Nominal("") } else { name },
+                if blank_run { [] } else { fields },
+                if blank_run { [] } else { values },
+            ),
         .Lambda(params, body) -> Expr.Lambda(if blank_name { blanked_param_name(params) } else { params }, body),
         .ListLit(elems) -> Expr.ListLit(if blank_run { [] } else { elems }),
         // BOTH fields blanked, never `stmts` alone: a block's LAST
@@ -345,7 +366,9 @@ fn kids_arms(arms: List<Arm>) -> List<At> {
 }
 
 fn kids_of_arm(a: Arm) -> List<At> {
-    [At.Pat(p) for p in a.pats].concat([At.Expr(g) for g in some_list(a.guard)]).concat([At.Expr(a.value)])
+    [At.Pat(p) for p in a.pats]
+        .concat([At.Expr(g) for g in some_list(a.guard)])
+        .concat([At.Expr(a.value)])
 }
 
 /// A body's shallow shape: which case, and a parsed quote's own
@@ -396,7 +419,12 @@ fn same_subtree(store: NodeStore, a: At, b: At) -> bool {
         .Stmt(x) -> match b { .Stmt(y) -> store.exact_stmt(store.stmt(x), store.stmt(y)), rest -> false },
         .Pat(x) -> match b { .Pat(y) -> store.exact_pat(store.pat(x), store.pat(y)), rest -> false },
         .Field(ox, ix) -> match b {
-            .Field(oy, iy) -> field_name_of(store, ox, ix) == field_name_of(store, oy, iy) && store.exact_expr(store.expr(field_value_of(store, ox, ix)), store.expr(field_value_of(store, oy, iy))),
+            .Field(oy, iy) -> field_name_of(store, ox, ix) == field_name_of(store, oy, iy) &&
+                store
+                    .exact_expr(
+                        store.expr(field_value_of(store, ox, ix)),
+                        store.expr(field_value_of(store, oy, iy)),
+                    ),
             rest -> false,
         },
         .Param(ox, ix) -> match b {
@@ -443,7 +471,8 @@ fn deduped_ats(holes: List<At>) -> List<At> {
 
 fn built_shape(store: NodeStore, at: At, holes: List<At>) -> Shape {
     let h? = hole_index(holes, at) else {
-        return Shape.TypedNode(store.shallow_at(at), [built_shape(store, k, holes) for k in store.kids_at(at)], [])
+        return Shape
+            .TypedNode(store.shallow_at(at), [built_shape(store, k, holes) for k in store.kids_at(at)], [])
     }
     Shape.Hole(h)
 }
@@ -512,14 +541,21 @@ fn bound_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) ->
         next.set(hole, [subject])
         return next
     }
-    if store.subtree_fp(seen![0]) == store.subtree_fp(subject) && same_subtree(store, seen![0], subject) { acc } else { null }
+    if store.subtree_fp(seen![0]) == store.subtree_fp(subject) &&
+        same_subtree(store, seen![0], subject) {
+        acc
+    } else {
+        null
+    }
 }
 
 /// A NAME binder seat: the FIRST occurrence records the subject; a
 /// REPEAT occurrence must carry the SAME NAME TEXT — `bound_hole`'s
 /// twin, comparing what `own_name_at` reads rather than the whole
 /// subtree.
-fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
+fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<
+    List<At>?,
+>? {
     let seen: List<At>? = acc[hole]
     if seen == null {
         mut next = acc
@@ -534,7 +570,9 @@ fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?
 /// twin, comparing what `own_type_at` reads (`spelled`, core/nodes.av)
 /// rather than the whole subtree — a written type's own spelling, not
 /// the typer's answer, exactly as a NAME binder compares written text.
-fn bound_type_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
+fn bound_type_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<
+    List<At>?,
+>? {
     let seen: List<At>? = acc[hole]
     if seen == null {
         mut next = acc
@@ -560,7 +598,12 @@ fn bound_run(store: NodeStore, ats: List<At>, hole: int, acc: List<List<At>?>) -
 }
 
 fn same_run(store: NodeStore, a: List<At>, b: List<At>) -> bool {
-    a.length == b.length && [j for j in 0..a.length].all((k) -> store.subtree_fp(a[k]) == store.subtree_fp(b[k]) && same_subtree(store, a[k], b[k]))
+    a.length == b.length &&
+        [j for j in 0..a.length]
+            .all(
+                (k) -> store.subtree_fp(a[k]) == store.subtree_fp(b[k]) &&
+                    same_subtree(store, a[k], b[k]),
+            )
 }
 
 /// One recursive step: `subject` against `shape`, given the binds
@@ -583,7 +626,14 @@ fn match_shape(store: NodeStore, subject: At, shape: Shape, acc: List<List<At>?>
 /// subject whose kind carries none, a TYPE open likewise — `opens`
 /// empty is an ordinary structural node, no binding to do), then its
 /// ordinary children match.
-fn match_typed_node(store: NodeStore, subject: At, shallow: int, kids: List<Shape>, opens: List<Open>, acc: List<List<At>?>) -> List<List<At>?>? {
+fn match_typed_node(
+    store: NodeStore,
+    subject: At,
+    shallow: int,
+    kids: List<Shape>,
+    opens: List<Open>,
+    acc: List<List<At>?>,
+) -> List<List<At>?>? {
     if typed_node_shallow_at(store, subject, kids, opens) != shallow { return null }
     let bound? = bind_opens(store, subject, opens, acc) else { return null }
     if kids.is_empty() { return bound }
@@ -595,7 +645,9 @@ fn match_typed_node(store: NodeStore, subject: At, shallow: int, kids: List<Shap
 /// `own_type_at`, and either refuses when the subject's kind answers
 /// none (a defensive refusal, never reached once the pattern's own
 /// build agrees with what it is matched against).
-fn bind_opens(store: NodeStore, subject: At, opens: List<Open>, acc: List<List<At>?>) -> List<List<At>?>? {
+fn bind_opens(store: NodeStore, subject: At, opens: List<Open>, acc: List<List<At>?>) -> List<
+    List<At>?,
+>? {
     mut cur = acc
     for o in opens {
         match o {
@@ -621,7 +673,9 @@ fn bind_opens(store: NodeStore, subject: At, opens: List<Open>, acc: List<List<A
 /// boundary and nothing here backtracks past it. With no `Run` among
 /// `shapes` this is the exact zip it always was, `si` and `j` in
 /// lockstep.
-fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: List<List<At>?>) -> List<List<At>?>? {
+fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: List<List<At>?>) -> List<
+    List<At>?,
+>? {
     mut cur = acc
     mut si = 0
     mut i = 0

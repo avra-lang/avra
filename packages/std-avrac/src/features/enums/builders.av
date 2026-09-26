@@ -9,13 +9,29 @@
 //! are both anchors — a window set short of the payloads reads a
 //! variant's last payload's mark as the NEXT variant's.
 use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
-use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, between, marks_at, type_lo, MarkWindows, expr_id_at}
+use features.{
+    LangNode,
+    Builder,
+    window_end,
+    pat_ids_at,
+    arms_at,
+    ref_within,
+    between,
+    marks_at,
+    type_lo,
+    MarkWindows,
+    expr_id_at,
+}
 use grammar.{Token}
 
 fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
-    let ends? = b.span_end() else { return .Err("defect: an enum declaration without a span — the arena and the grammar disagree") }
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: an enum declaration without a span — the arena and the grammar disagree",
+        )
+    }
     let vs = b.tokens(2)?
     let names = b.tokens(4)?
     let tys = b.type_refs(5)?
@@ -30,7 +46,15 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     mut variants: List<Variant> = []
     for j, v in vs {
         let upto = window_end(vs, j, ends)
-        variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, w, v.span.lo, upto), span: v.span, marks: w.at(v.span.lo) })
+        variants
+            .push(
+                Variant {
+                    name: Plain(v.text),
+                    payloads: payloads_between(names, tys, w, v.span.lo, upto),
+                    span: v.span,
+                    marks: w.at(v.span.lo),
+                },
+            )
     }
     b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))
 }
@@ -38,8 +62,17 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
 /// One variant's payloads: the types inside its window, each named
 /// by the field name written just before it, or "" when positional,
 /// and each carrying the marks written in front of it.
-fn payloads_between(names: List<Token>, tys: List<TypeRef>, w: MarkWindows, after: int, before: int) -> List<Param> {
-    [Param { name: Scoped(name_before(names, t, after)), ty: t, default: null, promises: plain_mark, span: t.span, marks: w.at(type_lo(t)) } for t in tys if ref_within(t, after, before)]
+fn payloads_between(names: List<Token>, tys: List<TypeRef>, w: MarkWindows, after: int, before: int) -> List<
+    Param,
+> {
+    [Param {
+        name: Scoped(name_before(names, t, after)),
+        ty: t,
+        default: null,
+        promises: plain_mark,
+        span: t.span,
+        marks: w.at(type_lo(t)),
+    } for t in tys if ref_within(t, after, before)]
 }
 
 /// The field name written between the variant's name and this

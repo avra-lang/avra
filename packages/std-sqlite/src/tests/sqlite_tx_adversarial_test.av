@@ -8,10 +8,7 @@ use @std.sqlite.error.{SqlError}
 use @std.io.{exists, remove}
 
 fn tx_kind(r: Result<int, SqlError>) -> string {
-    match r {
-        .Ok(n) -> "Ok(${n})",
-        .Err(e) -> e.cause.kind(),
-    }
+    match r { .Ok(n) -> "Ok(${n})", .Err(e) -> e.cause.kind() }
 }
 
 // ── A CLOSED CONNECTION ─────────────────────────────────────────
@@ -41,10 +38,7 @@ fn tried_finish(db: Db) -> string { "${db.finish()} open=${db.in_transaction()}"
 // back as `sqlite.defect` — the driver accusing itself for the caller's
 // sequence, which is the whole reason `.Closed` exists.
 fn tried_prepare(db: Db) -> string {
-    match db.prepare("select 1") {
-        .Ok(_) -> "Ok",
-        .Err(e) -> e.cause.kind(),
-    }
+    match db.prepare("select 1") { .Ok(_) -> "Ok", .Err(e) -> e.cause.kind() }
 }
 
 fn tried_run(db: Db) -> string { tx_kind(run(db, "select 1")) }
@@ -57,10 +51,7 @@ fn tried_run(db: Db) -> string { tx_kind(run(db, "select 1")) }
 fn commit_after_an_auto_rollback() -> string { in_memory(conflicted) }
 
 fn conflicted(db: Db) -> string {
-    match seeded_conflict(db) {
-        .Ok(s) -> s,
-        .Err(e) -> e.cause.kind(),
-    }
+    match seeded_conflict(db) { .Ok(s) -> s, .Err(e) -> e.cause.kind() }
 }
 
 fn seeded_conflict(db: Db) -> Result<string, SqlError> {
@@ -80,10 +71,7 @@ fn seeded_conflict(db: Db) -> Result<string, SqlError> {
 // no second connection to contend with.
 
 fn commit_under_a_standing_reader() -> string {
-    match Db.open(busy_path()) {
-        .Ok(w) -> with_a_writer(w),
-        .Err(e) -> e.cause.kind(),
-    }
+    match Db.open(busy_path()) { .Ok(w) -> with_a_writer(w), .Err(e) -> e.cause.kind() }
 }
 
 fn busy_path() -> string { "build/sqlite-tx-busy.db" }
@@ -98,17 +86,11 @@ fn with_a_writer(w: Db) -> string {
 
 fn busy_swept() -> bool {
     if !exists(busy_path()) { return false }
-    match remove(busy_path()) {
-        .Ok(_) -> true,
-        .Err(_) -> false,
-    }
+    match remove(busy_path()) { .Ok(_) -> true, .Err(_) -> false }
 }
 
 fn contended(w: Db) -> string {
-    match seeded_file(w) {
-        .Ok(_) -> with_a_reader(w),
-        .Err(e) -> e.cause.kind(),
-    }
+    match seeded_file(w) { .Ok(_) -> with_a_reader(w), .Err(e) -> e.cause.kind() }
 }
 
 fn seeded_file(w: Db) -> Result<int, SqlError> {
@@ -118,10 +100,7 @@ fn seeded_file(w: Db) -> Result<int, SqlError> {
 }
 
 fn with_a_reader(w: Db) -> string {
-    match Db.open(busy_path()) {
-        .Ok(r) -> reading(w, r),
-        .Err(e) -> e.cause.kind(),
-    }
+    match Db.open(busy_path()) { .Ok(r) -> reading(w, r), .Err(e) -> e.cause.kind() }
 }
 
 fn reading(w: Db, r: Db) -> string {
@@ -145,10 +124,7 @@ fn stepped_then_committed(w: Db, s: Stmt) -> string {
 }
 
 fn committed_while_read(w: Db) -> string {
-    match promoted(w) {
-        .Ok(s) -> s,
-        .Err(e) -> e.cause.kind(),
-    }
+    match promoted(w) { .Ok(s) -> s, .Err(e) -> e.cause.kind() }
 }
 
 fn promoted(w: Db) -> Result<string, SqlError> {
@@ -174,10 +150,7 @@ fn tx_nested(db: Db, clean: fn(Db, bool) -> int) -> string {
 }
 
 fn outer_then_inner(db: Db, clean: fn(Db, bool) -> int) -> string {
-    match framed(db, clean) {
-        .Ok(s) -> s,
-        .Err(e) -> e.cause.kind(),
-    }
+    match framed(db, clean) { .Ok(s) -> s, .Err(e) -> e.cause.kind() }
 }
 
 fn framed(db: Db, clean: fn(Db, bool) -> int) -> Result<string, SqlError> {
@@ -205,10 +178,7 @@ fn promoting(db: Db) -> string {
 }
 
 fn deferred_then_wrote(db: Db) -> string {
-    match seeded_deferred(db) {
-        .Ok(s) -> s,
-        .Err(e) -> e.cause.kind(),
-    }
+    match seeded_deferred(db) { .Ok(s) -> s, .Err(e) -> e.cause.kind() }
 }
 
 fn seeded_deferred(db: Db) -> Result<string, SqlError> {

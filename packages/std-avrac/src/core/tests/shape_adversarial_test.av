@@ -1,7 +1,23 @@
 // Attacks on the structural matcher, assuming it is broken: degenerate
 // shapes, binders repeated more than twice, nesting through Pat and
 // through a quote body, and a subject deeper than its pattern.
-use @std.avrac.core.{new_node_store, NodeStore, Expr, Stmt, Pat, Arm, BinOp, BodyView, At, Shape, shape_at, matched, matched_runs, typed_node_shallow_at, ExprId}
+use @std.avrac.core.{
+    new_node_store,
+    NodeStore,
+    Expr,
+    Stmt,
+    Pat,
+    Arm,
+    BinOp,
+    BodyView,
+    At,
+    Shape,
+    shape_at,
+    matched,
+    matched_runs,
+    typed_node_shallow_at,
+    ExprId,
+}
 
 spec "core/shape adversarial" {
     given "degenerate shapes" {
@@ -22,7 +38,8 @@ spec "core/shape adversarial" {
             let empty_pat = shape_at(s, At.Expr(empty_src), [])!
             let x = s.alloc_expr(Expr.IntLit(1))
             let one_elem_subj = s.alloc_expr(Expr.ListLit([x]))
-            matched(s, At.Expr(empty_src), one_hole_pat) == null && matched(s, At.Expr(one_elem_subj), empty_pat) == null
+            matched(s, At.Expr(empty_src), one_hole_pat) == null &&
+                matched(s, At.Expr(one_elem_subj), empty_pat) == null
         }
         then "a hole under a hole: the outer absorbs its subtree, so the inner placeholder is never reached — refused, not silently dropped" {
             mut s = new_node_store()
@@ -61,11 +78,15 @@ spec "core/shape adversarial" {
             let false_guard = s.alloc_expr(Expr.BoolLit(false))
             let val2 = s.alloc_expr(Expr.IntLit(1))
 
-            let arity_equal = s.shallow_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }])) == s.shallow_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]))
+            let arity_equal = s
+                .shallow_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }])) == s
+                .shallow_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]))
 
-            let true_arm_src = s.alloc_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }]))
+            let true_arm_src = s
+                .alloc_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }]))
             let pat = shape_at(s, At.Expr(true_arm_src), [])!
-            let false_arm = s.alloc_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]))
+            let false_arm = s
+                .alloc_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]))
             let r = matched(s, At.Expr(false_arm), pat)
 
             arity_equal && r == null
@@ -90,16 +111,22 @@ spec "core/shape adversarial" {
             mut s = new_node_store()
             let lit = s.alloc_expr(Expr.IntLit(1))
             let inner_stmt = s.alloc_stmt(Stmt.Discard(lit))
-            let body_src = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt], [])))
+            let body_src = s
+                .alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt], [])))
             let pat = shape_at(s, At.Expr(body_src), [At.Stmt(inner_stmt)])!
 
             let lit2 = s.alloc_expr(Expr.IntLit(2))
             let inner_stmt2 = s.alloc_stmt(Stmt.Discard(lit2))
-            let body_subj = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt2], [])))
+            let body_subj = s
+                .alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt2], [])))
             let r = matched(s, At.Expr(body_subj), pat)
 
             let extra_stmt = s.alloc_stmt(Stmt.Discard(lit2))
-            let body_wrong = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt2, extra_stmt], [])))
+            let body_wrong = s
+                .alloc_expr(
+                    Expr
+                        .Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt2, extra_stmt], [])),
+                )
             let r_wrong = matched(s, At.Expr(body_wrong), pat)
 
             r != null && r!.length == 1 && kid_is_stmt(r![0], inner_stmt2) && r_wrong == null
@@ -165,13 +192,15 @@ spec "core/shape adversarial" {
             // its kids.
             let inner_kids = [Shape.Run(0)]
             let inner_template = s.alloc_expr(Expr.ListLit([]))
-            let inner_shape = Shape.TypedNode(typed_node_shallow_at(s, At.Expr(inner_template), inner_kids, []), inner_kids, [])
+            let inner_shape = Shape
+                .TypedNode(typed_node_shallow_at(s, At.Expr(inner_template), inner_kids, []), inner_kids, [])
 
             let d1 = s.alloc_expr(Expr.IntLit(0))
             let d2 = s.alloc_expr(Expr.IntLit(0))
             let outer_template = s.alloc_expr(Expr.ListLit([d1, d2]))
             let outer_kids = [inner_shape, inner_shape]
-            let pat = Shape.TypedNode(typed_node_shallow_at(s, At.Expr(outer_template), outer_kids, []), outer_kids, [])
+            let pat = Shape
+                .TypedNode(typed_node_shallow_at(s, At.Expr(outer_template), outer_kids, []), outer_kids, [])
 
             let a = s.alloc_expr(Expr.StrLit("aihhotaz"))
             let b = s.alloc_expr(Expr.StrLit("eepturoq"))

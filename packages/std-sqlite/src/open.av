@@ -162,10 +162,7 @@ fn uri_bit(c: OpenConfig) -> int { if c.uri { open_uri } else { 0 } }
 fn cache_bit(c: OpenConfig) -> int { if c.shared_cache { open_sharedcache } else { open_privatecache } }
 
 fn mutex_bit(c: OpenConfig) -> int {
-    match c.threading {
-        .Serialized -> open_fullmutex,
-        .Unshared -> open_nomutex,
-    }
+    match c.threading { .Serialized -> open_fullmutex, .Unshared -> open_nomutex }
 }
 
 fn follow_bit(c: OpenConfig) -> int { if c.no_follow { open_nofollow } else { 0 } }
@@ -205,7 +202,11 @@ fn past_authority(s: string) -> string {
 //
 // A refusal carries no SQLite code, because SQLite never saw the call.
 
-const spent_empty: SqlError = SqlError.refused(Cause.EmptyPath, "a database path is a FILE — `\"\"` and `:memory:` are SQLite's two temporary databases, and each has its own verb")
+const spent_empty: SqlError = SqlError
+    .refused(
+        Cause.EmptyPath,
+        "a database path is a FILE — `\"\"` and `:memory:` are SQLite's two temporary databases, and each has its own verb",
+    )
 
 /// MEASURED, and the reason this guard exists: a path whose first byte
 /// is a NUL reaches SQLite as the EMPTY STRING, because C stops there —
@@ -213,10 +214,18 @@ const spent_empty: SqlError = SqlError.refused(Cause.EmptyPath, "a database path
 /// database deleted at close. The door's own `.length` said 2. So the
 /// empty-path trap walks straight through a door built to stop it, and
 /// a mid-NUL path opens a file the caller did not name.
-const path_holds_a_nul: SqlError = SqlError.refused(Cause.HoldsNul, "a database path holds a NUL, and C reads only the bytes before it — the path SQLite would open is not the path you wrote")
+const path_holds_a_nul: SqlError = SqlError
+    .refused(
+        Cause.HoldsNul,
+        "a database path holds a NUL, and C reads only the bytes before it — the path SQLite would open is not the path you wrote",
+    )
 
 fn reads_as_uri(path: string) -> SqlError {
-    SqlError.refused(Cause.UriPath, "`${path}` begins `file:`, which is a URI and not a filename — ask for a URI deliberately, or give a path")
+    SqlError
+        .refused(
+            Cause.UriPath,
+            "`${path}` begins `file:`, which is a URI and not a filename — ask for a URI deliberately, or give a path",
+        )
 }
 
 // ── Opening, and closing ────────────────────────────────────────
@@ -391,10 +400,7 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
 /// it, an empty one included, and counting it reads the header without
 /// reading the data.
 fn unreadable(db: Db) -> SqlError? {
-    match db.prepare("select count(*) from sqlite_schema") {
-        .Ok(s) -> ran(s),
-        .Err(e) -> e,
-    }
+    match db.prepare("select count(*) from sqlite_schema") { .Ok(s) -> ran(s), .Err(e) -> e }
 }
 
 /// The probe stepped and finalized, whatever it answered — a statement
@@ -406,10 +412,7 @@ fn ran(s: Stmt) -> SqlError? {
 }
 
 fn fault_of(r: Result<bool, SqlError>) -> SqlError? {
-    match r {
-        .Ok(_) -> null,
-        .Err(e) -> e,
-    }
+    match r { .Ok(_) -> null, .Err(e) -> e }
 }
 
 /// The failure of an open, with the handle released first.
@@ -421,7 +424,14 @@ fn fault_of(r: Result<bool, SqlError>) -> SqlError? {
 /// message here becomes the connection's own words.
 fn closing(handle: ptr?, rc: int) -> SqlError {
     let _ = sqlite3_close_v2(handle)
-    SqlError { cause: Cause.of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: null }
+    SqlError {
+        cause: Cause.of(rc),
+        code: rc % 256,
+        extended: rc,
+        message: sqlite3_errstr(rc),
+        sql: null,
+    }
 }
 
-const connection_closed: SqlError = SqlError.refused(Cause.Closed, "this connection was closed — open it again")
+const connection_closed: SqlError = SqlError
+    .refused(Cause.Closed, "this connection was closed — open it again")

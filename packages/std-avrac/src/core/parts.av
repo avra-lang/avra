@@ -22,10 +22,7 @@ impl NodeStore {
     /// slot: the compiler settled the value, so every read of the
     /// name lowers the value itself.
     fn const_value(s: StmtId) -> ExprId? {
-        match self.stmt(s) {
-            .ConstDecl(_, _, v) -> v,
-            _ -> null,
-        }
+        match self.stmt(s) { .ConstDecl(_, _, v) -> v, _ -> null }
     }
 
     /// A BINDING's written type, when one was declared — `let` and
@@ -42,10 +39,7 @@ impl NodeStore {
     /// An assignment's TARGET — the place written; null for every
     /// other statement.
     fn assign_target(s: StmtId) -> ExprId? {
-        match self.stmt(s) {
-            .Assign(t, _) -> t,
-            _ -> null,
-        }
+        match self.stmt(s) { .Assign(t, _) -> t, _ -> null }
     }
 
     /// An expression that only NAMES a value — a literal, a name,
@@ -60,10 +54,7 @@ impl NodeStore {
 
     /// A construction's type name, when the expression is one.
     fn struct_lit_name(e: ExprId) -> string? {
-        match self.expr(e) {
-            .StructLit(name, _, _) -> name.of,
-            _ -> null,
-        }
+        match self.expr(e) { .StructLit(name, _, _) -> name.of, _ -> null }
     }
 
     /// A method call's pieces, when the expression is one.
@@ -78,10 +69,7 @@ impl NodeStore {
     /// statement's expression, nothing else's — a binding, a loop
     /// and an assignment show nothing.
     fn shown_value(s: StmtId) -> ExprId? {
-        match self.stmt(s) {
-            .ExprStmt(v) -> v,
-            _ -> null,
-        }
+        match self.stmt(s) { .ExprStmt(v) -> v, _ -> null }
     }
 
     /// A statement's value expression at its OWN position. A body
@@ -119,10 +107,7 @@ impl NodeStore {
     /// A fn's type parameters WITH their bounds — the constrained
     /// twin of decl_tparams; empty for every other declaring kind.
     fn decl_tbounds(s: StmtId) -> List<Param> {
-        match self.stmt(s) {
-            .FnDecl(_, tparams, _, _, _) -> tparams,
-            _ -> [],
-        }
+        match self.stmt(s) { .FnDecl(_, tparams, _, _, _) -> tparams, _ -> [] }
     }
 
     /// A block that LEAVES: no value, and a last statement that
@@ -155,10 +140,7 @@ impl NodeStore {
 
     /// An instance's component word, when the expression is one.
     fn instance_word(e: ExprId) -> string? {
-        match self.expr(e) {
-            .Component(word, _, _, _, _) -> word,
-            _ -> null,
-        }
+        match self.expr(e) { .Component(word, _, _, _, _) -> word, _ -> null }
     }
 
     /// Every component instance a statement holds, in source order.
@@ -169,18 +151,12 @@ impl NodeStore {
     /// An instance's compile-time `check` call, when its record declares
     /// one.
     fn instance_check(e: ExprId) -> ExprId? {
-        match self.expr(e) {
-            .Component(_, _, _, _, check) -> check,
-            _ -> null,
-        }
+        match self.expr(e) { .Component(_, _, _, _, check) -> check, _ -> null }
     }
 
     /// A block's statements, when the expression is one.
     fn block_stmts(e: ExprId) -> List<StmtId>? {
-        match self.expr(e) {
-            .Block(stmts, _) -> stmts,
-            _ -> null,
-        }
+        match self.expr(e) { .Block(stmts, _) -> stmts, _ -> null }
     }
 
     /// A setting's field and value, when the statement is one.
@@ -289,10 +265,7 @@ impl NodeStore {
 
     /// An ALIAS's pieces, when the statement is one.
     fn alias_parts(s: StmtId) -> NamedParts? {
-        match self.stmt(s) {
-            .Alias(name, tparams, of) -> name_over(name, tparams, of),
-            _ -> null,
-        }
+        match self.stmt(s) { .Alias(name, tparams, of) -> name_over(name, tparams, of), _ -> null }
     }
 
     /// A struct declaration's pieces, when the statement is one.
@@ -341,19 +314,25 @@ impl NodeStore {
     /// declaration ITSELF is an annotation, and answers elsewhere.
     fn marks_written(s: StmtId) -> List<Mark> {
         let vs = self.declared_variants(s)
-        flatten([f.marks for f in self.declared_fields(s)]).concat(flatten([v.marks.concat(flatten([q.marks for q in v.payloads])) for v in vs]))
+        flatten([f.marks for f in self.declared_fields(s)])
+            .concat(flatten([v.marks.concat(flatten([q.marks for q in v.payloads])) for v in vs]))
     }
 
     /// A declaring statement's name.
     fn declared_name(s: StmtId) -> string? {
-        self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name ?? self.syntax_parts(s)?.name ?? self.collect_parts(s)?.name
+        self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self
+            .trait_parts(s)?.name ?? self.syntax_parts(s)?.name ?? self.collect_parts(s)?.name
     }
 
     /// A statement that declares rather than runs: a declaration,
     /// an impl block, a `use` line, a spec, or a `const` — a settled
     /// value the program never computes.
     fn is_declaration(s: StmtId) -> bool {
-        self.declared_kind(s) != null || self.impl_parts(s) != null || self.use_parts(s) != null || self.spec_parts(s) != null || self.const_value(s) != null
+        self.declared_kind(s) != null ||
+            self.impl_parts(s) != null ||
+            self.use_parts(s) != null ||
+            self.spec_parts(s) != null ||
+            self.const_value(s) != null
     }
 
     /// An extern fn's pieces, when the statement is one.
@@ -377,7 +356,14 @@ impl NodeStore {
     /// the fields a reader wants.
     fn collect_parts(s: StmtId) -> CollectParts? {
         match self.stmt(s) {
-            .Collect(name, ty, kind, scope, proj, order) -> CollectParts { name: name.of, ty: ty, kind: kind, scope: scope, proj: proj, order: order },
+            .Collect(name, ty, kind, scope, proj, order) -> CollectParts {
+                name: name.of,
+                ty: ty,
+                kind: kind,
+                scope: scope,
+                proj: proj,
+                order: order,
+            },
             _ -> null,
         }
     }
@@ -389,17 +375,19 @@ impl NodeStore {
     /// for a statement that declares no type at all — through the
     /// EXISTING projections, never a second match over the enum.
     fn type_roots(s: StmtId) -> List<TypeRef> {
-        flatten([
-            some_list(self.binding_ty(s)),
-            param_types(self.decl_tbounds(s)),
-            param_types(self.declared_params(s)),
-            some_list(self.fn_parts(s)?.ret),
-            some_list(self.extern_parts(s)?.ret),
-            param_types(self.declared_fields(s)),
-            variant_types(self.declared_variants(s)),
-            some_list(self.named_parts(s)?.of),
-            some_list(self.alias_parts(s)?.of),
-        ])
+        flatten(
+            [
+                some_list(self.binding_ty(s)),
+                param_types(self.decl_tbounds(s)),
+                param_types(self.declared_params(s)),
+                some_list(self.fn_parts(s)?.ret),
+                some_list(self.extern_parts(s)?.ret),
+                param_types(self.declared_fields(s)),
+                variant_types(self.declared_variants(s)),
+                some_list(self.named_parts(s)?.of),
+                some_list(self.alias_parts(s)?.of),
+            ],
+        )
     }
 }
 

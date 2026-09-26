@@ -22,7 +22,13 @@ impl Seq {
     }
 }
 
-fn prim_defects(rule_name: string, p: Prim, names: List<string>, known_terminals: List<string>, labeled: bool) -> List<Diagnostic> {
+fn prim_defects(
+    rule_name: string,
+    p: Prim,
+    names: List<string>,
+    known_terminals: List<string>,
+    labeled: bool,
+) -> List<Diagnostic> {
     match p {
         .Ref(target) -> if names.contains(target) {
             []
@@ -47,7 +53,9 @@ fn prim_defects(rule_name: string, p: Prim, names: List<string>, known_terminals
 fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnostic> {
     if s.build == null {
         if !value_needed || s.items.length == 1 { return [] }
-        return [defect(rule_name, "a branch without a build must have exactly one item to pass through")]
+        return [
+            defect(rule_name, "a branch without a build must have exactly one item to pass through"),
+        ]
     }
     let labels = s.labels()
     match s.build! {
@@ -63,13 +71,28 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
     }
 }
 
-fn alt_defects(rule_name: string, a: Alt, names: List<string>, known_terminals: List<string>, value_needed: bool) -> List<Diagnostic> {
+fn alt_defects(
+    rule_name: string,
+    a: Alt,
+    names: List<string>,
+    known_terminals: List<string>,
+    value_needed: bool,
+) -> List<Diagnostic> {
     flatten([seq_defects(rule_name, s, names, known_terminals, value_needed) for s in a.branches])
 }
 
 /// One branch's defects: its items', then its build's.
-fn seq_defects(rule_name: string, s: Seq, names: List<string>, known_terminals: List<string>, value_needed: bool) -> List<Diagnostic> {
-    flatten([prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items]).concat(build_defects(rule_name, s, value_needed))
+fn seq_defects(
+    rule_name: string,
+    s: Seq,
+    names: List<string>,
+    known_terminals: List<string>,
+    value_needed: bool,
+) -> List<Diagnostic> {
+    flatten(
+        [prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items],
+    )
+        .concat(build_defects(rule_name, s, value_needed))
 }
 
 /// The executor indexes rules by name; a duplicate would silently
@@ -95,6 +118,13 @@ impl Grammar {
     fn defects(known_terminals: List<string>) -> List<Diagnostic> {
         let names = self.rules.map(it.name)
         let start_defect = if names.contains(self.start) { [] } else { [defect(self.start, "start rule is not defined")] }
-        start_defect.concat(duplicate_defects(self.rules)).concat(flatten([alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules])).concat(first_defects(self))
+        start_defect
+            .concat(duplicate_defects(self.rules))
+            .concat(
+                flatten(
+                    [alt_defects(r.name, r.body, names, known_terminals, true) for r in self.rules],
+                ),
+            )
+            .concat(first_defects(self))
     }
 }

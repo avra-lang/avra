@@ -156,25 +156,45 @@ spec "features/formats" {
     given "the refusals, rendered whole" {
 
         then "a wrong subject names the type it found" {
-            analyze_source("match 5 { \"{a}b\" -> 1\n    _ -> 0 }").report().starts_with("error[type.format]: a format pattern reads text, found `int`\n  ╭─[<source>:1:11]\n1 │ match 5 { \"{a}b\" -> 1\n  ·           ┬\n  ·           ╰── this is `int`\n──╯\nhelp: a format matches a `string` or a `Bytes`")
+            analyze_source("match 5 { \"{a}b\" -> 1\n    _ -> 0 }")
+                .report()
+                .starts_with(
+                    "error[type.format]: a format pattern reads text, found `int`\n  ╭─[<source>:1:11]\n1 │ match 5 { \"{a}b\" -> 1\n  ·           ┬\n  ·           ╰── this is `int`\n──╯\nhelp: a format matches a `string` or a `Bytes`",
+                )
         }
         then "two holes with nothing between them name both" {
-            analyze_source("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }").report().starts_with("error[type.format_shape]: `{a}` and `{b}` have nothing between them\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}{b}\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: a scan needs a literal to stop at — put one between the holes")
+            analyze_source("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }")
+                .report()
+                .starts_with(
+                    "error[type.format_shape]: `{a}` and `{b}` have nothing between them\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}{b}\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: a scan needs a literal to stop at — put one between the holes",
+                )
         }
         then "a repeated name says which name" {
-            analyze_source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }").report().starts_with("error[type.format_repeat]: `a` names two spans of this format\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}z{a}\" -> 1\n  ·             ┬\n  ·             ╰── written twice\n──╯\nhelp: rename one, or write `{_}` for a span you do not need")
+            analyze_source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }")
+                .report()
+                .starts_with(
+                    "error[type.format_repeat]: `a` names two spans of this format\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}z{a}\" -> 1\n  ·             ┬\n  ·             ╰── written twice\n──╯\nhelp: rename one, or write `{_}` for a span you do not need",
+                )
         }
         then "a hole of a type no text reads as names the two it may take" {
-            analyze_source("match \"x\" { \"{n: float}z\" -> 1\n    _ -> 0 }").report().starts_with("error[type.format_parse]: `{n: float}` reads its span as `float`, and a hole reads text as `string` or `int`\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: float}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm")
+            analyze_source("match \"x\" { \"{n: float}z\" -> 1\n    _ -> 0 }")
+                .report()
+                .starts_with(
+                    "error[type.format_parse]: `{n: float}` reads its span as `float`, and a hole reads text as `string` or `int`\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: float}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm",
+                )
         }
     }
     given "a grammar declaration" {
 
         then "its holes are the fields of a record of its name" {
-            shown("grammar Line = \"{method} {path}\"\nlet r = Line { method: \"GET\", path: \"/x\" }\n\"\${r.method}\${r.path}\"") == "GET/x"
+            shown(
+                "grammar Line = \"{method} {path}\"\nlet r = Line { method: \"GET\", path: \"/x\" }\n\"\${r.method}\${r.path}\"",
+            ) == "GET/x"
         }
         then "the fields keep the holes' order and names" {
-            shown("grammar P = \"{a}-{b}-{c}\"\nlet p = P { a: \"1\", b: \"2\", c: \"3\" }\n\"\${p.a}\${p.b}\${p.c}\"") == "123"
+            shown(
+                "grammar P = \"{a}-{b}-{c}\"\nlet p = P { a: \"1\", b: \"2\", c: \"3\" }\n\"\${p.a}\${p.b}\${p.c}\"",
+            ) == "123"
         }
         then "a format with no holes names no fields, and is refused" {
             refused_with("grammar Empty = \"no holes here\"\n1", "has no holes")
@@ -183,13 +203,20 @@ spec "features/formats" {
             refused_with("grammar Anon = \"{a} {_}\"\n1", "has a hole that binds nothing")
         }
         then "an `int` hole is an `int` field, read and printed back" {
-            shown("grammar V = \"v{major: int}.{minor: int}\"\nlet v = V.parse(\"v3.14\")!\n\"\${v.major + v.minor} \${V.print(V { major: -1, minor: 0 }) ?? \"?\"}\"") == "17 v-1.0"
+            shown(
+                "grammar V = \"v{major: int}.{minor: int}\"\nlet v = V.parse(\"v3.14\")!\n\"\${v.major + v.minor} \${V.print(V { major: -1, minor: 0 }) ?? \"?\"}\"",
+            ) == "17 v-1.0"
         }
         then "a span that is no int reads as nothing" {
-            shown("grammar V = \"v{major: int}\"\n\"\${V.parse(\"vx\") == null} \${V.parse(\"v+1\") == null} \${V.parse(\"v\") == null} \${V.parse(\"v99999999999999999999\") == null}\"") == "true true true true"
+            shown(
+                "grammar V = \"v{major: int}\"\n\"\${V.parse(\"vx\") == null} \${V.parse(\"v+1\") == null} \${V.parse(\"v\") == null} \${V.parse(\"v99999999999999999999\") == null}\"",
+            ) == "true true true true"
         }
         then "a hole of a type no text reads as is refused" {
-            refused_with("grammar Typed = \"{n: float}z\"\n1", "reads `{n}` as `float`, and a hole reads text as `string` or `int`")
+            refused_with(
+                "grammar Typed = \"{n: float}z\"\n1",
+                "reads `{n}` as `float`, and a hole reads text as `string` or `int`",
+            )
         }
         then "two holes with nothing between them cannot be scanned, so cannot be declared" {
             refused_with("grammar Adj = \"{a}{b}\"\n1", "a scan needs a literal between them")
@@ -204,40 +231,71 @@ spec "features/formats" {
     given "the parse door a grammar declares" {
 
         then "a grammar's name parses text into its own record" {
-            shown("grammar L = \"{m} {p}\"\nmatch L.parse(\"GET /x\") {\n    r? -> \"\${r.m}|\${r.p}\"\n    null -> \"no\"\n}") == "GET|/x"
+            shown(
+                "grammar L = \"{m} {p}\"\nmatch L.parse(\"GET /x\") {\n    r? -> \"\${r.m}|\${r.p}\"\n    null -> \"no\"\n}",
+            ) == "GET|/x"
         }
         then "text the format does not read answers absence" {
-            shown("grammar L = \"{m} {p}\"\nmatch L.parse(\"nope\") {\n    r? -> \"yes\"\n    null -> \"no\"\n}") == "no"
+            shown(
+                "grammar L = \"{m} {p}\"\nmatch L.parse(\"nope\") {\n    r? -> \"yes\"\n    null -> \"no\"\n}",
+            ) == "no"
         }
         then "the flagship reads its four holes through the door" {
-            shown("grammar R = \"{method} {path} HTTP/{major}.{minor}\"\nmatch R.parse(\"GET /x HTTP/1.1\") {\n    r? -> \"\${r.method} \${r.path} \${r.major}.\${r.minor}\"\n    null -> \"no\"\n}") == "GET /x 1.1"
+            shown(
+                "grammar R = \"{method} {path} HTTP/{major}.{minor}\"\nmatch R.parse(\"GET /x HTTP/1.1\") {\n    r? -> \"\${r.method} \${r.path} \${r.major}.\${r.minor}\"\n    null -> \"no\"\n}",
+            ) == "GET /x 1.1"
         }
         then "the name still constructs its record, as any type name does" {
             shown("grammar L = \"{a}-{b}\"\nlet g = L { a: \"1\", b: \"2\" }\ng.a + g.b") == "12"
         }
         then "a door no grammar declares is told about doors, not variants" {
-            refused_with("grammar G = \"{a}-{b}\"\nG.sample(\"x\")", "`G` is a `grammar`, not an enum")
+            refused_with(
+                "grammar G = \"{a}-{b}\"\nG.sample(\"x\")",
+                "`G` is a `grammar`, not an enum",
+            )
         }
         then "the refusal names the door it tried" {
-            refused_with("grammar G = \"{a}-{b}\"\nG.sample(\"x\")", "`G.sample` is a call only where the grammar declares a door of that name")
+            refused_with(
+                "grammar G = \"{a}-{b}\"\nG.sample(\"x\")",
+                "`G.sample` is a call only where the grammar declares a door of that name",
+            )
         }
         then "a type name that is no grammar is unchanged" {
-            refused_with("type Port = { n: int }\nPort.parse(\"80\")", "`Port` is a record, not an enum")
+            refused_with(
+                "type Port = { n: int }\nPort.parse(\"80\")",
+                "`Port` is a record, not an enum",
+            )
         }
     }
     given "the declaration's refusals, rendered whole" {
 
         then "a grammar asked for a door it lacks, rendered whole" {
-            analyze_source("grammar G = \"{a}-{b}\"\nG.sample(\"x\")").report().starts_with("error[type.unknown_prop]: `G` is a `grammar`, not an enum\n  ╭─[<source>:2:1]\n2 │ G.sample(\"x\")\n  · ┬\n  · ╰── built here\n──╯\nhelp: `G.sample` is a call only where the grammar declares a door of that name")
+            analyze_source("grammar G = \"{a}-{b}\"\nG.sample(\"x\")")
+                .report()
+                .starts_with(
+                    "error[type.unknown_prop]: `G` is a `grammar`, not an enum\n  ╭─[<source>:2:1]\n2 │ G.sample(\"x\")\n  · ┬\n  · ╰── built here\n──╯\nhelp: `G.sample` is a call only where the grammar declares a door of that name",
+                )
         }
         then "a format with no holes, rendered whole" {
-            analyze_source("grammar None = \"plain\"\n1").report().starts_with("error[build.failed]: `grammar None` has no holes — a grammar names the fields its holes bind, and this format binds none\n  ╭─[<source>:1:1]\n1 │ grammar None = \"plain\"\n  · ┬\n──╯")
+            analyze_source("grammar None = \"plain\"\n1")
+                .report()
+                .starts_with(
+                    "error[build.failed]: `grammar None` has no holes — a grammar names the fields its holes bind, and this format binds none\n  ╭─[<source>:1:1]\n1 │ grammar None = \"plain\"\n  · ┬\n──╯",
+                )
         }
         then "a hole that binds nothing, rendered whole" {
-            analyze_source("grammar Anon = \"{a} {_}\"\n1").report().starts_with("error[build.failed]: `grammar Anon` has a hole that binds nothing — every hole of a grammar names a field\n  ╭─[<source>:1:1]\n1 │ grammar Anon = \"{a} {_}\"\n  · ┬\n──╯")
+            analyze_source("grammar Anon = \"{a} {_}\"\n1")
+                .report()
+                .starts_with(
+                    "error[build.failed]: `grammar Anon` has a hole that binds nothing — every hole of a grammar names a field\n  ╭─[<source>:1:1]\n1 │ grammar Anon = \"{a} {_}\"\n  · ┬\n──╯",
+                )
         }
         then "two holes with nothing between them, rendered whole" {
-            analyze_source("grammar Adj = \"{a}{b}\"\n1").report().starts_with("error[build.failed]: `grammar Adj` puts `{a}` and `{b}` next to each other — a scan needs a literal between them to stop at\n  ╭─[<source>:1:1]\n1 │ grammar Adj = \"{a}{b}\"\n  · ┬\n──╯")
+            analyze_source("grammar Adj = \"{a}{b}\"\n1")
+                .report()
+                .starts_with(
+                    "error[build.failed]: `grammar Adj` puts `{a}` and `{b}` next to each other — a scan needs a literal between them to stop at\n  ╭─[<source>:1:1]\n1 │ grammar Adj = \"{a}{b}\"\n  · ┬\n──╯",
+                )
         }
     }
     given "print, and the round-trip law it keeps" {
@@ -261,7 +319,9 @@ spec "features/formats" {
             shown("grammar L = \"{a}-{b}\"\nL.print(L { a: \"\", b: \"\" }) ?? \"refused\"") == "-"
         }
         then "print then parse recovers every field" {
-            shown("grammar L = \"{a}-{b}\"\nlet t = L.print(L { a: \"p\", b: \"q\" })!\nmatch L.parse(t) { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+            shown(
+                "grammar L = \"{a}-{b}\"\nlet t = L.print(L { a: \"p\", b: \"q\" })!\nmatch L.parse(t) { r? -> r.a + r.b\n    null -> \"no\" }",
+            ) == "pq"
         }
     }
     given "a greedy hole" {
@@ -279,37 +339,57 @@ spec "features/formats" {
             bound_names(read_format("{_...}-{b}").parts).join(",") == "b"
         }
         then "A GREEDY HOLE TAKES ITS LITERAL AT THE LAST OCCURRENCE" {
-            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"1-2-3\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "1-2|3"
+            shown(
+                "grammar G = \"{a...}-{b}\"\nmatch G.parse(\"1-2-3\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }",
+            ) == "1-2|3"
         }
         then "and its lazy twin takes the first" {
-            shown("grammar L = \"{a}-{b}\"\nmatch L.parse(\"1-2-3\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "1|2-3"
+            shown(
+                "grammar L = \"{a}-{b}\"\nmatch L.parse(\"1-2-3\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }",
+            ) == "1|2-3"
         }
         then "with one occurrence the two agree" {
-            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"1-2\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "1|2"
+            shown(
+                "grammar G = \"{a...}-{b}\"\nmatch G.parse(\"1-2\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }",
+            ) == "1|2"
         }
         then "with no occurrence both fail" {
-            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"12\") { r? -> \"yes\"\n    null -> \"no\" }") == "no"
+            shown(
+                "grammar G = \"{a...}-{b}\"\nmatch G.parse(\"12\") { r? -> \"yes\"\n    null -> \"no\" }",
+            ) == "no"
         }
         then "an empty capture is still a capture" {
-            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"-x\") { r? -> \"[\" + r.a + \"][\" + r.b + \"]\"\n    null -> \"no\" }") == "[][x]"
+            shown(
+                "grammar G = \"{a...}-{b}\"\nmatch G.parse(\"-x\") { r? -> \"[\" + r.a + \"][\" + r.b + \"]\"\n    null -> \"no\" }",
+            ) == "[][x]"
         }
         then "THERE IS NO BACKTRACKING, so a greedy hole can fail where its lazy twin matches" {
-            shown("grammar G = \"{a...}-{b}-{c}\"\nmatch G.parse(\"1-2-3-4\") { r? -> \"yes\"\n    null -> \"no\" }") == "no"
+            shown(
+                "grammar G = \"{a...}-{b}-{c}\"\nmatch G.parse(\"1-2-3-4\") { r? -> \"yes\"\n    null -> \"no\" }",
+            ) == "no"
         }
         then "and the lazy twin of that format does match" {
-            shown("grammar L = \"{a}-{b}-{c}\"\nmatch L.parse(\"1-2-3-4\") { r? -> \"yes\"\n    null -> \"no\" }") == "yes"
+            shown(
+                "grammar L = \"{a}-{b}-{c}\"\nmatch L.parse(\"1-2-3-4\") { r? -> \"yes\"\n    null -> \"no\" }",
+            ) == "yes"
         }
     }
     given "greed on the LAST hole, which is inert" {
 
         then "a marked last hole answers what an unmarked one does" {
-            shown("grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/s/a/b/c\")?.p ?? \"no\"\nlet b = P.parse(\"/s/a/b/c\")?.p ?? \"no\"\na + \"|\" + b") == "a/b/c|a/b/c"
+            shown(
+                "grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/s/a/b/c\")?.p ?? \"no\"\nlet b = P.parse(\"/s/a/b/c\")?.p ?? \"no\"\na + \"|\" + b",
+            ) == "a/b/c|a/b/c"
         }
         then "and both refuse the same text" {
-            shown("grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/x/y\")?.p ?? \"no\"\nlet b = P.parse(\"/x/y\")?.p ?? \"no\"\na + \"|\" + b") == "no|no"
+            shown(
+                "grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/x/y\")?.p ?? \"no\"\nlet b = P.parse(\"/x/y\")?.p ?? \"no\"\na + \"|\" + b",
+            ) == "no|no"
         }
         then "and both take an empty capture the same way" {
-            shown("grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/s/\")?.p ?? \"no\"\nlet b = P.parse(\"/s/\")?.p ?? \"no\"\n\"[\" + a + \"][\" + b + \"]\"") == "[][]"
+            shown(
+                "grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/s/\")?.p ?? \"no\"\nlet b = P.parse(\"/s/\")?.p ?? \"no\"\n\"[\" + a + \"][\" + b + \"]\"",
+            ) == "[][]"
         }
     }
     given "the round trip, and its greedy mirror" {
@@ -327,13 +407,17 @@ spec "features/formats" {
             shown("grammar L = \"{a}-{b}\"\nL.print(L { a: \"1\", b: \"2-3\" }) ?? \"refused\"") == "1-2-3"
         }
         then "THE OVERLAP CASE ROUND-TRIPS UNDER GREED — a value ending in its own delimiter's prefix" {
-            shown("grammar G = \"{a...}--{b}\"\nlet t = G.print(G { a: \"x-\", b: \"y\" })!\nmatch G.parse(t) { r? -> \"[\" + r.a + \"][\" + r.b + \"]\"\n    null -> \"no\" }") == "[x-][y]"
+            shown(
+                "grammar G = \"{a...}--{b}\"\nlet t = G.print(G { a: \"x-\", b: \"y\" })!\nmatch G.parse(t) { r? -> \"[\" + r.a + \"][\" + r.b + \"]\"\n    null -> \"no\" }",
+            ) == "[x-][y]"
         }
         then "and its lazy twin refuses that value, which is why the proof has two clauses" {
             shown("grammar L = \"{a}--{b}\"\nL.print(L { a: \"x-\", b: \"y\" }) ?? \"refused\"") == "refused"
         }
         then "whatever a greedy print answers, parsing it gives the fields back" {
-            shown("grammar G = \"{a...}-{b}\"\nlet t = G.print(G { a: \"p-q\", b: \"r\" })!\nmatch G.parse(t) { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "p-q|r"
+            shown(
+                "grammar G = \"{a...}-{b}\"\nlet t = G.print(G { a: \"p-q\", b: \"r\" })!\nmatch G.parse(t) { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }",
+            ) == "p-q|r"
         }
     }
 }

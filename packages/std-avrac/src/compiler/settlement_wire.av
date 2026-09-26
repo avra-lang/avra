@@ -191,13 +191,19 @@ impl Workspace {
     fn file_ref(f: FileId) -> string { self.decls.file(f).path }
 
     fn seat_wire(s: SeatValue) -> string {
-        wire_field("${s.index}") + wire_field(s.fp) + wire_field(self.type_ref(s.ty)) + wire_value(s.value) + heap_wire(s.heap)
+        wire_field("${s.index}") +
+            wire_field(s.fp) +
+            wire_field(self.type_ref(s.ty)) +
+            wire_value(s.value) +
+            heap_wire(s.heap)
     }
 
     fn sub_wire(sub: Sub?) -> string {
         if sub == null { return wire_field("-") }
         let s = sub!
-        mut out = wire_field("+") + wire_field(self.decl_ref(s.target)) + wire_field("${s.args.length}")
+        mut out = wire_field("+") +
+            wire_field(self.decl_ref(s.target)) +
+            wire_field("${s.args.length}")
         for a in s.args { out = out + wire_field(self.type_ref(a)) }
         out = out + wire_field("${s.consts.length}")
         for c in s.consts { out = out + wire_field(c) }
@@ -288,7 +294,16 @@ impl Workspace {
                     }
                     maps.push(meta_map(keys, values))
                 }
-                seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: meta_heap(nodes, maps) })
+                seats
+                    .push(
+                        SeatValue {
+                            index: index,
+                            fp: fp,
+                            ty: ty!,
+                            value: value,
+                            heap: meta_heap(nodes, maps),
+                        },
+                    )
             }
             out.push(Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: null })
         }
@@ -303,7 +318,9 @@ impl Workspace {
     }
 
     fn wanted_wire(w: Wanted) -> string {
-        mut out = wire_field(w.name) + wire_field(self.file_ref(w.file)) + wire_field(self.decl_ref(w.decl))
+        mut out = wire_field(w.name) +
+            wire_field(self.file_ref(w.file)) +
+            wire_field(self.decl_ref(w.decl))
         out = out + self.sub_wire(w.sub) + wire_field("${w.seats.length}")
         for s in w.seats { out = out + self.seat_wire(s) }
         out

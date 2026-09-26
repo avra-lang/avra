@@ -49,7 +49,8 @@ fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
     match p {
-        .Group(inner) -> Prim.Group(inner with { branches: [bound_seq(rname, b, outer, rows) for b in inner.branches] }),
+        .Group(inner) -> Prim
+            .Group(inner with { branches: [bound_seq(rname, b, outer, rows) for b in inner.branches] }),
         .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
     }
 }
@@ -65,7 +66,13 @@ fn bound_build(s: Seq, outer: Seq, rows: List<PayloadRow>) -> Build? {
     }
 }
 
-fn filled_slots(outer: Seq, owner: string, variant: string, fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Slot>? {
+fn filled_slots(
+    outer: Seq,
+    owner: string,
+    variant: string,
+    fixed: List<Fixed>,
+    rows: List<PayloadRow>,
+) -> List<Slot>? {
     let row? = row_for(rows, owner, variant) else { return null }
     [filling(p, outer.labels(), fixed) for p in row.payloads]
 }
@@ -101,7 +108,14 @@ fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Lis
     }
 }
 
-fn node_defects(rname: string, outer: Seq, owner: string, variant: string, fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Diagnostic> {
+fn node_defects(
+    rname: string,
+    outer: Seq,
+    owner: string,
+    variant: string,
+    fixed: List<Fixed>,
+    rows: List<PayloadRow>,
+) -> List<Diagnostic> {
     let row? = row_for(rows, owner, variant) else { return [node_refusal(rname, no_such_variant(owner, variant))] }
     judged(rname, outer, row, fixed)
 }
@@ -109,7 +123,9 @@ fn node_defects(rname: string, outer: Seq, owner: string, variant: string, fixed
 /// The branch against a variant that EXISTS: what it names, what it
 /// leaves unfilled, and what it fills with the wrong shape.
 fn judged(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
-    stranger_defects(rname, s, row, fixed).concat(unfilled_defects(rname, s, row, fixed)).concat(shape_defects(rname, s, row))
+    stranger_defects(rname, s, row, fixed)
+        .concat(unfilled_defects(rname, s, row, fixed))
+        .concat(shape_defects(rname, s, row))
 }
 
 /// Names the rule uses — captured or stated — that the variant has no
@@ -221,10 +237,7 @@ fn wrong_shape(row: PayloadRow, p: Field, got: Carrier) -> string {
 }
 
 fn carrier_word(c: Carrier) -> string {
-    match c {
-        .Built -> "a built node",
-        .Text -> "a token's text",
-    }
+    match c { .Built -> "a built node", .Text -> "a token's text" }
 }
 
 fn listed(names: List<string>) -> string {

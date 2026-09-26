@@ -124,7 +124,15 @@ fn bound_names(cx: TypeCx, p: PatId) -> List<string> {
 
 /// Alternative `k` of an `or` arm binds the first alternative's names,
 /// no more and no fewer, each at the first's type.
-fn alternative_law(mut cx: TypeCx, value: ExprId, names: List<string>, types: List<TypeId>, k: int, own: List<string>, own_types: List<TypeId>) {
+fn alternative_law(
+    mut cx: TypeCx,
+    value: ExprId,
+    names: List<string>,
+    types: List<TypeId>,
+    k: int,
+    own: List<string>,
+    own_types: List<TypeId>,
+) {
     if own.length != names.length || own.any((n) -> !names.contains(n)) { return or_names_differ(cx, value, names, k, own) }
     for j, n in names {
         let at = own.index_of(n)
@@ -163,7 +171,9 @@ export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
     }
 }
 
-fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expected: TypeId) -> List<TypeId> {
+fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expected: TypeId) -> List<
+    TypeId,
+> {
     let sig? = cx.variants_of(expected) else { return not_variant_shaped(cx, p, name, expected) }
     if sig.tag_of(name) == null { return unknown_arm(cx, p, cx.view.types.name_of(expected), name, sig) }
     let carried = sig.payloads_of(name)
@@ -225,7 +235,12 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
         if hole != null && a.guard == null {
             if declared != null {
                 let sig = declared!
-                hidden_checks(cx, hole!, answering_arms(cx.view.store, arms), uncovered(cx, before, sig))
+                hidden_checks(
+                    cx,
+                    hole!,
+                    answering_arms(cx.view.store, arms),
+                    uncovered(cx, before, sig),
+                )
             }
             return
         }
@@ -405,10 +420,7 @@ fn covers(cx: TypeCx, a: Arm) -> List<string> {
 
 /// Whether the hole BINDS what it takes.
 fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
-    match cx.view.store.pat(hole) {
-        .Bind(_) -> true,
-        _ -> false,
-    }
+    match cx.view.store.pat(hole) { .Bind(_) -> true, _ -> false }
 }
 
 /// The variant a pattern accepts whole — a test whose payload
@@ -450,76 +462,222 @@ export fn check_ordinal(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
 // ── The voices ──
 
 fn no_variants(mut cx: TypeCx, s: StmtId, name: string) {
-    cx.emit(refusal("type.enum_decl", cx.stmt_loc(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
+    cx
+        .emit(
+            refusal(
+                "type.enum_decl",
+                cx.stmt_loc(s),
+                "`${name}` declares no variants",
+                "this enum is empty",
+                "an enum names at least one variant",
+            ),
+        )
 }
 
 fn not_askable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    cx.spoken(refusal("type.match", cx.loc_of(subject), "`is` asks an enum for its variant, found `${n}`", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.match",
+                cx.loc_of(subject),
+                "`is` asks an enum for its variant, found `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn no_variant_asked(mut cx: TypeCx, e: ExprId, sname: string, v: string, sig: EnumSig) {
-    cx.emit(refusal("type.match", cx.loc_of(e), "`${sname}` has no variant `${v}`", "asked here", variants_are(sig)))
+    cx
+        .emit(
+            refusal(
+                "type.match",
+                cx.loc_of(e),
+                "`${sname}` has no variant `${v}`",
+                "asked here",
+                variants_are(sig),
+            ),
+        )
 }
 
 fn not_matchable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    cx.spoken(refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.match",
+                cx.loc_of(subject),
+                "`match` chooses over an enum, found `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn unwanted_literal(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx.spoken(refusal("type.variant_lit", cx.loc_of(e), "`.${name}` needs a known enum — nothing here says which", "built here", "annotate the binding, return it from a fn that declares the type, or write `Type.${name}`"))
+    cx
+        .spoken(
+            refusal(
+                "type.variant_lit",
+                cx.loc_of(e),
+                "`.${name}` needs a known enum — nothing here says which",
+                "built here",
+                "annotate the binding, return it from a fn that declares the type, or write `Type.${name}`",
+            ),
+        )
 }
 
 fn unenumerated_want(mut cx: TypeCx, e: ExprId, name: string, want: TypeId) -> TypeId {
     let n = cx.view.types.name_of(want)
-    cx.spoken(refusal("type.variant_lit", cx.loc_of(e), "`.${name}` builds a variant, and `${n}` has none", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.variant_lit",
+                cx.loc_of(e),
+                "`.${name}` builds a variant, and `${n}` has none",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 fn no_variant_wanted(mut cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
-    cx.spoken(refusal("type.variant_lit", cx.loc_of(e), "`${tname}` has no variant `${name}`", "built here", variants_are(sig)))
+    cx
+        .spoken(
+            refusal(
+                "type.variant_lit",
+                cx.loc_of(e),
+                "`${tname}` has no variant `${name}`",
+                "built here",
+                variants_are(sig),
+            ),
+        )
 }
 
 fn unknown_arm(mut cx: TypeCx, p: PatId, sname: string, v: string, sig: EnumSig) -> List<TypeId> {
-    cx.emit(refusal("type.match", cx.pat_loc(p), "`${sname}` has no variant `${v}`", "matched here", variants_are(sig)))
+    cx
+        .emit(
+            refusal(
+                "type.match",
+                cx.pat_loc(p),
+                "`${sname}` has no variant `${v}`",
+                "matched here",
+                variants_are(sig),
+            ),
+        )
     []
 }
 
 fn repeated_arm(mut cx: TypeCx, value: ExprId, v: string) {
-    cx.emit(refusal("type.match", cx.loc_of(value), "variant `${v}` is matched more than once", "matched again here", null))
+    cx
+        .emit(
+            refusal(
+                "type.match",
+                cx.loc_of(value),
+                "variant `${v}` is matched more than once",
+                "matched again here",
+                null,
+            ),
+        )
 }
 
 fn nothing_to_bind(mut cx: TypeCx, p: PatId, sname: string, variant: string) -> List<TypeId> {
-    cx.emit(refusal("type.variant_arity", cx.pat_loc(p), "`${sname}.${variant}` carries nothing to bind", "bound here", "write `.${variant} ->` — only a carrying variant binds"))
+    cx
+        .emit(
+            refusal(
+                "type.variant_arity",
+                cx.pat_loc(p),
+                "`${sname}.${variant}` carries nothing to bind",
+                "bound here",
+                "write `.${variant} ->` — only a carrying variant binds",
+            ),
+        )
     []
 }
 
-fn pattern_arity(mut cx: TypeCx, p: PatId, variant: string, carried: int, named: int) -> List<TypeId> {
-    cx.emit(refusal("type.variant_arity", cx.pat_loc(p), "`.${variant}` carries ${carried}, the pattern names ${named}", "here", "one pattern per payload, in order — `_` for one you do not need"))
+fn pattern_arity(mut cx: TypeCx, p: PatId, variant: string, carried: int, named: int) -> List<
+    TypeId,
+> {
+    cx
+        .emit(
+            refusal(
+                "type.variant_arity",
+                cx.pat_loc(p),
+                "`.${variant}` carries ${carried}, the pattern names ${named}",
+                "here",
+                "one pattern per payload, in order — `_` for one you do not need",
+            ),
+        )
     []
 }
 
 fn not_variant_shaped(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> List<TypeId> {
     let n = cx.view.types.name_of(expected)
-    cx.emit(refusal("type.pattern", cx.pat_loc(p), "`.${name}` tests a variant, but this is `${n}`", this_is(n), null))
+    cx
+        .emit(
+            refusal(
+                "type.pattern",
+                cx.pat_loc(p),
+                "`.${name}` tests a variant, but this is `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
     []
 }
 
 fn literal_mismatch(mut cx: TypeCx, p: PatId, got: TypeId, expected: TypeId) {
     let g = cx.view.types.name_of(got)
-    cx.emit(refusal("type.pattern", cx.pat_loc(p), "a `${g}` never matches `${cx.view.types.name_of(expected)}`", this_is(g), null))
+    cx
+        .emit(
+            refusal(
+                "type.pattern",
+                cx.pat_loc(p),
+                "a `${g}` never matches `${cx.view.types.name_of(expected)}`",
+                this_is(g),
+                null,
+            ),
+        )
 }
 
 fn or_names_differ(mut cx: TypeCx, value: ExprId, names: List<string>, k: int, own: List<string>) {
-    cx.emit(refusal("type.or_binds", cx.loc_of(value), "every alternative of an `or` arm binds the same names — the first binds ${names_said(names)}, alternative ${k + 1} binds ${names_said(own)}", "this arm", "bind the same names in every alternative, write `_` where one is not wanted, or split the arm"))
+    cx
+        .emit(
+            refusal(
+                "type.or_binds",
+                cx.loc_of(value),
+                "every alternative of an `or` arm binds the same names — the first binds ${names_said(names)}, alternative ${k + 1} binds ${names_said(own)}",
+                "this arm",
+                "bind the same names in every alternative, write `_` where one is not wanted, or split the arm",
+            ),
+        )
 }
 
 fn or_types_differ(mut cx: TypeCx, value: ExprId, name: string, first: TypeId, k: int, own: TypeId) {
-    cx.emit(refusal("type.or_binds", cx.loc_of(value), "`${name}` is `${cx.view.types.name_of(first)}` in the first alternative of this `or` arm and `${cx.view.types.name_of(own)}` in alternative ${k + 1} — a name binds at one type", "this arm", "split the arm, so each alternative binds its own name"))
+    cx
+        .emit(
+            refusal(
+                "type.or_binds",
+                cx.loc_of(value),
+                "`${name}` is `${cx.view.types.name_of(first)}` in the first alternative of this `or` arm and `${cx.view.types.name_of(own)}` in alternative ${k + 1} — a name binds at one type",
+                "this arm",
+                "split the arm, so each alternative binds its own name",
+            ),
+        )
 }
 
 fn binds_twice(mut cx: TypeCx, p: PatId, name: string) {
-    cx.emit(refusal("type.binds_twice", cx.pat_loc(p), "this pattern binds `${name}` twice — a name binds one value", "this pattern", "name the second one differently, or write `_` where its value is not wanted"))
+    cx
+        .emit(
+            refusal(
+                "type.binds_twice",
+                cx.pat_loc(p),
+                "this pattern binds `${name}` twice — a name binds one value",
+                "this pattern",
+                "name the second one differently, or write `_` where its value is not wanted",
+            ),
+        )
 }
 
 fn names_said(names: List<string>) -> string {
@@ -528,17 +686,53 @@ fn names_said(names: List<string>) -> string {
 }
 
 fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {
-    cx.emit(refusal("type.match", cx.loc_of(e), "a `match` over `${sname}` needs a catch-all arm", "this match", "end with `_ -> …` or `rest -> …`"))
+    cx
+        .emit(
+            refusal(
+                "type.match",
+                cx.loc_of(e),
+                "a `match` over `${sname}` needs a catch-all arm",
+                "this match",
+                "end with `_ -> …` or `rest -> …`",
+            ),
+        )
 }
 
 fn registry_forgets(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
-    cx.emit(warning("type.registry_hole", cx.pat_loc(hole), "arms answer for several variants and this hole takes the rest: ${joined([".${n}" for n in hidden], ", ")}", "matches them all", "spell each arm, so the next variant lands here visibly — or write `rest ->` to say the remainder is deliberate"))
+    cx
+        .emit(
+            warning(
+                "type.registry_hole",
+                cx.pat_loc(hole),
+                "arms answer for several variants and this hole takes the rest: ${joined([".${n}" for n in hidden], ", ")}",
+                "matches them all",
+                "spell each arm, so the next variant lands here visibly — or write `rest ->` to say the remainder is deliberate",
+            ),
+        )
 }
 
 fn registry_forgets_bound(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
-    cx.emit(warning("type.registry_hole", cx.pat_loc(hole), "arms answer for several variants and this hole binds the rest: ${joined([".${n}" for n in hidden], ", ")}", "binds them all", "spell each arm, so the next variant lands here visibly — `rest` binds nothing, so it cannot take this arm's place"))
+    cx
+        .emit(
+            warning(
+                "type.registry_hole",
+                cx.pat_loc(hole),
+                "arms answer for several variants and this hole binds the rest: ${joined([".${n}" for n in hidden], ", ")}",
+                "binds them all",
+                "spell each arm, so the next variant lands here visibly — `rest` binds nothing, so it cannot take this arm's place",
+            ),
+        )
 }
 
 fn unhandled_variant(mut cx: TypeCx, e: ExprId, sname: string, n: string) {
-    cx.emit(refusal("type.match", cx.loc_of(e), "`match` on `${sname}` must handle `.${n}`", "this match", "every variant exactly once — adding a variant breaks every match, on purpose"))
+    cx
+        .emit(
+            refusal(
+                "type.match",
+                cx.loc_of(e),
+                "`match` on `${sname}` must handle `.${n}`",
+                "this match",
+                "every variant exactly once — adding a variant breaks every match, on purpose",
+            ),
+        )
 }

@@ -9,27 +9,53 @@ use @std.avrac.testing.{shown, refused_with, refusals, refused_at_run, makers, f
 spec "features/nullable" {
     given "a nullable pointer in a slot — the niche" {
         then "a field holds a nullable string, absent or present" {
-            shown("type P = { name: string? }\nlet a = P { name: null }\nlet b = P { name: \"x\" }\n\"" + "\${a.name ?? \"-\"} " + "\${b.name ?? \"-\"}\"") == "- x"
+            shown(
+                "type P = { name: string? }\nlet a = P { name: null }\nlet b = P { name: \"x\" }\n\"" +
+                    "\${a.name ?? \"-\"} " +
+                    "\${b.name ?? \"-\"}\"",
+            ) == "- x"
         }
         then "a list holds nullable strings" {
-            shown("let xs: List<string?> = [null, \"a\"]\n\"" + "\${xs[0] ?? \"-\"} " + "\${xs[1] ?? \"-\"}\"") == "- a"
+            shown(
+                "let xs: List<string?> = [null, \"a\"]\n\"" +
+                    "\${xs[0] ?? \"-\"} " +
+                    "\${xs[1] ?? \"-\"}\"",
+            ) == "- a"
         }
         then "an enum payload holds one" {
-            shown("enum W {\n    Named(n: string?)\n}\nmatch W.Named(null) {\n    .Named(n) -> n ?? \"none\"\n}") == "none"
+            shown(
+                "enum W {\n    Named(n: string?)\n}\nmatch W.Named(null) {\n    .Named(n) -> n ?? \"none\"\n}",
+            ) == "none"
         }
         then "`?.` into a field that is itself nullable flattens — one absence, never two" {
-            shown("type P = { name: string? }\ntype Q = { p: P? }\nfn f(q: Q) -> string { q.p?.name ?? \"-\" }\n\"" + "\${f(Q { p: P { name: \"n\" } })} " + "\${f(Q { p: P { name: null } })} " + "\${f(Q { p: null })}\"") == "n - -"
+            shown(
+                "type P = { name: string? }\ntype Q = { p: P? }\nfn f(q: Q) -> string { q.p?.name ?? \"-\" }\n\"" +
+                    "\${f(Q { p: P { name: \"n\" } })} " +
+                    "\${f(Q { p: P { name: null } })} " +
+                    "\${f(Q { p: null })}\"",
+            ) == "n - -"
         }
         then "a scalar nullable rides its slot — the word and the cell's mark" {
-            shown("type Q = { n: int? }\nlet q = Q { n: null }\nlet r = Q { n: 3 }\n\"\${q.n ?? 2} \${r.n ?? 2}\"") == "2 3"
+            shown(
+                "type Q = { n: int? }\nlet q = Q { n: null }\nlet r = Q { n: 3 }\n\"\${q.n ?? 2} \${r.n ?? 2}\"",
+            ) == "2 3"
         }
     }
     given "a redundant ask after narrowing, and the chained `??`" {
         then "`!` on a read a narrowing proved present is the value" {
-            shown("fn f(s: string?) -> string {\n    if s != null { s! } else { \"-\" }\n}\n\"" + "\${f(\"a\")} " + "\${f(null)}\"") == "a -"
+            shown(
+                "fn f(s: string?) -> string {\n    if s != null { s! } else { \"-\" }\n}\n\"" +
+                    "\${f(\"a\")} " +
+                    "\${f(null)}\"",
+            ) == "a -"
         }
         then "`??` chains through nullables" {
-            shown("fn g(a: string?, b: string?) -> string { a ?? b ?? \"z\" }\n\"" + "\${g(null, \"b\")} " + "\${g(null, null)} " + "\${g(\"a\", null)}\"") == "b z a"
+            shown(
+                "fn g(a: string?, b: string?) -> string { a ?? b ?? \"z\" }\n\"" +
+                    "\${g(null, \"b\")} " +
+                    "\${g(null, null)} " +
+                    "\${g(\"a\", null)}\"",
+            ) == "b z a"
         }
         then "`??` on a value that is never absent warns and answers it" {
             refused_with("let n = 3\nn ?? 4", "`??` never fires — a `int` is never absent")
@@ -37,13 +63,26 @@ spec "features/nullable" {
     }
     given "equality through presence" {
         then "a nullable beside its value: equal when present and equal" {
-            shown("fn f(s: string?) -> bool { s == \"a\" }\n\"" + "\${f(\"a\")} " + "\${f(\"b\")} " + "\${f(null)}\"") == "true false false"
+            shown(
+                "fn f(s: string?) -> bool { s == \"a\" }\n\"" +
+                    "\${f(\"a\")} " +
+                    "\${f(\"b\")} " +
+                    "\${f(null)}\"",
+            ) == "true false false"
         }
         then "two nullables: both absent is equal, one absent is not" {
-            shown("fn f(a: int?, b: int?) -> bool { a == b }\n\"" + "\${f(null, null)} " + "\${f(1, null)} " + "\${f(1, 1)} " + "\${f(1, 2)}\"") == "true false true false"
+            shown(
+                "fn f(a: int?, b: int?) -> bool { a == b }\n\"" +
+                    "\${f(null, null)} " +
+                    "\${f(1, null)} " +
+                    "\${f(1, 1)} " +
+                    "\${f(1, 2)}\"",
+            ) == "true false true false"
         }
         then "the plain value may lead — either side may be the nullable" {
-            shown("fn f(s: string?) -> bool { \"a\" == s }\nfn g(n: int?) -> bool { 1 == n }\nif f(\"a\") && !f(null) && g(1) && !g(null) { \"led\" } else { \"lost\" }") == "led"
+            shown(
+                "fn f(s: string?) -> bool { \"a\" == s }\nfn g(n: int?) -> bool { 1 == n }\nif f(\"a\") && !f(null) && g(1) && !g(null) { \"led\" } else { \"lost\" }",
+            ) == "led"
         }
         then "`!=` negates it" {
             shown("fn f(s: string?) -> bool { s != \"a\" }\n\"" + "\${f(\"a\")} " + "\${f(null)}\"") == "false true"
@@ -91,25 +130,43 @@ spec "features/nullable" {
             shown("fn half(v: int?) -> int? { v? / 2 }\n${makers}half(none()) ?? 0 - 1") == "-1"
         }
         then "the exit happens where the `?` stands — nothing after it runs" {
-            shown("fn boom(x: int) -> int { x / 0 }\nfn f(v: int?) -> int? {\n    let x = v?\n    boom(x)\n}\n${makers}f(none()) ?? 5") == "5"
+            shown(
+                "fn boom(x: int) -> int { x / 0 }\nfn f(v: int?) -> int? {\n    let x = v?\n    boom(x)\n}\n${makers}f(none()) ?? 5",
+            ) == "5"
         }
         then "the niche propagates too — a string rides its pointer" {
-            shown("fn measured(w: string?) -> int? { (w?).length }\nfn word(b: bool) -> string? { if b { \"hey\" } else { null } }\n(measured(word(true)) ?? 0 - 1) + (measured(word(false)) ?? 0 - 1)") == "2"
+            shown(
+                "fn measured(w: string?) -> int? { (w?).length }\nfn word(b: bool) -> string? { if b { \"hey\" } else { null } }\n(measured(word(true)) ?? 0 - 1) + (measured(word(false)) ?? 0 - 1)",
+            ) == "2"
         }
         then "`w?.length` stays the CHAIN — propagation before a member takes parens" {
-            shown("fn a(w: string?) -> int? { w?.length }\nfn word(b: bool) -> string? { if b { \"hey\" } else { null } }\n(a(word(true)) ?? 0 - 1) + (a(word(false)) ?? 0 - 1)") == "2"
+            shown(
+                "fn a(w: string?) -> int? { w?.length }\nfn word(b: bool) -> string? { if b { \"hey\" } else { null } }\n(a(word(true)) ?? 0 - 1) + (a(word(false)) ?? 0 - 1)",
+            ) == "2"
         }
         then "propagating a GUARANTEE is refused at compile time" {
-            refused_with("fn f(x: int) -> int? { x? }\n${makers}f(1) ?? 0", "`?` propagates a nullable, this is `int`")
+            refused_with(
+                "fn f(x: int) -> int? { x? }\n${makers}f(1) ?? 0",
+                "`?` propagates a nullable, this is `int`",
+            )
         }
         then "the top level has no caller to pass absence to" {
-            refused_with("${makers}some(1)?", "`?` passes absence to a caller, and the top level has none")
+            refused_with(
+                "${makers}some(1)?",
+                "`?` passes absence to a caller, and the top level has none",
+            )
         }
         then "the enclosing fn must promise a nullable" {
-            refused_with("fn f(v: int?) -> int { v? }\n${makers}f(some(1))", "`?` makes this fn answer `null`, but it promises a `int`")
+            refused_with(
+                "fn f(v: int?) -> int { v? }\n${makers}f(some(1))",
+                "`?` makes this fn answer `null`, but it promises a `int`",
+            )
         }
         then "absence itself always propagates — refused as always absent" {
-            refused_with("fn f() -> int? { null? }\nf() ?? 0", "this is always absent, so `?` always propagates")
+            refused_with(
+                "fn f() -> int? { null? }\nf() ?? 0",
+                "this is always absent, so `?` always propagates",
+            )
         }
     }
     given "`match` over an absence — the third consumer" {
@@ -126,10 +183,15 @@ spec "features/nullable" {
             shown("${makers}match some(4) {\n    v? -> v * v\n    null -> 0\n}") == "16"
         }
         then "it nests, each bind in its own scope" {
-            shown("${makers}match some(1) {\n    v? -> match some(2) {\n        w? -> v + w\n        null -> 0\n    }\n    null -> 0\n}") == "3"
+            shown(
+                "${makers}match some(1) {\n    v? -> match some(2) {\n        w? -> v + w\n        null -> 0\n    }\n    null -> 0\n}",
+            ) == "3"
         }
         then "the arms must agree, like any other pair of branches" {
-            refused_with("${makers}match some(1) {\n    v? -> v\n    null -> \"s\"\n}", "the arms disagree: `int` vs `string`")
+            refused_with(
+                "${makers}match some(1) {\n    v? -> v\n    null -> \"s\"\n}",
+                "the arms disagree: `int` vs `string`",
+            )
         }
         then "an ENUM match is untouched by the new branch" {
             shown("enum E {\n    a\n    b\n}\nmatch E.a {\n    .a -> 1\n    .b -> 0\n}") == "1"
@@ -138,15 +200,18 @@ spec "features/nullable" {
     given "non-null by default" {
         then "`null` is not an `int`" {
             let a = analyze_source("fn f() -> int { null }\nf()")
-            a.diagnostics.length == 1 && a.report().contains("the body answers `null` but `f` declares `int`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("the body answers `null` but `f` declares `int`")
         }
         then "a nullable is not its value" {
             let a = analyze_source("${makers}some(1) + 1")
-            a.diagnostics.length == 1 && a.report().contains("`+` needs `int` operands, found `int?`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`+` needs `int` operands, found `int?`")
         }
         then "a nullable never widens BACK" {
             let a = analyze_source("fn f(x: int) -> int { x }\n${makers}f(some(1))")
-            a.diagnostics.length == 1 && a.report().contains("argument 1 of `f` wants `int`, found `int?`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("argument 1 of `f` wants `int`, found `int?`")
         }
     }
     given "`??`'s own law" {
@@ -161,10 +226,16 @@ spec "features/nullable" {
         }
         then "the right side carries the nullable's own type" {
             let a = analyze_source("${makers}some(1) ?? \"s\"")
-            a.diagnostics.length == 1 && a.report().contains("`??` answers with a `int`, this is `string`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`??` answers with a `int`, this is `string`")
         }
         then "a chain reads left to right, staying nullable until the last" {
-            shown("${makers}\"" + "\${none() ?? none() ?? 7} " + "\${some(1) ?? none() ?? 7} " + "\${none() ?? some(2) ?? 7}\"") == "7 1 2"
+            shown(
+                "${makers}\"" +
+                    "\${none() ?? none() ?? 7} " +
+                    "\${some(1) ?? none() ?? 7} " +
+                    "\${none() ?? some(2) ?? 7}\"",
+            ) == "7 1 2"
         }
     }
     given "`if let` — the bind-fresh form, sugar over the asking arms" {
@@ -175,49 +246,77 @@ spec "features/nullable" {
             shown("${finder}if let u? = find_user(3) {\n    u.age\n} else {\n    0 - 5\n}") == "-5"
         }
         then "it IS an expression — a `let` takes it whole" {
-            shown("${finder}let got = if let u? = find_user(7) {\n    u.age\n} else {\n    0\n}\ngot + 1") == "31"
+            shown(
+                "${finder}let got = if let u? = find_user(7) {\n    u.age\n} else {\n    0\n}\ngot + 1",
+            ) == "31"
         }
         then "the arms are BLOCKS — statements live inside" {
-            shown("${finder}if let u? = find_user(7) {\n    let doubled = u.age * 2\n    doubled + 1\n} else {\n    0\n}") == "61"
+            shown(
+                "${finder}if let u? = find_user(7) {\n    let doubled = u.age * 2\n    doubled + 1\n} else {\n    0\n}",
+            ) == "61"
         }
         then "the bind lives in the present branch ONLY" {
-            refused_with("${finder}if let u? = find_user(7) {\n    u.age\n} else {\n    u.age\n}", "`u` is not defined")
+            refused_with(
+                "${finder}if let u? = find_user(7) {\n    u.age\n} else {\n    u.age\n}",
+                "`u` is not defined",
+            )
         }
         then "a GUARANTEE subject refuses in the BIND's words, not `match`'s" {
-            refused_with("if let v? = 5 {\n    v\n} else {\n    0\n}", "`v?` asks a nullable, this is `int`")
+            refused_with(
+                "if let v? = 5 {\n    v\n} else {\n    0\n}",
+                "`v?` asks a nullable, this is `int`",
+            )
         }
         then "a missing `else` refuses for `if let`; plain elseless `if` is a STATEMENT now" {
             // The return arc fixed half the old parity debt: an
             // elseless multiline `if` is the guard statement. An
             // elseless `if let` still refuses — absence must be
             // answered.
-            refusals("${finder}if let u? = find_user(7) {\n    u.age\n}") == 2 && refusals("if true {\n    1\n}") == 0
+            refusals("${finder}if let u? = find_user(7) {\n    u.age\n}") == 2 &&
+                refusals("if true {\n    1\n}") == 0
         }
         then "the chain feeds it — one nullable currency" {
             shown("${finder}if let age? = find_user(7)?.age {\n    age + 100\n} else {\n    0\n}") == "130"
         }
         then "it nests, each bind in its own scope" {
-            shown("${finder}if let a? = find_user(7) {\n    if let b? = find_user(3) {\n        a.age + b.age\n    } else {\n        a.age\n    }\n} else {\n    0\n}") == "30"
+            shown(
+                "${finder}if let a? = find_user(7) {\n    if let b? = find_user(3) {\n        a.age + b.age\n    } else {\n        a.age\n    }\n} else {\n    0\n}",
+            ) == "30"
         }
     }
     given "`let v? = e else` — bind through absence, keep going" {
         then "a present subject binds its carried value, enclosing scope" {
-            shown("${finder}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        return 0 - 1\n    }\n    u.age * 2\n}\nage(7)") == "60"
+            shown(
+                "${finder}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        return 0 - 1\n    }\n    u.age * 2\n}\nage(7)",
+            ) == "60"
         }
         then "an absent subject leaves through the else" {
-            shown("${finder}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        return 0 - 1\n    }\n    u.age\n}\nage(3)") == "-1"
+            shown(
+                "${finder}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        return 0 - 1\n    }\n    u.age\n}\nage(3)",
+            ) == "-1"
         }
         then "the else is a BLOCK — it works, then leaves" {
-            shown("${finder}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        let apology = 0 - 9\n        return apology\n    }\n    u.age\n}\nage(3)") == "-9"
+            shown(
+                "${finder}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        let apology = 0 - 9\n        return apology\n    }\n    u.age\n}\nage(3)",
+            ) == "-9"
         }
         then "a GUARANTEE subject refuses in the bind's words" {
-            refused_with("fn f(x: int) -> int {\n    let a? = x else {\n        return 0\n    }\n    a\n}\nf(1)", "`a?` asks a nullable, this is `int`")
+            refused_with(
+                "fn f(x: int) -> int {\n    let a? = x else {\n        return 0\n    }\n    a\n}\nf(1)",
+                "`a?` asks a nullable, this is `int`",
+            )
         }
         then "an else that could FALL THROUGH refuses — the bind would be hollow" {
-            refused_with("fn h(v: int?) -> int {\n    let a? = v else {\n        let x = 1\n    }\n    a\n}\nh(2)", "the `else` must LEAVE — control cannot fall through to `a`")
+            refused_with(
+                "fn h(v: int?) -> int {\n    let a? = v else {\n        let x = 1\n    }\n    a\n}\nh(2)",
+                "the `else` must LEAVE — control cannot fall through to `a`",
+            )
         }
         then "an empty else refuses the same way" {
-            refused_with("fn h(v: int?) -> int {\n    let a? = v else {\n    }\n    a\n}\nh(2)", "the `else` must LEAVE")
+            refused_with(
+                "fn h(v: int?) -> int {\n    let a? = v else {\n    }\n    a\n}\nh(2)",
+                "the `else` must LEAVE",
+            )
         }
         then "the plain `let` is untouched — annotation, value, all of it" {
             shown("let a: int = 4\nlet b = a + 1\nb") == "5"
@@ -225,57 +324,97 @@ spec "features/nullable" {
     }
     given "the presence test and the narrow — `!= null` proves a branch" {
         then "`!= null` and `== null` answer bools, either operand order" {
-            shown("${finder}if find_user(7) != null { 1 } else { 0 }") == "1" && shown("${finder}if null == find_user(3) { 1 } else { 0 }") == "1"
+            shown("${finder}if find_user(7) != null { 1 } else { 0 }") == "1" &&
+                shown("${finder}if null == find_user(3) { 1 } else { 0 }") == "1"
         }
         then "a PARAM narrows in the proven branch — the ceremony retires" {
-            shown("type U = { age: int }\nfn find(b: bool) -> U? { if b { U { age: 30 } } else { null } }\n" + "fn describe(u: U?) -> int {\n    if u != null { u.age } else { 0 - 1 }\n}\n" + "describe(find(true)) + describe(find(false))") == "29"
+            shown(
+                "type U = { age: int }\nfn find(b: bool) -> U? { if b { U { age: 30 } } else { null } }\n" +
+                    "fn describe(u: U?) -> int {\n    if u != null { u.age } else { 0 - 1 }\n}\n" +
+                    "describe(find(true)) + describe(find(false))",
+            ) == "29"
         }
         then "`== null` proves the ELSE branch" {
-            shown("fn h(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" + "fn f(v: int?) -> int { if v == null { 0 - 5 } else { v * 10 } }\n" + "f(h(4)) + f(h(3))") == "15"
+            shown(
+                "fn h(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                    "fn f(v: int?) -> int { if v == null { 0 - 5 } else { v * 10 } }\n" +
+                    "f(h(4)) + f(h(3))",
+            ) == "15"
         }
         then "a LET narrows; the same read outside the branch still refuses" {
-            shown("${finder}let u = find_user(7)\nif u != null { u.age } else { 0 }") == "30" && refused_with("${finder}let u = find_user(7)\nif u != null { 1 } else { 0 }\nu.age", "`.age` reads a guarantee, this is `User?`")
+            shown("${finder}let u = find_user(7)\nif u != null { u.age } else { 0 }") == "30" &&
+                refused_with(
+                    "${finder}let u = find_user(7)\nif u != null { 1 } else { 0 }\nu.age",
+                    "`.age` reads a guarantee, this is `User?`",
+                )
         }
         then "a MUT never narrows — reassignment could lie" {
-            refused_with("mut x: int? = 5\nlet a = if x != null { x + 1 } else { 0 }\na", "`+` needs `int` operands, found `int?`")
+            refused_with(
+                "mut x: int? = 5\nlet a = if x != null { x + 1 } else { 0 }\na",
+                "`+` needs `int` operands, found `int?`",
+            )
         }
         then "the UNPROVEN branch stays wide" {
-            refused_with("fn f(v: int?) -> int { if v != null { v } else { v + 1 } }\nf(1)", "`+` needs `int` operands, found `int?`")
+            refused_with(
+                "fn f(v: int?) -> int { if v != null { v } else { v + 1 } }\nf(1)",
+                "`+` needs `int` operands, found `int?`",
+            )
         }
         then "`!` under the narrow is the value — redundant, and silent" {
             shown("fn f(v: int?) -> int { if v != null { v! } else { 0 } }\nf(1)") == "1"
         }
         then "a GUARANTEE beside null refuses toward the family words" {
-            refused_with("let n = 5\nif n != null { 1 } else { 0 }", "`!= null` asks a nullable, this is `int`")
+            refused_with(
+                "let n = 5\nif n != null { 1 } else { 0 }",
+                "`!= null` asks a nullable, this is `int`",
+            )
         }
         then "`null == null` is a question already answered" {
             refused_with("if null == null { 1 } else { 0 }", "always absent")
         }
         then "a NARROWED branch joins WIDE beside its own nullable" {
-            shown("fn f(v: int?) -> int? {\n    if v != null { v } else { v }\n}\nf(4) ?? 9") == "4" && shown("fn f(v: int?) -> int? {\n    if v != null { v } else { v }\n}\nf(null) ?? 9") == "9"
+            shown("fn f(v: int?) -> int? {\n    if v != null { v } else { v }\n}\nf(4) ?? 9") == "4" &&
+                shown("fn f(v: int?) -> int? {\n    if v != null { v } else { v }\n}\nf(null) ?? 9") == "9"
         }
         then "a narrowed read WIDENS back when a nullable slot claims it" {
-            shown("fn f(v: int?) -> int {\n    if v != null {\n        let again: int? = v\n        again ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "4"
+            shown(
+                "fn f(v: int?) -> int {\n    if v != null {\n        let again: int? = v\n        again ?? 9\n    } else {\n        0\n    }\n}\nf(4)",
+            ) == "4"
         }
     }
     given "the niche — a pointer-shaped nullable IS its value" {
         then "`string?` answers through `??`, present and absent" {
-            shown("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\"") == "x" && shown("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false) ?? \"y\"") == "y"
+            shown("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\"") == "x" &&
+                shown(
+                    "fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false) ?? \"y\"",
+                ) == "y"
         }
         then "the spec's headline example types and runs: `find_user -> User?`" {
-            shown("type User = { age: int }\n" + "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n" + "match find_user(7) {\n    u? -> u.age\n    null -> 0\n}") == "30"
+            shown(
+                "type User = { age: int }\n" +
+                    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n" +
+                    "match find_user(7) {\n    u? -> u.age\n    null -> 0\n}",
+            ) == "30"
         }
         then "`List<int>?` rides the same niche" {
-            shown("fn f(b: bool) -> List<int>? { if b { [1, 2] } else { null } }\n(f(false) ?? [9]).length") == "1"
+            shown(
+                "fn f(b: bool) -> List<int>? { if b { [1, 2] } else { null } }\n(f(false) ?? [9]).length",
+            ) == "1"
         }
         then "`!` insists on a niche nullable, and refuses in the shared words" {
-            refused_at_run("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false)!", "unwrapped an absent value")
+            refused_at_run(
+                "fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false)!",
+                "unwrapped an absent value",
+            )
         }
         then "a nullable param passes through by IDENTITY — widening is free" {
             shown("fn hand(s: string?) -> string? { s }\nhand(\"kept\") ?? \"lost\"") == "kept"
         }
         then "the present arm binds the CARRIED record, fields reachable" {
-            shown("type P = { x: int }\nfn mk(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n" + "match mk(true) {\n    p? -> p.x * p.x\n    null -> 0\n}") == "16"
+            shown(
+                "type P = { x: int }\nfn mk(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n" +
+                    "match mk(true) {\n    p? -> p.x * p.x\n    null -> 0\n}",
+            ) == "16"
         }
     }
     given "`?.` — the chain: reach through, or answer absence" {
@@ -286,7 +425,12 @@ spec "features/nullable" {
             shown("${finder}find_user(3)?.age ?? 0 - 1") == "-1"
         }
         then "`length` reaches through a `string?` and a `List<int>?` alike" {
-            shown("fn g(b: bool) -> string? { if b { \"hello\" } else { null } }\ng(true)?.length ?? 0") == "5" && shown("fn f(b: bool) -> List<int>? { if b { [1, 2, 3] } else { null } }\nf(true)?.length ?? 0") == "3"
+            shown(
+                    "fn g(b: bool) -> string? { if b { \"hello\" } else { null } }\ng(true)?.length ?? 0",
+                ) == "5" &&
+                shown(
+                    "fn f(b: bool) -> List<int>? { if b { [1, 2, 3] } else { null } }\nf(true)?.length ?? 0",
+                ) == "3"
         }
         then "the chain's answer takes `!` — present proven, insisted" {
             shown("${finder}find_user(7)?.age!") == "30"
@@ -295,7 +439,10 @@ spec "features/nullable" {
             refused_with("${finder}find_user(7)?.age?.length ?? 0", "no property `length` on `int`")
         }
         then "a GUARANTEE subject is refused toward the plain read" {
-            refused_with("type P = { x: int }\nlet p = P { x: 1 }\np?.x", "`P` is a guarantee — write `.x`")
+            refused_with(
+                "type P = { x: int }\nlet p = P { x: 1 }\np?.x",
+                "`P` is a guarantee — write `.x`",
+            )
         }
         then "absence itself never reaches anything" {
             refused_with("null?.age", "this is always absent, so `?.age` never reaches anything")
@@ -306,16 +453,26 @@ spec "features/nullable" {
     }
     given "`?.` calls a method — the chain over a nullable's methods" {
         then "present calls, absent answers absence, a nullable answer flattens" {
-            shown("type P = { x: int }\nimpl P {\n    fn dbl() -> int { self.x * 2 }\n    fn maybe(b: bool) -> int? { if b { self.x } else { null } }\n}\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n\"\${find(true)?.dbl() ?? 0} \${find(false)?.dbl() ?? 0} \${find(true)?.maybe(true) ?? 0} \${find(true)?.maybe(false) ?? 0 - 1}\"") == "8 0 4 -1"
+            shown(
+                "type P = { x: int }\nimpl P {\n    fn dbl() -> int { self.x * 2 }\n    fn maybe(b: bool) -> int? { if b { self.x } else { null } }\n}\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n\"\${find(true)?.dbl() ?? 0} \${find(false)?.dbl() ?? 0} \${find(true)?.maybe(true) ?? 0} \${find(true)?.maybe(false) ?? 0 - 1}\"",
+            ) == "8 0 4 -1"
         }
         then "the chain continues past the call" {
-            shown("type P = { x: int }\nimpl P {\n    fn name() -> string { \"p\${self.x}\" }\n}\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n\"\${find(true)?.name()?.length ?? 0} \${find(false)?.name()?.length ?? 0}\"") == "2 0"
+            shown(
+                "type P = { x: int }\nimpl P {\n    fn name() -> string { \"p\${self.x}\" }\n}\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n\"\${find(true)?.name()?.length ?? 0} \${find(false)?.name()?.length ?? 0}\"",
+            ) == "2 0"
         }
         then "a chained call on a guarantee refuses in the chain's words, never the binder's" {
-            refused_with("type P = { x: int }\nimpl P {\n    fn dbl() -> int { self.x * 2 }\n}\nlet p = P { x: 1 }\np?.dbl()", "`?.` reaches into a nullable, this is `P`")
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    fn dbl() -> int { self.x * 2 }\n}\nlet p = P { x: 1 }\np?.dbl()",
+                "`?.` reaches into a nullable, this is `P`",
+            )
         }
         then "a method the carried type lacks refuses in the method's words" {
-            refused_with("type P = { x: int }\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\nfind(true)?.nope()", "`P` has no method `nope`")
+            refused_with(
+                "type P = { x: int }\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\nfind(true)?.nope()",
+                "`P` has no method `nope`",
+            )
         }
     }
 }

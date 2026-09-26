@@ -1,16 +1,55 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, TypeId, flatten, BlockVoice, DeclId, FileId, joined, is_user_kind, same_decl, user_kind}
+use core.{
+    NodeStore,
+    new_node_store,
+    Expr,
+    Stmt,
+    StmtId,
+    ExprId,
+    Span,
+    Param,
+    Variant,
+    Case,
+    TypeRef,
+    TypeId,
+    flatten,
+    BlockVoice,
+    DeclId,
+    FileId,
+    joined,
+    is_user_kind,
+    same_decl,
+    user_kind,
+}
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
 use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
-use @std.grammar.{Captured, RunOutcome, run_grammar, run_untold, run_from, lex_diagnostic, Diagnostic, Cause}
+use @std.grammar.{
+    Captured,
+    RunOutcome,
+    run_grammar,
+    run_untold,
+    run_from,
+    lex_diagnostic,
+    Diagnostic,
+    Cause,
+}
 use grammar.{Token, DocComment, lex_source, lex_blocks, TokenKind, avra_lexeme}
 // LICENSED modules.unused_import: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
-use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockWords}
+use features.{
+    LangNode,
+    PatSemantics,
+    Dispatch,
+    build_named,
+    list_at,
+    stmt_id_at,
+    type_ref_at,
+    BlockWords,
+}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.quote.{QuoteSemantics, QuotePatSemantics}
@@ -151,10 +190,27 @@ export fn parse_into(lang: Language, store: NodeStore, src: SourceFile, words: B
 
 fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     if lang.syntax == null {
-        return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
+        return Parsed {
+            store: store,
+            stmts: [],
+            source: src,
+            voices: Voices { list: lang.diagnostics },
+        }
     }
-    let lexed = lex_blocks(src.text, [g.word for g in words.grammars], [c.word for c in words.components])
-    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), src.text, words)
+    let lexed = lex_blocks(
+        src.text,
+        [g.word for g in words.grammars],
+        [c.word for c in words.components],
+    )
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
+        lang.builders,
+        store,
+        name,
+        args,
+        loc_span(loc),
+        src.text,
+        words,
+    )
     let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
@@ -165,7 +221,9 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
     if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
     // what a block's grammar refused speaks with the parse, at the block
     let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
-    let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
+    let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors]
+        .concat(o.diagnostics)
+        .concat(blocked)
     Parsed {
         store: store,
         stmts: [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls()),
@@ -176,7 +234,13 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
 
 /// A block grammar's refusal as the engine's diagnostic it was.
 fn block_diagnostic(v: BlockVoice) -> Diagnostic {
-    Diagnostic { cause: Cause.Block, message: v.message, loc: Loc { file: null, lo: v.lo, hi: v.hi }, expected: v.expected, in_rule: v.in_rule }
+    Diagnostic {
+        cause: Cause.Block,
+        message: v.message,
+        loc: Loc { file: null, lo: v.lo, hi: v.hi },
+        expected: v.expected,
+        in_rule: v.in_rule,
+    }
 }
 
 /// The engine's own Loc, worn as this store's Span.
@@ -199,8 +263,22 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     let store = new_node_store()
     let lexed = lex_source(text)
     if !lexed.errors.is_empty() { return null }
-    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), text, BlockWords {})
-    let o = run_from<Token, LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], avra_lexeme(), build)
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
+        lang.builders,
+        store,
+        name,
+        args,
+        loc_span(loc),
+        text,
+        BlockWords {},
+    )
+    let o = run_from<Token, LangNode>(
+        lang.syntax!,
+        "type",
+        [t for t in lexed.tokens if t.kind != TokenKind.Break],
+        avra_lexeme(),
+        build,
+    )
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
 }
@@ -288,7 +366,12 @@ impl Program {
     /// once carried — `explain_doc` shares the same door.
     fn explain_annotation(name: string) -> string? {
         let decls = self.ws.decls
-        let decl? = decls.decls.get().find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else { return null }
+        let decl? = decls
+            .decls
+            .get()
+            .find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else {
+            return null
+        }
         let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
         let holes = [decls.types.name_of(pt) for pt in sig.params]
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
@@ -379,7 +462,10 @@ impl Program {
     fn explain_repr(type_text: string) -> string? {
         let ann? = parse_type_ref(avra(), type_text) else { return null }
         let decls = self.ws.decls
-        let base? = spelled_type(decls.types, ann with { optional: false }) ?? decls.struct_type_ref(ann.name) else { return null }
+        let base? = spelled_type(decls.types, ann with { optional: false }) ?? decls
+            .struct_type_ref(ann.name) else {
+            return null
+        }
         let ty = if ann.optional { decls.types.type(base?) } else { base }
         repr_word(decls.types, ty)
     }
@@ -398,7 +484,12 @@ impl Program {
     /// sharp edge `explain @name` already carries.
     fn explain_writes(fn_name: string) -> string? {
         let decls = self.ws.decls
-        let decl? = decls.decls.get().find((d: Decl) -> d.name == fn_name && decls.fn_name(d.id) != null) else { return null }
+        let decl? = decls
+            .decls
+            .get()
+            .find((d: Decl) -> d.name == fn_name && decls.fn_name(d.id) != null) else {
+            return null
+        }
         if decls.seat_count(decl.id) == 0 { return null }
         let chain? = self.ws.write_chain(decl.id, 0, []) else { return null }
         chain.join(" -> ")
@@ -422,7 +513,8 @@ impl Program {
         mut attached: List<DeclId> = []
         for s in parsed.stmts {
             chunks.push(render_statement(parsed.store, s))
-            chunks = chunks.concat([self.expansion_note(parsed.store, e) for e in parsed.store.instances_in(s)])
+            chunks = chunks
+                .concat([self.expansion_note(parsed.store, e) for e in parsed.store.instances_in(s)])
             let written: DeclId? = self.ws.decls.decl_of(f, s)
             if written != null {
                 let name = self.ws.decls.decl(written!).name
@@ -452,7 +544,8 @@ impl Program {
         let word? = store.instance_word(e) else { return "" }
         let home: string? = store.foreign_of(x)?.path
         let module = if home == null { "" } else { " (from ${self.ws.decls.module_name(self.ws.decls.file(self.ws.file_id(home!)).module_id)})" }
-        let lines = ["// `${word}`${module} expands to:"].concat(["//     ${l}" for l in render_expression(store, x).split("\n")])
+        let lines = ["// `${word}`${module} expands to:"]
+            .concat(["//     ${l}" for l in render_expression(store, x).split("\n")])
         joined(lines, "\n")
     }
 
@@ -514,7 +607,9 @@ impl Program {
     /// window comes from the file its Loc names: a manifest, a file
     /// of this package, or the dependency file that wrote a template.
     fn rendered(ds: List<Diag>) -> string {
-        let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files.get()])
+        let sources = self
+            .manifests
+            .concat([self.ws.source(f.id) for f in self.ws.decls.files.get()])
         joined([render_among(d, sources) for d in ds], "\n\n")
     }
 
@@ -534,14 +629,19 @@ impl Program {
     /// this program SPOKE, which is how a kind computed at run time
     /// registers.
     fn kind_rows() -> List<DiagCode> {
-        let spoken = self.spoken_codes(flatten([a.diagnostics for a in self.files]).concat(self.voices))
-        distinct_codes(spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.files.get()])))
+        let spoken = self
+            .spoken_codes(flatten([a.diagnostics for a in self.files]).concat(self.voices))
+        distinct_codes(
+            spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.files.get()])),
+        )
     }
 
     fn kind_rows_of(f: FileId) -> List<DiagCode> {
         let decls = self.ws.decls
         let names = self.ws.resolved(f)
-        flatten([self.kind_rows_in(names, d) for d in decls.decls_of_file(f) if decls.decl(d).root != null])
+        flatten(
+            [self.kind_rows_in(names, d) for d in decls.decls_of_file(f) if decls.decl(d).root != null],
+        )
     }
 
     /// The kinds one declaration's body spells, hidden branches
@@ -577,7 +677,20 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(self.ws.decls.union(self.files, entry, every, programs, ws.hold.held_wants.get(), (w: Wanted) -> ws.lowered(ws.spec_id(w)), (f: FileId) -> ws.is_held(f))) with { libraries: ws.linked_packages() }
+        memory(
+            self
+                .ws
+                .decls
+                .union(
+                    self.files,
+                    entry,
+                    every,
+                    programs,
+                    ws.hold.held_wants.get(),
+                    (w: Wanted) -> ws.lowered(ws.spec_id(w)),
+                    (f: FileId) -> ws.is_held(f),
+                ),
+        ) with { libraries: ws.linked_packages() }
     }
 
     /// The lowered program, CHECKED — every file's analysis first,

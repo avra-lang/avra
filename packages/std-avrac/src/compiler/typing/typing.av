@@ -7,10 +7,44 @@
 //! never an option and never an Unknown — a hole or unresolved
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, TypeRef, TypeRegistry, DeclId, Binding, same_expr, flatten, mut_mark, Annotation}
+use core.{
+    StmtId,
+    ExprId,
+    TypeId,
+    Type,
+    TypeRef,
+    TypeRegistry,
+    DeclId,
+    Binding,
+    same_expr,
+    flatten,
+    mut_mark,
+    Annotation,
+}
 use core.{SeatMark, FileId}
 use diagnostics.{refusal}
-use features.{TypeCx, NarrowFrame, Gathering, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, TypeRow, type_row, Decl, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named, Namespace, example_marks}
+use features.{
+    TypeCx,
+    NarrowFrame,
+    Gathering,
+    Dispatch,
+    semantics_of,
+    stmt_semantics_of,
+    post_order,
+    FnSig,
+    TypeRow,
+    type_row,
+    Decl,
+    new_type_facts,
+    type_named,
+    TypeFacts,
+    NameFacts,
+    FileView,
+    nothing,
+    scalar_named,
+    Namespace,
+    example_marks,
+}
 use features.structs.{fits_default}
 use features.fns.{fits_seat_default}
 use features.specs.{fits_case}
@@ -22,7 +56,15 @@ use features.impls.{derive_contract}
 /// SHARED declaration table — a signature may name any file's
 /// types, and asking for one computes it. The table is born total:
 /// every slot pre-typed as the hole.
-export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView, names: NameFacts, written_in: fn(FileId) -> Namespace, lo: int, hi: int) -> TypeCx {
+export fn new_type_cx(
+    dispatch: Dispatch,
+    keywords: List<string>,
+    view: FileView,
+    names: NameFacts,
+    written_in: fn(FileId) -> Namespace,
+    lo: int,
+    hi: int,
+) -> TypeCx {
     let hole = view.types.intern(Type.Error)
     TypeCx {
         view: view,
@@ -272,7 +314,11 @@ impl TypeCx {
     mut fn gather(s: StmtId) {
         let v? = self.view.store.stmt_value(s) else { return }
         let top = self.gathers.length - 1
-        if top < 0 || self.gathers[top].bars != self.lam_bar.length || !self.view.types.holds_value(self.type_at(v)) { return }
+        if top < 0 ||
+            self.gathers[top].bars != self.lam_bar.length ||
+            !self.view.types.holds_value(self.type_at(v)) {
+            return
+        }
         self.gathers[top].values.push(v)
         self.facts.mark_kept(v)
     }
@@ -294,7 +340,12 @@ impl TypeCx {
     /// arms-sugar variant under a nullable seat reads it here too. A
     /// boundary with no declared answer (a list walk's predicate,
     /// figured out from the body rather than declared) plants none.
-    mut fn retype_seated(a: ExprId, seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId? = null) -> TypeId? {
+    mut fn retype_seated(
+        a: ExprId,
+        seats: List<TypeId>,
+        marks: List<SeatMark>,
+        answer: TypeId? = null,
+    ) -> TypeId? {
         if !self.facts.hungry_at(a) { return null }
         let parts? = self.view.store.lambda_parts(a) else { return null }
         if parts.params.length != seats.length || takes_by_name(self, parts.params, seats) { return null }
@@ -623,10 +674,7 @@ fn shape_named(name: string) -> Type? {
 
 /// Whether an interned id is the Var wearing this name.
 fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
-    match types.shape_of(id) {
-        .Var(_, _, n) -> n == name,
-        _ -> false,
-    }
+    match types.shape_of(id) { .Var(_, _, n) -> n == name, _ -> false }
 }
 
 /// The slot-law help, worded once — every slot that must wait says

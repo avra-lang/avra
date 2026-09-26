@@ -116,10 +116,20 @@ fn backlog() -> int { 511 }
 /// "forever", and a zero one looks once.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
     if !names_a_host(host) { return no_host("connect", host, port) }
-    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", 0 - avra_errno_invalid()) }
+    if timeout.ms < 0 {
+        return failed(
+            "connect",
+            "${host}:${port} within ${timeout.ms} ms",
+            0 - avra_errno_invalid(),
+        )
+    }
     let n = avra_net_addresses(host, port)
     if n < 0 { return failed("connect", "${host}:${port}", n) }
-    streamed(dialed_from(host, port, 0, n, now_ms() + timeout.ms, 0 - avra_errno_invalid()), "connect", "${host}:${port}")
+    streamed(
+        dialed_from(host, port, 0, n, now_ms() + timeout.ms, 0 - avra_errno_invalid()),
+        "connect",
+        "${host}:${port}",
+    )
 }
 
 /// The first of addresses `i..n` to connect by `deadline`, or the last
@@ -327,17 +337,18 @@ impl Poller {
 }
 
 fn bits_of(interest: Interest) -> int {
-    match interest {
-        .Read -> 1,
-        .Write -> 2,
-        .Both -> 3,
-        .None -> 0,
-    }
+    match interest { .Read -> 1, .Write -> 2, .Both -> 3, .None -> 0 }
 }
 
 fn event_at(i: int) -> Event {
     let flags = avra_net_event_flags(i)
-    Event { fd: avra_net_event_fd(i), readable: flags & 1 == 1, writable: flags & 2 == 2, hangup: flags & 4 == 4, failed: flags & 8 == 8 }
+    Event {
+        fd: avra_net_event_fd(i),
+        readable: flags & 1 == 1,
+        writable: flags & 2 == 2,
+        hangup: flags & 4 == 4,
+        failed: flags & 8 == 8,
+    }
 }
 
 /// A v4 address as its four octets.

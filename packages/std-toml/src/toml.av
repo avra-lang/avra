@@ -65,24 +65,23 @@ impl TomlDoc {
 
 /// A Str value's text, or absence.
 export fn toml_text(v: TomlValue) -> string? {
-    match v {
-        .Str(s) -> s,
-        _ -> null,
-    }
+    match v { .Str(s) -> s, _ -> null }
 }
 
 /// An inline table's value at `key`, or absence (absence also for
 /// a non-table).
 export fn toml_field(v: TomlValue, key: string) -> TomlValue? {
-    match v {
-        .Table(pairs) -> pairs.find(it.key == key)?.value,
-        _ -> null,
-    }
+    match v { .Table(pairs) -> pairs.find(it.key == key)?.value, _ -> null }
 }
 
 /// The document a text describes.
 export fn parse_toml(text: string) -> TomlDoc {
-    mut rd = Reader { text: text, n: text.length, doc: TomlDoc { headers: [], entries: [], errors: [] }, section: "" }
+    mut rd = Reader {
+        text: text,
+        n: text.length,
+        doc: TomlDoc { headers: [], entries: [], errors: [] },
+        section: "",
+    }
     mut i = 0
     while i < rd.n {
         i = after_line(text, rd.n, read_line(rd, run_end(text, rd.n, i, is_space)))
@@ -97,12 +96,24 @@ type Reader = { text: string, n: int, doc: TomlDoc, section: string }
 impl Reader {
     /// A refusal, spanning the line that holds its byte.
     fn refuse(r: Refusal) {
-        self.doc.errors.push(TomlError { message: r.message, lo: line_lo(self.text, r.at), hi: line_hi(self.text, self.n, r.at) })
+        self
+            .doc
+            .errors
+            .push(
+                TomlError {
+                    message: r.message,
+                    lo: line_lo(self.text, r.at),
+                    hi: line_hi(self.text, self.n, r.at),
+                },
+            )
     }
 
     /// An entry under the open section.
     fn hold(p: TomlPair, lo: int, hi: int) {
-        self.doc.entries.push(TomlEntry { section: self.section, key: p.key, value: p.value, lo: lo, hi: hi })
+        self
+            .doc
+            .entries
+            .push(TomlEntry { section: self.section, key: p.key, value: p.value, lo: lo, hi: hi })
     }
 
     /// A header: recorded, and open for the entries after it.
@@ -263,13 +274,7 @@ fn scan_string(text: string, n: int, i: int) -> TextScan {
 
 /// The four escapes; anything else after `\` stays raw.
 fn unescaped(e: int) -> string? {
-    match e {
-        34 -> "\"",
-        92 -> "\\",
-        110 -> "\n",
-        116 -> "\t",
-        _ -> null,
-    }
+    match e { 34 -> "\"", 92 -> "\\", 110 -> "\n", 116 -> "\t", _ -> null }
 }
 
 /// An integer, `-` allowed in front; a `-` with no digits is a word.
@@ -459,7 +464,10 @@ fn missing_equals(at: int) -> Refusal { refusal("expected `=` after the key", at
 fn missing_value(at: int) -> Refusal { refusal("expected a value after `=`", at) }
 
 fn unknown_value(word: string, at: int) -> Refusal {
-    refusal("unknown value form `${word}`: a value is a string, an integer, `true`/`false`, an array, or an inline table", at)
+    refusal(
+        "unknown value form `${word}`: a value is a string, an integer, `true`/`false`, an array, or an inline table",
+        at,
+    )
 }
 
 fn number_overflow(at: int) -> Refusal { refusal("this number does not fit an int", at) }

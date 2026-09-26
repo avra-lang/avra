@@ -24,26 +24,35 @@ spec "features/components — a template's instance" {
             answered(packaged("use @x.c.{limited, span}\nlet v = limited span(1) { 1 }\nv")) == "2"
         }
         then "the template's binders are its own — the user's `outer` is the user's" {
-            answered(packaged("use @x.c.{limited, span}\nlet outer = 100\nlimited span(1) { outer }")) == "101"
+            answered(
+                packaged("use @x.c.{limited, span}\nlet outer = 100\nlimited span(1) { outer }"),
+            ) == "101"
         }
         then "an alias opens the instance under its new word" {
             answered(packaged("use @x.c.{limited as bounded, span}\nbounded span(2) { 2 }")) == "4"
         }
         then "a line only the word can parse does not hide the import that names it" {
-            answered(packaged("use @x.c.{limited, span}\nlet w = match limited span(1) { 1 } {\n    2 -> \"two\",\n    _ -> \"other\",\n}\nw")) == "two"
+            answered(
+                packaged(
+                    "use @x.c.{limited, span}\nlet w = match limited span(1) { 1 } {\n    2 -> \"two\",\n    _ -> \"other\",\n}\nw",
+                ),
+            ) == "two"
         }
     }
     given "the laws" {
         then "a head of the wrong type is the template's typed binding, refused at the user's head" {
             let p = packaged("use @x.c.{limited}\nlet v = limited 5 { 1 }\nv")
-            refused_n(p, "`limit` declares `Span`, this is `int`", 1) && p.report().contains("main.av:2")
+            refused_n(p, "`limit` declares `Span`, this is `int`", 1) &&
+                p.report().contains("main.av:2")
         }
     }
     given "visible magic" {
         then "`expand` notes what the instance became, and the module its names resolve in" {
             let p = packaged("use @x.c.{limited, span}\nlet v = limited span(1) { 1 }\nv")
             let shown = p.expanded_source(p.ws.file_id("/w/src/main.av"))
-            shown.contains("limited span(1) {") && shown.contains("// `limited` (from @x.c) expands to:") && shown.contains("let limit: Span = span(1)")
+            shown.contains("limited span(1) {") &&
+                shown.contains("// `limited` (from @x.c) expands to:") &&
+                shown.contains("let limit: Span = span(1)")
         }
     }
 }

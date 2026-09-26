@@ -6,12 +6,37 @@ use features.{nothing, Budgets, budgets_of}
 use diagnostics.{SourceFile, new_source_file, Diag, refusal}
 use query.{Loaded}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
-use compiler.host.{Dependency, Manifest, bad_dependency_path, dependency_cycle, deps_offset, duplicate_package, name_mismatch, prelude_depends, read_manifest}
+use compiler.host.{
+    Dependency,
+    Manifest,
+    bad_dependency_path,
+    dependency_cycle,
+    deps_offset,
+    duplicate_package,
+    name_mismatch,
+    prelude_depends,
+    read_manifest,
+}
 
 // ── The packages ──
 
 fn empty_manifest() -> Manifest {
-    Manifest { budgets: budgets_of(), name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], tools: [], voices: [] }
+    Manifest {
+        budgets: budgets_of(),
+        name: "",
+        version: "",
+        bin: null,
+        lib: null,
+        deps: [],
+        deps_at: null,
+        excludes: [],
+        objects: [],
+        search: [],
+        libs: [],
+        raw: [],
+        tools: [],
+        voices: [],
+    }
 }
 
 impl Workspace {
@@ -22,12 +47,24 @@ impl Workspace {
         let pkg = self.packages()[i]
         let path = joined_path(pkg.root, "avra.toml")
         if !self.has_manifest(pkg) {
-            return manifest_of(self.manifest_memo.input(i, () -> DbRow.Manifest(empty_manifest()), (s: DbRow) -> 0))
+            return manifest_of(
+                self.manifest_memo.input(i, () -> DbRow.Manifest(empty_manifest()), (s: DbRow) -> 0),
+            )
         }
-        manifest_of(self.manifest_memo.input_loaded(i, () -> {
-            let text = self.host.read(path)
-            Loaded { value: DbRow.Manifest(read_manifest(new_source_file(path, text))), fingerprint: fp_str(text) }
-        }))
+        manifest_of(
+            self
+                .manifest_memo
+                .input_loaded(
+                    i,
+                    () -> {
+                        let text = self.host.read(path)
+                        Loaded {
+                            value: DbRow.Manifest(read_manifest(new_source_file(path, text))),
+                            fingerprint: fp_str(text),
+                        }
+                    },
+                ),
+        )
     }
 
     /// What a settlement may spend: the ROOT package's `[lifted]` rows,
@@ -50,7 +87,14 @@ impl Workspace {
     /// holds a manifest, the manifest calls itself the keyed name, one
     /// key is one directory, and no cycle closes.
     fn load_packages(src: string) {
-        let unnamed = Package { key: "", root: self.root, src: src, ordinal: 0, at: null, origin: Origin.Root }
+        let unnamed = Package {
+            key: "",
+            root: self.root,
+            src: src,
+            ordinal: 0,
+            at: null,
+            origin: Origin.Root,
+        }
         self.package_rows.push(unnamed)
         let m = self.manifest(0)
         self.decls.name_root(m.name)
@@ -63,7 +107,15 @@ impl Workspace {
     /// the root, since they never travel.
     fn admit_dependencies(i: int, m: Manifest, root: bool, chain: List<string>) {
         for d in m.deps {
-            if !d.dev || root { self.admitted(d.key, normalized(joined_path(self.packages()[i].root, d.path!)), d.at, dep_chain(d, chain)) }
+            if !d.dev || root {
+                self
+                    .admitted(
+                        d.key,
+                        normalized(joined_path(self.packages()[i].root, d.path!)),
+                        d.at,
+                        dep_chain(d, chain),
+                    )
+            }
         }
     }
 
@@ -97,7 +149,14 @@ impl Workspace {
     /// prelude declares no dependency, so the layering has a bottom.
     fn entered(key: string, dir: string, at: Loc?, origin: Origin, chain: List<string>) {
         let i = self.packages().length
-        let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at, origin: origin }
+        let pkg = Package {
+            key: key,
+            root: dir,
+            src: joined_path(dir, "src"),
+            ordinal: i,
+            at: at,
+            origin: origin,
+        }
         self.package_rows.push(pkg)
         let m = self.manifest(i)
         if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
@@ -115,7 +174,9 @@ impl Workspace {
     /// Everything the packages said: each manifest's own voices, then
     /// the graph's.
     fn packages_voiced() -> List<Diag> {
-        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()]).concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)]).concat(self.package_voices.get())
+        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()])
+            .concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)])
+            .concat(self.package_voices.get())
     }
 
     /// A dependency asking for raw linker options: `[link.raw]` is the
@@ -132,7 +193,10 @@ impl Workspace {
         // holds is the root's (a lone file)
         mut best: int? = null
         for pkg in self.packages() {
-            if under_dir(path, pkg.src) && (best == null || pkg.src.length > self.packages()[best!].src.length) { best = pkg.ordinal }
+            if under_dir(path, pkg.src) &&
+                (best == null || pkg.src.length > self.packages()[best!].src.length) {
+                best = pkg.ordinal
+            }
         }
         best ?? 0
     }
@@ -169,13 +233,25 @@ impl Workspace {
         let manifest_path = joined_path(from.root, "avra.toml")
         let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
         let at = deps_offset(m) ?? self.host.read(manifest_path).length
-        [Suggestion { confidence: Confidence.High, description: "add `${line}` under `[dependencies]` in `${manifest_path}`", edits: [Edit { loc: Loc { file: manifest_path, lo: at, hi: at }, replacement: text }] }]
+        [
+            Suggestion {
+                confidence: Confidence.High,
+                description: "add `${line}` under `[dependencies]` in `${manifest_path}`",
+                edits: [Edit { loc: Loc { file: manifest_path, lo: at, hi: at }, replacement: text }],
+            },
+        ]
     }
 
     fn not_a_dependency(at: Loc?, from: Package, k: string) -> Diag {
         let fixes = self.dependency_fix(from, k)
         let at_file = joined_path(from.root, "avra.toml")
-        refusal("resolve.not_a_dependency", at, "`${k}` is not a dependency of this package", "in this use", "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`") with { suggestions: fixes }
+        refusal(
+            "resolve.not_a_dependency",
+            at,
+            "`${k}` is not a dependency of this package",
+            "in this use",
+            "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`",
+        ) with { suggestions: fixes }
     }
 }
 

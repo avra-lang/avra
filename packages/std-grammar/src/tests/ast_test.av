@@ -41,31 +41,36 @@ fn expression_rule() -> Rule {
     }
     let tail = Item {
         label: null,
-        prim: Prim.Group(Alt {
-            branches: [
-                Seq {
-                    items: [
-                        Item {
-                            label: null,
-                            prim: Prim.Group(Alt { branches: [plus, minus] }),
-                            rep: Rep.One,
-                            expect: null,
+        prim: Prim
+            .Group(
+                Alt {
+                    branches: [
+                        Seq {
+                            items: [
+                                Item {
+                                    label: null,
+                                    prim: Prim.Group(Alt { branches: [plus, minus] }),
+                                    rep: Rep.One,
+                                    expect: null,
+                                },
+                                Item {
+                                    label: "r",
+                                    prim: Prim.Ref("term"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                },
+                            ],
+                            build: null,
+                            recover: null,
                         },
-                        Item { label: "r", prim: Prim.Ref("term"), rep: Rep.One, expect: null },
                     ],
-                    build: null,
-                    recover: null,
                 },
-            ],
-        }),
+            ),
         rep: Rep.Star,
         expect: null,
     }
     let branch = Seq {
-        items: [
-            Item { label: "l", prim: Prim.Ref("term"), rep: Rep.One, expect: null },
-            tail,
-        ],
+        items: [Item { label: "l", prim: Prim.Ref("term"), rep: Rep.One, expect: null }, tail],
         build: Build.Call("fold_binary", ["l", "op", "r"]),
         recover: null,
     }
@@ -94,7 +99,12 @@ fn defer_rule() -> Rule {
     let branch = Seq {
         items: [
             Item { label: null, prim: Prim.Lit("defer"), rep: Rep.One, expect: null },
-            Item { label: null, prim: Prim.Group(Alt { branches: [iffed, again] }), rep: Rep.One, expect: null },
+            Item {
+                label: null,
+                prim: Prim.Group(Alt { branches: [iffed, again] }),
+                rep: Rep.One,
+                expect: null,
+            },
             Item { label: null, prim: Prim.Named("BREAK"), rep: Rep.One, expect: null },
         ],
         build: null,
@@ -115,12 +125,18 @@ spec "grammar/ast" {
         }
         then "an uncaptured Named atom has no label" {
             let first = term_rule().body.branches[0].items[0]
-            let named = match first.prim { .Named(term) -> term, .Ref(_) or .Lit(_) or .Group(_) or .NotChar(_) -> "" }
+            let named = match first.prim {
+                .Named(term) -> term,
+                .Ref(_) or .Lit(_) or .Group(_) or .NotChar(_) -> "",
+            }
             first.label == null && named == "NUMBER"
         }
         then "a captured Ref carries its label" {
             let e = term_rule().body.branches[1].items[1]
-            let target = match e.prim { .Ref(name) -> name, .Named(_) or .Lit(_) or .Group(_) or .NotChar(_) -> "" }
+            let target = match e.prim {
+                .Ref(name) -> name,
+                .Named(_) or .Lit(_) or .Group(_) or .NotChar(_) -> "",
+            }
             e.label == "e" && target == "expression"
         }
         then "an Expect lives on the item it guards" {
@@ -151,7 +167,11 @@ spec "grammar/ast" {
             calc().keywords().is_empty()
         }
         then "word literals surface once each, groups included, in order" {
-            let g = Grammar { name: "K", start: "defer_stmt", rules: [defer_rule(), expression_rule(), term_rule()] }
+            let g = Grammar {
+                name: "K",
+                start: "defer_stmt",
+                rules: [defer_rule(), expression_rule(), term_rule()],
+            }
             let ks = g.keywords()
             ks.length == 2 && ks[0] == "defer" && ks[1] == "if"
         }

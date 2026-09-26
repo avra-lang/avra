@@ -2,7 +2,19 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, TypeId, same_reg, distinct, lent_args, flatten, some_list, new_type_registry, static_code_syms}
+use @std.avrac.core.{
+    Ins,
+    RtSig,
+    Reg,
+    TypeId,
+    same_reg,
+    distinct,
+    lent_args,
+    flatten,
+    some_list,
+    new_type_registry,
+    static_code_syms,
+}
 
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
@@ -30,10 +42,7 @@ fn boxes_built(l: Lowered) -> int {
 }
 
 fn is_owned_get(i: Ins) -> bool {
-    match i {
-        .CallRt(_, callee, _) -> callee == "avra_array_get_owned",
-        _ -> false,
-    }
+    match i { .CallRt(_, callee, _) -> callee == "avra_array_get_owned", _ -> false }
 }
 
 fn is_box_call(i: Ins) -> bool {
@@ -51,10 +60,7 @@ fn dyn_read() -> string {
 fn addr_syms(l: Lowered) -> List<string> {
     mut out: List<string> = []
     for i in l.entry.ins {
-        let sym: string? = match i {
-            .FnAddr(_, s) -> s,
-            _ -> null,
-        }
+        let sym: string? = match i { .FnAddr(_, s) -> s, _ -> null }
         if sym != null { out.push(sym!) }
     }
     out
@@ -79,10 +85,7 @@ fn entry_loads_ride_pointers(l: Lowered) -> bool {
 
 /// A non-load passes; a load passes when its register is a pointer.
 fn load_rides_pointer(l: Lowered, i: Ins) -> bool {
-    let d: Reg? = match i {
-        .Load(dst, _) -> dst,
-        _ -> null,
-    }
+    let d: Reg? = match i { .Load(dst, _) -> dst, _ -> null }
     d == null || l.types.rides_pointer(l.entry.reg_types[d!.index])
 }
 
@@ -100,10 +103,7 @@ fn callptr_seats(ins: List<Ins>) -> List<Reg> {
 }
 
 fn callptr_seat(i: Ins) -> Reg? {
-    match i {
-        .CallPtr(_, _, args) -> args.first(),
-        _ -> null,
-    }
+    match i { .CallPtr(_, _, args) -> args.first(), _ -> null }
 }
 
 /// A `string?` made and read through `??` — the niche subject.
@@ -120,7 +120,15 @@ fn pair_read() -> string {
 /// Deliberately aggregate-free: a struct literal's box is a STRUCT
 /// cost, and this law speaks only for the nullable's own lowering.
 fn every_consumer() -> string {
-    "fn g(b: bool) -> string? { if b { \"hi\" } else { null } }\n" + halver + "fn fwd(v: int?) -> int? { v? + 1 }\n" + "let a = half(4) ?? 0\n" + "let b = half(4)!\n" + "let c = match half(3) {\n    v? -> v\n    null -> 0\n}\n" + "let d = g(true)?.length ?? 0\n" + "let e = fwd(half(4)) ?? 0\n" + "a + b + c + d + e"
+    "fn g(b: bool) -> string? { if b { \"hi\" } else { null } }\n" +
+        halver +
+        "fn fwd(v: int?) -> int? { v? + 1 }\n" +
+        "let a = half(4) ?? 0\n" +
+        "let b = half(4)!\n" +
+        "let c = match half(3) {\n    v? -> v\n    null -> 0\n}\n" +
+        "let d = g(true)?.length ?? 0\n" +
+        "let e = fwd(half(4)) ?? 0\n" +
+        "a + b + c + d + e"
 }
 
 /// The identity fn whose tail WIDENS into a nullable…
@@ -149,7 +157,12 @@ spec "compiler/lower" {
     given "arithmetic" {
         then "one scope, constants, one Bin, the answer's puts, exit 0" {
             let l = ir_of("1 + 2")
-            l.diagnostics.is_empty() && l.entry.ins[0] is .ScopeEnter && l.entry.ins.last()! is .Ret && l.entry.ins.filter(it is .Bin).length == 1 && l.entry.ins.filter(it is .ConstInt).length == 2 && l.entry.ins.filter(it is .CallRtVoid).length == 1
+            l.diagnostics.is_empty() &&
+                l.entry.ins[0] is .ScopeEnter &&
+                l.entry.ins.last()! is .Ret &&
+                l.entry.ins.filter(it is .Bin).length == 1 &&
+                l.entry.ins.filter(it is .ConstInt).length == 2 &&
+                l.entry.ins.filter(it is .CallRtVoid).length == 1
         }
         then "an ident adds NO instruction — SSA by construction" {
             let direct = ir_of("1 + 2")
@@ -229,7 +242,10 @@ spec "compiler/lower" {
         then "the index answers the same row the scan does" {
             let scanned: RtSig? = rt_sig_of("avra_array_push")
             let indexed: RtSig? = rt_index().get("avra_array_push")
-            scanned != null && indexed != null && scanned!.host == indexed!.host && scanned!.has_owned_twin == indexed!.has_owned_twin
+            scanned != null &&
+                indexed != null &&
+                scanned!.host == indexed!.host &&
+                scanned!.has_owned_twin == indexed!.has_owned_twin
         }
     }
     given "the runtime registry" {
@@ -255,7 +271,12 @@ spec "compiler/lower" {
             call_ptrs(ir_of(dyn_read())) == 1
         }
         then "a boxed empty contract carries the value alone" {
-            addr_syms(ir_of("trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2")).length == 0
+            addr_syms(
+                ir_of(
+                    "trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2",
+                ),
+            )
+                .length == 0
         }
     }
     given "the mut-cell protocol (ownership 11.5)" {
@@ -292,7 +313,11 @@ spec "compiler/lower" {
   release r13
 }
 ret 0"""
-            render_ir(ir_of("type P = { x: int, tag: string }\nlet n = 1\nmut a = P { x: n, tag: \"a\" }\na = P { x: n + 1, tag: \"b\" }\na.x")) == expected
+            render_ir(
+                ir_of(
+                    "type P = { x: int, tag: string }\nlet n = 1\nmut a = P { x: n, tag: \"a\" }\na = P { x: n + 1, tag: \"b\" }\na.x",
+                ),
+            ) == expected
         }
     }
     given "the fn value's box (rung 13)" {
@@ -300,19 +325,28 @@ ret 0"""
             let l = ir_of("let f = (x: int) -> x + 1\nf(2)")
             let names = [b.name for b in l.fns]
             // capture-free — its box is static data, never `Ins.FnAddr`
-            addr_syms(l).length == 0 && static_addr_syms(l).length == 1 && names.any(it.ends_with("\$l3"))
+            addr_syms(l).length == 0 &&
+                static_addr_syms(l).length == 1 &&
+                names.any(it.ends_with("\$l3"))
         }
         then "a named fn boxes behind its wrapper" {
-            let l = ir_of("fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 4)")
+            let l = ir_of(
+                "fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 4)",
+            )
             let names = [b.name for b in l.fns]
             // no captures ever ride a named fn value — always static data
             let syms = static_addr_syms(l)
-            addr_syms(l).length == 0 && syms.length == 1 && syms[0] == "double\$w" && names.contains("double\$w")
+            addr_syms(l).length == 0 &&
+                syms.length == 1 &&
+                syms[0] == "double\$w" &&
+                names.contains("double\$w")
         }
     }
     given "the program is the entry's closure" {
         then "a fn reached only from a lambda's body lowers; one nothing reaches stays out" {
-            let l = ir_of("fn helper(n: int) -> int {\n    n + 1\n}\nfn unused(n: int) -> int {\n    n\n}\nlet f = (n: int) -> helper(n)\nf(1)")
+            let l = ir_of(
+                "fn helper(n: int) -> int {\n    n + 1\n}\nfn unused(n: int) -> int {\n    n\n}\nlet f = (n: int) -> helper(n)\nf(1)",
+            )
             let names = [b.name for b in l.fns]
             names.contains("helper") && !names.contains("unused")
         }
@@ -321,23 +355,31 @@ ret 0"""
             [b.name for b in l.fns].contains("P.y")
         }
         then "a method reached only through a dyn box's vtable lowers; its uncalled sibling stays out" {
-            let l = ir_of("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nimpl P {\n    fn unused() -> int {\n        0\n    }\n}\nlet d: dyn Show = P { x: 3 }\nd.show()")
+            let l = ir_of(
+                "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nimpl P {\n    fn unused() -> int {\n        0\n    }\n}\nlet d: dyn Show = P { x: 3 }\nd.show()",
+            )
             let names = [b.name for b in l.fns]
             names.contains("P.show") && !names.contains("P.unused")
         }
         then "a fn reached only through a fn value in a struct field lowers" {
-            let l = ir_of("type H = { f: fn(int) -> int }\nfn inc(n: int) -> int {\n    n + 1\n}\nlet h = H { f: inc }\nh.f(1)")
+            let l = ir_of(
+                "type H = { f: fn(int) -> int }\nfn inc(n: int) -> int {\n    n + 1\n}\nlet h = H { f: inc }\nh.f(1)",
+            )
             [b.name for b in l.fns].contains("inc")
         }
     }
     given "the loop's condition settles every turn" {
         then "a value the condition MINTS is released before the test, inside the loop — never after it" {
-            let l = ir_of("type Db = { cells: List<int> }\nimpl Db {\n    fn tag() -> string {\n        \"ab\"\n    }\n    fn keep(at: int) {\n        while self.tag().length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length")
+            let l = ir_of(
+                "type Db = { cells: List<int> }\nimpl Db {\n    fn tag() -> string {\n        \"ab\"\n    }\n    fn keep(at: int) {\n        while self.tag().length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length",
+            )
             let keep: Body? = l.fns.find(it.name == "Db.keep")
             keep != null && cond_mint_settled(keep!.ins)
         }
         then "a LENDING read in a condition borrows — the subject still holds it, so the body writes in place" {
-            let l = ir_of("type Db = { cells: List<int> }\nimpl Db {\n    fn keep(at: int) {\n        while self.cells.length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length")
+            let l = ir_of(
+                "type Db = { cells: List<int> }\nimpl Db {\n    fn keep(at: int) {\n        while self.cells.length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length",
+            )
             let keep: Body? = l.fns.find(it.name == "Db.keep")
             keep != null && !keep!.ins.any(is_owned_get(it))
         }
@@ -352,7 +394,9 @@ fn cond_mint_settled(ins: List<Ins>) -> bool {
     let cond = cond_index(ins)
     let end = marker_index(ins, Ins.LoopEnd)
     let minted: Reg? = called_in(ins.slice(start, cond))
-    minted != null && releases_of(ins.slice(start, cond), minted!) == 1 && releases_of(ins.slice(end, ins.length), minted!) == 0
+    minted != null &&
+        releases_of(ins.slice(start, cond), minted!) == 1 &&
+        releases_of(ins.slice(end, ins.length), minted!) == 0
 }
 
 /// The identity pack's destination holds NO reference — its value is
@@ -401,10 +445,7 @@ fn no_call_seat_counted(ins: List<Ins>) -> bool {
 /// The destination of the first pack in the slice.
 fn first_pack(ins: List<Ins>) -> Reg? {
     for i in ins {
-        let d: Reg? = match i {
-            .Pack(d, _) -> d,
-            _ -> null,
-        }
+        let d: Reg? = match i { .Pack(d, _) -> d, _ -> null }
         if d != null { return d }
     }
     null
@@ -413,10 +454,7 @@ fn first_pack(ins: List<Ins>) -> Reg? {
 /// The destination of the first element read in the slice.
 fn first_extract(ins: List<Ins>) -> Reg? {
     for i in ins {
-        let d: Reg? = match i {
-            .Extract(d, _, _) -> d,
-            _ -> null,
-        }
+        let d: Reg? = match i { .Extract(d, _, _) -> d, _ -> null }
         if d != null { return d }
     }
     null
@@ -425,10 +463,7 @@ fn first_extract(ins: List<Ins>) -> Reg? {
 /// The register the first body CALL in the slice defines.
 fn called_in(ins: List<Ins>) -> Reg? {
     for i in ins {
-        let dst: Reg? = match i {
-            .Call(d, _, _) -> d,
-            _ -> null,
-        }
+        let dst: Reg? = match i { .Call(d, _, _) -> d, _ -> null }
         if dst != null { return dst }
     }
     null
@@ -439,19 +474,13 @@ fn releases_of(ins: List<Ins>, r: Reg) -> int {
 }
 
 fn releases(i: Ins, r: Reg) -> bool {
-    match i {
-        .Release(x) -> same_reg(x, r),
-        _ -> false,
-    }
+    match i { .Release(x) -> same_reg(x, r), _ -> false }
 }
 
 /// The register the FIRST slot read in the slice defines.
 fn loaded_in(ins: List<Ins>) -> Reg? {
     for i in ins {
-        let dst: Reg? = match i {
-            .Load(d, _) -> d,
-            _ -> null,
-        }
+        let dst: Reg? = match i { .Load(d, _) -> d, _ -> null }
         if dst != null { return dst }
     }
     null
@@ -462,10 +491,7 @@ fn retains_of(ins: List<Ins>, r: Reg) -> int {
 }
 
 fn retains(i: Ins, r: Reg) -> bool {
-    match i {
-        .Retain(x) -> same_reg(x, r),
-        _ -> false,
-    }
+    match i { .Retain(x) -> same_reg(x, r), _ -> false }
 }
 
 /// The first slot read OWNS its value — retained once, released once.
@@ -516,7 +542,14 @@ fn cell_settles(text: string) -> int {
 
 /// A one-instruction body whose only register wears `ty`.
 fn constant_body(ty: TypeId, v: int) -> Body {
-    Body { name: "probe", params: [], ret: ty, gives: null, ins: [Ins.ConstInt(Reg { index: 0 }, v)], reg_types: [ty] }
+    Body {
+        name: "probe",
+        params: [],
+        ret: ty,
+        gives: null,
+        ins: [Ins.ConstInt(Reg { index: 0 }, v)],
+        reg_types: [ty],
+    }
 }
 
 spec "the pointer-constant law" {
@@ -545,10 +578,20 @@ spec "the pointer-constant law" {
 spec "a managed read is a borrow" {
     given "liveness in the memory pass (S3)" {
         then "a read whose uses stand before any change to its cell owns NOTHING" {
-            read_borrows(ir_of("type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\na.x").entry.ins)
+            read_borrows(
+                ir_of("type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\na.x")
+                    .entry
+                    .ins,
+            )
         }
         then "a read whose use stands PAST a write to its cell owns — the borrow must outlive it" {
-            read_owns(ir_of("type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\nlet b = a\na = P { x: 2, tag: \"b\" }\nb.x").entry.ins)
+            read_owns(
+                ir_of(
+                    "type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\nlet b = a\na = P { x: 2, tag: \"b\" }\nb.x",
+                )
+                    .entry
+                    .ins,
+            )
         }
     }
 }
@@ -556,11 +599,15 @@ spec "a managed read is a borrow" {
 spec "a mut cell's type" {
     given "a cell seeded with null, its binding declared a boxed nullable" {
         then "the cell settles at the scope's end — the widen from null is identity, the declared type is the cell's" {
-            let l = ir_of("type Far = { cursor: int, expected: List<string> }\nfn hold(i: int) -> int {\n    mut x: Far? = null\n    x = Far { cursor: i, expected: [] }\n    if x == null { 0 } else { x!.cursor }\n}\nhold(3)")
+            let l = ir_of(
+                "type Far = { cursor: int, expected: List<string> }\nfn hold(i: int) -> int {\n    mut x: Far? = null\n    x = Far { cursor: i, expected: [] }\n    if x == null { 0 } else { x!.cursor }\n}\nhold(3)",
+            )
             cell_settles(body_of(render_ir(l), "hold")) >= 2
         }
         then "a store of null into a managed cell releases what it held" {
-            let l = ir_of("type Far = { cursor: int, expected: List<string> }\nfn drop(i: int) -> int {\n    mut x: Far? = Far { cursor: i, expected: [] }\n    x = null\n    if x == null { 0 } else { 1 }\n}\ndrop(3)")
+            let l = ir_of(
+                "type Far = { cursor: int, expected: List<string> }\nfn drop(i: int) -> int {\n    mut x: Far? = Far { cursor: i, expected: [] }\n    x = null\n    if x == null { 0 } else { 1 }\n}\ndrop(3)",
+            )
             cell_settles(body_of(render_ir(l), "drop")) >= 2
         }
     }

@@ -14,13 +14,77 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, distinct, TypeId, Type, some_list, same_file, touch, Annotation, DeclKind}
+use core.{
+    Table,
+    new_table,
+    list_cell,
+    NodeStore,
+    StmtId,
+    same_decl,
+    module_path,
+    DeclId,
+    FileId,
+    ModuleId,
+    UseParts,
+    ExprId,
+    fp,
+    fp_list,
+    fp_str,
+    joined,
+    flatten,
+    sorted_texts,
+    distinct,
+    TypeId,
+    Type,
+    some_list,
+    same_file,
+    touch,
+    Annotation,
+    DeclKind,
+}
 use @std.path.{dir_of, joined_path}
 use features.components.{word_of, instanced, named_instances}
-use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, scalar_types, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockWords}
+use features.{
+    Unsettled,
+    Settled,
+    Settlement,
+    TypeCx,
+    Decls,
+    new_decls,
+    scalar_types,
+    kind_word,
+    Decl,
+    Namespace,
+    Import,
+    ModuleNames,
+    Clash,
+    NameFacts,
+    new_name_facts,
+    TypeFacts,
+    new_type_facts,
+    DeclSig,
+    Wanted,
+    nothing,
+    Lifted,
+    SeatValue,
+    Elsewhere,
+    SettleRoot,
+    BlockWords,
+}
 use @std.meta.{Diagnostic}
 use core.{StmtId}
-use diagnostics.{SourceFile, new_source_file, Diag, Voices, error_at, render_among, refusal, by_position, has_errors, is_error}
+use diagnostics.{
+    SourceFile,
+    new_source_file,
+    Diag,
+    Voices,
+    error_at,
+    render_among,
+    refusal,
+    by_position,
+    has_errors,
+    is_error,
+}
 use query.{Kernel, new_kernel, Key, Memo, new_memo}
 use @std.errors.{Loc}
 use @std.testing.{words}
@@ -57,7 +121,15 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_digests: Map<string, string> = {}
     let no_stamps: Map<string, string> = {}
-    Keys { bytes_keys: Cell.new(no_bytes), view_keys: Cell.new(no_view), object_keys: Cell.new(no_object), text_digests: Cell.new(no_digests), stamped: Cell.new(no_stamps), stamps_at: Cell.new(0), store_root: Cell.new("") }
+    Keys {
+        bytes_keys: Cell.new(no_bytes),
+        view_keys: Cell.new(no_view),
+        object_keys: Cell.new(no_object),
+        text_digests: Cell.new(no_digests),
+        stamped: Cell.new(no_stamps),
+        stamps_at: Cell.new(0),
+        store_root: Cell.new(""),
+    }
 }
 
 /// WHAT IS HELD THIS BUILD: the files a build must parse (`homes` — a home
@@ -143,7 +215,14 @@ fn new_records() -> Records {
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
     let no_scanned: Map<string, bool> = {}
-    Records { loaded_records: Cell.new(no_loaded), record_texts: Cell.new(no_texts), record_lines: Cell.new(no_lines), record_fields: Cell.new(no_fields), record_places: Cell.new(no_places), grammar_scanned: Cell.new(no_scanned) }
+    Records {
+        loaded_records: Cell.new(no_loaded),
+        record_texts: Cell.new(no_texts),
+        record_lines: Cell.new(no_lines),
+        record_fields: Cell.new(no_fields),
+        record_places: Cell.new(no_places),
+        grammar_scanned: Cell.new(no_scanned),
+    }
 }
 
 /// The families' value tables, sparse by their keys and grown as
@@ -227,10 +306,7 @@ type SettleAsk = { file: FileId, root: SettleRoot, name: string, seats: List<Sea
 
 /// The const a settlement is for — none for an expression's.
 fn const_stmt(root: SettleRoot) -> StmtId? {
-    match root {
-        .Const(s) -> s,
-        .Expr(_) -> null,
-    }
+    match root { .Const(s) -> s, .Expr(_) -> null }
 }
 
 fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
@@ -246,17 +322,11 @@ fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -
 enum LiftResult { Crossed(Lifted), Refused(Unsettled) }
 
 fn reused_lift(held: LiftResult) -> Result<Lifted, Unsettled> {
-    match held {
-        .Crossed(crossed) -> .Ok(crossed),
-        .Refused(_) -> .Err(Unsettled.Spoken),
-    }
+    match held { .Crossed(crossed) -> .Ok(crossed), .Refused(_) -> .Err(Unsettled.Spoken) }
 }
 
 fn reused_settlement(held: Settlement) -> Result<Settled, Unsettled> {
-    match held {
-        .Held(value) -> .Ok(value),
-        .Refused(_) -> .Err(Unsettled.Spoken),
-    }
+    match held { .Held(value) -> .Ok(value), .Refused(_) -> .Err(Unsettled.Spoken) }
 }
 
 /// One package of the workspace: its key (the manifest's name; ""
@@ -443,11 +513,27 @@ impl Workspace {
     /// so a restart from a copy keeps every hold and a changed copy is asked through
     /// hooks that still answer for the original.
     fn anew() -> Workspace {
-        built(self.host, self.root, self.packages().find(it.origin is .Root)?.src ?? self.root, self.lang, self.clock, self.lone, self.per_file)
+        built(
+            self.host,
+            self.root,
+            self.packages().find(it.origin is .Root)?.src ?? self.root,
+            self.lang,
+            self.clock,
+            self.lone,
+            self.per_file,
+        )
     }
 }
 
-fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool, per_file: bool) -> Workspace {
+fn built(
+    host: Host,
+    root: string,
+    src: string,
+    lang: Language,
+    clock: fn() -> int,
+    lone: bool,
+    per_file: bool,
+) -> Workspace {
     let db = new_kernel()
     let no_asks: List<Wanted> = []
     let no_lifts: List<LiftAsk> = []
@@ -521,7 +607,13 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
     ws.decls.arm_references(() -> ws.refs_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
-    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
+    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
+        d: DeclId,
+        f: FileId,
+        s: StmtId,
+        call: ExprId,
+        args: List<ExprId>,
+    ) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
     ws.load_packages(src)
     ws
@@ -552,7 +644,13 @@ impl Workspace {
     fn file_ensured(f: FileId) {
         if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
         self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store.get() != null { self.mint_module(self.store.get()!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
+        if self.is_held(f) && self.store.get() != null {
+            self
+                .mint_module(
+                    self.store.get()!,
+                    module_path(segments_of(self.module_of(self.decls.file(f).path))),
+                )
+        }
     }
 
     /// Every held module that declares an impl or a trait of this name, minted.
@@ -604,7 +702,9 @@ impl Workspace {
         // nothing annotates it, so there is nothing to keep.
         if x.stmt.index >= p.store.annotations.get().length { return [] }
         let vis = self.visible(x.file)
-        let out = flatten([self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)])
+        let out = flatten(
+            [self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)],
+        )
         self.decls.record_marks(d, out)
         out
     }
@@ -756,7 +856,11 @@ impl Workspace {
         // as ordinary statements without them — a rewrite that moved
         // not one byte of that block would still fail to reparse.
         let words = self.block_words(f, before)
-        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after), words)
+        let reparsed = parse_program(
+            self.lang,
+            new_source_file(self.decls.file(f).path, after),
+            words,
+        )
         if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
         if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
         for i, s in before.stmts {
@@ -768,10 +872,16 @@ impl Workspace {
     /// An INPUT: the file's text, hashed; the revision moves only when
     /// the text did.
     fn source(f: FileId) -> SourceFile {
-        let staged = self.source_memo.input(f.index, () -> {
-            let path = self.decls.file(f).path
-            DbRow.Source(new_source_file(path, self.host.read(path)))
-        }, (s: DbRow) -> fp_str(source_of(s).text))
+        let staged = self
+            .source_memo
+            .input(
+                f.index,
+                () -> {
+                    let path = self.decls.file(f).path
+                    DbRow.Source(new_source_file(path, self.host.read(path)))
+                },
+                (s: DbRow) -> fp_str(source_of(s).text),
+            )
         source_of(staged)
     }
 
@@ -784,7 +894,11 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        parsed_of(self.parsed_memo.demand(f.index, () -> DbRow.Parsed(self.parsed_under_blocks(f)), parsed_fingerprint))
+        parsed_of(
+            self
+                .parsed_memo
+                .demand(f.index, () -> DbRow.Parsed(self.parsed_under_blocks(f)), parsed_fingerprint),
+        )
     }
 
     /// A file parsed under NO block words — its own words alone: the
@@ -801,7 +915,15 @@ impl Workspace {
     /// sharing the name would sum a span and its own subset into one
     /// double-counted total.
     fn plain_parsed(f: FileId) -> Parsed {
-        plain_of(self.plain_memo.demand(f.index, () -> DbRow.Plain(self.clocked_parse(f)), (s: DbRow) -> program_hash(plain_of(s))))
+        plain_of(
+            self
+                .plain_memo
+                .demand(
+                    f.index,
+                    () -> DbRow.Plain(self.clocked_parse(f)),
+                    (s: DbRow) -> program_hash(plain_of(s)),
+                ),
+        )
     }
 
     fn clocked_parse(f: FileId) -> Parsed {
@@ -842,7 +964,9 @@ impl Workspace {
         if d.help != null { return d }
         let near = names_near(p.source.text, at.lo)
         let own = self.module_at(p.source.file)
-        let homes = flatten([some_list(self.component_home(w, own)) for w in near if !w.is_empty() && !words.components.any(it.word == w)])
+        let homes = flatten(
+            [some_list(self.component_home(w, own)) for w in near if !w.is_empty() && !words.components.any(it.word == w)],
+        )
         let home? = homes.first() else { return d }
         d with { help: import_it(home) }
     }
@@ -851,7 +975,13 @@ impl Workspace {
     /// by this name — as `use` spells it with the word.
     fn component_home(word: string, own: string) -> string? {
         let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
-        let path? = paths.find((path: string) -> self.module_at(path) != own && self.provided_words(path).components.any(it.word == word)) else { return null }
+        let path? = paths
+            .find(
+                (path: string) -> self.module_at(path) != own &&
+                    self.provided_words(path).components.any(it.word == word),
+            ) else {
+            return null
+        }
         "${self.module_at(path)}.{${word}}"
     }
 
@@ -878,7 +1008,11 @@ impl Workspace {
         let lines = [self.line_words(from, own, u) for u in p.store.built_uses()]
         let components = flatten([l.components for l in lines])
         let local = if components.is_empty() { [] } else { named_instances(p.source.text, components) }
-        BlockWords { grammars: flatten([l.grammars for l in lines]), components: components, instances: local.concat(flatten([l.instances for l in lines])) }
+        BlockWords {
+            grammars: flatten([l.grammars for l in lines]),
+            components: components,
+            instances: local.concat(flatten([l.instances for l in lines])),
+        }
     }
 
     /// One `use` line's block words — none from a module that is not
@@ -904,9 +1038,15 @@ impl Workspace {
         let components = flatten([d.components for d in declared])
         let instances = flatten([d.instances for d in declared])
         BlockWords {
-            grammars: flatten([[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items]),
-            components: flatten([[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items]),
-            instances: flatten([[x with { name: u.bound_as(j) } for x in instances if x.name == item] for j, item in u.items]),
+            grammars: flatten(
+                [[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items],
+            ),
+            components: flatten(
+                [[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items],
+            ),
+            instances: flatten(
+                [[x with { name: u.bound_as(j) } for x in instances if x.name == item] for j, item in u.items],
+            ),
         }
     }
 
@@ -930,10 +1070,17 @@ impl Workspace {
         // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
         // declarations were MINTED, and `file_items` is a memo over a paree it never had.
         if self.is_held(f) { return self.decls.held_items_of_file(f) }
-        match self.items_memo.start(f.index) { .Reuse(value) -> { return items_of(value) }, .Compute -> nothing() }
+        match self.items_memo.start(f.index) {
+            .Reuse(value) -> { return items_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
-        items_of(self.items_memo.finish(f.index, DbRow.Items(ids), fp(7, [self.item_print(d) for d in ids])))
+        items_of(
+            self
+                .items_memo
+                .finish(f.index, DbRow.Items(ids), fp(7, [self.item_print(d) for d in ids])),
+        )
     }
 
     /// The declaration behind an id.
@@ -955,11 +1102,22 @@ impl Workspace {
     /// module's names back — a re-entry is a SMALLER view (the binder
     /// alone, no signature work waits on it), never a trap.
     fn namespace(m: ModuleId) -> ModuleNames {
-        match self.namespace_memo.start_recursive(m.index) { .Reuse(value) -> { return namespace_of(value) }, .Compute -> nothing() }
+        match self.namespace_memo.start_recursive(m.index) {
+            .Reuse(value) -> { return namespace_of(value) },
+            .Compute -> nothing(),
+        }
         let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        namespace_of(self.namespace_memo.finish(m.index, DbRow.Namespace(names), fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length])))
+        namespace_of(
+            self
+                .namespace_memo
+                .finish(
+                    m.index,
+                    DbRow.Namespace(names),
+                    fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length]),
+                ),
+        )
     }
 
     /// What a file's top level sees: its module's names, then its
@@ -969,7 +1127,10 @@ impl Workspace {
     /// visible namespace back — a re-entry is a SMALLER view, never a
     /// trap.
     fn visible(f: FileId) -> Namespace {
-        match self.visible_memo.start_recursive(f.index) { .Reuse(value) -> { return visible_of(value) }, .Compute -> nothing() }
+        match self.visible_memo.start_recursive(f.index) {
+            .Reuse(value) -> { return visible_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -978,7 +1139,15 @@ impl Workspace {
             imports = imports.concat(line.imports)
             diags = diags.concat(line.diagnostics)
         }
-        let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, self.prelude_imports(f), (path: string) -> self.shown(path))
+        let names = self
+            .decls
+            .file_names(
+                f,
+                self.namespace(self.decls.file(f).module_id),
+                imports,
+                self.prelude_imports(f),
+                (path: string) -> self.shown(path),
+            )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
         visible_of(self.visible_memo.finish(f.index, DbRow.Visible(out), self.db.revision()))
     }
@@ -999,7 +1168,10 @@ impl Workspace {
     /// in flight — the acyclic `start` answers a cycle with a defect,
     /// and one file's resolve may be demanded while another is served.
     fn resolved(f: FileId) -> NameFacts {
-        match self.resolved_memo.start_recursive(f.index) { .Reuse(value) -> { return resolved_of(value) }, .Compute -> nothing() }
+        match self.resolved_memo.start_recursive(f.index) {
+            .Reuse(value) -> { return resolved_of(value) },
+            .Compute -> nothing(),
+        }
         touch(self.items(f))
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
@@ -1020,10 +1192,19 @@ impl Workspace {
         // A generated body's statement stands in the arena, never in
         // the parse tree — resolve it after the written bodies.
         let generated = [self.decls.decl(d).stmt for d in made]
-        let resolved = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), elsewhere, generated)
+        let resolved = resolve(
+            self.lang.dispatch,
+            self.lang.keywords,
+            file_view(self.lang, p, self.decls, f),
+            self.visible(f),
+            elsewhere,
+            generated,
+        )
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
-        let out = resolved with { voices: Voices { list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()) } }
+        let out = resolved with { voices: Voices {
+            list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
+        } }
         resolved_of(self.resolved_memo.finish(f.index, DbRow.Resolved(out), self.db.revision()))
     }
 
@@ -1093,7 +1274,12 @@ impl Workspace {
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
         self.named_minted(self.decls.decl(target).name)
-        let blocks = self.decls.children_of(target).concat([b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)])
+        let blocks = self
+            .decls
+            .children_of(target)
+            .concat(
+                [b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)],
+            )
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
@@ -1124,7 +1310,9 @@ impl Workspace {
             let aimed = self.decls.target_of(b)
             return aimed != null && same_decl(aimed!, target)
         }
-        let seen: DeclId? = self.visible(self.decls.decl(b).file).type_decl(self.decls.decl(target).name)
+        let seen: DeclId? = self
+            .visible(self.decls.decl(b).file)
+            .type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
     }
 
@@ -1176,7 +1364,15 @@ impl Workspace {
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         let p = self.parsed(x.file)
         let view = file_view(self.lang, p, self.decls, x.file)
-        new_type_cx(self.lang.dispatch, self.lang.keywords, view, names, (origin: FileId) -> self.visible(origin), x.lo, x.hi)
+        new_type_cx(
+            self.lang.dispatch,
+            self.lang.keywords,
+            view,
+            names,
+            (origin: FileId) -> self.visible(origin),
+            x.lo,
+            x.hi,
+        )
     }
 
     /// One declaration's body typed — a table over its own expression
@@ -1185,7 +1381,10 @@ impl Workspace {
         // Annotation evaluation re-types the declaration after hiding
         // the active annotation, so this family also has a smaller
         // recursive view.
-        match self.typed_memo.start_recursive(d.index) { .Reuse(value) -> { return typed_of(value) }, .Compute -> nothing() }
+        match self.typed_memo.start_recursive(d.index) {
+            .Reuse(value) -> { return typed_of(value) },
+            .Compute -> nothing(),
+        }
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
@@ -1199,7 +1398,10 @@ impl Workspace {
     fn folded(f: FileId) -> TypeFacts {
         // Annotation evaluation re-enters the file after the active
         // annotation has been hidden; that recursive view is smaller.
-        match self.folded_memo.start_recursive(f.index) { .Reuse(value) -> { return folded_of(value) }, .Compute -> nothing() }
+        match self.folded_memo.start_recursive(f.index) {
+            .Reuse(value) -> { return folded_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
@@ -1216,7 +1418,8 @@ impl Workspace {
     /// A file's bodies to type: Main, then every declaration owning a
     /// range, in declaration order.
     fn bodies_of(f: FileId) -> List<DeclId> {
-        some_list(self.decls.main_of(f)).concat([d for d in self.decls.decls_of_file(f) if self.decls.owns_a_range(d)])
+        some_list(self.decls.main_of(f))
+            .concat([d for d in self.decls.decls_of_file(f) if self.decls.owns_a_range(d)])
     }
 
     /// A file's signature diagnostics, in the order the rounds spoke

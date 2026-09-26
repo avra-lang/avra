@@ -8,7 +8,13 @@ use diagnostics.{refusal}
 
 impl TypeCx {
     /// The one law, at the call — the module's header states it.
-    mut fn construct_variant(e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
+    mut fn construct_variant(
+        e: ExprId,
+        decl: DeclId,
+        tname: string,
+        variant: string,
+        args: List<ExprId>,
+    ) -> TypeId {
         let sig? = self.variants_declared(decl, tname) else { return self.no_variants_here(e, decl, tname, variant) }
         if sig.tag_of(variant) == null { return self.no_such_variant(e, tname, variant, sig) }
         let tp = self.view.decls.tparams(decl)
@@ -25,7 +31,16 @@ impl TypeCx {
     }
 
     mut fn wrong_payload_count(e: ExprId, tname: string, variant: string, carries: int, found: int) -> TypeId {
-        self.spoken(refusal("type.variant_arity", self.loc_of(e), "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}", "built here", "a variant's payload is a single value — wrap several in a record"))
+        self
+            .spoken(
+                refusal(
+                    "type.variant_arity",
+                    self.loc_of(e),
+                    "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}",
+                    "built here",
+                    "a variant's payload is a single value — wrap several in a record",
+                ),
+            )
     }
 
     /// A unit variant given an argument list: the plain one carries
@@ -37,7 +52,13 @@ impl TypeCx {
 
     /// A bare generic unit variant — `Opt.none` — pins from the want
     /// alone; with none, nothing carries the type and it says so.
-    mut fn unit_instantiated(e: ExprId, tname: string, variant: string, decl: DeclId, tp: List<string>) -> TypeId {
+    mut fn unit_instantiated(
+        e: ExprId,
+        tname: string,
+        variant: string,
+        decl: DeclId,
+        tp: List<string>,
+    ) -> TypeId {
         let pinned = self.pinned_by_want(e, decl, no_pins(tp.length))
         let missing: string? = unpinned_of(tp, pinned)
         if missing != null { return if self.starving { self.cannot_pin(e, tname, variant, missing!) } else { self.hungry(e) } }
@@ -67,7 +88,8 @@ impl TypeCx {
         let row: TypeRow? = self.view.decls.row_of(decl)
         if row != null {
             let args = TypeArgs { parts: self.view.types.args_of(want) }
-            return args.parts.length == row!.arity && !self.types_disagree(self.view.types.intern(row!.builds(args)), want)
+            return args.parts.length == row!.arity &&
+                !self.types_disagree(self.view.types.intern(row!.builds(args)), want)
         }
         match self.view.types.shape_of(want) {
             .App(d, _, _) -> same_decl(d, decl),
@@ -122,42 +144,132 @@ impl TypeCx {
     /// signatory's name instead.
     mut fn no_trait_static(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
         if self.view.decls.trait_member(decl, name) != null {
-            return self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}.${name}` has no one body — each signatory answers its own", "built here", "call it through the implementing type: `<Type>.${name}(…)`"))
+            return self
+                .spoken(
+                    refusal(
+                        "type.unknown_prop",
+                        self.loc_of(e),
+                        "`${tname}.${name}` has no one body — each signatory answers its own",
+                        "built here",
+                        "call it through the implementing type: `<Type>.${name}(…)`",
+                    ),
+                )
         }
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` has no associated fn `${name}`", "built here", "declare it — `static fn ${name}(…) -> … { … }` inside the trait"))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tname}` has no associated fn `${name}`",
+                    "built here",
+                    "declare it — `static fn ${name}(…) -> … { … }` inside the trait",
+                ),
+            )
     }
 
     mut fn no_such_door(e: ExprId, tname: string, name: string) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` is a `grammar`, not an enum", "built here", "`${tname}.${name}` is a call only where the grammar declares a door of that name"))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tname}` is a `grammar`, not an enum",
+                    "built here",
+                    "`${tname}.${name}` is a call only where the grammar declares a door of that name",
+                ),
+            )
     }
 
     mut fn not_an_enum(e: ExprId, tname: string) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` is a record, not an enum", "built here", build_a_record(tname)))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tname}` is a record, not an enum",
+                    "built here",
+                    build_a_record(tname),
+                ),
+            )
     }
 
     mut fn no_such_variant(e: ExprId, tname: string, variant: string, sig: EnumSig) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` has no variant `${variant}`", "built here", variants_are(sig)))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tname}` has no variant `${variant}`",
+                    "built here",
+                    variants_are(sig),
+                ),
+            )
     }
 
     mut fn carries_nothing(e: ExprId, tname: string, variant: string) -> TypeId {
-        self.spoken(refusal("type.variant_arity", self.loc_of(e), "`${tname}.${variant}` carries nothing", "given an argument here", "write `${tname}.${variant}` on its own"))
+        self
+            .spoken(
+                refusal(
+                    "type.variant_arity",
+                    self.loc_of(e),
+                    "`${tname}.${variant}` carries nothing",
+                    "given an argument here",
+                    "write `${tname}.${variant}` on its own",
+                ),
+            )
     }
 
     mut fn cannot_pin(e: ExprId, tname: string, variant: string, tparam: string) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it", "built here", "a payload pins the type; the pinned unit surface is recorded"))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it",
+                    "built here",
+                    "a payload pins the type; the pinned unit surface is recorded",
+                ),
+            )
     }
 
     mut fn wrong_payload(v: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
         let n = self.name_at(v)
-        self.spoken(refusal("type.variant_arity", self.loc_of(v), "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, found `${n}`", this_is(n), null))
+        self
+            .spoken(
+                refusal(
+                    "type.variant_arity",
+                    self.loc_of(v),
+                    "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, found `${n}`",
+                    this_is(n),
+                    null,
+                ),
+            )
     }
 
     mut fn given_nothing(e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
-        self.spoken(refusal("type.variant_arity", self.loc_of(e), "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, given nothing", "built empty here", "write `${tname}.${variant}(<value>)`"))
+        self
+            .spoken(
+                refusal(
+                    "type.variant_arity",
+                    self.loc_of(e),
+                    "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, given nothing",
+                    "built empty here",
+                    "write `${tname}.${variant}(<value>)`",
+                ),
+            )
     }
 
     mut fn unpinned_by_payload(e: ExprId, tparam: string) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tparam}` is not pinned by the payload", "built here", "the pinned unit surface is recorded — carry `${tparam}` for now"))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tparam}` is not pinned by the payload",
+                    "built here",
+                    "the pinned unit surface is recorded — carry `${tparam}` for now",
+                ),
+            )
     }
 }
 

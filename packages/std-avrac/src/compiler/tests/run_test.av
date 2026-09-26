@@ -10,7 +10,8 @@ spec "compiler/run" {
             shown("1 + 2") == "3" && shown("let x = 1 + 2\nx - 4") == "-1"
         }
         then "names read their definitions, shadowing included" {
-            shown("let a = 2\nlet b = a + 3\nb - a") == "3" && shown("let x = 1\nlet x = x + 1\nx") == "2"
+            shown("let a = 2\nlet b = a + 3\nb - a") == "3" &&
+                shown("let x = 1\nlet x = x + 1\nx") == "2"
         }
     }
     given "strings" {
@@ -31,10 +32,15 @@ spec "compiler/run" {
     }
     given "a `Bytes` handed to a text row through an extern" {
         then "UTF-8 octets are the text they spell — the evaluator answers what native does" {
-            shown("extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim(\" hi \".bytes()).length") == "2"
+            shown(
+                "extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim(\" hi \".bytes()).length",
+            ) == "2"
         }
         then "octets that are not UTF-8 are refused by name, never approximated" {
-            refused_at_run("extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim([255].bytes()!)", "octets that are not UTF-8 reached a text seat")
+            refused_at_run(
+                "extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim([255].bytes()!)",
+                "octets that are not UTF-8 reached a text seat",
+            )
         }
         then "a length reads the header and never decodes, so octets that are not UTF-8 still answer" {
             shown("extern fn avra_str_len(b: Bytes) -> int\navra_str_len([255, 254].bytes()!)") == "2"
@@ -42,10 +48,7 @@ spec "compiler/run" {
     }
     given "an empty program" {
         then "it runs and shows nothing" {
-            match analyze_source("").run() {
-                .Ok(out) -> out == "",
-                .Err(_) -> false,
-            }
+            match analyze_source("").run() { .Ok(out) -> out == "", .Err(_) -> false }
         }
     }
     given "a root-module fn named `main`" {

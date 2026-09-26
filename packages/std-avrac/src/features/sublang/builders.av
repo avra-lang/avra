@@ -4,7 +4,20 @@
 //! and every action mints a call of the library's fn, the captures as
 //! arguments — so the expansion's nodes stand right before the block's,
 //! as a parsed child does, and every range law holds.
-use core.{Expr, Stmt, ExprId, NodeStore, Span, span_of, hole_name, flatten, some_list, BlockVoice, Scoped, BodyView}
+use core.{
+    Expr,
+    Stmt,
+    ExprId,
+    NodeStore,
+    Span,
+    span_of,
+    hole_name,
+    flatten,
+    some_list,
+    BlockVoice,
+    Scoped,
+    BodyView,
+}
 use @std.errors.{Loc}
 use features.{LangNode, Builder, zip_defect_of}
 use @std.grammar.{run_from, Captured, Grammar, Seq, Item, Build}
@@ -54,16 +67,41 @@ fn expanded(b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprI
     let block? = b.words.grammars.find(it.word == word) else { return null }
     let at = body.span.lo
     let lexed = lex_body(body.text)
-    for x in lexed.errors { b.store.speak_block(BlockVoice { message: x.message, lo: x.span.lo + at, hi: x.span.hi + at, expected: [], in_rule: "(lexing)" }) }
+    for x in lexed.errors {
+        b
+            .store
+            .speak_block(
+                BlockVoice {
+                    message: x.message,
+                    lo: x.span.lo + at,
+                    hi: x.span.hi + at,
+                    expected: [],
+                    in_rule: "(lexing)",
+                },
+            )
+    }
     if !lexed.errors.is_empty() { return null }
     let since = b.store.marks()
     let store = b.store
     let g = block.ready.g
-    let build = (name: string, args: List<Captured<Token, ExprId>>, loc: Loc?) -> store.minted_action(name, listed_seats(g, name, args.length), args, loc_span(loc), holes)
+    let build = (name: string, args: List<Captured<Token, ExprId>>, loc: Loc?) -> store
+        .minted_action(name, listed_seats(g, name, args.length), args, loc_span(loc), holes)
     let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
     let o = run_from<Token, ExprId>(block.ready, block.ready.g.start, tokens, avra_lexeme(), build)
     b.store.note_foreign(since, block.origin)
-    for d in o.diagnostics { b.store.speak_block(BlockVoice { message: d.message, lo: d.loc?.lo ?? at, hi: d.loc?.hi ?? at, expected: d.expected, in_rule: d.in_rule }) }
+    for d in o.diagnostics {
+        b
+            .store
+            .speak_block(
+                BlockVoice {
+                    message: d.message,
+                    lo: d.loc?.lo ?? at,
+                    hi: d.loc?.hi ?? at,
+                    expected: d.expected,
+                    in_rule: d.in_rule,
+                },
+            )
+    }
     if !o.diagnostics.is_empty() || o.result == null { return null }
     b.store.captured_expr(o.result!, holes)
 }
@@ -116,7 +154,13 @@ impl NodeStore {
     /// A grammar's action minted as a call of the library's fn, its
     /// captures as the arguments — a listed seat's one or none as a
     /// list of one or of none.
-    fn minted_action(name: string, listed: List<bool>, args: List<Captured<Token, ExprId>>, span: Span?, holes: List<ExprId>) -> Result<Captured<Token, ExprId>, string> {
+    fn minted_action(
+        name: string,
+        listed: List<bool>,
+        args: List<Captured<Token, ExprId>>,
+        span: Span?,
+        holes: List<ExprId>,
+    ) -> Result<Captured<Token, ExprId>, string> {
         let ids = [self.seated(a, listed[j], span, holes) for j, a in args]
         .Ok(Captured.Node(self.alloc_expr(Expr.Call(Scoped(name), [], ids), span)))
     }
@@ -141,7 +185,8 @@ impl NodeStore {
         match c {
             .Node(e) -> e,
             .Absent -> null,
-            .Many(items) -> self.alloc_expr(Expr.ListLit(flatten([some_list(self.captured_expr(x, holes)) for x in items]))),
+            .Many(items) -> self
+                .alloc_expr(Expr.ListLit(flatten([some_list(self.captured_expr(x, holes)) for x in items]))),
             .Terminal(t) -> match t.kind {
                 .Hole -> hole_expr(t.text, holes),
                 .Num -> self.alloc_expr(Expr.IntLit(t.int_value() ?? 0), t.span),

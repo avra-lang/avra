@@ -2,9 +2,49 @@
 //! instruction order, slots and cells, bindings read, fn values and
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
-use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    TypeId,
+    Type,
+    Expr,
+    Reg,
+    Ins,
+    DeclId,
+    Arrow,
+    Binding,
+    NodeStore,
+    SeatMark,
+    is_literal,
+    settled_mark,
+    Static,
+    StaticBox,
+}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, FnSig, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
+use features.{
+    LowerCx,
+    capture_lane,
+    Sub,
+    SeatValue,
+    viewed,
+    def_type_of,
+    Wanted,
+    Lift,
+    LiftKind,
+    Wrap,
+    FnSig,
+    Unsettled,
+    Settled,
+    SettleRoot,
+    const_symbol,
+    settled_symbol,
+    seat_symbol,
+    nothing,
+    MetaVal,
+    new_meta_heap,
+    literal_meta,
+}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -28,7 +68,16 @@ impl LowerCx {
         let sub? = self.facts.subst_at(e) else { return self.wanted(d) }
         let seats: List<SeatValue> = self.call_seats(d, e)
         if !self.seats_complete(d, e, seats) { return self.wanted(d) }
-        self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: [sv.fp for sv in seats] }, seats)
+        self
+            .wanted(
+                d,
+                Sub {
+                    target: sub.target,
+                    args: [self.concrete(t) for t in sub.args],
+                    consts: [sv.fp for sv in seats],
+                },
+                seats,
+            )
     }
 
     /// A declared call's registers in SEAT order: each written
@@ -78,7 +127,8 @@ impl LowerCx {
             let call = at!
             let seats: List<SeatValue> = self.call_seats(m, call)
             if !self.seats_complete(m, call, seats) { return self.wanted(m) }
-            return self.wanted(m, Sub { target: contract, args: [recv], consts: [sv.fp for sv in seats] }, seats)
+            return self
+                .wanted(m, Sub { target: contract, args: [recv], consts: [sv.fp for sv in seats] }, seats)
         }
         if at == null { return self.wanted(m) }
         self.symbol_at(m, at!)
@@ -91,7 +141,19 @@ impl LowerCx {
         let sym = self.view.decls.symbol(d)
         let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
         if self.unseen(name) {
-            self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub, seats: seats, root: null })
+            self
+                .jobs
+                .pending
+                .push(
+                    Wanted {
+                        file: self.view.decls.decl(d).file,
+                        decl: d,
+                        name: name,
+                        sub: sub,
+                        seats: seats,
+                        root: null,
+                    },
+                )
         }
         name
     }
@@ -123,7 +185,8 @@ impl LowerCx {
         match b {
             .Param(_) -> self.forwarded_seat(b, index),
             // a body's own `const`: spelled, or settled on this unit's seats
-            .Def(s) -> self.spelled_seat(a, index) ?? self.settled_seat(self.view.file, SettleRoot.Const(s), self.seats, index, self.facts.type_at(a)),
+            .Def(s) -> self.spelled_seat(a, index) ?? self
+                .settled_seat(self.view.file, SettleRoot.Const(s), self.seats, index, self.facts.type_at(a)),
             // a DECLARED `const`: settled in its own file, whatever it spells
             .Decl(d) -> if self.view.decls.decl(d).kind is .Const { self.declared_seat(d, index, self.facts.type_at(a)) } else { null },
             // anything else the source spells — an aggregate with consts
@@ -161,7 +224,13 @@ impl LowerCx {
         mut heap = new_meta_heap()
         let value: MetaVal? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap)
         if value == null { return null }
-        SeatValue { index: index, fp: "e${self.view.store.expr_fingerprint(e)}", ty: self.facts.type_at(a), value: value!, heap: heap }
+        SeatValue {
+            index: index,
+            fp: "e${self.view.store.expr_fingerprint(e)}",
+            ty: self.facts.type_at(a),
+            value: value!,
+            heap: heap,
+        }
     }
 
     /// A `const`-seat argument that is a `const` the evaluator settles —
@@ -187,10 +256,7 @@ impl LowerCx {
     /// Null for a run-time value.
     fn spelled_source(a: ExprId) -> ExprId? {
         let b? = self.names.binding(a) else { return a }
-        match b {
-            .Def(s) -> self.view.store.const_value(s),
-            rest -> a,
-        }
+        match b { .Def(s) -> self.view.store.const_value(s), rest -> a }
     }
 
     /// A call node's arguments.
@@ -482,12 +548,17 @@ impl LowerCx {
         if self.unseen(wname) {
             let fnty = self.concrete(self.facts.type_at(e))
             let held: Arrow? = self.view.decls.types.arrow_parts(fnty)
-            self.jobs.wraps.push(Wrap {
-                target: symbol,
-                seats: held?.seats ?? [],
-                ret: held?.answer ?? self.view.decls.types.intern(Type.Error),
-                name: wname,
-            })
+            self
+                .jobs
+                .wraps
+                .push(
+                    Wrap {
+                        target: symbol,
+                        seats: held?.seats ?? [],
+                        ret: held?.answer ?? self.view.decls.types.intern(Type.Error),
+                        name: wname,
+                    },
+                )
         }
         self.static_fn_box(self.view.types.shape_of(self.concrete(self.facts.type_at(e))), wname)
     }
@@ -502,13 +573,19 @@ impl LowerCx {
         if self.unseen(shim) {
             let sig: FnSig? = self.view.decls.sig(m)?.fn_sig()
             let params = sig?.params ?? []
-            self.jobs.wraps.push(Wrap {
-                target: symbol,
-                seats: [self.view.decls.types.type(List<int>)].concat(params.slice(1, params.length)),
-                ret: sig?.ret ?? self.view.decls.types.intern(Type.Error),
-                name: shim,
-                unboxes: recv,
-            })
+            self
+                .jobs
+                .wraps
+                .push(
+                    Wrap {
+                        target: symbol,
+                        seats: [self.view.decls.types.type(List<int>)]
+                            .concat(params.slice(1, params.length)),
+                        ret: sig?.ret ?? self.view.decls.types.intern(Type.Error),
+                        name: shim,
+                        unboxes: recv,
+                    },
+                )
         }
         shim
     }
@@ -669,10 +746,34 @@ impl LowerCx {
         // that reached here has one
         let at = loc_at(path, store.expr_span(store.const_value(s)!))
         let d: Diag? = match why {
-            .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
-            .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`"),
-            .Trap(words) -> refusal("const.trap", at, "a const trapped while settling", "`${name}` ${words}", "the initializer runs at compile time, so what traps there is refused here"),
-            .Param(runtime) -> refusal("const.param", at, "a const cannot read a run-time parameter", "`${name}` reads `${runtime}`", "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`"),
+            .Reach(label) -> refusal(
+                "const.reach",
+                at,
+                "a const cannot read the world",
+                "`${name}` ${label}",
+                "a const settles at compile time from pure computation alone — read the world at run time, under `let`",
+            ),
+            .Budget(label) -> refusal(
+                "const.budget",
+                at,
+                "a const ran past its budget",
+                "`${name}` ${label}",
+                "raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`",
+            ),
+            .Trap(words) -> refusal(
+                "const.trap",
+                at,
+                "a const trapped while settling",
+                "`${name}` ${words}",
+                "the initializer runs at compile time, so what traps there is refused here",
+            ),
+            .Param(runtime) -> refusal(
+                "const.param",
+                at,
+                "a const cannot read a run-time parameter",
+                "`${name}` reads `${runtime}`",
+                "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`",
+            ),
             .Spoken or .Recursive -> null,
         }
         if d != null { self.out.voices.speak(d!) }
@@ -682,6 +783,17 @@ impl LowerCx {
     /// parts were spelled, so what failed was a const inside it.
     fn argument_unsettled(a: ExprId, why: Unsettled) {
         if why.words().is_empty() { return }
-        self.out.voices.speak(refusal("const.trap", self.view.loc_of(a), "a `const` seat's argument did not settle", why.words(), "the argument settles at compile time from its literals and consts — what fails there is refused here"))
+        self
+            .out
+            .voices
+            .speak(
+                refusal(
+                    "const.trap",
+                    self.view.loc_of(a),
+                    "a `const` seat's argument did not settle",
+                    why.words(),
+                    "the argument settles at compile time from its literals and consts — what fails there is refused here",
+                ),
+            )
     }
 }

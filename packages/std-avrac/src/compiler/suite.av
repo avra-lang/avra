@@ -16,7 +16,10 @@ impl Workspace {
     /// its sources — a module tree, a vendored dependency, a test that reaches
     /// past the library's own dependencies — each proved on its own. `only` is
     /// one file's cases and nothing else; labels are told from `told_from`.
-    fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<List<BuildOutcome>, string> {
+    fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<
+        List<BuildOutcome>,
+        string,
+    > {
         let own: BuildOutcome? = self.suite(only, told_from, tools)?
         mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
         if only != null { return out }
@@ -51,7 +54,10 @@ impl Workspace {
             println("${counted(results.length, "example")} proved, as cases")
         }
         let programs = if only == null { self.program_tests() } else { [] }
-        let under = Keyed { named: "suite:${only ?? ""}", beside: [beside(path, "expected") for path in programs] }
+        let under = Keyed {
+            named: "suite:${only ?? ""}",
+            beside: [beside(path, "expected") for path in programs],
+        }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
         let kept = self.kept_binary(self.program_key(under.named, under.beside), binary)
         if kept != null { return kept }
@@ -64,10 +70,17 @@ impl Workspace {
         let _ = make_dirs(dir_of(binary))
         let calls = [self.program_call(path, told_from) for path in programs]
         let homes = flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told])
-        let made: BuildOutcome? = match d.linked(ProgramModule { main: (types: TypeRegistry) -> suite_entry(types, cases, calls), rows: program_rows, cases: homes }, under, binary, tools) {
-            .Ok(b) -> b,
-            .Err(e) -> { fail e.describe().message },
-        }
+        let made: BuildOutcome? = match d
+            .linked(
+                ProgramModule {
+                    main: (types: TypeRegistry) -> suite_entry(types, cases, calls),
+                    rows: program_rows,
+                    cases: homes,
+                },
+                under,
+                binary,
+                tools,
+            ) { .Ok(b) -> b, .Err(e) -> { fail e.describe().message } }
         made
     }
 
@@ -125,7 +138,9 @@ impl Workspace {
     /// own module sees.
     fn seen_files(store: Store, path: string) -> List<string> {
         let ws = self
-        flatten([self.module_files(module_path(dep.split("."))) for dep in seen_modules(ws, store, module_path(self.module_of(path).split(".")))])
+        flatten(
+            [self.module_files(module_path(dep.split("."))) for dep in seen_modules(ws, store, module_path(self.module_of(path).split(".")))],
+        )
     }
 
     /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the text the program
@@ -133,7 +148,10 @@ impl Workspace {
     /// so an interface digest would not do.
     fn proved_key(store: Store, path: string) -> string {
         let texts = [self.text_digest(f) for f in self.seen_files(store, path)]
-        node_key(Stored.Unit, ["proved", path, self.host.read(beside(path, "expected")), joined(texts, "\n")])
+        node_key(
+            Stored.Unit,
+            ["proved", path, self.host.read(beside(path, "expected")), joined(texts, "\n")],
+        )
     }
 }
 
@@ -144,7 +162,9 @@ fn beside(path: string, extension: string) -> string { joined_path(dir_of(path),
 /// package, and nothing under it is asked again.
 fn nested_roots(host: Host, dir: string) -> List<string> {
     if !host.is_dir(dir) { return [] }
-    flatten([nested_under(host, joined_path(dir, name)) for name in sorted_texts(host.list(dir)) if host.is_dir(joined_path(dir, name))])
+    flatten(
+        [nested_under(host, joined_path(dir, name)) for name in sorted_texts(host.list(dir)) if host.is_dir(joined_path(dir, name))],
+    )
 }
 
 fn nested_under(host: Host, dir: string) -> List<string> {

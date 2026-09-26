@@ -10,7 +10,10 @@ spec "features/structs (aliases, adversarial)" {
             shown("type P = { x: int }\nalias Q = P\nlet q = Q { x: 2 }\nq.x") == "2"
         }
         then "a literal under an alias of a fieldless shape refuses" {
-            refused_with("alias L = List<int>\nlet l = L { x: 1 }\n1", "`L` names `List<int>`, which has no fields to fill")
+            refused_with(
+                "alias L = List<int>\nlet l = L { x: 1 }\n1",
+                "`L` names `List<int>`, which has no fields to fill",
+            )
         }
         // FOUND: the construction lowered the alias as a fn with no body — a defect
         then "a construction under an alias builds the named type it names" {
@@ -18,20 +21,28 @@ spec "features/structs (aliases, adversarial)" {
         }
         // FOUND: impls are filed by the name written, so one on an alias answered by order
         then "an impl is written on the type an alias names" {
-            refused_with("type P = { x: int }\nalias Q = P\nimpl Q { fn dbl() -> int { self.x * 2 } }\n1", "`impl Q` is written on an alias — `Q` names `P`")
+            refused_with(
+                "type P = { x: int }\nalias Q = P\nimpl Q { fn dbl() -> int { self.x * 2 } }\n1",
+                "`impl Q` is written on an alias — `Q` names `P`",
+            )
         }
     }
     given "an alias's arguments" {
         // FOUND: a substituted alias skipped the constructor's slot law
         then "an alias's argument is a value's type" {
-            refused_with("alias B<T> = List<T>\nfn f(x: B<void>) -> int { 1 }\n1", "`B<...>` is given `void`, which is no value")
+            refused_with(
+                "alias B<T> = List<T>\nfn f(x: B<void>) -> int { 1 }\n1",
+                "`B<...>` is given `void`, which is no value",
+            )
         }
         // FOUND BY `make attack`: the parameters skipped the naming law
         then "an alias's type parameters are distinct" {
             refused_with("alias X<Y, Y> = Y\n1", "`X` declares `Y` more than once")
         }
         then "a keyword is no type parameter, on any type declaration" {
-            refused_with("alias X<type> = int\n1", "`type` is a keyword") && refused_with("type X<type> = { a: int }\n1", "`type` is a keyword") && refused_with("enum X<type> { A }\n1", "`type` is a keyword")
+            refused_with("alias X<type> = int\n1", "`type` is a keyword") &&
+                refused_with("type X<type> = { a: int }\n1", "`type` is a keyword") &&
+                refused_with("enum X<type> { A }\n1", "`type` is a keyword")
         }
         then "a key law refuses at the alias, before any argument" {
             refused_with("alias M<K> = Map<K, int>\n1", "a map's keys are strings, not `K`")

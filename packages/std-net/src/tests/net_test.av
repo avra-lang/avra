@@ -23,10 +23,7 @@ fn pair() -> Result<Pair, NetError> {
 }
 
 fn passes(r: Result<bool, NetError>) -> bool {
-    match r {
-        .Ok(b) -> b,
-        .Err(_) -> false,
-    }
+    match r { .Ok(b) -> b, .Err(_) -> false }
 }
 
 fn readable(p: Poller, fd: int) -> Result<bool, NetError> {
@@ -35,11 +32,7 @@ fn readable(p: Poller, fd: int) -> Result<bool, NetError> {
 }
 
 fn data_of(r: Read) -> Bytes {
-    match r {
-        .Data(b) -> b,
-        .Eof -> "<eof>".bytes(),
-        .Pending -> "<pending>".bytes(),
-    }
+    match r { .Data(b) -> b, .Eof -> "<eof>".bytes(), .Pending -> "<pending>".bytes() }
 }
 
 fn exact_read() -> Result<bool, NetError> {
@@ -55,7 +48,11 @@ fn pending_then_eof() -> Result<bool, NetError> {
     let before = data_of(pr.server.try_read(64)?)
     pr.client.close()?
     let ready = readable(pr.p, pr.server.fd)?
-    .Ok(ready && before == "<pending>".bytes() && data_of(pr.server.try_read(64)?) == "<eof>".bytes())
+    .Ok(
+        ready &&
+            before == "<pending>".bytes() &&
+            data_of(pr.server.try_read(64)?) == "<eof>".bytes(),
+    )
 }
 
 fn half_close() -> Result<bool, NetError> {
@@ -66,7 +63,12 @@ fn half_close() -> Result<bool, NetError> {
     let first = data_of(pr.server.try_read(64)?)
     // the shutdown is its own segment: waited for like the data
     let again = readable(pr.p, pr.server.fd)?
-    .Ok(ready && first == "bye".bytes() && again && data_of(pr.server.try_read(64)?) == "<eof>".bytes())
+    .Ok(
+        ready &&
+            first == "bye".bytes() &&
+            again &&
+            data_of(pr.server.try_read(64)?) == "<eof>".bytes(),
+    )
 }
 
 fn peers() -> Result<bool, NetError> {
@@ -106,10 +108,12 @@ fn refused_port() -> Result<bool, NetError> {
 
 fn port_in_use() -> Result<bool, NetError> {
     let l = listen("127.0.0.1", 0)?
-    .Ok(match listen("127.0.0.1", l.port) {
-        .Err(e) -> e.describe().kind == "net.listen",
-        .Ok(_) -> false,
-    })
+    .Ok(
+        match listen("127.0.0.1", l.port) {
+            .Err(e) -> e.describe().kind == "net.listen",
+            .Ok(_) -> false,
+        },
+    )
 }
 
 fn every_interface_by_name() -> Result<bool, NetError> {
@@ -127,10 +131,12 @@ fn gone_peer() -> Result<bool, NetError> {
     // the first write lands in the closed peer's buffer and provokes
     // the reset the second one then meets; its own answer says nothing
     let _ = pr.client.try_write("x".bytes(), 0)
-    .Ok(match pr.client.try_write([1 for i in 0..100000].bytes()!, 0) {
-        .Err(e) -> e.describe().kind == "net.write",
-        .Ok(_) -> false,
-    })
+    .Ok(
+        match pr.client.try_write([1 for i in 0..100000].bytes()!, 0) {
+            .Err(e) -> e.describe().kind == "net.write",
+            .Ok(_) -> false,
+        },
+    )
 }
 
 spec "std.net" {

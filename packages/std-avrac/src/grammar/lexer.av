@@ -96,7 +96,29 @@ export type LexResult = { tokens: List<Token>, docs: List<DocComment>, file_doc:
 /// A single-character operator, by code — the scanner asks this of
 /// every character that is not a name, a number or a space.
 fn is_single_op_code(c: int) -> bool {
-    c == 61 || c == 124 || c == 40 || c == 41 || c == 42 || c == 43 || c == 63 || c == 58 || c == 44 || c == 45 || c == 60 || c == 62 || c == 123 || c == 125 || c == 47 || c == 37 || c == 33 || c == 91 || c == 93 || c == 46 || c == 38 || c == 94 || c == 126
+    c == 61 ||
+        c == 124 ||
+        c == 40 ||
+        c == 41 ||
+        c == 42 ||
+        c == 43 ||
+        c == 63 ||
+        c == 58 ||
+        c == 44 ||
+        c == 45 ||
+        c == 60 ||
+        c == 62 ||
+        c == 123 ||
+        c == 125 ||
+        c == 47 ||
+        c == 37 ||
+        c == 33 ||
+        c == 91 ||
+        c == 93 ||
+        c == 46 ||
+        c == 38 ||
+        c == 94 ||
+        c == 126
 }
 // the bitwise three: `&` and `^` reach here only after `&&`
 // failed its munch, and `~` has no two-character form at all
@@ -283,7 +305,10 @@ fn scan_triple(src: string, n: int, i: int) -> ScanStep {
     mut j = i + 3
     while j + 2 < n {
         if src.char_code(j) == 34 && src.char_code(j + 1) == 34 && src.char_code(j + 2) == 34 {
-            return emit(token(TokenKind.Str, src.substring(i + 3, j), i, j + 3) with { raw: true }, j + 3)
+            return emit(
+                token(TokenKind.Str, src.substring(i + 3, j), i, j + 3) with { raw: true },
+                j + 3,
+            )
         }
         j = j + 1
     }
@@ -298,15 +323,7 @@ fn scan_triple(src: string, n: int, i: int) -> ScanStep {
 /// The three escapes; anything else after `\` stays raw. `\$` exists
 /// so text can hold a literal `${`.
 fn unescape(e: int) -> string? {
-    match e {
-        34 -> "\"",
-        92 -> "\\",
-        36 -> "\$",
-        110 -> "\n",
-        116 -> "\t",
-        114 -> "\r",
-        _ -> null,
-    }
+    match e { 34 -> "\"", 92 -> "\\", 36 -> "\$", 110 -> "\n", 116 -> "\t", 114 -> "\r", _ -> null }
 }
 
 /// How one string piece ended: at its closing quote, at a `${` hole,
@@ -532,7 +549,11 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
             mut j = i + 1
             while j < raw.length && raw[j].kind == TokenKind.Break { j = j + 1 }
             let next_indent = if j < raw.length { raw[j].span.lo - raw[j - 1].span.hi } else { 0 }
-            if boundary(raw, j) && !out.is_empty() && separates(open) && !continues(out.last()!) && !continued_by(raw, j, next_indent > line_indent, out.last()!) {
+            if boundary(raw, j) &&
+                !out.is_empty() &&
+                separates(open) &&
+                !continues(out.last()!) &&
+                !continued_by(raw, j, next_indent > line_indent, out.last()!) {
                 out.push(t)
                 line_indent = next_indent
             }
@@ -558,8 +579,14 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
 fn continued_by(raw: List<Token>, j: int, deeper: bool, last: Token) -> bool {
     if j >= raw.length { return false }
     let next = raw[j]
-    if next.kind == TokenKind.Name && (next.text == "else" || next.text == "or" || next.text == "with") { return true }
-    let chain = next.kind == TokenKind.Op && next.text == "." && j + 1 < raw.length && raw[j + 1].kind == TokenKind.Name
+    if next.kind == TokenKind.Name &&
+        (next.text == "else" || next.text == "or" || next.text == "with") {
+        return true
+    }
+    let chain = next.kind == TokenKind.Op &&
+        next.text == "." &&
+        j + 1 < raw.length &&
+        raw[j + 1].kind == TokenKind.Name
     chain && deeper && !(last.kind == TokenKind.Op && (last.text == "{" || last.text == ","))
 }
 
@@ -615,7 +642,13 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
 /// The whole input under a set of BLOCK WORDS — a word of the set
 /// before `{` opens a raw block whose text is one `Body` token — and,
 /// in PLACEHOLDER mode, `${k}` lexes as the `Hole` token it names.
-fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool, words: List<string>, placeholders: bool) -> LexResult {
+fn lex_words(
+    src: string,
+    boundary: fn(List<Token>, int) -> bool,
+    interpolate: bool,
+    words: List<string>,
+    placeholders: bool,
+) -> LexResult {
     mut lx = Lexing {
         src: src,
         n: src.length,
@@ -647,7 +680,13 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
-    LexResult { tokens: tokens, docs: lx.docs, file_doc: lx.file_pending, remarks: sorted_remarks(lx.remarks), errors: lx.errors }
+    LexResult {
+        tokens: tokens,
+        docs: lx.docs,
+        file_doc: lx.file_pending,
+        remarks: sorted_remarks(lx.remarks),
+        errors: lx.errors,
+    }
 }
 
 /// `remarks`, by `at` ascending. Every push during a scan already
@@ -795,7 +834,15 @@ impl Lexing {
         if c == 123 { self.frame_depth(f, 1) }
         if c == 125 {
             if self.frames[f].depth == 0 {
-                self.push(token(TokenKind.Body, self.frames[f].body.built(), self.frames[f].lo, self.i))
+                self
+                    .push(
+                        token(
+                            TokenKind.Body,
+                            self.frames[f].body.built(),
+                            self.frames[f].lo,
+                            self.i,
+                        ),
+                    )
                 self.close_quote(token(TokenKind.Op, "}", self.i, self.i + 1))
                 self.i = self.i + 1
                 return
@@ -816,7 +863,9 @@ impl Lexing {
     mut fn placeholder() {
         let close = scan_while(self.src, self.n, self.i + 2, is_digit)
         if close >= self.n || self.src.char_code(close) != 125 {
-            self.errors.push(LexError { message: "a placeholder is `\${k}`", span: span_of(self.i, close) })
+            self
+                .errors
+                .push(LexError { message: "a placeholder is `\${k}`", span: span_of(self.i, close) })
             self.i = close
             return
         }
@@ -825,7 +874,9 @@ impl Lexing {
     }
 
     fn at_hole_open() -> bool {
-        self.i + 1 < self.n && self.src.char_code(self.i) == 36 && self.src.char_code(self.i + 1) == 123
+        self.i + 1 < self.n &&
+            self.src.char_code(self.i) == 36 &&
+            self.src.char_code(self.i + 1) == 123
     }
 
     /// One scanner step, routed by what the scanner is inside.
@@ -926,7 +977,24 @@ impl Lexing {
     }
 
     mut fn opened_frame(raw: bool) {
-        self.frames.push(QuoteFrame { raw: raw, body: builder(), depth: 0, groups: [], count: 0, current: [], hole_lo: 0, assembling: false, parts: [], holes: [], head: 0, lo: self.i })
+        self
+            .frames
+            .push(
+                QuoteFrame {
+                    raw: raw,
+                    body: builder(),
+                    depth: 0,
+                    groups: [],
+                    count: 0,
+                    current: [],
+                    hole_lo: 0,
+                    assembling: false,
+                    parts: [],
+                    holes: [],
+                    head: 0,
+                    lo: self.i,
+                },
+            )
         self.stack.push(Ctx.Body(self.frames.length - 1))
     }
 
@@ -944,7 +1012,10 @@ impl Lexing {
     /// Whether a template hole opens here: `${` in code position
     /// inside a quote.
     fn hole_opens_here() -> bool {
-        !self.frames.is_empty() && self.i + 1 < self.n && self.src.char_code(self.i) == 36 && self.src.char_code(self.i + 1) == 123
+        !self.frames.is_empty() &&
+            self.i + 1 < self.n &&
+            self.src.char_code(self.i) == 36 &&
+            self.src.char_code(self.i + 1) == 123
     }
 
     /// A hole of the innermost quote opens: a Hole token begins here
@@ -954,7 +1025,14 @@ impl Lexing {
         let f = self.frames.length - 1
         let top: Ctx? = self.stack.last()
         if top != null && top! is .QuoteHole {
-            self.errors.push(LexError { message: "a hole inside a hole — splice the inner value first", span: span_of(self.i, self.i + 2) })
+            self
+                .errors
+                .push(
+                    LexError {
+                        message: "a hole inside a hole — splice the inner value first",
+                        span: span_of(self.i, self.i + 2),
+                    },
+                )
             self.i = self.i + 2
             return
         }
@@ -1006,7 +1084,9 @@ impl Lexing {
         let j = scan_while(self.src, self.n, next, is_name_cont)
         fr.parts.push(self.src.substring(next, j))
         self.i = j
-        let continues = j + 1 < self.n && self.src.char_code(j) == 36 && self.src.char_code(j + 1) == 123
+        let continues = j + 1 < self.n &&
+            self.src.char_code(j) == 36 &&
+            self.src.char_code(j + 1) == 123
         if !continues {
             fr.assembling = false
             self.frames.set(f, fr)
@@ -1042,7 +1122,10 @@ impl Lexing {
     fn open_hole_frame() -> int? {
         mut j = self.stack.length - 1
         while j >= 0 {
-            let f: int? = match self.stack[j] { .QuoteHole(f, _) -> f, .Body(_) or .StrHole(_) -> null }
+            let f: int? = match self.stack[j] {
+                .QuoteHole(f, _) -> f,
+                .Body(_) or .StrHole(_) -> null,
+            }
             if f != null { return f }
             j = j - 1
         }
@@ -1072,7 +1155,17 @@ impl Lexing {
             self.file_doc_open = false
             if !self.pending.is_empty() {
                 if declaration_start(t) {
-                    self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at, line_ats: self.pending_ats, pkg: t.kind == TokenKind.Pkg })
+                    self
+                        .docs
+                        .push(
+                            DocComment {
+                                lines: self.pending,
+                                before: t.span.lo,
+                                at: self.pending_at,
+                                line_ats: self.pending_ats,
+                                pkg: t.kind == TokenKind.Pkg,
+                            },
+                        )
                     self.pending = []
                     self.pending_ats = []
                 } else {
@@ -1121,7 +1214,10 @@ impl Lexing {
     mut fn left_holes() {
         while self.in_hole() {
             let top = self.stack.pop()
-            match top { .QuoteHole(f, _) -> self.dropped_hole(f), .Body(_) or .StrHole(_) -> nothing_noted() }
+            match top {
+                .QuoteHole(f, _) -> self.dropped_hole(f),
+                .Body(_) or .StrHole(_) -> nothing_noted(),
+            }
         }
     }
 
@@ -1145,7 +1241,15 @@ impl Lexing {
             // whole and by position like an own-line remark, marked
             // same-line so the printer appends it to the code it
             // trails instead of giving it a line of its own.
-            self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i, same_line: true })
+            self
+                .remarks
+                .push(
+                    Remark {
+                        trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)),
+                        at: self.i,
+                        same_line: true,
+                    },
+                )
             self.file_doc_open = false
             return
         }
@@ -1186,7 +1290,11 @@ impl Lexing {
     /// law only by an accident of where they land: attached, they
     /// print through `docs`; unattached, they were silently dropped.
     mut fn orphan_pending() {
-        self.remarks = self.remarks.concat([Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, at)), at: at } for at in self.pending_ats])
+        self.remarks = self
+            .remarks
+            .concat(
+                [Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, at)), at: at } for at in self.pending_ats],
+            )
         self.pending = []
         self.pending_ats = []
     }
@@ -1194,7 +1302,14 @@ impl Lexing {
     /// What the input ended inside: an open hole or an open quote.
     mut fn closed_at_end() {
         if self.in_hole() { self.errors.push(hole_error(self.n)) }
-        self.errors = self.errors.concat([LexError { message: if fr.raw { "a block is never closed" } else { "a `quote` block is never closed" }, span: span_of(fr.lo, self.n) } for fr in self.frames])
+        self.errors = self
+            .errors
+            .concat(
+                [LexError {
+                    message: if fr.raw { "a block is never closed" } else { "a `quote` block is never closed" },
+                    span: span_of(fr.lo, self.n),
+                } for fr in self.frames],
+            )
     }
 }
 
@@ -1271,7 +1386,9 @@ extern fn avra_float_fits(text: string) -> int
 /// The source runs between holes: one run more than there are holes.
 /// `begins` is each `${`'s opening token and `ends` its closing `}`'s,
 /// in body order.
-export fn runs(text: string, lo: int, hi: int, begins: List<Token>, ends: List<Token>) -> List<string> {
+export fn runs(text: string, lo: int, hi: int, begins: List<Token>, ends: List<Token>) -> List<
+    string,
+> {
     let starts = [lo].concat([t.span.hi for t in ends])
     let stops = [t.span.lo for t in begins].concat([hi])
     [text.substring(starts[j], stops[j]) for j in 0..starts.length]

@@ -2,7 +2,31 @@
 //! offset, its runs, and its fills — each fill coerced by its seat's
 //! kind through a `@std/meta` row — wrapped as the kind the body
 //! parsed as. No new instruction.
-use core.{ExprId, Reg, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, Open, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape, quote_pat_is_text, quote_pat_is_run, quote_pat_is_type}
+use core.{
+    ExprId,
+    Reg,
+    DeclId,
+    PatId,
+    TypeId,
+    HoleKind,
+    MetaKind,
+    FillClass,
+    At,
+    Shape,
+    Open,
+    QuoteHole,
+    hole_kinds,
+    quote_kind,
+    holes_kind,
+    holes_seat,
+    quote_pat_holes,
+    quote_pat_names,
+    quote_pat_root,
+    quote_pat_shape,
+    quote_pat_is_text,
+    quote_pat_is_run,
+    quote_pat_is_type,
+}
 use features.{LowerCx, EnumSig}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -21,7 +45,13 @@ fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
         let kind = if whole is .Holes { holes_seat(holes_kind([c! for c in classes]) ?? MetaKind.Stmts, q.holes.length) } else { kinds[k] }
         fills.push(fill_reg(cx, e, class, kind, h, node_ty))
     }
-    let node = meta_call(cx, e, "template", [file, at, parts, boxed(cx, cx.type(List<node_ty>), fills)], node_ty)
+    let node = meta_call(
+        cx,
+        e,
+        "template",
+        [file, at, parts, boxed(cx, cx.type(List<node_ty>), fills)],
+        node_ty,
+    )
     meta_call(cx, e, wrap_verb(cx, e), [node], cx.type_at(e))
 }
 
@@ -38,7 +68,14 @@ fn wrap_verb(cx: LowerCx, e: ExprId) -> string {
 /// A hole's value as a `Node`, by what it is: a template as its
 /// node, a list of templates through the row that joins them, a
 /// number or a name through the row that lifts it.
-fn fill_reg(mut cx: LowerCx, e: ExprId, class: FillClass, kind: HoleKind, h: ExprId, node_ty: TypeId) -> Reg {
+fn fill_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    class: FillClass,
+    kind: HoleKind,
+    h: ExprId,
+    node_ty: TypeId,
+) -> Reg {
     let ty = cx.type_at(h)
     match class {
         .Template(_) or .Pattern -> node_of(cx, cx.reg_of(h), ty, node_ty),
@@ -46,9 +83,21 @@ fn fill_reg(mut cx: LowerCx, e: ExprId, class: FillClass, kind: HoleKind, h: Exp
         .Texts -> meta_call(cx, e, "names_node", [cx.reg_of(h)], node_ty),
         .Text -> meta_call(cx, e, "name_node", [cx.reg_of(h)], node_ty),
         .Named -> meta_call(cx, e, "name_node", [named(cx, h, ty)], node_ty),
-        .Int -> meta_call(cx, e, if kind is .Expression { "int_node" } else { "int_name" }, [cx.reg_of(h)], node_ty),
+        .Int -> meta_call(
+            cx,
+            e,
+            if kind is .Expression { "int_node" } else { "int_name" },
+            [cx.reg_of(h)],
+            node_ty,
+        ),
         .Bool -> meta_call(cx, e, "bool_node", [cx.reg_of(h)], node_ty),
-        .Held -> meta_call(cx, e, "text_node", [avrac_call(cx, "spliced_text", [cx.reg_of(h)], cx.type(string))], node_ty),
+        .Held -> meta_call(
+            cx,
+            e,
+            "text_node",
+            [avrac_call(cx, "spliced_text", [cx.reg_of(h)], cx.type(string))],
+            node_ty,
+        ),
     }
 }
 
@@ -148,14 +197,34 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     let type_ty = avrac_self(cx, "TypeRef")
     let of_ty = avrac_self(cx, "Analysed")
     let of = cx.field_named(v, vty, "of", of_ty)
-    let subj_store = cx.field_named(cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")), avrac_self(cx, "FileView"), "store", avrac_self(cx, "NodeStore"))
+    let subj_store = cx
+        .field_named(
+            cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")),
+            avrac_self(cx, "FileView"),
+            "store",
+            avrac_self(cx, "NodeStore"),
+        )
     let carried = cx.carried_of(answer, cx.type(List<List<at_ty>>?))
     let list_at_ty = cx.type(List<at_ty>)
     mut out: List<Reg> = []
     // LICENSED loops.push_loop: each binder's bind is packed in binder order, its own mint
     for j, n in names {
         let span_j = cx.slot_read(carried, j, list_at_ty)
-        out.push(bind_of(cx, of, code_ty, type_ty, subj_store, span_j, at_ty, quote_pat_is_text(holes, n), quote_pat_is_run(holes, n), quote_pat_is_type(holes, n)))
+        out
+            .push(
+                bind_of(
+                    cx,
+                    of,
+                    code_ty,
+                    type_ty,
+                    subj_store,
+                    span_j,
+                    at_ty,
+                    quote_pat_is_text(holes, n),
+                    quote_pat_is_run(holes, n),
+                    quote_pat_is_type(holes, n),
+                ),
+            )
     }
     out
 }
@@ -166,7 +235,18 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
 /// and proceeds as before — a code seat packs `Code { of, at }`, a
 /// name seat reads the `At`'s own name text, a type seat its own
 /// written type.
-fn bind_of(mut cx: LowerCx, of: Reg, code_ty: TypeId, type_ty: TypeId, store: Reg, span_j: Reg, at_ty: TypeId, text: bool, run: bool, ty: bool) -> Reg {
+fn bind_of(
+    mut cx: LowerCx,
+    of: Reg,
+    code_ty: TypeId,
+    type_ty: TypeId,
+    store: Reg,
+    span_j: Reg,
+    at_ty: TypeId,
+    text: bool,
+    run: bool,
+    ty: bool,
+) -> Reg {
     if run { return avrac_call(cx, "run_coded", [of, span_j], cx.type(List<code_ty>)) }
     let at_j = cx.slot_read(span_j, 0, at_ty)
     if text { return text_bind(cx, store, at_j) }
@@ -194,7 +274,14 @@ fn type_bind(mut cx: LowerCx, store: Reg, at_j: Reg, type_ty: TypeId) -> Reg {
 /// The pattern's own Shape, rebuilt: a hole names its dense binder
 /// index, a node its bare shallow fold, its kids, and its own OPEN
 /// fields (a list — a name and a type at once, or neither).
-fn shape_reg(mut cx: LowerCx, shape_ty: TypeId, list_ty: TypeId, open_ty: TypeId, open_list_ty: TypeId, s: Shape) -> Reg {
+fn shape_reg(
+    mut cx: LowerCx,
+    shape_ty: TypeId,
+    list_ty: TypeId,
+    open_ty: TypeId,
+    open_list_ty: TypeId,
+    s: Shape,
+) -> Reg {
     let sig? = cx.variants_of(shape_ty) else { return untagged(cx, shape_ty, "Shape") }
     match s {
         .Hole(index) -> tagged(cx, shape_ty, variant_tag(cx, sig, "Shape", "Hole"), [cx.const_int(index)]),
@@ -202,7 +289,16 @@ fn shape_reg(mut cx: LowerCx, shape_ty: TypeId, list_ty: TypeId, open_ty: TypeId
         .TypedNode(shallow, kids, opens) -> {
             let kid_regs = [shape_reg(cx, shape_ty, list_ty, open_ty, open_list_ty, k) for k in kids]
             let open_regs = [open_reg(cx, open_ty, o) for o in opens]
-            tagged(cx, shape_ty, variant_tag(cx, sig, "Shape", "TypedNode"), [cx.const_int(shallow), boxed(cx, list_ty, kid_regs), boxed(cx, open_list_ty, open_regs)])
+            tagged(
+                cx,
+                shape_ty,
+                variant_tag(cx, sig, "Shape", "TypedNode"),
+                [
+                    cx.const_int(shallow),
+                    boxed(cx, list_ty, kid_regs),
+                    boxed(cx, open_list_ty, open_regs),
+                ],
+            )
         },
     }
 }
@@ -221,7 +317,10 @@ fn open_reg(mut cx: LowerCx, open_ty: TypeId, o: Open) -> Reg {
 /// absence is a defect, spoken, never defaulted over.
 fn variant_tag(mut cx: LowerCx, sig: EnumSig, tyname: string, name: string) -> int {
     let t? = sig.tag_of(name) else {
-        cx.defect("`@std.avrac.${tyname}` has no `${name}` variant — the compiler's own enum moved under this lowering")
+        cx
+            .defect(
+                "`@std.avrac.${tyname}` has no `${name}` variant — the compiler's own enum moved under this lowering",
+            )
         return 0
     }
     t

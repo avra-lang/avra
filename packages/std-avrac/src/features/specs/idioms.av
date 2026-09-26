@@ -20,9 +20,7 @@ use features.{Code, Fix, rule, said}
 /// say — mining it back out would mean running the very check this
 /// assertion exists to guard, which a static pattern cannot do.
 @keeps("spec \"s\" {\n    then \"k\" {\n        a.report().contains(\"x\") && a.diagnostics.length == 1\n    }\n}")
-export rule refusal_uncounted_contains {
-    quote { ${lit} } if is_uncounted_case(lit) -> refusal_uncounted_contains_found(lit),
-}
+export rule refusal_uncounted_contains { quote { ${lit} } if is_uncounted_case(lit) -> refusal_uncounted_contains_found(lit) }
 
 fn is_uncounted_case(lit: Code) -> bool {
     match lit.at {
@@ -45,12 +43,28 @@ fn spec_cases(store: NodeStore, s: StmtId) -> List<Case> {
 
 /// Every count-pinning shape the tree already spells — a case naming
 /// any one of these has spoken a count, whatever else it also reads.
-const counted_markers: List<string> = ["diagnostics.length ==", "voices.length ==", "refused_with(", "refused_n(", "refused_in("]
+const counted_markers: List<string> = [
+    "diagnostics.length ==",
+    "voices.length ==",
+    "refused_with(",
+    "refused_n(",
+    "refused_in(",
+]
 
 fn uncounted(text: string) -> bool {
-    text.contains(".report().contains(") && !counted_markers.any((m) -> text.contains(m)) && !(text.contains("refusals(") && text.contains(") =="))
+    text.contains(".report().contains(") &&
+        !counted_markers.any((m) -> text.contains(m)) &&
+        !(text.contains("refusals(") && text.contains(") =="))
 }
 
 fn refusal_uncounted_contains_found(lit: Code) -> Fix {
-    Fix.Say(said(lit.loc(), "a `then` case asserting only `.report().contains(...)` — a cascade of refusals can hide behind a message that happens to appear; pin the count too (diagnostics.length, refusals(...) == n, refused_with/refused_n/refused_in)", "this case", null))
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "a `then` case asserting only `.report().contains(...)` — a cascade of refusals can hide behind a message that happens to appear; pin the count too (diagnostics.length, refusals(...) == n, refused_with/refused_n/refused_in)",
+                "this case",
+                null,
+            ),
+        )
 }

@@ -207,18 +207,12 @@ impl NodeStore {
 
     /// The seat an argument names, when it is written `name: value`.
     fn arg_label(a: ExprId) -> string? {
-        match self.expr(a) {
-            .Named(name, _) -> name.of,
-            _ -> null,
-        }
+        match self.expr(a) { .Named(name, _) -> name.of, _ -> null }
     }
 
     /// An argument's value, its name stripped.
     fn unnamed(a: ExprId) -> ExprId {
-        match self.expr(a) {
-            .Named(_, value) -> value,
-            _ -> a,
-        }
+        match self.expr(a) { .Named(_, value) -> value, _ -> a }
     }
 
     /// A call's arguments in SEAT order, names stripped; a seat no
@@ -265,7 +259,9 @@ impl NodeStore {
     /// mark's code 147.
     fn mark_grammar_lit(e: ExprId, text: string) {
         self.grammar_lits.set_at(e.index, text)
-        self.expr_fingerprints.set_at(e.index, fp(147, [self.expr_fingerprints.get()[e.index], fp_str(text)]))
+        self
+            .expr_fingerprints
+            .set_at(e.index, fp(147, [self.expr_fingerprints.get()[e.index], fp_str(text)]))
     }
 
     fn grammar_lit_of(e: ExprId) -> string? {
@@ -277,7 +273,19 @@ impl NodeStore {
     /// the table is empty, the mark's code 148.
     fn mark_table(e: ExprId, tbl: TableSpec) {
         self.tables.set_at(e.index, tbl)
-        self.expr_fingerprints.set_at(e.index, fp(148, [self.expr_fingerprints.get()[e.index], fp_str(tbl.row_type), fp_list(str_fps(tbl.header))]))
+        self
+            .expr_fingerprints
+            .set_at(
+                e.index,
+                fp(
+                    148,
+                    [
+                        self.expr_fingerprints.get()[e.index],
+                        fp_str(tbl.row_type),
+                        fp_list(str_fps(tbl.header)),
+                    ],
+                ),
+            )
     }
 
     fn table_of(e: ExprId) -> TableSpec? {
@@ -461,7 +469,8 @@ impl NodeStore {
         if !self.pronoun_rides(a) { return a }
         let label? = self.arg_label(a) else { return self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a)) }
         // a named argument keeps its name: the wrap goes inside it
-        self.alloc_expr(Expr.Named(Plain(label), self.pronouned(self.unnamed(a))), self.expr_span(a))
+        self
+            .alloc_expr(Expr.Named(Plain(label), self.pronouned(self.unnamed(a))), self.expr_span(a))
     }
 
     /// The value a tail statement answers with: an expression
@@ -550,13 +559,12 @@ impl NodeStore {
     fn answered(stmts: List<StmtId>) -> List<StmtId> {
         let held? = stmts.last() else { return stmts }
         let last = held
-        let chained: bool = match self.stmt(last) {
-            .IfStmt(_, _, e) -> !e.is_empty(),
-            _ -> false,
-        }
+        let chained: bool = match self.stmt(last) { .IfStmt(_, _, e) -> !e.is_empty(), _ -> false }
         if !chained || !self.annotations_of(last).is_empty() { return stmts }
         let value? = self.answer_of(last) else { return stmts }
-        stmts.slice(0, stmts.length - 1).concat([self.alloc_stmt(Stmt.ExprStmt(value), self.stmt_span(last))])
+        stmts
+            .slice(0, stmts.length - 1)
+            .concat([self.alloc_stmt(Stmt.ExprStmt(value), self.stmt_span(last))])
     }
 
     /// The one pattern-allocation seam.
@@ -589,10 +597,7 @@ impl NodeStore {
 
     /// A binding pattern's name; absence for any other pattern.
     fn bind_name(id: PatId) -> string? {
-        match self.pat(id) {
-            .Bind(name) -> name.of,
-            _ -> null,
-        }
+        match self.pat(id) { .Bind(name) -> name.of, _ -> null }
     }
 
     /// A pattern nothing can refuse: a hole or a name.
@@ -624,7 +629,14 @@ impl NodeStore {
     /// sequence and the same fingerprint. Two different programs,
     /// one identity, and the memo kernel cannot tell them apart.
     fn arm_fps(arms: List<Arm>) -> List<int> {
-        [fp(29, [fp_list([self.pat_fingerprint(p) for p in a.pats]), fp_list([self.expr_fingerprint(g) for g in some_list(a.guard)]), self.expr_fingerprint(a.value)]) for a in arms]
+        [fp(
+            29,
+            [
+                fp_list([self.pat_fingerprint(p) for p in a.pats]),
+                fp_list([self.expr_fingerprint(g) for g in some_list(a.guard)]),
+                self.expr_fingerprint(a.value),
+            ],
+        ) for a in arms]
     }
 
     /// The one statement-allocation seam.
@@ -656,7 +668,9 @@ impl NodeStore {
     fn document(s: StmtId, lines: List<string>, at: int) {
         self.docs.set_at(s.index, lines)
         self.doc_ats.set_at(s.index, at)
-        self.stmt_fingerprints.set_at(s.index, fp(115, [self.stmt_fingerprints.get()[s.index], fp_str(lines.join("\n"))]))
+        self
+            .stmt_fingerprints
+            .set_at(s.index, fp(115, [self.stmt_fingerprints.get()[s.index], fp_str(lines.join("\n"))]))
     }
 
     fn doc_comment(s: StmtId) -> List<string>? {
@@ -733,7 +747,19 @@ impl NodeStore {
     }
 
     fn restamp_annotation(s: StmtId, a: Annotation) {
-        self.stmt_fingerprints.set_at(s.index, fp(114, [self.stmt_fingerprints.get()[s.index], self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]))
+        self
+            .stmt_fingerprints
+            .set_at(
+                s.index,
+                fp(
+                    114,
+                    [
+                        self.stmt_fingerprints.get()[s.index],
+                        self.expr_fingerprint(a.callee),
+                        fp_list(self.expr_fps(a.args)),
+                    ],
+                ),
+            )
     }
 
     fn annotations_of(s: StmtId) -> List<Annotation> {
@@ -788,7 +814,8 @@ impl NodeStore {
     /// folded to one value.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
         self.grammars.set_at(s.index, read)
-        self.restamp_carrying(s, 113, [fp_str(read.head), fp_list([hole_fp(p) for p in read.parts])])
+        self
+            .restamp_carrying(s, 113, [fp_str(read.head), fp_list([hole_fp(p) for p in read.parts])])
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
@@ -863,7 +890,9 @@ impl NodeStore {
     /// that CARRIES something folds what it carries to ONE value, so
     /// the codes stay a registry and no run's boundary can move.
     fn restamp_carrying(s: StmtId, tag: int, carried: List<int>) {
-        self.stmt_fingerprints.set_at(s.index, fp(tag, [self.stmt_fingerprints.get()[s.index], fp_list(carried)]))
+        self
+            .stmt_fingerprints
+            .set_at(s.index, fp(tag, [self.stmt_fingerprints.get()[s.index], fp_list(carried)]))
     }
 
     /// `export` crossed this declaration — the module's surface
@@ -939,26 +968,17 @@ impl NodeStore {
 
     /// An unwrap's subject; null for every other expression.
     fn forced(e: ExprId) -> ExprId? {
-        match self.expr(e) {
-            .Force(value) -> value,
-            _ -> null,
-        }
+        match self.expr(e) { .Force(value) -> value, _ -> null }
     }
 
     /// A `?.` field read's subject; null for every other expression.
     fn chained(e: ExprId) -> ExprId? {
-        match self.expr(e) {
-            .Chain(subject, _) -> subject,
-            _ -> null,
-        }
+        match self.expr(e) { .Chain(subject, _) -> subject, _ -> null }
     }
 
     /// A `??`'s two sides, in order; empty for every other expression.
     fn coalesced(e: ExprId) -> List<ExprId> {
-        match self.expr(e) {
-            .Coalesce(left, right) -> [left, right],
-            _ -> [],
-        }
+        match self.expr(e) { .Coalesce(left, right) -> [left, right], _ -> [] }
     }
 
     /// The binding a place is rooted in — the name at the bottom of
@@ -974,18 +994,12 @@ impl NodeStore {
     /// The INDEX name a pairing loop binds — null for every other
     /// statement, and for a loop that names only its element.
     fn loop_index(s: StmtId) -> string? {
-        match self.stmt(s) {
-            .ForEach(index, _, _, _) -> index?.of,
-            _ -> null,
-        }
+        match self.stmt(s) { .ForEach(index, _, _, _) -> index?.of, _ -> null }
     }
 
     /// A bare name's text; null for every other expression.
     fn ident_name(e: ExprId) -> string? {
-        match self.expr(e) {
-            .Ident(name) -> name.of,
-            _ -> null,
-        }
+        match self.expr(e) { .Ident(name) -> name.of, _ -> null }
     }
 
     /// Does the PRONOUN ride this subtree unbound? `it` belongs to
@@ -1082,14 +1096,26 @@ impl NodeStore {
     /// are different records, and a defaults list beside the fields
     /// says which defaults exist without saying whose they are.
     fn param_fps(params: List<Param>) -> List<int> {
-        [fp(123, [fp_str(p.name.of), type_fp(p.ty), mark_fp(p.promises), self.opt_fp(p.default), fp_list(mark_fps(p.marks))]) for p in params]
+        [fp(
+            123,
+            [
+                fp_str(p.name.of),
+                type_fp(p.ty),
+                mark_fp(p.promises),
+                self.opt_fp(p.default),
+                fp_list(mark_fps(p.marks)),
+            ],
+        ) for p in params]
     }
 
     /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
     /// Spliced flat, a variant's payload run and the next variant's
     /// name share a boundary that moves.
     fn variant_fps(variants: List<Variant>) -> List<int> {
-        [fp(124, [fp_str(v.name.of), fp_list(self.param_fps(v.payloads)), fp_list(mark_fps(v.marks))]) for v in variants]
+        [fp(
+            124,
+            [fp_str(v.name.of), fp_list(self.param_fps(v.payloads)), fp_list(mark_fps(v.marks))],
+        ) for v in variants]
     }
 }
 
@@ -1107,20 +1133,25 @@ impl NodeStore {
     }
 
     fn exact_expr_ids(a: List<ExprId>, b: List<ExprId>) -> bool {
-        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_expr(self.expr(a[k]), self.expr(b[k])))
+        a.length == b.length &&
+            [i for i in 0..a.length].all((k) -> self.exact_expr(self.expr(a[k]), self.expr(b[k])))
     }
 
     fn exact_stmt_ids(a: List<StmtId>, b: List<StmtId>) -> bool {
-        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_stmt(self.stmt(a[k]), self.stmt(b[k])))
+        a.length == b.length &&
+            [i for i in 0..a.length].all((k) -> self.exact_stmt(self.stmt(a[k]), self.stmt(b[k])))
     }
 
     fn exact_pat_ids(a: List<PatId>, b: List<PatId>) -> bool {
-        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_pat(self.pat(a[k]), self.pat(b[k])))
+        a.length == b.length &&
+            [i for i in 0..a.length].all((k) -> self.exact_pat(self.pat(a[k]), self.pat(b[k])))
     }
 
     /// An arm's own equality — `arm_fps`'s exact twin.
     fn exact_arm(a: Arm, b: Arm) -> bool {
-        self.exact_pat_ids(a.pats, b.pats) && self.exact_opt_expr(a.guard, b.guard) && self.exact_expr(self.expr(a.value), self.expr(b.value))
+        self.exact_pat_ids(a.pats, b.pats) &&
+            self.exact_opt_expr(a.guard, b.guard) &&
+            self.exact_expr(self.expr(a.value), self.expr(b.value))
     }
 
     fn exact_arms(a: List<Arm>, b: List<Arm>) -> bool {
@@ -1129,7 +1160,11 @@ impl NodeStore {
 
     /// A seat's own equality — `param_fps`'s exact twin.
     fn exact_param(a: Param, b: Param) -> bool {
-        a.name.of == b.name.of && exact_type_ref(a.ty, b.ty) && exact_seat_mark(a.promises, b.promises) && self.exact_opt_expr(a.default, b.default) && exact_marks(a.marks, b.marks)
+        a.name.of == b.name.of &&
+            exact_type_ref(a.ty, b.ty) &&
+            exact_seat_mark(a.promises, b.promises) &&
+            self.exact_opt_expr(a.default, b.default) &&
+            exact_marks(a.marks, b.marks)
     }
 
     fn exact_params(a: List<Param>, b: List<Param>) -> bool {
@@ -1138,7 +1173,9 @@ impl NodeStore {
 
     /// A variant's own equality — `variant_fps`'s exact twin.
     fn exact_variant(a: Variant, b: Variant) -> bool {
-        a.name.of == b.name.of && self.exact_params(a.payloads, b.payloads) && exact_marks(a.marks, b.marks)
+        a.name.of == b.name.of &&
+            self.exact_params(a.payloads, b.payloads) &&
+            exact_marks(a.marks, b.marks)
     }
 
     fn exact_variants(a: List<Variant>, b: List<Variant>) -> bool {
@@ -1147,7 +1184,9 @@ impl NodeStore {
 
     /// A case's own equality — `case_fps`'s exact twin.
     fn exact_case(a: Case, b: Case) -> bool {
-        a.group == b.group && a.name == b.name && self.exact_expr(self.expr(a.body), self.expr(b.body))
+        a.group == b.group &&
+            a.name == b.name &&
+            self.exact_expr(self.expr(a.body), self.expr(b.body))
     }
 
     fn exact_cases(a: List<Case>, b: List<Case>) -> bool {
@@ -1160,7 +1199,10 @@ impl NodeStore {
     fn exact_view(a: BodyView, b: BodyView) -> bool {
         match a {
             .None -> match b { .None -> true, rest -> false },
-            .Verbatim(stmts1, arms1) -> match b { .Verbatim(stmts2, arms2) -> self.exact_stmt_ids(stmts1, stmts2) && self.exact_arms(arms1, arms2), rest -> false },
+            .Verbatim(stmts1, arms1) -> match b {
+                .Verbatim(stmts2, arms2) -> self.exact_stmt_ids(stmts1, stmts2) && self.exact_arms(arms1, arms2),
+                rest -> false,
+            },
             .Expanded(_) -> match b { .Expanded(_) -> true, rest -> false },
         }
     }

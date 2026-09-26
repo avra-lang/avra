@@ -1,6 +1,22 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
-use core.{joined, flatten, distinct, sorted_texts, module_path, digest_of, same_decl, ModulePath, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark}
+use core.{
+    joined,
+    flatten,
+    distinct,
+    sorted_texts,
+    module_path,
+    digest_of,
+    same_decl,
+    ModulePath,
+    Type,
+    TypeId,
+    DeclId,
+    FileId,
+    StmtId,
+    ExprId,
+    SeatMark,
+}
 use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word}
 use compiler.lower.{Body}
 use compiler.store.{Store, Stored, node_key}
@@ -20,7 +36,13 @@ impl Workspace {
                     if !store.has(Stored.Unit, key) {
                         match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
                             .Ok(value) -> {
-                                let _ = store.keep(Stored.Unit, key, settled_wire(value), [obj_key_of(self, store, m, path)])
+                                let _ = store
+                                    .keep(
+                                        Stored.Unit,
+                                        key,
+                                        settled_wire(value),
+                                        [obj_key_of(self, store, m, path)],
+                                    )
                                 count = count + 1
                             },
                             .Err(_) -> { let _ = 0 },
@@ -69,8 +91,13 @@ impl Workspace {
         self.decls.record_const_type(f, stmt, ty)
         // a held const has no initializer to settle again: its kept value is the
         // only one, and a row that does not give it back is a defect said
-        let value: Settled? = settled_from_wire(store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? "")
-        if value == null { return self.defect("a held const's value did not decode — `${row.name}` in ${row.path}") }
+        let value: Settled? = settled_from_wire(
+            store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? "",
+        )
+        if value == null {
+            return self
+                .defect("a held const's value did not decode — `${row.name}` in ${row.path}")
+        }
         self.decls.remember_held_value(id, value!)
     }
 
@@ -91,11 +118,18 @@ impl Workspace {
         // a seal is sticky, so the layout the record kept lands before the declaration
         if boxed { self.decls.types.unflatten(self.decls.record_type(id)) }
         let fields = row.items()
-        self.decls.declare(id, .Record(StructSig {
-            names: [field_name(f) for f in fields],
-            types: [self.interface_type(name_of_field(f)) for f in fields],
-            defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
-        }))
+        self
+            .decls
+            .declare(
+                id,
+                .Record(
+                    StructSig {
+                        names: [field_name(f) for f in fields],
+                        types: [self.interface_type(name_of_field(f)) for f in fields],
+                        defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
+                    },
+                ),
+            )
         let made = self.decls.record_type(id)
         // peek, not is_flat: this is a belief to watch for drift, not a
         // read to answer for — layouts_moved (compiler/derive.av) asks
@@ -106,13 +140,33 @@ impl Workspace {
 
     fn fill_enum(row: Row, id: DeclId) {
         let arms = row.items()
-        self.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(self, a) for a in arms] }))
+        self
+            .decls
+            .declare(
+                id,
+                .Enum(
+                    EnumSig {
+                        names: [field_name(a) for a in arms],
+                        payloads: [payload_of(self, a) for a in arms],
+                    },
+                ),
+            )
     }
 
     fn fill_fn(row: Row, id: DeclId) {
         let seats = row.items()
         self.decls.record_seats(id, row.marks())
-        self.decls.declare(id, .Fn(FnSig { params: [self.interface_type(s) for s in seats], ret: self.interface_type(row.ret_wire()) }))
+        self
+            .decls
+            .declare(
+                id,
+                .Fn(
+                    FnSig {
+                        params: [self.interface_type(s) for s in seats],
+                        ret: self.interface_type(row.ret_wire()),
+                    },
+                ),
+            )
         let bits = row.writes()
         for j in 0..bits.length { if bits.char_code(j) == 49 { self.decls.record_seat_written(id, j) } }
     }
@@ -207,7 +261,20 @@ impl Workspace {
         let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
         // the ordinal is the record's identity within a held file: a name/kind key
         // collapses generated members and same-named methods
-        let id = self.decls.mint("${f.index}#held#${row.ordinal}", f, StmtId { index: row.stmt }, row.name, kind!, row.exported, row.owner, null, row.nested, root)
+        let id = self
+            .decls
+            .mint(
+                "${f.index}#held#${row.ordinal}",
+                f,
+                StmtId { index: row.stmt },
+                row.name,
+                kind!,
+                row.exported,
+                row.owner,
+                null,
+                row.nested,
+                root,
+            )
         self.decls.held_joins(f, id, row.ordinal, kind! is .Main, row.item)
         self.decls.adopt_facts(id, facts!)
         id
@@ -231,10 +298,17 @@ impl Workspace {
             // the fn's payload: one word per seat, then one bit per seat.
             let n = self.decls.seat_count(d.id)
             let marks = joined([mark_word(self.decls.seat_mark(d.id, j)) for j in 0..n], ";")
-            let writes = joined([if self.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n], "")
+            let writes = joined(
+                [if self.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n],
+                "",
+            )
             "${shape_line(self, sig!, "")}\t${marks}\t${writes}"
         } else {
-            shape_line(self, sig!, if d.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d.id)) { "boxed" } else { "struct" })
+            shape_line(
+                self,
+                sig!,
+                if d.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d.id)) { "boxed" } else { "struct" },
+            )
         }
         let at = shape.index_of("\t")
         let visibility = if d.exported { "1" } else { "0" }
@@ -266,14 +340,22 @@ impl Workspace {
         let prior_lines = record_cached(self, store, m).split("\n")
         let files = self.module_files(m)
         let kept = lines_by_file(prior_lines)
-        let fresh = flatten([self.imported_by(path) for path in files if !self.is_held(self.file_id(path))])
-        let here = distinct([line for line in prior_lines if line.starts_with("import\t")].concat(["import\t${d.text()}" for d in fresh]))
+        let fresh = flatten(
+            [self.imported_by(path) for path in files if !self.is_held(self.file_id(path))],
+        )
+        let here = distinct(
+            [line for line in prior_lines if line.starts_with("import\t")]
+                .concat(["import\t${d.text()}" for d in fresh]),
+        )
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
         let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${joined(self.ran_by(store, f.path), "|")}\t${f.iface}" for f in parts]
         let iface = digest_of(joined(sorted_texts([f.iface for f in parts]), "\n"))
-        joined(["iface\t${iface}"].concat(here).concat(read).concat(flatten([f.lines for f in parts])), "\n")
+        joined(
+            ["iface\t${iface}"].concat(here).concat(read).concat(flatten([f.lines for f in parts])),
+            "\n",
+        )
     }
 
     /// One file's part of its module's record. A HELD file's lines are copied
@@ -286,7 +368,11 @@ impl Workspace {
         }
         let lines = kept.get(path) ?? []
         let at: Placed? = record_places(self, store, m).get(path)
-        FileLines { path: path, lines: lines, iface: if at != null && at!.file.length > 4 { at!.file[4] } else { iface_digest(lines) } }
+        FileLines {
+            path: path,
+            lines: lines,
+            iface: if at != null && at!.file.length > 4 { at!.file[4] } else { iface_digest(lines) },
+        }
     }
 
     /// A parsed file's record lines, one per declaration.
@@ -323,7 +409,9 @@ impl Workspace {
     /// its module's last record kept them.
     fn ran_directly(store: Store, path: string) -> List<string> {
         if !self.is_held(self.file_id(path)) { return self.hold.runs.get().get(path) ?? [] }
-        kept_runs(record_places(self, store, module_path(self.module_of(path).split("."))).get(path))
+        kept_runs(
+            record_places(self, store, module_path(self.module_of(path).split("."))).get(path),
+        )
     }
 
 }
@@ -335,7 +423,15 @@ impl Workspace {
         if d.nested { return null }
         let s? = self.sig(d.id) else { return null }
         match s {
-            .Fn(sig) -> Body { name: self.decls.symbol(d.id), params: sig.params, ret: sig.ret, gives: null, ins: [], reg_types: [], file: d.file },
+            .Fn(sig) -> Body {
+                name: self.decls.symbol(d.id),
+                params: sig.params,
+                ret: sig.ret,
+                gives: null,
+                ins: [],
+                reg_types: [],
+                file: d.file,
+            },
             rest -> null,
         }
     }
@@ -430,7 +526,10 @@ impl Decls {
                 marks.push(mark_of_word(bits.substring(j, j + 1)))
             }
             let ret? = self.read_type_wire(words, cursor + 1) else { return null }
-            return WireType { id: self.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
+            return WireType {
+                id: self.types.intern(Type.Fn(params, marks, ret.id)),
+                next: ret.next,
+            }
         }
         if tag == "U" {
             if at + 1 >= words.length { return null }
@@ -480,7 +579,20 @@ impl Decls {
             .Opt(t) -> "O~${self.wire_body(t)}",
             .Map(k, v) -> "M~${self.wire_body(k)}~${self.wire_body(v)}",
             .Res(ok, err) -> "Q~${self.wire_body(ok)}~${self.wire_body(err)}",
-            .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([self.wire_body(t) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), self.wire_body(ret)]), "~"),
+            .Fn(params, marks, ret) -> joined(
+                ["F", "${params.length}"]
+                    .concat([self.wire_body(t) for t in params])
+                    .concat(
+                        [
+                            joined(
+                                [mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length],
+                                "",
+                            ),
+                            self.wire_body(ret),
+                        ],
+                    ),
+                "~",
+            ),
             .Union(members) -> joined(["U", "${members.length}"].concat([self.wire_body(m) for m in members]), "~"),
         }
     }

@@ -38,14 +38,20 @@ spec "compiler/typing" {
     }
     given "several declarations in one file" {
         then "totality holds across every body — one table covers the file" {
-            let a = analyze_source("type P = { x: int }\nenum E {\n    a\n    b\n}\nfn f(p: P) -> int {\n    p.x\n}\nfn g(e: E) -> int {\n    match e {\n        .a -> 1\n        .b -> 2\n    }\n}\nf(P { x: 1 }) + g(E.b)")
+            let a = analyze_source(
+                "type P = { x: int }\nenum E {\n    a\n    b\n}\nfn f(p: P) -> int {\n    p.x\n}\nfn g(e: E) -> int {\n    match e {\n        .a -> 1\n        .b -> 2\n    }\n}\nf(P { x: 1 }) + g(E.b)",
+            )
             a.diagnostics.is_empty() && a.facts.of_expr.length() == a.view.store.exprs.count()
         }
         then "two erroring bodies report in SOURCE order, whatever order they were asked in" {
             // the entry calls `b` before `a`, so `b`'s body is asked first;
             // the report still reads top to bottom.
-            let a = analyze_source("fn a() -> int {\n    \"s\"\n}\nfn b() -> int {\n    true\n}\nb() + a()")
-            a.diagnostics.length == 2 && a.diagnostics[0].message.contains("`a` declares") && a.diagnostics[1].message.contains("`b` declares")
+            let a = analyze_source(
+                "fn a() -> int {\n    \"s\"\n}\nfn b() -> int {\n    true\n}\nb() + a()",
+            )
+            a.diagnostics.length == 2 &&
+                a.diagnostics[0].message.contains("`a` declares") &&
+                a.diagnostics[1].message.contains("`b` declares")
         }
     }
     given "a use before its definition" {
@@ -61,7 +67,10 @@ spec "compiler/typing" {
             let a = reg.type(int)
             let b = reg.type(int)
             // LICENSED structs.index_compared: interning identity is what this test asserts
-            a.index == b.index && a.index != reg.intern(Type.Error).index && reg.name_of(a) == "int" && reg.name_of(reg.intern(Type.Error)) == "<error>"
+            a.index == b.index &&
+                a.index != reg.intern(Type.Error).index &&
+                reg.name_of(a) == "int" &&
+                reg.name_of(reg.intern(Type.Error)) == "<error>"
         }
     }
 }

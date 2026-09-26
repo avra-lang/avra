@@ -66,7 +66,13 @@ export fn checks_delete(applied: fn(Code) -> Fix?, before: string) -> bool {
     let root? = example_root(a) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let what? = deleted(hit) else { return false }
-    let edits? = delete_edits(Analysed { view: a.view, names: a.names, facts: a.facts }, a.view.source.text, what) else { return false }
+    let edits? = delete_edits(
+        Analysed { view: a.view, names: a.names, facts: a.facts },
+        a.view.source.text,
+        what,
+    ) else {
+        return false
+    }
     let after? = spliced(a.view.source.text, edits) else { return false }
     analyze_source(after).clean()
 }
@@ -110,8 +116,13 @@ impl Workspace {
 impl Decls {
     fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
         let d? = found.find(named(r, it)) else { return [] }
-        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", component_root_kind(self, d) == r.root)
-        [root_check].concat([checked("${rule_id(r)} @fixes", fixes_checked(r.run, f)) for f in r.fixes]).concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
+        let root_check = checked(
+            "${rule_id(r)}'s synthesised root-kind index matches its declaration",
+            component_root_kind(self, d) == r.root,
+        )
+        [root_check]
+            .concat([checked("${rule_id(r)} @fixes", fixes_checked(r.run, f)) for f in r.fixes])
+            .concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
     }
 }
 

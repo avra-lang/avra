@@ -2,20 +2,43 @@
 // hole's text resolves where it is spliced, and a template's own
 // names resolve in the file that wrote the quote — origin hygiene.
 use @std.avrac.compiler.{avra, new_workspace, parse_source, Program}
-use @std.avrac.testing.{vendored_meta, vendored_meta_as, vendored_meta_paths, real_meta_source, said, refused_n, refused_in}
+use @std.avrac.testing.{
+    vendored_meta,
+    vendored_meta_as,
+    vendored_meta_paths,
+    real_meta_source,
+    said,
+    refused_n,
+    refused_in,
+}
 use compiler.host.{memory_host}
 use compiler.format.{render_source}
 
 /// A program with `@std/meta` and a PROVIDER package (`@x/prov`) whose
 /// templates the program's annotations run.
 fn packaged(main: string, prov: string) -> Program {
-    let files = vendored_meta({
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
-        "/w/src/main.av": main,
-        "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-        "/w/vendor/prov/src/prov.av": prov,
-    })
-    let ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
+            "/w/src/main.av": main,
+            "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/prov/src/prov.av": prov,
+        },
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/prov/avra.toml",
+                "/w/vendor/prov/src/prov.av",
+            ]
+                .concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
     ws.program("/w/src/main.av")
 }
 
@@ -24,13 +47,29 @@ fn packaged(main: string, prov: string) -> Program {
 /// the shapes the crossing reads by slot have moved. Built from the
 /// real source, one thing changed.
 fn packaged_under(main: string, prov: string, meta: string) -> Program {
-    let files = vendored_meta_as({
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
-        "/w/src/main.av": main,
-        "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-        "/w/vendor/prov/src/prov.av": prov,
-    }, meta)
-    let ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
+    let files = vendored_meta_as(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
+            "/w/src/main.av": main,
+            "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/prov/src/prov.av": prov,
+        },
+        meta,
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/prov/avra.toml",
+                "/w/vendor/prov/src/prov.av",
+            ]
+                .concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
     ws.program("/w/src/main.av")
 }
 
@@ -51,10 +90,7 @@ fn meta_less(main: string) -> Program {
 }
 
 fn report(p: Program) -> string {
-    match p.check() {
-        .Ok(warned) -> warned,
-        .Err(words) -> words,
-    }
+    match p.check() { .Ok(warned) -> warned, .Err(words) -> words }
 }
 
 fn clean(p: Program) -> bool { p.check() is .Ok }
@@ -83,13 +119,27 @@ fn canonical(source: string) -> string {
 spec "features/quote — a quote is `Code`" {
     given "the hole law" {
         then "text, a scalar, a named meta value and `Code` all splice" {
-            clean(packaged("use @std.meta.{Code, Decls, name}\nlet n = 7\nlet tname = \"P\"\nlet inner: Code = name(\"x\")\nlet c: Decls = quote { impl \${tname} { fn get() -> int { \${n} + \${inner} } } }\nc.text()", provider()))
+            clean(
+                packaged(
+                    "use @std.meta.{Code, Decls, name}\nlet n = 7\nlet tname = \"P\"\nlet inner: Code = name(\"x\")\nlet c: Decls = quote { impl \${tname} { fn get() -> int { \${n} + \${inner} } } }\nc.text()",
+                    provider(),
+                ),
+            )
         }
         then "a list in a hole refuses at the hole" {
-            refused_in(packaged("use @std.meta.{Code}\nlet xs = [1, 2]\nlet c: Code = quote { \${xs} }\nc.text()", provider()), "a hole takes a template, a number, a name, a list of names or of templates, found `List<int>`")
+            refused_in(
+                packaged(
+                    "use @std.meta.{Code}\nlet xs = [1, 2]\nlet c: Code = quote { \${xs} }\nc.text()",
+                    provider(),
+                ),
+                "a hole takes a template, a number, a name, a list of names or of templates, found `List<int>`",
+            )
         }
         then "a quote without `@std/meta` has no `Code` to answer" {
-            refused_in(meta_less("let c = quote { 1 }\n1"), "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`")
+            refused_in(
+                meta_less("let c = quote { 1 }\n1"),
+                "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`",
+            )
         }
         then "a quote prints back as written" {
             canonical("let c = quote { impl \${name} { fn get() -> int { \${n} } } }") == "let c = quote { impl \${name} { fn get() -> int { \${n} } } }"
@@ -104,20 +154,38 @@ spec "features/quote — a quote is `Code`" {
             clean(packaged(wrapped_program(), provider()))
         }
         then "a template's own read does not see a binder whose name came through a hole" {
-            refused_n(packaged("use @std.meta.{derive}\nuse @x.prov.{holed}\n@holed(\"x\")\nfn go() -> int { 0 }\ngo_holed()", provider()), "`x` is not defined", 1)
+            refused_n(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{holed}\n@holed(\"x\")\nfn go() -> int { 0 }\ngo_holed()",
+                    provider(),
+                ),
+                "`x` is not defined",
+                1,
+            )
         }
         then "`avra expand` names the template beside the annotation that asked" {
             let p = packaged(loud_program(), provider())
-            p.expanded_source(p.ws.file_id("/w/src/main.av")).contains("// from @derive on Point — template /w/vendor/prov/src/prov.av:7")
+            p
+                .expanded_source(p.ws.file_id("/w/src/main.av"))
+                .contains("// from @derive on Point — template /w/vendor/prov/src/prov.av:7")
         }
         then "the user's code is spliced as written" {
             let p = packaged(wrapped_program(), provider())
-            p.expanded_source(p.ws.file_id("/w/src/main.av")).contains("fn go_wrapped() -> int {\n    let tmp = 1\n    let picked = tmp\n    picked() + tmp\n}")
+            p
+                .expanded_source(p.ws.file_id("/w/src/main.av"))
+                .contains(
+                    "fn go_wrapped() -> int {\n    let tmp = 1\n    let picked = tmp\n    picked() + tmp\n}",
+                )
         }
         then "a name a template does not know refuses in the template's own file" {
-            let p = packaged(loud_program(), provider().replace("shout(\${name})", "missing(\${name})"))
+            let p = packaged(
+                loud_program(),
+                provider().replace("shout(\${name})", "missing(\${name})"),
+            )
             let diagnostics = said(p)
-            diagnostics.length == 1 && p.report().contains("no `fn missing` is defined") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+            diagnostics.length == 1 &&
+                p.report().contains("no `fn missing` is defined") &&
+                p.report().contains("/w/vendor/prov/src/prov.av:7")
         }
     }
     given "a template's own mistakes speak at the template" {
@@ -125,38 +193,46 @@ spec "features/quote — a quote is `Code`" {
         then "a template that does not parse refuses at the library's own parse, and the target says nothing more" {
             let p = packaged(loud_program(), provider().replace("shout(\${name})", "let = 3"))
             let diagnostics = said(p)
-            diagnostics.length == 1 && p.report().contains("expected NAME") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+            diagnostics.length == 1 &&
+                p.report().contains("expected NAME") &&
+                p.report().contains("/w/vendor/prov/src/prov.av:7")
         }
         then "a type error inside a template blames the template, not the user" {
             let p = packaged(loud_program(), provider().replace("shout(\${name})", "shout(1)"))
             let diagnostics = said(p)
-            diagnostics.length == 1 && p.report().contains("argument 1 of `shout` wants `string`, found `int`") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+            diagnostics.length == 1 &&
+                p.report().contains("argument 1 of `shout` wants `string`, found `int`") &&
+                p.report().contains("/w/vendor/prov/src/prov.av:7")
         }
     }
     given "a run hole in an expression seat — `\${..xs}` splices a `List<Code>` where an argument list or a list literal's elements stand" {
         then "zero items land as zero elements" {
-            match packaged("use @std.meta.{derive}\nuse @x.prov.{spliced0}\n@spliced0()\nfn go() -> int { 0 }\ngo_spliced0()", provider()).run() {
-                .Ok(out) -> out == "0",
-                .Err(_) -> false,
-            }
+            match packaged(
+                "use @std.meta.{derive}\nuse @x.prov.{spliced0}\n@spliced0()\nfn go() -> int { 0 }\ngo_spliced0()",
+                provider(),
+            )
+                .run() { .Ok(out) -> out == "0", .Err(_) -> false }
         }
         then "one item lands as one element" {
-            match packaged("use @std.meta.{derive}\nuse @x.prov.{spliced1}\n@spliced1()\nfn go() -> int { 0 }\ngo_spliced1()", provider()).run() {
-                .Ok(out) -> out == "1",
-                .Err(_) -> false,
-            }
+            match packaged(
+                "use @std.meta.{derive}\nuse @x.prov.{spliced1}\n@spliced1()\nfn go() -> int { 0 }\ngo_spliced1()",
+                provider(),
+            )
+                .run() { .Ok(out) -> out == "1", .Err(_) -> false }
         }
         then "three items land as three elements, in a list literal" {
-            match packaged("use @std.meta.{derive}\nuse @x.prov.{spliced_args}\n@spliced_args()\nfn go() -> int { 0 }\ngo_spliced()", provider()).run() {
-                .Ok(out) -> out == "3",
-                .Err(_) -> false,
-            }
+            match packaged(
+                "use @std.meta.{derive}\nuse @x.prov.{spliced_args}\n@spliced_args()\nfn go() -> int { 0 }\ngo_spliced()",
+                provider(),
+            )
+                .run() { .Ok(out) -> out == "3", .Err(_) -> false }
         }
         then "three items land as three arguments, in a call" {
-            match packaged("use @std.meta.{derive}\nuse @x.prov.{spliced_call}\n@spliced_call()\nfn go() -> int { 0 }\ngo_call()", provider()).run() {
-                .Ok(out) -> out == "6",
-                .Err(_) -> false,
-            }
+            match packaged(
+                "use @std.meta.{derive}\nuse @x.prov.{spliced_call}\n@spliced_call()\nfn go() -> int { 0 }\ngo_call()",
+                provider(),
+            )
+                .run() { .Ok(out) -> out == "6", .Err(_) -> false }
         }
     }
 }

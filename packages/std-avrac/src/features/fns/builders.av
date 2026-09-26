@@ -3,7 +3,16 @@
 //! types arrive as two parallel captures and zip into Params.
 use core.{Expr, Stmt, Param, TypeRef, plain_mark, Scoped}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at, seats, marked_seats, isolating}
+use features.{
+    LangNode,
+    Builder,
+    aligned_binds,
+    aligned_param_types,
+    expr_id_at,
+    seats,
+    marked_seats,
+    isolating,
+}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -13,13 +22,39 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     let ps = b.tokens(5)?
     let r = b.answer(8)
     let body = b.expr(9)?
-    let ends? = b.span_end() else { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: a fn declaration without a span — the arena and the grammar disagree",
+        )
+    }
     // a tparam's BOUND and a param's TYPE are optional in the
     // PARSE; spans re-align both (only `self` may go bare — the
     // declare law enforces it).
     let bounds = aligned_binds(tp, b.tokens(2)?, ends)
-    let tparams = [Param { name: Scoped(t.text), ty: bound_ref(bounds[j], t), default: null, promises: plain_mark, span: t.span } for j, t in tp]
-    let params = b.defaulted(ps, isolating(marked_seats(ps, aligned_param_types(ps, b.type_refs(6)?, ends), muts, consts, n.span.lo), ps, b.tokens(10)?, n.span.lo), b.exprs(7)?)
+    let tparams = [Param {
+        name: Scoped(t.text),
+        ty: bound_ref(bounds[j], t),
+        default: null,
+        promises: plain_mark,
+        span: t.span,
+    } for j, t in tp]
+    let params = b
+        .defaulted(
+            ps,
+            isolating(
+                marked_seats(
+                    ps,
+                    aligned_param_types(ps, b.type_refs(6)?, ends),
+                    muts,
+                    consts,
+                    n.span.lo,
+                ),
+                ps,
+                b.tokens(10)?,
+                n.span.lo,
+            ),
+            b.exprs(7)?,
+        )
     b.make_stmt(Stmt.FnDecl(Scoped(n.text), tparams, params, r, body))
 }
 
@@ -33,8 +68,24 @@ fn build_once_fn(b: Builder) -> Result<LangNode, string> {
     let ps = b.tokens(3)?
     let r = b.answer(5)
     let body = b.expr(6)?
-    let ends? = b.span_end() else { return .Err("defect: a once declaration without a span — the arena and the grammar disagree") }
-    let s = b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends)), r, body), b.span)
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: a once declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    let s = b
+        .store
+        .alloc_stmt(
+            Stmt
+                .FnDecl(
+                    Scoped(n.text),
+                    [],
+                    seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends)),
+                    r,
+                    body,
+                ),
+            b.span,
+        )
     b.store.mark_once(s)
     .Ok(LangNode.NStmt(s))
 }
@@ -74,6 +125,24 @@ fn build_extern(b: Builder) -> Result<LangNode, string> {
     let consts = b.tokens(1)?
     let muts = b.tokens(2)?
     let ps = b.tokens(3)?
-    let ends? = b.span_end() else { return .Err("defect: an extern declaration without a span — the arena and the grammar disagree") }
-    b.make_stmt(Stmt.ExternFn(Scoped(n.text), marked_seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends), muts, consts, n.span.lo), b.answer(5)))
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: an extern declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    b
+        .make_stmt(
+            Stmt
+                .ExternFn(
+                    Scoped(n.text),
+                    marked_seats(
+                        ps,
+                        aligned_param_types(ps, b.type_refs(4)?, ends),
+                        muts,
+                        consts,
+                        n.span.lo,
+                    ),
+                    b.answer(5),
+                ),
+        )
 }

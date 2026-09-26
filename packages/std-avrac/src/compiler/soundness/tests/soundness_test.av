@@ -26,8 +26,25 @@ fn new_list(dst: Reg) -> Ins { Ins.CallRt(dst, "avra_array_new", []) }
 /// One body, `n` registers wide, no params — every witness below
 /// tests ONE body's own span, standing alone in its own `Lowered`.
 fn witness(name: string, ins: List<Ins>, n: int) -> List<Diag> {
-    let b = Body { name: name, params: [], ret: ty(0), gives: null, ins: ins, reg_types: [ty(0) for i in 0..n] }
-    checked(Lowered { fns: [], entry: b, types: new_type_registry(), diagnostics: [], externs: [], statics: [] }, all_managed)
+    let b = Body {
+        name: name,
+        params: [],
+        ret: ty(0),
+        gives: null,
+        ins: ins,
+        reg_types: [ty(0) for i in 0..n],
+    }
+    checked(
+        Lowered {
+            fns: [],
+            entry: b,
+            types: new_type_registry(),
+            diagnostics: [],
+            externs: [],
+            statics: [],
+        },
+        all_managed,
+    )
 }
 
 fn words(ds: List<Diag>) -> string {
@@ -43,7 +60,14 @@ fn leak_ins() -> List<Ins> {
 /// The same box released twice — the second `Release` reads a
 /// register this walk already brought to zero.
 fn double_release_ins() -> List<Ins> {
-    [Ins.ScopeEnter(Level.Application), new_list(reg(0)), Ins.Release(reg(0)), Ins.Release(reg(0)), Ins.ScopeExit(null), Ins.Ret(0)]
+    [
+        Ins.ScopeEnter(Level.Application),
+        new_list(reg(0)),
+        Ins.Release(reg(0)),
+        Ins.Release(reg(0)),
+        Ins.ScopeExit(null),
+        Ins.Ret(0),
+    ]
 }
 
 /// A register this body never owns (never an owning definition —
@@ -89,15 +113,21 @@ spec "compiler/soundness" {
     given "the five voices, over hand-built IR a correct memory pass never emits" {
         then "a fresh box left alive at its scope's end is LEAKED" {
             let ds = witness("leaks", leak_ins(), 1)
-            ds.length == 1 && words(ds).contains("r0 is a fresh box still alive") && words(ds).contains("never released, transferred, or answered")
+            ds.length == 1 &&
+                words(ds).contains("r0 is a fresh box still alive") &&
+                words(ds).contains("never released, transferred, or answered")
         }
         then "a second Release reads what the first already brought to zero" {
             let ds = witness("double_release", double_release_ins(), 1)
-            ds.length == 1 && words(ds).contains("reads r0 after it was released") && words(ds).contains("use-after-free")
+            ds.length == 1 &&
+                words(ds).contains("reads r0 after it was released") &&
+                words(ds).contains("use-after-free")
         }
         then "releasing a register this body never owned names the mistake" {
             let ds = witness("release_unowned", release_unowned_ins(), 1)
-            ds.length == 1 && words(ds).contains("releases r0") && words(ds).contains("never this body's own reference")
+            ds.length == 1 &&
+                words(ds).contains("releases r0") &&
+                words(ds).contains("never this body's own reference")
         }
         then "an IfStart region whose arms disagree on a pre-existing box is refused at the merge" {
             let ds = witness("disagree", region_disagreement_ins(), 5)
@@ -105,18 +135,30 @@ spec "compiler/soundness" {
         }
         then "an unprotected view handed to a call alongside its own root is refused" {
             let ds = witness("view_case", unprotected_view_ins(), 3)
-            ds.length == 1 && words(ds).contains("r1") && words(ds).contains("a view with no reference of its own")
+            ds.length == 1 &&
+                words(ds).contains("r1") &&
+                words(ds).contains("a view with no reference of its own")
         }
     }
     given "real programs whose lowered IR must stay clean — the false positives this pass found and fixed" {
         then "a managed struct PACK's own birth-retain reads clean (PACK IS IDENTITY, always retained)" {
-            ir_of("type P = { s: string }\nfn make() -> P { P { s: \"a\" } }\nmake().s").diagnostics.is_empty()
+            ir_of("type P = { s: string }\nfn make() -> P { P { s: \"a\" } }\nmake().s")
+                .diagnostics
+                .is_empty()
         }
         then "a mut accumulator folded across a loop reads clean — the escaping Load's birth-retain" {
-            ir_of("fn built(head: List<int>, rest: List<List<int>>) -> List<int> {\n    mut acc = head\n    for p in rest {\n        acc = acc.concat(p)\n    }\n    acc\n}\nbuilt([1], [[2], [3]]).length").diagnostics.is_empty()
+            ir_of(
+                "fn built(head: List<int>, rest: List<List<int>>) -> List<int> {\n    mut acc = head\n    for p in rest {\n        acc = acc.concat(p)\n    }\n    acc\n}\nbuilt([1], [[2], [3]]).length",
+            )
+                .diagnostics
+                .is_empty()
         }
         then "a view rooted at the same call's own mut seat is protected — borrowed_params' own shape" {
-            ir_of("type Bag = { items: List<string>, rows: List<List<string>>, tag: string }\nfn emptied(mut b: Bag, row: List<string>) -> string {\n    b.rows = []\n    b.tag = \"gone\"\n    row[1]\n}\nmut b = Bag { items: [], rows: [[\"a\", \"b\"]], tag: \"\" }\nemptied(b, b.rows[0])").diagnostics.is_empty()
+            ir_of(
+                "type Bag = { items: List<string>, rows: List<List<string>>, tag: string }\nfn emptied(mut b: Bag, row: List<string>) -> string {\n    b.rows = []\n    b.tag = \"gone\"\n    row[1]\n}\nmut b = Bag { items: [], rows: [[\"a\", \"b\"]], tag: \"\" }\nemptied(b, b.rows[0])",
+            )
+                .diagnostics
+                .is_empty()
         }
     }
 }

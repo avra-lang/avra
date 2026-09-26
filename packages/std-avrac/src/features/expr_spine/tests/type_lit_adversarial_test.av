@@ -17,7 +17,10 @@ spec "features/expr_spine (type literal) — the red team" {
             shown(names() + "n.type(List<List<List<int>>>)") == "List<List<List<int>>>"
         }
         then "every constructor inside every other" {
-            shown(names() + "n.type(Map<List<int>, Result<Map<string, int?>, fn(int) -> List<bool>?>>)") == "Map<List<int>, Result<Map<string, int?>, fn11 -> List<bool>?>>"
+            shown(
+                names() +
+                    "n.type(Map<List<int>, Result<Map<string, int?>, fn(int) -> List<bool>?>>)",
+            ) == "Map<List<int>, Result<Map<string, int?>, fn11 -> List<bool>?>>"
         }
         then "a trailing comma in a constructor's arguments, as everywhere" {
             shown(names() + "n.type(List<int,>)") == "List<int>"
@@ -26,27 +29,48 @@ spec "features/expr_spine (type literal) — the red team" {
             refused_with(names() + "n.type(List)", "`List` is applied to 0 types; it takes 1")
         }
         then "an empty literal takes a TYPE — and no method wears a keyword's name" {
-            refused_with(names() + "n.type()", "`.type(…)` names no method — `type` is a keyword")
+            refused_with(
+                names() + "n.type()",
+                "`.type(…)` names no method — `type` is a keyword",
+            )
         }
     }
     given "wrong types in every slot" {
         then "a text receiver refuses in the literal's words" {
-            refused_with(names() + "\"a\".type(int)", "`.type(…)` interns into its receiver, and `string` has no `interned`")
+            refused_with(
+                names() + "\"a\".type(int)",
+                "`.type(…)` interns into its receiver, and `string` has no `interned`",
+            )
         }
         then "a nullable receiver refuses in the literal's words — unwrap or chain" {
-            refused_with(names() + "let z: N? = n\nz.type(int)", "`.type(…)` interns into its receiver, and `N?` has no `interned`")
+            refused_with(
+                names() + "let z: N? = n\nz.type(int)",
+                "`.type(…)` interns into its receiver, and `N?` has no `interned`",
+            )
         }
         then "a type NAME as the receiver refuses in the literal's words, not the variant's" {
-            refused_with(names() + "N.type(int)", "`.type(…)` interns into its receiver, and `N` has no `interned`")
+            refused_with(
+                names() + "N.type(int)",
+                "`.type(…)` interns into its receiver, and `N` has no `interned`",
+            )
         }
         then "a value in the slot: a number" {
-            refused_with(names() + "n.type(1)", "`.type(…)` names no method — `type` is a keyword")
+            refused_with(
+                names() + "n.type(1)",
+                "`.type(…)` names no method — `type` is a keyword",
+            )
         }
         then "a value in the slot: a text" {
-            refused_with(names() + "n.type(\"int\")", "`.type(…)` names no method — `type` is a keyword")
+            refused_with(
+                names() + "n.type(\"int\")",
+                "`.type(…)` names no method — `type` is a keyword",
+            )
         }
         then "a value in the slot: an expression" {
-            refused_with(names() + "n.type(1 + 1)", "`.type(…)` names no method — `type` is a keyword")
+            refused_with(
+                names() + "n.type(1 + 1)",
+                "`.type(…)` names no method — `type` is a keyword",
+            )
         }
         then "a keyword in the slot is the keyword law's, once" {
             refused_with(names() + "n.type(let)", "`let` is a keyword")
@@ -55,16 +79,29 @@ spec "features/expr_spine (type literal) — the red team" {
             refused_with(names() + "n.type(N)", "`N` is a type literal's hole")
         }
         then "a hole holding the wrong type refuses as a hole, naming what it holds" {
-            refused_with(names() + "let s = \"x\"\nn.type(List<s>)", "`s` is a type literal's hole — it names an id, and this `s` holds `string`")
+            refused_with(
+                names() + "let s = \"x\"\nn.type(List<s>)",
+                "`s` is a type literal's hole — it names an id, and this `s` holds `string`",
+            )
         }
         then "a literal's ANSWER in the wrong seat refuses as an argument — the call is no hole" {
-            refused_with(names() + "fn f(x: int) -> int { x }\nf(n.type(int))", "argument 1 of `f` wants `int`, found `string`")
+            refused_with(
+                names() + "fn f(x: int) -> int { x }\nf(n.type(int))",
+                "argument 1 of `f` wants `int`, found `string`",
+            )
         }
         then "a map's key is the RECEIVER's to judge — the literal spells any" {
             shown(names() + "n.type(Map<int, int>)") == "Map<int, int>"
         }
         then "arity, per constructor" {
-            refused_with(names() + "n.type(Result<int>)", "`Result` is applied to 1 types; it takes 2") && refused_with(names() + "n.type(List<int, int, int>)", "`List` is applied to 3 types; it takes 1")
+            refused_with(
+                    names() + "n.type(Result<int>)",
+                    "`Result` is applied to 1 types; it takes 2",
+                ) &&
+                refused_with(
+                    names() + "n.type(List<int, int, int>)",
+                    "`List` is applied to 3 types; it takes 1",
+                )
         }
     }
     given "malformed surface" {
@@ -107,10 +144,16 @@ spec "features/expr_spine (type literal) — the red team" {
             shown(names() + "let z: N? = n\nz!.type(int?)") == "int?"
         }
         then "a type PARAMETER is no hole — it is not a binding, and refuses as none" {
-            refused_with(names() + "fn g<T>(x: N) -> string { x.type(T) }\ng<int>(n)", "`T` is not defined")
+            refused_with(
+                names() + "fn g<T>(x: N) -> string { x.type(T) }\ng<int>(n)",
+                "`T` is not defined",
+            )
         }
         then "the answer under a `for` head is judged as what the receiver answered" {
-            refused_with(names() + "for c in n.type(int) { }\n1", "`for … in` walks a `List`, this is `string`")
+            refused_with(
+                names() + "for c in n.type(int) { }\n1",
+                "`for … in` walks a `List`, this is `string`",
+            )
         }
     }
     given "names against names" {
@@ -118,36 +161,64 @@ spec "features/expr_spine (type literal) — the red team" {
             shown(names() + "let interned = 1\nn.type(int)") == "int"
         }
         then "a FIELD named `interned` is not the method either" {
-            refused_with(names() + "type R = { interned: int }\nlet r = R { interned: 1 }\nr.type(int)", "`.type(…)` interns into its receiver, and `R` has no `interned`")
+            refused_with(
+                names() + "type R = { interned: int }\nlet r = R { interned: 1 }\nr.type(int)",
+                "`.type(…)` interns into its receiver, and `R` has no `interned`",
+            )
         }
         then "a hole declared after its use is the order law's" {
-            refused_with(names() + "n.type(List<later>)\nlet later = 0", "`later` is used before its definition")
+            refused_with(
+                names() + "n.type(List<later>)\nlet later = 0",
+                "`later` is used before its definition",
+            )
         }
         then "a hole reads the NEAREST binding of its name" {
             shown(names() + "let h = 1\nn.type(h)") == "K"
         }
         then "an `interned` with a second seat refuses in the method's words" {
-            refused_with(names() + "type R = { n: int }\nimpl R { fn interned(t: Sp, extra: int) -> string { \"s\" } }\nlet r = R { n: 0 }\nr.type(int)", "`R.interned` takes 2 arguments beside `self`, found 1")
+            refused_with(
+                names() +
+                    "type R = { n: int }\nimpl R { fn interned(t: Sp, extra: int) -> string { \"s\" } }\nlet r = R { n: 0 }\nr.type(int)",
+                "`R.interned` takes 2 arguments beside `self`, found 1",
+            )
         }
         then "an `interned` whose seat is no enum refuses at the variant" {
-            refused_with(names() + "type R = { n: int }\nimpl R { fn interned(t: int) -> string { \"s\" } }\nlet r = R { n: 0 }\nr.type(int)", "`.Int` builds a variant, and `int` has none")
+            refused_with(
+                names() +
+                    "type R = { n: int }\nimpl R { fn interned(t: int) -> string { \"s\" } }\nlet r = R { n: 0 }\nr.type(int)",
+                "`.Int` builds a variant, and `int` has none",
+            )
         }
         then "a spelling enum missing a shape names the missing variant" {
-            refused_with("enum Q { Int, Opt(inner: Q) }\ntype R = { n: int }\nimpl R { fn interned(t: Q) -> int { 1 } }\nlet r = R { n: 0 }\nr.type(bool)", "`Q` has no variant `Bool`")
+            refused_with(
+                "enum Q { Int, Opt(inner: Q) }\ntype R = { n: int }\nimpl R { fn interned(t: Q) -> int { 1 } }\nlet r = R { n: 0 }\nr.type(bool)",
+                "`Q` has no variant `Bool`",
+            )
         }
         then "a hole's type is the RECEIVER's `Id` seat — text here" {
-            shown("enum Q { Int, Id(id: string) }\ntype R = { n: int }\nimpl R { fn interned(t: Q) -> string { match t { .Int -> \"i\", .Id(s) -> s } } }\nlet r = R { n: 0 }\nlet w = \"word\"\nr.type(w)") == "word"
+            shown(
+                "enum Q { Int, Id(id: string) }\ntype R = { n: int }\nimpl R { fn interned(t: Q) -> string { match t { .Int -> \"i\", .Id(s) -> s } } }\nlet r = R { n: 0 }\nlet w = \"word\"\nr.type(w)",
+            ) == "word"
         }
     }
     given "ownership" {
         then "the receiver is read ONCE per literal, however deep the spelling" {
-            shown(counting() + "let a = c.type(List<List<int?>>)\nlet b = c.type(int)\n\"\${a} \${b} \${c.seen.length}\"") == "1:1 2:2 2"
+            shown(
+                counting() +
+                    "let a = c.type(List<List<int?>>)\nlet b = c.type(int)\n\"\${a} \${b} \${c.seen.length}\"",
+            ) == "1:1 2:2 2"
         }
         then "a callee-minted receiver lives through the fold" {
-            shown(names() + "fn make() -> N { N { held: [\"M\"] } }\nlet h0 = 0\nmake().type(List<h0>)") == "List<M>"
+            shown(
+                names() +
+                    "fn make() -> N { N { held: [\"M\"] } }\nlet h0 = 0\nmake().type(List<h0>)",
+            ) == "List<M>"
         }
         then "two hundred literals in a loop keep every answer" {
-            shown(names() + "mut out: List<string> = []\nfor i in 0..200 { out.push(n.type(Map<string, List<int?>>)) }\n\"\${out.length} \${out[199]}\"") == "200 Map<string, List<int?>>"
+            shown(
+                names() +
+                    "mut out: List<string> = []\nfor i in 0..200 { out.push(n.type(Map<string, List<int?>>)) }\n\"\${out.length} \${out[199]}\"",
+            ) == "200 Map<string, List<int?>>"
         }
     }
 }

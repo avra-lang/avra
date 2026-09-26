@@ -26,7 +26,16 @@ impl ResolveCx {
         let at = self.stmt_loc(s)
         if self.refused_binder(name, at) { return }
         if builtin_type_name(self.view.lang.types, name) {
-            self.emit(refusal("resolve.builtin_type", at, "`${name}` is a built-in type", "declared here", "choose another name — `int`, `string` and `bool` are the language's"))
+            self
+                .emit(
+                    refusal(
+                        "resolve.builtin_type",
+                        at,
+                        "`${name}` is a built-in type",
+                        "declared here",
+                        "choose another name — `int`, `string` and `bool` are the language's",
+                    ),
+                )
         }
     }
 
@@ -107,10 +116,35 @@ impl ResolveCx {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
             // LICENSED compiler.refusal_assembled: the one voice with a SECOND frame — the definition's
-            self.emit(pointed(error_at("resolve.use_before_def", at, "`${name}` is used before its definition"), "used here") with { secondary: defined, help: "move the definition above this use" })
+            self
+                .emit(
+                    pointed(
+                        error_at(
+                            "resolve.use_before_def",
+                            at,
+                            "`${name}` is used before its definition",
+                        ),
+                        "used here",
+                    ) with { secondary: defined, help: "move the definition above this use" },
+                )
             return
         }
-        self.emit(self.suggested(refusal("resolve.unresolved", at, "`${name}` is not defined", "not defined anywhere in this program", null), e, name, self.def_names))
+        self
+            .emit(
+                self
+                    .suggested(
+                        refusal(
+                            "resolve.unresolved",
+                            at,
+                            "`${name}` is not defined",
+                            "not defined anywhere in this program",
+                            null,
+                        ),
+                        e,
+                        name,
+                        self.def_names,
+                    ),
+            )
     }
 
     /// THE ONE SCOPE RITUAL: a fresh overlay opens, binds made inside
@@ -223,8 +257,34 @@ impl ResolveCx {
             self.bind_use(e, Binding.Decl(here!))
             return
         }
-        if names.fn_decl(name) != null { return self.emit(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal", "used here", "a call taking an empty block writes its parentheses: `${name}() { }`")) }
-        self.emit(self.suggested(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null), e, name, names.type_suggestions()))
+        if names.fn_decl(name) != null {
+            return self
+                .emit(
+                    refusal(
+                        "resolve.unresolved",
+                        self.loc_of(e),
+                        "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal",
+                        "used here",
+                        "a call taking an empty block writes its parentheses: `${name}() { }`",
+                    ),
+                )
+        }
+        self
+            .emit(
+                self
+                    .suggested(
+                        refusal(
+                            "resolve.unresolved",
+                            self.loc_of(e),
+                            "no `type ${name}` is declared",
+                            "used here",
+                            null,
+                        ),
+                        e,
+                        name,
+                        names.type_suggestions(),
+                    ),
+            )
     }
 
     /// This file's own type namespace, tried only when the read wears
@@ -273,7 +333,22 @@ impl ResolveCx {
             return
         }
         if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
-        self.emit(self.suggested(refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null), e, name, names.fn_suggestions()))
+        self
+            .emit(
+                self
+                    .suggested(
+                        refusal(
+                            "resolve.unresolved",
+                            self.loc_of(e),
+                            "no `fn ${name}` is defined",
+                            "called here",
+                            null,
+                        ),
+                        e,
+                        name,
+                        names.fn_suggestions(),
+                    ),
+            )
     }
 
     fn names_in(origin: FileId?) -> Namespace {
@@ -339,7 +414,8 @@ impl ResolveCx {
         }
         if fhit != null {
             let f = self.lframes[fhit!]
-            return self.chained(fhit! + 1, name, Binding.LambdaParam(f.lam, found_at(f.params, name)!))
+            return self
+                .chained(fhit! + 1, name, Binding.LambdaParam(f.lam, found_at(f.params, name)!))
         }
         let idx: int? = found_at(self.scope, name)
         if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
@@ -390,40 +466,118 @@ impl ResolveCx {
         let cap = held!
         let at = cap.names.index_of(name)
         if at >= 0 { return at }
-        self.facts.captures.set(lam.index, cap with { names: cap.names.concat([name]), sources: cap.sources.concat([source]) })
+        self
+            .facts
+            .captures
+            .set(
+                lam.index,
+                cap with { names: cap.names.concat([name]), sources: cap.sources.concat([source]) },
+            )
         cap.names.length
     }
 
     fn unbound_pronoun(at: Loc?) {
-        self.emit(refusal("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here", "the pronoun", "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value"))
+        self
+            .emit(
+                refusal(
+                    "resolve.unresolved",
+                    at,
+                    "`it` rides a METHOD call's arguments — nothing binds it here",
+                    "the pronoun",
+                    "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value",
+                ),
+            )
     }
 
     fn runtime_binding(name: string, at: Loc?) {
-        self.emit(refusal("resolve.runtime_binding", at, "`${name}` is a run-time binding of the top level — a fn body sees declarations, not the values around it", "read here", "pass `${name}` in as a parameter, or make it a fn"))
+        self
+            .emit(
+                refusal(
+                    "resolve.runtime_binding",
+                    at,
+                    "`${name}` is a run-time binding of the top level — a fn body sees declarations, not the values around it",
+                    "read here",
+                    "pass `${name}` in as a parameter, or make it a fn",
+                ),
+            )
     }
 
     fn refuse_self(at: Loc?) {
-        self.emit(refusal("resolve.reserved", at, "`Self` is a trait's name for its implementor", "cannot be a name", "a declaration of your own takes another name"))
+        self
+            .emit(
+                refusal(
+                    "resolve.reserved",
+                    at,
+                    "`Self` is a trait's name for its implementor",
+                    "cannot be a name",
+                    "a declaration of your own takes another name",
+                ),
+            )
     }
 
     fn refuse_reserved(name: string, at: Loc?) {
-        self.emit(refusal("resolve.reserved", at, "`${name}` is reserved for a future Avra feature", "cannot be a name", "pick another name — `${name}` becomes a keyword"))
+        self
+            .emit(
+                refusal(
+                    "resolve.reserved",
+                    at,
+                    "`${name}` is reserved for a future Avra feature",
+                    "cannot be a name",
+                    "pick another name — `${name}` becomes a keyword",
+                ),
+            )
     }
 
     fn refuse_keyword(name: string, at: Loc?, remedy: string?) {
-        self.emit(refusal("resolve.reserved", at, "`${name}` is a keyword", "cannot be a name", remedy ?? "pick another name"))
+        self
+            .emit(
+                refusal(
+                    "resolve.reserved",
+                    at,
+                    "`${name}` is a keyword",
+                    "cannot be a name",
+                    remedy ?? "pick another name",
+                ),
+            )
     }
 
     fn no_receiver(at: Loc?) {
-        self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — this is not a method", "no receiver here", "move this into `impl <Type> { … }`"))
+        self
+            .emit(
+                refusal(
+                    "resolve.receiver",
+                    at,
+                    "`self` names a method's receiver — this is not a method",
+                    "no receiver here",
+                    "move this into `impl <Type> { … }`",
+                ),
+            )
     }
 
     fn default_has_none(at: Loc?) {
-        self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — a default is a body of its own, and has none", "no receiver here", "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`"))
+        self
+            .emit(
+                refusal(
+                    "resolve.receiver",
+                    at,
+                    "`self` names a method's receiver — a default is a body of its own, and has none",
+                    "no receiver here",
+                    "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`",
+                ),
+            )
     }
 
     fn static_has_none(at: Loc?) {
-        self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — a `static fn` has none", "no receiver here", "drop `static`, or take what this needs as a parameter"))
+        self
+            .emit(
+                refusal(
+                    "resolve.receiver",
+                    at,
+                    "`self` names a method's receiver — a `static fn` has none",
+                    "no receiver here",
+                    "drop `static`, or take what this needs as a parameter",
+                ),
+            )
     }
 
     fn emit(d: Diag) { self.facts.voices.speak(d) }
@@ -452,7 +606,16 @@ impl ResolveCx {
     /// A pairing loop names its index and its element apart — one
     /// name for both would shadow one of them silently.
     fn paired_alike(s: StmtId, name: string) {
-        self.emit(refusal("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
+        self
+            .emit(
+                refusal(
+                    "resolve.paired",
+                    self.stmt_loc(s),
+                    "`${name}` names both the index and the element",
+                    "bound here",
+                    "give the index its own name — `for i, ${name} in …`",
+                ),
+            )
     }
 
     fn bind_checked(s: StmtId) {
@@ -499,5 +662,11 @@ impl ResolveCx {
 }
 
 fn worn_block_word(at: Loc?, name: string) -> Diag {
-    refusal("resolve.block_word", at, "`${name}` is a block word here, and nothing else in this file may wear it", "this name", "rename it, or import the word under another name")
+    refusal(
+        "resolve.block_word",
+        at,
+        "`${name}` is a block word here, and nothing else in this file may wear it",
+        "this name",
+        "rename it, or import the word under another name",
+    )
 }

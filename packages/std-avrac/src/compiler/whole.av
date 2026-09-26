@@ -1,6 +1,18 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
-use core.{NodeStore, DeclId, FileId, UseParts, ExprId, Case, flatten, SpecParts, spelled, user_kind, is_kind_word}
+use core.{
+    NodeStore,
+    DeclId,
+    FileId,
+    UseParts,
+    ExprId,
+    Case,
+    flatten,
+    SpecParts,
+    spelled,
+    user_kind,
+    is_kind_word,
+}
 use @std.path.{under_dir, joined_path, normalized}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
@@ -154,7 +166,13 @@ impl Workspace {
         let written: Case = parts!.cases.find(same_body(it, x.root!))!
         let lo = self.decls.decl_span(x.id)!.lo
         TestCase {
-            at: CaseRef { suite: x.owner, group: written.group, name: x.name, file: src.file, line: src.linecol(lo).line },
+            at: CaseRef {
+                suite: x.owner,
+                group: written.group,
+                name: x.name,
+                file: src.file,
+                line: src.linecol(lo).line,
+            },
             symbol: self.decls.symbol(x.id),
         }
     }
@@ -177,7 +195,10 @@ impl Workspace {
 
     fn package_link(pkg: Package) -> List<string> {
         let m = self.manifest(pkg.ordinal)
-        [joined_path(pkg.root, o) for o in filled_words(m.objects)].concat(["-L${d}" for d in filled_words(m.search)]).concat(["-l${l}" for l in filled_words(m.libs)]).concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+        [joined_path(pkg.root, o) for o in filled_words(m.objects)]
+            .concat(["-L${d}" for d in filled_words(m.search)])
+            .concat(["-l${l}" for l in filled_words(m.libs)])
+            .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
@@ -299,7 +320,11 @@ impl Decls {
         let args? = match store.expr(e) { .Call(_, _, xs) -> xs, rest -> null } else { return null }
         let d: DeclId? = bound_decl_of(names, e)
         if d == null || self.package_of(d!) != "@std.meta" { return null }
-        let message_at: int? = match self.decl(d!).name { "refuse_as" -> 1, "refuse_as_at" -> 2, _ -> null }
+        let message_at: int? = match self.decl(d!).name {
+            "refuse_as" -> 1,
+            "refuse_as_at" -> 2,
+            _ -> null,
+        }
         if message_at == null || args.length <= message_at! { return null }
         let kind: string? = store.expr(args[0]).text_of()
         if kind == null { return null }

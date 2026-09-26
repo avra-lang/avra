@@ -1,7 +1,25 @@
 // The structural matcher: a Shape pattern built once from a store
 // subtree, matched many times against another, never materialising
 // the subject.
-use @std.avrac.core.{Span, new_node_store, Expr, Stmt, Pat, Arm, BinOp, At, Shape, shape_at, matched, ExprId, StmtId, PatId, same_expr, same_stmt, same_pat}
+use @std.avrac.core.{
+    Span,
+    new_node_store,
+    Expr,
+    Stmt,
+    Pat,
+    Arm,
+    BinOp,
+    At,
+    Shape,
+    shape_at,
+    matched,
+    ExprId,
+    StmtId,
+    PatId,
+    same_expr,
+    same_stmt,
+    same_pat,
+}
 
 spec "core/shape" {
     given "a hole" {
@@ -16,13 +34,19 @@ spec "core/shape" {
             let hit = s.alloc_expr(Expr.Binary(BinOp.Add, n, s.alloc_expr(Expr.IntLit(1), null)))
             let r_hit = matched(s, At.Expr(hit), pat)
 
-            let wrong_lit = s.alloc_expr(Expr.Binary(BinOp.Add, n, s.alloc_expr(Expr.IntLit(2), null)))
+            let wrong_lit = s
+                .alloc_expr(Expr.Binary(BinOp.Add, n, s.alloc_expr(Expr.IntLit(2), null)))
             let r_wrong_lit = matched(s, At.Expr(wrong_lit), pat)
 
-            let wrong_op = s.alloc_expr(Expr.Binary(BinOp.Sub, n, s.alloc_expr(Expr.IntLit(1), null)))
+            let wrong_op = s
+                .alloc_expr(Expr.Binary(BinOp.Sub, n, s.alloc_expr(Expr.IntLit(1), null)))
             let r_wrong_op = matched(s, At.Expr(wrong_op), pat)
 
-            r_hit != null && r_hit!.length == 1 && kid_is_expr(r_hit![0], n) && r_wrong_lit == null && r_wrong_op == null
+            r_hit != null &&
+                r_hit!.length == 1 &&
+                kid_is_expr(r_hit![0], n) &&
+                r_wrong_lit == null &&
+                r_wrong_op == null
         }
         then "at a statement seat binds a StmtId, at a pattern seat a PatId" {
             mut s = new_node_store()
@@ -42,7 +66,12 @@ spec "core/shape" {
             let variant_subj = s.alloc_pat(Pat.Variant("V", [p2]))
             let r_pat = matched(s, At.Pat(variant_subj), pat_pat)
 
-            r_stmt != null && r_stmt!.length == 1 && kid_is_stmt(r_stmt![0], inner_b) && r_pat != null && r_pat!.length == 1 && kid_is_pat(r_pat![0], p2)
+            r_stmt != null &&
+                r_stmt!.length == 1 &&
+                kid_is_stmt(r_stmt![0], inner_b) &&
+                r_pat != null &&
+                r_pat!.length == 1 &&
+                kid_is_pat(r_pat![0], p2)
         }
     }
     given "the same binder twice" {
@@ -129,7 +158,8 @@ spec "core/shape" {
             let subj = s.alloc_expr(Expr.IntLit(0))
             let val = s.alloc_expr(Expr.IntLit(9))
             let g = s.alloc_expr(Expr.BoolLit(true))
-            let guarded = s.alloc_expr(Expr.Match(subj, [Arm { pats: [rest], guard: g, value: val }]))
+            let guarded = s
+                .alloc_expr(Expr.Match(subj, [Arm { pats: [rest], guard: g, value: val }]))
             let unguarded = s.alloc_expr(Expr.Match(subj, [Arm { pats: [rest], value: val }]))
             let guard_pat = shape_at(s, At.Expr(guarded), [])!
             let guard_arity_holds = matched(s, At.Expr(unguarded), guard_pat) == null
@@ -156,7 +186,8 @@ spec "core/shape" {
             mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1))
             let b = s.alloc_expr(Expr.IntLit(2))
-            s.shallow_expr(Expr.Binary(BinOp.Add, a, a)) == s.shallow_expr(Expr.Binary(BinOp.Add, a, b)) && s.shallow_expr(Expr.Binary(BinOp.Add, a, a)) != s.shallow_expr(Expr.Binary(BinOp.Sub, a, a))
+            s.shallow_expr(Expr.Binary(BinOp.Add, a, a)) == s.shallow_expr(Expr.Binary(BinOp.Add, a, b)) &&
+                s.shallow_expr(Expr.Binary(BinOp.Add, a, a)) != s.shallow_expr(Expr.Binary(BinOp.Sub, a, a))
         }
     }
     given "the kids walk" {
@@ -166,19 +197,29 @@ spec "core/shape" {
             let guard = s.alloc_expr(Expr.BoolLit(true))
             let value = s.alloc_expr(Expr.IntLit(1))
             let subject = s.alloc_expr(Expr.IntLit(0))
-            let match_kids = s.kids_expr(Expr.Match(subject, [Arm { pats: [p], guard: guard, value: value }]))
-            let match_order = match_kids.length == 4 && kid_is_expr(match_kids[0], subject) && kid_is_pat(match_kids[1], p) && kid_is_expr(match_kids[2], guard) && kid_is_expr(match_kids[3], value)
+            let match_kids = s
+                .kids_expr(Expr.Match(subject, [Arm { pats: [p], guard: guard, value: value }]))
+            let match_order = match_kids.length == 4 &&
+                kid_is_expr(match_kids[0], subject) &&
+                kid_is_pat(match_kids[1], p) &&
+                kid_is_expr(match_kids[2], guard) &&
+                kid_is_expr(match_kids[3], value)
 
             let cond = s.alloc_expr(Expr.IntLit(1))
             let on_true = s.alloc_expr(Expr.IntLit(2))
             let on_false = s.alloc_expr(Expr.IntLit(3))
             let if_kids = s.kids_expr(Expr.If(cond, on_true, on_false))
-            let if_order = if_kids.length == 3 && kid_is_expr(if_kids[0], cond) && kid_is_expr(if_kids[1], on_true) && kid_is_expr(if_kids[2], on_false)
+            let if_order = if_kids.length == 3 &&
+                kid_is_expr(if_kids[0], cond) &&
+                kid_is_expr(if_kids[1], on_true) &&
+                kid_is_expr(if_kids[2], on_false)
 
             let arg1 = s.alloc_expr(Expr.IntLit(4))
             let arg2 = s.alloc_expr(Expr.IntLit(5))
             let call_kids = s.kids_expr(Expr.Call("f", [], [arg1, arg2]))
-            let call_order = call_kids.length == 2 && kid_is_expr(call_kids[0], arg1) && kid_is_expr(call_kids[1], arg2)
+            let call_order = call_kids.length == 2 &&
+                kid_is_expr(call_kids[0], arg1) &&
+                kid_is_expr(call_kids[1], arg2)
 
             let let_value = s.alloc_expr(Expr.IntLit(6))
             let let_kids = s.kids_stmt(Stmt.Let("x", null, let_value))
@@ -192,7 +233,10 @@ spec "core/shape" {
             let t1 = s.alloc_stmt(Stmt.Discard(s.alloc_expr(Expr.IntLit(2))))
             let e1 = s.alloc_stmt(Stmt.Discard(s.alloc_expr(Expr.IntLit(3))))
             let if_kids = s.kids_stmt(Stmt.IfStmt(cond, [t1], [e1]))
-            if_kids.length == 3 && kid_is_expr(if_kids[0], cond) && kid_is_stmt(if_kids[1], t1) && kid_is_stmt(if_kids[2], e1)
+            if_kids.length == 3 &&
+                kid_is_expr(if_kids[0], cond) &&
+                kid_is_stmt(if_kids[1], t1) &&
+                kid_is_stmt(if_kids[2], e1)
         }
     }
 }

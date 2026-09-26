@@ -8,13 +8,64 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, CollectScope, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, same_file, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation, At}
+use core.{
+    SideTable,
+    side_table,
+    DeclId,
+    FileId,
+    ModuleId,
+    DeclKind,
+    CollectScope,
+    StmtId,
+    ExprId,
+    PatId,
+    Span,
+    NodeStore,
+    TypeRegistry,
+    new_type_registry,
+    Param,
+    module_symbol,
+    filled,
+    flatten,
+    some_list,
+    same_decl,
+    same_file,
+    SpecParts,
+    ImplParts,
+    TypeId,
+    no_stmt,
+    Type,
+    package_of_module,
+    TypeRef,
+    named_ref,
+    Stmt,
+    Expr,
+    Scoped,
+    GrammarSpec,
+    Annotation,
+    At,
+}
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use core.{Fingerprint, fp, list_cell, map_cell, same_type}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs, Unsettled, Lifted, Settled, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Origin, Origins, no_origins}
+use features.{
+    TypeRow,
+    TypeArgs,
+    Unsettled,
+    Lifted,
+    Settled,
+    MetaHeap,
+    MetaVal,
+    StructSig,
+    EnumSig,
+    generated_key,
+    Decl,
+    Origin,
+    Origins,
+    no_origins,
+}
 use @std.meta.{Diagnostic, derive}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -172,7 +223,21 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
 
 /// The facts a declaration minted with no store wears: a synthetic or builtin body has no
 /// receiver and declares nothing about the source.
-fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, is_component: false, span: null, tparams: [], bounds: [], seats: [], host: [], annotated: false, of: "" } }
+fn no_facts() -> DeclFacts {
+    DeclFacts {
+        external: false,
+        stat: true,
+        is_grammar: false,
+        is_component: false,
+        span: null,
+        tparams: [],
+        bounds: [],
+        seats: [],
+        host: [],
+        annotated: false,
+        of: "",
+    }
+}
 
 /// THE REFERENCES RELATION's own row: `decl` is named at `at`, in
 /// `file`, this way — a call, a method call (resolved through
@@ -310,7 +375,10 @@ export type Decls = {
 
 /// Where no workspace stands behind the table, nothing lifts.
 // LICENSED fns.dead_parameter: a fn VALUE filling the lifter seat — its parameters are the seat's contract, and the answer needs none of them
-fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<
+    Lifted,
+    Unsettled,
+> {
     .Err(Unsettled.Trap("nothing here lifts an annotation"))
 }
 
@@ -495,10 +563,23 @@ impl Decls {
     /// whole table.
     /// Every node of these runs was written in `origin`.
     fn note_runs(f: FileId, runs: ArenaRuns, origin: FileId) {
-        self.note_origins(f, [ExprId { index: i } for i in runs.exprs.lo..runs.exprs.hi], [StmtId { index: i } for i in runs.stmts.lo..runs.stmts.hi], [PatId { index: i } for i in runs.pats.lo..runs.pats.hi], origin)
+        self
+            .note_origins(
+                f,
+                [ExprId { index: i } for i in runs.exprs.lo..runs.exprs.hi],
+                [StmtId { index: i } for i in runs.stmts.lo..runs.stmts.hi],
+                [PatId { index: i } for i in runs.pats.lo..runs.pats.hi],
+                origin,
+            )
     }
 
-    fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
+    fn note_origins(
+        f: FileId,
+        exprs: List<ExprId>,
+        stmts: List<StmtId>,
+        pats: List<PatId>,
+        origin: FileId,
+    ) {
         let known = self.origins.get()[f.index]
         let wrote = Origin.Written(origin)
         for e in exprs {
@@ -621,13 +702,18 @@ impl Decls {
         if idx.through >= all.length { return }
         let by_word = self.folded_index(idx.by_word, self.collect_rows(idx.through, all))
         let by_mark = self.folded_index(idx.by_mark, self.mark_rows(idx.through, all))
-        self.collect_index.set(CollectIndex { by_word: by_word, by_mark: by_mark, through: all.length })
+        self
+            .collect_index
+            .set(CollectIndex { by_word: by_word, by_mark: by_mark, through: all.length })
     }
 
     /// `rows` folded onto `base` — one row per word, appended to
     /// whichever declarations already answer it. Shared by the two
     /// index tables `grown_index` extends.
-    fn folded_index(base: Map<string, List<DeclId>>, rows: List<IndexedWord>) -> Map<string, List<DeclId>> {
+    fn folded_index(base: Map<string, List<DeclId>>, rows: List<IndexedWord>) -> Map<
+        string,
+        List<DeclId>,
+    > {
         mut m = base
         for row in rows { m.set(row.word, (m.get(row.word) ?? []).concat([row.id])) }
         m
@@ -690,7 +776,10 @@ impl Decls {
     /// field's, a variant's, a parameter's — which is what a quote's
     /// hole splices of it.
     fn meta_names_one(ty: TypeId) -> bool {
-        self.takes_a_decl(ty) || self.meta_type(ty, "Field") || self.meta_type(ty, "Variant") || self.meta_type(ty, "Param")
+        self.takes_a_decl(ty) ||
+            self.meta_type(ty, "Field") ||
+            self.meta_type(ty, "Variant") ||
+            self.meta_type(ty, "Param")
     }
 
     /// A declaration of `@std/meta` by name — the compiler's own door
@@ -759,17 +848,22 @@ impl Decls {
         if known != null { return known }
         let ms = [ModuleId { index: j } for j, m in self.modules.get() if self.package_named(m) == pkg]
         let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
-        let found: DeclId? = ds.find((d: DeclId) -> {
-            let found_decl = self.decl(d)
-            found_decl.exported && found_decl.name == name
-        })
+        let found: DeclId? = ds
+            .find(
+                (d: DeclId) -> {
+                    let found_decl = self.decl(d)
+                    found_decl.exported && found_decl.name == name
+                },
+            )
         if found != null { self.meta_ids.put(key, found!) }
         found
     }
 
     /// One module's own declarations, across its files.
     fn module_decls(m: ModuleId) -> List<DeclId> {
-        flatten([self.file_decls.get()[f.index].get() for f in self.module_files.get()[m.index].get()])
+        flatten(
+            [self.file_decls.get()[f.index].get() for f in self.module_files.get()[m.index].get()],
+        )
     }
 
     /// Whether a type is one declaration exported by `@std/meta`.
@@ -897,7 +991,9 @@ impl Decls {
     }
 
     /// The workspace arms the lifting hook once.
-    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>) {
+    fn arm_lifter(
+        lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>,
+    ) {
         self.lifter.set(lift)
     }
 
@@ -922,16 +1018,16 @@ impl Decls {
 
     /// An annotation fn `d` run over the declaration at `s` in file
     /// `f`, with these settled arguments — asking IS the run.
-    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<
+        Lifted,
+        Unsettled,
+    > {
         (self.lifter.get())(d, f, s, call, args)
     }
 
     /// A list type's element, or null for any other shape.
     fn elem_of(ty: TypeId) -> TypeId? {
-        match self.types.shape_of(ty) {
-            .List(e) -> e,
-            _ -> null,
-        }
+        match self.types.shape_of(ty) { .List(e) -> e, _ -> null }
     }
 
     /// A declaration's signature — and with a record's, its LAYOUT: a
@@ -1151,7 +1247,11 @@ impl Decls {
         // the receivers pass never surveys a held body, so wiping them loses the
         // writer a caller's retain decision reads. The pass clears what it owns.
         for j, x in self.decls.get() {
-            if self.held.get().get(self.file(x.file).path) == null { self.written_seats.set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false))) }
+            if self.held.get().get(self.file(x.file).path) == null {
+                self
+                    .written_seats
+                    .set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false)))
+            }
         }
     }
 
@@ -1293,10 +1393,7 @@ impl Decls {
     fn named_by(d: DeclId) -> DeclId? {
         if !self.is_alias(d) { return d }
         let of? = self.alias_of(d) else { return null }
-        match self.types.shape_of(of) {
-            .Struct(t, _) or .Enum(t, _) -> t,
-            _ -> null,
-        }
+        match self.types.shape_of(of) { .Struct(t, _) or .Enum(t, _) -> t, _ -> null }
     }
 
     fn is_builtin(d: DeclId) -> bool { self.decl(d).kind is .Builtin }
@@ -1316,7 +1413,19 @@ impl Decls {
     }
 
     fn admit_builtin(r: TypeRow) {
-        let id = self.mint("builtin::${r.name}", FileId { index: 0 }, no_stmt, r.name, DeclKind.Builtin, true, "", null, false, null)
+        let id = self
+            .mint(
+                "builtin::${r.name}",
+                FileId { index: 0 },
+                no_stmt,
+                r.name,
+                DeclKind.Builtin,
+                true,
+                "",
+                null,
+                false,
+                null,
+            )
         self.builtins.push(id)
         self.declare_builtin(id, r)
     }
@@ -1324,7 +1433,9 @@ impl Decls {
     /// A builtin's signature: its variants over its own Vars — the
     /// ordinal is the identity, `T1`, `T2`, … the wording.
     fn declare_builtin(d: DeclId, r: TypeRow) {
-        let vars = TypeArgs { parts: [self.types.intern(Type.Var(d, j, n)) for j, n in builtin_tparams(r.arity)] }
+        let vars = TypeArgs {
+            parts: [self.types.intern(Type.Var(d, j, n)) for j, n in builtin_tparams(r.arity)],
+        }
         let sig: EnumSig? = r.variants(vars)
         if sig != null { self.declare(d, DeclSig.Enum(sig!)) }
     }
@@ -1467,7 +1578,13 @@ impl Decls {
     /// that wrote it, or at the annotation that asked.
     fn loc(d: DeclId) -> Loc? {
         let x = self.decl(d)
-        self.homed(x.file, self.origin_of_stmt(x.file, x.stmt), self.generation_of_stmt(x.file, x.stmt), self.decl_span(d))
+        self
+            .homed(
+                x.file,
+                self.origin_of_stmt(x.file, x.stmt),
+                self.generation_of_stmt(x.file, x.stmt),
+                self.decl_span(d),
+            )
     }
 
     /// A span of a file homed. A copied template node keeps the span
@@ -1631,7 +1748,11 @@ fn declared_body(store: NodeStore, m: StmtId) -> ExprId? {
 /// template's refusal carries the template's own place and two walks
 /// of it mint two `Loc` values saying the same thing.
 fn same_voice(a: Diag, b: Diag) -> bool {
-    a.kind == b.kind && a.message == b.message && a.help ?? "" == b.help ?? "" && a.primary.label ?? "" == b.primary.label ?? "" && same_place(a.primary.loc, b.primary.loc)
+    a.kind == b.kind &&
+        a.message == b.message &&
+        a.help ?? "" == b.help ?? "" &&
+        a.primary.label ?? "" == b.primary.label ?? "" &&
+        same_place(a.primary.loc, b.primary.loc)
 }
 
 fn same_place(a: Loc?, b: Loc?) -> bool {
@@ -1659,8 +1780,5 @@ fn counted_bits(words: List<int>) -> int {
 fn nothing_asked() {}
 
 fn enum_parts(sig: DeclSig) -> EnumSig? {
-    match sig {
-        .Enum(e) -> e,
-        _ -> null,
-    }
+    match sig { .Enum(e) -> e, _ -> null }
 }
