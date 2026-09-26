@@ -58,6 +58,16 @@ export type SqlSelect = {
     limit: SqlExpr?,
 }
 
+export type InsertStmt = { table_name: string, columns: List<string>, rows: List<List<SqlExpr>>, returning: List<SelectItem> }
+
+/// One `SET column = value` — the value side is any expression, the
+/// same grammar a `WHERE` condition builds from.
+export type Assignment = { column: string, value: SqlExpr }
+
+export type UpdateStmt = { table_name: string, assignments: List<Assignment>, where: SqlExpr?, returning: List<SelectItem> }
+
+export type DeleteStmt = { table_name: string, where: SqlExpr?, returning: List<SelectItem> }
+
 /// The one node type every rule in this file builds into — the
 /// engine is monomorphic over it, so one wrapper spans every rule's
 /// own answer shape, the same way the compiler's own DSL parser has
@@ -76,6 +86,10 @@ export enum SqlNode {
     /// `GROUP BY` clause's own columns.
     ExList(items: List<SqlExpr>)
     When(w: WhenClause)
+    Ins(i: InsertStmt)
+    Assign(a: Assignment)
+    Upd(u: UpdateStmt)
+    Del(d: DeleteStmt)
 }
 
 fn text_of(c: Captured<LexToken, SqlNode>) -> string {
@@ -130,6 +144,10 @@ impl SqlNode {
     fn as_order_list() -> List<OrderItem>? { match self { .OrderList(items) -> items, _ -> null } }
     fn as_ex_list() -> List<SqlExpr>? { match self { .ExList(items) -> items, _ -> null } }
     fn as_when() -> WhenClause? { match self { .When(w) -> w, _ -> null } }
+    fn as_insert() -> InsertStmt? { match self { .Ins(i) -> i, _ -> null } }
+    fn as_assign() -> Assignment? { match self { .Assign(a) -> a, _ -> null } }
+    fn as_update() -> UpdateStmt? { match self { .Upd(u) -> u, _ -> null } }
+    fn as_delete() -> DeleteStmt? { match self { .Del(d) -> d, _ -> null } }
 }
 
 fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
@@ -193,6 +211,41 @@ fn when_items_of(c: Captured<LexToken, SqlNode>) -> Result<List<WhenClause>, str
         .Absent -> .Ok([]),
         .Terminal(_) or .Node(_) -> .Err("expected a list of when clauses"),
     }
+}
+
+/// `insert_stmt`'s own `c:IDENT (\",\" c:IDENT)*` — bare column
+/// names, never expressions.
+fn names_of(c: Captured<LexToken, SqlNode>) -> Result<List<string>, string> {
+    match c {
+        .Many(items) -> .Ok([text_of(i) for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of names"),
+    }
+}
+
+/// `insert_stmt`'s own `r:values_row (\",\" r:values_row)*` — one
+/// already-built expression list per row.
+fn rows_of(c: Captured<LexToken, SqlNode>) -> Result<List<List<SqlExpr>>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_ex_list(), "a values row")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of value rows"),
+    }
+}
+
+/// `update_stmt`'s own `a:assignment (\",\" a:assignment)*`.
+fn assignments_of(c: Captured<LexToken, SqlNode>) -> Result<List<Assignment>, string> {
+    match c {
+        .Many(items) -> .Ok([want(node_of(i)?.as_assign(), "an assignment")? for i in items]),
+        .Absent -> .Ok([]),
+        .Terminal(_) or .Node(_) -> .Err("expected a list of assignments"),
+    }
+}
+
+/// `insert_stmt`/`update_stmt`/`delete_stmt`'s own optional
+/// `RETURNING` — absent reads as no returning list at all.
+fn returning_of(c: Captured<LexToken, SqlNode>) -> List<SelectItem> {
+    node_of(c)?.as_cols() ?? []
 }
 
 /// `select_stmt`'s own `o:order_by_clause?` — absent when there is no
@@ -480,6 +533,55 @@ fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
     })))
 }
 
+/// Shared by `insert_stmt`/`update_stmt`/`delete_stmt` — the same
+/// expression-with-alias shape a `SELECT` list already builds from.
+@grammar_rule("\"RETURNING\" r:column_list")
+fn returning_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(caps[0])
+}
+
+/// One `VALUES (...)` row — a plain expression list, the same shape
+/// a function call's arguments already build from.
+@grammar_rule("\"(\" v:expr_list \")\"")
+fn values_row(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(caps[0])
+}
+
+@grammar_rule("\"INSERT\" \"INTO\" t:IDENT \"(\" c:IDENT (\",\" c:IDENT)* \")\" \"VALUES\" r:values_row (\",\" r:values_row)* (ret:returning_clause)?")
+fn insert_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let table_name = text_of(caps[0])
+    let columns = names_of(caps[1])?
+    let rows = rows_of(caps[2])?
+    .Ok(node(SqlNode.Ins(InsertStmt { table_name: table_name, columns: columns, rows: rows, returning: returning_of(caps[3]) })))
+}
+
+@grammar_rule("n:IDENT \"=\" v:or_expr")
+fn assignment(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let name = text_of(caps[0])
+    let v? = ex_of(caps[1]) else { return .Err("assignment: value did not build") }
+    .Ok(node(SqlNode.Assign(Assignment { column: name, value: v })))
+}
+
+@grammar_rule("\"UPDATE\" t:IDENT \"SET\" a:assignment (\",\" a:assignment)* w:where_clause? (ret:returning_clause)?")
+fn update_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let table_name = text_of(caps[0])
+    let assignments = assignments_of(caps[1])?
+    .Ok(node(SqlNode.Upd(UpdateStmt { table_name: table_name, assignments: assignments, where: ex_of(caps[2]), returning: returning_of(caps[3]) })))
+}
+
+@grammar_rule("\"DELETE\" \"FROM\" t:IDENT w:where_clause? (ret:returning_clause)?")
+fn delete_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    let table_name = text_of(caps[0])
+    .Ok(node(SqlNode.Del(DeleteStmt { table_name: table_name, where: ex_of(caps[1]), returning: returning_of(caps[2]) })))
+}
+
+/// The one entry point — `SELECT`/`INSERT`/`UPDATE`/`DELETE` each
+/// lead with a distinct keyword, so no first-set overlap among them.
+@grammar_rule("s:select_stmt | s:insert_stmt | s:update_stmt | s:delete_stmt")
+fn stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+    .Ok(caps[0])
+}
+
 type RuleSource = {
     name: string,
     mark: Annotation,
@@ -501,7 +603,7 @@ impl RuleSource {
 /// The assembled parser grammar — one rule per `@grammar_rule`d
 /// function in this file, no hand-written `Grammar` literal.
 export fn sql_parser_grammar() -> Grammar {
-    Grammar { name: "sql_parser", start: "select_stmt", rules: [s.built() for s in sql_sources] }
+    Grammar { name: "sql_parser", start: "stmt", rules: [s.built() for s in sql_sources] }
 }
 
 fn dispatch(name: string, caps: List<Captured<LexToken, SqlNode>>, _at: Loc?) -> Result<Captured<LexToken, SqlNode>, string> {
