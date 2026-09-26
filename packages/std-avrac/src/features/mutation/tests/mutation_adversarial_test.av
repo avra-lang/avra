@@ -9,7 +9,11 @@ use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run, halver}
 spec "features/mutation (adversarial)" {
     given "the cell law — every managed shape refused, every unmanaged held" {
         then "all four UNMANAGED cells live: int, bool, and both pairs" {
-            shown("mut a: int = 1\nmut b: bool = true\nmut c: int? = null\nmut d: bool? = null\n" + "a = 2\nb = false\nc = 3\nd = true\n" + "a + (c ?? 0) + (if b { 0 } else { 5 }) + (if d ?? false { 7 } else { 0 })") == "17"
+            shown(
+                "mut a: int = 1\nmut b: bool = true\nmut c: int? = null\nmut d: bool? = null\n" +
+                    "a = 2\nb = false\nc = 3\nd = true\n" +
+                    "a + (c ?? 0) + (if b { 0 } else { 5 }) + (if d ?? false { 7 } else { 0 })",
+            ) == "17"
         }
         then "a struct cell WORKS — unmanaged aggregates ride the slot" {
             shown("type U = { age: int }\nmut x: U = U { age: 1 }\nx = U { age: 5 }\nx.age") == "5"
@@ -26,10 +30,16 @@ spec "features/mutation (adversarial)" {
             shown("mut x: int? = 5\nx = x\nx ?? 0") == "5"
         }
         then "a wrong NULLABLE refuses nullable-to-nullable, exactly once" {
-            refusals("fn g(b: bool) -> string? { if b { \"x\" } else { null } }\n" + "mut x: int? = 5\nx = g(true)\nx ?? 0") == 1
+            refusals(
+                "fn g(b: bool) -> string? { if b { \"x\" } else { null } }\n" +
+                    "mut x: int? = 5\nx = g(true)\nx ?? 0",
+            ) == 1
         }
         then "an optional never widens BACK into a guarantee cell" {
-            refused_with("${halver}mut x: int = 1\nx = half(4)\nx", "assignment changes `x`: `int` to `int?`")
+            refused_with(
+                "${halver}mut x: int = 1\nx = half(4)\nx",
+                "assignment changes `x`: `int` to `int?`",
+            )
         }
     }
     given "the counter, which once typed as the ABSORBING hole" {
@@ -65,7 +75,11 @@ spec "features/mutation (adversarial)" {
     }
     given "places under attack (rt28)" {
         then "four levels deep, the snapshot keeps its value" {
-            shown("type D = { v: int }\ntype C = { d: D }\ntype B = { c: C }\ntype A = { b: B }\nmut a = A { b: B { c: C { d: D { v: 1 } } } }\nlet s = a\na.b.c.d.v = 9\n\"" + "\${a.b.c.d.v} " + "\${s.b.c.d.v}\"") == "9 1"
+            shown(
+                "type D = { v: int }\ntype C = { d: D }\ntype B = { c: C }\ntype A = { b: B }\nmut a = A { b: B { c: C { d: D { v: 1 } } } }\nlet s = a\na.b.c.d.v = 9\n\"" +
+                    "\${a.b.c.d.v} " +
+                    "\${s.b.c.d.v}\"",
+            ) == "9 1"
         }
         then "a measured property is not a place" {
             refused_with("mut xs = [1]\nxs.length = 3\n2", "`length` is measured, not stored")
@@ -74,31 +88,66 @@ spec "features/mutation (adversarial)" {
             refused_with("enum Color {\n    red\n}\nColor.red = 1\n2", "`Color` is a type")
         }
         then "a parameter's field refuses as the parameter" {
-            refused_with("type P = { x: int }\nfn f(p: P) -> int {\n    p.x = 1\n    p.x\n}\nf(P { x: 0 })", "`p` is a parameter")
+            refused_with(
+                "type P = { x: int }\nfn f(p: P) -> int {\n    p.x = 1\n    p.x\n}\nf(P { x: 0 })",
+                "`p` is a parameter",
+            )
         }
         then "`self` is the one parameter a method writes through — the receiver is a place" {
-            shown("type P = { x: int }\nimpl P {\n    fn bump() -> int {\n        self.x = self.x + 1\n        self.x\n    }\n}\nP { x: 1 }.bump()") == "2"
+            shown(
+                "type P = { x: int }\nimpl P {\n    fn bump() -> int {\n        self.x = self.x + 1\n        self.x\n    }\n}\nP { x: 1 }.bump()",
+            ) == "2"
         }
         then "null into an int slot" {
-            refused_with("type P = { x: int }\nmut p = P { x: 1 }\np.x = null\n2", "`int` to `null`")
+            refused_with(
+                "type P = { x: int }\nmut p = P { x: 1 }\np.x = null\n2",
+                "`int` to `null`",
+            )
         }
         then "a self-store keeps the value — retain first" {
-            shown("type U = { name: string, tags: List<string> }\nmut u = U { name: \"ada\", tags: [\"x\"] }\nu.name = u.name\nu.tags[0] = u.tags[0]\nu.tags.push(u.tags[0])\n\"" + "\${u.name} " + "\${u.tags[1]}\"") == "ada x"
+            shown(
+                "type U = { name: string, tags: List<string> }\nmut u = U { name: \"ada\", tags: [\"x\"] }\nu.name = u.name\nu.tags[0] = u.tags[0]\nu.tags.push(u.tags[0])\n\"" +
+                    "\${u.name} " +
+                    "\${u.tags[1]}\"",
+            ) == "ada x"
         }
         then "a slot aliased into another slot — copy-on-write at the slot" {
-            shown("mut g = [[1], [2]]\ng[0] = g[1]\ng[0][0] = 9\n\"" + "\${g[0][0]} " + "\${g[1][0]}\"") == "9 2"
+            shown(
+                "mut g = [[1], [2]]\ng[0] = g[1]\ng[0][0] = 9\n\"" +
+                    "\${g[0][0]} " +
+                    "\${g[1][0]}\"",
+            ) == "9 2"
         }
         then "a struct placed into another — both keep their own" {
-            shown("type A = { c: string }\ntype B = { a: A, n: int }\nmut a = A { c: \"one\" }\nmut b = B { a: a, n: 1 }\nb.a.c = \"two\"\na.c = \"three\"\n\"" + "\${a.c} " + "\${b.a.c}\"") == "three two"
+            shown(
+                "type A = { c: string }\ntype B = { a: A, n: int }\nmut a = A { c: \"one\" }\nmut b = B { a: a, n: 1 }\nb.a.c = \"two\"\na.c = \"three\"\n\"" +
+                    "\${a.c} " +
+                    "\${b.a.c}\"",
+            ) == "three two"
         }
         then "a push while iterating walks the snapshot" {
-            shown("mut xs = [1, 2]\nfor x in xs {\n    xs.push(x * 10)\n}\n\"" + "\${xs.length} " + "\${xs[3]}\"") == "4 20"
+            shown(
+                "mut xs = [1, 2]\nfor x in xs {\n    xs.push(x * 10)\n}\n\"" +
+                    "\${xs.length} " +
+                    "\${xs[3]}\"",
+            ) == "4 20"
         }
         then "an inner `let` shadowing a mut refuses" {
-            refused_with("mut x = 1\nfn f() -> int {\n    let x = 2\n    x = 3\n    x\n}\nf()", "`x` is not `mut`")
+            refused_with(
+                "mut x = 1\nfn f() -> int {\n    let x = 2\n    x = 3\n    x\n}\nf()",
+                "`x` is not `mut`",
+            )
         }
         then "string slots under churn — a thousand overwrites" {
-            shown("type A = { city: string }\ntype U = { name: string, addr: A, tags: List<string> }\nmut u = U { name: \"a\", addr: A { city: \"c\" }, tags: [\"t\"] }\nmut i = 0\nwhile i < 1000 {\n    u.name = \"n" + "\${i}\"\n    u.addr.city = \"c" + "\${i}\"\n    u.tags[0] = \"t" + "\${i}\"\n    i = i + 1\n}\n\"" + "\${u.name} " + "\${u.addr.city} " + "\${u.tags[0]}\"") == "n999 c999 t999"
+            shown(
+                "type A = { city: string }\ntype U = { name: string, addr: A, tags: List<string> }\nmut u = U { name: \"a\", addr: A { city: \"c\" }, tags: [\"t\"] }\nmut i = 0\nwhile i < 1000 {\n    u.name = \"n" +
+                    "\${i}\"\n    u.addr.city = \"c" +
+                    "\${i}\"\n    u.tags[0] = \"t" +
+                    "\${i}\"\n    i = i + 1\n}\n\"" +
+                    "\${u.name} " +
+                    "\${u.addr.city} " +
+                    "\${u.tags[0]}\"",
+            ) == "n999 c999 t999"
         }
     }
 }

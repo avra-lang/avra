@@ -243,13 +243,26 @@ fn request_line(buf: Bytes, start: int, mark: int, limits: Limits) -> Framed {
     mut fs: List<int> = []
     let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
     if why != null { return .Refused(why!) }
-    settled(buf, method, Span { lo: start, hi: verb_end }, Span { lo: t_lo, hi: t_end }, buf.at(v_lo + 7) - "0".char_code(), Fields(fs), mark + 4, limits)
+    settled(
+        buf,
+        method,
+        Span { lo: start, hi: verb_end },
+        Span { lo: t_lo, hi: t_end },
+        buf.at(v_lo + 7) - "0".char_code(),
+        Fields(fs),
+        mark + 4,
+        limits,
+    )
 }
 
 /// `HTTP/` then one digit, a point, one digit, and nothing else before
 /// the line ends (RFC 9112 §2.3).
 fn versioned(buf: Bytes, at: int, eol: int) -> bool {
-    eol - at == 8 && buf.eq_at(at, at + 5, http_slash) && is_digit(buf.at(at + 5)) && buf.at(at + 6) == ".".char_code() && is_digit(buf.at(at + 7))
+    eol - at == 8 &&
+        buf.eq_at(at, at + 5, http_slash) &&
+        is_digit(buf.at(at + 5)) &&
+        buf.at(at + 6) == ".".char_code() &&
+        is_digit(buf.at(at + 7))
 }
 
 /// The target's form belongs to its method (RFC 9112 §3.2): origin-form
@@ -415,7 +428,16 @@ fn persists(fr: Framing, minor: int) -> bool {
 
 /// The head, once the framing fields have been read and their laws
 /// kept: the body's delimiting, persistence, and the expectation.
-fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fields: Fields, end: int, limits: Limits) -> Framed {
+fn settled(
+    buf: Bytes,
+    method: Method,
+    verb: Span,
+    target: Span,
+    minor: int,
+    fields: Fields,
+    end: int,
+    limits: Limits,
+) -> Framed {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
     if fr.hosts > 1 || minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
@@ -427,17 +449,19 @@ fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fie
         fr.lengths > 0 -> .Length(fr.length)
         _ -> .None
     }
-    .Complete(Head {
-        method: method,
-        verb: verb,
-        target: target,
-        minor: minor,
-        fields: fields,
-        body: body,
-        keep_alive: persists(fr, minor),
-        expects_continue: fr.expects && minor == 1,
-        end: end,
-    })
+    .Complete(
+        Head {
+            method: method,
+            verb: verb,
+            target: target,
+            minor: minor,
+            fields: fields,
+            body: body,
+            keep_alive: persists(fr, minor),
+            expects_continue: fr.expects && minor == 1,
+            end: end,
+        },
+    )
 }
 
 /// One field's contribution to the framing, folded into it — a value
@@ -558,23 +582,43 @@ fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
 fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) -> FramedReply {
     let eol = buf.index_of(crlf, from)
     if eol - from > limits.line { return .Refused(.LineLength) }
-    if eol - from < 12 || buf.at(from + 8) != " ".char_code() || buf.at(from + 12) != " ".char_code() && eol != from + 12 { return .Refused(.RequestLine) }
+    if eol - from < 12 ||
+        buf.at(from + 8) != " ".char_code() ||
+        buf.at(from + 12) != " ".char_code() && eol != from + 12 { return .Refused(.RequestLine) }
     if !versioned(buf, from, from + 8) { return .Refused(.Version) }
     if buf.at(from + 5) != "1".char_code() { return .Refused(.Major) }
     if buf.run(from + 9, digit) != from + 12 { return .Refused(.RequestLine) }
     let reason_lo = if eol == from + 12 { eol } else { from + 13 }
     if buf.run(reason_lo, vchar) != eol { return .Refused(.RequestLine) }
-    let status = (buf.at(from + 9) - "0".char_code()) * 100 + (buf.at(from + 10) - "0".char_code()) * 10 + buf.at(from + 11) - "0".char_code()
+    let status = (buf.at(from + 9) - "0".char_code()) * 100 +
+        (buf.at(from + 10) - "0".char_code()) * 10 +
+        buf.at(from + 11) - "0".char_code()
     mut fs: List<int> = []
     let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
     if why != null { return .Refused(why!) }
-    settled_reply(buf, status, buf.at(from + 7) - "0".char_code(), Fields(fs), mark + 4, limits, asked)
+    settled_reply(
+        buf,
+        status,
+        buf.at(from + 7) - "0".char_code(),
+        Fields(fs),
+        mark + 4,
+        limits,
+        asked,
+    )
 }
 
 /// A reply's body is delimited by its status and the request's method
 /// before any field (RFC 9112 §6.3): none for a HEAD's answer, a 1xx,
 /// a 204 or a 304; then chunks; then a length; then the close.
-fn settled_reply(buf: Bytes, status: int, minor: int, fields: Fields, end: int, limits: Limits, asked: Method) -> FramedReply {
+fn settled_reply(
+    buf: Bytes,
+    status: int,
+    minor: int,
+    fields: Fields,
+    end: int,
+    limits: Limits,
+    asked: Method,
+) -> FramedReply {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
@@ -587,7 +631,16 @@ fn settled_reply(buf: Bytes, status: int, minor: int, fields: Fields, end: int, 
         fr.lengths > 0 -> .Length(fr.length)
         _ -> .UntilClose
     }
-    .Complete(Reply { status: status, minor: minor, fields: fields, body: body, keep_alive: persists(fr, minor) && !(body is .UntilClose), end: end })
+    .Complete(
+        Reply {
+            status: status,
+            minor: minor,
+            fields: fields,
+            body: body,
+            keep_alive: persists(fr, minor) && !(body is .UntilClose),
+            end: end,
+        },
+    )
 }
 
 // ── The chunked body (RFC 9112 §7.1) ────────────────────────────
@@ -667,7 +720,9 @@ fn size_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
 fn data_step(c: Chunker, n: int, buf: Bytes) -> Step {
     if c.at + n + 2 > buf.length { return .Wait(c) }
     if !buf.eq_at(c.at + n, c.at + n + 2, crlf) { return .Refused(.Chunk) }
-    .Again(c with { at: c.at + n + 2, phase: Phase.Size, total: c.total + n, parts: c.parts.concat([buf.slice(c.at, c.at + n)]) })
+    .Again(
+        c with { at: c.at + n + 2, phase: Phase.Size, total: c.total + n, parts: c.parts.concat([buf.slice(c.at, c.at + n)]) },
+    )
 }
 
 fn trailer_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {

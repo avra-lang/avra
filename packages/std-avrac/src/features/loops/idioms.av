@@ -44,11 +44,21 @@ export rule branched_push_loop {
         for ${x} in ${xs} {
             if ${cond} { ${out}.push(${a}) } else { ${out}.push(${b}) }
         }
-    } if !cond.text().contains(out.text()) && !a.text().contains(out.text()) && !b.text().contains(out.text()) -> branched_push_loop_found(out, cond, x),
+    } if !cond.text().contains(out.text()) &&
+        !a.text().contains(out.text()) &&
+        !b.text().contains(out.text()) -> branched_push_loop_found(out, cond, x),
 }
 
 fn branched_push_loop_found(out: Code, cond: Code, x: string) -> Fix {
-    Fix.Say(said(out.loc(), "a per-element branch pushing to `${out.text()}` either way is a conditional map (`[if ${cond.text()} { … } else { … } for ${x} in …]`) — but name any real per-branch logic first, typically an `impl` method on the pushed value's own type; splicing it straight into the comprehension reads worse than this loop", "this accumulator", null))
+    Fix
+        .Say(
+            said(
+                out.loc(),
+                "a per-element branch pushing to `${out.text()}` either way is a conditional map (`[if ${cond.text()} { … } else { … } for ${x} in …]`) — but name any real per-branch logic first, typically an `impl` method on the pushed value's own type; splicing it straight into the comprehension reads worse than this loop",
+                "this accumulator",
+                null,
+            ),
+        )
 }
 
 /// `for j in 0..xs.length` that then reads `xs[j]` — that walk is
@@ -69,9 +79,7 @@ fn branched_push_loop_found(out: Code, cond: Code, x: string) -> Fix {
 @fixes("for j in 0..xs.length { out.push(xs[j]) }", "for (j, x) in xs.enumerate() { out.push(x) }")
 @keeps("for j in 0..xs.length { log(j) }")
 @law("indexing a list by a counter from zero and enumerating that same list visit identical elements in identical order")
-export rule index_walk {
-    quote { ${lit} } if index_walked(lit) -> index_walk_fix(lit),
-}
+export rule index_walk { quote { ${lit} } if index_walked(lit) -> index_walk_fix(lit) }
 
 /// Whether `lit` is `for NAME in 0..E.length { …E[NAME]… }`.
 fn index_walked(lit: Code) -> bool {
@@ -102,7 +110,8 @@ fn subscript_read_bare(text: string, needle: string) -> string {
     mut i = 0
     while i < text.length {
         let hi = if i + needle.length > text.length { text.length } else { i + needle.length }
-        let boundary = i == 0 || !is_subscript_ident_char(text.char_code(i - 1)) && text.char_code(i - 1) != 46
+        let boundary = i == 0 ||
+            !is_subscript_ident_char(text.char_code(i - 1)) && text.char_code(i - 1) != 46
         if text.substring(i, hi) == needle && boundary {
             out = out + "x"
             i = hi

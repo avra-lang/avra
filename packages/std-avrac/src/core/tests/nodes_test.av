@@ -1,6 +1,25 @@
 // The arena contract: sequential opaque ids, spans in side tables,
 // and content identity that sees structure only — never spans.
-use @std.avrac.core.{Scoped, Plain, Span, new_node_store, Expr, Stmt, Pat, Arm, BinOp, Param, TypeRef, Variant, SeatMark, StmtId, plain_mark, plain, named_ref, spelled}
+use @std.avrac.core.{
+    Scoped,
+    Plain,
+    Span,
+    new_node_store,
+    Expr,
+    Stmt,
+    Pat,
+    Arm,
+    BinOp,
+    Param,
+    TypeRef,
+    Variant,
+    SeatMark,
+    StmtId,
+    plain_mark,
+    plain,
+    named_ref,
+    spelled,
+}
 
 fn at(lo: int, hi: int) -> Span? { Span { lo: lo, hi: hi } }
 
@@ -173,9 +192,20 @@ spec "core/nodes" {
             let tail = s.alloc_expr(Expr.IntLit(9))
             let recv = s.alloc_expr(Expr.Receiver)
             // ONE arm taking three alternatives, answering `tail`
-            let wide = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a, rest_b, rest_c], value: tail }]))
+            let wide = s
+                .alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a, rest_b, rest_c], value: tail }]))
             // TWO arms: the first answers `self`, the second `tail`
-            let split = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a], value: recv }, Arm { pats: [rest_b], value: tail }]))
+            let split = s
+                .alloc_expr(
+                    Expr
+                        .Match(
+                            subject,
+                            [
+                                Arm { pats: [rest_a], value: recv },
+                                Arm { pats: [rest_b], value: tail },
+                            ],
+                        ),
+                )
             s.expr_fingerprint(wide) != s.expr_fingerprint(split)
         }
         then "a guard is part of an arm's identity — guarded, unguarded and two different guards all differ" {
@@ -186,18 +216,42 @@ spec "core/nodes" {
             let g1 = s.alloc_expr(Expr.BoolLit(true))
             let g2 = s.alloc_expr(Expr.BoolLit(false))
             let unguarded = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], value: tail }]))
-            let guarded1 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]))
-            let guarded2 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]))
-            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) && s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
+            let guarded1 = s
+                .alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]))
+            let guarded2 = s
+                .alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]))
+            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) &&
+                s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
         }
         then "dropping a `?` KEEPS every other field — a fn type's seat marks survive it" {
-            let marked = TypeRef { name: "fn", args: [ty("int"), ty("int")], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
+            let marked = TypeRef {
+                name: "fn",
+                args: [ty("int"), ty("int")],
+                optional: true,
+                dynamic: false,
+                arrow: true,
+                span: null,
+                marks: [SeatMark { mutable: true, settled: false }, plain_mark],
+            }
             let dropped = plain(marked)
-            dropped.marks.length == 2 && dropped.marks[0].mutable && !dropped.marks[1].mutable && !dropped.optional && dropped.arrow && dropped.args.length == 2
+            dropped.marks.length == 2 &&
+                dropped.marks[0].mutable &&
+                !dropped.marks[1].mutable &&
+                !dropped.optional &&
+                dropped.arrow &&
+                dropped.args.length == 2
         }
         then "written types spell every part of their source" {
             let dynamic = named_ref("Show") with { dynamic: true, optional: true }
-            let arrow = TypeRef { name: "fn", args: [ty("int"), dynamic, ty("bool")], optional: false, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
+            let arrow = TypeRef {
+                name: "fn",
+                args: [ty("int"), dynamic, ty("bool")],
+                optional: false,
+                dynamic: false,
+                arrow: true,
+                span: null,
+                marks: [SeatMark { mutable: true, settled: false }, plain_mark],
+            }
             spelled(arrow) == "fn(mut int, dyn Show?) -> bool"
         }
         then "two spellings of one type still agree — spans never count" {
@@ -278,7 +332,22 @@ spec "core/nodes" {
             s.mark_mutating(b)
             s.mark_once(c)
             s.mark_static(d)
-            s.is_exported(a) && !s.is_mutating(a) && !s.is_once(a) && !s.is_static(a) && !s.is_exported(b) && s.is_mutating(b) && !s.is_once(b) && !s.is_static(b) && !s.is_exported(c) && !s.is_mutating(c) && s.is_once(c) && !s.is_static(c) && !s.is_exported(d) && !s.is_mutating(d) && !s.is_once(d) && s.is_static(d)
+            s.is_exported(a) &&
+                !s.is_mutating(a) &&
+                !s.is_once(a) &&
+                !s.is_static(a) &&
+                !s.is_exported(b) &&
+                s.is_mutating(b) &&
+                !s.is_once(b) &&
+                !s.is_static(b) &&
+                !s.is_exported(c) &&
+                !s.is_mutating(c) &&
+                s.is_once(c) &&
+                !s.is_static(c) &&
+                !s.is_exported(d) &&
+                !s.is_mutating(d) &&
+                !s.is_once(d) &&
+                s.is_static(d)
         }
     }
 }

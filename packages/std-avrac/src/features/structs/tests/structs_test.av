@@ -8,7 +8,9 @@ use @std.avrac.diagnostics.{new_source_file}
 spec "features/structs" {
     given "`with` on its own line" {
         then "a leading `with` continues the literal" {
-            shown("type P = { a: int, b: int }\nlet p = P { a: 1, b: 2 }\n    with { a: 9 }\np.a + p.b") == "11"
+            shown(
+                "type P = { a: int, b: int }\nlet p = P { a: 1, b: 2 }\n    with { a: 9 }\np.a + p.b",
+            ) == "11"
         }
     }
     given "the record" {
@@ -19,7 +21,9 @@ spec "features/structs" {
             shown("type P = { x: int, y: int }\nlet p = P { y: 4, x: 3 }\np.x") == "3"
         }
         then "a struct crosses a fn boundary, both ways" {
-            shown("type P = { x: int, y: int }\nfn mk(n: int) -> P { P { x: n, y: 1 } }\nfn getx(p: P) -> int { p.x }\ngetx(mk(9))") == "9"
+            shown(
+                "type P = { x: int, y: int }\nfn mk(n: int) -> P { P { x: n, y: 1 } }\nfn getx(p: P) -> int { p.x }\ngetx(mk(9))",
+            ) == "9"
         }
         then "a bool field carries" {
             shown("type F = { on: bool }\nlet f = F { on: true }\nf.on") == "true"
@@ -40,7 +44,9 @@ spec "features/structs" {
         }
         then "an unknown field names the real ones" {
             let a = analyze_source("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2, z: 3 }\n2")
-            a.diagnostics.length == 1 && a.report().contains("`P` has no field `z`") && a.report().contains("the fields are `x`, `y`")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` has no field `z`") &&
+                a.report().contains("the fields are `x`, `y`")
         }
         then "a wrong-typed field refuses" {
             let a = analyze_source("type P = { x: int }\nlet p = P { x: true }\n2")
@@ -51,7 +57,9 @@ spec "features/structs" {
             a.diagnostics.length == 1 && a.report().contains("field `x` is written more than once")
         }
         then "a managed field lands and reads back — ownership landed" {
-            analyze_source("type P = { name: string }\nlet p = P { name: \"hi\" }\n2").diagnostics.is_empty()
+            analyze_source("type P = { name: string }\nlet p = P { name: \"hi\" }\n2")
+                .diagnostics
+                .is_empty()
         }
         then "a repeated FIELD declaration refuses" {
             let a = analyze_source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2")
@@ -63,7 +71,9 @@ spec "features/structs" {
         }
         then "a record name is not a value either — one law" {
             let a = analyze_source("type P = { x: int }\nmut p = P\n1")
-            a.diagnostics.length == 1 && a.report().contains("`P` is a type, not a value") && a.report().contains("build a record")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` is a type, not a value") &&
+                a.report().contains("build a record")
         }
         then "a field read off a non-struct still refuses" {
             let a = analyze_source("let n = 3\nn.x")
@@ -76,27 +86,36 @@ spec "features/structs" {
     }
     given "the copy" {
         then "written fields replace, the rest carry over" {
-            shown("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = p with { y: 9 }\nq.x + q.y") == "10"
+            shown(
+                "type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = p with { y: 9 }\nq.x + q.y",
+            ) == "10"
         }
         then "the source is untouched" {
-            shown("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = p with { x: 5 }\np.x") == "1"
+            shown(
+                "type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = p with { x: 5 }\np.x",
+            ) == "1"
         }
         then "`with` on a non-struct refuses" {
             let a = analyze_source("let n = 3\nlet m = n with { x: 1 }\n2")
             a.diagnostics.length == 1 && a.report().contains("`with` copies a struct, found `int`")
         }
         then "an unknown field refuses through the shared law" {
-            let a = analyze_source("type P = { x: int }\nlet p = P { x: 1 }\nlet q = p with { z: 2 }\n3")
+            let a = analyze_source(
+                "type P = { x: int }\nlet p = P { x: 1 }\nlet q = p with { z: 2 }\n3",
+            )
             a.diagnostics.length == 1 && a.report().contains("`P` has no field `z`")
         }
     }
     given "the answer projection" {
         then "a struct answer refuses with the remedy, before either engine" {
             let src = "type P = { x: int }\nP { x: 1 }"
-            refused_at_run(src, "the program's answer is a `P`") && refused_at_run(src, "project a field instead")
+            refused_at_run(src, "the program's answer is a `P`") &&
+                refused_at_run(src, "project a field instead")
         }
         then "`check` agrees with run and build about it" {
-            avra().check(new_source_file("<source>", "type P = { x: int }\nP { x: 1 }")).contains("no text projection yet")
+            avra()
+                .check(new_source_file("<source>", "type P = { x: int }\nP { x: 1 }"))
+                .contains("no text projection yet")
         }
     }
     given "the condition ambiguity" {
@@ -109,24 +128,39 @@ spec "features/structs" {
             shown("type Box<T> = { v: T }\nlet b = Box { v: 41 }\nb.v + 1") == "42"
         }
         then "two parameters bind independently and members substitute" {
-            shown("type Pair<A, B> = { first: A, second: B }\nlet p = Pair { first: 7, second: true }\nif p.second { p.first } else { 0 }") == "7"
+            shown(
+                "type Pair<A, B> = { first: A, second: B }\nlet p = Pair { first: 7, second: true }\nif p.second { p.first } else { 0 }",
+            ) == "7"
         }
         then "instantiations are DISTINCT types" {
-            refused_with("type Box<T> = { v: T }\nfn f(b: Box<int>) -> int {\n    b.v\n}\nf(Box { v: true })", "argument 1 of `f` wants `Box<int>`, found `Box<bool>`")
+            refused_with(
+                "type Box<T> = { v: T }\nfn f(b: Box<int>) -> int {\n    b.v\n}\nf(Box { v: true })",
+                "argument 1 of `f` wants `Box<int>`, found `Box<bool>`",
+            )
         }
         then "a bare generic name refuses and names the arity" {
-            refused_with("type Box<T> = { v: T }\nfn f(b: Box) -> int {\n    1\n}\nf(Box { v: 1 })", "`Box` is generic — it takes 1 type argument")
+            refused_with(
+                "type Box<T> = { v: T }\nfn f(b: Box) -> int {\n    1\n}\nf(Box { v: 1 })",
+                "`Box` is generic — it takes 1 type argument",
+            )
         }
         then "a bare generic is refused where it is written, not where it is declared" {
-            let p = provided("use @x.c.{Box}\nfn f(b: Box) -> int {\n    1\n}\n", "export type Box<T> = { v: T }\n")
-            refused_n(p, "`Box` is generic — it takes 1 type argument", 1) && p.report().contains("main.av:2")
+            let p = provided(
+                "use @x.c.{Box}\nfn f(b: Box) -> int {\n    1\n}\n",
+                "export type Box<T> = { v: T }\n",
+            )
+            refused_n(p, "`Box` is generic — it takes 1 type argument", 1) &&
+                p.report().contains("main.av:2")
         }
         then "a managed binding rides the slot per instantiation — ownership landed" {
             let a = analyze_source("type Box<T> = { v: T }\nBox { v: \"held\" }\n2")
             a.diagnostics.is_empty()
         }
         then "fields that disagree on T refuse in the field's words" {
-            refused_with("type Twin<T> = { a: T, b: T }\nTwin { a: 1, b: true }", "field `b` is `T`, this is `bool`")
+            refused_with(
+                "type Twin<T> = { a: T, b: T }\nTwin { a: 1, b: true }",
+                "field `b` is `T`, this is `bool`",
+            )
         }
     }
     given "a trailing comma in every comma list" {

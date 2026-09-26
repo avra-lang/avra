@@ -3,7 +3,18 @@
 //! thing's own doc — a diagnostic's meaning, or a declared symbol's
 //! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{avra, DocRow, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.{
+    avra,
+    DocRow,
+    build_cache_root,
+    Db,
+    db,
+    db_qualified,
+    DocFacts,
+    FileWitness,
+    current_listing_digest,
+    current_file_digest,
+}
 use @std.avrac.compiler.store.{Store, store_at}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.compiler.dev.{shown_code}
@@ -72,22 +83,31 @@ fn explained_decl(name: string, json: bool) -> int {
 fn derived_decl(mut d: Db, store: Store, root: string, name: string, json: bool) -> int {
     let p? = clean_program() else { return 1 }
     let found? = p.explain_doc(name) else {
-        eprintln("avra: nothing registered under `${name}` — no diagnostic kind or declared fn/type/enum/trait/const wears it")
+        eprintln(
+            "avra: nothing registered under `${name}` — no diagnostic kind or declared fn/type/enum/trait/const wears it",
+        )
         return 1
     }
-    d.insert_decl(store, db_qualified(root, name), DocFacts {
-        root: root,
-        answer: found.text,
-        listing_digest: current_listing_digest(root),
-        files: [FileWitness { path: f, digest: current_file_digest(f) } for f in found.files],
-    })
+    d
+        .insert_decl(
+            store,
+            db_qualified(root, name),
+            DocFacts {
+                root: root,
+                answer: found.text,
+                listing_digest: current_listing_digest(root),
+                files: [FileWitness { path: f, digest: current_file_digest(f) } for f in found.files],
+            },
+        )
     print_decl(name, found.text, json)
     0
 }
 
 fn print_decl(name: string, text: string, json: bool) {
     if json {
-        println(to_text(Json.Obj([field("address", Json.Str(name)), field("text", Json.Str(text))])))
+        println(
+            to_text(Json.Obj([field("address", Json.Str(name)), field("text", Json.Str(text))])),
+        )
         return
     }
     println(text)
@@ -108,19 +128,24 @@ fn dumped(json: bool) -> int {
 }
 
 fn dump_json(r: DocRow) -> Json {
-    Json.Obj([
-        field("address", Json.Str(r.address)),
-        field("kind", Json.Str(r.kind)),
-        field("signature", Json.Str(r.signature)),
-        field("prose_lines", Json.Arr([Json.Str(line) for line in r.prose_lines])),
-        field("package", Json.Str(r.package)),
-    ])
+    Json
+        .Obj(
+            [
+                field("address", Json.Str(r.address)),
+                field("kind", Json.Str(r.kind)),
+                field("signature", Json.Str(r.signature)),
+                field("prose_lines", Json.Arr([Json.Str(line) for line in r.prose_lines])),
+                field("package", Json.Str(r.package)),
+            ],
+        )
 }
 
 /// Every exported symbol's address and signature, one per line, under
 /// a header naming the count.
 export fn dump_listing(rows: List<DocRow>) -> string {
-    ["this package exports — ${rows.length}"].concat(["${r.address} — ${r.signature}" for r in rows]).join("\n")
+    ["this package exports — ${rows.length}"]
+        .concat(["${r.address} — ${r.signature}" for r in rows])
+        .join("\n")
 }
 
 export command docs {

@@ -21,9 +21,7 @@ use features.{Code, Fix, rule, said}
 /// literal, which needs its own re-escaping — a human editing the
 /// grammar block directly is the honest fix.
 @keeps("fn f() -> int { 1 }")
-export rule comma_list_open {
-    quote { ${lit} } if !open_comma_lines(lit).is_empty() -> comma_list_open_found(lit),
-}
+export rule comma_list_open { quote { ${lit} } if !open_comma_lines(lit).is_empty() -> comma_list_open_found(lit) }
 
 fn open_comma_lines(lit: Code) -> List<string> {
     let text? = grammar_text(lit) else { return [] }
@@ -42,7 +40,8 @@ fn grammar_text(lit: Code) -> string? {
 fn has_open_comma_list(line: string) -> bool {
     let needle = "( \",\""
     if line.length < needle.length { return false }
-    [i for i in 0..line.length - needle.length + 1 if line.substring(i, i + needle.length) == needle].any((at) -> comma_list_left_open(line, at))
+    [i for i in 0..line.length - needle.length + 1 if line.substring(i, i + needle.length) == needle]
+        .any((at) -> comma_list_left_open(line, at))
 }
 
 fn comma_list_left_open(line: string, at: int) -> bool {
@@ -69,5 +68,13 @@ fn matching_close(line: string, at: int) -> int? {
 }
 
 fn comma_list_open_found(lit: Code) -> Fix {
-    Fix.Say(said(lit.loc(), "a repeated comma list with no trailing-comma option in this grammar — `( \",\" x )*` should end `\",\"?` before its closer", "this grammar", null))
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "a repeated comma list with no trailing-comma option in this grammar — `( \",\" x )*` should end `\",\"?` before its closer",
+                "this grammar",
+                null,
+            ),
+        )
 }

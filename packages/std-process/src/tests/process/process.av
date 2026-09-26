@@ -4,16 +4,27 @@
 // exit, a deadline that stops a slow child, a pipeline over kernel
 // pipes with a stage's own stderr, a child started and read a line
 // at a time through an open stdin, and a scripted runner.
-use @std.process.{Tool, tool, cmd, Exit, Stdin, Ready, Script, ProcessError, exit_text, scripted, run_through, parallel, race}
+use @std.process.{
+    Tool,
+    tool,
+    cmd,
+    Exit,
+    Stdin,
+    Ready,
+    Script,
+    ProcessError,
+    exit_text,
+    scripted,
+    run_through,
+    parallel,
+    race,
+}
 use @std.time.{ms, secs}
 
 fn timed(r: Result<Exit, ProcessError>) -> string {
     match r {
         .Ok(x) -> exit_text(x),
-        .Err(e) -> match e {
-            .TimedOut(_, _) -> "timed out",
-            rest -> "other",
-        },
+        .Err(e) -> match e { .TimedOut(_, _) -> "timed out", rest -> "other" },
     }
 }
 
@@ -43,7 +54,13 @@ fn shown() -> Result<string, ProcessError> {
     let second = child.read_line(secs(1)) ?? "-"
     let ended = child.wait(secs(1))?
     let served = "${first} ${second} ${exit_text(ended.exit)}"
-    let row = Script { program: "git", args: "describe", exit: Exit.Clean, stdout: "v9\n", stderr: "" }
+    let row = Script {
+        program: "git",
+        args: "describe",
+        exit: Exit.Clean,
+        stdout: "v9\n",
+        stderr: "",
+    }
     let fake = scripted([row])
     let git = Tool { name: "git", path: "/nowhere/git", terminator: null }
     let scripted_out = (run_through(fake, cmd(git, ["describe"]))?).stdout.trim()

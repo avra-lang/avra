@@ -30,7 +30,16 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
     let v? = cx.view.store.stmt_value(s) else { return }
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        cx.emit(refusal("type.fail", cx.stmt_loc(s), "a `fail` raises to a caller, and there is none enclosing", "raised here", "at the top level there is no failure channel"))
+        cx
+            .emit(
+                refusal(
+                    "type.fail",
+                    cx.stmt_loc(s),
+                    "a `fail` raises to a caller, and there is none enclosing",
+                    "raised here",
+                    "at the top level there is no failure channel",
+                ),
+            )
         return
     }
     let promised = ret!
@@ -38,13 +47,31 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
     let sides: ResSides? = cx.view.types.res_parts(promised)
     if sides == null {
         let promise = cx.view.types.name_of(promised)
-        cx.emit(refusal("type.fail", cx.stmt_loc(s), "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`", "raised here", "declare the answer fallible — `-> Result<${promise}, E>`"))
+        cx
+            .emit(
+                refusal(
+                    "type.fail",
+                    cx.stmt_loc(s),
+                    "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`",
+                    "raised here",
+                    "declare the answer fallible — `-> Result<${promise}, E>`",
+                ),
+            )
         return
     }
     if cx.errored(v) { return }
     if cx.accepts(v, sides!.err) { return }
     let gn = cx.name_at(v)
-    cx.emit(refusal("type.fail", cx.stmt_loc(s), "`fail` raises a `${cx.view.types.name_of(sides!.err)}`, this is `${gn}`", this_is(gn), null))
+    cx
+        .emit(
+            refusal(
+                "type.fail",
+                cx.stmt_loc(s),
+                "`fail` raises a `${cx.view.types.name_of(sides!.err)}`, this is `${gn}`",
+                this_is(gn),
+                null,
+            ),
+        )
 }
 
 /// The failure wrapped and exited — the open frames' `defer`s and

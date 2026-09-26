@@ -29,7 +29,10 @@ spec "features/impls adversarial" {
             refused_with(fn_field_server("fn"), "`s` is not `mut` — `turn` writes through it")
         }
         then "a declared callee's `mut` seat reads the same — one rule, not two" {
-            refused_with("type C = { n: int }\ntype S = { app: C }\nfn bump(mut c: C, by: int) -> int {\n    c.n = c.n + by\n    c.n\n}\nimpl S {\n    mut fn turn(by: int) -> int { bump(self.app, by) }\n}\nlet s = S { app: C { n: 0 } }\ns.turn(2)", "`s` is not `mut` — `turn` writes through it")
+            refused_with(
+                "type C = { n: int }\ntype S = { app: C }\nfn bump(mut c: C, by: int) -> int {\n    c.n = c.n + by\n    c.n\n}\nimpl S {\n    mut fn turn(by: int) -> int { bump(self.app, by) }\n}\nlet s = S { app: C { n: 0 } }\ns.turn(2)",
+                "`s` is not `mut` — `turn` writes through it",
+            )
         }
     }
     given "the receiver outside a method" {
@@ -38,53 +41,89 @@ spec "features/impls adversarial" {
             refused_with("self", "`self` names a method's receiver — this is not a method")
         }
         then "in a free fn" {
-            refused_with("fn f() -> int {\n    self.n\n}\nf()", "`self` names a method's receiver — this is not a method")
+            refused_with(
+                "fn f() -> int {\n    self.n\n}\nf()",
+                "`self` names a method's receiver — this is not a method",
+            )
         }
         then "in a top-level lambda" {
-            refused_with("let f = () -> self\n2", "`self` names a method's receiver — this is not a method")
+            refused_with(
+                "let f = () -> self\n2",
+                "`self` names a method's receiver — this is not a method",
+            )
         }
         then "in a struct field's default" {
-            refused_with("type P = { x: int = self }\n2", "`self` names a method's receiver — this is not a method")
+            refused_with(
+                "type P = { x: int = self }\n2",
+                "`self` names a method's receiver — this is not a method",
+            )
         }
     }
     given "the receiver written in a list" {
         then "bare, in a method — the receiver's remedy, once" {
-            refused_with("${counter()}impl C {\n    fn peek(self) -> int { self.n }\n}\nC { n: 1 }.peek()", "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "${counter()}impl C {\n    fn peek(self) -> int { self.n }\n}\nC { n: 1 }.peek()",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
         then "before other params — the seats still count" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn plus(self, k: int) -> int { self.n + k }\n}\nC { n: 1 }.plus(2)", "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn plus(self, k: int) -> int { self.n + k }\n}\nC { n: 1 }.plus(2)",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
         then "in a trait sig" {
-            refused_with("trait Show {\n    fn show(self) -> int\n}\n2", "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "trait Show {\n    fn show(self) -> int\n}\n2",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
         then "in a free fn — the same word" {
-            refused_with("fn f(self) -> int {\n    1\n}\nf()", "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "fn f(self) -> int {\n    1\n}\nf()",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
     }
     given "the keyword as a name" {
         then "a let named `self` refuses the name, and its read names no receiver" {
             let a = analyze_source("let self = 1\nself")
-            a.diagnostics.length == 2 && a.report().contains("`self` is a keyword") && a.report().contains("names a method's receiver")
+            a.diagnostics.length == 2 &&
+                a.report().contains("`self` is a keyword") &&
+                a.report().contains("names a method's receiver")
         }
         then "a lambda param named `self`" {
             refused_with("let f = (self: int) -> 1\nf(2)", "`self` is a keyword")
         }
         then "the receiver itself is never assigned" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn swap() { self = C { n: 2 } }\n}\n2", "`self` is the receiver — it is not assigned")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn swap() { self = C { n: 2 } }\n}\n2",
+                "`self` is the receiver — it is not assigned",
+            )
         }
     }
     given "`mut fn` — the declared form" {
         then "at the top level refuses once, and the fn still declares" {
-            refused_with("mut fn f() -> int { 1 }\nf()", "`mut fn` marks a method that writes its receiver — `f` has none")
+            refused_with(
+                "mut fn f() -> int { 1 }\nf()",
+                "`mut fn` marks a method that writes its receiver — `f` has none",
+            )
         }
         then "on an inherent method it parses and the method answers" {
-            shown("type C = { n: int }\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n    fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.bump()\nc.get()") == "2"
+            shown(
+                "type C = { n: int }\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n    fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.bump()\nc.get()",
+            ) == "2"
         }
         then "on a trait sig, and its impl's plain fn answers the contract" {
-            shown("trait Tick {\n    mut fn tick()\n    fn count() -> int\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut c = C { n: 0 }\nc.tick()\nc.tick()\nc.count()") == "2"
+            shown(
+                "trait Tick {\n    mut fn tick()\n    fn count() -> int\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut c = C { n: 0 }\nc.tick()\nc.tick()\nc.count()",
+            ) == "2"
         }
         then "`mut` before a non-fn inside an impl is the impl's own refusal" {
-            refused_with("type C = { n: int }\nimpl C {\n    mut x = 1\n}\n2", "an `impl` block holds `fn` declarations only")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    mut x = 1\n}\n2",
+                "an `impl` block holds `fn` declarations only",
+            )
         }
         then "`mut x = e` still declares a cell — the mutation statement is untouched" {
             shown("mut x = 1\nx = x + 1\nx") == "2"
@@ -92,25 +131,43 @@ spec "features/impls adversarial" {
     }
     given "the receiver crossed with every feature" {
         then "captured by a lambda, it is the receiver's value" {
-            shown("type C = { n: int, xs: List<int> }\nimpl C {\n    fn total() -> int {\n        let f = (k: int) -> self.n + k\n        let g = () -> self.xs.length\n        f(10) + g()\n    }\n}\nC { n: 1, xs: [1, 2] }.total()") == "13"
+            shown(
+                "type C = { n: int, xs: List<int> }\nimpl C {\n    fn total() -> int {\n        let f = (k: int) -> self.n + k\n        let g = () -> self.xs.length\n        f(10) + g()\n    }\n}\nC { n: 1, xs: [1, 2] }.total()",
+            ) == "13"
         }
         then "as a match subject" {
-            shown("enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score() -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()") == "7"
+            shown(
+                "enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score() -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()",
+            ) == "7"
         }
         then "under `with`, a modified copy" {
-            shown("type C = { n: int }\nimpl C {\n    fn next() -> C { self with { n: self.n + 1 } }\n}\nC { n: 1 }.next().next().n") == "3"
+            shown(
+                "type C = { n: int }\nimpl C {\n    fn next() -> C { self with { n: self.n + 1 } }\n}\nC { n: 1 }.next().next().n",
+            ) == "3"
         }
         then "in a comprehension's element and a `when`" {
-            shown("type C = { n: int, xs: List<int> }\nimpl C {\n    fn scaled() -> List<int> { [x * self.n for x in self.xs] }\n    fn sign() -> int { when { self.n > 0 -> 1, _ -> 0 } }\n}\nlet c = C { n: 3, xs: [1, 2] }\n\"" + "\${c.scaled()[1]} " + "\${c.sign()}\"") == "6 1"
+            shown(
+                "type C = { n: int, xs: List<int> }\nimpl C {\n    fn scaled() -> List<int> { [x * self.n for x in self.xs] }\n    fn sign() -> int { when { self.n > 0 -> 1, _ -> 0 } }\n}\nlet c = C { n: 3, xs: [1, 2] }\n\"" +
+                    "\${c.scaled()[1]} " +
+                    "\${c.sign()}\"",
+            ) == "6 1"
         }
         then "passed whole to a free fn, and answered whole" {
-            shown("type C = { n: int }\nfn peek(c: C) -> int { c.n }\nimpl C {\n    fn me() -> C { self }\n    fn viaFree() -> int { peek(self) }\n}\nC { n: 5 }.me().viaFree()") == "5"
+            shown(
+                "type C = { n: int }\nfn peek(c: C) -> int { c.n }\nimpl C {\n    fn me() -> C { self }\n    fn viaFree() -> int { peek(self) }\n}\nC { n: 5 }.me().viaFree()",
+            ) == "5"
         }
         then "a method calling a method on self, recursively" {
-            shown("type C = { n: int }\nimpl C {\n    fn down(k: int) -> int {\n        if k == 0 { self.n } else { self.down(k - 1) }\n    }\n}\nC { n: 9 }.down(3)") == "9"
+            shown(
+                "type C = { n: int }\nimpl C {\n    fn down(k: int) -> int {\n        if k == 0 { self.n } else { self.down(k - 1) }\n    }\n}\nC { n: 9 }.down(3)",
+            ) == "9"
         }
         then "a generic impl's receiver wears the instantiation" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n    fn with(x: T) -> Box<T> { Box { v: x } }\n}\n\"" + "\${Box { v: 4 }.get()} " + "\${Box { v: \"q\" }.with(\"r\").get()}\"") == "4 r"
+            shown(
+                "type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n    fn with(x: T) -> Box<T> { Box { v: x } }\n}\n\"" +
+                    "\${Box { v: 4 }.get()} " +
+                    "\${Box { v: \"q\" }.with(\"r\").get()}\"",
+            ) == "4 r"
         }
         then "two engines agree on a writing method's answer" {
             shown("${counter()}mut c = C { n: 1 }\nc.bump()\nc.bump()\nc.get()") == "3"
@@ -118,81 +175,154 @@ spec "features/impls adversarial" {
     }
     given "the receiver misused, one message each" {
         then "called" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn f() -> int { self() }\n}\n2", "this is not callable — it holds a `C`")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn f() -> int { self() }\n}\n2",
+                "this is not callable — it holds a `C`",
+            )
         }
         then "indexed" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn f() -> int { self[0] }\n}\n2", "`[...]` indexes a `List`, found `C`")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn f() -> int { self[0] }\n}\n2",
+                "`[...]` indexes a `List`, found `C`",
+            )
         }
         then "`self.self`" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn f() -> int { self.self }\n}\n2", "no field `self` on `C`")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn f() -> int { self.self }\n}\n2",
+                "no field `self` on `C`",
+            )
         }
         then "in a spec case" {
-            refused_with("spec \"s\" {\n    given \"g\" {\n        then \"t\" { self == 1 }\n    }\n}\n2", "`self` names a method's receiver — this is not a method")
+            refused_with(
+                "spec \"s\" {\n    given \"g\" {\n        then \"t\" { self == 1 }\n    }\n}\n2",
+                "`self` names a method's receiver — this is not a method",
+            )
         }
         then "handed to a seat that wants a scalar" {
-            refused_with("fn f(x: int) -> int { x }\ntype C = { n: int }\nimpl C {\n    fn g() -> int { f(self) }\n}\nC { n: 1 }.g()", "argument 1 of `f` wants `int`, found `C`")
+            refused_with(
+                "fn f(x: int) -> int { x }\ntype C = { n: int }\nimpl C {\n    fn g() -> int { f(self) }\n}\nC { n: 1 }.g()",
+                "argument 1 of `f` wants `int`, found `C`",
+            )
         }
         then "a generic `mut fn` meets the generic-method law, not a hole" {
-            refused_with("type C = { n: int }\nimpl C {\n    mut fn f<T>(x: T) -> int { 1 }\n}\n2", "`f` is generic — generic methods are recorded, not landed")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    mut fn f<T>(x: T) -> int { 1 }\n}\n2",
+                "`f` is generic — generic methods are recorded, not landed",
+            )
         }
         then "a refused generic method whose body READS its seat still speaks" {
-            refused_with("trait Tr {\n    fn m() -> int\n}\ntype C = { n: int }\nimpl C {\n    fn f<T: Tr>(x: T) -> int { x.m() }\n}\n2", "`f` is generic — generic methods are recorded, not landed")
+            refused_with(
+                "trait Tr {\n    fn m() -> int\n}\ntype C = { n: int }\nimpl C {\n    fn f<T: Tr>(x: T) -> int { x.m() }\n}\n2",
+                "`f` is generic — generic methods are recorded, not landed",
+            )
         }
         then "a refused generic method's UNBOUNDED seat read speaks too" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn f<T>(x: T) -> int { x.m() }\n}\n2", "`f` is generic — generic methods are recorded, not landed")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn f<T>(x: T) -> int { x.m() }\n}\n2",
+                "`f` is generic — generic methods are recorded, not landed",
+            )
         }
         then "an impl inside a fn body lives at the top level" {
-            refused_with("type C = { n: int }\nfn f() -> int {\n    impl C {\n        fn g() -> int { self.n }\n    }\n    1\n}\nf()", "impl and trait blocks live at the top level")
+            refused_with(
+                "type C = { n: int }\nfn f() -> int {\n    impl C {\n        fn g() -> int { self.n }\n    }\n    1\n}\nf()",
+                "impl and trait blocks live at the top level",
+            )
         }
         then "a trait sig spelling `mut fn f(self)` gets the receiver's remedy" {
-            refused_with("trait T {\n    mut fn f(self)\n}\n2", "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "trait T {\n    mut fn f(self)\n}\n2",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
     }
     given "the receiver beside its own names" {
         then "a local shadowing a field name reads the local; `self.` reads the field" {
-            shown("type C = { n: int }\nimpl C {\n    fn g() -> int {\n        let n = 5\n        self.n + n\n    }\n}\nC { n: 1 }.g()") == "6"
+            shown(
+                "type C = { n: int }\nimpl C {\n    fn g() -> int {\n        let n = 5\n        self.n + n\n    }\n}\nC { n: 1 }.g()",
+            ) == "6"
         }
         then "in an interpolation hole" {
-            shown("type C = { n: int }\nimpl C {\n    fn g() -> string { \"" + "\${self.n}!\" }\n}\nC { n: 7 }.g()") == "7!"
+            shown(
+                "type C = { n: int }\nimpl C {\n    fn g() -> string { \"" +
+                    "\${self.n}!\" }\n}\nC { n: 7 }.g()",
+            ) == "7!"
         }
     }
     given "the inout seats under attack (S1)" {
         then "three `mut` seats, three roots" {
-            shown("fn both(mut a: List<int>, mut b: List<int>, mut c: List<int>) { a.push(1)\n    b.push(2)\n    c.push(3) }\nmut x = [0]\nmut y = [0]\nmut z = [0]\nboth(x, y, z)\nx.length + y.length + z.length") == "6"
+            shown(
+                "fn both(mut a: List<int>, mut b: List<int>, mut c: List<int>) { a.push(1)\n    b.push(2)\n    c.push(3) }\nmut x = [0]\nmut y = [0]\nmut z = [0]\nboth(x, y, z)\nx.length + y.length + z.length",
+            ) == "6"
         }
         then "a wrong TYPE in a `mut` seat is the type's refusal alone" {
-            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nmut s = \"x\"\ngrow(s)\n2", "argument 1 of `grow` wants `List<int>`, found `string`")
+            refused_with(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nmut s = \"x\"\ngrow(s)\n2",
+                "argument 1 of `grow` wants `List<int>`, found `string`",
+            )
         }
         then "a field path under a `mut` root fills a seat; under a `let` it refuses" {
-            shown("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nmut b = B { xs: [] }\ngrow(b.xs)\nb.xs.length") == "1" && refused_with("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nlet b = B { xs: [] }\ngrow(b.xs)\nb.xs.length", "`b` is not `mut` — seat 1 of `grow` writes through it")
+            shown(
+                    "type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nmut b = B { xs: [] }\ngrow(b.xs)\nb.xs.length",
+                ) == "1" &&
+                refused_with(
+                    "type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nlet b = B { xs: [] }\ngrow(b.xs)\nb.xs.length",
+                    "`b` is not `mut` — seat 1 of `grow` writes through it",
+                )
         }
         then "an index path fills a seat" {
-            shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut g = [[1]]\ngrow(g[0])\ng[0].length") == "2"
+            shown(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nmut g = [[1]]\ngrow(g[0])\ng[0].length",
+            ) == "2"
         }
         then "a CAPTURED root is a copy, and the seat law says so" {
-            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\nlet g = () -> grow(v)\ng()\nv.length", "`v` is captured by value — a lambda's copy cannot fill seat 1 of `grow`")
+            refused_with(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\nlet g = () -> grow(v)\ng()\nv.length",
+                "`v` is captured by value — a lambda's copy cannot fill seat 1 of `grow`",
+            )
         }
         then "the receiver captured in a lambda is a copy, named as `self`" {
-            let a = analyze_source("type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn later() { let f = () -> self.bump()\n        f() }\n}\nmut c = C { n: 1 }\nc.later()\nc.n")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`self` is captured by value — `bump` writes through the lambda's copy")
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn later() { let f = () -> self.bump()\n        f() }\n}\nmut c = C { n: 1 }\nc.later()\nc.n",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains("`self` is captured by value — `bump` writes through the lambda's copy")
         }
         then "a generic `mut` seat, two instantiations" {
-            shown("fn grow<T>(mut xs: List<T>, v: T) { xs.push(v) }\nmut a = [1]\nmut b = [\"s\"]\ngrow(a, 2)\ngrow(b, \"t\")\na.length + b.length") == "4"
+            shown(
+                "fn grow<T>(mut xs: List<T>, v: T) { xs.push(v) }\nmut a = [1]\nmut b = [\"s\"]\ngrow(a, 2)\ngrow(b, \"t\")\na.length + b.length",
+            ) == "4"
         }
         then "a `mut` seat in a trait sig, through dyn" {
-            shown("trait Sink {\n    fn take(mut xs: List<int>)\n}\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\ns.take(v)\nv[1]") == "7"
+            shown(
+                "trait Sink {\n    fn take(mut xs: List<int>)\n}\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\ns.take(v)\nv[1]",
+            ) == "7"
         }
         then "a seat written, read, written — the reads see each write" {
-            shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nlet n = v.length\ngrow(v)\n\"" + "\${n} " + "\${v.length}\"") == "2 3"
+            shown(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nlet n = v.length\ngrow(v)\n\"" +
+                    "\${n} " +
+                    "\${v.length}\"",
+            ) == "2 3"
         }
         then "a managed value through a `mut` seat, twice" {
-            shown("fn shout(mut xs: List<string>) { xs.push(\"" + "\${xs.length}!\") }\nmut v = [\"a\"]\nshout(v)\nshout(v)\nv[2]") == "2!"
+            shown(
+                "fn shout(mut xs: List<string>) { xs.push(\"" +
+                    "\${xs.length}!\") }\nmut v = [\"a\"]\nshout(v)\nshout(v)\nv[2]",
+            ) == "2!"
         }
         then "the old design's `mut self` in a list gets the receiver's remedy" {
-            refused_with("type C = { n: int }\nimpl C {\n    mut fn bump(mut self) { self.n = 1 }\n}\n2", "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    mut fn bump(mut self) { self.n = 1 }\n}\n2",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
         then "a method that only recurses on self is not writing" {
-            let a = analyze_source("type C = { n: int }\nimpl C {\n    fn spin(k: int) { if k > 0 { self.spin(k - 1) } }\n}\nlet c = C { n: 1 }\nc.spin(3)\nc.n")
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    fn spin(k: int) { if k > 0 { self.spin(k - 1) } }\n}\nlet c = C { n: 1 }\nc.spin(3)\nc.n",
+            )
             a.diagnostics.is_empty() && a.ran() == "1"
         }
     }
@@ -209,39 +339,66 @@ spec "features/impls adversarial" {
     }
     given "trait defaults under attack" {
         then "a default reading a field of `self` refuses — `Self` has no fields, only the trait's members" {
-            refused_with("trait Show {\n    fn show() -> int\n    fn peek() -> int {\n        self.x\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.peek()", "no property `x` on `Self`")
+            refused_with(
+                "trait Show {\n    fn show() -> int\n    fn peek() -> int {\n        self.x\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.peek()",
+                "no property `x` on `Self`",
+            )
         }
         then "a default's body must answer its declared type — one refusal, at the default" {
-            refused_with("trait Show {\n    fn show() -> int\n    fn word() -> string {\n        self.show()\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.word()", "the body answers `int` but `word` declares `string`")
+            refused_with(
+                "trait Show {\n    fn show() -> int\n    fn word() -> string {\n        self.show()\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.word()",
+                "the body answers `int` but `word` declares `string`",
+            )
         }
         then "an empty default body is a void method" {
-            shown("trait Greet {\n    fn hi() {\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()\n2") == "2"
+            shown(
+                "trait Greet {\n    fn hi() {\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()\n2",
+            ) == "2"
         }
         then "a signatory's INHERENT method of the same name wins over the default" {
-            shown("${defaulted()}impl P {\n    fn twice() -> int {\n        99\n    }\n}\nP { x: 21 }.twice()") == "99"
+            shown(
+                "${defaulted()}impl P {\n    fn twice() -> int {\n        99\n    }\n}\nP { x: 21 }.twice()",
+            ) == "99"
         }
         then "a default recurses through `self`" {
-            shown("trait Count {\n    fn step() -> int\n    fn down(n: int) -> int {\n        if n <= 0 { return 0 }\n        self.step() + self.down(n - 1)\n    }\n}\ntype P = { x: int }\nimpl Count for P {\n    fn step() -> int {\n        self.x\n    }\n}\nP { x: 3 }.down(4)") == "12"
+            shown(
+                "trait Count {\n    fn step() -> int\n    fn down(n: int) -> int {\n        if n <= 0 { return 0 }\n        self.step() + self.down(n - 1)\n    }\n}\ntype P = { x: int }\nimpl Count for P {\n    fn step() -> int {\n        self.x\n    }\n}\nP { x: 3 }.down(4)",
+            ) == "12"
         }
         then "`Self` cannot be declared — it is the trait's word for its implementor" {
-            refused_with("type Self = { x: int }\n1", "`Self` is a trait's name for its implementor")
+            refused_with(
+                "type Self = { x: int }\n1",
+                "`Self` is a trait's name for its implementor",
+            )
         }
         then "overriding a default with the wrong signature refuses naming both sides" {
-            refused_with("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> bool {\n        true\n    }\n}\n1", "`G.twice` does not wear `Show.twice`'s signature")
+            refused_with(
+                "${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> bool {\n        true\n    }\n}\n1",
+                "`G.twice` does not wear `Show.twice`'s signature",
+            )
         }
         then "calling a default with the wrong arity refuses in the method's words" {
-            refused_with("${defaulted()}P { x: 1 }.twice(3)", "`P.twice` takes 0 arguments beside `self`, found 1")
+            refused_with(
+                "${defaulted()}P { x: 1 }.twice(3)",
+                "`P.twice` takes 0 arguments beside `self`, found 1",
+            )
         }
         then "two signatories through two dyn boxes each reach their own answer" {
-            shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nlet a: dyn Show = P { x: 1 }\nlet b: dyn Show = G.hot\na.twice() + b.twice()") == "202"
+            shown(
+                "${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nlet a: dyn Show = P { x: 1 }\nlet b: dyn Show = G.hot\na.twice() + b.twice()",
+            ) == "202"
         }
     }
     given "names against names — who answers a dot-call" {
         then "a fn-typed field and an impl method of one name: the field answers" {
-            shown("type Cx = { walk: fn(int) -> int }\nimpl Cx {\n    fn walk(n: int) -> int { n * 100 }\n}\nfn twice(n: int) -> int { n * 2 }\nCx { walk: twice }.walk(3)") == "6"
+            shown(
+                "type Cx = { walk: fn(int) -> int }\nimpl Cx {\n    fn walk(n: int) -> int { n * 100 }\n}\nfn twice(n: int) -> int { n * 2 }\nCx { walk: twice }.walk(3)",
+            ) == "6"
         }
         then "a type name constructs, a bounded parameter and a contract speak through their trait, the impl table answers last" {
-            shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nimpl P {\n    fn own() -> int { self.x * 10 }\n}\nenum K {\n    A(x: int)\n}\nfn bounded<T: Show>(v: T) -> int { v.show() }\nlet d: dyn Show = P { x: 3 }\nlet k = match K.A(4) { .A(x) -> x }\nbounded(P { x: 1 }) + d.show() + k + P { x: 5 }.own()") == "58"
+            shown(
+                "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nimpl P {\n    fn own() -> int { self.x * 10 }\n}\nenum K {\n    A(x: int)\n}\nfn bounded<T: Show>(v: T) -> int { v.show() }\nlet d: dyn Show = P { x: 3 }\nlet k = match K.A(4) { .A(x) -> x }\nbounded(P { x: 1 }) + d.show() + k + P { x: 5 }.own()",
+            ) == "58"
         }
     }
 }

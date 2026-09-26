@@ -63,7 +63,10 @@ fn pure_cases() -> List<PureCase> {
         // a Shared-effect method — a write by another name, same as push
         PureCase { src: "let c = Cell.new(1)\nc.set(2)", want: false },
         // a Read-effect method whose OWN argument is impure
-        PureCase { src: "let m: Map<string, int> = {}\nfn f() -> string { \"a\" }\nm.get(f())", want: false },
+        PureCase {
+            src: "let m: Map<string, int> = {}\nfn f() -> string { \"a\" }\nm.get(f())",
+            want: false,
+        },
         // `!` insists on a nullable read, deterministic within one expression — a `mut` binding included
         PureCase { src: "mut c: int? = 5\nc!", want: true },
         // an aggregate literal is pure only when EVERY kid is — a lambda kid sinks the whole list
@@ -96,11 +99,19 @@ spec "features/code — the analysed handle" {
             c.binding()! is .Param && c.declared()!.name() == "int"
         }
         then "a method's `self` binding is Receiver, and declared() names the impl's own type" {
-            let c = find_text(analyze_source("type P = { x: int }\nimpl P { fn same() -> P { self } }\nlet p = P { x: 1 }\np.same()"), "self")
+            let c = find_text(
+                analyze_source(
+                    "type P = { x: int }\nimpl P { fn same() -> P { self } }\nlet p = P { x: 1 }\np.same()",
+                ),
+                "self",
+            )
             c.binding()! is .Receiver && c.declared()!.name() == "P"
         }
         then "a match arm's bound name is Pattern, and declared() names the payload it took" {
-            let c = find_text(analyze_source("enum E { A(n: int) }\nmatch E.A(1) { .A(n) -> n }"), "n")
+            let c = find_text(
+                analyze_source("enum E { A(n: int) }\nmatch E.A(1) { .A(n) -> n }"),
+                "n",
+            )
             c.binding()! is .Pattern && c.declared()!.name() == "int"
         }
         then "a lambda param's binding is LambdaParam, and declared() names its written type" {
@@ -129,14 +140,24 @@ spec "features/code — the analysed handle" {
     given "answering() and is_registry()" {
 
         then "counts one per variant-testing arm, up to a hole; null off a match" {
-            let three = tail(analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, .B -> 2, .C -> 3 }"))
-            let one_and_hole = tail(analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, _ -> 0 }"))
+            let three = tail(
+                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, .B -> 2, .C -> 3 }"),
+            )
+            let one_and_hole = tail(
+                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, _ -> 0 }"),
+            )
             let not_a_match = tail(analyze_source("1"))
-            three.answering() == 3 && one_and_hole.answering() == 1 && not_a_match.answering() == null
+            three.answering() == 3 &&
+                one_and_hole.answering() == 1 &&
+                not_a_match.answering() == null
         }
         then "is_registry() follows: true at two or more answering arms, false at one and off a match" {
-            let three = tail(analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, .B -> 2, .C -> 3 }"))
-            let one_and_hole = tail(analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, _ -> 0 }"))
+            let three = tail(
+                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, .B -> 2, .C -> 3 }"),
+            )
+            let one_and_hole = tail(
+                analyze_source("enum E { A B C }\nmatch E.A { .A -> 1, _ -> 0 }"),
+            )
             let not_a_match = tail(analyze_source("1"))
             three.is_registry() && !one_and_hole.is_registry() && !not_a_match.is_registry()
         }
@@ -151,7 +172,11 @@ spec "features/code — the analysed handle" {
     given "kids()" {
 
         then "a call's kids are its callee then its args, in payload order" {
-            let c = tail(analyze_source("fn pick(n: int) -> fn(int) -> int { (m: int) -> m + n }\npick(1)(2)"))
+            let c = tail(
+                analyze_source(
+                    "fn pick(n: int) -> fn(int) -> int { (m: int) -> m + n }\npick(1)(2)",
+                ),
+            )
             let ks = c.kids()
             ks.length == 2 && ks[0].text() == "pick(1)" && ks[1].text() == "2"
         }

@@ -7,7 +7,16 @@
 // rewrite, as program TEXT handed to the compiler under test — that
 // text is the thing being checked, not this file's own code, the
 // same shape as features/lists/idioms.av's own lists.last_index license.
-use @std.avrac.compiler.{avra, new_workspace, fix_applied, fighting_pair, analysed, Application, Program, Workspace}
+use @std.avrac.compiler.{
+    avra,
+    new_workspace,
+    fix_applied,
+    fighting_pair,
+    analysed,
+    Application,
+    Program,
+    Workspace,
+}
 use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.diagnostics.{Diag, error_at}
 use @std.errors.{Edit, Loc, Suggestion, Confidence}
@@ -55,7 +64,9 @@ fn fix_apps_of(main: string, only: string? = null) -> List<Application> {
 spec "avra fix" {
     given "a null-check idiom the IR proof confirms" {
         then "one Application, PROVED" {
-            let apps = fix_apps_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n")
+            let apps = fix_apps_of(
+                "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n",
+            )
             apps.length == 1 && apps[0].proved && apps[0].kind == "nullable.if_null_ternary"
         }
         then "fix_applied splices the file to the rewritten form" {
@@ -66,7 +77,11 @@ spec "avra fix" {
     }
     given "the same idiom filtered by --only naming a DIFFERENT rule" {
         then "no Application at all" {
-            fix_apps_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n", "lists.last_index").is_empty()
+            fix_apps_of(
+                "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n",
+                "lists.last_index",
+            )
+                .is_empty()
         }
     }
     given "a last-index idiom whose lowering the IR proof does not confirm" {
@@ -91,7 +106,11 @@ spec "avra fix" {
             // LICENSED loops.push_loop: the fixture text names the idiom under test, held as a string
             let text = "fn doubled(xs: List<int>) {\n    mut out: List<int> = []\n    for x in xs {\n        out.push(x * 2)\n    }\n}\n0\n"
             let apps = fix_apps_of(text)
-            apps.length == 1 && !apps[0].proved && apps[0].by_law != null && apps[0].kind == "loops.push_loop" && fix_applied(text, apps) != text
+            apps.length == 1 &&
+                !apps[0].proved &&
+                apps[0].by_law != null &&
+                apps[0].kind == "loops.push_loop" &&
+                fix_applied(text, apps) != text
         }
         then "the written form still type-checks — the law never excuses a splice that does not" {
             let text = "fn doubled(xs: List<int>) {\n    mut out: List<int> = []\n    for x in xs {\n        out.push(x * 2)\n    }\n}\n0\n"
@@ -99,10 +118,7 @@ spec "avra fix" {
             let after? = fix_applied(text, apps) else { return false }
             mut ws2 = fix_ws_of(after)
             mut p2: Program = ws2.program("/w/src/main.av")
-            match p2.checked_from(null, true) {
-                .Ok(_) -> true,
-                .Err(_) -> false,
-            }
+            match p2.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
         }
     }
     given "the same push-loop rewrite, NOT the block's last statement — another statement follows it on the next line" {
@@ -115,10 +131,7 @@ spec "avra fix" {
             if after == text { return false }
             mut ws2 = fix_ws_of(after)
             mut p2: Program = ws2.program("/w/src/main.av")
-            match p2.checked_from(null, true) {
-                .Ok(_) -> true,
-                .Err(_) -> false,
-            }
+            match p2.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
         }
     }
     given "an index-walk idiom the IR proof cannot confirm — a different runtime protocol by construction — but its own `@law` accepts" {
@@ -126,7 +139,11 @@ spec "avra fix" {
             // LICENSED loops.index_walk: the fixture text names the idiom under test, held as a string
             let text = "fn summed(xs: List<int>) {\n    mut total = 0\n    for i in 0..xs.length {\n        total = total + xs[i]\n    }\n}\n0\n"
             let apps = fix_apps_of(text)
-            apps.length == 1 && !apps[0].proved && apps[0].by_law != null && apps[0].kind == "loops.index_walk" && fix_applied(text, apps) != text
+            apps.length == 1 &&
+                !apps[0].proved &&
+                apps[0].by_law != null &&
+                apps[0].kind == "loops.index_walk" &&
+                fix_applied(text, apps) != text
         }
     }
     given "the same index-walk rewrite, NOT the block's last statement — another statement follows it on the next line" {
@@ -139,10 +156,7 @@ spec "avra fix" {
             if after == text { return false }
             mut ws2 = fix_ws_of(after)
             mut p2: Program = ws2.program("/w/src/main.av")
-            match p2.checked_from(null, true) {
-                .Ok(_) -> true,
-                .Err(_) -> false,
-            }
+            match p2.checked_from(null, true) { .Ok(_) -> true, .Err(_) -> false }
         }
     }
     given "a one-body-arms idiom the IR proof cannot confirm — fewer instructions after every honest merge — but its own `@law` accepts" {
@@ -150,13 +164,20 @@ spec "avra fix" {
             // LICENSED compiler.one_body_arms: the fixture text names the idiom under test, held as a string
             let text = "fn described(k: int) -> int {\n    match k {\n        1 -> 1,\n        2 -> 1,\n        _ -> 0,\n    }\n}\n0\n"
             let apps = fix_apps_of(text)
-            apps.length == 1 && !apps[0].proved && apps[0].by_law != null && apps[0].kind == "compiler.one_body_arms" && fix_applied(text, apps) != text
+            apps.length == 1 &&
+                !apps[0].proved &&
+                apps[0].by_law != null &&
+                apps[0].kind == "compiler.one_body_arms" &&
+                fix_applied(text, apps) != text
         }
     }
     given "a rule that only SAYS (no rewrite at all)" {
         // LICENSED structs.index_compared: the fixture text names the idiom under test, held as a string
         then "no Application — fix never touches a Fix.Say" {
-            fix_apps_of("type Id = { index: int }\nfn same(a: Id, b: Id) -> bool {\n    a.index == b.index\n}\n0\n").is_empty()
+            fix_apps_of(
+                "type Id = { index: int }\nfn same(a: Id, b: Id) -> bool {\n    a.index == b.index\n}\n0\n",
+            )
+                .is_empty()
         }
     }
     given "a null-check idiom with a comment inside the matched span" {
@@ -182,20 +203,35 @@ spec "avra fix" {
         then "one Application, ACCEPTED by law — the method is gone, its own indent left behind the way any whole-statement deletion leaves the line it stood on" {
             let text = "impl Greeter for Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}\n\"\"\n"
             let apps = fix_apps_of(text)
-            apps.length == 1 && apps[0].by_law != null && apps[0].kind == "impls.default_override" && fix_applied(text, apps) == "impl Greeter for Loud {\n    \n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}\n\"\"\n"
+            apps.length == 1 &&
+                apps[0].by_law != null &&
+                apps[0].kind == "impls.default_override" &&
+                fix_applied(text, apps) == "impl Greeter for Loud {\n    \n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}\n\"\"\n"
         }
     }
     given "a `use` line naming two items, one of them read nowhere" {
         then "one Application, ACCEPTED by law — the line rewritten around the one item still read" {
             let text = "use lib.{Thing, Other}\nfn f() -> Thing {\n    Thing { x: 0 }\n}\n0\n"
-            let apps = fix_apps_of_files({"/w/src/main.av": text, "/w/src/lib.av": "export type Thing = { x: int }\nexport type Other = { y: int }\n"}, ["/w/src/main.av", "/w/src/lib.av"])
-            apps.length == 1 && apps[0].by_law != null && apps[0].kind == "modules.unused_import" && fix_applied(text, apps) == "use lib.{Thing}\nfn f() -> Thing {\n    Thing { x: 0 }\n}\n0\n"
+            let apps = fix_apps_of_files(
+                {
+                    "/w/src/main.av": text,
+                    "/w/src/lib.av": "export type Thing = { x: int }\nexport type Other = { y: int }\n",
+                },
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
+            apps.length == 1 &&
+                apps[0].by_law != null &&
+                apps[0].kind == "modules.unused_import" &&
+                fix_applied(text, apps) == "use lib.{Thing}\nfn f() -> Thing {\n    Thing { x: 0 }\n}\n0\n"
         }
     }
     given "a `use` line whose only item is read nowhere" {
         then "the whole line is gone — its own trailing break kept, same as any statement's deletion" {
             let text = "use lib.{Other}\n0\n"
-            let apps = fix_apps_of_files({"/w/src/main.av": text, "/w/src/lib.av": "export type Other = { y: int }\n"}, ["/w/src/main.av", "/w/src/lib.av"])
+            let apps = fix_apps_of_files(
+                {"/w/src/main.av": text, "/w/src/lib.av": "export type Other = { y: int }\n"},
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
             apps.length == 1 && fix_applied(text, apps) == "\n0\n"
         }
     }
@@ -210,7 +246,10 @@ spec "avra fix — the general Diag.suggestion channel" {
         then "PROVED — Confidence plays no part in it" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
             let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
-            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]))
+            let apps = suggestion_apps_of(
+                text,
+                suggestion_diag("test.finding", Confidence.High, [edit]),
+            )
             apps.length == 1 && apps[0].proved && apps[0].kind == "test.finding"
         }
     }
@@ -222,7 +261,10 @@ spec "avra fix — the general Diag.suggestion channel" {
         then "SHOWN, not proved — fix_applied writes nothing" {
             let text = "fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n"
             let edit = edit_over(text, "a + b", "a - b")
-            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]))
+            let apps = suggestion_apps_of(
+                text,
+                suggestion_diag("test.finding", Confidence.High, [edit]),
+            )
             apps.length == 1 && !apps[0].proved && fix_applied(text, apps) == text
         }
     }
@@ -230,22 +272,31 @@ spec "avra fix — the general Diag.suggestion channel" {
         then "PROVED all the same — confidence never raises or lowers the gate" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
             let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
-            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.Low, [edit]))
+            let apps = suggestion_apps_of(
+                text,
+                suggestion_diag("test.finding", Confidence.Low, [edit]),
+            )
             apps.length == 1 && apps[0].proved
         }
     }
     given "a suggestion whose one edit sits over a REMARK" {
         then "no Application at all — the general gate refuses it outright, same as a rule's" {
             let text = "fn pick(x: int?) -> int {\n    if x == null {\n        // held\n        0\n    } else { x! }\n}\n0\n"
-            let edit = edit_over(text, "if x == null {\n        // held\n        0\n    } else { x! }", "x ?? 0")
-            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit])).is_empty()
+            let edit = edit_over(
+                text,
+                "if x == null {\n        // held\n        0\n    } else { x! }",
+                "x ?? 0",
+            )
+            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]))
+                .is_empty()
         }
     }
     given "a suggestion whose one edit sits over a `// LICENSED` site" {
         then "no Application at all — a human's own decision, unconditionally" {
             let text = "fn pick(x: int?) -> int {\n    // LICENSED style.accumulator_declaration: kept as a ternary on purpose\n    if x == null { 0 } else { x! }\n}\n0\n"
             let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
-            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit])).is_empty()
+            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]))
+                .is_empty()
         }
     }
     given "a suggestion with TWO edits, both provable together" {
@@ -255,9 +306,15 @@ spec "avra fix — the general Diag.suggestion channel" {
                 edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0"),
                 edit_over(text, "if y == null { 0 } else { y! }", "y ?? 0"),
             ]
-            let apps = suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, edits))
+            let apps = suggestion_apps_of(
+                text,
+                suggestion_diag("test.finding", Confidence.High, edits),
+            )
             let after = fix_applied(text, apps)
-            apps[0].proved && after != null && after!.contains("x ?? 0") && after!.contains("y ?? 0")
+            apps[0].proved &&
+                after != null &&
+                after!.contains("x ?? 0") &&
+                after!.contains("y ?? 0")
         }
     }
     given "a Diag carrying TWO suggestions" {
@@ -278,7 +335,12 @@ spec "avra fix — the general Diag.suggestion channel" {
         then "no Application at all" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
             let edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
-            suggestion_apps_of(text, suggestion_diag("test.finding", Confidence.High, [edit]), "other.kind").is_empty()
+            suggestion_apps_of(
+                text,
+                suggestion_diag("test.finding", Confidence.High, [edit]),
+                "other.kind",
+            )
+                .is_empty()
         }
     }
     given "a Diag with TWO suggestions, only ONE of them sitting over a `// LICENSED` site" {
@@ -290,8 +352,16 @@ spec "avra fix — the general Diag.suggestion channel" {
             let licensed_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
             let clean_edit = edit_over(text, "if y == null { 0 } else { y! }", "y ?? 0")
             let d = error_at("test.two", null, "test finding") with { suggestions: [
-                Suggestion { confidence: Confidence.High, description: "licensed one", edits: [licensed_edit] },
-                Suggestion { confidence: Confidence.High, description: "clean one", edits: [clean_edit] },
+                Suggestion {
+                    confidence: Confidence.High,
+                    description: "licensed one",
+                    edits: [licensed_edit],
+                },
+                Suggestion {
+                    confidence: Confidence.High,
+                    description: "clean one",
+                    edits: [clean_edit],
+                },
             ] }
             mut ws = fix_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
@@ -326,15 +396,25 @@ spec "avra fix — a rule and a suggestion fighting over the same code" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
             let rule_apps = fix_apps_of(text)
             let same_span_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
-            let sg_apps = suggestion_apps_of(text, suggestion_diag("test.rival", Confidence.High, [same_span_edit]))
+            let sg_apps = suggestion_apps_of(
+                text,
+                suggestion_diag("test.rival", Confidence.High, [same_span_edit]),
+            )
             let apps = rule_apps.concat(sg_apps)
-            rule_apps.length == 1 && rule_apps[0].proved && sg_apps.length == 1 && sg_apps[0].proved && fighting_pair(apps) == "nullable.if_null_ternary and test.rival"
+            rule_apps.length == 1 &&
+                rule_apps[0].proved &&
+                sg_apps.length == 1 &&
+                sg_apps[0].proved &&
+                fighting_pair(apps) == "nullable.if_null_ternary and test.rival"
         }
         then "fix_applied refuses the whole splice rather than pick a winner" {
             let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
             let rule_apps = fix_apps_of(text)
             let same_span_edit = edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")
-            let sg_apps = suggestion_apps_of(text, suggestion_diag("test.rival", Confidence.High, [same_span_edit]))
+            let sg_apps = suggestion_apps_of(
+                text,
+                suggestion_diag("test.rival", Confidence.High, [same_span_edit]),
+            )
             fix_applied(text, rule_apps.concat(sg_apps)) == null
         }
     }
@@ -385,7 +465,11 @@ spec "a real WARNING-severity Suggestion reaching avra fix's own apply path" {
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
             let apps = p.suggestion_applications("/w/src/main.av", analysed(a), a.diagnostics, null)
-            p.clean() && apps.length == 1 && apps[0].kind == "type.coalesce_never" && apps[0].proved && fix_applied(text, apps) == "fn f() -> int {\n    let n = 3\n    n\n}\n0\n"
+            p.clean() &&
+                apps.length == 1 &&
+                apps[0].kind == "type.coalesce_never" &&
+                apps[0].proved &&
+                fix_applied(text, apps) == "fn f() -> int {\n    let n = 3\n    n\n}\n0\n"
         }
     }
 }

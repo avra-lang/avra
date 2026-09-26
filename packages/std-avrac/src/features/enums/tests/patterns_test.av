@@ -22,42 +22,72 @@ spec "features/enums (patterns)" {
     }
     given "nested patterns" {
         then "a pattern reaches into a payload's payload" {
-            shown("${tree()}match Node.One(Leaf.Num(7)) {\n    .One(.Num(n)) -> n\n    .One(.Word(_)) -> 0\n    .Empty -> -1\n}") == "7"
+            shown(
+                "${tree()}match Node.One(Leaf.Num(7)) {\n    .One(.Num(n)) -> n\n    .One(.Word(_)) -> 0\n    .Empty -> -1\n}",
+            ) == "7"
         }
         then "the untaken nested arm's payload is never read — the chain stays sound" {
-            shown("${tree()}match Node.One(Leaf.Word(\"x\")) {\n    .One(.Num(n)) -> n\n    .One(.Word(w)) -> w.length\n    .Empty -> -1\n}") == "1"
+            shown(
+                "${tree()}match Node.One(Leaf.Word(\"x\")) {\n    .One(.Num(n)) -> n\n    .One(.Word(w)) -> w.length\n    .Empty -> -1\n}",
+            ) == "1"
         }
         then "a literal nests inside a variant" {
-            shown("${tree()}fn pick(n: Node) -> int {\n    match n {\n        .One(.Num(3)) -> 1\n        .One(.Num(_)) -> 2\n        .One(.Word(_)) -> 3\n        .Empty -> 4\n    }\n}\npick(Node.One(Leaf.Num(3))) * 100 + pick(Node.One(Leaf.Num(5))) * 10 + pick(Node.Empty)") == "124"
+            shown(
+                "${tree()}fn pick(n: Node) -> int {\n    match n {\n        .One(.Num(3)) -> 1\n        .One(.Num(_)) -> 2\n        .One(.Word(_)) -> 3\n        .Empty -> 4\n    }\n}\npick(Node.One(Leaf.Num(3))) * 100 + pick(Node.One(Leaf.Num(5))) * 10 + pick(Node.Empty)",
+            ) == "124"
         }
         then "a nested test on the wrong enum refuses" {
-            refused_with("${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Empty) -> 1\n    _ -> 0\n}", "`Leaf` has no variant `Empty`")
+            refused_with(
+                "${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Empty) -> 1\n    _ -> 0\n}",
+                "`Leaf` has no variant `Empty`",
+            )
         }
     }
     given "alternatives and holes" {
         then "`or` joins arms that bind nothing" {
-            shown("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(_) -> 1\n    .Rect(_, _) -> 2\n}") == "1"
+            shown(
+                "${shapes()}match Shape.Line(2) {\n    .Dot or .Line(_) -> 1\n    .Rect(_, _) -> 2\n}",
+            ) == "1"
         }
         then "an `or` arm binds what every alternative binds" {
-            shown("${shapes()}fn w(s: Shape) -> int {\n    match s {\n        .Line(n) or .Rect(n, _) -> n\n        .Dot -> 0\n    }\n}\nw(Shape.Line(2)) * 100 + w(Shape.Rect(5, 1)) * 10 + w(Shape.Dot)") == "250"
+            shown(
+                "${shapes()}fn w(s: Shape) -> int {\n    match s {\n        .Line(n) or .Rect(n, _) -> n\n        .Dot -> 0\n    }\n}\nw(Shape.Line(2)) * 100 + w(Shape.Rect(5, 1)) * 10 + w(Shape.Dot)",
+            ) == "250"
         }
         then "the alternatives bind by name, wherever the name stands" {
-            shown("enum P {\n    A(x: int, y: string)\n    B(y: string, x: int)\n    C\n}\nfn f(p: P) -> string {\n    match p {\n        .A(x, y) or .B(y, x) -> y + \"\${x}\"\n        .C -> \"c\"\n    }\n}\nf(P.A(1, \"a\")) + f(P.B(\"b\", 2)) + f(P.C)") == "a1b2c"
+            shown(
+                "enum P {\n    A(x: int, y: string)\n    B(y: string, x: int)\n    C\n}\nfn f(p: P) -> string {\n    match p {\n        .A(x, y) or .B(y, x) -> y + \"\${x}\"\n        .C -> \"c\"\n    }\n}\nf(P.A(1, \"a\")) + f(P.B(\"b\", 2)) + f(P.C)",
+            ) == "a1b2c"
         }
         then "a nested pattern binds through an `or` too" {
-            shown("enum Leaf {\n    Num(int)\n    Word(string)\n}\nenum Node {\n    Empty\n    One(Leaf)\n    Two(Leaf, int)\n}\nfn g(n: Node) -> int {\n    match n {\n        .One(.Num(k)) or .Two(.Num(k), _) -> k\n        _ -> 0\n    }\n}\ng(Node.One(Leaf.Num(4))) + g(Node.Two(Leaf.Num(30), 9)) + g(Node.Empty)") == "34"
+            shown(
+                "enum Leaf {\n    Num(int)\n    Word(string)\n}\nenum Node {\n    Empty\n    One(Leaf)\n    Two(Leaf, int)\n}\nfn g(n: Node) -> int {\n    match n {\n        .One(.Num(k)) or .Two(.Num(k), _) -> k\n        _ -> 0\n    }\n}\ng(Node.One(Leaf.Num(4))) + g(Node.Two(Leaf.Num(30), 9)) + g(Node.Empty)",
+            ) == "34"
         }
         then "an alternative that binds a name the first does not is refused" {
-            refused_with("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(n) -> 1\n    _ -> 2\n}", "every alternative of an `or` arm binds the same names — the first binds nothing, alternative 2 binds `n`")
+            refused_with(
+                "${shapes()}match Shape.Line(2) {\n    .Dot or .Line(n) -> 1\n    _ -> 2\n}",
+                "every alternative of an `or` arm binds the same names — the first binds nothing, alternative 2 binds `n`",
+            )
         }
         then "a name bound at two types is refused" {
-            refused_with("enum Q {\n    A(v: int)\n    B(v: string)\n}\nmatch Q.A(1) {\n    .A(v) or .B(v) -> 1\n}", "`v` is `int` in the first alternative of this `or` arm and `string` in alternative 2 — a name binds at one type")
+            refused_with(
+                "enum Q {\n    A(v: int)\n    B(v: string)\n}\nmatch Q.A(1) {\n    .A(v) or .B(v) -> 1\n}",
+                "`v` is `int` in the first alternative of this `or` arm and `string` in alternative 2 — a name binds at one type",
+            )
         }
         then "a pattern binding a name twice is refused — it answered the second value, silently" {
-            refused_with("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}", "this pattern binds `n` twice — a name binds one value")
+            refused_with(
+                "enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}",
+                "this pattern binds `n` twice — a name binds one value",
+            )
         }
         then "a name bound twice renders whole" {
-            analyze_source("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}").report().starts_with("error[type.binds_twice]: this pattern binds `n` twice — a name binds one value")
+            analyze_source(
+                "enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}",
+            )
+                .report()
+                .starts_with("error[type.binds_twice]: this pattern binds `n` twice — a name binds one value")
         }
         then "an unknown variant inside an `or` arm refuses once and nothing else speaks" {
             let src = "enum E {\n    A(n: int)\n    B(n: int)\n}\nmatch E.A(1) {\n    .A(n) or .Zed(n) -> n\n    _ -> 0\n}"
@@ -67,12 +97,16 @@ spec "features/enums (patterns)" {
             shown("${shapes()}match Shape.Dot {\n    .Line(_) -> 1\n    _ -> 2\n}") == "2"
         }
         then "a name as the whole pattern binds the subject" {
-            shown("${shapes()}fn kind(s: Shape) -> int {\n    match s {\n        .Dot -> 0\n        other -> if other is .Line { 1 } else { 2 }\n    }\n}\nkind(Shape.Rect(1, 1))") == "2"
+            shown(
+                "${shapes()}fn kind(s: Shape) -> int {\n    match s {\n        .Dot -> 0\n        other -> if other is .Line { 1 } else { 2 }\n    }\n}\nkind(Shape.Rect(1, 1))",
+            ) == "2"
         }
     }
     given "literals" {
         then "a string match with a catch-all" {
-            shown("fn code(s: string) -> int {\n    match s {\n        \"NAME\" -> 1\n        \"NUM\" -> 2\n        _ -> 0\n    }\n}\ncode(\"NUM\") + code(\"x\")") == "2"
+            shown(
+                "fn code(s: string) -> int {\n    match s {\n        \"NAME\" -> 1\n        \"NUM\" -> 2\n        _ -> 0\n    }\n}\ncode(\"NUM\") + code(\"x\")",
+            ) == "2"
         }
         then "an int match" {
             shown("match 3 {\n    1 -> 10\n    3 -> 30\n    _ -> 0\n}") == "30"
@@ -81,48 +115,78 @@ spec "features/enums (patterns)" {
             refused_with("match 3 {\n    1 -> 10\n}", "needs a catch-all arm")
         }
         then "a literal of the wrong type refuses" {
-            refused_with("match 3 {\n    \"x\" -> 1\n    _ -> 0\n}", "a `string` never matches `int`")
+            refused_with(
+                "match 3 {\n    \"x\" -> 1\n    _ -> 0\n}",
+                "a `string` never matches `int`",
+            )
         }
     }
     given "the coverage law and its lint" {
         then "a pattern naming fewer payloads than the variant carries is refused once — coverage never reads a ragged row" {
-            refused_with("${shapes()}match Shape.Rect(3, 4) {\n    .Rect(w) -> w\n    .Line(n) -> n\n    .Dot -> 0\n}", "`.Rect` carries 2, the pattern names 1")
+            refused_with(
+                "${shapes()}match Shape.Rect(3, 4) {\n    .Rect(w) -> w\n    .Line(n) -> n\n    .Dot -> 0\n}",
+                "`.Rect` carries 2, the pattern names 1",
+            )
         }
         then "one answering arm is a PROJECTION — its hole is honest, however many it hides" {
-            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    _ -> 0\n}") == 0
+            refusals(
+                "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    _ -> 0\n}",
+            ) == 0
         }
         then "two answering arms make a REGISTRY — its hole forgets the next variant, and the program still runs" {
-            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}")
-            a.diagnostics.length == 1 && a.report().contains("warning") && a.report().contains("this hole takes the rest: .C, .D") && a.ran() == "2"
+            let a = analyze_source(
+                "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("warning") &&
+                a.report().contains("this hole takes the rest: .C, .D") &&
+                a.ran() == "2"
         }
         then "`rest` is the deliberate remainder — a registry says so and is quiet" {
-            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    rest -> 0\n}") == 0
+            refusals(
+                "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    rest -> 0\n}",
+            ) == 0
         }
         then "a hole after nested arms that already cover a variant does not count it" {
-            let a = analyze_source("${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Num(_)) -> 1\n    .One(.Word(_)) -> 2\n    _ -> 3\n}")
+            let a = analyze_source(
+                "${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Num(_)) -> 1\n    .One(.Word(_)) -> 2\n    _ -> 3\n}",
+            )
             a.diagnostics.length == 1 && a.report().contains("the rest: .Empty") && a.ran() == "1"
         }
         then "an or-run answering once is a PROJECTION, however many variants it names" {
             refusals("${shapes()}match Shape.Dot {\n    .Dot or .Line(_) -> 1\n    _ -> 0\n}") == 0
         }
         then "an or-run counts as ONE arm — a second answering arm still makes a registry" {
-            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A or .B -> 1\n    .C -> 2\n    _ -> 0\n}")
+            let a = analyze_source(
+                "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A or .B -> 1\n    .C -> 2\n    _ -> 0\n}",
+            )
             a.diagnostics.length == 1 && a.report().contains("the rest: .D") && a.ran() == "2"
         }
         then "an arm that both answers and holes does not count itself" {
-            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B or _ -> 2\n}") == 0
+            refusals(
+                "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B or _ -> 2\n}",
+            ) == 0
         }
         then "a hole that BINDS is told the exit that is open to it — `rest` binds nothing" {
-            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B -> 2\n    other -> 9\n}")
-            a.diagnostics.length == 1 && a.report().contains("this hole binds the rest: .C, .D") && a.report().contains("`rest` binds nothing")
+            let a = analyze_source(
+                "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B -> 2\n    other -> 9\n}",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("this hole binds the rest: .C, .D") &&
+                a.report().contains("`rest` binds nothing")
         }
         then "a hole hiding nothing is quiet, however many answered" {
-            refusals("${shapes()}match Shape.Dot {\n    .Dot -> 1\n    .Line(n) -> n\n    .Rect(w, h) -> w\n    _ -> 0\n}") == 0
+            refusals(
+                "${shapes()}match Shape.Dot {\n    .Dot -> 1\n    .Line(n) -> n\n    .Rect(w, h) -> w\n    _ -> 0\n}",
+            ) == 0
         }
     }
     given "a `null` arm beside variant arms, over a nullable enum" {
         then "only the true refusal speaks — `null` never reads as a keyword misused as a name" {
-            refused_with("enum K {\n    A\n    B\n}\nfn f(k: K?) -> int {\n    match k {\n        .A -> 1\n        .B -> 2\n        null -> 0\n    }\n}\nf(null)", "`match` chooses over an enum, found `K?`")
+            refused_with(
+                "enum K {\n    A\n    B\n}\nfn f(k: K?) -> int {\n    match k {\n        .A -> 1\n        .B -> 2\n        null -> 0\n    }\n}\nf(null)",
+                "`match` chooses over an enum, found `K?`",
+            )
         }
     }
 }

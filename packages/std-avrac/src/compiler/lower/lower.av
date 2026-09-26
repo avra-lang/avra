@@ -8,9 +8,65 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, doc_first_paragraph, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind, body_symbol}
+use core.{
+    Fingerprint,
+    StmtId,
+    ExprId,
+    Expr,
+    TypeId,
+    Type,
+    Reg,
+    Ins,
+    Level,
+    TypeRegistry,
+    joined,
+    flatten,
+    sorted_texts,
+    doc_first_paragraph,
+    root_kind_of,
+    NodeStore,
+    DeclId,
+    FileId,
+    Arrow,
+    RtSig,
+    RtKind,
+    extern_kind_name,
+    inout_row,
+    no_marks,
+    Param,
+    SeatMark,
+    Static,
+    CollectParts,
+    CollectKind,
+    CollectScope,
+    Plain,
+    DeclKind,
+    body_symbol,
+}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, AnnotationFact, Lifted, MetaVal, new_meta_heap}
+use features.{
+    LowerCx,
+    FnSig,
+    Sub,
+    SeatValue,
+    new_emitter,
+    new_body_regs,
+    viewed,
+    Decl,
+    Decls,
+    Jobs,
+    new_jobs,
+    Wanted,
+    Lift,
+    Wrap,
+    Unsettled,
+    Settled,
+    SettleRoot,
+    AnnotationFact,
+    Lifted,
+    MetaVal,
+    new_meta_heap,
+}
 use features.collects.{generic_words}
 use compiler.{Analysis, any_root}
 
@@ -117,7 +173,16 @@ impl Decls {
         // cannot derive from the signature alone (`int` crosses, but at what width).
         let host: List<string> = self.facts_or(d.id).host
         let params: List<TypeId> = sig?.params ?? []
-        inout_row(self.symbol(d.id), extern_kind_name(self.types, host_name(host, host.length - 1), sig?.ret ?? self.type(void)), [self.host_seat_kind(d.id, host, j, p) for j, p in params], [self.host_cell_kind(d.id, host, j, p) for j, p in params])
+        inout_row(
+            self.symbol(d.id),
+            extern_kind_name(
+                self.types,
+                host_name(host, host.length - 1),
+                sig?.ret ?? self.type(void),
+            ),
+            [self.host_seat_kind(d.id, host, j, p) for j, p in params],
+            [self.host_cell_kind(d.id, host, j, p) for j, p in params],
+        )
     }
 
     /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
@@ -147,14 +212,25 @@ fn host_name(host: List<string>, j: int) -> string {
 /// (null for main) and `sub` its instantiation (null when the body
 /// is not a specialization), which is why they are fields, not
 /// stacks.
-fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>, seat_marks: List<SeatMark>, jobs: Jobs) -> LowerCx {
+fn new_lower_cx(
+    a: Analysis,
+    fn_ret: TypeId?,
+    sub: Sub?,
+    seats: List<SeatValue>,
+    seat_marks: List<SeatMark>,
+    jobs: Jobs,
+) -> LowerCx {
     LowerCx {
         view: a.view,
         names: a.names,
         facts: a.facts,
         dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs, a.view.decls),
-        body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count(), a.view.store.pat_count()),
+        body: new_body_regs(
+            a.view.store.exprs.count(),
+            a.view.store.stmts.count(),
+            a.view.store.pat_count(),
+        ),
         sub: sub,
         seats: seats,
         seat_regs: [],
@@ -169,7 +245,18 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>,
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
     let externs = a.view.decls.extern_names()
-    a.view.decls.union([a], 0, false, false, [], (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross), (_f: FileId) -> false)
+    a
+        .view
+        .decls
+        .union(
+            [a],
+            0,
+            false,
+            false,
+            [],
+            (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
+            (_f: FileId) -> false,
+        )
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -185,11 +272,20 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, st
 /// program's extern symbols, gathered once per program by the
 /// workspace: every body's emitter refuses a callee it does not
 /// know against it.
-export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> Unit {
+export fn lower_unit(
+    a: Analysis,
+    externs: List<string>,
+    w: Wanted,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> Unit {
     // a `collect` carries no body of its own — SYNTHESISED, never
     // parsed (`is_collect_decl`) — so it is exempt from the guard a
     // bodyless ordinary declaration trips.
-    if w.root == null && w.decl != null && !a.view.decls.has_body(w.decl!) && !is_collect_decl(a, w.decl!) {
+    if w.root == null &&
+        w.decl != null &&
+        !a.view.decls.has_body(w.decl!) &&
+        !is_collect_decl(a, w.decl!) {
         mut out = new_emitter(externs, a.view.decls)
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
@@ -197,7 +293,14 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
     let first = when {
         w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle, cross)
         w.decl == null -> lower_main(a, w.name, externs, settle, cross)
-        is_collect_decl(a, w.decl!) -> lower_collect(a, a.view.decls.decl(w.decl!), w.name, externs, settle, cross)
+        is_collect_decl(a, w.decl!) -> lower_collect(
+            a,
+            a.view.decls.decl(w.decl!),
+            w.name,
+            externs,
+            settle,
+            cross,
+        )
         _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle, cross)
     }
     mut bodies: List<Body> = [first.body]
@@ -213,7 +316,10 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
             let wj = wraps.pop()
             if wrapped.get(wj.name) == null {
                 wrapped.set(wj.name, true)
-                bodies.push(if wj.unboxes == null { wrapped_body(a, wj) } else { unboxing_body(a, wj, wj.unboxes!, externs, settle, cross) })
+                bodies
+                    .push(
+                        if wj.unboxes == null { wrapped_body(a, wj) } else { unboxing_body(a, wj, wj.unboxes!, externs, settle, cross) },
+                    )
             }
         } else {
             let lf = lower_lambda(a, lifts.pop(), externs, settle, cross)
@@ -238,7 +344,15 @@ impl Decls {
     /// once per symbol — a memoization identity, never a NAME a
     /// declaration could also wear. The entry asks under
     /// `program_symbol`, which no `module_symbol` can ever spell.
-    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, held_asks: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool) -> Lowered {
+    fn union(
+        files: List<Analysis>,
+        entry: int?,
+        every: bool,
+        programs: bool,
+        held_asks: List<Wanted>,
+        unit_of: fn(Wanted) -> Unit,
+        is_held: fn(FileId) -> bool,
+    ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
         let at: int = entry ?? 0
@@ -248,7 +362,16 @@ impl Decls {
         // call in turn — every program in one binary
         mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
         spoken = spoken.concat(self.outside_entry(files, entry))
-        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: program_symbol(self.file(files[at].view.file).path), sub: null, seats: [], root: null }) }
+        let main_unit: Unit? = if entry == null { null } else { unit_of(
+                Wanted {
+                    file: files[at].view.file,
+                    decl: null,
+                    name: program_symbol(self.file(files[at].view.file).path),
+                    sub: null,
+                    seats: [],
+                    root: null,
+                },
+            ) }
         mut entry_body: Body = empty_main(self.types).body
         mut statics: List<Static> = []
         if main_unit != null {
@@ -259,12 +382,28 @@ impl Decls {
             wants = wants.concat(mu.wants)
             statics = mu.statics
         }
-        let d = drained(wants.concat(held_asks), unit_of, is_held, (w: Wanted) -> self.instantiated(w))
+        let d = drained(
+            wants.concat(held_asks),
+            unit_of,
+            is_held,
+            (w: Wanted) -> self.instantiated(w),
+        )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         let every_body = fns.concat([entry_body])
         spoken = spoken.concat(minted_pointers(self.types, every_body))
-        Lowered { fns: fns, entry: entry_body, asks: d.asks, homes: d.homes, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [], cold: cold_bodies(every_body) }
+        Lowered {
+            fns: fns,
+            entry: entry_body,
+            asks: d.asks,
+            homes: d.homes,
+            types: self.types,
+            diagnostics: spoken,
+            externs: self.extern_rows(),
+            statics: distinct_statics(statics.concat(d.statics)),
+            libraries: [],
+            cold: cold_bodies(every_body),
+        }
     }
 
     /// AN INSTANTIATION NOBODY LOWERED, as the declaration a caller's module needs:
@@ -272,7 +411,15 @@ impl Decls {
     fn unlowered_stub(w: Wanted) -> Body? {
         let d? = w.decl else { return null }
         let sig? = self.sig(d)?.fn_sig() else { return null }
-        Body { name: w.name, params: [viewed(self.types, w.sub, pt) for pt in sig.params], ret: viewed(self.types, w.sub, sig.ret), gives: null, ins: [], reg_types: [], weak: true }
+        Body {
+            name: w.name,
+            params: [viewed(self.types, w.sub, pt) for pt in sig.params],
+            ret: viewed(self.types, w.sub, sig.ret),
+            gives: null,
+            ins: [],
+            reg_types: [],
+            weak: true,
+        }
     }
 
     /// THE ENTRY'S LAW over every other file: a module file runs nothing.
@@ -292,7 +439,16 @@ impl Decls {
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let every_body = fns.concat([entry])
         let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, every_body))
-        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)), libraries: [], cold: cold_bodies(every_body) }
+        Lowered {
+            fns: fns,
+            entry: entry,
+            types: self.types,
+            diagnostics: spoken,
+            externs: self.extern_rows(),
+            statics: distinct_statics(ru.statics.concat(d.statics)),
+            libraries: [],
+            cold: cold_bodies(every_body),
+        }
     }
 }
 
@@ -300,7 +456,12 @@ impl Decls {
 /// read, and what they spoke.
 type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId> }
 
-fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool, instantiated: fn(Wanted) -> bool) -> Drained {
+fn drained(
+    pending: List<Wanted>,
+    unit_of: fn(Wanted) -> Unit,
+    is_held: fn(FileId) -> bool,
+    instantiated: fn(Wanted) -> bool,
+) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
@@ -334,7 +495,13 @@ fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileI
         }
     }
     if !wants.is_empty() {
-        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported"))
+        spoken
+            .push(
+                defect_at(
+                    null,
+                    "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported",
+                ),
+            )
     }
     Drained { fns: fns, spoken: spoken, statics: statics, asks: asks, homes: homes }
 }
@@ -371,14 +538,14 @@ fn mints_a_pointer(types: TypeRegistry, b: Body) -> bool {
 }
 
 fn is_pointer_constant(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> bool {
-    match i {
-        .ConstInt(d, v) -> v != 0 && types.rides_pointer(reg_types[d.index]),
-        _ -> false,
-    }
+    match i { .ConstInt(d, v) -> v != 0 && types.rides_pointer(reg_types[d.index]), _ -> false }
 }
 
 fn pointer_constant(name: string) -> Diag {
-    defect_at(null, "a non-zero constant reached a pointer register in `${name}` — a pointer's only constant is null")
+    defect_at(
+        null,
+        "a non-zero constant reached a pointer register in `${name}` — a pointer's only constant is null",
+    )
 }
 
 /// A body reachable from a `once fn` alone: every caller into it is
@@ -402,7 +569,8 @@ export fn cold_bodies(bodies: List<Body>) -> Map<string, bool> {
         let name = queue[at]
         at = at + 1
         for callee in edges_of(g.callees, name) {
-            if cold.get(callee) == null && edges_of(g.callers, callee).all((c: string) -> cold.get(c) != null) {
+            if cold.get(callee) == null &&
+                edges_of(g.callers, callee).all((c: string) -> cold.get(c) != null) {
                 cold.set(callee, true)
                 queue.push(callee)
             }
@@ -450,7 +618,14 @@ const unit_ceiling: int = 100000
 /// for an instantiation to want it.
 /// A file's main as a wanted body, named for the program it is.
 fn program_main(a: Analysis) -> Wanted {
-    Wanted { file: a.view.file, decl: null, name: program_symbol(a.view.decls.file(a.view.file).path), sub: null, seats: [], root: null }
+    Wanted {
+        file: a.view.file,
+        decl: null,
+        name: program_symbol(a.view.decls.file(a.view.file).path),
+        sub: null,
+        seats: [],
+        root: null,
+    }
 }
 
 /// The symbol a program's body wears in a programs binary: its whole
@@ -466,7 +641,14 @@ export fn program_symbol(path: string) -> string {
 
 fn declared(a: Analysis) -> List<Wanted> {
     let own = a.view.decls.decls_of_file(a.view.file)
-    let bodies = [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null, seats: [], root: null } for d in own if lowers_plain(a, d)]
+    let bodies = [Wanted {
+        file: a.view.file,
+        decl: d,
+        name: a.view.decls.symbol(d),
+        sub: null,
+        seats: [],
+        root: null,
+    } for d in own if lowers_plain(a, d)]
     bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
 }
 
@@ -491,11 +673,24 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
-fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
+fn lower_fn(
+    a: Analysis,
+    x: Decl,
+    fname: string,
+    sub: Sub?,
+    seats: List<SeatValue>,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
-    let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
+    let rt: TypeId = viewed(
+        a.view.decls.types,
+        sub,
+        sig?.ret ?? a.view.decls.types.intern(Type.Error),
+    )
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
     let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross))
@@ -508,7 +703,17 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     lo.seats_exit(r)
     lo.emit(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: sub != null, memoized: memoized },
+        body: Body {
+            name: fname,
+            params: ptypes,
+            ret: rt,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+            weak: sub != null,
+            memoized: memoized,
+        },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
@@ -518,7 +723,13 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
 /// lambda's own fn type — a pointer, managed, released by the
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
-fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
+fn lower_lambda(
+    a: Analysis,
+    lj: Lift,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
@@ -539,7 +750,16 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
     lo.seats_exit(r)
     lo.emit(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: answers, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
+        body: Body {
+            name: lj.name,
+            params: [lam_ty].concat(seats),
+            ret: answers,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+            weak: true,
+        },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
@@ -563,21 +783,47 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
         Ins.ScopeExit(dst),
         Ins.RetVal(dst),
     ]
-    Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys, file: a.view.file, weak: true }
+    Body {
+        name: w.name,
+        params: [fnty].concat(w.seats),
+        ret: w.ret,
+        gives: dst,
+        ins: ins,
+        reg_types: tys,
+        file: a.view.file,
+        weak: true,
+    }
 }
 
 /// A `dyn` entry for a VALUE RECORD receiver: seat 0 is the box the
 /// `dyn` slot holds, read back into the receiver the method takes.
-fn unboxing_body(a: Analysis, w: Wrap, recv: TypeId, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> Body {
+fn unboxing_body(
+    a: Analysis,
+    w: Wrap,
+    recv: TypeId,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> Body {
     mut lo = new_lower_cx(a, w.ret, null, [], [], new_jobs(externs, settle, cross))
     for st in w.seats { let _ = lo.mint_ty(st) }
     lo.seeded()
     lo.seats_enter()
     let receiver = lo.unboxed(Reg { index: 0 }, recv)
-    let r = lo.call_decl(w.ret, w.target, [receiver].concat([Reg { index: j } for j in 1..w.seats.length]))
+    let r = lo
+        .call_decl(w.ret, w.target, [receiver].concat([Reg { index: j } for j in 1..w.seats.length]))
     lo.seats_exit(r)
     lo.emit(Ins.RetVal(r))
-    Body { name: w.name, params: w.seats, ret: w.ret, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true }
+    Body {
+        name: w.name,
+        params: w.seats,
+        ret: w.ret,
+        gives: r,
+        ins: lo.out.ins,
+        reg_types: lo.out.reg_types,
+        file: a.view.file,
+        weak: true,
+    }
 }
 
 /// Whether `d` declares a `collect` — its body is SYNTHESISED
@@ -595,9 +841,20 @@ fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
 /// every collect's own scope admitted before any body lowers;
 /// `Decls.gathered` re-asks the same door lazily, from `x.file`, for
 /// any this misses.
-fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
+fn lower_collect(
+    a: Analysis,
+    x: Decl,
+    fname: string,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
-    let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a.view.decls.types.intern(Type.Error)
+    let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a
+        .view
+        .decls
+        .types
+        .intern(Type.Error)
     mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross))
     lo.out.seeded()
     lo.seats_enter()
@@ -605,7 +862,16 @@ fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, set
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: fname, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: false },
+        body: Body {
+            name: fname,
+            params: [],
+            ret: rt,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+            weak: false,
+        },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
@@ -668,14 +934,33 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
 /// OWN field, read off its instance's built value, for a named path
 /// that is not one of the generic words; else the GENERIC text
 /// projection, const.
-fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg {
+fn collect_field_reg(
+    mut lo: LowerCx,
+    a: Analysis,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+    d: Decl,
+) -> Reg {
     if path.is_empty() {
-        let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
+        let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
+            .view
+            .types
+            .intern(Type.Error)
         if a.view.decls.takes_a_decl(fnty) { return decl_crossed_reg(lo, fnty, d.id) }
         return collect_fn_reg(lo, d.id, fnty)
     }
     if is_root_kind_path(path) { return lo.const_int(component_root_kind(a.view.decls, d)) }
-    mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(lo, a, entry_ty, name, path, kind, d) ?? lo.const_str(collect_field_text(a, d, path))
+    mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(
+        lo,
+        a,
+        entry_ty,
+        name,
+        path,
+        kind,
+        d,
+    ) ?? lo.const_str(collect_field_text(a, d, path))
 }
 
 /// A declaration crossed WHOLE as the meta value `want` names — the
@@ -724,10 +1009,21 @@ fn is_mark_path(path: List<Plain>) -> bool {
     path.length == 1 && path[0].of == "mark"
 }
 
-fn mark_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg? {
+fn mark_field_reg(
+    mut lo: LowerCx,
+    a: Analysis,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+    d: Decl,
+) -> Reg? {
     if !is_mark_path(path) { return null }
     let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
-    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
+    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
+        .view
+        .types
+        .intern(Type.Error)
     let matched? = a.view.decls.annotations_of(d.id).find(it.name == word) else { return lo.mint_ty(field_ty) }
     let sig? = lo.fields_of(field_ty) else { return lo.mint_ty(field_ty) }
     lo.packed_struct(field_ty, [mark_part_reg(lo, matched, n) for n in sig.names])
@@ -757,11 +1053,25 @@ fn string_list_box(mut lo: LowerCx, texts: List<string>) -> Reg {
 /// declared type stands in), then the named field read off it
 /// (`values.av`'s `field_named`, whose own DEFECT is the honest
 /// answer for a word that names no field).
-fn component_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg? {
+fn component_field_reg(
+    mut lo: LowerCx,
+    a: Analysis,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+    d: Decl,
+) -> Reg? {
     if path.length != 1 || generic_words.contains(path[0].of) || !(kind is .Component) { return null }
     let word = path[0].of
-    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
-    let inst_ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo.view.types.intern(Type.Error)
+    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
+        .view
+        .types
+        .intern(Type.Error)
+    let inst_ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo
+        .view
+        .types
+        .intern(Type.Error)
     let unit = lo.view.decls.instance_unit(d.id)
     if lo.unseen(unit.name) { lo.jobs.pending.push(unit) }
     let inst = lo.call_decl(inst_ty, unit.name, [])
@@ -794,7 +1104,17 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
     let wname = "${symbol}\$w"
     if lo.unseen(wname) {
         let held: Arrow? = lo.view.decls.types.arrow_parts(fnty)
-        lo.jobs.wraps.push(Wrap { target: symbol, seats: held?.seats ?? [], ret: held?.answer ?? lo.view.decls.types.intern(Type.Error), name: wname })
+        lo
+            .jobs
+            .wraps
+            .push(
+                Wrap {
+                    target: symbol,
+                    seats: held?.seats ?? [],
+                    ret: held?.answer ?? lo.view.decls.types.intern(Type.Error),
+                    name: wname,
+                },
+            )
     }
     lo.static_fn_box(lo.view.types.shape_of(fnty), wname)
 }
@@ -806,7 +1126,15 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
 /// bracket, the answer after it settles. The evaluator runs it to
 /// settle the value; a program never calls it — a settled value is
 /// spelled or laid out at its reads.
-fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
+fn lower_root(
+    a: Analysis,
+    root: ExprId,
+    name: string,
+    seats: List<SeatValue>,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
     mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross))
     lo.seeded()
@@ -821,7 +1149,14 @@ fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, e
     lo.seats_exit(r)
     lo.emit(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: name, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
+        body: Body {
+            name: name,
+            params: [],
+            ret: rt,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+        },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
@@ -840,7 +1175,13 @@ fn no_cross(d: DeclId, want: TypeId) -> Lifted {
     Lifted { answer: MetaVal.Absent, heap: new_meta_heap() }
 }
 
-fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> LoweredBody {
+fn lower_main(
+    a: Analysis,
+    name: string,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> LoweredBody {
     mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross))
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
@@ -877,7 +1218,14 @@ fn program_answer(a: Analysis) -> ExprId? {
 fn empty_main(types: TypeRegistry) -> LoweredBody {
     let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
     LoweredBody {
-        body: Body { name: "main", params: [], ret: types.type(int), gives: null, ins: ins, reg_types: [] },
+        body: Body {
+            name: "main",
+            params: [],
+            ret: types.type(int),
+            gives: null,
+            ins: ins,
+            reg_types: [],
+        },
         voices: no_voices(),
         jobs: new_jobs([], no_settle, no_cross),
     }
@@ -886,7 +1234,13 @@ fn empty_main(types: TypeRegistry) -> LoweredBody {
 // ── voices ──
 
 fn runs_outside_entry(a: Analysis, s: StmtId, entry: Analysis) -> Diag {
-    refusal("lower.entry_only", loc_at(a.view.source.file, a.view.store.stmt_span(s)), "a module file holds declarations — only the entry `${entry.view.source.file ?? "the entry"}` runs statements", "runs here", "move it into the entry, or wrap it in a fn the entry calls")
+    refusal(
+        "lower.entry_only",
+        loc_at(a.view.source.file, a.view.store.stmt_span(s)),
+        "a module file holds declarations — only the entry `${entry.view.source.file ?? "the entry"}` runs statements",
+        "runs here",
+        "move it into the entry, or wrap it in a fn the entry calls",
+    )
 }
 
 /// CLAIM A NAME: true the first time, and the seat is MUT so the write lands in the

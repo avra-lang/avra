@@ -22,18 +22,25 @@ spec "commands/docs dump" {
     }
     given "a couple of rows" {
         then "each line is its address, an em dash, and its signature, in order" {
-            let text = dump_listing([row("a.bump", "fn bump(int) -> int"), row("a.zero", "fn zero() -> int")])
+            let text = dump_listing(
+                [row("a.bump", "fn bump(int) -> int"), row("a.zero", "fn zero() -> int")],
+            )
             text == "this package exports — 2\na.bump — fn bump(int) -> int\na.zero — fn zero() -> int"
         }
     }
     given "a package with an exported fn, a private fn, and a doc" {
         then "only the exported one is dumped, with its own doc and signature" {
             let root = dump_pkg_named("basic")
-            let _ = write_text("${root}/src/main.av", "/// adds one\nexport fn bump(n: int) -> int {\n    n + 1\n}\n\nfn hidden(n: int) -> int {\n    n\n}\n\nfn main() -> int {\n    bump(1) + hidden(1)\n}\n")
+            let _ = write_text(
+                "${root}/src/main.av",
+                "/// adds one\nexport fn bump(n: int) -> int {\n    n + 1\n}\n\nfn hidden(n: int) -> int {\n    n\n}\n\nfn main() -> int {\n    bump(1) + hidden(1)\n}\n",
+            )
             mut p = root_program(root)
             let rows = p.dumped_decls(root)
             let found? = rows.find(it.address.contains("bump")) else { return false }
-            rows.length == 1 && found.signature == "fn bump(int) -> int" && found.prose_lines.join("\n") == "adds one"
+            rows.length == 1 &&
+                found.signature == "fn bump(int) -> int" &&
+                found.prose_lines.join("\n") == "adds one"
         }
     }
     given "a package exporting nothing" {

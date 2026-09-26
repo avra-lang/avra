@@ -11,15 +11,11 @@ use @std.avrac.diagnostics.{warning}
 
 @fixes("wrap(a + b)", "(a + b) * 2")
 @keeps("a + b")
-export rule doubled {
-    quote { wrap(${x}) } -> quote { ${x} * 2 },
-}
+export rule doubled { quote { wrap(${x}) } -> quote { ${x} * 2 } }
 
 @fixes("mark(a)", "a + a")
 @keeps("a")
-export rule marked_twice {
-    quote { mark(${x}) } -> quote { ${x} + ${x} },
-}
+export rule marked_twice { quote { mark(${x}) } -> quote { ${x} + ${x} } }
 
 @keeps("1")
 export rule seen_typed {
@@ -34,9 +30,7 @@ export rule seen_typed {
 /// example `if_null_ternary` (nullable/idioms.av) fires on.
 @fixes("if x == null { 0 } else { x! }", "x ?? 0")
 @keeps("if next() == null { 0 } else { next()! }")
-export rule paren_if_null_ternary {
-    quote { (if ${x} == null { ${d} } else { ${x}! }) } if x.pure() -> quote { ${x} ?? ${d} },
-}
+export rule paren_if_null_ternary { quote { (if ${x} == null { ${d} } else { ${x}! }) } if x.pure() -> quote { ${x} ?? ${d} } }
 
 /// Whether `applied` fires anywhere in `a`'s first statement.
 fn fires(applied: fn(Code) -> Fix?, a: Analysis) -> bool {
@@ -95,7 +89,10 @@ spec "features/rule (mechanics)" {
         then "its own text is the receiver alone, not the chain around it" {
             // LICENSED lists.last_index: the example text names the idiom it proves — the
             // site the scanner is built to find, held as a string, not written
-            match fix_at(chain_span_probe.run, analyze_source("fn f() -> int { a.b[a.b.length - 1].c(1) }")) {
+            match fix_at(
+                chain_span_probe.run,
+                analyze_source("fn f() -> int { a.b[a.b.length - 1].c(1) }"),
+            ) {
                 f? -> match f { .Say(voice) -> voice.message == "a.b", _ -> false }
                 null -> false
             }

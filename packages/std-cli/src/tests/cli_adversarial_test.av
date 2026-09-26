@@ -1,7 +1,19 @@
 // The red team's record for @std/cli: how the parser breaks, by attack
 // class — the degenerate declarations, every odd token, names against
 // names, and the words a refusal is given.
-use @std.cli.{cli, command, flag, option, arg, Runnable, CliResult, CliError, parse, app_help, command_help}
+use @std.cli.{
+    cli,
+    command,
+    flag,
+    option,
+    arg,
+    Runnable,
+    CliResult,
+    CliError,
+    parse,
+    app_help,
+    command_help,
+}
 
 type Quiet = {}
 
@@ -67,26 +79,33 @@ fn app_of(cmds: List<command>) -> cli {
 }
 
 fn words_of(r: Result<CliResult, CliError>) -> string {
-    match r {
-        .Ok(p) -> "ok:${p.command}",
-        .Err(e) -> e.describe().message,
-    }
+    match r { .Ok(p) -> "ok:${p.command}", .Err(e) -> e.describe().message }
 }
 
 fn read(cmds: List<command>, words: List<string>) -> CliResult {
-    parse(app_of(cmds), words) catch CliResult { command: "?", flags: [], options: {}, args: {}, rest: [] }
+    parse(app_of(cmds), words) catch CliResult {
+        command: "?",
+        flags: [],
+        options: {},
+        args: {},
+        rest: [],
+    }
 }
 
 spec "std/cli — adversarial" {
     given "degenerate declarations" {
         then "an app with no commands renders its help with an empty list, and refuses every line" {
-            app_help(app_of([])) == "t 0 — tester\n\nusage: t <command> [flags] [args]\n\ncommands:\n\n\n`t <command> --help` says what a command takes." && words_of(parse(app_of([]), ["anything"])) == "unknown command: anything"
+            app_help(app_of([])) == "t 0 — tester\n\nusage: t <command> [flags] [args]\n\ncommands:\n\n\n`t <command> --help` says what a command takes." &&
+                words_of(parse(app_of([]), ["anything"])) == "unknown command: anything"
         }
         then "no command at all is its own refusal, not an unknown command named nothing" {
-            words_of(parse(app_of([bare_spec("go")]), [])) == "no command given" && words_of(parse(app_of([bare_spec("go")]), [""])) == "no command given"
+            words_of(parse(app_of([bare_spec("go")]), [])) == "no command given" &&
+                words_of(parse(app_of([bare_spec("go")]), [""])) == "no command given"
         }
         then "a command declaring nothing takes nothing" {
-            words_of(parse(app_of([bare_spec("go")]), ["go"])) == "ok:go" && words_of(parse(app_of([bare_spec("go")]), ["go", "x"])) == "`go` does not take `x`" && words_of(parse(app_of([bare_spec("go")]), ["go", "--x"])) == "`go` takes no `--x`"
+            words_of(parse(app_of([bare_spec("go")]), ["go"])) == "ok:go" &&
+                words_of(parse(app_of([bare_spec("go")]), ["go", "x"])) == "`go` does not take `x`" &&
+                words_of(parse(app_of([bare_spec("go")]), ["go", "--x"])) == "`go` takes no `--x`"
         }
         then "a command declaring nothing renders its usage line and words alone" {
             command_help(app_of([]), bare_spec("go")) == "usage: t go\n\n"
@@ -101,12 +120,14 @@ spec "std/cli — adversarial" {
                 description: "later"
                 run: Quiet {}
             }
-            command_help(app_of([first, second]), bare_spec("dup")) == "usage: t dup\n\n" && words_of(parse(app_of([first, second]), ["dup", "x"])) == "`dup` does not take `x`"
+            command_help(app_of([first, second]), bare_spec("dup")) == "usage: t dup\n\n" &&
+                words_of(parse(app_of([first, second]), ["dup", "x"])) == "`dup` does not take `x`"
         }
     }
     given "every odd token" {
         then "a flag declared without dashes still answers to `--json` and `-j`" {
-            read([loose_spec()], ["loose", "--json", "a"]).has_flag("json") && read([loose_spec()], ["loose", "-j", "a"]).has_flag("json")
+            read([loose_spec()], ["loose", "--json", "a"]).has_flag("json") &&
+                read([loose_spec()], ["loose", "-j", "a"]).has_flag("json")
         }
         then "an alias carrying `=` matches the whole token, never the option classifier" {
             read([loose_spec()], ["loose", "--message-format=json", "a"]).has_flag("json")
@@ -118,10 +139,13 @@ spec "std/cli — adversarial" {
             read([loose_spec()], ["loose", "--level", "-1", "a"]).option("level") == "-1"
         }
         then "`--level=` is an empty value, `--level==x` is `=x`" {
-            read([loose_spec()], ["loose", "--level=", "a"]).option("level") == "" && read([loose_spec()], ["loose", "--level==x", "a"]).option("level") == "=x"
+            read([loose_spec()], ["loose", "--level=", "a"]).option("level") == "" &&
+                read([loose_spec()], ["loose", "--level==x", "a"]).option("level") == "=x"
         }
         then "`--=x`, `---x` and `-` alone: two are unknown flags, one is a word" {
-            words_of(parse(app_of([loose_spec()]), ["loose", "--=x", "a"])) == "`loose` takes no `--=x`" && words_of(parse(app_of([loose_spec()]), ["loose", "---x", "a"])) == "`loose` takes no `---x`" && read([loose_spec()], ["loose", "-"]).args_of("files").join(",") == "-"
+            words_of(parse(app_of([loose_spec()]), ["loose", "--=x", "a"])) == "`loose` takes no `--=x`" &&
+                words_of(parse(app_of([loose_spec()]), ["loose", "---x", "a"])) == "`loose` takes no `---x`" &&
+                read([loose_spec()], ["loose", "-"]).args_of("files").join(",") == "-"
         }
         then "a second `--` after the first is a plain word" {
             read([loose_spec()], ["loose", "--", "--", "a"]).args_of("files").join(",") == "--,a"
@@ -130,18 +154,21 @@ spec "std/cli — adversarial" {
             read([loose_spec()], ["loose", "loose"]).args_of("files").join(",") == "loose"
         }
         then "a flag repeated is present once" {
-            read([loose_spec()], ["loose", "--json", "--json", "a"]).flags.length == 2 && read([loose_spec()], ["loose", "--json", "--json", "a"]).has_flag("json")
+            read([loose_spec()], ["loose", "--json", "--json", "a"]).flags.length == 2 &&
+                read([loose_spec()], ["loose", "--json", "--json", "a"]).has_flag("json")
         }
         then "an option repeated — the last value stands" {
             read([loose_spec()], ["loose", "--level", "1", "--level", "2", "a"]).option("level") == "2"
         }
         then "a flag and an option sharing a name — the flag wins the bare token, the option the `=` form" {
-            read([clashing_spec()], ["clash", "--mode"]).has_flag("mode") && read([clashing_spec()], ["clash", "--mode=x"]).option("mode") == "x"
+            read([clashing_spec()], ["clash", "--mode"]).has_flag("mode") &&
+                read([clashing_spec()], ["clash", "--mode=x"]).option("mode") == "x"
         }
     }
     given "the words a refusal is given" {
         then "every refusal names its command and the word" {
-            words_of(parse(app_of([loose_spec()]), ["loose", "--depth", "a"])) == "`loose` takes no `--depth`" && words_of(parse(app_of([loose_spec()]), ["loose", "a", "--level"])) == "`loose`'s `--level` needs a value"
+            words_of(parse(app_of([loose_spec()]), ["loose", "--depth", "a"])) == "`loose` takes no `--depth`" &&
+                words_of(parse(app_of([loose_spec()]), ["loose", "a", "--level"])) == "`loose`'s `--level` needs a value"
         }
         then "an unknown command is named as typed" {
             words_of(parse(app_of([bare_spec("go")]), ["GO"])) == "unknown command: GO"

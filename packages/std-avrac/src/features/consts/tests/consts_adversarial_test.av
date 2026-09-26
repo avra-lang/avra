@@ -101,10 +101,15 @@ spec "features/consts (adversarial)" {
 
         // red team, comptime S1: the evaluator settles a computed const
         then "a settlement recurses on the machine's own stack, past where the host's would end" {
-            shown("fn d(n: int) -> int { if n == 0 { 0 } else { 1 + d(n - 1) } }\nconst D: int = d(500)\nD") == "500"
+            shown(
+                "fn d(n: int) -> int { if n == 0 { 0 } else { 1 + d(n - 1) } }\nconst D: int = d(500)\nD",
+            ) == "500"
         }
         then "a runaway recursion is refused by the settlement's budget, in its words" {
-            refused_at_run("fn d(n: int) -> int { 1 + d(n + 1) }\nconst D: int = d(0)\nD", "ran past its budget")
+            refused_at_run(
+                "fn d(n: int) -> int { 1 + d(n + 1) }\nconst D: int = d(0)\nD",
+                "ran past its budget",
+            )
         }
         then "an overflow wraps as the program's would" {
             shown("fn m() -> int { 9223372036854775807 + 1 }\nconst M: int = m()\nM") == "-9223372036854775808"
@@ -121,10 +126,15 @@ spec "features/consts (adversarial)" {
             shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X = p()\nX.x") == "1"
         }
         then "a scalar optional is refused before its unsupported pair settles" {
-            refused_with("fn n() -> int? { null }\nconst X = n()\nX ?? 9", "compile-time value form")
+            refused_with(
+                "fn n() -> int? { null }\nconst X = n()\nX ?? 9",
+                "compile-time value form",
+            )
         }
         then "a list carrying a nominal type crosses too" {
-            shown("type P = { x: int }\nfn p() -> List<P> { [P { x: 1 }] }\nconst X = p()\nX.length") == "1"
+            shown(
+                "type P = { x: int }\nfn p() -> List<P> { [P { x: 1 }] }\nconst X = p()\nX.length",
+            ) == "1"
         }
         then "a record's SCALAR field settles" {
             shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: int = p().x\nX") == "1"
@@ -145,27 +155,43 @@ spec "features/consts (adversarial)" {
     given "boxed consts" {
         // red team, comptime S2: a boxed const is one box, called for
         then "a push on a const is refused as on any `let`" {
-            refused_with("fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nXS.push(4)\nXS.length", "is not `mut`")
+            refused_with(
+                "fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nXS.push(4)\nXS.length",
+                "is not `mut`",
+            )
         }
         then "so is a map's set" {
-            refused_with("fn m() -> Map<string, int> {\n    mut d: Map<string, int> = {}\n    d\n}\nconst M: Map<string, int> = m()\nM.set(\"k\", 1)\nM.length", "is not `mut`")
+            refused_with(
+                "fn m() -> Map<string, int> {\n    mut d: Map<string, int> = {}\n    d\n}\nconst M: Map<string, int> = m()\nM.set(\"k\", 1)\nM.length",
+                "is not `mut`",
+            )
         }
         then "and a `mut` seat" {
-            refused_with("fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nfn bump(mut ys: List<int>) -> int {\n    ys.push(9)\n    ys.length\n}\nbump(XS)", "writes through it")
+            refused_with(
+                "fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nfn bump(mut ys: List<int>) -> int {\n    ys.push(9)\n    ys.length\n}\nbump(XS)",
+                "writes through it",
+            )
         }
         then "an empty list settles as empty" {
             shown("fn e() -> List<int> {\n    []\n}\nconst E: List<int> = e()\nE.length") == "0"
         }
         then "a boxed const of a boxed const settles" {
-            shown("fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nfn more() -> List<int> {\n    XS.concat([4])\n}\nconst YS: List<int> = more()\nXS.length + YS.length") == "7"
+            shown(
+                "fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nfn more() -> List<int> {\n    XS.concat([4])\n}\nconst YS: List<int> = more()\nXS.length + YS.length",
+            ) == "7"
         }
         then "a lambda reads one" {
-            shown("fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nlet f = () -> XS.length\nf()") == "3"
+            shown(
+                "fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nlet f = () -> XS.length\nf()",
+            ) == "3"
         }
     }
     given "the world's reach" {
         then "the refusal names each link of the call chain" {
-            refused_at_run("extern fn avra_puts(s: string)\nfn g() -> int {\n    avra_puts(\"x\")\n    1\n}\nfn f() -> int {\n    g() + 1\n}\nconst X = f()\nX", "reaches `avra_puts` in `g`, called from `f`")
+            refused_at_run(
+                "extern fn avra_puts(s: string)\nfn g() -> int {\n    avra_puts(\"x\")\n    1\n}\nfn f() -> int {\n    g() + 1\n}\nconst X = f()\nX",
+                "reaches `avra_puts` in `g`, called from `f`",
+            )
         }
     }
     given "a const that asks for itself" {
@@ -186,12 +212,17 @@ spec "features/consts (adversarial)" {
             refused_with("const A = B + 1\nconst B = A + 1\nA", "asks for its own type")
         }
         then "a const reading itself through a fn traps while settling" {
-            refused_at_run("fn f() -> int {\n    X\n}\nconst X: int = f()\nX", "trapped while settling")
+            refused_at_run(
+                "fn f() -> int {\n    X\n}\nconst X: int = f()\nX",
+                "trapped while settling",
+            )
         }
     }
     given "cascades" {
         then "a const that trapped is refused ONCE, however many reads" {
-            let a = analyze_source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z")
+            let a = analyze_source(
+                "fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z",
+            )
             match a.run() {
                 .Err(msg) -> a.diagnostics.is_empty() && spoken_once(msg, "const.trap"),
                 .Ok(_) -> false,
@@ -201,7 +232,9 @@ spec "features/consts (adversarial)" {
             refusals("fn f() -> int { 3 }\nconst X: Nope = f()\nX") == 1
         }
         then "a computed const read in a fn body settles there too" {
-            shown("fn f() -> int { 3 }\nconst A: int = f()\nfn twice() -> int { A * 2 }\nconst B: int = twice()\nB") == "6"
+            shown(
+                "fn f() -> int { 3 }\nconst A: int = f()\nfn twice() -> int { A * 2 }\nconst B: int = twice()\nB",
+            ) == "6"
         }
     }
     given "a run-time read hidden in a branch" {
@@ -222,10 +255,7 @@ spec "features/consts (adversarial)" {
 
 /// What running the program said, or "" when it ran.
 fn run_words(source: string) -> string {
-    match analyze_source(source).run() {
-        .Err(msg) -> msg,
-        .Ok(_) -> "",
-    }
+    match analyze_source(source).run() { .Err(msg) -> msg, .Ok(_) -> "" }
 }
 
 /// The code appears in the report exactly once.

@@ -37,7 +37,9 @@ spec "features/closures/adversarial" {
             refusals("[].map(it)\n2") == 1
         }
         then "two pronoun arguments at int seats — two seats, two voices" {
-            refusals("type P = { x: int }\nimpl P {\n    fn two(a: int, b: int) -> int {\n        self.x + a + b\n    }\n}\nP { x: 1 }.two(it, it)\n2") == 2
+            refusals(
+                "type P = { x: int }\nimpl P {\n    fn two(a: int, b: int) -> int {\n        self.x + a + b\n    }\n}\nP { x: 1 }.two(it, it)\n2",
+            ) == 2
         }
     }
     given "every wrong type at the seat — one refusal each" {
@@ -54,7 +56,10 @@ spec "features/closures/adversarial" {
             refusals("[[1]].map(it[it])\n2") == 1
         }
         then "the pronoun at a plain int seat names its element's absence" {
-            refused_with("${scaled()}P { x: 3 }.scaled(it)\n2", "`it` has no element here — this seat takes `int`, not a fn")
+            refused_with(
+                "${scaled()}P { x: 3 }.scaled(it)\n2",
+                "`it` has no element here — this seat takes `int`, not a fn",
+            )
         }
         then "a walk on an int subject refuses once" {
             refusals("let n = 5\nn.map(it)\n2") == 1
@@ -91,7 +96,9 @@ spec "features/closures/adversarial" {
             shown("[1, 5].map(when {\n    it > 2 -> 1\n    _ -> 0\n})[0]") == "0"
         }
         then "matched on directly" {
-            shown("enum K {\n    a\n    b\n}\n[K.a, K.b].map(match it {\n    .a -> 1\n    .b -> 2\n})[1]") == "2"
+            shown(
+                "enum K {\n    a\n    b\n}\n[K.a, K.b].map(match it {\n    .a -> 1\n    .b -> 2\n})[1]",
+            ) == "2"
         }
         then "inside a struct literal" {
             shown("type P = { x: int }\n[4].map(P { x: it })[0].x") == "4"
@@ -109,10 +116,14 @@ spec "features/closures/adversarial" {
             shown("fn dbl(xs: List<int>) -> List<int> {\n    xs.map(it * 2)\n}\ndbl([4])[0]") == "8"
         }
         then "through recursion" {
-            shown("fn down(n: int) -> int {\n    if n == 0 { 0 } else { [n].map(down(it - 1))[0] }\n}\ndown(5)") == "0"
+            shown(
+                "fn down(n: int) -> int {\n    if n == 0 { 0 } else { [n].map(down(it - 1))[0] }\n}\ndown(5)",
+            ) == "0"
         }
         then "in a while condition" {
-            shown("mut xs = [3, 2]\nmut n = 0\nwhile xs.any(it > 2) {\n    xs = xs.map(it - 1)\n    n = n + 1\n}\nn") == "1"
+            shown(
+                "mut xs = [3, 2]\nmut n = 0\nwhile xs.any(it > 2) {\n    xs = xs.map(it - 1)\n    n = n + 1\n}\nn",
+            ) == "1"
         }
         then "the pronoun as a nested walk's subject — inner and outer bind apart" {
             shown("[[1, 2, 3]].map(it.filter(it > 1).length)[0]") == "2"
@@ -139,7 +150,9 @@ spec "features/closures/adversarial" {
             shown("let fs: List<fn(int) -> int> = [(x) -> x + 1]\nfs.map(it(3))[0]") == "4"
         }
         then "a walk collects a nullable scalar, absence and all" {
-            shown("fn g(n: int) -> int? {\n    if n > 1 { null } else { n }\n}\nlet ys = [1, 2].map(g(it))\n\"\${ys[0] ?? 0} \${ys[1] ?? 9}\"") == "1 9"
+            shown(
+                "fn g(n: int) -> int? {\n    if n > 1 { null } else { n }\n}\nlet ys = [1, 2].map(g(it))\n\"\${ys[0] ?? 0} \${ys[1] ?? 9}\"",
+            ) == "1 9"
         }
         then "a written `List<int?>` walks, its absent slot read as absence" {
             shown("let xs: List<int?> = [3, null]\nxs.map(it ?? 0)[1]") == "0"
@@ -151,7 +164,10 @@ spec "features/closures/adversarial" {
             shown("fn g(v: int?) -> int {\n    [v].length\n}\ng(1)") == "1"
         }
         then "`?` behind the lambda barrier names the lambda, not the top level" {
-            refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])", "a lambda promises none")
+            refused_with(
+                "type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])",
+                "a lambda promises none",
+            )
         }
     }
     given "the pronoun through the shared child walk" {
@@ -171,19 +187,25 @@ spec "features/closures/adversarial" {
             shown("enum K {\n    a\n    b\n}\n[K.a].map(it is .a)[0]") == "true"
         }
         then "through a `?.` chain" {
-            shown("type P = { n: int }\nfn held(n: int) -> P? {\n    P { n: n }\n}\n[5].map(held(it)?.n ?? 0)[0]") == "5"
+            shown(
+                "type P = { n: int }\nfn held(n: int) -> P? {\n    P { n: n }\n}\n[5].map(held(it)?.n ?? 0)[0]",
+            ) == "5"
         }
         then "in a comprehension's guard" {
             shown("[2].map([x for x in [1, 2, 3] if x > it].length)[0]") == "1"
         }
         then "in a `catch` recovery" {
-            shown("enum E {\n    boom\n}\nfn boom(n: int) -> Result<int, E> {\n    fail E.boom\n}\n[7].map(boom(it) catch it)[0]") == "7"
+            shown(
+                "enum E {\n    boom\n}\nfn boom(n: int) -> Result<int, E> {\n    fail E.boom\n}\n[7].map(boom(it) catch it)[0]",
+            ) == "7"
         }
         then "in an absent arm" {
             shown("${maybes()}[5].map(match none() {\n    v? -> v\n    null -> it\n})[0]") == "5"
         }
         then "in a variant literal's payload" {
-            shown("enum K {\n    b(n: int)\n}\nfn cost(k: K) -> int {\n    match k {\n        .b(n) -> n\n    }\n}\n[5].map(cost(.b(it)))[0]") == "5"
+            shown(
+                "enum K {\n    b(n: int)\n}\nfn cost(k: K) -> int {\n    match k {\n        .b(n) -> n\n    }\n}\n[5].map(cost(.b(it)))[0]",
+            ) == "5"
         }
     }
     given "names against names" {
@@ -220,27 +242,42 @@ spec "features/closures/adversarial" {
             shown("${users()}[us].map(it.map(it.name)[0])[0]") == "ada"
         }
         then "filter-then-map under churn" {
-            shown("${users()}mut n = 0\nmut i = 0\nwhile i < 200 {\n    n = n + us.filter(it.name != \"ada\").map(it.name).length\n    i = i + 1\n}\nn") == "200"
+            shown(
+                "${users()}mut n = 0\nmut i = 0\nwhile i < 200 {\n    n = n + us.filter(it.name != \"ada\").map(it.name).length\n    i = i + 1\n}\nn",
+            ) == "200"
         }
     }
     given "the channel's own seats (rt25)" {
         then "a body disagreeing with the declared answer names both" {
-            refused_with("let f: fn(int) -> bool = (x) -> x + 1\n2", "declares `fn(int) -> bool`, this is `fn(int) -> int`")
+            refused_with(
+                "let f: fn(int) -> bool = (x) -> x + 1\n2",
+                "declares `fn(int) -> bool`, this is `fn(int) -> int`",
+            )
         }
         then "wants flow through match and when arms" {
-            shown("enum Mode {\n    up\n    down\n}\nfn shift(m: Mode) -> fn(int) -> int {\n    match m {\n        .up -> (x) -> x + 1\n        .down -> (x) -> x - 1\n    }\n}\nfn pick(n: int) -> fn(int) -> int {\n    when {\n        n > 0 -> (x) -> x * n\n        _ -> (x) -> 0 - x\n    }\n}\n\"\${shift(Mode.up)(3)} \${pick(3)(7)} \${pick(0 - 1)(7)}\"") == "4 21 -7"
+            shown(
+                "enum Mode {\n    up\n    down\n}\nfn shift(m: Mode) -> fn(int) -> int {\n    match m {\n        .up -> (x) -> x + 1\n        .down -> (x) -> x - 1\n    }\n}\nfn pick(n: int) -> fn(int) -> int {\n    when {\n        n > 0 -> (x) -> x * n\n        _ -> (x) -> 0 - x\n    }\n}\n\"\${shift(Mode.up)(3)} \${pick(3)(7)} \${pick(0 - 1)(7)}\"",
+            ) == "4 21 -7"
         }
         then "one lambda at two seats" {
-            shown("fn twice(f: fn(int) -> int, v: int) -> int {\n    f(f(v))\n}\ntwice((x) -> x * 2, 5)") == "20"
+            shown(
+                "fn twice(f: fn(int) -> int, v: int) -> int {\n    f(f(v))\n}\ntwice((x) -> x * 2, 5)",
+            ) == "20"
         }
         then "a lambda at a scalar slot names the slot" {
-            refused_with("let n: int = (x) -> x + 1\n2", "a lambda cannot sit here — this seat takes `int`")
+            refused_with(
+                "let n: int = (x) -> x + 1\n2",
+                "a lambda cannot sit here — this seat takes `int`",
+            )
         }
         then "a lambda no slot ever judges speaks once" {
             refused_with("let f = (x) -> x + 1\n2", "needs a type")
         }
         then "a heterogeneous literal under a dyn want boxes; a non-implementor is named" {
-            refused_with("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2", "this list holds `dyn Show`, this is `int`")
+            refused_with(
+                "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2",
+                "this list holds `dyn Show`, this is `int`",
+            )
         }
         then "a nested literal's want reaches the lambda inside — fed, not starved" {
             refusals("let m: List<List<fn(int) -> int>> = [[(x) -> x + 1]]\n2") == 0
@@ -256,37 +293,57 @@ spec "features/closures/adversarial" {
             shown("let one = () -> 1\nlet two = () -> one() + 1\n\"\${two()} \${two()}\"") == "2 2"
         }
         then "a capture chain four deep" {
-            shown("let a = () -> 1\nlet b = () -> a() + 1\nlet c = () -> b() + 1\nlet d = () -> c() + 1\nd()") == "4"
+            shown(
+                "let a = () -> 1\nlet b = () -> a() + 1\nlet c = () -> b() + 1\nlet d = () -> c() + 1\nd()",
+            ) == "4"
         }
         then "arities 0..3 through a capture, managed in and out" {
-            shown("let z = () -> \"z\"\nlet o = (a: string) -> \"\${a}!\"\nlet t = (a: string, b: string) -> \"\${a}\${b}\"\nlet h = (a: string, b: string, c: string) -> \"\${a}\${b}\${c}\"\nlet run = () -> \"\${z()} \${o(\"a\")} \${t(\"b\", \"c\")} \${h(\"d\", \"e\", \"f\")}\"\n\"\${run()} \${run()}\"") == "z a! bc def z a! bc def"
+            shown(
+                "let z = () -> \"z\"\nlet o = (a: string) -> \"\${a}!\"\nlet t = (a: string, b: string) -> \"\${a}\${b}\"\nlet h = (a: string, b: string, c: string) -> \"\${a}\${b}\${c}\"\nlet run = () -> \"\${z()} \${o(\"a\")} \${t(\"b\", \"c\")} \${h(\"d\", \"e\", \"f\")}\"\n\"\${run()} \${run()}\"",
+            ) == "z a! bc def z a! bc def"
         }
         then "a captured fn passed on as an argument" {
-            shown("fn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\nlet inc = (x: int) -> x + 1\nlet g = () -> apply(inc, 41)\ng()") == "42"
+            shown(
+                "fn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\nlet inc = (x: int) -> x + 1\nlet g = () -> apply(inc, 41)\ng()",
+            ) == "42"
         }
         then "a captured fn returned, then called outside" {
-            shown("let inc = (x: int) -> x + 1\nlet give = () -> inc\nlet got = give()\n\"\${got(1)} \${give()(2)}\"") == "2 3"
+            shown(
+                "let inc = (x: int) -> x + 1\nlet give = () -> inc\nlet got = give()\n\"\${got(1)} \${give()(2)}\"",
+            ) == "2 3"
         }
         then "a captured fn stored in a field and a list inside the lambda" {
-            shown("type Ops = { f: fn(int) -> int }\nlet inc = (x: int) -> x + 1\nlet build = () -> {\n    let o = Ops { f: inc }\n    let fs = [inc, inc]\n    \"\${o.f(1)} \${fs[0](5)}\"\n}\nbuild()") == "2 6"
+            shown(
+                "type Ops = { f: fn(int) -> int }\nlet inc = (x: int) -> x + 1\nlet build = () -> {\n    let o = Ops { f: inc }\n    let fs = [inc, inc]\n    \"\${o.f(1)} \${fs[0](5)}\"\n}\nbuild()",
+            ) == "2 6"
         }
         then "a capture of a mut fn cell is BY VALUE at creation" {
             shown("mut f = () -> 1\nlet g = () -> f()\nf = () -> 2\n\"\${g()} \${f()}\"") == "1 2"
         }
         then "a self-recursive closure through a mut cell captures the OLD value" {
-            shown("mut fact = (n: int) -> 1\nfact = (n: int) -> if n <= 1 {\n    1\n} else {\n    n * fact(n - 1)\n}\nfact(5)") == "5"
+            shown(
+                "mut fact = (n: int) -> 1\nfact = (n: int) -> if n <= 1 {\n    1\n} else {\n    n * fact(n - 1)\n}\nfact(5)",
+            ) == "5"
         }
         then "a captured fn inside a generic body, at two instantiations" {
-            shown("fn twice<T>(x: T, f: fn(T) -> T) -> T {\n    let g = () -> f(f(x))\n    g()\n}\n\"\${twice(3, (v: int) -> v + 1)} \${twice(\"a\", (v: string) -> v + \"b\")}\"") == "5 abb"
+            shown(
+                "fn twice<T>(x: T, f: fn(T) -> T) -> T {\n    let g = () -> f(f(x))\n    g()\n}\n\"\${twice(3, (v: int) -> v + 1)} \${twice(\"a\", (v: string) -> v + \"b\")}\"",
+            ) == "5 abb"
         }
         then "a lambda in a method captures self and a fn param" {
-            shown("type C = { k: int }\nimpl C {\n    fn run(f: fn(int) -> int) -> int {\n        let g = () -> f(self.k) + self.k\n        g()\n    }\n}\nlet c = C { k: 5 }\nc.run(it * 10)") == "55"
+            shown(
+                "type C = { k: int }\nimpl C {\n    fn run(f: fn(int) -> int) -> int {\n        let g = () -> f(self.k) + self.k\n        g()\n    }\n}\nlet c = C { k: 5 }\nc.run(it * 10)",
+            ) == "55"
         }
         then "a lambda param shadows a captured fn name" {
-            shown("let f = () -> 1\nlet g = (f: fn() -> int) -> f()\nlet h = () -> f() + g(() -> 2)\nh()") == "3"
+            shown(
+                "let f = () -> 1\nlet g = (f: fn() -> int) -> f()\nlet h = () -> f() + g(() -> 2)\nh()",
+            ) == "3"
         }
         then "mixed lanes — a fn beside an int beside a string" {
-            shown("let n = 5\nlet f = () -> n\nlet g = () -> f() + n\nlet s = \"w\"\nlet h = () -> \"\${g()}\${s}\${f()}\"\n\"\${g()} \${h()}\"") == "10 10w5"
+            shown(
+                "let n = 5\nlet f = () -> n\nlet g = () -> f() + n\nlet s = \"w\"\nlet h = () -> \"\${g()}\${s}\${f()}\"\n\"\${g()} \${h()}\"",
+            ) == "10 10w5"
         }
         then "a captured fn called three times in one expression" {
             shown("let f = (x: int) -> x + 1\nlet g = () -> f(1) + f(2) + f(3)\ng()") == "9"
@@ -295,31 +352,54 @@ spec "features/closures/adversarial" {
             shown("let k = () -> 10\nlet f = (x: int) -> x + k()\n[1, 2, 3].map(f(it) + k())[2]") == "23"
         }
         then "a fn-typed field's lambda calling a captured fn" {
-            shown("type Ops = { run: fn(int) -> int }\nlet base = (x: int) -> x * 3\nlet ops = Ops { run: (v: int) -> base(v) + 1 }\n\"\${ops.run(2)} \${ops.run(3)}\"") == "7 10"
+            shown(
+                "type Ops = { run: fn(int) -> int }\nlet base = (x: int) -> x * 3\nlet ops = Ops { run: (v: int) -> base(v) + 1 }\n\"\${ops.run(2)} \${ops.run(3)}\"",
+            ) == "7 10"
         }
         then "a captured fn through a named recursion" {
-            shown("fn fold(n: int, f: fn(int) -> int) -> int {\n    if n == 0 {\n        0\n    } else {\n        f(n) + fold(n - 1, f)\n    }\n}\nlet k = 2\nlet g = (x: int) -> x * k\nlet run = () -> fold(100, g)\nrun()") == "10100"
+            shown(
+                "fn fold(n: int, f: fn(int) -> int) -> int {\n    if n == 0 {\n        0\n    } else {\n        f(n) + fold(n - 1, f)\n    }\n}\nlet k = 2\nlet g = (x: int) -> x * k\nlet run = () -> fold(100, g)\nrun()",
+            ) == "10100"
         }
         then "every slot-worthy category captured and read" {
-            shown("type Flat = { i: int }\ntype Box = { s: string, n: int }\nenum E {\n    A\n    B(v: int)\n}\nlet i = 7\nlet b = true\nlet s = \"str\"\nlet xs = [1, 2]\nlet fl = Flat { i: 3 }\nlet bx = Box { s: \"bs\", n: 9 }\nlet e = E.B(4)\nlet ns: string? = \"ns\"\nlet nf: Flat? = Flat { i: 8 }\nlet f = (x: int) -> x + 1\nlet all = () -> {\n    let ev = match e {\n        .A -> 0,\n        .B(v) -> v,\n    }\n    \"\${i} \${b} \${s} \${xs.length} \${fl.i} \${bx.s}\${bx.n} \${ev} \${ns ?? \"-\"} \${nf?.i ?? 0} \${f(1)}\"\n}\nall()") == "7 true str 2 3 bs9 4 ns 8 2"
+            shown(
+                "type Flat = { i: int }\ntype Box = { s: string, n: int }\nenum E {\n    A\n    B(v: int)\n}\nlet i = 7\nlet b = true\nlet s = \"str\"\nlet xs = [1, 2]\nlet fl = Flat { i: 3 }\nlet bx = Box { s: \"bs\", n: 9 }\nlet e = E.B(4)\nlet ns: string? = \"ns\"\nlet nf: Flat? = Flat { i: 8 }\nlet f = (x: int) -> x + 1\nlet all = () -> {\n    let ev = match e {\n        .A -> 0,\n        .B(v) -> v,\n    }\n    \"\${i} \${b} \${s} \${xs.length} \${fl.i} \${bx.s}\${bx.n} \${ev} \${ns ?? \"-\"} \${nf?.i ?? 0} \${f(1)}\"\n}\nall()",
+            ) == "7 true str 2 3 bs9 4 ns 8 2"
         }
         then "a scalar nullable rides a capture lane, present and absent" {
-            shown("let ni: int? = 5\nlet na: int? = null\nlet g = () -> \"\${ni ?? 0} \${na ?? 7}\"\ng()") == "5 7"
+            shown(
+                "let ni: int? = 5\nlet na: int? = null\nlet g = () -> \"\${ni ?? 0} \${na ?? 7}\"\ng()",
+            ) == "5 7"
         }
         then "a captured let is not a place" {
-            refused_with("let n = 1\nlet g = () -> {\n    n = 2\n    n\n}\ng()", "`n` is captured by value — a lambda cannot assign to it")
+            refused_with(
+                "let n = 1\nlet g = () -> {\n    n = 2\n    n\n}\ng()",
+                "`n` is captured by value — a lambda cannot assign to it",
+            )
         }
         then "a captured mut is not a place either — the capture is the copy" {
-            refused_with("mut count = 0\nlet bump = () -> {\n    count = count + 1\n    count\n}\nbump()", "`count` is captured by value — a lambda cannot assign to it")
+            refused_with(
+                "mut count = 0\nlet bump = () -> {\n    count = count + 1\n    count\n}\nbump()",
+                "`count` is captured by value — a lambda cannot assign to it",
+            )
         }
         then "a lambda's param is immutable" {
-            refused_with("let f = (x: int) -> {\n    x = 2\n    x\n}\nf(1)", "`x` is a parameter — parameters are immutable")
+            refused_with(
+                "let f = (x: int) -> {\n    x = 2\n    x\n}\nf(1)",
+                "`x` is a parameter — parameters are immutable",
+            )
         }
         then "a pattern's bind is not a place" {
-            refused_with("enum E {\n    A(v: int)\n}\nlet r = match E.A(1) {\n    .A(v) -> {\n        v = 2\n        v\n    },\n}\nr", "`v` is a pattern's bind — it names the matched value, it is not assigned")
+            refused_with(
+                "enum E {\n    A(v: int)\n}\nlet r = match E.A(1) {\n    .A(v) -> {\n        v = 2\n        v\n    },\n}\nr",
+                "`v` is a pattern's bind — it names the matched value, it is not assigned",
+            )
         }
         then "a fn's name is not a place" {
-            refused_with("fn f() -> int {\n    1\n}\nf = () -> 2\nf()", "`f` is a fn — it is not assigned")
+            refused_with(
+                "fn f() -> int {\n    1\n}\nf = () -> 2\nf()",
+                "`f` is a fn — it is not assigned",
+            )
         }
     }
     given "a lambda that calls a CAPTURED lambda" {
@@ -346,25 +426,45 @@ spec "features/closures/adversarial" {
     }
     given "the fn seat's contract under attack" {
         then "a writing fn refuses a seat that promised not to write" {
-            refused_with("type Rows = { grow: fn(List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet r = Rows { grow: writes }\n1", "field `grow` is `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
+            refused_with(
+                "type Rows = { grow: fn(List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet r = Rows { grow: writes }\n1",
+                "field `grow` is `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`",
+            )
         }
         then "a `let` refuses it in the same words" {
-            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1", "`g` declares `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
+            refused_with(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1",
+                "`g` declares `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`",
+            )
         }
         then "a call THROUGH the value needs a `mut` place, like a direct one" {
-            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nlet ys = [1]\ng(ys, 2)", "`ys` is not `mut` — seat 1 of `g` writes through it")
+            refused_with(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nlet ys = [1]\ng(ys, 2)",
+                "`ys` is not `mut` — seat 1 of `g` writes through it",
+            )
         }
         then "two marked seats cannot share one root" {
-            refused_with("fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\ng(x, x)", "`x` is handed `mut` twice in one call to `g`")
+            refused_with(
+                "fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\ng(x, x)",
+                "`x` is handed `mut` twice in one call to `g`",
+            )
         }
         then "a captured place is a copy here too" {
-            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\nlet f = () -> g(ys, 2)\nf()", "is captured by value")
+            refused_with(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\nlet f = () -> g(ys, 2)\nf()",
+                "is captured by value",
+            )
         }
         then "a fn built into a `mut` seat must be a place, not a value" {
-            refused_with("type Cx = { n: int }\nfn writes(mut cx: Cx) -> int {\n    cx.n = cx.n + 1\n    cx.n\n}\nlet g: fn(mut Cx) -> int = writes\ng(Cx { n: 1 })", "seat 1 of `g` is `mut`, and this is a value")
+            refused_with(
+                "type Cx = { n: int }\nfn writes(mut cx: Cx) -> int {\n    cx.n = cx.n + 1\n    cx.n\n}\nlet g: fn(mut Cx) -> int = writes\ng(Cx { n: 1 })",
+                "seat 1 of `g` is `mut`, and this is a value",
+            )
         }
         then "each refusal speaks once" {
-            refusals("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1") == 1
+            refusals(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1",
+            ) == 1
         }
     }
 }

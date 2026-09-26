@@ -1,12 +1,41 @@
 // The DSL round-trip in miniature: real grammar text, lexed and run
 // through the seed with the real builders, asserted as Grammar values.
 use @std.errors.{Loc}
-use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, grammar_of_grammars, Captured, RunOutcome, run_grammar, GrammarNode, grammar_build, grammar_result, ready}
+use @std.grammar.{
+    Grammar,
+    Rule,
+    Alt,
+    Seq,
+    Item,
+    Rep,
+    Prim,
+    Build,
+    Expect,
+    Recover,
+    grammar_of_grammars,
+    Captured,
+    RunOutcome,
+    run_grammar,
+    GrammarNode,
+    grammar_build,
+    grammar_result,
+    ready,
+}
 use @std.avrac.grammar.{Token, lex_grammar, avra_known_terminals, avra_lexeme}
 
 fn parse(src: string) -> RunOutcome<Token, GrammarNode> {
-    let build = (name: string, args: List<Captured<Token, GrammarNode>>, loc: Loc?) -> grammar_build(avra_lexeme(), name, args, loc)
-    run_grammar<Token, GrammarNode>(ready(grammar_of_grammars, avra_known_terminals()), lex_grammar(src).tokens, avra_lexeme(), build)
+    let build = (name: string, args: List<Captured<Token, GrammarNode>>, loc: Loc?) -> grammar_build(
+        avra_lexeme(),
+        name,
+        args,
+        loc,
+    )
+    run_grammar<Token, GrammarNode>(
+        ready(grammar_of_grammars, avra_known_terminals()),
+        lex_grammar(src).tokens,
+        avra_lexeme(),
+        build,
+    )
 }
 
 /// The parsed Grammar, or a loud filler grammar when the parse failed
@@ -36,8 +65,14 @@ spec "grammar/builders" {
             let b = first_branch(g, 0)
             let p0 = b.items[0].prim
             let p1 = b.items[1].prim
-            let is_ref = match p0 { .Ref(r) -> r == "b", .Lit(_) or .Named(_) or .Group(_) or .NotChar(_) -> false }
-            let is_named = match p1 { .Named(t) -> t == "NAME", .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> false }
+            let is_ref = match p0 {
+                .Ref(r) -> r == "b",
+                .Lit(_) or .Named(_) or .Group(_) or .NotChar(_) -> false,
+            }
+            let is_named = match p1 {
+                .Named(t) -> t == "NAME",
+                .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> false,
+            }
             is_ref && is_named
         }
         then "the first rule is the start" {
@@ -47,7 +82,10 @@ spec "grammar/builders" {
         then "a quoted terminal is a Lit" {
             let g = parsed("a = \"defer\" NAME")
             let p = first_branch(g, 0).items[0].prim
-            match p { .Lit(t) -> t == "defer", .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> false }
+            match p {
+                .Lit(t) -> t == "defer",
+                .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> false,
+            }
         }
     }
     given "captures, repetition, groups, alternation" {
@@ -91,7 +129,10 @@ spec "grammar/builders" {
         then "-> f() is a zero-arg Call, not a Var" {
             let g = parsed("a = NAME -> f()")
             let b = first_branch(g, 0).build!
-            match b { .Call(n, args) -> n == "f" && args.is_empty(), .Var(_) or .Node(_, _, _, _) -> false }
+            match b {
+                .Call(n, args) -> n == "f" && args.is_empty(),
+                .Var(_) or .Node(_, _, _, _) -> false,
+            }
         }
         then "no arrow means pass-through" {
             parsed("a = NAME").rules[0].body.branches[0].build == null
@@ -114,7 +155,9 @@ spec "grammar/builders" {
     }
     given "the whole notation at once" {
         then "the grammar-of-grammars' own shapes parse" {
-            let g = parsed("expr = l:term ( op:\"+\" r:term )* -> fold(l, op, r)\nterm = NUMBER | \"(\" e:expr \")\" -> e")
+            let g = parsed(
+                "expr = l:term ( op:\"+\" r:term )* -> fold(l, op, r)\nterm = NUMBER | \"(\" e:expr \")\" -> e",
+            )
             g.rules.length == 2 && g.rules[1].body.branches.length == 2
         }
     }

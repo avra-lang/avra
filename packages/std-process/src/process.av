@@ -211,9 +211,18 @@ impl Error for ProcessError {
             .Failed(e, o) -> info("process.failed", "the child exited ${exit_text(e)}: ${first_line(o.stderr)}"),
             .TimedOut(after, _) -> info("process.timed_out", "the child was stopped after ${after}ms"),
             .TooMuch(s, cap, _) -> info("process.too_much", "${stream_text(s)} exceeded the capture cap of ${cap} bytes"),
-            .Unplaceable(w, p) -> info("process.unplaceable", "`${w}` begins with `-` and `${p}` declares no end of options"),
-            .Holed(_, at) -> info("process.holed", "a word holding a NUL is two words — the host reads to byte ${at} and no further"),
-            .NotReady(waited, _) -> info("process.not_ready", "the child gave no sign of readiness in ${waited}ms and was stopped"),
+            .Unplaceable(w, p) -> info(
+                "process.unplaceable",
+                "`${w}` begins with `-` and `${p}` declares no end of options",
+            ),
+            .Holed(_, at) -> info(
+                "process.holed",
+                "a word holding a NUL is two words — the host reads to byte ${at} and no further",
+            ),
+            .NotReady(waited, _) -> info(
+                "process.not_ready",
+                "the child gave no sign of readiness in ${waited}ms and was stopped",
+            ),
             .StageFailed(i, e, _) -> info("process.stage_failed", "pipeline stage ${i + 1} exited ${exit_text(e)}"),
             .Unscripted(p, a) -> info("process.unscripted", "no script answers `${p} ${a}`"),
             .Empty(what) -> info("process.empty", "${what} has nothing to run"),
@@ -254,10 +263,7 @@ fn first_line(s: string) -> string {
 }
 
 fn stream_text(s: Stream) -> string {
-    match s {
-        .Stdout -> "stdout",
-        .Stderr -> "stderr",
-    }
+    match s { .Stdout -> "stdout", .Stderr -> "stderr" }
 }
 
 // ── Minting ─────────────────────────────────────────────────────
@@ -291,7 +297,8 @@ export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessErr
 /// same split as @std/io's environment predicate.
 fn which(name: string, path: string) -> string {
     if name.contains("/") { return if avra_proc_executable(name) == 0 { name } else { "" } }
-    let hit: string? = [candidate(d, name) for d in path.split(":") if d.starts_with("/")].find(avra_proc_executable(it) == 0)
+    let hit: string? = [candidate(d, name) for d in path.split(":") if d.starts_with("/")]
+        .find(avra_proc_executable(it) == 0)
     hit ?? ""
 }
 
@@ -334,13 +341,40 @@ fn terminator_of(name: string) -> string? {
 /// stripped), HOME, TMPDIR and TERM when set, `LANG=C`, `LC_ALL=C`,
 /// `NO_COLOR=1` so parsed output is stable.
 export fn minimal() -> Env {
-    Env.Only(present(["HOME", "TMPDIR", "TERM"]).concat([pair("PATH", search_path()), pair("LANG", "C"), pair("LC_ALL", "C"), pair("NO_COLOR", "1")]))
+    Env
+        .Only(
+            present(["HOME", "TMPDIR", "TERM"])
+                .concat(
+                    [
+                        pair("PATH", search_path()),
+                        pair("LANG", "C"),
+                        pair("LC_ALL", "C"),
+                        pair("NO_COLOR", "1"),
+                    ],
+                ),
+        )
 }
 
 /// The developer's base: `minimal` plus the homes, proxies and agents a
 /// toolchain reaches for.
 export fn developer() -> Env {
-    minimal().passing(["USER", "LOGNAME", "SHELL", "SSH_AUTH_SOCK", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "CARGO_HOME", "RUSTUP_HOME", "GOPATH", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"])
+    minimal()
+        .passing(
+            [
+                "USER",
+                "LOGNAME",
+                "SHELL",
+                "SSH_AUTH_SOCK",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "NO_PROXY",
+                "CARGO_HOME",
+                "RUSTUP_HOME",
+                "GOPATH",
+                "XDG_CONFIG_HOME",
+                "XDG_CACHE_HOME",
+            ],
+        )
 }
 
 fn pair(name: string, value: string) -> EnvPair {
@@ -379,17 +413,11 @@ impl Env {
     }
     /// The names alone.
     fn names() -> List<string> {
-        match self {
-            .Only(pairs) -> [p.name for p in pairs],
-            .Inherit -> [],
-        }
+        match self { .Only(pairs) -> [p.name for p in pairs], .Inherit -> [] }
     }
     /// The pairs as the host takes them, `NAME=value`.
     fn words() -> List<string> {
-        match self {
-            .Only(pairs) -> ["${p.name}=${p.value}" for p in pairs],
-            .Inherit -> [],
-        }
+        match self { .Only(pairs) -> ["${p.name}=${p.value}" for p in pairs], .Inherit -> [] }
     }
     /// One variable's value, when the child would see it — `null` when
     /// the pair set holds no such name. Under `.Inherit` an unset name
@@ -523,11 +551,7 @@ fn stdin_bytes(s: Stdin) -> Bytes {
 }
 
 fn stdin_text(s: Stdin) -> string {
-    match s {
-        .Text(t) -> t,
-        .Lines(xs) -> lines_text(xs),
-        .Closed or .Inherit or .Open -> "",
-    }
+    match s { .Text(t) -> t, .Lines(xs) -> lines_text(xs), .Closed or .Inherit or .Open -> "" }
 }
 
 fn lines_text(xs: List<string>) -> string {
@@ -765,15 +789,15 @@ impl Child {
 
 /// A probe command's verdict as readiness: clean is up.
 fn probe_clean(probe: Command) -> bool {
-    match probe.outcome() {
-        .Ok(o) -> o.exit is .Clean,
-        .Err(_) -> false,
-    }
+    match probe.outcome() { .Ok(o) -> o.exit is .Clean, .Err(_) -> false }
 }
 
 /// The bracket: the child up and ready around `body`, and stopped when
 /// it returns — however it returns. What `body` answered is the answer.
-export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T) -> Result<T, ProcessError> {
+export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T) -> Result<
+    T,
+    ProcessError,
+> {
     mut child = c.start(ready, limit)?
     let answer = body()
     child.stop()
@@ -870,7 +894,16 @@ fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     let h = avra_proc_spawn(token, c.tool.path, c.cwd ?? "", c.flags(), upstream)
     if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
     let t = timeout_ms(c.timeout)
-    fed_first(Stage { h: h, deadline: if t < 0 { 0 - 1 } else { now_ms() + t }, feed: stdin_bytes(c.stdin), cap: c.max_capture }, c, upstream)
+    fed_first(
+        Stage {
+            h: h,
+            deadline: if t < 0 { 0 - 1 } else { now_ms() + t },
+            feed: stdin_bytes(c.stdin),
+            cap: c.max_capture,
+        },
+        c,
+        upstream,
+    )
 }
 
 /// An inherited environment stages no variables — the child takes the
@@ -1066,7 +1099,11 @@ fn still_held(s: Stage) -> bool {
 
 /// What a stage has captured, both streams gathered once.
 fn gathered(s: Stage) -> Output {
-    Output { stdout: s.out.bytes().text() ?? "", stderr: s.err.bytes().text() ?? "", truncated: s.truncated }
+    Output {
+        stdout: s.out.bytes().text() ?? "",
+        stderr: s.err.bytes().text() ?? "",
+        truncated: s.truncated,
+    }
 }
 
 /// Past its deadline and still running.
@@ -1081,17 +1118,14 @@ fn capped(s: Stage) -> bool {
 /// The bound a stage broke, as the error a driver fails with.
 fn broken(c: Command, s: Stage) -> ProcessError {
     if s.timed { return ProcessError.TimedOut(timeout_ms(c.timeout), gathered(s)) }
-    ProcessError.TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
+    ProcessError
+        .TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
 }
 
 /// A stage's death by SIGPIPE — as a signal, or as the shell's
 /// 128-plus-signal code, which is how a wrapper reports it.
 fn is_sigpipe(e: Exit) -> bool {
-    match e {
-        .Clean -> false,
-        .Code(n) -> n == 128 + sigpipe,
-        .Signal(s, _) -> s == sigpipe,
-    }
+    match e { .Clean -> false, .Code(n) -> n == 128 + sigpipe, .Signal(s, _) -> s == sigpipe }
 }
 
 /// A finished stage's outcome; the handle is released. A status the
@@ -1099,7 +1133,11 @@ fn is_sigpipe(e: Exit) -> bool {
 fn collected(s: Stage, began: int) -> Outcome {
     let word = avra_proc_reap(s.h)
     let _ = avra_proc_close(s.h)
-    Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
+    Outcome {
+        exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+        out: gathered(s),
+        took_ms: now_ms() - began,
+    }
 }
 
 /// Every stage still running killed with its tree and released.
@@ -1340,7 +1378,11 @@ impl Runner for ScriptedRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
         let spelled = c.args.join(" ")
         let hit? = self.rows.find(answers(it, c.tool.name, spelled)) else { fail ProcessError.Unscripted(c.tool.name, spelled) }
-        Outcome { exit: hit.exit, out: Output { stdout: hit.stdout, stderr: hit.stderr, truncated: false }, took_ms: 0 }
+        Outcome {
+            exit: hit.exit,
+            out: Output { stdout: hit.stdout, stderr: hit.stderr, truncated: false },
+            took_ms: 0,
+        }
     }
 }
 
@@ -1356,7 +1398,11 @@ type PlanRunner = {}
 impl Runner for PlanRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
         avra_puts("would run: ${c.tool.path} ${c.args.join(" ")}")
-        Outcome { exit: Exit.Clean, out: Output { stdout: "", stderr: "", truncated: false }, took_ms: 0 }
+        Outcome {
+            exit: Exit.Clean,
+            out: Output { stdout: "", stderr: "", truncated: false },
+            took_ms: 0,
+        }
     }
 }
 
@@ -1377,9 +1423,5 @@ export fn exit(v: Exit) {
 /// An exit as the process status a shell would see: the code, or
 /// 128 plus the signal.
 export fn status_of(v: Exit) -> int {
-    match v {
-        .Clean -> 0,
-        .Code(n) -> n,
-        .Signal(s, _) -> 128 + s,
-    }
+    match v { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 128 + s }
 }

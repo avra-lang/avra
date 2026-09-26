@@ -19,7 +19,31 @@ use error.{Cause, Storage, SqlError, barred}
 use boundary.{transient, static_bytes}
 use open.{Db}
 use script.{statements}
-use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_column_name, sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset, sqlite3_column_count, sqlite3_data_count, sqlite3_column_type, sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_errmsg, sqlite3_error_offset, sqlite3_bind_int64, sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob, sqlite3_bind_parameter_count, sqlite3_changes64}
+use c.{
+    sqlite3_column_text,
+    sqlite3_column_blob,
+    sqlite3_column_bytes,
+    sqlite3_column_name,
+    sqlite3_bind_double,
+    sqlite3_prepare_v3,
+    sqlite3_step,
+    sqlite3_finalize,
+    sqlite3_reset,
+    sqlite3_column_count,
+    sqlite3_data_count,
+    sqlite3_column_type,
+    sqlite3_column_int64,
+    sqlite3_column_double,
+    sqlite3_errstr,
+    sqlite3_errmsg,
+    sqlite3_error_offset,
+    sqlite3_bind_int64,
+    sqlite3_bind_null,
+    sqlite3_bind_text,
+    sqlite3_bind_blob,
+    sqlite3_bind_parameter_count,
+    sqlite3_changes64,
+}
 
 /// A compiled statement. EVERY FIELD IS A CELL because all three are
 /// shared state: the handle so finalizing twice finalizes once, the
@@ -57,8 +81,16 @@ impl Db {
     fn prepare(sql: string) -> Result<Stmt, SqlError> {
         let _ = barred(self.closed_fault())?
         let parts = statements(sql)?
-        if parts.length > 1 { fail SqlError.refused(Cause.ManyStatements, "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many") }
-        if parts.is_empty() { fail SqlError.refused(Cause.NoStatement, "the text holds no statement — it is empty or nothing but comments") }
+        if parts.length > 1 { fail SqlError
+                .refused(
+                    Cause.ManyStatements,
+                    "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many",
+                ) }
+        if parts.is_empty() { fail SqlError
+                .refused(
+                    Cause.NoStatement,
+                    "the text holds no statement — it is empty or nothing but comments",
+                ) }
         self.compiled(parts[0])
     }
 
@@ -83,7 +115,8 @@ impl Db {
         // the only thing that can answer. For a verb that takes ONE
         // statement the answer is a refusal; a script verb skips the
         // segment instead. Same fact, two verbs, opposite answers.
-        if handle == null { fail SqlError.refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
+        if handle == null { fail SqlError
+                .refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
         Stmt { raw: Cell.new(handle), conn: Cell.new(self.raw.get()) }
     }
 }
@@ -112,7 +145,11 @@ impl Stmt {
     /// `sqlite_stmt_adversarial_test.av` pins the behaviour.
     fn step() -> Result<bool, SqlError> {
         let _ = barred(self.finalized_fault())?
-        if self.done.get() { fail SqlError.refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
+        if self.done.get() { fail SqlError
+                .refused(
+                    Cause.Done,
+                    "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean",
+                ) }
         let rc = sqlite3_step(self.raw.get())
         if rc == row_code { return true }
         if rc == done_code {
@@ -151,9 +188,14 @@ impl Stmt {
     /// one through a verb that answers a count would throw the rows away
     /// silently — which is the whole reason this verb refuses instead.
     fn drained(db: Db) -> Result<int, SqlError> {
-        if sqlite3_column_count(self.raw.get()) > 0 { fail SqlError.refused(Cause.RowsDiscarded, "this statement answers rows and this verb answers a count — read it instead") }
+        if sqlite3_column_count(self.raw.get()) > 0 { fail SqlError
+                .refused(
+                    Cause.RowsDiscarded,
+                    "this statement answers rows and this verb answers a count — read it instead",
+                ) }
         let more = self.step()?
-        if more { fail SqlError.refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
+        if more { fail SqlError
+                .refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
         sqlite3_changes64(db.raw.get())
     }
 
@@ -516,12 +558,19 @@ fn storage_of(code: int) -> Result<Storage, SqlError> {
     }
 }
 
-const statement_finalized: SqlError = SqlError.refused(Cause.Finalized, "this statement was finalized — prepare it again")
+const statement_finalized: SqlError = SqlError
+    .refused(Cause.Finalized, "this statement was finalized — prepare it again")
 
 // ── The voices ──────────────────────────────────────────────────
 
 fn failed(rc: int, sql: string?) -> SqlError {
-    SqlError { cause: Cause.of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
+    SqlError {
+        cause: Cause.of(rc),
+        code: rc % 256,
+        extended: rc,
+        message: sqlite3_errstr(rc),
+        sql: sql,
+    }
 }
 
 /// `step`'s own failure, enriched with `sqlite3_errmsg`'s
@@ -563,7 +612,11 @@ impl SqlError {
     /// indexed reads reuse this too, since a materialized value's mismatch
     /// is the same sentence over a different receiver.
     static fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
-        SqlError.refused(Cause.Mismatch(col, wanted, found), "column ${col} holds ${class_word(found)} and the read asked for ${class_word(wanted)}")
+        SqlError
+            .refused(
+                Cause.Mismatch(col, wanted, found),
+                "column ${col} holds ${class_word(found)} and the read asked for ${class_word(wanted)}",
+            )
     }
 }
 

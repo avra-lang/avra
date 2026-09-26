@@ -7,8 +7,37 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, StmtId, DeclId, TypeId, TypeRegistry, Binding, Type, Span, Expr, TypeRef, NodeStore, own_name_at, own_type_at, Arm, same_stmt, same_expr, flatten, some_list}
-use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, MethodRow, AnnotationFact, bound_decl_of}
+use core.{
+    At,
+    ExprId,
+    StmtId,
+    DeclId,
+    TypeId,
+    TypeRegistry,
+    Binding,
+    Type,
+    Span,
+    Expr,
+    TypeRef,
+    NodeStore,
+    own_name_at,
+    own_type_at,
+    Arm,
+    same_stmt,
+    same_expr,
+    flatten,
+    some_list,
+}
+use features.{
+    FileView,
+    NameFacts,
+    TypeFacts,
+    known_def_type_of,
+    method_row,
+    MethodRow,
+    AnnotationFact,
+    bound_decl_of,
+}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
@@ -377,7 +406,9 @@ impl Code {
             .Expr(id) -> {
                 let want = self.of.view.store.expr_fingerprint(id)
                 let mine = self.of.view.store.expr_span(id)
-                [self.coded(e) for e in self.of.view.store.expr_ids() if !same_expr(e, id) && self.of.view.store.expr_fingerprint(e) == want && sibling_span(mine, self.of.view.store.expr_span(e))]
+                [self.coded(e) for e in self.of.view.store.expr_ids() if !same_expr(e, id) &&
+                    self.of.view.store.expr_fingerprint(e) == want &&
+                    sibling_span(mine, self.of.view.store.expr_span(e))]
             },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
@@ -490,7 +521,9 @@ impl Code {
         // THE WHOLE ARENA, never `self.of.view.stmts` (the file's TOP
         // LEVEL alone): an assignment almost always nests inside a
         // fn's body, which the top-level list does not reach.
-        let assigns = flatten([some_list(self.write_root_of(s)) for s in self.of.view.store.stmt_ids()])
+        let assigns = flatten(
+            [some_list(self.write_root_of(s)) for s in self.of.view.store.stmt_ids()],
+        )
         let calls = flatten([some_list(self.method_write_root(e)) for e in range])
         let seated = flatten([self.seat_write_roots(e) for e in range])
         assigns.concat(calls).concat(seated)
@@ -537,7 +570,12 @@ impl Code {
 
     fn method_call_roots(subject: ExprId, name: string, args: List<ExprId>) -> List<ExprId> {
         let target? = declaring_decl(self.of.view.types.shape_of(self.of.facts.type_at(subject))) else { return [] }
-        let m? = self.of.view.decls.methods_of(target).find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else { return [] }
+        let m? = self
+            .of
+            .view
+            .decls
+            .methods_of(target)
+            .find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else { return [] }
         // seat 0 is the receiver; a method's own arguments start at 1.
         self.marked_arg_roots(m, args, 1)
     }
@@ -547,7 +585,9 @@ impl Code {
     /// own seat at that position is declared `mut`.
     fn marked_arg_roots(callee: DeclId, args: List<ExprId>, base: int) -> List<ExprId> {
         let seats = self.of.view.decls.facts_of(callee)?.seats ?? []
-        flatten([some_list(self.marked_root(callee, base, j, a)) for j, a in self.of.view.store.seated_args(args, seats)])
+        flatten(
+            [some_list(self.marked_root(callee, base, j, a)) for j, a in self.of.view.store.seated_args(args, seats)],
+        )
     }
 
     fn marked_root(callee: DeclId, base: int, j: int, a: ExprId) -> ExprId? {
@@ -598,7 +638,12 @@ impl Code {
     }
 
     fn user_method_writes(target: DeclId, name: string) -> bool {
-        let m? = self.of.view.decls.methods_of(target).find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else { return false }
+        let m? = self
+            .of
+            .view
+            .decls
+            .methods_of(target)
+            .find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else { return false }
         self.of.view.decls.writes_receiver(m)
     }
 
@@ -619,7 +664,8 @@ impl Code {
     fn unused_import_decls() -> List<DeclId> {
         if self.of.view.decls.refs_are_incomplete() { return [] }
         match self.at {
-            .Stmt(id) -> [r.decl for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) && self.of.view.decls.used(r.decl).is_empty()],
+            .Stmt(id) -> [r.decl for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) &&
+                self.of.view.decls.used(r.decl).is_empty()],
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
     }
@@ -873,8 +919,5 @@ fn method_could_be_pure(of: Analysed, id: ExprId) -> bool {
     let mp? = of.view.store.method_parts(id) else { return false }
     let sh = of.view.types.seen_shape(of.facts.type_at(mp.subject))
     let row? = method_row(of.view.lang.methods, mp.name, sh) else { return false }
-    match row.effect {
-        .Read or .Lends -> true,
-        .Write or .Shared -> false,
-    }
+    match row.effect { .Read or .Lends -> true, .Write or .Shared -> false }
 }

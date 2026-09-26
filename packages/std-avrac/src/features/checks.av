@@ -3,7 +3,27 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, StmtId, TypeId, Type, Expr, PlaceStep, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, isolated_mark, is_literal, literal_form, hears_want, some_list}
+use core.{
+    ExprId,
+    StmtId,
+    TypeId,
+    Type,
+    Expr,
+    PlaceStep,
+    ResSides,
+    Arrow,
+    filled,
+    DeclId,
+    Binding,
+    SeatMark,
+    mut_mark,
+    settled_mark,
+    isolated_mark,
+    is_literal,
+    literal_form,
+    hears_want,
+    some_list,
+}
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
 
@@ -41,7 +61,16 @@ impl TypeCx {
                 if held.is_empty() { return }
                 self.facts.mark_warned(e)
                 for x in held {
-                    let _ = self.spoken(warning(x.kind ?? "annotation.warning", x.at ?? self.loc_of(e), x.message, "used here", x.help))
+                    let _ = self
+                        .spoken(
+                            warning(
+                                x.kind ?? "annotation.warning",
+                                x.at ?? self.loc_of(e),
+                                x.message,
+                                "used here",
+                                x.help,
+                            ),
+                        )
                 }
             },
             .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> nothing(),
@@ -62,7 +91,16 @@ impl TypeCx {
 
     mut fn require_spoken(e: ExprId, subject: string, wanted: string, label: string) {
         if self.errored(e) { return }
-        self.emit(refusal("type.mismatch", self.loc_of(e), "${subject} is a `${wanted}`, found `${self.name_at(e)}`", label, null))
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "${subject} is a `${wanted}`, found `${self.name_at(e)}`",
+                    label,
+                    null,
+                ),
+            )
     }
 
     /// The agreement law: an Error on EITHER side absorbs (its cause
@@ -112,10 +150,7 @@ impl TypeCx {
     }
 
     fn self_typed(k: ExprId) -> bool {
-        match self.shape_at(k) {
-            .EmptyList or .EmptyMap or .Null or .Error -> false,
-            _ -> true,
-        }
+        match self.shape_at(k) { .EmptyList or .EmptyMap or .Null or .Error -> false, _ -> true }
     }
 
     /// The leader's type, nullable when any item is `null`: `[null, 7]`
@@ -129,18 +164,54 @@ impl TypeCx {
     /// seat ("a list element", "a map value").
     mut fn unslottable(head: ExprId, what: string) -> TypeId {
         if self.shape_at(head) is .Void {
-            return self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold nothing — this answers no value", "answers nothing", null))
+            return self
+                .spoken(
+                    refusal(
+                        "type.list_scalar",
+                        self.loc_of(head),
+                        "${what} cannot hold nothing — this answers no value",
+                        "answers nothing",
+                        null,
+                    ),
+                )
         }
         let n = self.name_at(head)
-        self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} takes its type from its value, and `${n}` has none of its own", this_is(n), "declare the type where it is bound — `let name: Type = …`"))
+        self
+            .spoken(
+                refusal(
+                    "type.list_scalar",
+                    self.loc_of(head),
+                    "${what} takes its type from its value, and `${n}` has none of its own",
+                    this_is(n),
+                    "declare the type where it is bound — `let name: Type = …`",
+                ),
+            )
     }
 
     mut fn unslottable_want(e: ExprId, want: TypeId, what: string) -> TypeId {
-        self.spoken(refusal("type.list_scalar", self.loc_of(e), "${what} cannot hold `${self.view.types.name_of(want)}` — it is no value", "this slot", null))
+        self
+            .spoken(
+                refusal(
+                    "type.list_scalar",
+                    self.loc_of(e),
+                    "${what} cannot hold `${self.view.types.name_of(want)}` — it is no value",
+                    "this slot",
+                    null,
+                ),
+            )
     }
 
     mut fn chain_writes(e: ExprId, name: string) {
-        self.emit(warning("type.receiver", self.loc_of(e), "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost", "the copy", "bind the value first — `if let v? = … { v.${name}(…) }`"))
+        self
+            .emit(
+                warning(
+                    "type.receiver",
+                    self.loc_of(e),
+                    "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost",
+                    "the copy",
+                    "bind the value first — `if let v? = … { v.${name}(…) }`",
+                ),
+            )
     }
 
     /// A UNIFIED SEAT AGREES, or not: `unify` binds the declaration's
@@ -422,7 +493,11 @@ impl TypeCx {
         if self.view.types.shape_of(ty) is .Opt { return self.reads_a_guarantee(e, shown, name) }
         let sig: StructSig? = self.fields_of(ty)
         if sig != null { return self.field_member(e, shown, sig!, name) }
-        let row: PropertyRow? = property_row(self.view.lang.properties, name, self.view.types.shape_of(ty))
+        let row: PropertyRow? = property_row(
+            self.view.lang.properties,
+            name,
+            self.view.types.shape_of(ty),
+        )
         if row != null { return row!.check(self, e, ty) }
         // A NAME IS TRANSPARENT AT A READ: nothing of the name's own
         // answered, so the shape it stands over does — and the
@@ -433,11 +508,29 @@ impl TypeCx {
     }
 
     mut fn reads_a_guarantee(e: ExprId, shown: string, name: string) -> TypeId {
-        self.spoken(refusal("type.mismatch", self.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
+        self
+            .spoken(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "`.${name}` reads a guarantee, this is `${shown}`",
+                    this_is(shown),
+                    "`?.${name}` reaches through the absence — or answer it first with `??`",
+                ),
+            )
     }
 
     mut fn no_such_property(e: ExprId, shown: string, name: string) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "no property `${name}` on `${shown}`", "read here", "a property is a record's field, or a measure like `length` on the shapes that have one"))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "no property `${name}` on `${shown}`",
+                    "read here",
+                    "a property is a record's field, or a measure like `length` on the shapes that have one",
+                ),
+            )
     }
 
     /// A record's property IS a declared field; a miss names the
@@ -449,7 +542,16 @@ impl TypeCx {
     }
 
     mut fn no_such_field(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
-        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "no field `${name}` on `${shown}`", "read here", fields_are(sig)))
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "no field `${name}` on `${shown}`",
+                    "read here",
+                    fields_are(sig),
+                ),
+            )
     }
 
     /// THE DECLARED-BINDING LAW: an annotated binding holds what it
@@ -466,7 +568,21 @@ impl TypeCx {
         if self.shape_at(v) is .TypeName { return }
         if self.accepts(v, declared) { return }
         let n = self.name_at(v)
-        self.emit(self.named_fix(refusal("type.binding", self.loc_of(v), "`${name}` declares `${self.view.types.name_of(declared)}`, this is `${n}`", this_is(n), null), declared, v))
+        self
+            .emit(
+                self
+                    .named_fix(
+                        refusal(
+                            "type.binding",
+                            self.loc_of(v),
+                            "`${name}` declares `${self.view.types.name_of(declared)}`, this is `${n}`",
+                            this_is(n),
+                            null,
+                        ),
+                        declared,
+                        v,
+                    ),
+            )
     }
 
     /// The VALUE law: a type NAME is not a value. `Color` alone is
@@ -476,13 +592,19 @@ impl TypeCx {
     /// refused.
     mut fn refuses_type_value(e: ExprId) -> bool {
         let sh: Type = self.shape_at(e)
-        let tname: string? = match sh {
-            .TypeName(_, n) -> n,
-            _ -> null,
-        }
+        let tname: string? = match sh { .TypeName(_, n) -> n, _ -> null }
         if tname == null { return false }
         let n = tname!
-        self.emit(refusal("type.type_value", self.loc_of(e), "`${n}` is a type, not a value", "used as a value here", "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)"))
+        self
+            .emit(
+                refusal(
+                    "type.type_value",
+                    self.loc_of(e),
+                    "`${n}` is a type, not a value",
+                    "used as a value here",
+                    "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)",
+                ),
+            )
         true
     }
 
@@ -496,7 +618,14 @@ impl TypeCx {
     /// may WIDEN — against the declared answer directly, the same as
     /// any other seat; with no want planted the arms judge each other,
     /// exactly as before.
-    mut fn arms_agree(kind: string, subject: string, anchor_name: string, e: ExprId, anchor: ExprId, values: List<ExprId>) -> TypeId {
+    mut fn arms_agree(
+        kind: string,
+        subject: string,
+        anchor_name: string,
+        e: ExprId,
+        anchor: ExprId,
+        values: List<ExprId>,
+    ) -> TypeId {
         // an arm that LEAVES answers nothing and joins with anything
         let answering = [v for v in values if self.stays(v)]
         let planted: TypeId? = self.want_at(e)
@@ -525,9 +654,24 @@ impl TypeCx {
         want
     }
 
-    mut fn arms_disagree(kind: string, subject: string, anchor_name: string, v: ExprId, want: TypeId) {
+    mut fn arms_disagree(
+        kind: string,
+        subject: string,
+        anchor_name: string,
+        v: ExprId,
+        want: TypeId,
+    ) {
         let n = self.name_at(v)
-        self.emit(refusal(kind, self.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${self.view.types.name_of(want)}`", this_is(n), null))
+        self
+            .emit(
+                refusal(
+                    kind,
+                    self.loc_of(v),
+                    "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${self.view.types.name_of(want)}`",
+                    this_is(n),
+                    null,
+                ),
+            )
     }
 
     /// The type every arm can answer with: the anchor's, JOINED with
@@ -544,7 +688,14 @@ impl TypeCx {
     /// A FN VALUE's seats judge a call — the one law the indirect
     /// call, the fn-field call, and the lambda share, refusing in the
     /// same words every call does.
-    mut fn seats_judged(e: ExprId, callee: string, ps: List<TypeId>, marks: List<SeatMark>, ret: TypeId, args: List<ExprId>) -> TypeId {
+    mut fn seats_judged(
+        e: ExprId,
+        callee: string,
+        ps: List<TypeId>,
+        marks: List<SeatMark>,
+        ret: TypeId,
+        args: List<ExprId>,
+    ) -> TypeId {
         if !self.seats_fit(e, callee, args, ps) { return self.error_type }
         // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
         // judged by the same law a direct one is: a marked seat is
@@ -574,12 +725,21 @@ impl TypeCx {
         let plan = self.view.store.seat_plan(args, seats)
         let unwritten: string? = [seats[j] for j, i in plan if i < 0 && defaults[j] == null].first()
         if unwritten != null { return self.seat_unwritten(e, callee, unwritten!) }
-        Placed { args: self.view.store.seated_args(args, seats), wants: [wants[j] for j, i in plan if i >= 0] }
+        Placed {
+            args: self.view.store.seated_args(args, seats),
+            wants: [wants[j] for j, i in plan if i >= 0],
+        }
     }
 
     /// Positional arguments: every seat, or — when each seat past them
     /// has a default — their own.
-    mut fn by_position(e: ExprId, callee: string, defaults: List<DeclId?>, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
+    mut fn by_position(
+        e: ExprId,
+        callee: string,
+        defaults: List<DeclId?>,
+        args: List<ExprId>,
+        wants: List<TypeId>,
+    ) -> Placed? {
         let least = [j + 1 for j, body in defaults if body == null].last() ?? 0
         if defaults.length != wants.length || least >= wants.length { return as_written(args, wants) }
         if args.length >= least && args.length <= wants.length { return Placed { args: args, wants: wants.slice(0, args.length) } }
@@ -616,7 +776,8 @@ impl TypeCx {
             self.seat_unknown(args[unknown!], callee, labels[unknown!], seats)
             return false
         }
-        let twice? = [j for j, l in labels if l != "" && written_before(labels, seats, l, j)].first() else { return true }
+        let twice? = [j for j, l in labels if l != "" && written_before(labels, seats, l, j)]
+            .first() else { return true }
         self.seat_twice(args[twice], callee, labels[twice])
         false
     }
@@ -627,7 +788,8 @@ impl TypeCx {
     mut fn seats_fit(e: ExprId, callee: string, args: List<ExprId>, wants: List<TypeId>) -> bool {
         if args.length != wants.length {
             let blocks = [a for a in args if self.view.store.is_trailing(a)]
-            if blocks.is_empty() { self.wrong_arity(e, callee, wants.length, args.length) } else { self.block_unseated(e, callee, wants.length, args.length - blocks.length, blocks.length) }
+            if blocks.is_empty() { self.wrong_arity(e, callee, wants.length, args.length) } else { self
+                    .block_unseated(e, callee, wants.length, args.length - blocks.length, blocks.length) }
             return false
         }
         for j, a in args {
@@ -662,7 +824,16 @@ impl TypeCx {
     /// means refused.
     mut fn refuses_void_value(e: ExprId) -> bool {
         if !(self.shape_at(e) is .Void) { return false }
-        self.spoken(refusal("type.mismatch", self.loc_of(e), "this answers nothing — there is nothing to bind", "answers nothing", "a mutation is a statement; drop the binding"))
+        self
+            .spoken(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "this answers nothing — there is nothing to bind",
+                    "answers nothing",
+                    "a mutation is a statement; drop the binding",
+                ),
+            )
         true
     }
 
@@ -695,47 +866,135 @@ impl TypeCx {
     }
 
     // ── The voices: every refusal worded HERE, once ──
-    mut fn isolated_capture(a: ExprId, callee: string, seat: string, name: string, ty: TypeId, held: TypeId) {
+    mut fn isolated_capture(
+        a: ExprId,
+        callee: string,
+        seat: string,
+        name: string,
+        ty: TypeId,
+        held: TypeId,
+    ) {
         let holds = if self.view.decls.is_identity(ty) { "is" } else { "holds" }
-        self.emit(refusal("type.isolated", self.loc_of(a), "`${seat}` of `${callee}` is `isolated`, and this fn captures `${name}`, which ${holds} `${self.view.types.name_of(held)}` — an isolated fn shares nothing with its caller", "captured here", "make it inside the fn, so each place it runs makes its own"))
+        self
+            .emit(
+                refusal(
+                    "type.isolated",
+                    self.loc_of(a),
+                    "`${seat}` of `${callee}` is `isolated`, and this fn captures `${name}`, which ${holds} `${self.view.types.name_of(held)}` — an isolated fn shares nothing with its caller",
+                    "captured here",
+                    "make it inside the fn, so each place it runs makes its own",
+                ),
+            )
     }
 
     mut fn isolated_unknown(a: ExprId, callee: string, seat: string) {
-        self.emit(refusal("type.isolated", self.loc_of(a), "`${seat}` of `${callee}` is `isolated`, and this fn value may hold anything its maker captured — an isolated fn shares nothing with its caller", "passed here", "write the fn here as a lambda, name a declared fn, or pass a parameter your own fn declares `isolated`"))
+        self
+            .emit(
+                refusal(
+                    "type.isolated",
+                    self.loc_of(a),
+                    "`${seat}` of `${callee}` is `isolated`, and this fn value may hold anything its maker captured — an isolated fn shares nothing with its caller",
+                    "passed here",
+                    "write the fn here as a lambda, name a declared fn, or pass a parameter your own fn declares `isolated`",
+                ),
+            )
     }
 
     /// THE arity refusal — every call shape shares the words.
     mut fn wrong_arity(e: ExprId, callee: string, want: int, found: int) {
-        self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "`${callee}` takes ${want} arguments, found ${found}",
+                    "this call",
+                    null,
+                ),
+            )
     }
 
     mut fn seats_unnamed(a: ExprId, callee: string) -> Placed? {
-        self.emit(refusal("type.named_arg", self.loc_of(a), "`${self.view.store.arg_label(a) ?? ""}:` names a seat, and `${callee}`'s seats have no names", "named here", "drop the name — a fn value, a runtime method, a contract's member and an extern are called by position"))
+        self
+            .emit(
+                refusal(
+                    "type.named_arg",
+                    self.loc_of(a),
+                    "`${self.view.store.arg_label(a) ?? ""}:` names a seat, and `${callee}`'s seats have no names",
+                    "named here",
+                    "drop the name — a fn value, a runtime method, a contract's member and an extern are called by position",
+                ),
+            )
         null
     }
 
     mut fn seat_unknown(a: ExprId, callee: string, name: string, seats: List<string>) {
-        self.emit(refusal("type.named_arg", self.loc_of(a), "`${callee}` has no seat named `${name}`", "named here", "its seats are ${named_list(seats)}"))
+        self
+            .emit(
+                refusal(
+                    "type.named_arg",
+                    self.loc_of(a),
+                    "`${callee}` has no seat named `${name}`",
+                    "named here",
+                    "its seats are ${named_list(seats)}",
+                ),
+            )
     }
 
     mut fn seat_twice(a: ExprId, callee: string, name: string) {
-        self.emit(refusal("type.named_arg", self.loc_of(a), "seat `${name}` of `${callee}` is written twice", "written again here", "a positional argument fills the seat at its own position — drop one, or name the other's seat"))
+        self
+            .emit(
+                refusal(
+                    "type.named_arg",
+                    self.loc_of(a),
+                    "seat `${name}` of `${callee}` is written twice",
+                    "written again here",
+                    "a positional argument fills the seat at its own position — drop one, or name the other's seat",
+                ),
+            )
     }
 
     mut fn seat_unwritten(e: ExprId, callee: string, name: string) -> Placed? {
-        self.emit(refusal("type.named_arg", self.loc_of(e), "seat `${name}` of `${callee}` is written by no argument, and has no default", "this call", "write it — `${name}: …`"))
+        self
+            .emit(
+                refusal(
+                    "type.named_arg",
+                    self.loc_of(e),
+                    "seat `${name}` of `${callee}` is written by no argument, and has no default",
+                    "this call",
+                    "write it — `${name}: …`",
+                ),
+            )
         null
     }
 
     /// The arity refusal for a callee whose last seats have defaults.
     mut fn wrong_defaulted_arity(e: ExprId, callee: string, least: int, most: int, found: int) {
-        self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${least} to ${most} arguments, found ${found}", "this call", defaulted_seats(most - least)))
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "`${callee}` takes ${least} to ${most} arguments, found ${found}",
+                    "this call",
+                    defaulted_seats(most - least),
+                ),
+            )
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
     /// the block's words: the parentheses already fill the callee.
     mut fn block_unseated(e: ExprId, callee: string, want: int, written: int, blocks: int) {
-        self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, and the parentheses give ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}", "this call", "a trailing block is the call's LAST argument: declare a fn seat for it, or move the value into the parentheses"))
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "`${callee}` takes ${want} arguments, and the parentheses give ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}",
+                    "this call",
+                    "a trailing block is the call's LAST argument: declare a fn seat for it, or move the value into the parentheses",
+                ),
+            )
     }
 
     /// THE argument refusal — every call shape shares the words.
@@ -743,7 +1002,21 @@ impl TypeCx {
         let n = self.name_at(a)
         if self.view.store.is_trailing(a) { return self.block_misseated(callee, j, want, n, a) }
         if self.view.store.is_hole(a) { return self.hole_misseated(n, a) }
-        self.emit(self.named_fix(refusal("type.mismatch", self.loc_of(a), "argument ${j + 1} of `${callee}` wants `${self.view.types.name_of(want)}`, found `${n}`", this_is(n), null), want, a))
+        self
+            .emit(
+                self
+                    .named_fix(
+                        refusal(
+                            "type.mismatch",
+                            self.loc_of(a),
+                            "argument ${j + 1} of `${callee}` wants `${self.view.types.name_of(want)}`, found `${n}`",
+                            this_is(n),
+                            null,
+                        ),
+                        want,
+                        a,
+                    ),
+            )
     }
 
     /// THE NAME'S REMEDY, worded once. A NAMED TYPE is its own type —
@@ -768,7 +1041,11 @@ impl TypeCx {
             _ -> "(${shown}).of"
         }
         let call = "${name}(${value})"
-        let fix = Suggestion { confidence: Confidence.High, description: "write `${call}`", edits: [Edit { loc: l, replacement: call } for l in some_list(self.loc_of(at))] }
+        let fix = Suggestion {
+            confidence: Confidence.High,
+            description: "write `${call}`",
+            edits: [Edit { loc: l, replacement: call } for l in some_list(self.loc_of(at))],
+        }
         d with { help: "`${name}` is its own type — write `${call}`", suggestions: [fix] }
     }
 
@@ -785,7 +1062,16 @@ impl TypeCx {
     mut fn hole_misseated(n: string, a: ExprId) {
         // a hole IS a name: the mark is set on the identifier alone
         let name = self.view.store.ident_name(a)!
-        self.emit(refusal("type.mismatch", self.loc_of(a), "`${name}` is a type literal's hole — it names an id, and this `${name}` holds `${n}`", "named here", "spell the shape (`int?`, `List<T>`), or name a binding that holds an id"))
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(a),
+                    "`${name}` is a type literal's hole — it names an id, and this `${name}` holds `${n}`",
+                    "named here",
+                    "spell the shape (`int?`, `List<T>`), or name a binding that holds an id",
+                ),
+            )
     }
 
     /// A trailing block at a seat that does not take it — the argument
@@ -794,25 +1080,70 @@ impl TypeCx {
     mut fn block_misseated(callee: string, j: int, want: TypeId, n: string, a: ExprId) {
         let seat = self.view.types.name_of(want)
         let help = if self.view.types.arrow_parts(want) == null { "a trailing block is a fn — move the value into the parentheses, or declare seat ${j + 1} as a fn" } else { "match the seat's parameters — `{ x -> … }` names them, `{ … }` takes none (or `it`)" }
-        self.emit(refusal("type.mismatch", self.loc_of(a), "the trailing block fills seat ${j + 1} of `${callee}`, which takes `${seat}`, and the block is `${n}`", this_is(n), help))
+        self
+            .emit(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(a),
+                    "the trailing block fills seat ${j + 1} of `${callee}`, which takes `${seat}`, and the block is `${n}`",
+                    this_is(n),
+                    help,
+                ),
+            )
     }
 
     mut fn type_not_place(e: ExprId, name: string) -> bool {
-        let _ = self.spoken(refusal("type.place", self.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding", "a type", null))
+        let _ = self
+            .spoken(
+                refusal(
+                    "type.place",
+                    self.loc_of(e),
+                    "`${name}` is a type — a mutation lands on a `mut` binding",
+                    "a type",
+                    null,
+                ),
+            )
         false
     }
 
     mut fn measured_not_stored(e: ExprId, name: string, subject: string) -> bool {
-        let _ = self.spoken(refusal("type.place", self.loc_of(e), "`${name}` is measured, not stored — `${subject}` has no such slot", "not a slot", "a place is a field a struct declares, or an index into a list"))
+        let _ = self
+            .spoken(
+                refusal(
+                    "type.place",
+                    self.loc_of(e),
+                    "`${name}` is measured, not stored — `${subject}` has no such slot",
+                    "not a slot",
+                    "a place is a field a struct declares, or an index into a list",
+                ),
+            )
         false
     }
 
     mut fn not_a_place_call(e: ExprId, name: string) -> TypeId {
-        self.spoken(refusal("type.place", self.loc_of(e), "`${name}` mutates a place, and this list is a value", "a value", "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`"))
+        self
+            .spoken(
+                refusal(
+                    "type.place",
+                    self.loc_of(e),
+                    "`${name}` mutates a place, and this list is a value",
+                    "a value",
+                    "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`",
+                ),
+            )
     }
 
     mut fn not_mut_call(e: ExprId, name: string, root: string) -> TypeId {
-        self.spoken(refusal("type.place", self.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it", "mutated here", "declare it `mut ${root} = ...` — or build a changed copy"))
+        self
+            .spoken(
+                refusal(
+                    "type.place",
+                    self.loc_of(e),
+                    "`${root}` is not `mut` — `${name}` mutates it",
+                    "mutated here",
+                    "declare it `mut ${root} = ...` — or build a changed copy",
+                ),
+            )
     }
 
     // ── THE INOUT SEATS (ROADMAP: the inout receiver) ──
@@ -839,11 +1170,38 @@ impl TypeCx {
         if !writes { return }
         if self.mut_place(subject) { return self.copy_laws(e, subject, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
-        if root == null { return self.emit(warning("type.receiver", self.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
+        if root == null { return self
+                .emit(
+                    warning(
+                        "type.receiver",
+                        self.loc_of(e),
+                        "`${name}` writes its receiver, and this is a value",
+                        "a value",
+                        "bind it `mut` first — the receiver becomes the caller's own place",
+                    ),
+                ) }
         let n = self.root_word(root!)
         if n == chained_binder { return self.chain_writes(e, name) }
-        if self.captured(root!) { return self.emit(warning("type.receiver", self.loc_of(e), "`${n}` is captured by value — `${name}` writes through the lambda's copy", "a copy", "a capture is a copy: write outside the lambda, or answer the new value")) }
-        self.emit(warning("type.receiver", self.loc_of(e), "`${n}` is not `mut` — `${name}` writes through it", "aliased here", "declare it `mut ${n} = …`"))
+        if self.captured(root!) { return self
+                .emit(
+                    warning(
+                        "type.receiver",
+                        self.loc_of(e),
+                        "`${n}` is captured by value — `${name}` writes through the lambda's copy",
+                        "a copy",
+                        "a capture is a copy: write outside the lambda, or answer the new value",
+                    ),
+                ) }
+        self
+            .emit(
+                warning(
+                    "type.receiver",
+                    self.loc_of(e),
+                    "`${n}` is not `mut` — `${name}` writes through it",
+                    "aliased here",
+                    "declare it `mut ${n} = …`",
+                ),
+            )
     }
 
     /// A root's word for a voice: its name, or `self` for the receiver
@@ -979,32 +1337,62 @@ impl TypeCx {
     }
 
     mut fn place_copy(e: ExprId, q: string, p: string) {
-        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`", "a copy", "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share"))
+        self
+            .emit(
+                warning(
+                    "type.alias_copy",
+                    self.loc_of(e),
+                    "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`",
+                    "a copy",
+                    "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share",
+                ),
+            )
     }
 
     mut fn local_path(e: ExprId, q: string, p: string) {
-        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a local — a write through `${p}` stays in `${q}`, and every other holder of what it reaches keeps its own", "stays local", "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared"))
+        self
+            .emit(
+                warning(
+                    "type.alias_copy",
+                    self.loc_of(e),
+                    "`${q}` is a local — a write through `${p}` stays in `${q}`, and every other holder of what it reaches keeps its own",
+                    "stays local",
+                    "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared",
+                ),
+            )
     }
 
     mut fn lent_copy(e: ExprId, q: string, p: string) {
-        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of what `${p}` holds — a write through it will not reach `${p}`", "a copy", "store the copy back into `${p}` if the write should reach it"))
+        self
+            .emit(
+                warning(
+                    "type.alias_copy",
+                    self.loc_of(e),
+                    "`${q}` is a copy of what `${p}` holds — a write through it will not reach `${p}`",
+                    "a copy",
+                    "store the copy back into `${p}` if the write should reach it",
+                ),
+            )
     }
 
     /// A bare `mut` local's own declaring statement — null for `self`,
     /// a parameter, and every place that is not a plain `mut` name.
     fn bare_mut_stmt(e: ExprId) -> StmtId? {
         let b? = self.names.binding(e) else { return null }
-        match b {
-            .Def(s) -> if self.view.store.stmt(s) is .MutLet { s } else { null },
-            _ -> null,
-        }
+        match b { .Def(s) -> if self.view.store.stmt(s) is .MutLet { s } else { null }, _ -> null }
     }
 
     /// THE SEAT LAW: every `mut` seat of a call is filled by a `mut`
     /// place, and no two `mut` seats (the receiver counted) share a
     /// root — the exclusivity law. Seats are numbered from `base` (1
     /// past a method's receiver seat).
-    mut fn mut_seats_law(e: ExprId, callee: string, marks: List<SeatMark>, args: List<ExprId>, receiver: ExprId?) {
+    mut fn mut_seats_law(
+        e: ExprId,
+        callee: string,
+        marks: List<SeatMark>,
+        args: List<ExprId>,
+        receiver: ExprId?,
+    ) {
         mut roots: List<ExprId> = if receiver == null { [] } else { [receiver!] }
         for j, a in args {
             if mut_mark(marks, j) { roots = self.judged_seat(e, callee, a, j, roots) }
@@ -1033,7 +1421,14 @@ impl TypeCx {
     /// refusal was already spoken — so every call shape returns its
     /// error type. `receiver` is the subject a writing method judged
     /// for exclusivity, or null.
-    mut fn seat_contracts(e: ExprId, callee: string, d: DeclId, base: int, args: List<ExprId>, receiver: ExprId?) -> bool {
+    mut fn seat_contracts(
+        e: ExprId,
+        callee: string,
+        d: DeclId,
+        base: int,
+        args: List<ExprId>,
+        receiver: ExprId?,
+    ) -> bool {
         let marks = self.declared_marks(d, base, args.length)
         self.mut_seats_law(e, callee, marks, args, receiver)
         self.isolated_seats_law(callee, self.seat_names(d), marks, args)
@@ -1049,7 +1444,12 @@ impl TypeCx {
     /// either) forks into two that each believe they are the one. A
     /// lambda capturing no identity, a declared fn, or a seat the
     /// enclosing fn itself declared isolated fills it.
-    mut fn isolated_seats_law(callee: string, names: List<string>, marks: List<SeatMark>, args: List<ExprId>) {
+    mut fn isolated_seats_law(
+        callee: string,
+        names: List<string>,
+        marks: List<SeatMark>,
+        args: List<ExprId>,
+    ) {
         for j, a in args {
             if isolated_mark(marks, j) { self.isolated_arg(a, callee, seat_word(names, j)) }
         }
@@ -1078,10 +1478,7 @@ impl TypeCx {
         let d: DeclId? = self.bound_decl(a)
         if d != null && self.view.decls.decl(d!).kind is .Fn { return true }
         let b? = self.names.binding(a) else { return false }
-        match b {
-            .Param(i) -> isolated_mark(self.scope_marks, i),
-            _ -> false,
-        }
+        match b { .Param(i) -> isolated_mark(self.scope_marks, i), _ -> false }
     }
 
     // ── THE `const` SEATS ──
@@ -1089,7 +1486,12 @@ impl TypeCx {
     /// null, with the refusal spoken, when one is filled by a value
     /// computed at run time. The fingerprints ride the call's `Sub`,
     /// so mono lowers one unit per distinct settled value.
-    mut fn const_seats(callee: string, names: List<string>, marks: List<SeatMark>, args: List<ExprId>) -> List<string>? {
+    mut fn const_seats(
+        callee: string,
+        names: List<string>,
+        marks: List<SeatMark>,
+        args: List<ExprId>,
+    ) -> List<string>? {
         mut out: List<string> = []
         mut ok = true
         for j, a in args {
@@ -1151,10 +1553,7 @@ impl TypeCx {
 
     fn names_enum(k: ExprId) -> bool {
         let b? = self.names.binding(k) else { return false }
-        match b {
-            .Decl(d) -> self.view.decls.decl(d).kind is .Enum,
-            rest -> false,
-        }
+        match b { .Decl(d) -> self.view.decls.decl(d).kind is .Enum, rest -> false }
     }
 
     /// A declaration's written seat names, for a voice — read from
@@ -1165,12 +1564,23 @@ impl TypeCx {
     }
 
     mut fn const_seat_unsettled(a: ExprId, callee: string, name: string) {
-        self.emit(refusal("type.const_seat", self.loc_of(a), "`${name}` is a `const` seat — `${callee}` settles it at compile time, and this is computed at run time", "computed here", "fill it with a literal or a `const` — a value that settles at compile time"))
+        self
+            .emit(
+                refusal(
+                    "type.const_seat",
+                    self.loc_of(a),
+                    "`${name}` is a `const` seat — `${callee}` settles it at compile time, and this is computed at run time",
+                    "computed here",
+                    "fill it with a literal or a `const` — a value that settles at compile time",
+                ),
+            )
     }
 
     /// One `mut` seat judged; the roots handed so far, grown by this
     /// one when it is lawful.
-    mut fn judged_seat(e: ExprId, callee: string, a: ExprId, j: int, roots: List<ExprId>) -> List<ExprId> {
+    mut fn judged_seat(e: ExprId, callee: string, a: ExprId, j: int, roots: List<ExprId>) -> List<
+        ExprId,
+    > {
         let root: ExprId? = self.place_binding_root(a)
         if root == null {
             self.value_in_mut_seat(a, callee, j)
@@ -1199,22 +1609,58 @@ impl TypeCx {
     }
 
     mut fn value_in_mut_seat(a: ExprId, callee: string, j: int) {
-        self.emit(refusal("type.seat", self.loc_of(a), "seat ${j + 1} of `${callee}` is `mut`, and this is a value", "a value", "bind it `mut` first — `mut x = …` — then hand `x`"))
+        self
+            .emit(
+                refusal(
+                    "type.seat",
+                    self.loc_of(a),
+                    "seat ${j + 1} of `${callee}` is `mut`, and this is a value",
+                    "a value",
+                    "bind it `mut` first — `mut x = …` — then hand `x`",
+                ),
+            )
     }
 
     /// A WARNING while the contexts' closure fields become methods
     /// (ROADMAP: the inout receiver, S4b) — 70 sites in the compiler's
     /// own source hand a captured driver to a seat; then a refusal.
     mut fn captured_in_mut_seat(a: ExprId, callee: string, j: int, root: string) {
-        self.emit(refusal("type.seat", self.loc_of(a), "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`", "a copy", "a capture is a copy: call outside the lambda, or answer the new value"))
+        self
+            .emit(
+                refusal(
+                    "type.seat",
+                    self.loc_of(a),
+                    "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`",
+                    "a copy",
+                    "a capture is a copy: call outside the lambda, or answer the new value",
+                ),
+            )
     }
 
     mut fn not_mut_seat(a: ExprId, callee: string, j: int, root: string) {
-        self.emit(refusal("type.seat", self.loc_of(a), "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it", "handed here", "declare it `mut ${root} = …`"))
+        self
+            .emit(
+                refusal(
+                    "type.seat",
+                    self.loc_of(a),
+                    "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it",
+                    "handed here",
+                    "declare it `mut ${root} = …`",
+                ),
+            )
     }
 
     mut fn shared_root(e: ExprId, callee: string, root: string) {
-        self.emit(refusal("type.seat", self.loc_of(e), "`${root}` is handed `mut` twice in one call to `${callee}`", "this call", "bind `mut b = ${root}…` first, and write it back after"))
+        self
+            .emit(
+                refusal(
+                    "type.seat",
+                    self.loc_of(e),
+                    "`${root}` is handed `mut` twice in one call to `${callee}`",
+                    "this call",
+                    "bind `mut b = ${root}…` first, and write it back after",
+                ),
+            )
     }
 
     /// THE SETTLEMENT LAW: a call refused as a whole absorbs its
@@ -1231,7 +1677,16 @@ impl TypeCx {
     /// An empty literal has no measure until a declared type adopts
     /// it — the shared voice for `[]` and `{}`.
     mut fn unmeasurable_empty(e: ExprId, lit: string, example: string) -> TypeId {
-        self.spoken(refusal("type.mismatch", self.loc_of(e), "`${lit}` has no length yet — a declared type gives it one", "measured here", "bind it first — `let xs: ${example} = ${lit}`"))
+        self
+            .spoken(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(e),
+                    "`${lit}` has no length yet — a declared type gives it one",
+                    "measured here",
+                    "bind it first — `let xs: ${example} = ${lit}`",
+                ),
+            )
     }
 }
 

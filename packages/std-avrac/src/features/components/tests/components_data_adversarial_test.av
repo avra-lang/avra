@@ -24,49 +24,82 @@ spec "features/components — a record's instance, adversarial" {
     }
     given "the wrong thing in every seat" {
         then "a setting of the wrong type is the field's refusal, at the setting" {
-            refused_in(attacked("grid g {\n    title: 5\n}\n0"), "field `title` is `string`, this is `int`")
+            refused_in(
+                attacked("grid g {\n    title: 5\n}\n0"),
+                "field `title` is `string`, this is `int`",
+            )
         }
         then "a setting the record lacks names its fields" {
             refused_in(attacked("grid g {\n    nope: 5\n}\n0"), "`grid` has no field `nope`")
         }
         then "a setting written twice refuses the second" {
-            refused_in(attacked("grid g {\n    title: \"a\"\n    title: \"b\"\n}\n0"), "field `title` is written more than once")
+            refused_in(
+                attacked("grid g {\n    title: \"a\"\n    title: \"b\"\n}\n0"),
+                "field `title` is written more than once",
+            )
         }
         then "a child of the wrong type refuses where it stands" {
             let p = attacked("grid g {\n    row 1\n    5\n}\n0")
-            refused_in(p, "this list holds `row`, this is `int`") && p.report().contains("main.av:4")
+            refused_in(p, "this list holds `row`, this is `int`") &&
+                p.report().contains("main.av:4")
         }
         then "a required field left unwritten is the record's refusal" {
-            refused_in(attacked("let v = grid {\n    title: \"a\"\n}\n0"), "`grid` needs field `name`")
+            refused_in(
+                attacked("let v = grid {\n    title: \"a\"\n}\n0"),
+                "`grid` needs field `name`",
+            )
         }
     }
     given "bodies the record cannot take" {
         then "children with no `List` field to fill" {
-            refused_in(attacked("let v = blank {\n    1\n}\n0"), "`blank` declares no `List` field, so its block holds settings only")
+            refused_in(
+                attacked("let v = blank {\n    1\n}\n0"),
+                "`blank` declares no `List` field, so its block holds settings only",
+            )
         }
         then "children beside their slot set by name join after the setting's list" {
-            answered(attacked("grid g {\n    rows: [row 1]\n    row 2\n    row 3\n}\n[\"\${r.id}\" for r in g.rows].join(\",\")")) == "1,2,3"
+            answered(
+                attacked(
+                    "grid g {\n    rows: [row 1]\n    row 2\n    row 3\n}\n[\"\${r.id}\" for r in g.rows].join(\",\")",
+                ),
+            ) == "1,2,3"
         }
         then "a child two same-typed fields could take is not guessed into either" {
-            refused_in(attacked("let p = pairs {\n    row 1\n}\n0"), "`pairs` has 2 `List` fields its statements could fill")
+            refused_in(
+                attacked("let p = pairs {\n    row 1\n}\n0"),
+                "`pairs` has 2 `List` fields its statements could fill",
+            )
         }
         then "children with two slots open" {
-            refused_in(attacked("let t = two {\n    1\n}\n0"), "`two` has 2 `List` fields its statements could fill — set each by name: `xs: collect { … }`")
+            refused_in(
+                attacked("let t = two {\n    1\n}\n0"),
+                "`two` has 2 `List` fields its statements could fill — set each by name: `xs: collect { … }`",
+            )
         }
     }
     given "heads" {
         then "a missing head counts what was written" {
-            refused_in(attacked("let r = row { }\n0"), "`row` takes 1 head value before its block, and this instance writes 0")
+            refused_in(
+                attacked("let r = row { }\n0"),
+                "`row` takes 1 head value before its block, and this instance writes 0",
+            )
         }
         then "two heads cannot be written as one value" {
-            refused_in(attacked("let p = pair 1 { }\n0"), "`pair` takes 2 head values before its block, and this instance writes 1")
+            refused_in(
+                attacked("let p = pair 1 { }\n0"),
+                "`pair` takes 2 head values before its block, and this instance writes 1",
+            )
         }
         then "a headless record refuses a value head and names both forms" {
-            refused_in(attacked("let g = grid x { }\n0"), "`grid` takes no head value — name it at a statement (`grid name { … }`), or write `grid { … }`")
+            refused_in(
+                attacked("let g = grid x { }\n0"),
+                "`grid` takes no head value — name it at a statement (`grid name { … }`), or write `grid { … }`",
+            )
         }
         then "an imported word's refusal carries no import remedy" {
             let p = attacked("let v = blank {\n    1\n}\n0")
-            refused_in(p, "`blank` declares no `List` field") && !p.report().contains("use @x.c.{blank}")
+            refused_in(p, "`blank` declares no `List` field") &&
+                !p.report().contains("use @x.c.{blank}")
         }
     }
 }

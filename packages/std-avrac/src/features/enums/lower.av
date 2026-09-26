@@ -61,7 +61,14 @@ fn matched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
 /// own absent value (its repr's flag or niche), never `hollow_of`'s
 /// don't-care bits: this value is actually READ, unlike a leaving
 /// arm's.
-fn matched_with_default(mut cx: LowerCx, e: ExprId, subject: ExprId, v: Reg, vty: TypeId, arms: List<Arm>) -> Reg {
+fn matched_with_default(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    v: Reg,
+    vty: TypeId,
+    arms: List<Arm>,
+) -> Reg {
     let want = cx.type_at(e)
     let declared: EnumSig? = cx.variants_at(subject)
     if declared != null && switchable(cx, arms, arms.length) {
@@ -108,7 +115,15 @@ fn switched_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, a
 /// a case (none is exempted as "the last, taken unconditionally"),
 /// and the tag that matches none of them answers the tail's `want`
 /// absent.
-fn switched_reg_with_default(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms: List<Arm>, want: TypeId) -> Reg {
+fn switched_reg_with_default(
+    mut cx: LowerCx,
+    e: ExprId,
+    v: Reg,
+    vty: TypeId,
+    sig: EnumSig,
+    arms: List<Arm>,
+    want: TypeId,
+) -> Reg {
     let cases = arm_cases(cx, sig, arms, arms.length)
     if cases.length != arms.length { return short_cases(cx, e) }
     cx.emit(Ins.SwitchStart(cx.tag_of(v), cases))
@@ -143,17 +158,26 @@ fn chained_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>,
     let a = arms[k]
     let want = cx.type_at(e)
     if k == arms.length - 1 { return arm_reg(cx, v, vty, a, want) }
-    cx.region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg(cx, e, v, vty, arms, k + 1) }
+    cx
+        .region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg(cx, e, v, vty, arms, k + 1) }
 }
 
 /// The chain's twin for an implicit tail: arm k tests, same as the
 /// chain, but NONE answers unconditionally — a subject none of the
 /// written arms accepted falls past the last one to `want`'s own
 /// absence.
-fn chained_reg_with_default(mut cx: LowerCx, v: Reg, vty: TypeId, arms: List<Arm>, k: int, want: TypeId) -> Reg {
+fn chained_reg_with_default(
+    mut cx: LowerCx,
+    v: Reg,
+    vty: TypeId,
+    arms: List<Arm>,
+    k: int,
+    want: TypeId,
+) -> Reg {
     if k == arms.length { return cx.absent_of(want) }
     let a = arms[k]
-    cx.region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg_with_default(cx, v, vty, arms, k + 1, want) }
+    cx
+        .region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg_with_default(cx, v, vty, arms, k + 1, want) }
 }
 
 /// One arm taken: its binds read from the subject (inside the arm's
@@ -191,14 +215,30 @@ fn spoken_types(cx: LowerCx, v: ExprId, n: int) -> List<TypeId>? {
 
 /// Alternative `k` onward: the first that accepts writes its binds.
 /// The last is taken unconditionally — the arm already accepted.
-fn or_filled(mut cx: LowerCx, v: Reg, vty: TypeId, pats: List<PatId>, k: int, names: List<string>, cells: List<Reg>) {
+fn or_filled(
+    mut cx: LowerCx,
+    v: Reg,
+    vty: TypeId,
+    pats: List<PatId>,
+    k: int,
+    names: List<string>,
+    cells: List<Reg>,
+) {
     let took = pat_accepts_of(cx, pats[k], v, vty)
     if k == pats.length - 1 { return stored_binds(cx, pats[k], v, vty, names, cells) }
-    cx.void_branches(took) { cx -> stored_binds(cx, pats[k], v, vty, names, cells) } else { cx -> or_filled(cx, v, vty, pats, k + 1, names, cells) }
+    cx
+        .void_branches(took) { cx -> stored_binds(cx, pats[k], v, vty, names, cells) } else { cx -> or_filled(cx, v, vty, pats, k + 1, names, cells) }
 }
 
 /// One alternative's binds, each written into the cell of its name.
-fn stored_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId, names: List<string>, cells: List<Reg>) {
+fn stored_binds(
+    mut cx: LowerCx,
+    p: PatId,
+    v: Reg,
+    vty: TypeId,
+    names: List<string>,
+    cells: List<Reg>,
+) {
     let regs = pat_binds_of(cx, p, v, vty)
     let own = [b.name for b in cx.view.store.pattern_binds(p)]
     for j, n in names { cx.stored(cells[j], regs[own.index_of(n)]) }
@@ -267,11 +307,13 @@ fn accepts_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
     mut j = 1
     while j < a.pats.length {
         let p = a.pats[j]
-        acc = cx.region_as(acc, cx.type(bool)) { cx -> cx.const_bool(true) } else { cx -> pat_accepts_of(cx, p, v, vty) }
+        acc = cx
+            .region_as(acc, cx.type(bool)) { cx -> cx.const_bool(true) } else { cx -> pat_accepts_of(cx, p, v, vty) }
         j = j + 1
     }
     let g? = a.guard else { return acc }
-    cx.region_as(acc, cx.type(bool)) { cx -> guard_reg(cx, v, vty, a, g) } else { cx -> cx.const_bool(false) }
+    cx
+        .region_as(acc, cx.type(bool)) { cx -> guard_reg(cx, v, vty, a, g) } else { cx -> cx.const_bool(false) }
 }
 
 /// The guard itself, once its arm's pattern already accepted — its
@@ -324,7 +366,8 @@ fn variant_reg(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: Ty
     let tagged = cx.bin(Type.Bool, BinOp.Eq, cx.tag_of(v), cx.const_int(which!))
     if all_irrefutable(cx.view.store, args) { return tagged }
     let carried = declared!.payloads_of(name)
-    cx.region_as(tagged, cx.type(bool)) { cx -> payloads_reg(cx, carried, args, v) } else { cx -> cx.const_bool(false) }
+    cx
+        .region_as(tagged, cx.type(bool)) { cx -> payloads_reg(cx, carried, args, v) } else { cx -> cx.const_bool(false) }
 }
 
 /// Every payload pattern accepts its payload — `a && b` as the lazy
@@ -334,7 +377,8 @@ fn payloads_reg(mut cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Re
     mut acc = cx.const_bool(true)
     for k, a in args {
         if k < carried.length {
-            acc = cx.region_as(acc, cx.type(bool)) { cx -> pat_accepts_of(cx, a, cx.payload_at(v, k, carried), carried[k]) } else { cx -> cx.const_bool(false) }
+            acc = cx
+                .region_as(acc, cx.type(bool)) { cx -> pat_accepts_of(cx, a, cx.payload_at(v, k, carried), carried[k]) } else { cx -> cx.const_bool(false) }
         }
     }
     acc

@@ -407,17 +407,11 @@ fn multi_unique_db() -> Result<Db, SqlError> {
 }
 
 fn update_causes_unique_violation() -> string {
-    match update_violation_attempt() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().kind,
-    }
+    match update_violation_attempt() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().kind }
 }
 
 fn update_violation_attempt_message() -> string {
-    match update_violation_attempt() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().message,
-    }
+    match update_violation_attempt() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().message }
 }
 
 fn update_violation_attempt() -> Result<int, ModelError> {
@@ -434,22 +428,19 @@ fn version_unchanged_after_failed_update() -> Result<int, ModelError> {
     let b = MultiUnique { id: 0, email: "b@x.com", username: "bob" }.insert(db)?
     let clashing = b with { username: "alice" }
     let _ = clashing.update(db) catch 0 - 1
-    let v = modeled(db.scalar(sql("select \"__avra_version__\" from MultiUnique where id = ?").args([.Int(b.id)])))?
+    let v = modeled(
+        db
+            .scalar(sql("select \"__avra_version__\" from MultiUnique where id = ?").args([.Int(b.id)])),
+    )?
     modeled(v.int())
 }
 
 fn second_unique_field_also_enforced() -> string {
-    match dup_username() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().kind,
-    }
+    match dup_username() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().kind }
 }
 
 fn dup_username_message() -> string {
-    match dup_username() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().message,
-    }
+    match dup_username() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().message }
 }
 
 fn dup_username() -> Result<int, ModelError> {
@@ -460,10 +451,7 @@ fn dup_username() -> Result<int, ModelError> {
 }
 
 fn dup_email_message() -> string {
-    match dup_email() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().message,
-    }
+    match dup_email() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().message }
 }
 
 fn dup_email() -> Result<int, ModelError> {
@@ -474,10 +462,7 @@ fn dup_email() -> Result<int, ModelError> {
 }
 
 fn operating_on_a_closed_db() -> string {
-    match closed_db_insert() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().kind,
-    }
+    match closed_db_insert() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().kind }
 }
 
 fn closed_db_insert() -> Result<int, ModelError> {
@@ -498,17 +483,24 @@ fn huge_string_survives() -> Result<int, ModelError> {
 fn empty_string_is_not_null() -> Result<string, ModelError> {
     mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "e@x.com", name: "" }.insert(db)?
-    let row = modeled(db.one(sql("select typeof(name), length(name) from User where id = ?").args([.Int(u.id)])))?
+    let row = modeled(
+        db.one(sql("select typeof(name), length(name) from User where id = ?").args([.Int(u.id)])),
+    )?
     "${modeled(row.text(0))?}|${modeled(row.int(1))?}"
 }
 
 spec "std/db @model more adversarial" {
     given "two independently unique fields on one model" {
         then "the second field's uniqueness is enforced on insert too" { second_unique_field_also_enforced() == "db.constraint.unique" }
-        then "a duplicate username names that exact field, never the other" { dup_username_message().contains("`username`") && dup_username_message().contains("`MultiUnique.username`") && !dup_username_message().contains("`email`") }
-        then "a duplicate email names that exact field, never the other" { dup_email_message().contains("`email`") && dup_email_message().contains("`MultiUnique.email`") && !dup_email_message().contains("`username`") }
+        then "a duplicate username names that exact field, never the other" { dup_username_message().contains("`username`") &&
+                dup_username_message().contains("`MultiUnique.username`") &&
+                !dup_username_message().contains("`email`") }
+        then "a duplicate email names that exact field, never the other" { dup_email_message().contains("`email`") &&
+                dup_email_message().contains("`MultiUnique.email`") &&
+                !dup_email_message().contains("`username`") }
         then "an update that collides with another row's unique field is refused" { update_causes_unique_violation() == "db.constraint.unique" }
-        then "the update collision names the field it collided on" { update_violation_attempt_message().contains("`username`") && update_violation_attempt_message().contains("`MultiUnique.username`") }
+        then "the update collision names the field it collided on" { update_violation_attempt_message().contains("`username`") &&
+                update_violation_attempt_message().contains("`MultiUnique.username`") }
         then "a refused update leaves the hidden version column unbumped" { (version_unchanged_after_failed_update() catch 0 - 1) == 1 }
     }
     given "a model operation on a closed connection" {
@@ -566,10 +558,12 @@ fn fully_unique_clash(field_index: int) -> Result<int, ModelError> {
 spec "std/db @model at the @unique field cap" {
     given "a model with all five non-id fields marked @unique — the arity dispatch's own top boundary" {
         then "a clash on the first field names the first field, not a neighbor" {
-            fully_unique_clash_message(0).contains("`a`") && !fully_unique_clash_message(0).contains("`b`")
+            fully_unique_clash_message(0).contains("`a`") &&
+                !fully_unique_clash_message(0).contains("`b`")
         }
         then "a clash on the last field names the last field, not a neighbor" {
-            fully_unique_clash_message(4).contains("`e`") && !fully_unique_clash_message(4).contains("`d`")
+            fully_unique_clash_message(4).contains("`e`") &&
+                !fully_unique_clash_message(4).contains("`d`")
         }
         then "a clash on a middle field names that exact field" { fully_unique_clash_message(2).contains("`c`") }
     }
@@ -581,10 +575,7 @@ spec "std/db @model at the @unique field cap" {
 // older row can still put a SQL NULL where `find`'s generated reader
 // assumes a scalar.
 fn find_over_sql_null_column() -> string {
-    match find_after_raw_null_insert() {
-        .Ok(_) -> "no refusal",
-        .Err(e) -> e.describe().kind,
-    }
+    match find_after_raw_null_insert() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().kind }
 }
 
 fn find_after_raw_null_insert() -> Result<User?, SqlError> {
@@ -624,10 +615,7 @@ fn version_unchanged_after_busy_failure() -> Result<string, ModelError> {
 
     let changed = u with { name: "B" }
     let attempt = changed.update(a)
-    let kind = match attempt {
-        .Ok(_) -> "unexpected ok",
-        .Err(e) -> e.describe().kind,
-    }
+    let kind = match attempt { .Ok(_) -> "unexpected ok", .Err(e) -> e.describe().kind }
 
     modeled(b.rollback())?
     let after = modeled(user_version_of(a, u.id))?

@@ -23,9 +23,7 @@ export enum UnOp { Not }
 
 /// The operator's surface symbol — the projection beside its enum.
 export fn un_symbol(op: UnOp) -> string {
-    match op {
-        .Not -> "!",
-    }
+    match op { .Not -> "!" }
 }
 
 /// THE INSTRUCTION VOCABULARY. Features lower into it and never
@@ -173,22 +171,63 @@ impl Ins {
             .ConstFloat(dst, bits) -> derived([fp_str("Ins"), 1, dst.fingerprint(), bits]),
             .ConstStr(dst, s) -> derived([fp_str("Ins"), 2, dst.fingerprint(), fp_str(s)]),
             .ConstBool(dst, v) -> derived([fp_str("Ins"), 3, dst.fingerprint(), if v { 1 } else { 0 }]),
-            .Bin(dst, op, a, b) -> derived([fp_str("Ins"), 4, dst.fingerprint(), op.fingerprint(), a.fingerprint(), b.fingerprint()]),
+            .Bin(dst, op, a, b) -> derived(
+                [
+                    fp_str("Ins"),
+                    4,
+                    dst.fingerprint(),
+                    op.fingerprint(),
+                    a.fingerprint(),
+                    b.fingerprint(),
+                ],
+            ),
             .Un(dst, op, src) -> derived([fp_str("Ins"), 5, dst.fingerprint(), op.fingerprint(), src.fingerprint()]),
             .CallRtVoid(callee, args) -> derived([fp_str("Ins"), 6, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
-            .CallRt(dst, callee, args) -> derived([fp_str("Ins"), 7, dst.fingerprint(), fp_str(callee), fp_list([x.fingerprint() for x in args])]),
-            .Pack(dst, elems) -> derived([fp_str("Ins"), 8, dst.fingerprint(), fp_list([x.fingerprint() for x in elems])]),
+            .CallRt(dst, callee, args) -> derived(
+                [
+                    fp_str("Ins"),
+                    7,
+                    dst.fingerprint(),
+                    fp_str(callee),
+                    fp_list([x.fingerprint() for x in args]),
+                ],
+            ),
+            .Pack(dst, elems) -> derived(
+                [fp_str("Ins"), 8, dst.fingerprint(), fp_list([x.fingerprint() for x in elems])],
+            ),
             .Extract(dst, src, at) -> derived([fp_str("Ins"), 9, dst.fingerprint(), src.fingerprint(), at]),
             .FnAddr(dst, sym) -> derived([fp_str("Ins"), 10, dst.fingerprint(), fp_str(sym)]),
             .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
             .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
-            .ScopeExit(gives) -> derived([fp_str("Ins"), 13, if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) }]),
+            .ScopeExit(gives) -> derived(
+                [
+                    fp_str("Ins"),
+                    13,
+                    if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) },
+                ],
+            ),
             .IfStart(cond) -> derived([fp_str("Ins"), 14, cond.fingerprint()]),
             .SwitchStart(selector, cases) -> derived([fp_str("Ins"), 15, selector.fingerprint(), fp_list(cases)]),
             .ArmEnd(gives) -> derived([fp_str("Ins"), 16, gives.fingerprint()]),
             .RegionEnd(dst, gives) -> derived([fp_str("Ins"), 17, dst.fingerprint(), gives.fingerprint()]),
-            .Call(dst, callee, args) -> derived([fp_str("Ins"), 18, dst.fingerprint(), fp_str(callee), fp_list([x.fingerprint() for x in args])]),
-            .CallPtr(dst, f, args) -> derived([fp_str("Ins"), 19, dst.fingerprint(), f.fingerprint(), fp_list([x.fingerprint() for x in args])]),
+            .Call(dst, callee, args) -> derived(
+                [
+                    fp_str("Ins"),
+                    18,
+                    dst.fingerprint(),
+                    fp_str(callee),
+                    fp_list([x.fingerprint() for x in args]),
+                ],
+            ),
+            .CallPtr(dst, f, args) -> derived(
+                [
+                    fp_str("Ins"),
+                    19,
+                    dst.fingerprint(),
+                    f.fingerprint(),
+                    fp_list([x.fingerprint() for x in args]),
+                ],
+            ),
             .RetVal(r) -> derived([fp_str("Ins"), 20, r.fingerprint()]),
             .FnExit(gives) -> derived([fp_str("Ins"), 21, gives.fingerprint()]),
             .Alloca(dst) -> derived([fp_str("Ins"), 22, dst.fingerprint()]),
@@ -306,23 +345,24 @@ fn not_if_span(ins: List<Ins>, i: int) -> NotIfSpan? {
     let if_at = i + 1
     let a1e = arm1_end(ins, if_at)
     let re = region_end(ins, if_at)
-    NotIfSpan { cond: dst_c.src, arm1_lo: if_at + 1, arm1_end: a1e, arm2_lo: a1e + 1, arm2_hi: re, region_end: re }
+    NotIfSpan {
+        cond: dst_c.src,
+        arm1_lo: if_at + 1,
+        arm1_end: a1e,
+        arm2_lo: a1e + 1,
+        arm2_hi: re,
+        region_end: re,
+    }
 }
 
 type NotPair = { dst: Reg, src: Reg }
 
 fn not_pair(i: Ins) -> NotPair? {
-    match i {
-        .Un(dst, op, src) if op is .Not -> NotPair { dst: dst, src: src },
-        rest -> null,
-    }
+    match i { .Un(dst, op, src) if op is .Not -> NotPair { dst: dst, src: src }, rest -> null }
 }
 
 fn if_cond(i: Ins) -> Reg? {
-    match i {
-        .IfStart(cond) -> cond,
-        rest -> null,
-    }
+    match i { .IfStart(cond) -> cond, rest -> null }
 }
 
 /// Whether `dst` is read anywhere OTHER than the `IfStart` at
@@ -556,12 +596,24 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .ConstFloat(d1, v1) -> match b { .ConstFloat(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
         .ConstStr(d1, s1) -> match b { .ConstStr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .ConstBool(d1, v1) -> match b { .ConstBool(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
-        .Bin(d1, op1, l1, r1) -> match b { .Bin(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2), rest -> false },
-        .Un(d1, op1, s1) -> match b { .Un(d2, op2, s2) -> same_reg(d1, d2) && op1 == op2 && same_reg(s1, s2), rest -> false },
+        .Bin(d1, op1, l1, r1) -> match b {
+            .Bin(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2),
+            rest -> false,
+        },
+        .Un(d1, op1, s1) -> match b {
+            .Un(d2, op2, s2) -> same_reg(d1, d2) && op1 == op2 && same_reg(s1, s2),
+            rest -> false,
+        },
         .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
-        .CallRt(d1, c1, args1) -> match b { .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2), rest -> false },
+        .CallRt(d1, c1, args1) -> match b {
+            .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
+            rest -> false,
+        },
         .Pack(d1, e1) -> match b { .Pack(d2, e2) -> same_reg(d1, d2) && same_regs(e1, e2), rest -> false },
-        .Extract(d1, s1, at1) -> match b { .Extract(d2, s2, at2) -> same_reg(d1, d2) && same_reg(s1, s2) && at1 == at2, rest -> false },
+        .Extract(d1, s1, at1) -> match b {
+            .Extract(d2, s2, at2) -> same_reg(d1, d2) && same_reg(s1, s2) && at1 == at2,
+            rest -> false,
+        },
         .FnAddr(d1, s1) -> match b { .FnAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
@@ -570,8 +622,14 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && same_fps(cs1, cs2), rest -> false },
         .ArmEnd(g1) -> match b { .ArmEnd(g2) -> same_reg(g1, g2), rest -> false },
         .RegionEnd(d1, g1) -> match b { .RegionEnd(d2, g2) -> same_reg(d1, d2) && same_reg(g1, g2), rest -> false },
-        .Call(d1, c1, args1) -> match b { .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2), rest -> false },
-        .CallPtr(d1, f1, args1) -> match b { .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2), rest -> false },
+        .Call(d1, c1, args1) -> match b {
+            .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
+            rest -> false,
+        },
+        .CallPtr(d1, f1, args1) -> match b {
+            .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2),
+            rest -> false,
+        },
         .RetVal(r1) -> match b { .RetVal(r2) -> same_reg(r1, r2), rest -> false },
         .FnExit(g1) -> match b { .FnExit(g2) -> same_reg(g1, g2), rest -> false },
         .Alloca(d1) -> match b { .Alloca(d2) -> same_reg(d1, d2), rest -> false },

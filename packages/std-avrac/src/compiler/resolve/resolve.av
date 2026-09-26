@@ -16,16 +16,55 @@ use core.{StmtId, ExprId, FileId, Param, flatten, Binding, found_at, NodeStore, 
 use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, SelfSeat, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound, example_marks}
+use features.{
+    ResolveCx,
+    SelfSeat,
+    Def,
+    LFrame,
+    Dispatch,
+    Namespace,
+    NameFacts,
+    new_name_facts,
+    FileView,
+    written_seats,
+    semantics_of,
+    stmt_semantics_of,
+    post_order,
+    Elsewhere,
+    Bound,
+    example_marks,
+}
 
 /// Words the spec reserves for future levels, memory, and
 /// concurrency: refusing them as names today means they become
 /// keywords tomorrow without breaking any program. (Today's ACTUAL
 /// keywords derive from the grammar — `p.keywords` — never a list
 /// kept by hand.)
-export const reserved: List<string> = ["systems", "bare", "hardware", "owned", "borrow", "move", "level", "unsafe", "extern", "async", "spawn", "await", "channel", "select"]
+export const reserved: List<string> = [
+    "systems",
+    "bare",
+    "hardware",
+    "owned",
+    "borrow",
+    "move",
+    "level",
+    "unsafe",
+    "extern",
+    "async",
+    "spawn",
+    "await",
+    "channel",
+    "select",
+]
 
-export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace, elsewhere: Elsewhere, generated: List<StmtId>) -> NameFacts {
+export fn resolve(
+    dispatch: Dispatch,
+    keywords: List<string>,
+    view: FileView,
+    scope: Namespace,
+    elsewhere: Elsewhere,
+    generated: List<StmtId>,
+) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
     mut r = ResolveCx {
         view: view,
@@ -53,7 +92,15 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
     // above never reaches it. Resolve it here, after the written
     // bodies, so its names are bound as any declared fn's are.
     r.resolve_stmts(false, generated)
-    r.facts with { voices: Voices { list: flatten([scope.voices.list, module_laws(view.store, view.source.file, view.stmts), r.facts.voices.list]) } }
+    r.facts with { voices: Voices {
+        list: flatten(
+            [
+                scope.voices.list,
+                module_laws(view.store, view.source.file, view.stmts),
+                r.facts.voices.list,
+            ],
+        ),
+    } }
 }
 
 /// THE WALK — the context's own verbs, which every feature's rule
@@ -165,7 +212,15 @@ impl ResolveCx {
         }
         let origin: FileId? = self.view.origin_of(lam)
         // LICENSED compiler.bracket_ritual: this IS the bracket
-        self.lframes.push(LFrame { lam: lam, params: [keyed(pp.name.of, origin) for pp in params], floor: self.overlays.length })
+        self
+            .lframes
+            .push(
+                LFrame {
+                    lam: lam,
+                    params: [keyed(pp.name.of, origin) for pp in params],
+                    floor: self.overlays.length,
+                },
+            )
         self.walk(body)
         let _ = self.lframes.pop()
     }
@@ -191,7 +246,9 @@ impl ResolveCx {
     /// One member. A `static fn` resolves with NO receiver, so
     /// `self` inside it refuses and its seats start at 0.
     mut fn impl_member(s: StmtId) {
-        self.receivers.push(if self.view.store.is_static(s) { SelfSeat.Static } else { SelfSeat.Receiver })
+        self
+            .receivers
+            .push(if self.view.store.is_static(s) { SelfSeat.Static } else { SelfSeat.Receiver })
         self.resolve_stmts(false, [s])
         let _ = self.receivers.pop()
     }

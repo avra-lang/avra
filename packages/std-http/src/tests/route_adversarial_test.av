@@ -125,7 +125,8 @@ fn wide_enough(r: Route, target: Bytes) -> bool {
 /// The targets on which the table and the scan disagree.
 fn disagreements() -> List<string> {
     let t = compiled(every())
-    [g for g in targets() if asked_get(g) != null && shown(dispatch(t, asked_get(g)!)) != shown(scanned(every(), asked_get(g)!))]
+    [g for g in targets() if asked_get(g) != null &&
+        shown(dispatch(t, asked_get(g)!)) != shown(scanned(every(), asked_get(g)!))]
 }
 
 fn named(rows: List<Route>) -> string { faults(rows).join(" ; ") }
@@ -133,14 +134,31 @@ fn named(rows: List<Route>) -> string { faults(rows).join(" ; ") }
 // ── Rest-taking fixtures ────────────────────────────────────────
 
 fn r_rest() -> Route { tailed<AdvRest>(Method.Get, "/static/{path...}", (t: Bytes) -> AdvRest.parse(t), adv_rest) }
-fn r_suffix() -> Route { tailed<AdvSuffix>(Method.Get, "/img/{path...}.png", (t: Bytes) -> AdvSuffix.parse(t), adv_suffix) }
-fn r_holed() -> Route { tailed<AdvHoled>(Method.Get, "/{tenant}/files/{path...}", (t: Bytes) -> AdvHoled.parse(t), adv_holed) }
+fn r_suffix() -> Route { tailed<AdvSuffix>(
+        Method.Get,
+        "/img/{path...}.png",
+        (t: Bytes) -> AdvSuffix.parse(t),
+        adv_suffix,
+    ) }
+fn r_holed() -> Route { tailed<AdvHoled>(
+        Method.Get,
+        "/{tenant}/files/{path...}",
+        (t: Bytes) -> AdvHoled.parse(t),
+        adv_holed,
+    ) }
 fn r_root() -> Route { tailed<AdvRoot>(Method.Get, "/{path...}", (t: Bytes) -> AdvRoot.parse(t), adv_root) }
 
 /// Six routes: exact, static, three rest-takers of different shapes,
 /// and a root catch-all LAST where it shadows nothing.
 fn resting() -> List<Route> {
-    [r_idea(), fixed(Method.Get, "/static/logo.svg", word), r_rest(), r_suffix(), r_holed(), r_root()]
+    [
+        r_idea(),
+        fixed(Method.Get, "/static/logo.svg", word),
+        r_rest(),
+        r_suffix(),
+        r_holed(),
+        r_root(),
+    ]
 }
 
 /// Targets that outrun the trie, end at a tail's own width, fall
@@ -177,7 +195,8 @@ fn deep_targets() -> List<string> {
 /// The deep targets on which the table and the scan disagree.
 fn deep_disagreements() -> List<string> {
     let t = compiled(resting())
-    [g for g in deep_targets() if asked_get(g) != null && shown(dispatch(t, asked_get(g)!)) != shown(scanned(resting(), asked_get(g)!))]
+    [g for g in deep_targets() if asked_get(g) != null &&
+        shown(dispatch(t, asked_get(g)!)) != shown(scanned(resting(), asked_get(g)!))]
 }
 
 spec "@std.http route adversarial" {
@@ -252,7 +271,18 @@ spec "@std.http route adversarial" {
             named([r_new(), r_idea()]) == ""
         }
         then "two holes of one shape are named, the later one" {
-            named([r_idea(), routed<AdvIdea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> AdvIdea.parse(t), adv_idea)]).contains("`/ideas/{slug}` is unreachable")
+            named(
+                [
+                    r_idea(),
+                    routed<AdvIdea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> AdvIdea.parse(t),
+                        adv_idea,
+                    ),
+                ],
+            )
+                .contains("`/ideas/{slug}` is unreachable")
         }
         then "one path declared twice is named" {
             named([r_new(), r_new()]).contains("`/ideas/new` is unreachable")
@@ -300,10 +330,30 @@ spec "@std.http route adversarial" {
             hit([fixed(Method.Get, "", word)], "/") == "404"
         }
         then "A PATTERN THAT DISAGREES WITH ITS GRAMMAR IS A DEAD ROUTE, never a wrong answer — at the pattern's target the reader refuses" {
-            hit([routed<AdvIdea>(Method.Get, "/zzz/{id}", (t: Bytes) -> AdvIdea.parse(t), adv_idea)], "/zzz/7") == "404"
+            hit(
+                [
+                    routed<AdvIdea>(
+                        Method.Get,
+                        "/zzz/{id}",
+                        (t: Bytes) -> AdvIdea.parse(t),
+                        adv_idea,
+                    ),
+                ],
+                "/zzz/7",
+            ) == "404"
         }
         then "and at the grammar's target the table never offers it" {
-            hit([routed<AdvIdea>(Method.Get, "/zzz/{id}", (t: Bytes) -> AdvIdea.parse(t), adv_idea)], "/ideas/7") == "404"
+            hit(
+                [
+                    routed<AdvIdea>(
+                        Method.Get,
+                        "/zzz/{id}",
+                        (t: Bytes) -> AdvIdea.parse(t),
+                        adv_idea,
+                    ),
+                ],
+                "/ideas/7",
+            ) == "404"
         }
     }
     given "a route that takes the rest, against the algorithm it replaced" {
@@ -342,7 +392,16 @@ spec "@std.http route adversarial" {
     given "a door and a pattern that disagree about the rest" {
 
         then "the fault names it" {
-            named([tailed<AdvRest>(Method.Get, "/static/files", (t: Bytes) -> AdvRest.parse(t), adv_rest)]) == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+            named(
+                [
+                    tailed<AdvRest>(
+                        Method.Get,
+                        "/static/files",
+                        (t: Bytes) -> AdvRest.parse(t),
+                        adv_rest,
+                    ),
+                ],
+            ) == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }
         then "and a well-formed rest-taker earns no such fault" {
             named([r_rest()]) == ""

@@ -26,7 +26,61 @@ fn one_of(chars: List<string>) -> Prim { Prim.Group(alt([seq([item(lit(c))]) for
 /// `grammar_lit` feature, a different (and differently-aged) copy of
 /// this engine than the one this package ships; data construction
 /// runs the CURRENT engine, the one this file's tests actually cover.
-const ALPHA_CHARS: List<string> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "_"]
+const ALPHA_CHARS: List<string> = [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+    "i",
+    "j",
+    "k",
+    "l",
+    "m",
+    "n",
+    "o",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "u",
+    "v",
+    "w",
+    "x",
+    "y",
+    "z",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "O",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z",
+    "_",
+]
 const DIGIT_CHARS: List<string> = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
 // Rule order is tie-break order (see `lexing.av`'s `longest_rule_match`):
@@ -38,22 +92,38 @@ const DSL_NOTATION: Grammar = Grammar {
     name: "dsl_notation",
     start: "NAME",
     rules: [
-        rule_def("NAME", [
-            seq([
-                item(rule_ref("alpha")),
-                item(group([seq([item(rule_ref("alpha"))]), seq([item(rule_ref("digit"))])])) with { rep: Rep.Star },
-            ]),
-        ]),
-        rule_def("STRING", [
-            seq([
-                item(lit("\"")),
-                item(group([
-                    seq([item(lit("\\")), item(lit("\""))]),
-                    seq([item(Prim.NotChar(lit("\"")))]),
-                ])) with { rep: Rep.Star },
-                item(lit("\"")),
-            ]),
-        ]),
+        rule_def(
+            "NAME",
+            [
+                seq(
+                    [
+                        item(rule_ref("alpha")),
+                        item(
+                            group([seq([item(rule_ref("alpha"))]), seq([item(rule_ref("digit"))])]),
+                        ) with { rep: Rep.Star },
+                    ],
+                ),
+            ],
+        ),
+        rule_def(
+            "STRING",
+            [
+                seq(
+                    [
+                        item(lit("\"")),
+                        item(
+                            group(
+                                [
+                                    seq([item(lit("\\")), item(lit("\""))]),
+                                    seq([item(Prim.NotChar(lit("\"")))]),
+                                ],
+                            ),
+                        ) with { rep: Rep.Star },
+                        item(lit("\"")),
+                    ],
+                ),
+            ],
+        ),
         rule_def("WS", [seq([item(one_of([" ", "\t", "\n", "\r"])) with { rep: Rep.Plus }])]),
         rule_def("OP", [seq([item(one_of(["=", "|", "(", ")", "*", "+", "?", ":", ",", "@"]))])]),
         rule_def("alpha", [seq([item(one_of(ALPHA_CHARS))])]),
@@ -79,7 +149,11 @@ fn dsl_lexeme() -> Lexeme<LexToken> {
         wears: (t: LexToken, term: string) -> t.kind == term,
         text: dsl_token_text,
         loc: (t: LexToken) -> t.loc,
-        stated: (text: string, loc: Loc?) -> LexToken { kind: "STATED", text: text, loc: loc ?? Loc { file: null, lo: 0, hi: 0 } },
+        stated: (text: string, loc: Loc?) -> LexToken {
+            kind: "STATED",
+            text: text,
+            loc: loc ?? Loc { file: null, lo: 0, hi: 0 },
+        },
     }
 }
 

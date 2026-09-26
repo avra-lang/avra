@@ -22,7 +22,9 @@ export trait Show {
     static fn derive(t: Type) -> List<Directive> {
         if !t.variants.is_empty() {
             let arms = [quote { .${v} -> ${literal("${t.name}.${v.name}")} } for v in t.variants]
-            return [directive(t, quote { impl ${t} { fn show() -> string { match self { ${arms} } } } })]
+            return [
+                directive(t, quote { impl ${t} { fn show() -> string { match self { ${arms} } } } }),
+            ]
         }
         let reads = [quote { self.${f} } for f in t.fields]
         let shown = interpolated(shown_parts(t), reads)
@@ -47,7 +49,12 @@ export trait Eq {
     static fn derive(t: Type) -> List<Directive> {
         if !t.variants.is_empty() {
             let arms = [eq_arm(v) for v in t.variants]
-            return [directive(t, quote { impl ${t} { fn eq(other: ${t}) -> bool { match self { ${arms} } } } })]
+            return [
+                directive(
+                    t,
+                    quote { impl ${t} { fn eq(other: ${t}) -> bool { match self { ${arms} } } } },
+                ),
+            ]
         }
         let checks = [quote { self.${f} == other.${f} } for f in t.fields]
         let all = conj(checks)
