@@ -167,8 +167,12 @@ fn remember(store: Store, key: string, paths: List<string>) {
 }
 
 /// What `check` says of a clean program: its warnings, and whether they were kept
-/// from a check of these exact inputs.
-export type Checked = { warnings: string, reused: bool, timed: string }
+/// from a check of these exact inputs — plus the PROGRAM this answer was
+/// derived from, when one was: a cache hit costs a hash and builds none,
+/// so a caller wanting more than the rendered warnings (a rule listing, a
+/// license scan) falls back to building its own rather than forcing every
+/// `check` to pay for a Program it does not otherwise need.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -184,7 +188,7 @@ impl Workspace {
         let d = self.derived(entry, Want.Diagnostics)?
         let key = d.program.ws.kept_key(under)
         cache.insert_warn(store, key, d.warnings)
-        Checked { warnings: d.warnings, reused: false, timed: d.timed([]) }
+        Checked { warnings: d.warnings, reused: false, timed: d.timed([]), program: d.program }
     }
 
     /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
