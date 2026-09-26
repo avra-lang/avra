@@ -478,12 +478,24 @@ impl NodeStore {
     }
 
     /// A chain answers when it has an else and both sides answer.
+    /// THE ELSE SIDE'S OWN AMBIGUITY: `else if` and `else { if … }`
+    /// capture the identical one-statement list (no node marks which
+    /// was written), so `branch_value`'s lone-tail wrap seeds its
+    /// `written_close` from that ONE statement's own span either way.
+    /// This statement's OWN span is the only place a real brace still
+    /// shows: parsed straight through to wherever the else side ends,
+    /// it lands past the branch's single statement exactly when one
+    /// stands there, and exactly there when none does — so it
+    /// overwrites the branch's seed once the branch turns out to have
+    /// been that single, promotable statement.
     fn chain_value(s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
         if e.is_empty() { return null }
         let tv: ExprId? = self.branch_value(t)
         let ev: ExprId? = self.branch_value(e)
         if tv == null || ev == null { return null }
-        self.alloc_expr(Expr.If(c, tv!, ev!), self.stmt_span(s))
+        let span = self.stmt_span(s)
+        if e.length == 1 && span != null { self.mark_written_close(ev!, span!.hi) }
+        self.alloc_expr(Expr.If(c, tv!, ev!), span)
     }
 
     /// THE TAIL LAW: a scope's tail STATEMENT already answered a

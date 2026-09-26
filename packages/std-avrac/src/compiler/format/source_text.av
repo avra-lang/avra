@@ -471,7 +471,7 @@ impl SourceText {
             return "if ${condition} {\n${joined(empty, "\n")}\n${source_line(depth, "}")}"
         }
         let opened = "if ${condition} {\n${joined(y, "\n")}\n"
-        let elif? = self.else_if_tail(no, depth) else {
+        let elif? = self.else_if_tail(no, end, depth) else {
             let n = flatten([self.statement(s, depth + 1) for s in no]).concat(self.trivia_before(end, depth + 1))
             if one_line && y.length == 1 && n.length == 1 {
                 return "if ${condition} { ${unpadded(y[0], depth + 1)} } else { ${unpadded(n[0], depth + 1)} }"
@@ -484,13 +484,19 @@ impl SourceText {
     /// `no`'s sole statement, read back as an `else if` chain link
     /// when it is one — `null` when `no` holds more than one
     /// statement, is empty, or its one statement is not an `IfStmt`,
-    /// OR a remark stands before it (nothing can stand between `else`
+    /// a remark stands before it (nothing can stand between `else`
     /// and `if` in the source an `else if` reads back from, so a
-    /// comment there means the braces were written, not the chain).
-    mut fn else_if_tail(no: List<StmtId>, depth: int) -> string? {
+    /// comment there means the braces were written, not the chain),
+    /// OR real braces were written around it: `else if` and `else {
+    /// if … }` capture the SAME one-statement list, so the enclosing
+    /// span is the only witness left — `enclosing_end` is where the
+    /// caller's OWN braces read back to, and it reaches past the
+    /// nested if's own end only when a real `}` stands there too.
+    mut fn else_if_tail(no: List<StmtId>, enclosing_end: int, depth: int) -> string? {
         if no.length != 1 { return null }
         let s = no[0]
         if self.pending_before(start_of(self.store.stmt_span(s))) { return null }
+        if enclosing_end != self.stmt_end(s) { return null }
         match self.store.stmt(s) {
             .IfStmt(c2, y2, n2) -> self.if_tail(c2, y2, n2, self.stmt_end(s), self.stmt_flat(s), depth),
             rest -> null,
@@ -823,11 +829,15 @@ impl SourceText {
         if self.pending_before(start_of(self.store.expr_span(no))) { return null }
         match self.store.expr(no) {
             .If(c2, y2, n2) -> self.if_group(c2, y2, n2, no, depth),
-            // A single "else if" branch answers through `tail_scoped`'s
-            // lone-tail wrap (core/store.av), so the chain link this
-            // sees is `Block([], If(...))`, never `If(...)` bare — see
-            // through it exactly when it holds nothing else.
-            .Block(stmts, value) -> if stmts.is_empty() && value != null { self.chained_if(value!, depth) } else { null },
+            // A NESTED "else if" (its own if a STATEMENT, chain_value's
+            // promotion) answers through `tail_scoped`'s lone-tail wrap
+            // (core/store.av), so the chain link this sees is
+            // `Block([], If(...))`, never `If(...)` bare. A written
+            // `else { if … }` wraps the SAME shape, so the two are told
+            // apart by `written_close` (`block_end`): a real brace sits
+            // STRICTLY PAST the wrapped value's own span, where a
+            // synthetic wrap's end IS that span — see through only then.
+            .Block(stmts, value) -> if stmts.is_empty() && value != null && self.block_end(no) == end_of(self.store.expr_span(value!)) { self.chained_if(value!, depth) } else { null },
             rest -> null,
         }
     }
