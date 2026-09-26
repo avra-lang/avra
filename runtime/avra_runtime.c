@@ -2787,7 +2787,7 @@ const char* avra_embed(const char* path) {
 /* `type_named` is answered by the compiler's own declaration table,
    which a running program does not carry; the interpreter's arm
    never calls this body at all. */
-void* av_type_named(const char* name) {
+void* avra_type_named(const char* name) {
     (void)name;
     avra_trap("`type_named` resolves a declaration at compile time — this program reached it at run time");
     return NULL;
