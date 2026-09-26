@@ -12,6 +12,8 @@
 //! backend.
 use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, dst_of, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, rt_reusing_twin, rt_moving_twin, reversed}
 use compiler.lower.{Lowered}
+use compiler.soundness.{checked}
+use @std.io.{env}
 
 /// Managed registers bound in one open scope, its tier remembered.
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
@@ -19,7 +21,20 @@ export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
 export fn memory(l: Lowered) -> Lowered {
     let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length) } for b in l.fns]
     let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0) }
-    l with { fns: fns, entry: entry }
+    let out = l with { fns: fns, entry: entry }
+    if !sound_checked() { return out }
+    // L2: an independent proof over this pass's OWN output — never a
+    // second opinion on the decisions above, only on what they left
+    // behind (docs/2026_09_23_REUSE_IN_PLACE.md §30). Measured at
+    // ~23% of `avra check packages/cli`'s own instructions retired —
+    // too much for every ordinary check or build, so it runs only
+    // when asked: `avra test`, a landing's gate, or `AVRA_SOUND_CHECK=1`
+    // set by hand.
+    out with { diagnostics: out.diagnostics.concat(checked(out, (ty: TypeId) -> is_managed(l.types, ty))) }
+}
+
+fn sound_checked() -> bool {
+    env("AVRA_SOUND_CHECK") == "1"
 }
 
 /// WHETHER THE RUNTIME COUNTS a value of this type: strings AND the
