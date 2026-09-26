@@ -24,13 +24,12 @@
 //! remembered under this compiler's print in the tree's store, so a
 //! warm re-run skips its parse and its print both — only a file that
 //! moved, or one this compiler has never seen, pays for either.
-use @std.cli.{CliResult, Runnable, command, flag, arg, option}
+use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{exists, write_text, is_dir, list_dir}
 use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total}
 use @std.avrac.compiler.store.{Store, Stored, store_at}
 use @std.avrac.core.{FileId, digest_of, joined, distinct}
 use @std.path.{dir_of, joined_path}
-use @std.text.{parse_int}
 use @std.time.{now_ns}
 
 type FmtCmd = {}
@@ -49,9 +48,8 @@ impl Runnable for FmtCmd {
         // (length 0)", for every input.
         let ws = file_workspace(path)
         let f = ws.file_id(path)
-        let width = width_arg(args)
-        if args.has_flag("write") { return written(ws, f, path, width) }
-        let outcome = match formatted(ws, f, width) {
+        if args.has_flag("write") { return written(ws, f, path) }
+        let outcome = match ws.formatted_source(f) {
             .Ok(text) -> {
                 println(text)
                 0
@@ -66,27 +64,11 @@ impl Runnable for FmtCmd {
     }
 }
 
-/// `ws.formatted_source(f)`, or `--width`'s own decision when the
-/// line asked for one.
-fn formatted(ws: Workspace, f: FileId, width: int?) -> Result<string, string> {
-    if width == null { ws.formatted_source(f) } else { ws.formatted_source_width(f, width!) }
-}
-
-/// `--width`'s value, parsed: absent for a bare `avra fmt` (the
-/// option's own default is ""), and for a value that does not read as
-/// a plain int — `parse_int`'s refusal is the line's own to speak,
-/// not this command's to duplicate.
-fn width_arg(args: CliResult) -> int? {
-    let raw = args.option("width")
-    if raw.is_empty() { return null }
-    parse_int(raw)
-}
-
 /// `--write`: the receipt-checked text, put on disk — or the reason
 /// it was refused, and the file left untouched either way until the
 /// receipt holds.
-fn written(ws: Workspace, f: FileId, path: string, width: int?) -> int {
-    match if width == null { ws.write_checked_source(f) } else { ws.write_checked_source_width(f, width!) } {
+fn written(ws: Workspace, f: FileId, path: string) -> int {
+    match ws.write_checked_source(f) {
         .Ok(text) -> match write_text(path, "${text}\n") {
             .Ok(_) -> 0,
             .Err(e) -> host_refused(e.describe().message),
@@ -270,7 +252,6 @@ export command fmt {
     flags: [time]
     flag write { description: "rewrite the file, refusing unless the receipt is lossless" }
     flag check { description: "one pass over every file under a directory, or the files given; reports what differs from canonical" }
-    option width { description: "wrap a group past this column instead of keeping the written form — call arguments, a parameter list, a chainable &&/||/+ run, a literal, `use`'s item list, a `match`'s arms" }
     arg file {
         description: "the source file, or (--check) files/directories to examine"
         required: true
