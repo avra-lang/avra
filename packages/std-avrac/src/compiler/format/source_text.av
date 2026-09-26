@@ -858,14 +858,20 @@ impl SourceText {
     /// A parameter list's parentheses — a fn's, a lambda's, a
     /// component head's, an enum variant's payload. `col` is where the
     /// list's own `(` begins; its PARAMS are each rendered before the
-    /// list decides flat or broken, so they take the fallback.
+    /// list decides flat or broken, so they take the fallback column
+    /// — but at `depth + 1`, the indent a param LANDS at once the
+    /// list breaks: a param that is itself wide enough to need its
+    /// own wrap must nest one level past this list's own bracket, or
+    /// its closer dedents to a column shallower than its own opener,
+    /// and a broken chain step no longer reads DEEPER than the line
+    /// it continues — which the lexer reads back as two statements.
     mut fn params_wrapped(params: List<Param>, depth: int, col: int = -1) -> string {
-        self.wrapped_list("(", [self.param(p, depth) for p in params], ")", false, depth, col)
+        self.wrapped_list("(", [self.param(p, depth + 1) for p in params], ")", false, depth, col)
     }
 
     /// A call's argument parentheses, wrapping-decided the same way.
     mut fn args_wrapped(args: List<ExprId>, depth: int, col: int = -1) -> string {
-        self.wrapped_list("(", [self.expression(a, loosest_tier, depth) for a in args], ")", false, depth, col)
+        self.wrapped_list("(", [self.expression(a, loosest_tier, depth + 1) for a in args], ")", false, depth, col)
     }
 
     /// `e`'s run of `op` operands, left to right — the SAME operator
@@ -892,7 +898,7 @@ impl SourceText {
     /// `col`, needs to be exact.
     mut fn chain_grouped(op: BinOp, left: ExprId, right: ExprId, p: int, parent: int, depth: int, col: int = -1) -> string {
         let operands = self.chain_operands(op, left).concat([right])
-        let docs = [text(self.expression(operands[j], if j == 0 { p } else { p + 1 }, depth)) for j in 0..operands.length]
+        let docs = [text(self.expression(operands[j], if j == 0 { p } else { p + 1 }, depth + 1)) for j in 0..operands.length]
         let rendered = render_doc_at(chain_doc(op_symbol(op), docs), canonical_width, depth * 4, resolved_col(col, depth))
         if p < parent { "(${rendered})" } else { rendered }
     }
@@ -911,7 +917,7 @@ impl SourceText {
         let tbl? = self.store.table_of(id) else {
             if elems.is_empty() { return "[]" }
             let span = self.store.expr_span(id)
-            if self.width_decides(span) { return self.wrapped_list("[", [self.expression(e, loosest_tier, depth) for e in elems], "]", false, depth, col) }
+            if self.width_decides(span) { return self.wrapped_list("[", [self.expression(e, loosest_tier, depth + 1) for e in elems], "]", false, depth, col) }
             if self.span_flat(span) { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
             let body = flatten([self.trivia_before(start_of(self.store.expr_span(e)), depth + 1).concat([source_line(depth + 1, "${self.expression(e, loosest_tier, depth + 1)},")]) for e in elems]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
             return "[\n${joined(body, "\n")}\n${source_line(depth, "]")}"
@@ -924,7 +930,7 @@ impl SourceText {
     mut fn map_lit_text(id: ExprId, keys: List<ExprId>, values: List<ExprId>, depth: int, col: int = -1) -> string {
         if keys.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
-        if self.width_decides(span) { return self.wrapped_list("{", ["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], "}", false, depth, col) }
+        if self.width_decides(span) { return self.wrapped_list("{", ["${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, k in keys], "}", false, depth, col) }
         if self.span_flat(span) { return "{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}" }
         let body = flatten([self.trivia_before(start_of(self.store.expr_span(k)), depth + 1).concat([source_line(depth + 1, "${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)},")]) for j, k in keys]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
@@ -974,7 +980,7 @@ impl SourceText {
     mut fn struct_fields_text(id: ExprId, fields: List<Plain>, values: List<ExprId>, depth: int, col: int = -1) -> string {
         if fields.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
-        if self.width_decides(span) { return self.wrapped_list("{", ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], "}", true, depth, col) }
+        if self.width_decides(span) { return self.wrapped_list("{", ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, f in fields], "}", true, depth, col) }
         if self.span_flat(span) { return "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }
         let body = flatten([self.trivia_before(start_of(self.store.expr_span(values[j])), depth + 1).concat([source_line(depth + 1, "${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)},")]) for j, f in fields]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
@@ -1161,7 +1167,7 @@ impl SourceText {
     mut fn arms_braced(arms: List<Arm>, id: ExprId, depth: int, col: int = -1) -> string {
         let span = self.store.expr_span(id)
         if self.width_decides(span) {
-            return self.wrapped_list("{", [self.arm_text(a, depth) for a in arms], "}", true, depth, col)
+            return self.wrapped_list("{", [self.arm_text(a, depth + 1) for a in arms], "}", true, depth, col)
         }
         if self.span_flat(span) {
             return "{ ${joined([self.arm_text(a, depth) for a in arms], ", ")} }"
@@ -1351,7 +1357,10 @@ impl SourceText {
     /// a link, like a comma list's item, is pre-rendered before the
     /// chain it belongs to decides flat or broken.
     mut fn method_link_text(id: ExprId, name: Plain, args: List<ExprId>, depth: int) -> string {
-        let tail? = self.type_lit_tail(id, name, args) else { return ".${source_name(name.of)}${self.call_tail(args, depth)}" }
+        // A link lands at `depth + 1` once the chain breaks (postfix_chain_doc's
+        // own `nest(4, ...)`), so its OWN call — if IT also wraps — must
+        // nest from THAT column, never from the chain's.
+        let tail? = self.type_lit_tail(id, name, args) else { return ".${source_name(name.of)}${self.call_tail(args, depth + 1)}" }
         ".${tail}"
     }
 
