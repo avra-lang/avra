@@ -230,6 +230,8 @@ static void acc_buf(int64_t cap, int64_t bytes, int64_t count) {
     if (g_cap_live[b] > g_cap_peak[b]) g_cap_peak[b] = g_cap_live[b];
 }
 
+static int64_t g_mortal_live;
+
 static void acc_report(void) {
 #ifdef AVRA_CENSUS
     fprintf(stderr, "rc: %lld retains, %lld releases, %lld reclaims\n",
@@ -246,6 +248,13 @@ static void acc_report(void) {
 #endif
 
     fprintf(stderr, "mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
+    // EXACT, never MB-rounded: a small program's leak is bytes, and a
+    // shift that floors to zero would certify it clean. `avra_once_set`
+    // already credited every cached answer out of this ledger the
+    // moment it made one immortal, so this line is 0 exactly when
+    // nothing outstanding would still need freeing — the soundness
+    // runner reads this line alone.
+    fprintf(stderr, "mem: live %lld bytes at exit\n", (long long)g_mortal_live);
     for (int k = 0; k < ACC_KINDS; k++) {
         fprintf(stderr, "mem:   %-13s peak %6lld MB, now %6lld MB\n", g_acc_name[k],
                 (long long)(g_acc_peak[k] >> 20), (long long)(g_acc_live[k] >> 20));
@@ -322,6 +331,18 @@ static int64_t g_live_bytes = 0;
 
 int64_t avra_mem_live(void) { return g_live_bytes; }
 
+// THE MORTAL LEDGER: every byte a box or buffer holds that a normal
+// release path would eventually free. A box `avra_once_set` makes
+// IMMORTAL never reaches that path again by design (the answer is
+// held for the process's life), so `avra_once_set` credits its bytes
+// back out of this ledger the moment it promotes it (`once_box_credit`)
+// rather than leaving them counted as still owed — a STATIC aggregate
+// (a const's, baked by the backend at compile time) never touches
+// this ledger to begin with, so it needs no credit at all. This is
+// what lets a leak check read the ledger against zero without a
+// `once` cache or a compile-time constant reading as one.
+static int64_t g_mortal_live = 0;
+
 // The report's own tables, kept only while it is on.
 __attribute__((noinline, cold))
 static void acc_note(int k, int64_t bytes) {
@@ -333,14 +354,21 @@ static void acc_note(int k, int64_t bytes) {
 
 static inline void acc_add(int k, int64_t bytes) {
     g_live_bytes += bytes;
+    g_mortal_live += bytes;
     if (__builtin_expect(accounting(), 0)) acc_note(k, bytes);
 }
 
 static int acc_kind_of(int32_t kind);
 
 // A box's bytes moved: its kind's category is read only for the report.
+// Immortal and static kinds (negative) never reach `box_free`, so they
+// are excluded from the mortal ledger at the same test that already
+// excludes them from retain/release (`kind < 0`) — a `once` answer's
+// OWN box is credited back separately, since it is minted mortal and
+// only turns immortal after this call already counted it.
 static inline void acc_box(int32_t kind, int64_t bytes) {
     g_live_bytes += bytes;
+    if (kind >= 0) g_mortal_live += bytes;
     if (__builtin_expect(accounting(), 0)) acc_note(acc_kind_of(kind), bytes);
 }
 
@@ -1199,6 +1227,47 @@ void* avra_once_get(void* key) {
     return held;
 }
 
+// ONE STILL-MORTAL BOX'S FOOTPRINT, walked the way `array_reclaim`
+// and `map_reclaim` would free it — box, buffer and every OWNED slot,
+// recursively — except nothing here is freed. Called from
+// `avra_once_set` BEFORE the kind is flipped, so `h->kind` is still
+// its true shape and `h->kind < 0` unambiguously means "never added
+// to the mortal ledger": a STATIC aggregate (a const's, baked by the
+// backend at compile time) never touched `acc_box`/`acc_add` to
+// begin with, and neither did a string literal reached as a map key,
+// so both are credited as nothing rather than walked — crediting a
+// box the ledger never counted is the over-credit this guard exists
+// to refuse. A KIND_PLAIN box (a record, an enum) has no
+// runtime-visible owned fields — the compiler releases those by
+// name, never by a mark the runtime can walk — so only its own
+// header and payload are credited here; a `once fn` answering a
+// record or enum with a managed field is undercredited, a recorded
+// trigger for the day one exists.
+static int64_t once_box_credit(void* p) {
+    Header* h = hdr(p);
+    if (h == NULL || h->kind < 0) return 0;
+    switch (h->kind) {
+        case KIND_ARRAY: {
+            AvraArray* a = (AvraArray*)p;
+            int64_t total = array_bytes(a);
+            for (int64_t i = 0; i < a->len; i++) {
+                if (a->marks[i] & MARK_OWNED) total += once_box_credit((void*)(uintptr_t)a->data[i]);
+            }
+            return total;
+        }
+        case KIND_MAP: {
+            AvraMap* m = (AvraMap*)p;
+            int64_t total = (int64_t)(sizeof(Header) + sizeof(AvraMap)) + (int64_t)(m->icap * (int64_t)sizeof(int64_t));
+            return total + once_box_credit(m->keys) + once_box_credit(m->vals);
+        }
+        case KIND_STR:
+        case KIND_BYTES:
+            return (int64_t)(sizeof(Header) + h->len + 1);
+        default:
+            return (int64_t)(sizeof(Header) + h->len);
+    }
+}
+
 void avra_once_set(void* key, void* value) {
     // the guard answered absent, so a second setter cannot happen;
     // if it did, the FIRST answer stands
@@ -1210,9 +1279,15 @@ void avra_once_set(void* key, void* value) {
     // process, so every later retain and release of it is bookkeeping
     // for a death that cannot happen — 104M of them in one framer
     // run. Marked here, where the cache takes its reference, so the
-    // kind reflects the fact rather than the intention.
+    // kind reflects the fact rather than the intention. Credited out
+    // of the mortal ledger in the same breath, while `kind` still
+    // names its true shape — a cache held for the process's life is
+    // not a leak, so it must not read as bytes still owed.
     Header* vh = hdr(value);
-    if (vh != NULL && vh->kind >= 0) vh->kind = KIND_IMMORTAL(vh->kind);
+    if (vh != NULL && vh->kind >= 0) {
+        g_mortal_live -= once_box_credit(value);
+        vh->kind = KIND_IMMORTAL(vh->kind);
+    }
     g_once[g_once_count].key = key;
     g_once[g_once_count].value = value;
     once_index(key, g_once_count);
@@ -2707,6 +2782,15 @@ const char* avra_embed(const char* path) {
     (void)path;
     avra_trap("`embed` reads a file at compile time, into a const — this program reached it at run time");
     return "";
+}
+
+/* `type_named` is answered by the compiler's own declaration table,
+   which a running program does not carry; the interpreter's arm
+   never calls this body at all. */
+void* av_type_named(const char* name) {
+    (void)name;
+    avra_trap("`type_named` resolves a declaration at compile time — this program reached it at run time");
+    return NULL;
 }
 
 static int by_text(const void* a, const void* b) {

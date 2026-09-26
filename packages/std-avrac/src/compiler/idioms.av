@@ -7,6 +7,7 @@
 //! before the language grew able to say them; a sibling shape not
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
+use core.{TypeRef}
 use features.{ArmInfo, Code, Fix, rule, said}
 use @std.meta.{name}
 
@@ -307,6 +308,36 @@ fn hand_sized(e: Code, k: Code) -> Fix {
     Fix.Say(said(e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
 }
 
+/// `hand_sized_index`'s sibling half of ONE idiom: a fact column
+/// SEEDED from an arena's own count — `filled(store.exprs.count(),
+/// null)` — rather than through `SideTable<V>`, which states the
+/// storage, the window, the growth and the out-of-window defect once.
+/// TWO ARMS, one shape: `filled(...)` and `filled<T>(...)` — a
+/// pinned type argument is a TYPE-seat hole (avra-8sb5.25.10), held
+/// open only so the SECOND arm's message can quote it back; the smell
+/// is the same either way, the first ARGUMENT ending in `.count()`.
+///
+/// NO REWRITE, `hand_sized_index`'s own reason: adopting `SideTable<V>`
+/// means replacing the surrounding TABLE's own declaration and every
+/// other site that reads or grows it, outside this one call's span.
+@keeps("filled(n, null)")
+@keeps("filled<TypeId>(n, hole)")
+export rule filled_by_arena_count {
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { filled(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, null),
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { filled<${t}>(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, t),
+}
+
+// LICENSED style.filled_by_arena_count: the voice quotes the matched text back, which names the shape it detects
+fn hand_sized_column(n: Code, seed: Code, t: TypeRef?) -> Fix {
+    let head = match t {
+        ty? -> "filled<${ty.text()}>"
+        null -> "filled"
+    }
+    Fix.Say(said(n.loc(), "`${head}(${n.text()}.count(), ${seed.text()})` is a fact column sized from an arena's count — SideTable<V> states the storage, the window, the growth and the out-of-window defect once", "this call", null))
+}
+
 /// A walk over a NodeStore's own statements BY INDEX — `for i in
 /// 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()`
 /// hands the ids themselves, the thing every such walk actually
@@ -336,6 +367,100 @@ fn stmt_index_walked(lit: Code) -> bool {
 fn stmt_index_walk_found(lit: Code) -> Fix {
     let r = lit.for_range()!
     Fix.Say(said(r.to.loc(), "an index walk over a store's statements — `for s in store.stmt_ids()` hands the ids themselves", "this loop", null))
+}
+
+/// A VOCABULARY VERB written as a free fn taking a pass STATE first —
+/// `open_region(cx, c)`, `sig(ws, d)` — where the state's own impl IS
+/// its vocabulary, so the verb belongs there as a method
+/// (`cx.open_region(c)`, `ws.sig(d)`). A BARE-HOLE ROOT, structural
+/// GUARD (`Code.fn_params`, features/code.av, the same door
+/// `modified_copy_literal`/`one_body_arms` read a struct literal's
+/// fields and a `match`'s arms through): a param LIST has no fixed
+/// arity a quote pattern can spell, so only the FIRST param's own
+/// written type is asked, structurally, never bound through the
+/// pattern itself. THE REACH is the pass's own files — a `fn`
+/// declared directly under `features/` or `compiler/`, never one
+/// nested a directory deeper (`features/quote/lower.av`'s own
+/// dispatch targets stay free, `push_loop`'s same file-shape test).
+///
+/// NO REWRITE: the fix moves the fn's BODY inside the state's `impl`
+/// block and every CALL SITE loses its first argument — a
+/// whole-declaration refactor this pattern's one bound param cannot
+/// see, let alone perform.
+@keeps("fn f(a: int, b: int) -> int { a + b }")
+@keeps("fn lower(a: Analysis) -> Lowered { a }")
+export rule free_state_verb {
+    quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit),
+}
+
+/// The states a vocabulary verb's OWN impl belongs to — `open_region`,
+/// `accepts`, `sig` and their like all read or write one of these.
+const state_types: List<string> = ["TypeCx", "LowerCx", "ResolveCx", "Survey", "Workspace", "Decls", "Builder", "Body", "Scope"]
+
+/// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
+/// directly under `features/` or `compiler/` and that param's own
+/// written type is one of `state_types` — absent for every other
+/// shape (not a `fn`, no params, a nested feature file, an unrelated
+/// first type, or a `fn` that is not top-level: a trait's own method
+/// SIGNATURE (`fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId`,
+/// features/contract.av's `NodeSemantics`) is a DISPATCH TARGET
+/// `cx` reaches BY NODE KIND, never a vocabulary verb wanting to move
+/// onto `cx`'s own impl, and an `impl`'s method is the same shape one
+/// door over — both are indented, unlike a free fn, which the retired
+/// regex's own column-0 anchor already excluded them by).
+fn free_state_param(lit: Code) -> Code? {
+    if !is_pass_file(lit.of.view.source.file) { return null }
+    if !is_top_level(lit) { return null }
+    let params? = lit.fn_params() else { return null }
+    let p0? = params.first() else { return null }
+    if !is_state_type(p0.decl_type()) { return null }
+    p0
+}
+
+fn is_state_type(t: TypeRef?) -> bool {
+    let ty? = t else { return false }
+    state_types.contains(ty.name)
+}
+
+/// Whether `lit` sits at its file's own column zero — unindented,
+/// never nested inside an `impl`/`trait` body. NOTHING between the
+/// previous newline and `lit`'s own start, not merely nothing but
+/// whitespace there — an indented `fn` is whitespace too, and
+/// `.trim()` would call four leading spaces "empty" as readily as
+/// none. `export` is the one mark this checks for by name: a
+/// `FnDecl`'s own span starts at `fn`, so an EXPORTED top-level fn
+/// carries `"export "` between the line's start and its span, never
+/// nothing — the retired regex's own `(?:export )?` said the same.
+fn is_top_level(lit: Code) -> bool {
+    let loc? = lit.loc() else { return false }
+    let text = lit.of.view.source.text
+    let start = line_start_of(text, loc.lo)
+    let prefix = text.substring(start, loc.lo)
+    prefix.is_empty() || prefix == "export "
+}
+
+/// The index one past the newline before `at`, or 0 when there is
+/// none — where `at`'s own LINE begins.
+fn line_start_of(text: string, at: int) -> int {
+    // LICENSED style.hand_rolled_scan: a backward scan to the previous newline; the subset has no rfind
+    mut i = at
+    while i > 0 && text.char_code(i - 1) != 10 { i = i - 1 }
+    i
+}
+
+/// Whether `file` names a `.av` file DIRECTLY under `features/` or
+/// `compiler/` — one path segment, never a feature's own subdirectory
+/// (`features/quote/lower.av`'s parent is `quote`, not `features`).
+fn is_pass_file(file: string) -> bool {
+    let segs = file.split("/")
+    let n = segs.length
+    n >= 2 && (segs[n - 2] == "features" || segs[n - 2] == "compiler")
+}
+
+fn free_state_verb_found(lit: Code) -> Fix {
+    let p0 = free_state_param(lit)!
+    let ty = p0.decl_type()!
+    Fix.Say(said(lit.loc(), "a vocabulary verb written as a free fn taking a pass state first (`${ty.text()} ${p0.name() ?? "?"}`) — the state's own impl IS its vocabulary, so this belongs there as a method instead", "this fn", null))
 }
 
 /// A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x",
@@ -754,18 +879,23 @@ fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
 /// when neither carries a guard and their VALUE Codes are text-equal
 /// — wider than the retired regex, which read single-line arms only.
 ///
-/// THE REWRITE TRUSTS THE PROOF, NOT THE GUARD: whether the join is
-/// SOUND is the alternatives-bind question — do the two patterns bind
-/// the same names at the same types (F2039)? — a TYPING fact this
-/// rule-side text scan does not carry, so the rewrite does not answer
-/// it either. `ir_proved` does: it lowers the AFTER text and writes
-/// nothing unless the result both TYPECHECKS and answers the SAME IR
-/// — a mismatched bind either refuses to typecheck (F2039) or lowers
-/// to a different program, and either way the join stays SHOWN, not
-/// applied, the same door `modified_copy_literal`'s `with` collapse
-/// already stands behind.
+/// THE LAW TRUSTS THE TYPE-CHECK, NEVER THE IR MATCH: whether the
+/// join is SOUND is the alternatives-bind question — do the two
+/// patterns bind the same names at the same types (F2039)? — a
+/// TYPING fact this rule-side text scan does not carry, so the
+/// rewrite does not answer it either. Two arms sharing one body lower
+/// as TWO copies of it, one per jump-table entry; the merged
+/// `or`-arm lowers as ONE — fewer instructions after every honest
+/// join, so `ir_proved`'s instruction-for-instruction comparison can
+/// never confirm this rewrite BY CONSTRUCTION, whether or not it is
+/// sound. `@law` trusts the equivalence and asks only that the
+/// splice still TYPECHECK: a mismatched bind refuses there (F2039)
+/// exactly as it would have under a full IR match, so the law costs
+/// nothing the proof was ever going to buy — the same door
+/// `modified_copy_literal`'s `with` collapse already stands behind.
 @fixes("match k { .Struct(d, _) -> d, .Enum(d, _) -> d }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
 @keeps("match k { .A -> 1, .B -> 2 }")
+@law("two match arms whose bodies are identical text answer the same value whichever pattern matched, so joining the patterns with `or` changes nothing but which arm parses the choice")
 export rule one_body_arms {
     quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit),
 }
@@ -816,4 +946,95 @@ fn arm_text(a: ArmInfo) -> string {
         null -> ""
     }
     pats + guard + " -> " + a.value.text()
+}
+
+/// A long string literal written twice in one PRODUCT file — a
+/// message repeated rather than named. Guarded to a SHARED-SENTENCE
+/// shape (20+ characters, starting lowercase, the house style every
+/// diagnostic and fixture message already wears) so a short symbolic
+/// literal repeated by coincidence (a type name, a key) never fires;
+/// `fingerprint_siblings()` answers by STRUCTURE, never by re-reading
+/// `.text()`. Tests are exempt: a repeated fixture there is not a
+/// message that can drift.
+///
+/// NO REWRITE: the fix is a fn the caller names — a judgement call
+/// this pattern's one bound literal cannot make on its own.
+@keeps("\"a message long enough to be shared\"")
+export rule duplicated_message {
+    quote { ${lit} } if is_shared_message(lit) -> duplicated_message_found(lit),
+}
+
+fn is_shared_message(lit: Code) -> bool {
+    if lit.of.view.source.file.contains("/tests/") { return false }
+    let v? = lit.str_lit_value() else { return false }
+    // A MESSAGE READS AS PROSE, A CODE READS AS A KEY: `.contains(" ")`
+    // is what tells "pop on an empty list" from "type.derive_contract"
+    // or a builder row's own name — a diagnostic kind and a grammar's
+    // build-call target are MEANT to repeat their one name everywhere
+    // they are read, which is the opposite of the smell this rule
+    // names.
+    v.length >= 20 && v.contains(" ") && starts_lowercase(v) && !lit.fingerprint_siblings().is_empty()
+}
+
+fn starts_lowercase(s: string) -> bool {
+    if s.is_empty() { return false }
+    let c = s.char_code(0)
+    c >= 97 && c <= 122
+}
+
+fn duplicated_message_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "a long string duplicated in this file — a shared message is a fn", "this literal", null))
+}
+
+/// A struct literal written twice in one PRODUCT file, field for
+/// field — a fixture built by hand rather than named. Tests are
+/// exempt: a fixture built twice there is the test being explicit.
+///
+/// NO REWRITE: the fix names a constructor fn — a judgement call
+/// this pattern's one bound literal cannot make on its own.
+@keeps("Span { lo: 0, hi: 1 }")
+@keeps("fn f() {\n    let a = Empty {}\n    let b = Empty {}\n}")
+@keeps("fn f() {\n    let a = ExprId { index: 0 }\n    let b = ExprId { index: 0 }\n}")
+export rule duplicated_literal {
+    quote { ${lit} } if is_shared_literal(lit) -> duplicated_literal_found(lit),
+}
+
+fn is_shared_literal(lit: Code) -> bool {
+    if lit.of.view.source.file.contains("/tests/") { return false }
+    // A fixture worth naming carries at least two fields — an empty
+    // literal (`BlockWords {}`) and a one-field newtype wrap
+    // (`ExprId { index: i }`) are not built, they are spelled, and
+    // every seat wants its own.
+    lit.is_struct_lit() && lit.kids().length >= 2 && !lit.fingerprint_siblings().is_empty()
+}
+
+fn duplicated_literal_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "an identical struct literal written twice in this file — name its constructor", "this literal", null))
+}
+
+/// The same method call computed twice on both sides of one `&&`/
+/// `||` — `cx.shape_at(e) && cx.shape_at(e)` — where the second call
+/// answers exactly what the first already holds. Guarded by
+/// FINGERPRINT, so `cx.shape_at(e) && cx.shape_at(f)` (a different
+/// argument) never fires.
+///
+/// NO REWRITE: `pure()` (features/code.av) answers a purity FACT only
+/// for the built-in vocabulary (List/Map/Cell/Bytes/Str) — "a
+/// user-declared method carries no purity fact yet, so it stays
+/// impure like any other call" — and `cx.shape_at` is exactly such a
+/// method. Folding `a && a` into `a` is sound only when `a` runs no
+/// side effect worth running twice; without that fact, the honest
+/// answer is to ask the reader, not the compiler.
+@keeps("let ok = cx.shape_at(e) && cx.shape_at(other)")
+export rule repeated_projection {
+    quote { ${a} && ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
+    quote { ${a} || ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
+}
+
+fn is_repeated_call(a: Code, b: Code) -> bool {
+    a.is_method_call() && a.fp() == b.fp()
+}
+
+fn repeated_projection_found(a: Code) -> Fix {
+    Fix.Say(said(a.loc(), "`${a.text()}` computed twice on one line — bind it once and read the name", "this projection", null))
 }

@@ -3,14 +3,14 @@
 // and lex errors ride the same diagnostics list.
 use @std.avrac.compiler.{avra, assemble, language_features, parse_source, project, builtin_codes, analyze_source}
 use @std.avrac.testing.{shown}
-use @std.avrac.grammar.{Diagnostic, Cause, Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Diagnostic, Cause, Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use @std.avrac.diagnostics.{registered, new_source_file}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.features.{LanguageFeature, feature}
 
 /// True when a cause's projected kind is in the built-in registry.
 fn cause_registered(c: Cause) -> bool {
-    let d = Diagnostic { cause: c, message: "m", span: null, expected: [], in_rule: "r" }
+    let d = Diagnostic { cause: c, message: "m", loc: null, expected: [], in_rule: "r" }
     registered(builtin_codes, project(d, null).kind)
 }
 
@@ -41,6 +41,24 @@ spec "language" {
   ·     ┬
 ──╯"""
             lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected && lang.check(new_source_file("<source>", "let a = 1")) == ""
+        }
+        then "a layout fact read before a `mut` seat moves it is a named compiler defect, not a silently wrong mask (R11c, avra-8sb5.34.21)" {
+            let lang = avra()
+            let src = """type Small = { index: int }
+enum Tagged {
+    A(Small)
+    B
+}
+fn reads_tag(x: Tagged) -> int {
+    match x {
+        .A(s) -> s.index,
+        .B -> 0,
+    }
+}
+fn seal(mut s: Small) {
+    s.index = 1
+}"""
+            lang.check(new_source_file("app.av", src)) == "error[language.defect]: `Small`'s flatness was read before a `mut` seat sealed it"
         }
     }
     given "the code table" {

@@ -131,7 +131,7 @@ impl Workspace {
     }
 
     fn held_okey(s: Store, path: string) -> string {
-        mut ws = self
+        let ws = self
         obj_key_cached(ws, s, module_path(self.module_of(path).split(".")), path)
     }
 
@@ -145,7 +145,8 @@ impl Workspace {
         }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)
-        lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
+        let cross: fn(DeclId, TypeId) -> Lifted = (d: DeclId, want: TypeId) -> ws.crossed_lifted(d, want)
+        lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle, cross)
     }
 
     /// An isolated compile-time run needs the body of every function it
@@ -278,7 +279,8 @@ impl Workspace {
         // order choose which body survives.
         let l = self.standalone(f, root, "settling\$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
+        let ws = self
+        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path), (nm: string) -> ws.type_named_lifted(f, nm))
     }
 
     /// One expression lowered as a program of its own, while every
@@ -292,7 +294,8 @@ impl Workspace {
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.standalone(f, e, expr_symbol(f, e), [])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path)) {
+        let ws = self
+        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path), (nm: string) -> ws.type_named_lifted(f, nm)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
             .Err(why) -> .Err(why),
         }
@@ -355,7 +358,8 @@ impl Workspace {
                 .Err(why) -> { return .Err(why) },
             }
         }
-        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets()) {
+        let ws = self
+        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets(), (nm: string) -> ws.type_named_lifted(f, nm)) {
             .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }

@@ -160,7 +160,23 @@ export enum TypeLit {
 /// the sealed answer is STICKY. `stands_for` is kept BESIDE the
 /// fields, not read out of them: sealing empties the fields and a
 /// name must outlive that.
-export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null, boxed_flat: bool = false, valued: bool = false, counted: int = 0, settled: bool = false }
+///
+/// `read_*` marks a FACT BUCKET once anything has asked it — never
+/// cleared. WRITE-ONCE-AFTER-READ: a write that would move a bucket
+/// already read is refused (`flag_stale`), never applied — the
+/// answer a caller already holds cannot go stale under it.
+export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null, boxed_flat: bool = false, valued: bool = false, counted: int = 0, settled: bool = false, read_flat: bool = false, read_valued: bool = false, read_settled: bool = false, read_named: bool = false }
+
+/// The layout buckets a body can ask about — one write-once-after-read
+/// mark each. `Flat` covers `fields`/`boxed_flat` together: sealing
+/// changes both in one step (R11c, avra-8sb5.34.21), so a read of
+/// either stands for the other.
+export enum LayoutFact { Flat, Valued, Settled, Named }
+
+/// A layout write the registry refused: what fact moved, on which
+/// type, and the write site's own words for why — a compiler DEFECT,
+/// never a silent representation change.
+export type LayoutStale = { id: TypeId, fact: LayoutFact, cause: string }
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
@@ -169,11 +185,15 @@ export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? =
 /// derivation swaps, the map and its callers do not.
 /// ONE IDENTITY: every table is a `Cell`, so a copy of the registry
 /// shares its tables and an intern through any copy reaches them all.
-export type TypeRegistry = { shapes: Cell<List<Type>>, ids: Cell<Map<string, TypeId>>, named: Cell<Map<string, TypeId>>, indexed: Cell<bool>, reps: Cell<List<RepRow>> }
+export type TypeRegistry = { shapes: Cell<List<Type>>, ids: Cell<Map<string, TypeId>>, named: Cell<Map<string, TypeId>>, indexed: Cell<bool>, reps: Cell<List<RepRow>>, stale: Cell<List<LayoutStale>>, declare_hook: Cell<fn(TypeId) -> void> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: list_cell(), ids: map_cell(), named: map_cell(), indexed: Cell.new(false), reps: list_cell() }
+    TypeRegistry { shapes: list_cell(), ids: map_cell(), named: map_cell(), indexed: Cell.new(false), reps: list_cell(), stale: list_cell(), declare_hook: Cell.new(nothing_declared) }
 }
+
+/// The declare hook's floor, before anything arms it — core cannot see a
+/// declaration, only ask whether one is owed.
+fn nothing_declared(_t: TypeId) {}
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
 /// ownership analysis wherever mutation or management is concerned.
@@ -325,13 +345,30 @@ impl TypeRegistry {
     /// whatever that shape rides. Empty for every other type; the
     /// flat ones are marked at declaration, where the fields are
     /// known.
-    fn flat_fields(id: TypeId) -> List<TypeId> { self.reps.get()[id.index].fields }
+    fn flat_fields(id: TypeId) -> List<TypeId> {
+        self.note(id, LayoutFact.Flat)
+        self.reps.get()[id.index].fields
+    }
 
-    fn is_flat(id: TypeId) -> bool { !self.reps.get()[id.index].fields.is_empty() }
+    fn is_flat(id: TypeId) -> bool { !self.flat_fields(id).is_empty() }
+
+    /// `is_flat`, UNTRACKED — a peek at what the fact answers RIGHT NOW,
+    /// for a caller comparing it against a STORED belief rather than
+    /// relying on the answer forever. A held file's interface loading
+    /// asks this to decide whether a type is worth watching for drift
+    /// (`Workspace.held_flat`); the drift check itself (`layouts_moved`,
+    /// compiler/derive.av) asks it again once typing has finished, to
+    /// see whether THIS attempt sealed what the store remembered flat.
+    /// Both reads are the mechanism a hold already has for catching a
+    /// stale layout and retrying unheld — marking either one read would
+    /// make the LATER seal (a fresh file's own `mut` seat, elsewhere
+    /// than the record's declaration) refuse itself instead of landing,
+    /// which starves that retry of the very drift it exists to see.
+    fn peek_flat(id: TypeId) -> bool { !self.reps.get()[id.index].fields.is_empty() }
 
     /// A VALUE RECORD: flat over more than one field, so it rides
     /// REGISTERS as an aggregate — and a one-word seat holds it boxed.
-    fn is_wide(id: TypeId) -> bool { self.reps.get()[id.index].fields.length > 1 }
+    fn is_wide(id: TypeId) -> bool { self.flat_fields(id).length > 1 }
 
     /// THE TYPE A VALUE TRAVELS AS: a flat record of one field is that
     /// field, all the way down, so a name over a value record travels
@@ -365,22 +402,107 @@ impl TypeRegistry {
 
     /// A VALUE ENUM: every variant carries at most one word, so a value
     /// is its tag and that word in registers, boxed only in a slot.
-    fn is_valued(id: TypeId) -> bool { self.reps.get()[id.index].valued }
+    fn is_valued(id: TypeId) -> bool {
+        self.note(id, LayoutFact.Valued)
+        self.reps.get()[id.index].valued
+    }
 
     /// Which of a value enum's variants carry a COUNTED word: bit `t`
     /// for tag `t`.
     fn counted_mask(id: TypeId) -> int {
         let m = self.machine_type(id)
         match self.shape_of(m) {
-            .Opt(inner) -> self.reps.get()[self.machine_type(inner).index].counted,
-            rest -> self.reps.get()[m.index].counted,
+            .Opt(inner) -> self.counted_of(self.machine_type(inner)),
+            rest -> self.counted_of(m),
         }
     }
 
+    fn counted_of(id: TypeId) -> int {
+        self.note(id, LayoutFact.Valued)
+        self.reps.get()[id.index].counted
+    }
+
     /// A declaration's LAYOUT IS FINAL: what it was marked — word, value,
-    /// box — no later mark moves.
+    /// box — no later mark moves. WRITE-ONCE-AFTER-READ: settling twice
+    /// is a no-op, moving the answer after it was read is refused.
     fn mark_settled(id: TypeId) {
-        self.reps.set_at(id.index, self.reps.get()[id.index] with { settled: true })
+        let r = self.reps.get()[id.index]
+        if r.settled { return }
+        if r.read_settled { return self.flag_stale(id, LayoutFact.Settled, "its declaration settled a second time") }
+        self.reps.set_at(id.index, r with { settled: true })
+    }
+
+    fn is_settled(id: TypeId) -> bool {
+        self.note(id, LayoutFact.Settled)
+        self.reps.get()[id.index].settled
+    }
+
+    /// FEATURES arms this once (`Decls`'s own `declared_first`) — core
+    /// cannot reach a declaration table, only ask one to run first. A
+    /// registry with no arming reads whatever a bare `intern` left,
+    /// same as before this door existed.
+    fn arm_declare(hook: fn(TypeId) -> void) {
+        self.declare_hook.set(hook)
+    }
+
+    /// A fact bucket asked once — never cleared, so the first ask is
+    /// the one that counts. THE DECLARATION RUNS FIRST: a struct or
+    /// enum's layout is the blank default until its own declare has,
+    /// and demand order does not guarantee that happened before this
+    /// ask — the crossing and comptime machinery reach every type
+    /// this way, `Reg`'s Fingerprint derive among them
+    /// (avra-8sb5.34.21).
+    fn note(id: TypeId, fact: LayoutFact) {
+        if self.was_read(id, fact) { return }
+        (self.declare_hook.get())(id)
+        let r = self.reps.get()[id.index]
+        match fact {
+            .Flat -> self.reps.set_at(id.index, r with { read_flat: true }),
+            .Valued -> self.reps.set_at(id.index, r with { read_valued: true }),
+            .Settled -> self.reps.set_at(id.index, r with { read_settled: true }),
+            .Named -> self.reps.set_at(id.index, r with { read_named: true }),
+        }
+    }
+
+    fn was_read(id: TypeId, fact: LayoutFact) -> bool {
+        let r = self.reps.get()[id.index]
+        match fact {
+            .Flat -> r.read_flat,
+            .Valued -> r.read_valued,
+            .Settled -> r.read_settled,
+            .Named -> r.read_named,
+        }
+    }
+
+    /// A fact bucket's name, for a stale-write's own words.
+    fn fact_word(fact: LayoutFact) -> string {
+        match fact {
+            .Flat -> "flatness",
+            .Valued -> "value-enum layout",
+            .Settled -> "settlement",
+            .Named -> "declared shape",
+        }
+    }
+
+    /// Refuse a write that would move a fact bucket already read —
+    /// the write does not happen; the caller returns right after.
+    fn flag_stale(id: TypeId, fact: LayoutFact, cause: string) {
+        self.stale.push(LayoutStale { id: id, fact: fact, cause: cause })
+    }
+
+    /// Every stale write caught since the last drain, worded — the
+    /// ONE place a `TypeId` becomes prose here, so a caller with no
+    /// diagnostic machinery of its own (a fresh mint, deep in
+    /// `intern`) still raises a readable defect. Draining, not
+    /// peeking: a build asks once and the log does not repeat itself.
+    fn drain_stale() -> List<string> {
+        let out = [self.stale_message(v) for v in self.stale.get()]
+        self.stale.set([])
+        out
+    }
+
+    fn stale_message(v: LayoutStale) -> string {
+        "`${self.name_of(v.id)}`'s ${self.fact_word(v.fact)} was read before ${v.cause}"
     }
 
     /// A RESULT is a value enum when each side is ONE WORD by a layout
@@ -405,8 +527,8 @@ impl TypeRegistry {
     fn side_word(t: TypeId) -> int? {
         match self.shape_of(t) {
             .Int or .Float or .Bool -> 0,
-            .Enum(_, _) -> if !self.reps.get()[t.index].settled || self.is_valued(t) { null } else if self.is_flat(t) { 0 } else { 1 },
-            .Struct(_, _) -> if self.reps.get()[t.index].settled && !self.is_flat(t) { 1 } else { null },
+            .Enum(_, _) -> if !self.is_settled(t) || self.is_valued(t) { null } else if self.is_flat(t) { 0 } else { 1 },
+            .Struct(_, _) -> if self.is_settled(t) && !self.is_flat(t) { 1 } else { null },
             .Res(_, _) -> if self.is_valued(t) { null } else { 1 },
             .Opt(inner) -> if self.valued_carrier(inner) || !self.opt_rides_pointer(inner) { null } else { 1 },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Dyn(_, _) or .Fn(_, _, _) or .App(_, _, _) -> 1,
@@ -415,10 +537,15 @@ impl TypeRegistry {
     }
 
     /// Mark an enum a VALUE ENUM whose `counted` variants carry a
-    /// pointer. A SEALED enum keeps its box.
+    /// pointer. A SEALED enum keeps its box. WRITE-ONCE-AFTER-READ:
+    /// the same answer twice is a no-op, a different one after a read
+    /// is refused.
     fn mark_valued(id: TypeId, counted: int) {
-        if self.reps.get()[id.index].sealed { return }
-        self.reps.set_at(id.index, self.reps.get()[id.index] with { valued: true, counted: counted })
+        let r = self.reps.get()[id.index]
+        if r.sealed { return }
+        if r.valued && r.counted == counted { return }
+        if r.read_valued { return self.flag_stale(id, LayoutFact.Valued, "its value-enum layout was computed a second time") }
+        self.reps.set_at(id.index, r with { valued: true, counted: counted })
     }
 
     /// THE SLOTS a value takes inside a box that holds it: one, or a
@@ -441,7 +568,10 @@ impl TypeRegistry {
     /// `List<int>`; every other type answers absence. A NAME IS
     /// OPAQUE AT A SEAT AND TRANSPARENT AT A READ, and this is the
     /// read's door: the seat law compares ids and never asks here.
-    fn stands_for(id: TypeId) -> TypeId? { self.reps.get()[id.index].stands_for }
+    fn stands_for(id: TypeId) -> TypeId? {
+        self.note(id, LayoutFact.Named)
+        self.reps.get()[id.index].stands_for
+    }
 
     /// `stands_for` all the way down — a name over a name over a
     /// shape is that shape. Itself when the type names nothing.
@@ -458,8 +588,13 @@ impl TypeRegistry {
 
     /// A NAME's shape, recorded once at declare. The name keeps its
     /// own identity — this says only what it travels as.
+    /// WRITE-ONCE-AFTER-READ: the same shape twice is a no-op, a
+    /// different one after a read is refused.
     fn mark_named(id: TypeId, of: TypeId) {
-        self.reps.set_at(id.index, self.reps.get()[id.index] with { stands_for: of })
+        let r = self.reps.get()[id.index]
+        if r.stands_for != null && same_type(r.stands_for!, of) { return }
+        if r.read_named { return self.flag_stale(id, LayoutFact.Named, "its name was bound to a different shape") }
+        self.reps.set_at(id.index, r with { stands_for: of })
     }
 
     /// Whether naming `id` over `of` would CLOSE A CIRCLE — a name
@@ -553,26 +688,50 @@ impl TypeRegistry {
     /// `mut` seat and a `mut fn` receiver of one still work — they
     /// alias exactly as a record's receiver does (ROADMAP: RECEIVER
     /// ALIASING), which the adversarial suite pins as a PARITY.
+    /// WRITE-ONCE-AFTER-READ (R11c, avra-8sb5.34.21): sealing a record
+    /// whose flatness was already read is refused rather than applied
+    /// — the mask a reader derived from that flatness stays the mask
+    /// it read, never silently wrong under it. `r with { … }` keeps
+    /// `valued`/`counted`/`settled` exactly as they were: a bare
+    /// `RepRow { … }` here once reset them to their declared defaults
+    /// on every seal, which is the same shape of bug one field over.
     fn unflatten(id: TypeId) {
-        if self.stands_for(id) != null { return }
+        if self.reps.get()[id.index].stands_for != null { return }
         // an enum has no path a `mut` seat writes through, so it keeps
         // the layout its declaration made
         if self.shape_of(id) is .Enum { return }
-        self.reps.set_at(id.index, RepRow { fields: [], sealed: true, boxed_flat: self.reps.get()[id.index].boxed_flat || self.is_flat(id) })
+        let r = self.reps.get()[id.index]
+        let was_flat = !r.fields.is_empty()
+        if was_flat && r.read_flat { return self.flag_stale(id, LayoutFact.Flat, "a `mut` seat sealed it") }
+        self.reps.set_at(id.index, r with { fields: [], sealed: true, boxed_flat: r.boxed_flat || was_flat })
     }
 
     /// Mark a type FLAT: the value IS its fields, with no box of its
     /// own. A record of scalars holds no reference at all; a NAME
     /// holds exactly what its shape holds, and the memory pass asks
-    /// the field. A SEALED record refuses.
+    /// the field. A SEALED record refuses. WRITE-ONCE-AFTER-READ: the
+    /// same fields twice, or a seal already boxed, is a no-op.
     fn mark_flat(id: TypeId, fields: List<TypeId>) {
-        if self.reps.get()[id.index].sealed { return self.reps.set_at(id.index, self.reps.get()[id.index] with { boxed_flat: true }) }
-        self.reps.set_at(id.index, self.reps.get()[id.index] with { fields: fields })
+        let r = self.reps.get()[id.index]
+        if r.sealed {
+            if r.boxed_flat { return }
+            if r.read_flat { return self.flag_stale(id, LayoutFact.Flat, "it was found flat after a `mut` seat had already sealed it") }
+            return self.reps.set_at(id.index, r with { boxed_flat: true })
+        }
+        if same_fields(r.fields, fields) { return }
+        if r.read_flat { return self.flag_stale(id, LayoutFact.Flat, "its fields were declared a second time (id=${id.index}, was [${joined(["${f.index}" for f in r.fields], ",")}], now [${joined(["${f.index}" for f in fields], ",")}])") }
+        self.reps.set_at(id.index, r with { fields: fields })
     }
 
     /// Whether a seal boxed this record, which its declaration alone makes
     /// flat — the one layout fact a declaration's own text does not decide.
-    fn boxed_flat(id: TypeId) -> bool { self.reps.get()[id.index].boxed_flat }
+    fn boxed_flat(id: TypeId) -> bool {
+        self.note(id, LayoutFact.Flat)
+        self.reps.get()[id.index].boxed_flat
+    }
+
+    /// `boxed_flat`'s untracked twin — `peek_flat`'s own reason.
+    fn peek_boxed_flat(id: TypeId) -> bool { self.reps.get()[id.index].boxed_flat }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
@@ -950,6 +1109,13 @@ export fn no_marks(n: int) -> List<SeatMark> {
 fn nothing_sealed() {}
 
 fn nothing_judged() {}
+
+/// Whether two field lists name the SAME types in the SAME order —
+/// `mark_flat`'s own guard against flagging a re-declaration that
+/// changes nothing.
+fn same_fields(a: List<TypeId>, b: List<TypeId>) -> bool {
+    a.length == b.length && [j for j, x in a if !same_type(x, b[j])].is_empty()
+}
 
 /// `ids`, ascending by index, first appearance kept — a union's
 /// canon key needs this order-independence and nothing else in the

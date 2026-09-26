@@ -1908,3 +1908,485 @@ before I found them one crash and one test failure at a time; a
 worklist (today: `make idioms`/`avra check` name them one at a
 time, in whatever order the build happens to fail) would have
 turned three discoveries into one.
+
+## §32 As built — L3, sound-by-construction test runs
+
+**The target** (avra-8sb5.34.30.3). Tonight's R5 use-after-free was
+caught only because one existing program test happened to read the
+freed value — luck, not a guarantee. The ask: every program test that
+`avra test` already proves `eval == native == expected` for should
+ALSO run its native binary once under `AVRA_RC_GUARD=1` (a stale read
+answers garbage or traps instead of finding a plausible value) and
+once under `AVRA_MEM_STATS=1` (0 live bytes at exit), systematically,
+with `once fn` caches and static aggregates excluded on their own
+terms rather than allow-listed.
+
+**D1. The runtime's accounting has no EXACT signal, and a `once`
+cache is not excluded from it.** `AVRA_MEM_STATS`'s existing report is
+MB-rounded — a small program test's leak is bytes, and `>> 20` floors
+it to zero — and its "peak/now" figures never come back down for a
+`once` answer, because `avra_once_set` marks it `KIND_IMMORTAL`
+(runtime/avra_box.h) and retain/release both no-op on a negative
+kind: the bytes were added once at allocation and never subtracted,
+by design, since the cache holds the answer for the process's life.
+Measured on a scratch `once fn cached_dynamic() -> string`: 75 bytes
+"still live" under the OLD report, forever, on every run.
+
+**D2. `g_mortal_live`, a second always-on counter beside the
+existing `g_live_bytes`, and a credit paid at the moment of
+promotion, not read back from the header.** `acc_box`/`acc_add`
+(runtime/avra_runtime.c) add to it exactly when `kind >= 0` — a
+STATIC box (`str_static`, kind `-1` from birth: argv, env, keywords)
+never enters it at all, matching "A SETTLED AGGREGATE IS STATIC
+DATA." `avra_once_set` walks the value's OWN shape (`once_box_credit`
+— box, buffer and every OWNED array/map slot, recursively, the same
+walk `array_reclaim`/`map_reclaim` would make to free it) and
+subtracts that whole footprint from the ledger in the SAME
+call, BEFORE flipping the kind to immortal — while the kind still
+names its true shape, which is what makes the walk unambiguous. A
+report-time walk (the first draft) cannot tell a genuinely-promoted
+box from one baked immortal by the backend at compile time (a
+constant-foldable `once fn` body IS laid out as static data, kind
+already negative the first time `avra_once_set` ever sees it) —
+crediting that box's bytes on top of a ledger it never touched drove
+`g_mortal_live` NEGATIVE. Promotion-time credit needs no such guess:
+`vh->kind >= 0` is the exact question "did this box ever enter the
+ledger," asked at the one moment the answer is certain. A KIND_PLAIN
+box (a record, an enum) has no runtime-visible owned-field marks —
+the compiler releases those by name, never by a mark the runtime
+walks — so a `once fn` answering a record or enum with a managed
+field is undercredited; no case in this tree exercises it, and it is
+a recorded trigger for the day one does. `runtime/avra_runtime.c`
+gained one new line under `AVRA_MEM_STATS`: `mem: live N bytes at
+exit`, exact, which is the one line the soundness runner reads.
+
+**D3. Two real, silent leaks, found by turning the instrument on the
+compiler's own test-running code.** `suite_entry.av` hand-builds the
+suite's `main` in raw `Ins` — outside the memory pass entirely, which
+never sees hand-built IR — and TWO of its runtime calls minted an
+owned string and never released it: `tally_line`'s `avra_int_text` +
+`avra_str_concat` answer (the "N/M tests passed" line — leaked on
+EVERY suite, spec-case count irrelevant, since it runs once per
+suite) and `one_program`'s `avra_capture_end` answer (`got`, the
+program's captured output — leaked on every PROGRAM test, sized to
+its output). Neither touched any observable output; `eval == native
+== expected` and every spec case stayed green through both, which is
+exactly the class of bug a diff-the-answer check cannot see. Fixed
+with one `Ins.Release` each, in place (suite_entry.av), mirroring
+what a lowered body would have emitted for itself.
+
+**D4. The soundness runs are gated on `AVRA_SOUNDNESS`, not
+default.** Measured on `packages/std-avrac`'s own (large) suite
+binary directly: a plain run is 21.6s wall; the SAME binary under
+`AVRA_RC_GUARD=1` is 49.6s (2.3×) and, worse, EXITS RED — one spec
+case, `features/crossing`'s "five thousand directives cross and
+every one of them declares nothing," fails only under the guard.
+That spec drives a NESTED compile of a generated 5000-directive
+program through `real(...).check()`; the likeliest cause (not fully
+traced to its root) is that guard mode never actually frees
+anything, so `avra_mem_live()` — the always-on counter a
+budget/settlement ceiling reads, per CLAUDE.md's BUDGET MEASUREMENT
+entry — reports far more "still held" than the real occupancy the
+budget was sized against, tripping a ceiling a plain run never
+approaches. This is a genuine interaction between the guard and an
+existing resource ceiling, not a UAF and not a defect in this
+slice's own mechanism (the SAME binary passes `AVRA_MEM_STATS=1`
+clean, and every other of std-avrac's 6805 cases and every program
+test passes guarded); it is reported here, with its repro, rather
+than allow-listed. Given that and the wall-time cost, the two extra
+runs are opt-in (`AVRA_SOUNDNESS=1`, read once per suite in
+`packages/cli/src/stage.av`'s `first_red`) — `avra test`'s default
+behavior and cost are UNCHANGED. Wiring the flag into `make gate`'s
+own invocation is left to whoever resolves the crossing budget
+question; small and mid-sized packages (see numbers) pay only
+milliseconds and could reasonably default it on sooner.
+
+**Negative witnesses**, both a real bug reintroduced and reverted,
+each shown failing then clean:
+- The leak (D3), reverted by deleting its three `Ins.Release` lines:
+  a fresh scratch package (`spec "trivial" { given "nothing" { then
+  "true is true" { true } } }`) shows `1/1 tests passed` and
+  `eval == native == expected` — every check that existed before
+  tonight, GREEN — while `AVRA_SOUNDNESS=1` fails it: `AVRA_MEM_STATS=1:
+  70 bytes still live at exit`, exit 1. Restored: exit 0, 0 bytes.
+- R5's own first-draft bug (§30 above), reverted by deleting
+  `root_of`'s `if self.ins[d] is .Load { return null }` line: the
+  full suite's `borrowed_params` answers `2` for `s1` exactly as
+  originally found — caught by the EXISTING `eval != native` check
+  too, since the miscompile is native-only and this campaign already
+  runs both engines, so it is not a "passes today, fails mine" case.
+  Isolated to a ten-line scratch program (`emptied(mut b, row)`
+  emptying `b.rows` while `row` still points at the same freed list),
+  the UNGUARDED native run answers `0` (a stale read landing on
+  reused memory, not a crash — the silent-wrong-value shape the
+  guard exists for) while `AVRA_RC_GUARD=1` traps outright: `avra:
+  array_get read a RELEASED box`. Restored: `s1 gone 0` both ways,
+  guard clean.
+
+**Critical checks.** `build/avra test packages/std-avrac`:
+6805/6805 spec cases, every program test, green (repeated after
+every change in this slice). `build/avra test packages/cli`: 77/77.
+`build/avra test packages/std-process`: 118/118 + 2 programs (the
+`Command`/`Env`/`outcome` surface this slice calls). `build/avra test
+packages/std-text`: 113/113 + 2 programs (`parse_int`, the one this
+slice calls to read the ledger's line). `python3 tools/idioms.py`:
+no new violations (148 pre-existing debt sites, 648 files, 20
+packages). `build/avra fmt` identical on both touched `.av` files.
+`make cited` fails on `fn_params` (a stale licence in
+`tools/cited.allow` naming `features/code.av`) — untouched by this
+slice's three files (`packages/cli/src/stage.av`,
+`packages/std-avrac/src/compiler/suite_entry.av`,
+`runtime/avra_runtime.c`) and reproduces before any of them changed.
+
+**Numbers.** Fixed point: three successive `make avra`,
+`.avra-cache` moved aside before each, byte-identical
+(`cmp build/avra.g1 build/avra.g2`, `cmp build/avra.g2
+build/avra.g3`). Cost, `packages/std-avrac`'s own suite binary run
+directly, `time`, warm: plain 21.6s / 15.0s user; `AVRA_RC_GUARD=1`
+49.6s / 24.9s user (2.3×, and red — D4); `AVRA_MEM_STATS=1` 37.8s /
+18.0s user (1.75×). `build/avra test packages/std-avrac` end to end,
+`/usr/bin/time -l`, `.avra-cache` cleared: without the flag,
+307.30s real / 1,219.0B instructions retired / 588 MB peak; with
+`AVRA_SOUNDNESS=1`, 540.62s real (+76%) / 1,223.8B instructions
+(+0.4%) / 595 MB peak. Instructions retired barely moves — the added
+cost is almost entirely WALL TIME spent spawning and draining child
+processes (`@std.process`'s default `drain_grace: secs(2)` per
+`Command`), not CPU; on a small package (`std-path`, one suite, one
+program test) the two extra runs cost under 50ms end to end,
+noise-level against the package's own compile.
+
+What I wanted from the language while doing this: a `once fn`'s
+answer becoming immortal is a runtime FACT (`avra_box.h`'s
+`KIND_IMMORTAL`) with no Avra-level name — `core/ir.av`'s vocabulary
+has no way to ask "is this the process's one instance" from inside a
+pass, so a future pass that wants to reason about `once`-cache
+lifetime (this slice's runtime C code aside) has nothing to read.
+And the deeper one: `avra_mem_live()`'s use as a budget ceiling and
+`AVRA_RC_GUARD`'s use as a correctness net are two INSTRUMENTS built
+to answer different questions, sharing one counter that only one of
+them owns — D4 is that seam showing up as a false positive, and the
+fix belongs to whichever of the two is willing to stop reading the
+other's number.
+## §32 As built — L1, a layout fact is write-once-after-read (SOUND BY CONSTRUCTION, avra-8sb5.34.30.1)
+
+**The bug class.** R11c (avra-8sb5.34.21) computed a value enum's
+counted mask from a payload record's FLATNESS, and a LATER `mut`
+seat sealed that record — the mask went stale, silently, and a list
+of those enums use-after-freed natively. CLAUDE.md already names the
+law this breaks twice over ("WHETHER A VALUE RIDES A POINTER IS ITS
+DECLARATION'S ANSWER", "A NAME … ITS MARK IS MADE AT ITS
+DECLARATION"): a fact answered by declaration order is wrong the
+moment something reads it before that order settles. The fix makes
+the read side of that law a COMPILER DEFECT instead of a hope.
+
+**D1. RepRow gains four read-tracking bits, one per fact bucket.**
+`fields`/`boxed_flat` share ONE bucket (`Flat` — sealing moves both
+in the same step), and `valued`/`counted` share another (`Valued`).
+`Settled` and `Named` (`stands_for`) are their own. `LayoutFact` is
+the registry (four variants, `note`/`was_read`/`fact_word` spell
+every arm — no `_ ->`). Every PUBLIC read (`flat_fields`, `is_flat`,
+`is_wide`, `boxed_flat`, `is_valued`, `counted_mask`, `is_settled`,
+`stands_for`) routes through `note(id, fact)`, which marks the
+bucket read ONCE — the guard every reader already pays (`if
+!was_read`) is the SAME guard that makes the mark cheap: after the
+first ask, every later one is a bit test. Reads a write method takes
+of its OWN gate (`sealed`, in `mark_flat`/`mark_valued`; `stands_for`
+as `unflatten`'s early-out) stay on the raw field — the registry's
+own bookkeeping is not a consumer relying on the answer.
+
+**D2. Every write is checked-and-refused, never checked-and-warned.**
+`mark_flat`, `mark_valued`, `mark_settled`, `mark_named`, `unflatten`
+each: read the current row, decide whether the write actually
+CHANGES anything (a same-value write is always let through, matching
+the ticket's "a write that doesn't change the answer is fine"), and
+if the bucket was already read AND the value would move, call
+`flag_stale(id, fact, cause)` and RETURN — the corrupting write never
+lands, so the fact a caller already holds cannot go stale under it.
+`flag_stale` appends a `LayoutStale { id, fact, cause }` to a new
+`stale: Cell<List<LayoutStale>>` on `TypeRegistry` — plain data, no
+diagnostic machinery, because `unflatten` fires from `intern()`,
+which is CORE and cannot see a `Diagnostic` (layering: core -> query
+-> grammar -> features -> compiler). `drain_stale()` turns the log
+into worded strings (`\`Id\`'s flatness was read before a \`mut\`
+seat sealed it`) — the ONE place a `TypeId` becomes prose in a file
+that otherwise never prints one.
+
+**D3. THE LAYERING WALL WAS THE REAL FIND.** The obvious write sites
+(`decls.av`'s `flatten`/`laid_out`, `declare.av`'s `keep_boxed`,
+`impls.av`'s receiver seal, `interface.av`'s held-record loading) are
+all FEATURES or COMPILER layer, with `self.defect`-style diagnostics
+in reach — but the READ that actually raced them, on main's own
+source, was `side_word`'s `.Opt(inner)` arm asking
+`opt_rides_pointer(inner)`, reached from `judge_result` INSIDE
+`intern()` while comptime-settling `core.Fingerprint.derive`'s own
+generated code for a declaration whose fields included `core.Reg` —
+a CORE-layer read, with NO path to a `Decls`/`self.sig(...)` call at
+all. `payload_word`'s own two-line guard (`match shape_of(t) {
+.Struct(r,_) -> {let _ = self.sig(r)}, ...}`) is exactly the right
+fix at every site THAT CAN SEE `Decls` — I generalized it into
+`Decls.declared_first(t)` and used it at three (`payload_word` itself,
+`literal_record`, `Emitter.mint_ty`) — but `judge_result`/`side_word`
+cannot call it, and neither can any future core-layer reader. THE
+FIX IS A HOOK: `TypeRegistry` gains `declare_hook: Cell<fn(TypeId) ->
+void>`, defaulted to a no-op (`nothing_declared`) so a bare registry
+(a unit test's `new_decls()`) behaves exactly as before this door
+existed; `arm_declare` lets a HIGHER layer wire itself in without
+core naming a type it cannot see. `new_decls()` arms it once,
+closing over its OWN identity (`d.types.arm_declare((t) ->
+d.declared_first(t))` — the same "NOT `mut`, hooks capture the
+identity" shape `Decls.arm_marks`/`Workspace.anew` already use).
+`note()` calls the hook on the FIRST ask of any bucket, before
+marking it read — so `Reg`'s declaration is forced the moment
+anything, anywhere, asks about its layout, whichever layer is
+asking. This closes the gap `payload_word`'s three per-site copies
+never could: a hook works from core, a per-site guard cannot.
+
+**Guard witnessed failing, then fixed.** The negative witness is a
+program, not a removed line — a 14-line source
+(`type Small = {index:int}`, an enum carrying `Small` as one variant's
+payload, and a SIBLING fn taking `mut s: Small`) reproduces R11c's
+shape directly: the enum's layout reads `Small`'s flatness at
+declare time, and the sibling's `mut` seat would seal it after.
+Before D1–D3 this compiles silently (wrong mask, same as R11c).
+With them: `error[language.defect]: \`Small\`'s flatness was read
+before a \`mut\` seat sealed it` — pinned as a golden test in
+`compiler/tests/language_test.av` (`lang.check(new_source_file(...))
+==` the exact rendered line), CLAUDE.md's "a check whose failure has
+never been witnessed is untested" paid literally: the case was run
+red (no hook armed) before it was run green.
+
+**A real bug found on the way, independent of D1–D3.** `unflatten`
+rebuilt the RepRow from a bare literal (`RepRow { fields: [], sealed:
+true, boxed_flat: … }`) instead of `r with { … }` — every OTHER field
+a prior pass had set (`valued`, `counted`, `settled`) silently reset
+to its declared default on every seal. The only types this could
+touch are `Result<T,E>` sides (the one shape `mark_valued` marks
+outside `flatten_enum`, which `unflatten` already excludes via its
+own `.Enum` guard) sealed by a LATER `mut` seat — `fn f(mut r:
+Result<int, string>)` after `Result<int,string>` was already judged
+a value enum elsewhere. Fixed by the same `r with { … }` every other
+write method already used; D1–D3's read-tracking would have caught
+this too (a write moving an already-read `Valued` bucket) had the
+race been reachable, but the write itself is wrong on its own terms
+regardless.
+
+**Proof.** `build/avra test packages/std-avrac`: 146 examples + 195
+program tests, eval == native == expected, ZERO defects — including
+one self-check that races EXACTLY this shape inside the compiler's
+own comptime settlement of `@derive(Fingerprint)` over `core.Reg`, a
+type this same test run touches thousands of times. `build/avra test
+packages/cli`, `packages/std-testing`: clean. `python3
+tools/idioms.py`: no new violations (one `style.dead_parameter` on
+the hook's floor fn, fixed by naming the unread param `_t`, per I23).
+`make cited`: pre-existing failure (`fn_params` licence, from
+`e7a0f48`, untouched by this slice — a pure-Python check independent
+of the compiler binary; verified unrelated). `build/avra fmt`
+identical on all eight touched files. Fixed point: three successive
+`make avra`, byte-identical, `.avra-cache` cleared before each.
+Instructions retired on `build/avra check packages/cli`, old vs new,
+interleaved: 208.16B -> 209.40B (+0.6%) — the cost of one bit-test
+per (type, fact) pair's first ask, paid once per compile, against a
+package check that does far more besides.
+
+What I wanted from the language while doing this: the layering wall
+(D3) is a real, load-bearing law (core cannot see a declaration), and
+I paid it with a hand-armed callback because that is the idiom this
+tree already uses for the same shape (`Decls.arm_marks`,
+`Workspace.anew`'s hooks) — but there is no NAMED CONCEPT for "a
+lower layer needs one upcall it cannot import," so the pattern gets
+re-invented at its call site every time rather than declared once
+where the doctrine already lives. A `hook<T>` primitive — a typed,
+self-documenting one-shot upcall slot with its OWN entry in the
+layering rule ("a hook is not an import") — would have turned this
+from four lines of comment justifying the shape into a phrase.
+
+**Follow-up — the hold's own drift check needed an untracked read.**
+`make cache-attacks` (a2c99e0) turned red on landing: a library's
+`Tick` record, held flat from the shared store, gets a `mut` seat in
+a SIBLING package's file that never declares it — exactly the
+scenario `Workspace.held_flat` + `layouts_moved` (compiler/derive.av)
+already exist to catch, by comparing a held belief against a fresh
+one and RETRYING UNHELD when they disagree. Both of those reads
+(`interface.av`'s `fill_record`, which populates `held_flat`, and
+`layouts_moved`'s own comparison) were going through the tracked
+`is_flat`/`boxed_flat` — so the FIRST one marked the bucket read, and
+the seal that should have landed (letting `layouts_moved` see the
+drift and retry) refused itself instead, loudly and correctly by
+D1-D3's own rule, but starving a mechanism that was never a
+"consumer relying on the answer forever" — it exists BECAUSE the
+answer is expected to move. Two new untracked twins, `peek_flat` and
+`peek_boxed_flat` (read the row, mark nothing), used at exactly those
+two sites: the drift detector polls without becoming a stakeholder in
+what it detects. `make cache-attacks`: 65 builds, 27 under a hold, 0
+failed. `build/avra test packages/std-avrac`: 156 examples + 196
+programs, clean. Fixed point: 3x byte-identical `make avra`.
+## §33 As built — L2, an independent reference-count checker over the memory pass's own output
+
+`compiler/soundness/soundness.av` is a second, DELIBERATELY SIMPLE
+proof that never asks WHY `memory.av` chose to retain or elide a
+count — it re-derives, from the FINAL instruction stream alone, what
+SHOULD hold, and turns a wrong elision into a compile-time defect
+instead of a run-time use-after-free. `memory()` calls it once, after
+its own rewrite (`compiler/memory/memory.av`'s one new line), so a
+wrong answer anywhere downstream of the memory pass has one more
+independent witness before it ever reaches C.
+
+The walk carries ONE proof per body: `refs[r]`, the same currency the
+runtime's own refcount is (`Sim`, soundness.av). An owning definition
+births at 1, `Retain` adds, `Release` takes; a read of an owning
+register already at zero is the use-after-free (`Release`'s own
+second call included — "a SECOND Release is a read of a fully-
+released register by exactly this rule"); a span's end (a scope, an
+arm, the body itself) owes every register it bore released,
+transferred, or answered; an `IfStart`/`SwitchStart` region's arms
+must leave every register born before it in the SAME state; a VIEW
+(`Extract`, a lending `CallRt`, a bare cell `Load`) handed to an Avra
+call needs its own reference exactly when the call's own seats may
+also reach its root — R5's own shape, re-checked independently of
+the pass that protects it. Registers this walk cannot model precisely
+(a loop's SECOND turn, an arm's own local credit) are left unchecked
+rather than guessed at, by design — see "Be CONSERVATIVE" below.
+
+**A false positive found and fixed while proving it clean.** The
+walk's own birth-crediting defers a register's +1 to the ONE `Retain`
+that `memory.av` mints immediately after an owning definition that
+must outlive its cell (a `Load`) or that is always retained by
+construction (a managed `Pack` — PACK IS IDENTITY). The deferral was
+right; the READ-CHECK on that SAME `Retain` was not told about it, so
+every managed struct literal and every `mut` accumulator folded
+across a loop (`mut acc = head; for p in rest { acc = acc.concat(p)
+}` — `built`'s own shape, `core.listed`'s real one) read as a
+use-after-free on its OWN birth credit arriving. Fixed by
+`birth_retain` (soundness.av): a `Retain` whose immediately preceding
+instruction is the very owning definition it credits is exempt from
+the dead-read check; every other `Retain` and every `Release` still
+answers for itself. Found by `python3 tools/idioms.py`-clean but
+`make bootstrap`-red on the compiler's OWN `@derive(Fingerprint)`
+machinery (`core.listed`), which every derive in the tree runs
+through — the doctrine's "A DIAGNOSTIC IS THE THIRD KIND" arriving
+exactly as written: a refusal added to the compiler firing on the
+compiler's own source during the very build that adds it.
+
+**A near-miss worth recording.** Mid-session, a saved intermediate
+binary was compiled FROM a source carrying the R5 witness bug (below)
+and never rebuilt after the bug was reverted in the SOURCE — the
+generation law (CLAUDE.md: "A CHANGE THE COMPILER MUST THEN READ
+REACHES THE PRODUCT ON THE SECOND BUILD") applied to a REGRESSION
+too: the STALE binary's own `root_of` stayed buggy across every later
+build and test invocation, under-protecting views throughout its OWN
+self-compilation, and the checker (correctly, given what it was fed)
+then reported hundreds of "unprotected view" defects across
+`compiler.Workspace.*`, `compiler.backend.*`, `grammar.*` and
+`features.*` — a plausible-looking checker regression that was in
+fact a stale compiler reading its own reintroduced bug. Traced by
+`cmp`ing the suspect binary against the last proven fixed point
+(`build/avra.gen3`, saved before the edit) rather than reasoning
+about the diagnostics; restoring the saved binary and rebuilding from
+the (correctly reverted) source made every one of them vanish. The
+tell, in hindsight, was exactly CLAUDE.md's own "PROFILE, DON'T
+REASON" one register over: a divergence between two runs of "the same
+checker" is found by diffing the BINARIES, not by re-reading the
+check's logic.
+
+**Negative witnesses (mandatory, each reverted and the fixed point
+re-proven after).** All three built the buggy binary with the
+LAST KNOWN-GOOD `build/avra`, checked `packages/std-avrac` with it,
+then restored the saved good binary and rebuilt to confirm
+byte-identity with the pre-witness fixed point before touching
+anything else.
+- **R5's first-draft bug** — `memory.av`'s `Lives.root_of` with its
+  `if self.ins[d] is .Load { return null }` guard removed, so a view
+  crossing a cell load compares register IDENTITY instead of
+  answering "unknown, could alias another load of the same box." L2
+  refused THREE real programs it protects today: `borrowed_params`
+  (`emptied`'s own shape, the ticket's named witness), plus
+  `nullable/tests/nested_slots` and `loops/tests/pairing` — found
+  only because this run additionally checked the whole package rather
+  than one file, which the earlier probe had not.
+- **A dropped Release** — `kept_out` (memory.av) made to spare the
+  FIRST bound register in a scope unconditionally instead of the one
+  that escapes, so every OTHER managed binding in a multi-binding
+  scope leaks. Caught immediately and broadly: dozens of "r_ is a
+  fresh box still alive... never released, transferred, or answered"
+  defects, cascading through the compiler's own `@derive`-generated
+  code (`core.holding`, `core.arm_of`, `core.as_list_expr`) on the
+  very first `check packages/std-avrac`.
+- **A double Release** — `.ScopeExit`'s handling (memory.av) made to
+  emit `scope.settled(gives)` twice, so every scope-exit releases its
+  bindings twice. Caught immediately: "instruction _ reads r_ after
+  it was released — a use-after-free the memory pass's own output
+  proves", again first surfacing inside `@derive`-generated code
+  (`core.body_of`, `features.projection_of`).
+
+**Permanent tests.** `compiler/soundness/tests/soundness_test.av`
+pins the exact words of all FIVE voices (`leaked`, `use_after_release`,
+`releases_unowned`, `region_disagreement`, `unprotected_view`) over
+HAND-BUILT `Ins` streams a correct memory pass never emits — the only
+way to reach a double Release or a dropped Release deterministically,
+without leaving a real bug in the tree to trigger them — plus three
+`ir_of`-compiled REAL programs that must stay clean: a managed struct
+`Pack`'s own birth-retain, a `mut` accumulator folded across a loop,
+and `emptied`'s own borrowed-view shape. All eight are part of
+`packages/std-avrac`'s ordinary spec run now, so a future regression
+in any of these five defect classes fails the gate on its own,
+independent of stumbling onto a real program that happens to exercise
+it.
+
+**Be CONSERVATIVE where the IR is ambiguous.** The walk answers
+"unknown, protect it" rather than "safe" whenever it cannot be sure:
+a view crossing a cell `Load` (a `mut` cell may be loaded twice, each
+load its own register for the same box — R5's own reason), a region
+arm that diverges (excluded from the merge rather than guessed), and
+a body lowered a way the walk does not claim to know the ending of
+(a const's settlement unit, which answers through no terminal at
+all) skips its own top-level leak check while every NESTED span
+inside it is still checked exactly as before.
+
+**Cost — gated, not always on.** Instructions retired on `build/avra
+check packages/cli`, checker on vs off, three rounds interleaved,
+`.avra-cache` cleared before each: checked 288.39B / 289.04B / 288.90B
+(avg 288.77B) vs unchecked 235.00B / 233.97B / 234.06B (avg 234.34B)
+— **+23.2%**. Far past the ~3% "always on" line, so `memory()` gates
+the whole pass behind `AVRA_SOUND_CHECK=1` (read via `@std.io.env`,
+the same opt-in shape as `AVRA_RC_GUARD`/`AVRA_MEM_STATS`/
+`AVRA_QTRACE`): off by default for an ordinary `avra check`/`avra
+build`, on for `make test`/`make gate` (the `test:` target now
+exports it for every suite) and for anyone probing by hand. Confirmed
+both ways on the SAME rebuilt binary: default run over a
+reintroduced R5 bug reports nothing; `AVRA_SOUND_CHECK=1` over the
+identical binary and source reports `borrowed_params` by name.
+
+**Proof.** Fixed point: three successive `make avra` byte-identical
+(`.avra-cache` cleared before each), proven twice — once before the
+`AVRA_SOUND_CHECK` gate landed, once after. Critical checks, all with
+`AVRA_SOUND_CHECK=1`, zero soundness defects: `packages/std-avrac`
+196 program tests + 6841/6841 spec cases; `packages/cli` 77/77;
+`packages/std-http` 468/468 + 4 programs; `packages/std-sqlite`
+505/505 + 2 programs. `python3 tools/idioms.py`: no new violations
+(one native `compiler.raw_rt_call` finding, in the witness file's own
+hand-built `CallRt` — no `cx` to emit through in a bare unit test —
+accepted into the baseline; one `style.dead_parameter` fixed by
+naming the checker's unread `managed` stand-in `_t`). `make cited`:
+clean. `build/avra fmt`: identical on all three touched `.av` files.
+A red-team pass over the compiled (never interpreted) output of
+small programs under `AVRA_RC_GUARD=1 AVRA_MEM_STATS=1` — dyn
+dispatch, a loop folding a `mut` accumulator, recursion, an early
+`return`, a `const` static — reports 0 MB in every category at exit,
+eval == native, confirming the checker's own presence changes
+nothing about what is emitted. `packages/std-meta`'s native LINK
+(a pre-existing, unrelated `av_type_named` duplicate-symbol failure
+surfaced only when testing a single file's full transitive closure,
+reproduced with the checker fully disabled) reported to the team
+separately — outside this ticket's scope, not caused by this change.
+
+What I wanted from the language while doing this: a hand-built `Ins`
+stream is the only way to reach a double Release or a dropped Release
+on purpose, and building one costs a full `Lowered`/`Body`/
+`TypeRegistry` scaffold for five lines of instructions that matter —
+`new_type_registry()`, empty `externs`/`statics`/`diagnostics` lists,
+a `managed` predicate nobody but this file needs. A tiny `Ins`
+FIXTURE builder — `body([...ins], reg_count)` answering a minimal,
+already-`Lowered`-wrapped unit — belongs in `@std/avrac/testing`
+itself, next to `ir_of`: every future pass that wants to test its own
+malformed-input handling (a checker, a keeper, a second verifier)
+will hand-roll the same four lines otherwise.

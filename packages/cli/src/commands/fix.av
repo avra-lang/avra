@@ -1,9 +1,12 @@
-//! `avra fix <file>` — apply every PROVED rewrite, splicing it into
+//! `avra fix <file>` — apply every ACCEPTED rewrite, splicing it into
 //! the source: a rule's own, and every OTHER diagnostic's own
 //! `Diag.suggestions` (a spell-check, a dependency line, a named
-//! type's wrap), proved the same way. Every rewrite the IR proof
-//! cannot confirm is only SHOWN (`avra check` already reported it)
-//! and left untouched — Confidence is never the gate, proof is.
+//! type's wrap), proved the same way. A rewrite is accepted when the
+//! IR proof confirms it, OR — a rule's own rewrite only — when the
+//! rule DECLARES a law (`RuleEntry.law`) the splice still
+//! type-checks under; every rewrite neither door accepts is only
+//! SHOWN (`avra check` already reported it) and left untouched —
+//! Confidence is never the gate, proof or a declared law is.
 //! `--dry` prints what would change and writes nothing; `--only
 //! <kind>` limits to one rule's `<module>.<name>` or one diagnostic's
 //! own kind.
@@ -19,7 +22,7 @@ type FixCmd = {}
 impl Runnable for FixCmd {
     fn run(args: CliResult) -> int {
         let held? = program_at(args) else { return 2 }
-        mut p = held
+        let p = held
         match fixed(p, args) {
             .Ok(code) -> code,
             .Err(report) -> {
@@ -58,9 +61,10 @@ fn fixed(p: Program, args: CliResult) -> Result<int, string> {
 }
 
 /// The findings, printed either as prose lines or as one JSON array
-/// (--json: kind, every edit's before/after text, the rule's own
-/// /// sentence when it has one, and the `docs_cmd` link) — the empty
-/// case is `[]`, never omitted.
+/// (--json: kind, every edit's before/after text, WHY it was
+/// accepted — `proved` true or `by_law` the rule's own claim, P7's
+/// visible magic — the rule's own /// sentence when it has one, and
+/// the `docs_cmd` link) — the empty case is `[]`, never omitted.
 fn report(text: string, apps: List<Application>, json: bool) {
     if json {
         println(to_text(Json.Arr([application_json(text, ap) for ap in apps])))
@@ -77,8 +81,9 @@ fn application_json(text: string, ap: Application) -> Json {
     Json.Obj([
         field("kind", Json.Str(ap.kind)),
         field("proved", Json.Bool(ap.proved)),
+        field("by_law", opt_json(ap.by_law)),
         field("edits", Json.Arr([edit_json(text, e) for e in ap.edits])),
-        field("doc", doc_field(rule_doc(ap.kind))),
+        field("doc", opt_json(rule_doc(ap.kind))),
         field("docs_cmd", Json.Str("avra docs ${ap.kind}")),
     ])
 }
@@ -90,29 +95,40 @@ fn edit_json(text: string, e: Edit) -> Json {
     ])
 }
 
-fn doc_field(doc: string?) -> Json {
-    match doc {
+fn opt_json(s: string?) -> Json {
+    match s {
         s? -> Json.Str(s)
         null -> Json.Null
     }
 }
 
-/// Two rules landing proved, overlapping edits — named, when the
+/// Two rules landing accepted, overlapping edits — named, when the
 /// pair is known, over the bare "nothing applied".
 fn fight_report(apps: List<Application>) -> string {
-    let pair? = fighting_pair(apps) else { return "avra fix: proved rewrites overlap — nothing applied" }
-    "avra fix: ${pair} fight over the same code — proved rewrites overlap, nothing applied"
+    let pair? = fighting_pair(apps) else { return "avra fix: accepted rewrites overlap — nothing applied" }
+    "avra fix: ${pair} fight over the same code — accepted rewrites overlap, nothing applied"
 }
 
-/// One line per application: proved ones the write acts on, shown
-/// ones named as what `avra check` already reported.
+/// One line per application: accepted ones the write acts on —
+/// proved by IR, or trusted by the rule's own law — shown ones named
+/// as what `avra check` already reported.
 fn application_lines(apps: List<Application>) -> List<string> {
     [application_line(ap) for ap in apps]
 }
 
 fn application_line(ap: Application) -> string {
-    let tier = if ap.proved { "proved" } else { "shown, not applied" }
-    "${ap.kind} (${tier}): ${joined([edit_summary(e) for e in ap.edits], ", ")}"
+    "${ap.kind} (${tier_word(ap)}): ${joined([edit_summary(e) for e in ap.edits], ", ")}"
+}
+
+/// The three tiers a reader sees: the IR proof held, a rule's own
+/// law was trusted instead (its wording named, never just "law"),
+/// or neither — `check` already showed it, `fix` leaves it alone.
+fn tier_word(ap: Application) -> string {
+    if ap.proved { return "proved" }
+    match ap.by_law {
+        law? -> "by law: ${law}"
+        null -> "shown, not applied"
+    }
 }
 
 /// A deleting edit answers "" — named, never a bare empty slot in

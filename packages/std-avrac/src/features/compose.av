@@ -4,8 +4,8 @@
 //! tables. Nothing is parsed here: a feature's `grammar { … }` was
 //! read when the compiler ran.
 use core.{NodeStore, Span, flatten}
-use grammar.{Captured, Grammar, Rule}
-
+use @std.grammar.{Captured, Grammar, Rule}
+use grammar.{Token}
 /// The composed grammar: every feature's rules, in feature order.
 export type Composed = { built: Grammar }
 
@@ -33,7 +33,7 @@ export fn builder_index(features: List<LanguageFeature>) -> Map<string, BuilderR
 
 /// The engine-facing dispatch: the builder registered under `name`
 /// builds, through a Builder holding this call's world.
-export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?, text: string, words: BlockWords) -> Result<Captured<LangNode>, string> {
+export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name: string, args: List<Captured<Token, LangNode>>, span: Span?, text: string, words: BlockWords) -> Result<Captured<Token, LangNode>, string> {
     let hit: BuilderRow? = builders.get(name)
     if hit == null { return .Err("no feature owns builder `${name}`") }
     // the builder is a `mut` seat — the world it writes through is
@@ -44,6 +44,6 @@ export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name:
 
 /// The same dispatch from the features themselves — what a test of
 /// the registration asks.
-export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
+export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string, args: List<Captured<Token, LangNode>>, span: Span?) -> Result<Captured<Token, LangNode>, string> {
     build_named(builder_index(features), store, name, args, span, "", BlockWords {})
 }

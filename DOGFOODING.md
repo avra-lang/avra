@@ -37,8 +37,14 @@ commit). When a review round or a milestone discovers a NEW idiom,
 it lands here AT DISCOVERY, with its smell, its licensed
 exceptions, and — where greppable — a ratchet rule.
 
-THE BAR (tools/idioms.py) rests on five laws, and the first three
-exist because the old ratchet had a hole under each:
+THE BAR rests on five laws, and the first three exist because the
+old ratchet had a hole under each. Every idiom the language can
+state is a `rule` declaration now, found by `avra check` itself
+(compiler/idioms.av, or a feature's own idioms.av) — `tools/idioms.py`,
+the regex tool this section originally described, is gone, ported
+out to the last shape (avra-8sb5.25.16); `tools/idioms.baseline` and
+`avra check --baseline` (wired into `make idioms`/`make idioms-accept`)
+carry the five laws below now.
 
   1. THE BASELINE LISTS SITES, NEVER COUNTS. The old tool compared
      totals, so fixing one smell while adding another passed
@@ -80,8 +86,10 @@ of 99 laws found 17 stale decorations, 5 of them names a grep
 finds and 12 counts, line numbers and attributions no tool can
 see. Licences live in `tools/cited.allow`, each with its reason.
 
-Ratcheted: `python3 tools/idioms.py --rules` answers, from the tool's own
-`RULES` keys — never a hand copy here.
+Ratcheted: `avra rules --json` answers every native rule the compiler
+carries, by its `<module>.<rule>` id. The list below is a HAND COPY
+until a printer generates this section from that answer directly
+(RECORDED TRIGGER: avra-8sb5.25.16's own follow-up) —
 Unratcheted, read by a human: style.dedupe_union_fold (a matcher cannot see whether a
 predicate has effects), style.doc_run_stolen (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -135,6 +143,15 @@ gate — there is no amnesty left to hide in.
       writing method or hand a `mut` seat on, and the writes land in
       element order (probed 2026-09-22 on lane/fn-defaults, both
       engines; eight loops that cited it are comprehensions now).
+- loops.branched_push_loop  `push_loop`'s BRANCHED twin — a per-element `if`/`else` pushing
+      to the same accumulator either way is a conditional map. NO
+      REWRITE, deliberately (found while cleaning @std/grammar's
+      `bind_label`/`bind_label_all`, 2026-09-26): splicing the branch
+      straight into a comprehension reads WORSE than the loop the
+      moment either arm is more than a bare name — the sound fix
+      names that logic first (an `impl` method on the pushed value's
+      own type, `Binding.rebound` there), a judgement call no pattern
+      can make for you. Say-only, same shape as `duplicated_literal`.
 - style.hand_rolled_scan  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
       `int?`), as `core/modules.av` reads a key's cut.
@@ -309,6 +326,16 @@ gate — there is no amnesty left to hide in.
       expect a change that never comes; two survived (a type
       registry threaded through a pass, and its test twin).
  GREW 2026-09-04 with the inout seats: a `mut` handed to a call may fill a `mut` seat, and one receiving a method may be a writing method's place — the compiler refuses a `let` at both — so the ratchet counts an argument or a receiver as mutated; the compiler's own laws now judge `mut` more exactly than the grep.
+ RETIRED (avra-8sb5.25.9): PORTED NATIVELY as `let_stmt.unmutated_mut`, a `rule`
+      over THE REFERENCES RELATION (compiler/references.av): a write is an
+      assignment's own place root or a call through a KNOWN-WRITING method (a
+      declared `mut fn`, or a built-in vocabulary row whose effect is
+      Write/Shared), read off the receivers pass's settled answer — strictly
+      tighter than the grep's "any call or bare-argument appearance counts."
+      187 sites on packages/std-avrac where the regex's baseline was empty
+      (0), spot-checked genuine. Carries a `Fix.Rewrite` and a `@law`. Not yet
+      seen: a `mut` handed to a declared `mut` SEAT argument
+      (dead_parameter's own gap, follow-up).
 - style.registry_catchall a match where TWO OR MORE variants answer is a REGISTRY, and
       a registry ending in `_ ->` silently forgets the NEXT variant.
       One answering arm is a PROJECTION and its catch-all is honest:
@@ -382,6 +409,17 @@ gate — there is no amnesty left to hide in.
       and the rule accused a parameter that was never declared. Ten
       hits across std-http and std-sqlite were that, against nineteen
       true ones — the list ends at its MATCHING paren now.
+ RETIRED (avra-8sb5.25.9): PORTED NATIVELY as `fns.dead_parameter`, over
+      `Code.dead_params()` (features/code.av) — a param's own reads/writes,
+      walked over its ENCLOSING declaration alone (a local never crosses a
+      file), resolved through any CAPTURE chain to its root binding, and
+      offset by the method's receiver seat. A hostile self-check against
+      packages/std-avrac's OWN source caught two bugs the first draft had
+      (the capture chain, the seat offset) before landing: 2504 false
+      positives fell to 31 genuine ones, matching sites already carrying
+      `// LICENSED style.dead_parameter`. Contract-bound members and
+      bodiless signatures stay exempt; NO REWRITE (a whole-program edit,
+      not a single node's).
 - I herein note why style.unused_import is MODULE-scoped: bs2 merges a module's
       files into one bundle, so an import in `program.av` serves
       `mod.av`. Per-FILE unused-import analysis is wrong and will
@@ -392,6 +430,19 @@ gate — there is no amnesty left to hide in.
       not export (F3012), but an unused one is silent, so imports
       rot in that one direction — 54 had accumulated, several
       created by the same day's refactors. The matcher reads through the `mut` mark on a seat (2026-09-04): `mut cx: TypeCx` is a parameter named `cx`.
+ RETIRED (avra-8sb5.25.9): PORTED NATIVELY as `modules.unused_import`, over
+      `Code.unused_imports()` (features/code.av) — MODULE-scoped as before,
+      through THE REFERENCES RELATION's `Decls.used(d)` across every file the
+      module admits, plus an `impl … for` block's own TRAIT and TARGET
+      (named in the signature alone, no expression to see —
+      compiler/references.av's `impl_refs`; 112 sites fell to 2 once it
+      landed). A `DeclFacts.instance` import (a `rule`/`component`
+      registration, used by being REACHABLE for a `collect`, never by a
+      read) is exempt. 2 sites remain on packages/std-avrac, both
+      TYPE-ANNOTATION-ONLY uses (a name spelled only in a param/field's
+      WRITTEN TYPE) — the one gap this port does not close, named at the
+      rule's own site. NO REWRITE (a comma-list item delete needs a quote
+      hole this language does not have yet, avra-8sb5.25.16).
 
 - style.wrong_payload_count_pattern RETIRED (2026-09-04): a variant pattern writing the WRONG
       payload count. The bootstrap accepted `.A(_, _)` against a
@@ -698,7 +749,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       the four verbs that ARE the spelling; an Emitter's own `give`
       in a synthesized body (suite_entry.av) has no context and is not
       the smell.
-- style.free_state_verb (ratcheted) A VOCABULARY VERB AS A FREE FN TAKING A PASS
+- compiler.free_state_verb (ratcheted) A VOCABULARY VERB AS A FREE FN TAKING A PASS
       STATE FIRST — `open_region(cx, c)`, `accepts(cx, e, want)`,
       `sig(ws, d)`. A state struct's impl IS its vocabulary, so the
       verb is a method (`cx.open_region(c)`, `ws.sig(d)`) and the
@@ -726,6 +777,42 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       `self.rides(it)`. And a `..` before a name is not a field's
       dot: a rewrite that refused `.name` refused `0..name` too,
       and one site read `decls` as undefined.
+      PORTED NATIVELY (avra-8sb5.25.10): `free_state_verb`
+      (compiler/idioms.av) — a bare-hole root, structural GUARD over
+      a new `Code.fn_params()`/`Code.decl_type()` (features/code.av):
+      a param list has no fixed arity a `quote` pattern can spell,
+      so only the FIRST param's own WRITTEN TYPE is asked, off the
+      declaration's own field — the same door `own_type_at`
+      (core/shape.av) opens for a `let`'s own annotation and a
+      call's own pinned type argument. THE REACH is checked
+      structurally now, not by column: a `fn` must sit at its
+      file's own column zero (`is_top_level`, scanning back to the
+      previous newline for anything but `""`/`"export "`) AND its
+      file must be a direct child of `features/`/`compiler/`
+      (`is_pass_file`) — together excluding a trait's own method
+      SIGNATURE (`fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId`,
+      features/contract.av's `NodeSemantics` — a DISPATCH TARGET,
+      not a vocabulary verb) and an `impl`'s own method, both of
+      which the retired regex's `^(?:export )?fn` anchor excluded
+      by their indentation alone — the first draft of `is_top_level`
+      used `.trim().is_empty()` and called four leading spaces
+      "empty" as readily as none, which is a NULL check inverted:
+      an empty PREFIX means top-level, and trimming a non-empty one
+      down to nothing is what a `.trim()` habit does by reflex.
+      Ratcheted by the native-findings phase. 36 sites found
+      tree-wide, every one already `// LICENSED style.free_state_verb`'d
+      by a prior human review (baselined directly — a native finding
+      reads no site license); the OTHER 11 of the 47 such comments
+      in the tree name a site this rule (and the retired regex
+      alike) would never have matched: five sit a directory deeper
+      than `features/`/`compiler/` (`features/str_lit/builders.av`,
+      `compiler/backend/llvm.av` ×2, `compiler/store/store.av` ×2),
+      and six are simply STALE — the comment's own reasoning no
+      longer matches the fn beneath it (a first param typed
+      `NodeStore`, not one of the nine states; the state param
+      sitting SECOND, not first; a `const` where the comment expects
+      a `fn`) — a citation surviving a signature change, the
+      retracted-fact-by-citation law one level down.
 - compiler.interned_opt (ratcheted) A STRUCTURAL TYPE INTERNED BY HAND —
       `cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))`,
       the type rebuilt inside out, one `intern` per level. The
@@ -918,7 +1005,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       `named_adversarial_test.av` reaches every vocabulary a name
       can stand over.
 
-- style.filled_by_arena_count (ratcheted) A FACT COLUMN SIZED BY HAND — `filled(store.
+- compiler.filled_by_arena_count (ratcheted) A FACT COLUMN SIZED BY HAND — `filled(store.
       exprs.count(), null)` beside its siblings, a `- self.lo` at
       every read, and a `concat(filled(n - xs.length, null))` where
       the arena grew. Four things live in that shape and NONE of
@@ -938,12 +1025,26 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       free fn's parameters and nowhere else; the typed door stays
       on the owner (`type_at(e: ExprId)`), which is where every
       reader already goes.
+      PORTED NATIVELY (avra-8sb5.25.10): `filled_by_arena_count`
+      (compiler/idioms.av) — TWO `quote` arms, one shape: `filled(${n}.count(),
+      ${seed})` and `filled<${T}>(${n}.count(), ${seed})`. The SECOND
+      arm is what this idiom waited on a TYPE-position hole for: a
+      call's own pinned type argument is a scalar field the shallow
+      fold folds whole (`Call.pins: List<TypeRef>`), so a pattern with
+      no pins at all could never agree with one that has one —
+      `own_type_at` (core/shape.av) reads `pins.first()` the way it
+      reads a `let`'s own annotation, and `${T}` holds it open
+      (`Shape.TypedNode`/`Open.Type`) so the SECOND arm's message can
+      quote the pinned type back (`filled<TypeId>(...)`, the
+      specimen's own text). Ratcheted by the native-findings phase.
+      0 sites found tree-wide at landing — the regex's own historical
+      sweep already cleaned every one, `raw_rt_call`'s same shape.
 
 - compiler.hand_sized_index (ratcheted) THE `.index - ` HALF OF THE SHAPE ABOVE, native
       now (`hand_sized_index`, compiler/idioms.av): an id read through
       a hand offset rather than through `SideTable<V>`'s own `get`.
-      The arena-count half (`filled(...count())`) has no structural
-      shape a `rule` can hold yet and stays `style.filled_by_arena_count`'s regex.
+      The arena-count half (`filled(...count())`) is
+      `compiler.filled_by_arena_count` now, also native.
 
 - style.positional_boundary_unspelled (unratcheted) A POSITIONAL BOUNDARY SPELLS ITS ORDER ONCE — a
       value crossing between two compilations of the same
@@ -1188,7 +1289,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       one a human must remember not to increment. Ratcheted
       (`nullable_flag_local`).
 
-- style.impl_method_equals_default (unratcheted) AN IMPL METHOD WHOSE BODY IS EQUIVALENT TO ITS
+- impls.default_override (ratcheted) AN IMPL METHOD WHOSE BODY IS EQUIVALENT TO ITS
       TRAIT'S DEFAULT BODY — INCLUDING THROUGH A NO-OP LIKE `nothing()`
       — IS A COPY OF THE DEFAULT; DELETE IT. `nothing()` (or whatever
       no-op form applies) is TRANSPARENT to the comparison: a body that
@@ -1203,6 +1304,35 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       body equality against the trait's default — a native rule over
       the declaration's Code (the formatter's rule engine), not a text
       matcher.
+      LANDED (avra-8sb5.25.47), NAMED BY ITS RULE: `impls/idioms.av`'s
+      `default_override`, reached by `impls/mod.av` — the guard reads
+      a CROSS-DECLARATION fact (`Decls.trait_named`/`default_member`,
+      the impl's own trait member of the same name, the RUNTIME
+      dispatch's own fallback table), never a text match, then
+      compares each side's kept statements by `NodeStore`'s own
+      span-blind `stmt_fingerprint`, `nothing()`-only ones dropped.
+      THE CITED INSTANCE HAD ALREADY GONE BY THEN, undiscovered by
+      name: `ConstSemantics.lower_stmt` carries no override at all in
+      the tree this rule was written against — fixed separately,
+      untied to this entry, sometime after it was written. The sweep
+      this rule ran (`avra check` over every package under
+      `packages/`) found the family's one SURVIVING member instead:
+      `CollectStmtSemantics.lower_stmt`, the identical `nothing();
+      null` shape, in `features/collects/semantics.av`. Zero
+      elsewhere — the entry's OWN "26 identical sites" sweep had
+      already caught the rest by hand; this rule exists for the next
+      straggler, not a backlog. THE FIX HAS NO `@fixes` EXAMPLE: the
+      rewrite answers no code at all (a deletion), and
+      `same_fingerprint` reads a rewrite's rendered text as a program
+      to pull a root from — an empty one parses to no statements and
+      has none. `avra fix` applies it through `@law` alone
+      (`an impl method identical to its trait's default answers the
+      same as the default`), and TODAY'S REWRITE MACHINERY EDITS ONE
+      SPAN, NOT A WHOLE DECLARATION'S SUPPORTING TEXT: applying it by
+      hand at the one live site left the method's now-orphaned `///`
+      doc comment and its now-dead imports (`Reg`, `LowerCx`,
+      `nothing`) behind, cleaned up by hand alongside it. Ratcheted
+      (`default_override`).
 
 ## Lowering: MINT IN EMISSION ORDER
 

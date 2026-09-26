@@ -14,6 +14,18 @@
 //! at, since it was built far from any AST walk (`edits_proved`).
 //! Both end at `decl_ir_proved`, the one question either door asks:
 //! does this declaration answer the same program before and after.
+//!
+//! A THIRD DOOR TRUSTS INSTEAD OF COMPARING: `law_proved` is for a
+//! rewrite the IR proof can never confirm by the GRANULARITY of its
+//! own comparison — two arms merged into one lower to fewer
+//! instructions than two, a push loop and the comprehension that
+//! replaces it call different runtime primitives — even though both
+//! forms answer the same program. A rule that DECLARES this
+//! (`RuleEntry.law`, its own `@law("...")`) is trusted on that claim
+//! rather than asked to also match IR; the type-check safety net
+//! every rewrite already stands behind (`after_p.clean()`) still
+//! runs, so a law never excuses an UNSOUND splice — only a
+//! comparison this proof's own granularity was never going to make.
 use core.{At, alpha_renamed, same_fps, same_ins_list, Span, DeclId}
 use features.{Analysed, enclosing_decl, FileView}
 use compiler.lower.{Body, Lowered}
@@ -36,13 +48,38 @@ impl Program {
             .Ok(l) -> l,
             .Err(_) -> { return false },
         }
-        mut after_p = self.after_program(path, after_text)
+        let after_p = self.after_program(path, after_text)
         if !after_p.clean() { return false }
         let after_lo = match after_p.checked_from(null, true) {
             .Ok(l) -> l,
             .Err(_) -> { return false },
         }
         self.decl_ir_proved(before_lo, after_lo, d)
+    }
+
+    /// THE LAW DOOR: `law`'s own claim (`RuleEntry.law`), handed back
+    /// unchanged once `after_text` still TYPE-CHECKS — `null` for a
+    /// rule that declares none, or a law-carrying rewrite whose
+    /// splice fails to even compile (F2039's alternatives-bind
+    /// mismatch reads exactly this way for `one_body_arms`: a bad
+    /// join REFUSES here, it does not fall through to being trusted).
+    /// Never asked to also match IR — that comparison is `ir_proved`'s
+    /// alone, and this door exists for the rewrites it can never
+    /// confirm by construction. THE SAME GATE `ir_proved` TRUSTS:
+    /// `clean()` alone answers a program NOTHING has asked a
+    /// question of yet — `checked_from` is what actually forces the
+    /// parse and the type-check, so a law that only asked `clean()`
+    /// waved a genuinely broken splice through (found live: a
+    /// `push_loop` rewrite that glued two statements onto one line
+    /// with no BREAK between them, `clean()` true, `avra check`
+    /// refusing the identical text a breath later).
+    fn law_proved(path: string, after_text: string, law: string?) -> string? {
+        let claim? = law else { return null }
+        let after_p = self.after_program(path, after_text)
+        match after_p.checked_from(null, true) {
+            .Ok(_) -> claim,
+            .Err(_) -> null,
+        }
     }
 
     /// `ir_proved`'s question, generalized off a rule's own `At` to
@@ -65,7 +102,7 @@ impl Program {
             .Ok(l) -> l,
             .Err(_) -> { return false },
         }
-        mut after_p = self.after_program(path, after_text)
+        let after_p = self.after_program(path, after_text)
         if !after_p.clean() { return false }
         let after_lo = match after_p.checked_from(null, true) {
             .Ok(l) -> l,
@@ -105,7 +142,7 @@ impl Program {
     /// asked before `avra fix` decides whether to write at all.
     fn after_program(path: string, text: string) -> Program {
         let host2 = self.ws.host with { read: (p: string) -> if normalized(p) == normalized(path) { text } else { self.ws.host.read(p) } }
-        mut ws2 = timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock)
+        let ws2 = timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock)
         ws2.program(null)
     }
 }

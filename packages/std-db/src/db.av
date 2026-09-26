@@ -1,16 +1,14 @@
 //! `@std/db` — a record type IS the schema. `@model` reads a
 //! declaration's fields (their names, their shapes, their marks) and
 //! answers the table DDL and the typed CRUD that agree with it —
-//! never a second, hand-kept schema description. `@model_shape`
-//! answers the same declaration's contract: a generator and a
-//! validator are different effects (`@std/meta`'s answer type picks
-//! exactly one per fn, never both), so the two are two written
-//! words, stacked, not one fn quietly doing both.
+//! never a second, hand-kept schema description. It answers both the
+//! generated code AND the declaration's own contract in one `Declared`
+//! value: `made` is the `impl`, `problems` is every way the shape
+//! breaks the model law, spoken at the declaration itself.
 //!
-//!     use @std.db.{model_shape, model}
+//!     use @std.db.{model}
 //!     use @std.sqlite.{Db}
 //!
-//!     @model_shape
 //!     @model
 //!     type User = {
 //!         id: int = 0
@@ -25,7 +23,7 @@
 //! Stands ALONE with `@std/meta`, per CLAUDE.md's derive-isolation law
 //! — the file that types this trait must not also carry code the
 //! annotated file's own names could shadow.
-use @std.meta.{Type, Field, Kind, Directive, Diagnostic, Code, Decls, literal, refuse_as_at}
+use @std.meta.{Type, Field, Kind, Directive, Diagnostic, Declared, Code, Decls, literal, refuse_as_at}
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
@@ -42,20 +40,18 @@ export trait Model {
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
 /// declaration reads as what it is rather than a trait a reader has
-/// to look up. GENERATES ONLY — a `List<Directive>` fn carries no
-/// `Diagnostic` of its own — so this runs UNCONDITIONALLY, even over
-/// a shape `@model_shape` refuses: the `impl` it builds may be one
-/// nothing should call, but it never traps the compiler, and
-/// `@model_shape` beside it is what actually stops the build.
-export fn model(t: Type) -> List<Directive> {
-    Model.derive(t)
+/// to look up. `made` is the generated `impl`, built even over a
+/// shape `problems` refuses (the `impl` it builds may be one nothing
+/// should call, but it never traps the compiler on a shape it was
+/// never built for) — `problems` is what actually stops the build,
+/// spoken as real diagnostics at the declaration itself.
+export fn model(t: Type) -> Declared {
+    Declared { made: Model.derive(t), problems: shape_problems(t) }
 }
 
-/// `@model_shape` — `@model`'s contract, checked for real: every
-/// refusal here is a package-namespaced `Diagnostic` (`@std/db:
-/// no_id_field`, ...), at the declaration itself, in the law's own
-/// words. Stack it beside `@model` on every model, always.
-export fn model_shape(t: Type) -> List<Diagnostic> {
+/// `@model`'s contract: every refusal here is a package-namespaced
+/// `Diagnostic` (`@std/db: no_id_field`, ...), in the law's own words.
+fn shape_problems(t: Type) -> List<Diagnostic> {
     if t.variants.length > 0 { return [enum_not_supported(t)] }
     if !has_id_field(t) { return [no_id_field(t)] }
     if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
@@ -64,8 +60,7 @@ export fn model_shape(t: Type) -> List<Diagnostic> {
 
 // ── The shape a model must have ──────────────────────────────────
 
-/// The FIRST field, required, or `@model_shape` refuses with
-/// `no_id_field`.
+/// The FIRST field, required, or `@model` refuses with `no_id_field`.
 fn has_id_field(t: Type) -> bool {
     !t.fields.is_empty() && t.fields[0].name == "id" && t.fields[0].kind is .Int
 }
@@ -77,12 +72,12 @@ fn has_id_field(t: Type) -> bool {
 /// wants a construct the language lacks," names this site too.
 const MAX_FIELDS: int = 6
 
-/// The same question `model_shape` answers as diagnostics, asked here
-/// as a bool: `generated` builds NOTHING over a shape this fails,
-/// rather than an `impl` whose every method mistypes against a shape
-/// it was never built for. `@model_shape` is what SPEAKS the refusal;
-/// this is what stops a second, silent, unrelated pile of errors from
-/// speaking over it.
+/// The same question `shape_problems` answers as diagnostics, asked
+/// here as a bool: `generated` builds NOTHING over a shape this
+/// fails, rather than an `impl` whose every method mistypes against a
+/// shape it was never built for. `shape_problems` is what SPEAKS the
+/// refusal; this is what stops a second, silent, unrelated pile of
+/// errors from speaking over it.
 fn shape_ok(t: Type) -> bool {
     t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
 }
@@ -138,7 +133,7 @@ fn generated(t: Type) -> Decls {
     }
 }
 
-// ── `@model_shape`'s refusals — each a `Diagnostic` at the type's own
+// ── `@model`'s refusals — each a `Diagnostic` at the type's own
 // declaration, stating the law broken in its own words, never a
 // generic "`@model` failed:" prefix flattening three different
 // mistakes into one sentence. A KIND IS A BARE WORD, never dotted —

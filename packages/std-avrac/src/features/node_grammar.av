@@ -20,7 +20,7 @@
 //! the next declared type the way a string table would.
 use core.{flatten, joined, PayloadRow, row_for}
 use @std.meta.{Field, Kind}
-use grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
+use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
 
 /// A grammar with every node build bound, and what binding refused.
 export type NodeBinding = { g: Grammar, defects: List<Diagnostic> }
@@ -50,7 +50,7 @@ fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
     match p {
         .Group(inner) -> Prim.Group(inner with { branches: [bound_seq(rname, b, outer, rows) for b in inner.branches] }),
-        .Ref(_) or .Lit(_) or .Named(_) -> p,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
     }
 }
 
@@ -198,8 +198,9 @@ fn carrier_of(p: Prim) -> Carrier? {
         .Ref(_) -> Carrier.Built,
         .Named(_) -> Carrier.Text,
         // A literal captures nothing a payload wants, and a group may
-        // answer either — neither proves a mismatch.
-        .Lit(_) or .Group(_) -> null,
+        // answer either — neither proves a mismatch. A lexicon's own
+        // atom never reaches a node build either.
+        .Lit(_) or .Group(_) or .NotChar(_) -> null,
     }
 }
 

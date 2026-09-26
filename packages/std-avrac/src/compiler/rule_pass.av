@@ -5,7 +5,7 @@
 //! (`rule_findings`) and `avra fix`'s proof both read it, so a
 //! rewrite `check` shows is the exact one `fix` proves or refuses,
 //! never a second derivation that could disagree.
-use core.{At, StmtId, NodeStore, flatten}
+use core.{At, StmtId, DeclId, NodeStore, flatten}
 use features.{Code, Fix, Analysed}
 use diagnostics.{Diag, warning}
 use @std.errors.{Suggestion, Edit, Confidence, Loc}
@@ -81,6 +81,7 @@ fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
     match c.fix {
         .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
         .Rewrite(_) -> rewrite_diags(a, c.at, c.owner, c.fix),
+        .Delete(what) -> delete_diags(a, c.at, c.owner, what),
     }
 }
 
@@ -100,4 +101,21 @@ fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
     let edit = Edit { loc: loc, replacement: text }
     let sg = Suggestion { confidence: Confidence.High, description: "rewrite to `${text}`", edits: [edit] }
     warning(rule_id(r), loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
+}
+
+fn delete_diags(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> List<Diag> {
+    let d? = delete_diag(a, at, r, what) else { return [] }
+    [d]
+}
+
+/// A DELETE'S DIAG CARRIES THE SAME EDITS `avra fix` would splice —
+/// `delete_edits` (`rule_delete.av`) is the ONE builder, so a finding
+/// `check` shows is the exact removal `fix` proves or refuses, never
+/// a second derivation. `null` when nothing can be placed (no span at
+/// the matched node) or nothing survives the References cross-check.
+fn delete_diag(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> Diag? {
+    let loc? = code_at(a, at).loc() else { return null }
+    let edits? = delete_edits(a, a.view.source.text, what) else { return null }
+    let sg = Suggestion { confidence: Confidence.High, description: "delete this", edits: edits }
+    warning(rule_id(r), loc, "${rule_id(r)} — this is provably dead", "this code", null) with { suggestions: [sg] }
 }

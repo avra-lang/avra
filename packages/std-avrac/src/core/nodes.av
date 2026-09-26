@@ -145,10 +145,15 @@ export enum DeclKind {
 /// word that names no imported component is `UnknownKind`; one that
 /// names a component (`model in closure`, `rule in closure`) is
 /// `Component` — the owner's ruling: `collect` is a keyword, so the
-/// kind is bare, never `instance of`.
+/// kind is bare, never `instance of`. `@name in scope` — a kind
+/// slot spelled with its `@` — is `Annotated`: every declaration
+/// wearing that annotation, of any DeclKind, gathered by its
+/// written name alone (a declaration's annotations are a fact of
+/// the declaration, not a word a component index minted).
 export enum CollectKind {
     Component(word: string)
     UnknownKind(word: string)
+    Annotated(name: string)
 }
 
 /// Where a `collect` gathers from.
@@ -566,6 +571,13 @@ export fn plain(t: TypeRef) -> TypeRef {
     t with { optional: false }
 }
 
+impl TypeRef {
+    /// This type, spelled back — `spelled`, as a method a quote
+    /// pattern's bound TYPE hole reads the same way a bound NAME
+    /// hole reads its own text.
+    fn text() -> string { spelled(self) }
+}
+
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
     if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
@@ -968,6 +980,7 @@ fn collectkind_fp(k: CollectKind) -> int {
     match k {
         .Component(w) -> fp(136, [fp_str(w)]),
         .UnknownKind(w) -> fp(132, [fp_str(w)]),
+        .Annotated(w) -> fp(137, [fp_str(w)]),
     }
 }
 
@@ -1065,6 +1078,7 @@ fn exact_collect_kind(a: CollectKind, b: CollectKind) -> bool {
     match a {
         .Component(w1) -> match b { .Component(w2) -> w1 == w2, rest -> false },
         .UnknownKind(w1) -> match b { .UnknownKind(w2) -> w1 == w2, rest -> false },
+        .Annotated(w1) -> match b { .Annotated(w2) -> w1 == w2, rest -> false },
     }
 }
 

@@ -29,8 +29,9 @@
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
 use core.{flatten, PayloadRow, node_payload_rows}
 use @std.meta.{Field}
-use grammar.{Diagnostic, Ready, ready, node_builder_name}
-use features.{LanguageFeature, BuilderRow, compose_grammar, builder_defects, builder_index, code_defects, LanguageRows, Dispatch, bind_nodes, node_builders}
+use @std.grammar.{Diagnostic, Ready, ready, node_builder_name}
+use grammar.{avra_known_terminals}
+use features.{LanguageFeature, BuilderRow, compose_grammar, builder_defects, builder_index, code_defects, LanguageRows, Dispatch, bind_nodes, node_builders, BlockWords}
 use diagnostics.{Diag, DiagCode, new_source_file}
 use features.type_expr.{type_expr}
 use features.stmt_spine.{stmt_spine}
@@ -99,7 +100,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     // PREPARED ONCE: validated and indexed here, so a parse pays for
     // neither — and the defects the assembly gates on ARE that
     // validation, asked a single time.
-    let rd = ready(bound.g)
+    let rd = ready(bound.g, avra_known_terminals())
     let codes = code_registry(features)
     let defects = flatten([rd.defects, bound.defects, builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
@@ -257,9 +258,10 @@ export once fn avra() -> Language {
     assemble(language_features())
 }
 
-/// The canonical language over one nameless source.
+/// The canonical language over one nameless source — a lone source
+/// stands in no package, so it names no import: no block words.
 export fn parse_source(text: string) -> Parsed {
-    parse_program(avra(), new_source_file("<source>", text))
+    parse_program(avra(), new_source_file("<source>", text), BlockWords {})
 }
 
 /// The canonical language's whole pipeline over one nameless source.

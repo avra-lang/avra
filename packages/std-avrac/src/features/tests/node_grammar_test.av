@@ -1,11 +1,12 @@
 // THE GRAMMAR NAMES THE NODE, against a node model of three made-up
 // variants — so these cases prove the BINDING and never the compiler's
 // own payloads, which move.
-use @std.avrac.grammar.{Grammar, Prim, Build, Slot, Diagnostic, Captured, RunOutcome, parse_grammar, render_grammar, run_grammar, ready, lex_grammar, rule_def, seq_to, item, cap, named}
+use @std.grammar.{Grammar, Prim, Build, Slot, Diagnostic, Captured, RunOutcome, render_grammar, run_grammar, ready, rule_def, seq_to, item, cap, named}
+use @std.avrac.grammar.{parse_grammar, lex_grammar, Token, avra_known_terminals, avra_lexeme}
 use @std.avrac.features.{bind_nodes}
 use @std.avrac.core.{PayloadRow}
 use @std.meta.{Field}
-use @std.avrac.core.{Span}
+use @std.errors.{Loc}
 
 /// A model with one of each shape the arity law sorts: a text
 /// payload, two same-typed node payloads, a list and a nullable.
@@ -167,7 +168,7 @@ spec "features/node_grammar" {
 
 /// A grammar carrying a node build with NO slots — what binding would
 /// have filled. Run straight at the engine.
-fn unbound_run() -> RunOutcome<string> {
+fn unbound_run() -> RunOutcome<Token, string> {
     let g = Grammar {
         name: "r",
         start: "r",
@@ -177,13 +178,14 @@ fn unbound_run() -> RunOutcome<string> {
             ]),
         ],
     }
-    run_grammar<string>(ready(g), lex_grammar("x").tokens, never_built)
+    run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_grammar("x").tokens, avra_lexeme(), never_built)
 }
 
 // LICENSED style.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
-fn never_built(name: string, args: List<Captured<string>>, span: Span?) -> Result<Captured<string>, string> {
-    .Ok(Captured.Node(name))
+fn never_built(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<Captured<Token, string>, string> {
+    let built: Captured<Token, string> = Captured.Node(name)
+    .Ok(built)
 }
 
 /// The first slot of a build carried by a group's first branch.
@@ -199,7 +201,7 @@ fn nested_label(src: string) -> string {
 fn group_build(p: Prim) -> Build? {
     match p {
         .Group(inner) -> inner.branches[0].build,
-        .Ref(_) or .Lit(_) or .Named(_) -> null,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> null,
     }
 }
 

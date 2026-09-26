@@ -128,7 +128,7 @@ fn program_arg(args: CliResult) -> Program? {
         no_such_file(path)
         return null
     }
-    mut ws = file_workspace(path)
+    let ws = file_workspace(path)
     let entered: Program = ws.program(path)
     entered
 }
@@ -180,8 +180,31 @@ fn here() -> string {
 /// A package root as a program entered at its `[bin]` when it has
 /// one — every file analyzed either way.
 export fn root_program(root: string) -> Program {
-    mut ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
+    let ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
     ws.program(ws.entry_of())
+}
+
+/// A package-scoped command's one door: the package the command
+/// stands in, clean — its refusal already reported, so every caller
+/// below answers only the absence it was written for.
+export fn clean_program() -> Program? {
+    let p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return null
+    }
+    p
+}
+
+/// A found answer prints and exits clean; an absence explains why and
+/// exits 1 — the shape every package-scoped command closes with.
+export fn answered(text: string?, absent: string) -> int {
+    let text? = text else {
+        eprintln("avra: ${absent}")
+        return 1
+    }
+    println(text)
+    0
 }
 
 /// The argued path as a program: a directory is a package root, a
@@ -328,7 +351,7 @@ export fn argued_path(args: CliResult) -> string? {
 /// `avra check`'s judgement of an argued path — the command and its tests
 /// ask this one door.
 export fn checked_at(path: string) -> Result<Checked, string> {
-    mut ws = build_workspace(path)
+    let ws = build_workspace(path)
     ws.checked(build_entry(ws, path))
 }
 
@@ -359,7 +382,7 @@ fn build_report(e: BuildError) -> string {
 /// command's.
 fn cached_build(args: CliResult) -> int {
     let path? = argued_path(args) else { return 2 }
-    mut ws = build_workspace(path)
+    let ws = build_workspace(path)
     let entry = build_entry(ws, path)
     if entry == null {
         eprintln("avra: ${ws.root} declares no entry point")

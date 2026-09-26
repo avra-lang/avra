@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, CollectScope, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, same_file, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation}
+use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, CollectScope, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, same_file, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation, At}
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use core.{Fingerprint, fp, list_cell, map_cell, same_type, Table, new_table}
 use @std.path.{stem_of}
@@ -18,7 +18,10 @@ use features.{TypeRow, TypeArgs, Unsettled, Lifted, Settled, MetaHeap, MetaVal, 
 use @std.meta.{Diagnostic, derive}
 
 /// A file's path facts — known at first mention, before its parse.
-export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
+/// `test` is the caller's structural fact (the package's own test
+/// root, `Workspace.is_test_path`), never recomputed here by
+/// matching the path.
+export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bool }
 
 /// One declaration: where it lives, what it is, the expression its
 /// body IS (a fn's, a default's; absent for the rest), and the
@@ -35,11 +38,16 @@ type IndexedWord = { word: string, id: DeclId }
 /// THE COLLECT INDEX's own state: every word's rows so far, and how
 /// far into `decls` it has read — `through` is the index's OWN
 /// cursor, never `decls.get().length` read twice at different times.
-type CollectIndex = { by_word: Map<string, List<DeclId>>, through: int }
+/// TWO TABLES, never one: `by_word` is a `.Component`'s own name
+/// (at most one per declaration — `collect_word`), `by_mark` an
+/// `.Annotated` one's (zero or more per declaration — a decl may
+/// wear several `@name`s). Sharing one map would let a component
+/// named `rule` and an annotation `@rule` answer for each other.
+type CollectIndex = { by_word: Map<string, List<DeclId>>, by_mark: Map<string, List<DeclId>>, through: int }
 
 fn no_collect_index() -> CollectIndex {
     let empty: Map<string, List<DeclId>> = {}
-    CollectIndex { by_word: empty, through: 0 }
+    CollectIndex { by_word: empty, by_mark: empty, through: 0 }
 }
 
 /// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
@@ -166,6 +174,20 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
 /// receiver and declares nothing about the source.
 fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, is_component: false, span: null, tparams: [], bounds: [], seats: [], host: [], annotated: false, of: "" } }
 
+/// THE REFERENCES RELATION's own row: `decl` is named at `at`, in
+/// `file`, this way — a call, a method call (resolved through
+/// `methods(target)`), a plain read, a write, the `use` line that
+/// names it, or a WRITTEN TYPE that names it (a param's, a field's,
+/// a `let`'s annotation, a bound, a return — never a nested
+/// expression, so no expression-level walk sees these on its own).
+/// Never about a LOCAL: a param or a `mut` local is scoped to its
+/// own body, which `Code.reads`/`Code.writes` (features/code.av)
+/// answer with a bounded walk of their own — this relation only
+/// ever answers about a `DeclId`, which is what crosses files.
+export enum UseKind { Call, MethodCall, Read, Write, Import, TypeUse }
+
+export type Ref = { decl: DeclId, file: FileId, at: At, kind: UseKind }
+
 export type Decls = {
     types: TypeRegistry,
     /// OUTER-TABLE GROWTH, SHARED: `mint`/`file_id`/`module_id` run
@@ -273,6 +295,17 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> void>,
+    /// THE REFERENCES RELATION — every file's own rows, dense by
+    /// FileId, replaced whole when `references.av`'s pass re-settles
+    /// that file; and the SAME rows, dense by the DeclId they name,
+    /// folded at settle.
+    refs_by_file: Cell<List<List<Ref>>>,
+    refs_by_decl: Cell<List<List<Ref>>>,
+    /// Whether a HELD file stood in the workspace the last time the
+    /// pass ran — that file was never surveyed, so the relation
+    /// cannot answer "used nowhere" with any confidence.
+    refs_incomplete: Cell<bool>,
+    ensure_refs: Cell<fn() -> void>,
     // an inferred `Result<T, _>`'s growing error set, dense by DeclId
     // — the error-unions Phase 2 fixpoint's own table, settled by the
     // armed hook on first ask
@@ -302,6 +335,9 @@ fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 
 // LICENSED style.dead_parameter: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
+
+// LICENSED style.dead_parameter: a fn VALUE filling the references-ensure seat — no pass runs before the workspace arms it
+fn no_refs_ensure() {}
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -341,7 +377,9 @@ export fn new_decls() -> Decls {
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
-    Decls {
+    let no_refs_by_file: List<List<Ref>> = []
+    let no_refs_by_decl: List<List<Ref>> = []
+    let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
         paths: Cell.new(no_paths),
@@ -391,7 +429,15 @@ export fn new_decls() -> Decls {
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
         lifter: Cell.new(no_lifter),
+        refs_by_file: Cell.new(no_refs_by_file),
+        refs_by_decl: Cell.new(no_refs_by_decl),
+        refs_incomplete: Cell.new(false),
+        ensure_refs: Cell.new(no_refs_ensure),
     }
+    // the registry cannot reach a declaration on its own — a struct or
+    // enum's layout answers the blank default until this runs
+    d.types.arm_declare((t: TypeId) -> d.declared_first(t))
+    d
 }
 
 /// A row's type parameters — `T1`, `T2`, … by arity; the ordinal
@@ -553,12 +599,12 @@ impl Decls {
     fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last()! }
 
     /// Every declaration of `k` admitted so far — a fixture proving
-    /// one (`/tests/`) is not the program's own, `is_test_path`'s law
-    /// here too. Admission is the caller's: a closure-scoped
-    /// `collect` forces its own package's files in first
-    /// (`Workspace.collect_admit`, `gathered`'s hook).
+    /// one (`FileInfo.test`) is not the program's own. Admission is
+    /// the caller's: a closure-scoped `collect` forces its own
+    /// package's files in first (`Workspace.collect_admit`,
+    /// `gathered`'s hook).
     fn decls_of_kind(k: DeclKind) -> List<Decl> {
-        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).path.contains("/tests/")]
+        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).test]
     }
 
     /// THE COLLECT INDEX: every declaration `collect` can gather, by
@@ -572,15 +618,32 @@ impl Decls {
         self.collect_index.get().by_word.get(word) ?? []
     }
 
+    /// THE MARK INDEX: every declaration under each `@name` it wears
+    /// — `indexed`'s twin, for `.Annotated` kinds. A declaration may
+    /// answer several names (several annotations) where a component
+    /// word answers at most one, which is why this is a second table
+    /// and not a second bucket in the same map.
+    fn indexed_by_mark(name: string) -> List<DeclId> {
+        self.grown_index()
+        self.collect_index.get().by_mark.get(name) ?? []
+    }
+
     fn grown_index() {
         let idx = self.collect_index.get()
         let all = self.decls.get()
         if idx.through >= all.length { return }
-        mut by_word = idx.by_word
-        for row in self.collect_rows(idx.through, all) {
-            by_word.set(row.word, (by_word.get(row.word) ?? []).concat([row.id]))
-        }
-        self.collect_index.set(CollectIndex { by_word: by_word, through: all.length })
+        let by_word = self.folded_index(idx.by_word, self.collect_rows(idx.through, all))
+        let by_mark = self.folded_index(idx.by_mark, self.mark_rows(idx.through, all))
+        self.collect_index.set(CollectIndex { by_word: by_word, by_mark: by_mark, through: all.length })
+    }
+
+    /// `rows` folded onto `base` — one row per word, appended to
+    /// whichever declarations already answer it. Shared by the two
+    /// index tables `grown_index` extends.
+    fn folded_index(base: Map<string, List<DeclId>>, rows: List<IndexedWord>) -> Map<string, List<DeclId>> {
+        mut m = base
+        for row in rows { m.set(row.word, (m.get(row.word) ?? []).concat([row.id])) }
+        m
     }
 
     /// The new rows' own words, `all[from..]` — a row with none (most
@@ -606,11 +669,31 @@ impl Decls {
         self.store_of(d.file).instance_of(d.stmt)
     }
 
+    /// Every `@name` row a declaration answers, `collect_word`'s
+    /// twin — every annotation it wears, of any DeclKind (a `type`,
+    /// a `fn`, a `record` may each carry one, unlike a component
+    /// instance's one word).
+    fn mark_rows(from: int, all: List<Decl>) -> List<IndexedWord> {
+        flatten([self.marked_words(all[i]) for i in from..all.length])
+    }
+
+    fn marked_words(d: Decl) -> List<IndexedWord> {
+        [IndexedWord { word: a.name, id: d.id } for a in self.annotations_of(d.id)]
+    }
+
     /// Every indexed declaration of `word`, admitted so far —
-    /// `decls_of_kind`'s law here too: a fixture (`/tests/`) is not
-    /// the program's own.
+    /// `decls_of_kind`'s law here too: a fixture (`FileInfo.test`) is
+    /// not the program's own. Unscoped, so it answers alike for
+    /// every caller; `gathered`'s owner-scoped door is `collectible`,
+    /// not this.
     fn decls_of_word(word: string) -> List<Decl> {
-        [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).path.contains("/tests/")]
+        [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).test]
+    }
+
+    /// Every indexed declaration wearing `@name`, `decls_of_word`'s
+    /// mark twin.
+    fn decls_of_mark(name: string) -> List<Decl> {
+        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if !self.file(d.file).test]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -771,20 +854,46 @@ impl Decls {
     /// SCOPE FILTERS what is already reached, it never widens it —
     /// `closure` answers everything the program links, `package`
     /// narrows to the owner's own package, `self` to the owner's own
-    /// file.
+    /// file. Filtered through `collectible`, never `decls_of_word`:
+    /// that door excludes EVERY test-tree declaration, unconditionally,
+    /// which would hide a program test's own `collect` from its own
+    /// sibling declarations — the one caller that must see them.
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
-        [d for d in self.decls_of_word(word) if self.in_scope(d, scope, owner)]
+        [d for d in [self.decl(id) for id in self.indexed(word)] if self.collectible(d, scope, owner)]
+    }
+
+    /// `gathered`'s mark twin: every declaration wearing `@name`,
+    /// filtered to `scope` the same way.
+    fn gathered_by_mark(name: string, scope: CollectScope, owner: FileId) -> List<Decl> {
+        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if self.collectible(d, scope, owner)]
+    }
+
+    /// Whether `owner`'s collect may gather `d`: `in_scope`'s law,
+    /// and — for a declaration a package's own test tree holds — ONLY
+    /// when `owner` stands in that SAME FILE. A fixture written to
+    /// test the collect mechanism itself must never leak into another
+    /// file's collect (`rules`, closure-scoped, gathers no component-
+    /// test fixture); a program test's own `collect` gathers its own
+    /// sibling declarations all the same, since they share its file.
+    fn collectible(d: Decl, scope: CollectScope, owner: FileId) -> bool {
+        self.in_scope(d, scope, owner) && (!self.file(d.file).test || same_file(d.file, owner))
     }
 
     /// A REGISTRY match over `CollectScope`: `self` is the owner's own
     /// file, `package` the owner's own package, `closure` everything
-    /// admitted. An unknown scope was already refused at
-    /// `check_collect` — it gathers nothing, honestly.
+    /// admitted — ACROSS PACKAGES, EXPORTED DECLARATIONS ONLY
+    /// (docs/2026_09_22_COLLECTIONS.md §4.4): a declaration in the
+    /// owner's OWN package is seen either way, private ones included,
+    /// the same as `self`/`package` already see; one a DIFFERENT
+    /// package holds must have said `export`, or a dependency could
+    /// silently hand a program its own unexported internals. An
+    /// unknown scope was already refused at `check_collect` — it
+    /// gathers nothing, honestly.
     fn in_scope(d: Decl, scope: CollectScope, owner: FileId) -> bool {
         match scope {
             .Self -> same_file(d.file, owner),
             .Package -> self.package_of_file(d.file) == self.package_of_file(owner),
-            .Closure -> true,
+            .Closure -> d.exported || self.package_of_file(d.file) == self.package_of_file(owner),
             .UnknownScope(_) -> false,
         }
     }
@@ -889,6 +998,23 @@ impl Decls {
         self.payload_word(d, t)
     }
 
+    /// A STRUCT or ENUM's layout answers the blank default — not flat,
+    /// not valued, not settled — until its OWN declaration has run;
+    /// asking a layout fact of one that has not is asking a different
+    /// question from every later ask (CLAUDE.md, "a slot's seed is
+    /// computed the same way as its updates"). Force it first: a
+    /// registry reader outside the type's own declare pass never
+    /// knows whether demand has reached it yet, and the crossing
+    /// machinery — `materialized`'s whole family, deep in const and
+    /// `@derive` settlement — reads layout facts on exactly the types
+    /// demand order has not forced.
+    fn declared_first(t: TypeId) {
+        match self.types.shape_of(t) {
+            .Struct(r, _) or .Enum(r, _) -> { let _ = self.sig(r) },
+            rest -> nothing_asked(),
+        }
+    }
+
     /// A payload's word, asked of its own declaration first so the
     /// answer never depends on which was declared first: 0 an int or
     /// a word enum, 1 a pointer that is counted, absent for anything
@@ -900,10 +1026,7 @@ impl Decls {
     /// cause not yet found. Widening this arm to match needs that
     /// cause found first.
     fn payload_word(d: DeclId, t: TypeId) -> int? {
-        match self.types.shape_of(t) {
-            .Struct(r, _) -> { let _ = self.sig(r) },
-            rest -> nothing_asked(),
-        }
+        self.declared_first(t)
         // a FLAT record is a word a `mut` seat may still box — out
         if self.types.shape_of(t) is .Struct && self.types.is_flat(t) { return null }
         let m = self.types.machine_type(t)
@@ -1115,6 +1238,79 @@ impl Decls {
     /// The workspace arms the receivers hook once.
     fn arm_writes(ensure: fn(DeclId) -> void) {
         self.ensure_writes.set(ensure)
+    }
+
+    /// Every named USE of `d`, of any kind, across the program —
+    /// asking runs the references pass.
+    fn refs_of(d: DeclId) -> List<Ref> {
+        (self.ensure_refs.get())()
+        let rows = self.refs_by_decl.get()
+        if d.index < rows.length { rows[d.index] } else { [] }
+    }
+
+    /// Every CALL or METHOD CALL naming `d`.
+    fn callers(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if r.kind is .Call || r.kind is .MethodCall]
+    }
+
+    /// Every plain read of `d` — never a call, never a write.
+    fn readers(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if r.kind is .Read]
+    }
+
+    /// Every place that writes `d` — rare: only a decl a program can
+    /// assign to at all answers here.
+    fn writers(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if r.kind is .Write]
+    }
+
+    /// Every use OTHER than the `use` line that named it — whether an
+    /// import is read at all.
+    fn used(d: DeclId) -> List<Ref> {
+        [r for r in self.refs_of(d) if !(r.kind is .Import)]
+    }
+
+    /// Whether a held file left the relation INCOMPLETE — a decl
+    /// `used(d)` calls unused may be read from inside one, so "no use
+    /// anywhere" is not an answer a caller may give while this holds.
+    fn refs_are_incomplete() -> bool {
+        self.refs_incomplete.get()
+    }
+
+    fn mark_refs_incomplete(incomplete: bool) {
+        self.refs_incomplete.set(incomplete)
+    }
+
+    /// One file's own rows, as `references.av`'s pass wrote them.
+    fn refs_in_file(f: FileId) -> List<Ref> {
+        (self.ensure_refs.get())()
+        let rows = self.refs_by_file.get()
+        if f.index < rows.length { rows[f.index] } else { [] }
+    }
+
+    /// `references.av`'s own write door: one file's rows, replacing
+    /// whatever it held.
+    fn set_file_refs(f: FileId, rows: List<Ref>) {
+        mut cur = self.refs_by_file.get()
+        while cur.length <= f.index { cur.push([]) }
+        cur.set(f.index, rows)
+        self.refs_by_file.set(cur)
+    }
+
+    /// `references.av`'s own settle: every row, folded by the
+    /// declaration it names.
+    fn settle_refs(all: List<Ref>) {
+        let no_row: List<Ref> = []
+        mut idx: List<List<Ref>> = filled(self.decls.get().length, no_row)
+        for r in all {
+            if r.decl.index < idx.length { idx.set(r.decl.index, idx[r.decl.index].concat([r])) }
+        }
+        self.refs_by_decl.set(idx)
+    }
+
+    /// The workspace arms the references hook once.
+    fn arm_references(ensure: fn() -> void) {
+        self.ensure_refs.set(ensure)
     }
 
     /// The workspace arms the failures hook once.

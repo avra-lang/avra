@@ -1,0 +1,648 @@
+//! L2 — an INDEPENDENT reference-count checker over the memory
+//! pass's OWN OUTPUT (the `Ins` stream after `memory(…)`: Retain,
+//! Release, the regions, the calls). It never asks WHY memory.av
+//! chose to retain or elide — it re-derives, from the final stream
+//! alone, what SHOULD hold, and reads a mismatch as a compile-time
+//! defect instead of a run-time use-after-free.
+//!
+//! Four checks, each exact on the shapes it names and silent
+//! otherwise — no shape it does not recognize is ever flagged on
+//! its own account:
+//!   - a register read after its last Release, with no Retain since
+//!     (covers a DOUBLE Release too — Release itself reads its reg);
+//!   - a region's arms leaving a register that lived before the
+//!     region in DIFFERENT states (one released it, one did not);
+//!   - a VIEW (Extract, a lending CallRt, or a bare cell Load) hand
+//!     ed to an Avra call with no protecting Retain, when its root
+//!     cannot be ruled unreachable by that same call — the shape
+//!     R5's own first draft got wrong (docs/2026_09_23_REUSE_IN_PLACE.md §30);
+//!   - an owning definition (a fresh box, never a param, a view, or
+//!     the binary's own immortal data) that reaches the end of its
+//!     OWN span — a scope, an arm, or the body itself — still alive:
+//!     released, transferred, or answered on every path out.
+//!
+//! Registers this pass does not model precisely (the exact credit an
+//! arm carries out of a region) are left unchecked rather than
+//! guessed at — a checker that cries wolf gets switched off.
+use core.{Ins, Reg, TypeId, same_reg, reads_of, dst_of, owned_dst, lent_args, rt_owns, rt_lends, flatten}
+use compiler.lower.{Body, Lowered}
+use diagnostics.{Diag, defect_at}
+
+/// Every body's soundness diagnostics, folded in beside the memory
+/// pass's own output — see `compiler.memory.memory`'s call. `managed`
+/// is `compiler.memory.is_managed` PINNED to this program's own
+/// types: soundness never imports the memory pass (memory.av calls
+/// THIS module, the one way the layering runs), so it takes the
+/// answer as a predicate rather than the module that computes it.
+export fn checked(l: Lowered, managed: fn(TypeId) -> bool) -> List<Diag> {
+    flatten([checked_body(b, managed) for b in l.fns.concat([l.entry])])
+}
+
+fn checked_body(b: Body, managed: fn(TypeId) -> bool) -> List<Diag> {
+    let n = b.reg_types.length
+    let immortal = immortal_regs(n, b.ins)
+    let ctx = Ctx {
+        reg_types: b.reg_types,
+        ins: b.ins,
+        name: b.name,
+        managed: managed,
+        immortal: immortal,
+        owning: owning_table(b.reg_types, immortal, b.ins, managed),
+        defs: def_sites(n, b.ins),
+    }
+    // A body this pass understands ends its own top-level span in a
+    // terminal (`RetVal`, `Ret`, or an `FnExit` that never falls
+    // through) — an ordinary fn's, and the entry's. A unit lowered a
+    // DIFFERENT way (a const's settlement reads its last register
+    // straight off the stream, no terminal minted) is a shape this
+    // walk does not claim to know the ending of, so its OWN top-level
+    // leak check is skipped — every OTHER check still runs, and a
+    // register genuinely left dangling inside a NESTED scope is still
+    // caught there, where a terminal is never in question.
+    walk(ctx, 0, b.ins.length, fresh_sim(n), null, ends_in_terminal(b.ins)).diags
+}
+
+fn ends_in_terminal(ins: List<Ins>) -> bool {
+    !ins.is_empty() && (ins.last()! is .RetVal || ins.last()! is .Ret || ins.last()! is .FnExit)
+}
+
+// ── Facts read once, never re-derived mid-walk ──────────────────────
+
+/// The read-only facts a walk needs: the body's own instructions and
+/// register types, which registers the binary owns outright (never
+/// retained, never released), which are OWNING definitions (a fresh
+/// box — never a param, a view, or immortal data), and where each
+/// register is DEFINED (-1 for a param).
+type Ctx = { reg_types: List<TypeId>, ins: List<Ins>, name: string, managed: fn(TypeId) -> bool, immortal: List<bool>, owning: List<bool>, defs: List<int> }
+
+/// A string constant or a settled aggregate's address — the binary's
+/// own data, counted by no retain and freed by no release.
+fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
+    mut out = [false for i in 0..count]
+    for step in ins {
+        let d: Reg? = immortal_dst(step)
+        if d != null { out.set(d!.index, true) }
+    }
+    out
+}
+
+fn immortal_dst(i: Ins) -> Reg? {
+    match i {
+        .ConstStr(dst, _) or .StaticAddr(dst, _) -> dst,
+        rest -> null,
+    }
+}
+
+/// `r` is an OWNING definition: a fresh, managed, non-immortal box —
+/// the `@owns` role, refined the two ways `managed` alone cannot. A
+/// CallRt's destination owns a reference only when its OWN row says
+/// so (a lending row's answer rides its subject's). A LOAD'S `@owns`
+/// is the STATIC role every load carries whether or not this one
+/// earned it — memory.av mints the actual +1 as a SEPARATE `Retain`
+/// immediately after, only when the borrow must outlive its cell
+/// (memory.av's `borrow_outlives`); a bare Load with no such Retain
+/// is a VIEW, never a box this walk owes a release for. Reading
+/// `owned_dst` as the whole answer here read every borrowed Load as
+/// a leaked box — `avra_array_get(load r8, ...)` with the load never
+/// retained, own reference correctly none, memory.av's own witness.
+fn owning_def(ins: List<Ins>, at: int, reg_types: List<TypeId>, immortal: List<bool>, managed: fn(TypeId) -> bool) -> Reg? {
+    let i = ins[at]
+    let dst? = owned_dst(i) else { return null }
+    if immortal[dst.index] || !managed(reg_types[dst.index]) { return null }
+    match i {
+        .CallRt(_, callee, _) if !rt_owns(callee) -> null,
+        .Load(_, _) -> if retained_next(ins, at, dst) { dst } else { null },
+        rest -> dst,
+    }
+}
+
+/// Whether `ins[at + 1]` is `Retain(dst)` — the ONE instruction
+/// memory.av ever places right after a Load to earn it its own +1.
+fn retained_next(ins: List<Ins>, at: int, dst: Reg) -> bool {
+    at + 1 < ins.length && is_retain_of(ins[at + 1], dst)
+}
+
+fn is_retain_of(i: Ins, dst: Reg) -> bool {
+    match i { .Retain(r) -> same_reg(r, dst), rest -> false }
+}
+
+fn owning_table(reg_types: List<TypeId>, immortal: List<bool>, ins: List<Ins>, managed: fn(TypeId) -> bool) -> List<bool> {
+    mut out = [false for i in 0..reg_types.length]
+    for at, step in ins {
+        let od: Reg? = owning_def(ins, at, reg_types, immortal, managed)
+        if od != null { out.set(od!.index, true) }
+    }
+    out
+}
+
+/// The instruction DEFINING each register; -1 for a param — the
+/// walk `Lives.root_of` (memory.av) answers with, re-derived here
+/// independently rather than read off its own reasoning.
+fn def_sites(count: int, ins: List<Ins>) -> List<int> {
+    mut out = [0 - 1 for i in 0..count]
+    for at, step in ins {
+        let d: Reg? = dst_of(step)
+        if d != null { out.set(d!.index, at) }
+    }
+    out
+}
+
+// ── The proof carried forward through the walk ──────────────────────
+
+/// `refs[r]` — ONE integer per register, the same currency the
+/// runtime's own refcount is: an OWNING definition seeds it 1 (its
+/// birth reference), everything else (a param, a view, a bare cell
+/// Load never retained) seeds it 0 — the baseline neither of us
+/// tracks, since it is the CALLER's or the CELL's, not this body's.
+/// `Retain` adds, `Release` takes. Splitting this into a "did the
+/// birth reference get released" flag plus a separate "local extra
+/// credit" counter was the FIRST draft's bug: a Retain in one arm of
+/// a region and the Release that matches it OUTSIDE the region are
+/// two ends of the SAME count, never two currencies — treating them
+/// as separate left `verb_of(spelling) else { return … }`'s present
+/// arm (retain, yield, later released once merged) reading as a leak
+/// even though the arithmetic (1 born, +1 retain, -1 moved out, -1
+/// released = 0) was exactly balanced.
+type Sim = { refs: List<int> }
+
+fn fresh_sim(count: int) -> Sim {
+    Sim { refs: [0 for i in 0..count] }
+}
+
+/// One span's walk, and what it found — `diverges` when the span
+/// left through an early exit, so nothing after it on this path ever
+/// runs (a region's OTHER arms still might).
+type Walked = { sim: Sim, diags: List<Diag>, diverges: bool }
+
+/// `[lo, hi)` of `ctx.ins`, a straight run whose OWN bracket (if any)
+/// the caller has already matched to `hi`. `escaping`, when given, is
+/// the one register this span hands UP — never charged against this
+/// span's own leak check, since its debt now belongs to whoever
+/// receives it. `check_end` is decided ONCE, at the body's own top
+/// level, by whether it ends in a terminal this pass recognizes
+/// (`checked_body`'s `ends_in_terminal`) — a body lowered a way this
+/// pass does not claim to know the ending of (a const's or an
+/// annotation's settlement unit, which answers through no `RetVal`
+/// at all) gets NO leak check anywhere in its own span, not merely at
+/// the top: the same uncertainty that makes the outer answer unclear
+/// makes an inner scope's "did its escapee truly leave" unclear too,
+/// so `check_end` is threaded to every nested span unchanged, never
+/// re-decided. `outer` is everything born in an ENCLOSING span that
+/// is still open here — an early exit settles every open scope's
+/// debts at the site (memory.av's own `exit_releases`/`exit_cells`),
+/// never only the innermost one, so an `FnExit` reached from inside a
+/// region's arm must still see a register a scope further out minted
+/// (R5's own `verb_of(spelling) else { return … }` shape: the absent
+/// arm releases the OUTER `string?` inline, on ITS path, exactly
+/// because that path never reaches the fall-through release after the
+/// region — a local-only `born` never learns the outer register
+/// existed).
+fn walk(ctx: Ctx, lo: int, hi: int, sim0: Sim, escaping: Reg?, check_end: bool = true, outer: List<Reg> = []) -> Walked {
+    // A `mut` SEAT cannot be answered whole (CLAUDE.md), and this walk
+    // replaces its whole proof every step (a fresh `Sim` from `dispatch`,
+    // a fresh one from a nested span) — so it stays a plain value, held
+    // in a LOCAL `mut`, never a `mut` parameter.
+    mut sim = sim0
+    mut diags: List<Diag> = []
+    mut born: List<Reg> = []
+    mut diverges = false
+    mut i = lo
+    while i < hi && !diverges {
+        let step = ctx.ins[i]
+        diags = diags.concat(dead_read_diags(ctx, sim, i, step))
+        let od: Reg? = owning_def(ctx.ins, i, ctx.reg_types, ctx.immortal, ctx.managed)
+        if od != null {
+            // A birth this pass credits at 1 UNLESS its own `Retain`
+            // is the very next instruction — a Load that outlives its
+            // cell, or a `Pack` (ALWAYS retained when managed, PACK
+            // IS IDENTITY) — in which case that Retain is the ONE
+            // reference this birth mints, and crediting both is the
+            // same double-spend the region merge and the Store
+            // hand-off were fixed for, one instruction earlier.
+            let o = od!
+            if !retained_next(ctx.ins, i, o) { sim.refs.set(o.index, 1) }
+            born.push(o)
+        }
+        let stepped = dispatch(ctx, sim, born, i, step, check_end, outer)
+        sim = stepped.sim
+        diags = diags.concat(stepped.diags)
+        born = stepped.born
+        diverges = stepped.diverges
+        i = stepped.next
+    }
+    if !diverges && check_end {
+        diags = diags.concat(leak_diags(ctx, sim, born, escaping, hi))
+    }
+    Walked { sim: sim, diags: diags, diverges: diverges }
+}
+
+/// One instruction's OWN effect on the walk — every register-reading
+/// or -defining shape but the generic "define, maybe own" step
+/// `walk` already applied above; a registry, spelled in full (no
+/// instruction's handling silently falls to another's).
+type Stepped = { sim: Sim, diags: List<Diag>, born: List<Reg>, diverges: bool, next: int }
+
+fn dispatch(ctx: Ctx, sim0: Sim, born0: List<Reg>, i: int, step: Ins, check_end: bool, outer: List<Reg>) -> Stepped {
+    mut sim = sim0
+    mut born = born0
+    match step {
+        .Retain(r) -> {
+            sim.refs.set(r.index, sim.refs[r.index] + 1)
+            stepped(sim, born, i + 1)
+        },
+        .Release(r) -> {
+            let before = sim.refs[r.index]
+            sim.refs.set(r.index, before - 1)
+            let rdiags = if !ctx.owning[r.index] && before <= 0 { [releases_unowned(ctx.name, i, r)] } else { [] }
+            Stepped { sim: sim, diags: rdiags, born: born, diverges: false, next: i + 1 }
+        },
+        .CallRt(_, callee, args) -> {
+            if is_reusing_twin(callee) && !args.is_empty() { sim.refs.set(args[0].index, 0) }
+            stepped(sim, born, i + 1)
+        },
+        .CallRtVoid(callee, args) -> {
+            if is_moving_twin(callee) && !args.is_empty() { sim.refs.set(args.last()!.index, 0) }
+            stepped(sim, born, i + 1)
+        },
+        // A STORE MOVES what dies there (its LAST read, owning —
+        // memory.av never retains a value that dies at its own
+        // store) or memory.av retains the cell its OWN independent
+        // reference first — the same hand-off the region merge pays
+        // for, one step over: a `Retain` immediately before a Store
+        // mints the cell's reference, and this walk never tracks a
+        // cell's own count, so the reference it just gained must
+        // leave `src`'s here, or a later read of `src` past this
+        // point (there always is one — a value that dies here moves
+        // instead) finds a credit that already belongs to the cell.
+        .Store(_, src) -> {
+            if ctx.managed(ctx.reg_types[src.index]) {
+                if ctx.owning[src.index] && last_read(ctx.ins, src, i) {
+                    sim.refs.set(src.index, 0)
+                } else {
+                    sim.refs.set(src.index, sim.refs[src.index] - 1)
+                }
+            }
+            stepped(sim, born, i + 1)
+        },
+        .Call(_, _, args) or .CallPtr(_, _, args) -> {
+            let cargs = lent_args(step)
+            let cdiags = flatten([view_protection(ctx, sim, i, cargs, ar) for ar in cargs])
+            Stepped { sim: sim, diags: cdiags, born: born, diverges: false, next: i + 1 }
+        },
+        .ScopeEnter(_) -> {
+            let close_at = scope_close(ctx.ins, i)
+            let gives = scope_gives(ctx.ins[close_at])
+            let w = walk(ctx, i + 1, close_at, sim, gives, check_end, outer.concat(born))
+            if gives != null && ctx.owning[gives!.index] { born.push(gives!) }
+            Stepped { sim: w.sim, diags: w.diags, born: born, diverges: w.diverges, next: close_at + 1 }
+        },
+        .IfStart(_) or .SwitchStart(_, _) -> {
+            let arms = region_arms(ctx.ins, i)
+            let last_arm = arms.last()!
+            let walked = [yielded(walk(ctx, a.lo, a.hi, sim, a.gives, check_end, outer.concat(born)), a.gives) for a in arms]
+            let m = merged_region(ctx, i, last_arm.hi, sim, walked)
+            if m.gives != null { born.push(m.gives!) }
+            Stepped { sim: m.sim, diags: m.diags, born: born, diverges: m.diverges, next: last_arm.hi + 1 }
+        },
+        .LoopStart -> {
+            let bounds = loop_bounds(ctx.ins, i)
+            let w = walk(ctx, i + 1, bounds.cond_at, sim, null, check_end, outer.concat(born))
+            Stepped { sim: w.sim, diags: w.diags, born: born, diverges: w.diverges, next: bounds.cond_at + 1 }
+        },
+        .FnExit(gives) or .RetVal(gives) -> exited(ctx, sim, outer.concat(born), gives, i),
+        .Ret(_) -> exited(ctx, sim, outer.concat(born), null, i),
+        // Closers, and the loop's own turn: consumed by the opener
+        // that matched them above — reached here only under a
+        // malformed bracket, where doing nothing is the safe answer.
+        // Every other shape is a plain define-or-read step, already
+        // covered by `walk`'s own generic pass.
+        .ScopeExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or .LoopCond(_) or .LoopEnd or .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Extract(_, _, _) or .Load(_, _) or .Alloca(_) or .Pack(_, _) -> stepped(sim, born, i + 1),
+    }
+}
+
+/// The common step: the proof carried as it stands, nothing spoken,
+/// this path still open.
+fn stepped(sim: Sim, born: List<Reg>, next: int) -> Stepped {
+    Stepped { sim: sim, diags: [], born: born, diverges: false, next: next }
+}
+
+/// An exit — early (`FnExit`) or the body's own tail (`RetVal`,
+/// `Ret`): every span open at this point owes its leak check right
+/// here, and nothing on this path runs again.
+fn exited(ctx: Ctx, sim: Sim, born: List<Reg>, gives: Reg?, i: int) -> Stepped {
+    Stepped { sim: sim, diags: leak_diags(ctx, sim, born, gives, i), born: born, diverges: true, next: i + 1 }
+}
+
+/// Every register `step` reads, checked against the proof carried in
+/// — an OWNING register whose refs already reached zero has no
+/// honest reader left, Retain and Release included (a SECOND Release
+/// is a read of a fully-released register by exactly this rule). A
+/// BORROWED register (a param, a view) rides a reference this body
+/// never counted from zero, so a read of it is never flagged here —
+/// `Release`'s own handling is where an over-release of one is
+/// caught, since reaching zero is its ordinary resting state.
+/// ONE RETAIN IS EXEMPT: the birth credit `walk` itself defers to it
+/// (see `walk`'s own comment) reads its register at the deferred
+/// zero on purpose — refusing that read would refuse the very shape
+/// the deferral exists to allow. Every other Retain, and every
+/// Release, answers for itself at whatever `sim` already holds.
+fn dead_read_diags(ctx: Ctx, sim: Sim, at: int, step: Ins) -> List<Diag> {
+    if birth_retain(ctx, at, step) { return [] }
+    flatten([dead_read_diag(ctx, sim, at, r) for r in reads_of(step)])
+}
+
+fn dead_read_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
+    if ctx.owning[r.index] && sim.refs[r.index] <= 0 { [use_after_release(ctx.name, at, r)] } else { [] }
+}
+
+/// Whether `step` is the ONE Retain a birth at `at - 1` defers its
+/// credit to — a Load that outlives its cell, a managed Pack (PACK
+/// IS IDENTITY, always retained) — any owning definition whose very
+/// next instruction retains its own destination. `walk` credits the
+/// birth to THIS retain rather than to the definition, so this
+/// retain's read of a still-zero register is the credit arriving,
+/// not a use after release.
+fn birth_retain(ctx: Ctx, at: int, step: Ins) -> bool {
+    match step {
+        .Retain(r) -> at > 0 && births(owning_def(ctx.ins, at - 1, ctx.reg_types, ctx.immortal, ctx.managed), r),
+        rest -> false,
+    }
+}
+
+fn births(od: Reg?, r: Reg) -> bool {
+    od != null && same_reg(od!, r)
+}
+
+/// Whether `at` is `src`'s own LAST read in the whole body — the
+/// store-moves-a-dying-value shape (CLAUDE.md's "A STORE MOVES what
+/// dies there"), read off the stream rather than re-asked of the
+/// pass that decided it.
+fn last_read(ins: List<Ins>, src: Reg, at: int) -> bool {
+    [j for j, step in ins if j > at && reads_of(step).any(same_reg(it, src))].is_empty()
+}
+
+/// Every register `born` in a span, still alive when it closes —
+/// released, transferred, or answered on every path out is the whole
+/// of the owning contract; `escaping` is the one register this close
+/// hands upward; its debt is not this span's to pay.
+fn leak_diags(ctx: Ctx, sim: Sim, born: List<Reg>, escaping: Reg?, at: int) -> List<Diag> {
+    flatten([leak_diag(ctx, sim, at, r) for r in born if !kept(r, escaping)])
+}
+
+fn kept(r: Reg, escaping: Reg?) -> bool {
+    escaping != null && same_reg(r, escaping!)
+}
+
+fn leak_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
+    if sim.refs[r.index] <= 0 { [] } else { [leaked(ctx.name, at, r)] }
+}
+
+// ── Regions: fork per arm, merge on the way out ─────────────────────
+
+/// One arm of an `IfStart`/`SwitchStart` region: its body `[lo, hi)`
+/// and the register it yields at `hi` (an `ArmEnd`, or the region's
+/// own `RegionEnd` for the last arm).
+type ArmSpan = { lo: int, hi: int, gives: Reg }
+
+fn region_arms(ins: List<Ins>, open_at: int) -> List<ArmSpan> {
+    mut arms: List<ArmSpan> = []
+    mut lo = open_at + 1
+    mut depth = 0
+    mut i = open_at + 1
+    mut done = false
+    while !done {
+        let step = ins[i]
+        if depth == 0 && (step is .ArmEnd || step is .RegionEnd) {
+            arms.push(ArmSpan { lo: lo, hi: i, gives: turn_gives(step) })
+            if step is .RegionEnd { done = true } else { lo = i + 1 }
+        } else if opens(step) {
+            depth = depth + 1
+        } else if closes(step) {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    arms
+}
+
+fn turn_gives(i: Ins) -> Reg {
+    match i { .ArmEnd(gives) or .RegionEnd(_, gives) -> gives, rest -> Reg { index: 0 - 1 } }
+}
+
+/// The matching `ScopeExit` for a `ScopeEnter` at `open_at`.
+fn scope_close(ins: List<Ins>, open_at: int) -> int {
+    mut depth = 0
+    mut i = open_at + 1
+    mut found = 0 - 1
+    while found < 0 {
+        let step = ins[i]
+        if depth == 0 && step is .ScopeExit {
+            found = i
+        } else if opens(step) {
+            depth = depth + 1
+        } else if closes(step) {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    found
+}
+
+fn scope_gives(i: Ins) -> Reg? {
+    match i {
+        .ScopeExit(gives) -> gives,
+        rest -> null,
+    }
+}
+
+/// A loop's own `LoopCond` and `LoopEnd`, at `LoopStart`'s own
+/// nesting — the condition's span runs `[open_at+1, cond_at)`, and
+/// the body follows it in the SAME enclosing span (memory.av settles
+/// the condition's own scope at every `LoopCond`; the body is
+/// whatever block it opens for itself).
+type LoopBounds = { cond_at: int, end_at: int }
+
+fn loop_bounds(ins: List<Ins>, open_at: int) -> LoopBounds {
+    mut depth = 0
+    mut i = open_at + 1
+    mut cond_at = 0 - 1
+    mut end_at = 0 - 1
+    while end_at < 0 {
+        let step = ins[i]
+        if depth == 0 && step is .LoopCond && cond_at < 0 {
+            cond_at = i
+        } else if depth == 0 && step is .LoopEnd {
+            end_at = i
+        } else if opens(step) {
+            depth = depth + 1
+        } else if closes(step) {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    LoopBounds { cond_at: cond_at, end_at: end_at }
+}
+
+/// THE BRACKETS, independently counted: one OPENS a nested span, one
+/// CLOSES it — `ArmEnd`/`LoopCond` are TURNS, never counted here,
+/// which is what lets a depth-0 scan find them.
+fn opens(i: Ins) -> bool { i is .ScopeEnter || i is .IfStart || i is .SwitchStart || i is .LoopStart }
+
+fn closes(i: Ins) -> bool { i is .ScopeExit || i is .RegionEnd || i is .LoopEnd }
+
+/// A region's own ending proof: every arm merged (`Walked`'s shape),
+/// plus the fresh register `RegionEnd` itself mints — `null` when the
+/// region answers nothing managed, the one case its caller (`dispatch`)
+/// still owes `born`.
+type Merged = { sim: Sim, diags: List<Diag>, diverges: bool, gives: Reg? }
+
+/// An arm's own OUTPUT, adjusted for what its yield SPENT: `RegionEnd`
+/// mints a genuinely FRESH register for the region's own answer
+/// (unlike `ScopeExit`, which has no `dst` at all — the same
+/// register just changes owner) — and memory.av's `moved_out` pays
+/// for that mint with its OWN `Retain` on `gives` when the arm does
+/// not already own it. Reading `gives`'s ending refs as-is after that
+/// would count the SAME one reference twice: once toward `gives`
+/// itself (which a later release outside the region still owes) and
+/// once toward the fresh register `owning_def` seeds at `RegionEnd`.
+/// One `Retain` minted one reference; crediting `gives` for it here,
+/// before the merge ever sees it, is what keeps it to one.
+fn yielded(w: Walked, gives: Reg) -> Walked {
+    if w.diverges { return w }
+    mut sim = w.sim
+    sim.refs.set(gives.index, sim.refs[gives.index] - 1)
+    w with { sim: sim }
+}
+
+/// Every arm's ending proof, merged: a register alive BEFORE the
+/// region (defined strictly before `open_at` — a param included, its
+/// `defs` index -1 always qualifying) must leave every arm ALIVE or
+/// leave every arm RESOLVED, or the region itself is where the two
+/// paths stopped agreeing on that — never the exact count, which an
+/// arm is free to carry a different LOCAL credit toward (one path's
+/// own extra `Retain`, matched outside the region the same way on
+/// every path that takes it). An arm that diverged (an early exit)
+/// never reaches the join and is excluded rather than guessed at;
+/// diverging on every arm makes the region itself diverge. Agreeing
+/// alive keeps the LARGEST refs among the arms — the reading that
+/// asks the least of a Release still to come, never the one that
+/// reports an over-release a real one of the other arms would not.
+fn merged_region(ctx: Ctx, open_at: int, region_end_at: int, sim0: Sim, walks: List<Walked>) -> Merged {
+    mut diags = flatten([w.diags for w in walks])
+    let live = [w for w in walks if !w.diverges]
+    if live.is_empty() {
+        return Merged { sim: sim0, diags: diags, diverges: true, gives: null }
+    }
+    let n = sim0.refs.length
+    mut merged: Sim = live.first()!.sim
+    for r in 0..n {
+        if ctx.defs[r] < open_at {
+            let states = [w.sim.refs[r] > 0 for w in live]
+            if states.any(it != states[0]) {
+                diags.push(region_disagreement(ctx.name, region_end_at, Reg { index: r }))
+                merged.refs.set(r, 0)
+            } else if states[0] {
+                merged.refs.set(r, largest([w.sim.refs[r] for w in live]))
+            } else {
+                merged.refs.set(r, 0)
+            }
+        }
+    }
+    let od: Reg? = owning_def(ctx.ins, region_end_at, ctx.reg_types, ctx.immortal, ctx.managed)
+    if od != null { merged.refs.set(od!.index, 1) }
+    Merged { sim: merged, diags: diags, diverges: false, gives: od }
+}
+
+/// `xs`'s greatest value — `xs` is never empty here (one entry per
+/// live arm, and `live` was just proven non-empty).
+fn largest(xs: List<int>) -> int {
+    mut m = xs[0]
+    for x in xs { if x > m { m = x } }
+    m
+}
+
+// ── A view crossing an Avra call ─────────────────────────────────────
+
+/// A register's root, walked back through Extract and a lending
+/// CallRt's own subject to whatever defines it outright. `Unknown` at
+/// a `Load` ON PURPOSE — a `mut` cell can be loaded more than once,
+/// each its own register for the SAME box, so register identity
+/// cannot say a later argument is "the same" root
+/// (docs/2026_09_23_REUSE_IN_PLACE.md §30, D16).
+enum Provenance { Unknown, At(root: Reg) }
+
+fn view_root(ctx: Ctx, r: Reg) -> Provenance {
+    let d = ctx.defs[r.index]
+    if d < 0 { return Provenance.At(r) }
+    if ctx.ins[d] is .Load { return Provenance.Unknown }
+    let src? = view_source(ctx.ins[d]) else { return Provenance.At(r) }
+    view_root(ctx, src)
+}
+
+fn view_source(i: Ins) -> Reg? {
+    match i {
+        .Extract(_, src, _) -> src,
+        .CallRt(_, callee, args) if rt_lends(callee) -> args.first(),
+        rest -> null,
+    }
+}
+
+/// `ar` RIDES another box's reference (Extract, a lending CallRt, or
+/// a bare cell Load) with no reference of its own.
+/// A BARE Load is memory.av's own `standing_regs` — "a cell never
+/// leaves its body, so no callee changes it" — so it is NEVER a
+/// candidate here, only what is built ON one (Extract, a lending
+/// CallRt) is: `view_root`'s walk still crosses the Load beneath it
+/// to answer `Unknown`, but the gate that asks the question at all
+/// is the shape ABOVE the Load, never the Load's own destination.
+fn is_view(ctx: Ctx, r: Reg) -> bool {
+    let d = ctx.defs[r.index]
+    d >= 0 && view_source(ctx.ins[d]) != null
+}
+
+/// One call argument, checked: a VIEW whose root the call cannot be
+/// ruled unreachable from — the root itself is unknown (crossed a
+/// cell Load), or it is ALSO among this call's own seats — must carry
+/// its own protecting Retain; a call argument that stands already, or
+/// that already owns its own reference, needs none.
+fn view_protection(ctx: Ctx, sim: Sim, at: int, cargs: List<Reg>, ar: Reg) -> List<Diag> {
+    if !ctx.managed(ctx.reg_types[ar.index]) || !is_view(ctx, ar) { return [] }
+    let needs = match view_root(ctx, ar) {
+        .Unknown -> true,
+        .At(root) -> cargs.any(same_reg(it, root)),
+    }
+    if !needs || sim.refs[ar.index] > 0 { return [] }
+    [unprotected_view(ctx.name, at, ar)]
+}
+
+// ── Reusing/moving twins — an OUTPUT shape, read by name ────────────
+
+fn is_reusing_twin(callee: string) -> bool {
+    callee.ends_with("_reusing")
+}
+
+fn is_moving_twin(callee: string) -> bool {
+    callee.ends_with("_moved")
+}
+
+// ── Voices — every refusal spoken here, never assembled elsewhere ──
+
+fn use_after_release(name: string, at: int, r: Reg) -> Diag {
+    defect_at(null, "in `${name}`, instruction ${at} reads r${r.index} after it was released — a use-after-free the memory pass's own output proves")
+}
+
+fn releases_unowned(name: string, at: int, r: Reg) -> Diag {
+    defect_at(null, "in `${name}`, instruction ${at} releases r${r.index} — a parameter or a view, never this body's own reference to give up — a caller's own count goes wrong at the return")
+}
+
+fn region_disagreement(name: string, at: int, r: Reg) -> Diag {
+    defect_at(null, "in `${name}`, a region ending at instruction ${at} leaves r${r.index} released on one arm and not on another — the two paths must agree")
+}
+
+fn unprotected_view(name: string, at: int, r: Reg) -> Diag {
+    defect_at(null, "in `${name}`, instruction ${at} hands r${r.index} — a view with no reference of its own — to a call whose callee may empty the box it looks into, uncounted")
+}
+
+fn leaked(name: string, at: int, r: Reg) -> Diag {
+    defect_at(null, "in `${name}`, r${r.index} is a fresh box still alive at instruction ${at} — never released, transferred, or answered on this path")
+}

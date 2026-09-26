@@ -1,0 +1,22 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+
+/// A parameter nothing reads — the signature lies about what the fn
+/// needs, and every call site carries the lie. `dead_params()`
+/// (features/code.av) already exempts a contract-bound member (a
+/// `trait` signature or an `impl Trait for` method — the TRAIT owns
+/// the seat count) and a bodiless declaration.
+///
+/// NO REWRITE: dropping a dead parameter from the signature would
+/// leave every call site an arity short — this is a whole-program
+/// edit `callers()` (features/code.av, THE REFERENCES RELATION)
+/// could drive, not a single node's to make alone.
+@keeps("fn f(a: int) -> int { a }")
+export rule dead_parameter {
+    quote { ${f} } if !f.dead_params().is_empty() -> dead_parameter_found(f),
+}
+
+fn dead_parameter_found(f: Code) -> Fix {
+    Fix.Say(said(f.loc(), "never read: ${f.dead_params().join(", ")}", "this signature", null))
+}

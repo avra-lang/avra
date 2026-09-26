@@ -124,6 +124,10 @@ type Machine = {
     // the files it read; null outside a settlement, where embed traps
     base: string?,
     embeds: List<string>,
+    // `type_named`'s door back to the workspace, from where THIS run
+    // stands — an ordinary program run carries the one that always
+    // answers absent, since it has no workspace to stand in
+    named: fn(string) -> Lifted,
 }
 
 /// A place in the program: a body and the instruction in it.
@@ -168,9 +172,13 @@ fn opened(stem: string) -> int {
     avra_ffi_open("${stem}.so")
 }
 
+/// `type_named` outside any workspace-backed run — an ordinary
+/// program, or a run nobody armed the door for.
+fn no_named_type(_name: string) -> Lifted { crossed_answer(MetaVal.Absent, new_meta_heap()) }
+
 /// A machine at rest over a program: no frames, no heap, nothing said.
-fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], callers: [], tasks: [], running: -1, parking: false, arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], live: false, failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
+fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Machine {
+    Machine { l: l, rt: rt_index(), frames: [], callers: [], tasks: [], running: -1, parking: false, arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], live: false, failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {}, named: named }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -278,12 +286,12 @@ const unbudgeted: int = 1000000000000000
 /// Refused BEFORE running when any body reaches the world, DURING
 /// it when the budget runs out or a body traps, and AFTER it when
 /// the body answers nothing.
-export fn run_settle(l: Lowered, budgets: Budgets, base: string) -> Result<Settled, Unsettled> {
+export fn run_settle(l: Lowered, budgets: Budgets, base: string, named: fn(string) -> Lifted = no_named_type) -> Result<Settled, Unsettled> {
     // Every answer crosses into compiler-owned data now, so embed is
     // safe for aggregates as well as values with a source literal.
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
-    mut m = budgeted_machine(l, budgets)
+    mut m = budgeted_machine(l, budgets, named)
     m.base = base
     let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
@@ -305,11 +313,11 @@ fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
 /// A fn run at compile time over crossing values: the body under its
 /// arguments, its answer crossed back. The reach law holds here — no
 /// world, no embed.
-export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, budgets: Budgets) -> Result<Lifted, Unsettled> {
+export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, budgets: Budgets, named: fn(string) -> Lifted = no_named_type) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, false)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     let target? = body_named(l, symbol) else { return .Err(Unsettled.Trap(no_body_named(symbol))) }
-    mut m = budgeted_machine(l, budgets)
+    mut m = budgeted_machine(l, budgets, named)
     let vals = [m.val_of(heap, a) for a in args]
     let answer: Val? = m.run_body(target, vals)
     m.spent(symbol, budgets)
@@ -324,10 +332,10 @@ export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: Meta
 /// Unlike scalar const settlement, no source literal is synthesized:
 /// nested records, lists and maps remain values. Embed is permitted
 /// because the result exists only while the compiler call runs.
-export fn run_crossed(l: Lowered, budgets: Budgets, base: string) -> Result<Lifted, Unsettled> {
+export fn run_crossed(l: Lowered, budgets: Budgets, base: string, named: fn(string) -> Lifted = no_named_type) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
-    mut m = budgeted_machine(l, budgets)
+    mut m = budgeted_machine(l, budgets, named)
     m.base = base
     let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
@@ -340,8 +348,8 @@ export fn run_crossed(l: Lowered, budgets: Budgets, base: string) -> Result<Lift
 }
 
 /// A machine under a settlement's budgets.
-fn budgeted_machine(l: Lowered, budgets: Budgets) -> Machine {
-    fresh_machine(l) with { budget: budgets.steps, asked: budgets.steps, bytes: budgets.bytes }
+fn budgeted_machine(l: Lowered, budgets: Budgets, named: fn(string) -> Lifted = no_named_type) -> Machine {
+    fresh_machine(l, named) with { budget: budgets.steps, asked: budgets.steps, bytes: budgets.bytes }
 }
 
 /// The first row a compile-time call reaches that it may not, with
@@ -419,7 +427,7 @@ fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
     let h? = hosted_symbol(i) else { return false }
     let row? = rows.get(h) else { return true }
     match row.reach {
-        .Pure -> false,
+        .Pure or .Lookup -> false,
         .Embed -> !permits_embed,
         .World -> true,
     }
@@ -704,6 +712,14 @@ impl Machine {
         }
         self.embeds.push(path)
         Val.S(avra_selfhost_read_file(path))
+    }
+
+    /// `type_named`: the workspace's own answer, crossed straight
+    /// into this run's values — the door every OTHER row reaches C
+    /// through, reached here into the compiler instead.
+    fn type_named_val(name: string) -> Val {
+        let r = self.named(name)
+        self.val_of(r.heap, r.answer)
     }
 
     fn trapped(msg: string) {
@@ -1169,6 +1185,7 @@ impl Machine {
             .FiberWithinEnd -> self.fiber_within_end_val(vals),
             .SpawnStatus -> self.spawn_status_val(vals),
             .SpawnIn -> self.spawn_in_val(vals),
+            .TypeNamed -> self.type_named_val(self.text_val(vals[0])),
             // no arm of its own: the row's C body, called by name through
             // the uniform frame, the row its witness — the host holds
             // every row (runtime/avra_rt.h), so the symbol is there

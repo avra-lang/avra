@@ -276,7 +276,7 @@ sweep:
 
 test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites
 	@for p in $(SUITES); do \
-	  ./avra test $$p || exit 1; \
+	  AVRA_SOUND_CHECK=1 ./avra test $$p || exit 1; \
 	done
 
 # THE OBJECT FOLLOWS THE SOURCE'S CONTENT, NOT ITS TIMESTAMP. make
@@ -447,9 +447,14 @@ suites:
 	@python3 tools/suites.py --self-test
 	@python3 tools/suites.py --report
 
-# The idiom bar: the baseline LISTS sites and only ever shrinks —
-# `idioms-accept` prunes what is fixed and can never add. A new
-# violation is written idiomatically or licensed AT the site.
+# The idiom bar is NATIVE now: every idiom the language can state is
+# a `rule` (packages/std-avrac's compiler/idioms.av and each
+# feature's own idioms.av), found by `avra check` itself.
+# `tools/idioms.baseline` lists every currently-accepted site and
+# only ever shrinks — `idioms-accept` prunes what a fix made gone,
+# and no path here can add a line (the file's own header states the
+# law). A new violation is fixed in the code, or a human adds it to
+# the baseline, reviewed at adoption and every time after.
 # THE NAMES THE DOCTRINE CITES RESOLVE — a third of the rot, and it
 # says which third: a count, a line number or an attribution stays
 # invisible to it.
@@ -457,10 +462,22 @@ cited:
 	@python3 tools/cited.py
 
 idioms:
-	@sh tools/idioms.sh
+	@STATUS=0; CHECKED=0; \
+	for pkg in packages/*/; do \
+	  name=$$(basename "$$pkg"); \
+	  [ -d "$${pkg}src" ] || continue; \
+	  CHECKED=$$((CHECKED + 1)); \
+	  ./build/avra check "packages/$$name" --baseline tools/idioms.baseline || STATUS=1; \
+	done; \
+	if [ $$STATUS -eq 0 ]; then echo "idioms: no new violations — $$CHECKED package(s) checked against tools/idioms.baseline"; fi; \
+	exit $$STATUS
 
 idioms-accept:
-	@sh tools/idioms.sh --accept
+	@for pkg in packages/*/; do \
+	  name=$$(basename "$$pkg"); \
+	  [ -d "$${pkg}src" ] || continue; \
+	  ./build/avra check "packages/$$name" --baseline tools/idioms.baseline --baseline_accept; \
+	done
 
 # The formatter's real receipt: `fmt(x) == x`, byte-exact, over every
 # `.av` file in the tree — never idempotence

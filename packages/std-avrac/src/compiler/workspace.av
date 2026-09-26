@@ -334,6 +334,10 @@ enum Family {
     /// a file parsed under NO sublanguage words — what the block
     /// pre-scan reads of a provider, depending on its source alone
     Plain
+    /// THE REFERENCES RELATION — one key, the whole program: every
+    /// named use of a declaration, folded from every file's own rows
+    /// (compiler/references.av).
+    References
     /// a `Result<T, _>`'s inferred error set — the whole-program
     /// fixpoint, one key for the entire program
     Failures
@@ -364,7 +368,8 @@ fn ordinal(f: Family) -> int {
         .Receivers -> 16,
         .Expanded -> 17,
         .Plain -> 18,
-        .Failures -> 19,
+        .References -> 19,
+        .Failures -> 20,
     }
 }
 
@@ -390,6 +395,7 @@ fn families() -> List<Family> {
         Family.Receivers,
         Family.Expanded,
         Family.Plain,
+        Family.References,
         Family.Failures,
     ]
     all
@@ -422,7 +428,7 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
 
 /// The declaration table with the language's own declarations in it.
 fn language_decls(lang: Language) -> Decls {
-    mut decls = new_decls() with { rows: lang.rows.types.concat(scalar_types()) }
+    let decls = new_decls() with { rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -511,6 +517,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_references(() -> ws.refs_ensured())
     ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
@@ -568,6 +575,10 @@ impl Workspace {
 
     fn writes_ensured() {
         let _ = self.receivers()
+    }
+
+    fn refs_ensured() {
+        let _ = self.references()
     }
 
     fn failures_ensured() {
@@ -641,6 +652,7 @@ impl Workspace {
             .Receivers -> touch(self.receivers()),
             .Expanded -> touch(self.expanded(file_at(arg))),
             .Plain -> touch(self.plain_parsed(file_at(arg))),
+            .References -> touch(self.references()),
             .Failures -> touch(self.failures()),
         }
         self.db.changed_at(key(f, arg))
@@ -660,7 +672,7 @@ impl Workspace {
     // ── The families ──
     /// A path's identity — the table mints it at first mention.
     fn file_id(path: string) -> FileId {
-        self.decls.file_id(path, self.module_of(path))
+        self.decls.file_id(path, self.module_of(path), self.is_test_path(path))
     }
 
     /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
@@ -737,7 +749,14 @@ impl Workspace {
         if rd != null { return rd }
         let before = self.parsed(f)
         if has_errors(before.voices.list) { return "the source has parse errors" }
-        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after))
+        // THE SAME BLOCK WORDS `before` READ UNDER: `parse_program`'s
+        // own `words` parameter defaults to none, and a file that
+        // imports a component or a named grammar (every `rule`
+        // declaration in this very file is one) parses its own blocks
+        // as ordinary statements without them — a rewrite that moved
+        // not one byte of that block would still fail to reparse.
+        let words = self.block_words(f, before)
+        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after), words)
         if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
         if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
         for i, s in before.stmts {
@@ -786,7 +805,7 @@ impl Workspace {
 
     fn clocked_parse(f: FileId) -> Parsed {
         let t0 = self.clock()
-        let p = parse_program(self.lang, self.source(f))
+        let p = parse_program(self.lang, self.source(f), BlockWords {})
         self.timed("ast", self.clock() - t0)
         p
     }
@@ -1155,7 +1174,7 @@ impl Workspace {
     /// of its file, the names it reads.
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         let p = self.parsed(x.file)
-        mut view = file_view(self.lang, p, self.decls, x.file)
+        let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(self.lang.dispatch, self.lang.keywords, view, names, (origin: FileId) -> self.visible(origin), x.lo, x.hi)
     }
 

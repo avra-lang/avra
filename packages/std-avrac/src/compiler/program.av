@@ -6,7 +6,8 @@ use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
 use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
-use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_untold, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
+use @std.grammar.{Captured, RunOutcome, run_grammar, run_untold, run_from, lex_diagnostic, Diagnostic, Cause}
+use grammar.{Token, DocComment, lex_source, lex_blocks, TokenKind, avra_lexeme}
 // LICENSED style.unused_import: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
 use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockWords}
@@ -122,19 +123,22 @@ export fn new_dispatch() -> Dispatch {
 }
 
 /// Parse a source into a FRESH store — the whole-file entry — under
-/// the block words the file imports (none for a file that imports
-/// none).
+/// the block words the file imports (`BlockWords {}` for a file that
+/// imports none). No default: an omitted `words` parses a NARROWER
+/// language than the file was written in, silently — the caller
+/// states which words it parses under, even when that answer is
+/// none.
 ///
 /// THE UNTOLD RUN FIRST: a file that parses clean is parsed once, with no miss
 /// keeping its story. Anything spoken is spoken again by the telling run, over a
 /// store of its own — the builders wrote into the first.
-export fn parse_program(lang: Language, src: SourceFile, words: BlockWords = BlockWords {}) -> Parsed {
+export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> Parsed {
     let quiet = parsed_fresh(lang, src, words, false)
     if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
 }
 
 fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
-    mut store = new_node_store(src.file)
+    let store = new_node_store(src.file)
     parsed_as(lang, store, src, words, telling)
 }
 
@@ -150,8 +154,8 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_blocks(src.text, [g.word for g in words.grammars], [c.word for c in words.components])
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, words)
-    let o = if telling { run_grammar<LangNode>(lang.syntax!, lexed.tokens, build) } else { run_untold<LangNode>(lang.syntax!, lexed.tokens, build) }
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), src.text, words)
+    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
     // attach_docs: an orphaned doc group extends this list, and
@@ -161,7 +165,7 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
     if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
     // what a block's grammar refused speaks with the parse, at the block
     let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
-    let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
+    let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
     Parsed {
         store: store,
         stmts: [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls()),
@@ -172,7 +176,18 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
 
 /// A block grammar's refusal as the engine's diagnostic it was.
 fn block_diagnostic(v: BlockVoice) -> Diagnostic {
-    Diagnostic { cause: Cause.Block, message: v.message, span: Span { lo: v.lo, hi: v.hi }, expected: v.expected, in_rule: v.in_rule }
+    Diagnostic { cause: Cause.Block, message: v.message, loc: Loc { file: null, lo: v.lo, hi: v.hi }, expected: v.expected, in_rule: v.in_rule }
+}
+
+/// The engine's own Loc, worn as this store's Span.
+fn loc_span(l: Loc?) -> Span? {
+    if l == null { return null }
+    span_of(l!.lo, l!.hi)
+}
+
+/// A byte range in this file, worn as the engine's own Loc.
+fn span_loc(s: Span) -> Loc {
+    Loc { file: null, lo: s.lo, hi: s.hi }
 }
 
 /// A type SPELLING (`List<ExprId>?`) as the written type it spells —
@@ -181,11 +196,11 @@ fn block_diagnostic(v: BlockVoice) -> Diagnostic {
 /// when the spelling is not a type.
 export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     if lang.syntax == null { return null }
-    mut store = new_node_store()
+    let store = new_node_store()
     let lexed = lex_source(text)
     if !lexed.errors.is_empty() { return null }
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text, BlockWords {})
-    let o = run_from<LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], build)
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), text, BlockWords {})
+    let o = run_from<Token, LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], avra_lexeme(), build)
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
 }
@@ -238,7 +253,7 @@ fn doc_target(store: NodeStore, doc: DocComment) -> StmtId? {
 
 /// The program's statements in order. A recovery hole becomes an
 /// explicit Stmt.Error node — the tree survives bad input visibly.
-fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
+fn program_stmts(store: NodeStore, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
     mut out: List<StmtId> = []
     if o.result == null { return out }
     let items = list_at([o.result!], 0)
@@ -353,7 +368,7 @@ impl Program {
     }
 
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s
-    /// words (features/values.av) — `avra docs repr <type>` (P7: a
+    /// words (features/values.av) — `avra repr <type>` (P7: a
     /// representation the compiler chose is inspectable wherever a
     /// tool exists to ask). Resolves a built-in scalar, `List<…>` or
     /// `Map<…>` from the registry alone, or a declared STRUCT by
@@ -363,7 +378,7 @@ impl Program {
     /// yet).
     fn explain_repr(type_text: string) -> string? {
         let ann? = parse_type_ref(avra(), type_text) else { return null }
-        mut decls = self.ws.decls
+        let decls = self.ws.decls
         let base? = spelled_type(decls.types, ann with { optional: false }) ?? decls.struct_type_ref(ann.name) else { return null }
         let ty = if ann.optional { decls.types.type(base?) } else { base }
         repr_word(decls.types, ty)
@@ -371,7 +386,7 @@ impl Program {
 
     /// A fn's seat-0 WRITE-FLOW CHAIN — a method's receiver, a free
     /// fn's first parameter — from `write_chain` (compiler/
-    /// receivers.av). `avra docs writes <fn>`. Null when no
+    /// receivers.av). `avra writes <fn>`. Null when no
     /// declared fn wears the name, its seat 0 is not written, or it
     /// has no seat 0 at all (a fn with no receiver and no parameters).
     /// A `mut` parameter PAST seat 0 is the pass's data too, not yet
@@ -581,6 +596,8 @@ impl Program {
     fn files_checked() -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_as(null, true, true)
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         let spoken = lo.diagnostics.concat(self.ws.decls.outside_entry(self.files, self.entry?.at))
         if !spoken.is_empty() { return .Err(self.rendered(spoken)) }
         .Ok(lo)
@@ -589,8 +606,20 @@ impl Program {
     fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_from(entry, every)
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
         .Ok(lo)
+    }
+
+    /// A layout fact moved under lowering, the way typing's own
+    /// `Workspace.program` already checked it did not — MONO can
+    /// still mint a fresh combination (R11c, avra-8sb5.34.21). `?`
+    /// reads odd here on purpose: absence is the clean case.
+    fn layout_report() -> string? {
+        let stale = self.ws.decls.types.drain_stale()
+        if stale.is_empty() { return null }
+        joined(stale, "\n\n")
     }
 
     fn run() -> Result<string, string> {
@@ -620,6 +649,8 @@ impl Program {
     fn check_bodies(every: bool) -> Result<string, string> {
         if !self.clean() { return .Err(self.report()) }
         let lowered = self.lowered_from(self.entry?.at, every).diagnostics
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         if has_errors(lowered) { return .Err(self.rendered(lowered)) }
         .Ok(self.warnings())
     }
