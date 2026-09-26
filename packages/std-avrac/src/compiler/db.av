@@ -21,10 +21,12 @@
 //! warnings are already-serialized text by the time either reaches
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
-use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape}
+use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape, DeclId, TypeId}
 use compiler.store.{Store, Stored, node_key}
+use compiler.host.{Manifest}
 use diagnostics.{SourceFile}
 use compiler.lower.{Unit}
+use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
 use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
 use @std.text.{parse_int}
@@ -95,23 +97,39 @@ export fn decoded_docfacts(text: string) -> DocFacts? {
 /// one `key() -> string` method would be the same false unification the
 /// Obj/Bin file-path shape already refused for the durable side.
 ///
-/// RECORDED TRIGGER: only three of `Workspace`'s families are folded in
-/// here (`Source`, `Parsed`, `Lowered`) — proof the pattern holds for an
-/// INPUT (`Source`), a plain derived query (`Parsed`), and a RECURSIVE
-/// one (`Lowered`, which re-enters itself for specializations). The
-/// other ~17 families (`Items`, `Namespace`, `Typed`, `Analysis`, ...)
-/// are NOT migrated: several carry extra side-tables beyond a single
-/// value (`Methods` has `sig_voices`/`method_clashes` alongside it) and
-/// `Sig`'s own in-memory answer already lives in `Decls.sigs`, not a
-/// `Memo` at all — each needs its own look before folding in, not a
-/// mechanical sweep. `Workspace.db` stays `Kernel`-typed until every
-/// family shares `Stage`; renaming it to `Db` is a final, purely
-/// mechanical step, not something safe to do with 17 families still
-/// on their own bespoke types.
+/// Every `Workspace` family with a plain "one value, one Memo" shape is
+/// folded in here — proof the pattern holds for an INPUT (`Source`,
+/// `Manifest`), a plain derived query (`Parsed`, `Plain`, `Items`), a
+/// RECURSIVE one (`Lowered`, `Namespace`, `Visible`, `Resolved`,
+/// `Typed`, `Folded`, `Analysis`, `Expanded` — each re-enters itself or
+/// a peer), and a manual ask/begin/finish one that folds real work
+/// between the two (`ConstTyped`, `Lifted`, `Settled`). NOT folded in,
+/// each for a real reason named at the site rather than skipped
+/// quietly: `Methods` carries `sig_voices`/`method_clashes` alongside
+/// its value, not a single value; `Sig`'s own in-memory answer lives in
+/// `Decls.sigs`, not a `Memo` at all; `Receivers` uses the raw kernel
+/// verbs directly over a side-effecting whole-program pass, not a typed
+/// value cache. `Workspace.db` stays `Kernel`-typed until every
+/// `Memo` field shares `Stage` — renaming it to `Db` is a final,
+/// purely mechanical step, unsafe while any family still holds its own
+/// bespoke type.
 export enum Stage {
     Source(SourceFile)
     Parsed(Parsed)
     Lowered(Unit)
+    Manifest(Manifest)
+    Plain(Parsed)
+    Items(List<DeclId>)
+    Namespace(ModuleNames)
+    Visible(Namespace)
+    Resolved(NameFacts)
+    Typed(TypeFacts)
+    ConstTyped(TypeId)
+    Folded(TypeFacts)
+    Analysis(Analysis)
+    Lifted(LiftResult)
+    Expanded(List<DeclId>)
+    Settled(Settlement)
 }
 
 extern fn avra_trap(message: string)
@@ -146,6 +164,136 @@ fn lowered_of(s: Stage) -> Unit {
         _ -> {
             avra_trap("defect: Stage.Lowered expected")
             lowered_of(s)
+        },
+    }
+}
+
+fn manifest_of(s: Stage) -> Manifest {
+    match s {
+        .Manifest(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Manifest expected")
+            manifest_of(s)
+        },
+    }
+}
+
+fn plain_of(s: Stage) -> Parsed {
+    match s {
+        .Plain(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Plain expected")
+            plain_of(s)
+        },
+    }
+}
+
+fn items_of(s: Stage) -> List<DeclId> {
+    match s {
+        .Items(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Items expected")
+            items_of(s)
+        },
+    }
+}
+
+fn namespace_of(s: Stage) -> ModuleNames {
+    match s {
+        .Namespace(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Namespace expected")
+            namespace_of(s)
+        },
+    }
+}
+
+fn visible_of(s: Stage) -> Namespace {
+    match s {
+        .Visible(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Visible expected")
+            visible_of(s)
+        },
+    }
+}
+
+fn resolved_of(s: Stage) -> NameFacts {
+    match s {
+        .Resolved(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Resolved expected")
+            resolved_of(s)
+        },
+    }
+}
+
+fn typed_of(s: Stage) -> TypeFacts {
+    match s {
+        .Typed(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Typed expected")
+            typed_of(s)
+        },
+    }
+}
+
+fn const_typed_of(s: Stage) -> TypeId {
+    match s {
+        .ConstTyped(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.ConstTyped expected")
+            const_typed_of(s)
+        },
+    }
+}
+
+fn folded_of(s: Stage) -> TypeFacts {
+    match s {
+        .Folded(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Folded expected")
+            folded_of(s)
+        },
+    }
+}
+
+fn analysis_of(s: Stage) -> Analysis {
+    match s {
+        .Analysis(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Analysis expected")
+            analysis_of(s)
+        },
+    }
+}
+
+fn lifted_of(s: Stage) -> LiftResult {
+    match s {
+        .Lifted(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Lifted expected")
+            lifted_of(s)
+        },
+    }
+}
+
+fn expanded_of(s: Stage) -> List<DeclId> {
+    match s {
+        .Expanded(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Expanded expected")
+            expanded_of(s)
+        },
+    }
+}
+
+fn settled_of(s: Stage) -> Settlement {
+    match s {
+        .Settled(v) -> v,
+        _ -> {
+            avra_trap("defect: Stage.Settled expected")
+            settled_of(s)
         },
     }
 }
