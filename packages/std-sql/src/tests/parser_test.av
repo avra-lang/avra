@@ -4,7 +4,7 @@
 // SELECT statement — the end-to-end proof the `@grammar_rule` +
 // `collect` + `@std/grammar` assembly actually works.
 use @std.sql.lexicon.{SQL}
-use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem}
+use @std.sql.parser.{parse_sql, sql_parser_grammar, SqlNode, SqlExpr, SqlSelect, SelectItem, TableRef, JoinItem, WhenClause, InsertStmt, UpdateStmt, DeleteStmt}
 use @std.grammar.{lex}
 
 fn kinds_of(source: string) -> string {
@@ -53,6 +53,30 @@ fn select_of(n: SqlNode?) -> SqlSelect? {
     }
 }
 
+fn insert_of(n: SqlNode?) -> InsertStmt? {
+    if n == null { return null }
+    match n! {
+        .Ins(i) -> i,
+        _ -> null,
+    }
+}
+
+fn update_of(n: SqlNode?) -> UpdateStmt? {
+    if n == null { return null }
+    match n! {
+        .Upd(u) -> u,
+        _ -> null,
+    }
+}
+
+fn delete_of(n: SqlNode?) -> DeleteStmt? {
+    if n == null { return null }
+    match n! {
+        .Del(d) -> d,
+        _ -> null,
+    }
+}
+
 /// A canonical rendering of an expression tree — for asserting on
 /// clause shape (precedence, operator nesting, qualified columns)
 /// without hand-unwrapping `SqlExpr` in every test.
@@ -69,7 +93,15 @@ fn render_expr(e: SqlExpr) -> string {
         .IsNull(inner, negated) -> "(${render_expr(inner)} IS ${if negated { "NOT " } else { "" }}NULL)",
         .Between(inner, lo, hi, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}BETWEEN ${render_expr(lo)} AND ${render_expr(hi)})",
         .In(inner, list, negated) -> "(${render_expr(inner)} ${if negated { "NOT " } else { "" }}IN (${[render_expr(a) for a in list].join(", ")}))",
+        .Case(operand, whens, else_branch) -> render_case(operand, whens, else_branch),
     }
+}
+
+fn render_case(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> string {
+    let head = if operand == null { "CASE" } else { "CASE ${render_expr(operand!)}" }
+    let arms = [" WHEN ${render_expr(w.cond)} THEN ${render_expr(w.result)}" for w in whens].join("")
+    let tail = if else_branch == null { "" } else { " ELSE ${render_expr(else_branch!)}" }
+    "${head}${arms}${tail} END"
 }
 
 fn where_ident(e: SqlExpr?) -> string? {
@@ -381,6 +413,99 @@ spec "sql/predicates" {
     given "a predicate beside an ordinary comparison" {
         then "both sides of AND build independently" {
             where_shape("SELECT a FROM t WHERE age > 1 AND deleted_at IS NULL") == "((age > 1) AND (deleted_at IS NULL))"
+        }
+    }
+}
+
+spec "sql/case" {
+    given "the searched form, no operand" {
+        then "each WHEN is its own boolean condition" {
+            where_shape("SELECT a FROM t WHERE CASE WHEN x > 1 THEN 1 ELSE 0 END = 1") == "(CASE WHEN (x > 1) THEN 1 ELSE 0 END = 1)"
+        }
+    }
+    given "the searched form with no ELSE" {
+        then "else_branch is absent, not a defaulted value" {
+            where_shape("SELECT a FROM t WHERE CASE WHEN x > 1 THEN 1 END = 1") == "(CASE WHEN (x > 1) THEN 1 END = 1)"
+        }
+    }
+    given "the simple form, with an operand" {
+        then "each WHEN compares a value against the operand" {
+            where_shape("SELECT a FROM t WHERE CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END = 'one'") == "(CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END = 'one')"
+        }
+    }
+    given "CASE as a SELECT item" {
+        then "aliases like any other expression" {
+            let s = select_of(selected("SELECT CASE WHEN a > 0 THEN 'pos' ELSE 'non' END AS sign FROM t"))
+            s != null && columns_shape(s!.columns) == "CASE WHEN (a > 0) THEN 'pos' ELSE 'non' END AS sign"
+        }
+    }
+}
+
+spec "sql/dml" {
+    given "INSERT with one row" {
+        then "the table, columns, and one row build" {
+            let i = insert_of(selected("INSERT INTO posts (title, body) VALUES ('hi', 'there')"))
+            i != null && i!.table_name == "posts" && i!.columns.join(",") == "title,body" && i!.rows.length == 1 && render_expr(i!.rows[0][0]) == "'hi'" && render_expr(i!.rows[0][1]) == "'there'"
+        }
+    }
+    given "INSERT with several rows" {
+        then "every row, in order" {
+            let i = insert_of(selected("INSERT INTO posts (title) VALUES ('a'), ('b'), ('c')"))
+            i != null && i!.rows.length == 3 && [render_expr(r[0]) for r in i!.rows].join(",") == "'a','b','c'"
+        }
+    }
+    given "INSERT with RETURNING" {
+        then "the returning list builds like a SELECT list" {
+            let i = insert_of(selected("INSERT INTO posts (title) VALUES ('a') RETURNING id, title AS t"))
+            i != null && columns_shape(i!.returning) == "id,title AS t"
+        }
+    }
+    given "INSERT with no RETURNING" {
+        then "an empty list" {
+            let i = insert_of(selected("INSERT INTO posts (title) VALUES ('a')"))
+            i != null && i!.returning.is_empty()
+        }
+    }
+    given "UPDATE with one assignment" {
+        then "the table and assignment build" {
+            let u = update_of(selected("UPDATE posts SET title = 'new' WHERE id = 5"))
+            u != null && u!.table_name == "posts" && u!.assignments.length == 1 && u!.assignments[0].column == "title" && render_expr(u!.assignments[0].value) == "'new'" && where_ident(u!.where) == "(id = 5)"
+        }
+    }
+    given "UPDATE with several assignments" {
+        then "every assignment, in order" {
+            let u = update_of(selected("UPDATE posts SET title = 'new', published = 1 WHERE id = 5"))
+            u != null && u!.assignments.length == 2 && u!.assignments[1].column == "published"
+        }
+    }
+    given "UPDATE with no WHERE" {
+        then "absent" {
+            let u = update_of(selected("UPDATE posts SET title = 'new'"))
+            u != null && u!.where == null
+        }
+    }
+    given "UPDATE with RETURNING" {
+        then "builds like a SELECT list" {
+            let u = update_of(selected("UPDATE posts SET title = 'new' WHERE id = 5 RETURNING id"))
+            u != null && columns_shape(u!.returning) == "id"
+        }
+    }
+    given "DELETE with WHERE" {
+        then "the table and condition build" {
+            let d = delete_of(selected("DELETE FROM posts WHERE id = 5"))
+            d != null && d!.table_name == "posts" && where_ident(d!.where) == "(id = 5)"
+        }
+    }
+    given "DELETE with no WHERE" {
+        then "absent — every row" {
+            let d = delete_of(selected("DELETE FROM posts"))
+            d != null && d!.where == null
+        }
+    }
+    given "DELETE with RETURNING" {
+        then "builds like a SELECT list" {
+            let d = delete_of(selected("DELETE FROM posts WHERE id = 5 RETURNING id, title"))
+            d != null && columns_shape(d!.returning) == "id,title"
         }
     }
 }
