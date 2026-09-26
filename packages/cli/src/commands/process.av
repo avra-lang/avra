@@ -1,0 +1,79 @@
+//! `avra process` — the package's declared tools, minted as the
+//! library mints them, and what a child inherits: the set of doors,
+//! before any opens.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.path.{joined_path}
+use @std.process.{Tool, tool, tool_from_env, ProcessError}
+use @std.io.{read_text, exists}
+use @std.avrac.diagnostics.{Diag, new_source_file, render}
+use @std.avrac.compiler.host.{ToolRow, read_manifest}
+
+type ProcessCmd = {}
+
+impl Runnable for ProcessCmd {
+    fn run(args: CliResult) -> int {
+        explained_process(args.arg("dir"))
+    }
+}
+
+/// `dir` is the package's directory; the front door stands at the
+/// root when absent.
+fn explained_process(dir: string) -> int {
+    let manifest = joined_path(if dir.length == 0 { here() } else { dir }, "avra.toml")
+    if !exists(manifest) {
+        eprintln("avra: no ${manifest} — `process` reads a package's manifest")
+        return 1
+    }
+    let src = new_source_file(manifest, read_text(manifest) catch "")
+    let m = read_manifest(src)
+    for d in m.voices { eprintln(render(d, src)) }
+    if m.voices.any(refuses(it)) { return 1 }
+    if m.tools.is_empty() {
+        println("no [process.tools] declared — the script rung: any tool a literal names, an open set")
+        return 0
+    }
+    println("tools this package declares — ${m.tools.length}")
+    for row in m.tools { println("  ${row.name}  ${resolved_text(row)}  ${provenance_text(row)}  ${terminator_text(row.terminator)}") }
+    println("a child inherits the minimal base: PATH (relative entries stripped) HOME TMPDIR TERM LANG=C LC_ALL=C NO_COLOR=1")
+    0
+}
+
+/// A manifest voice that refuses — a warning is said and read past.
+fn refuses(d: Diag) -> bool {
+    d.severity is .Error
+}
+
+fn resolved_text(row: ToolRow) -> string {
+    match minted(row) {
+        .Ok(t) -> t.path,
+        .Err(e) -> "NOT FOUND — ${e.describe().message}",
+    }
+}
+
+/// A row minted as the library would, by its provenance.
+fn minted(row: ToolRow) -> Result<Tool, ProcessError> {
+    match row.from {
+        .Path -> tool(row.name),
+        .Env -> tool_from_env(row.var ?? "", row.default ?? row.name),
+        .Abs -> tool(row.at_path ?? row.name),
+    }
+}
+
+fn provenance_text(row: ToolRow) -> string {
+    match row.from {
+        .Path -> "from the PATH",
+        .Env -> "from ${row.var ?? "?"}, else `${row.default ?? row.name}`",
+        .Abs -> "at its path",
+    }
+}
+
+fn terminator_text(t: string?) -> string {
+    if t == null { return "options never end — a dashed word needs `after_options`" }
+    "options end at `${t!}`"
+}
+
+export command process {
+    description: "The package's declared [process.tools], resolved, and the minimal environment a child inherits"
+    arg dir { description: "the package directory (the root when absent)" }
+    run: ProcessCmd {}
+}

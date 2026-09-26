@@ -586,6 +586,17 @@ UNRATCHETED = {
            "           WILDCARD seat (a literal `_`, never an `or`-run) already refuses\n"
            "           a registry's remaining variants structurally, before any is\n"
            "           asked; ratcheted by the native-findings phase below",
+    "impls.default_override": "NATIVE FROM THE START, never a regex (DOGFOODING's own entry said\n"
+           "           so at discovery — the comparison is cross-declaration, a body\n"
+           "           against a DIFFERENT declaration's, which no text pattern in one\n"
+           "           file can reach): `default_override` (features/impls/idioms.av) —\n"
+           "           a bare-hole root guarded `overrides_default(m)`, which reads the\n"
+           "           impl's own trait by name (`Decls.trait_named`) and that trait's\n"
+           "           default member of the same name (`Decls.default_member` — the\n"
+           "           runtime dispatch's own fallback table), then compares each side's\n"
+           "           kept statements by `NodeStore`'s span-blind `stmt_fingerprint`,\n"
+           "           a bare `nothing()` call dropped from either; ratcheted by the\n"
+           "           native-findings phase below.",
     "compiler.modified_copy_literal": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
            "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
            "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
@@ -623,11 +634,6 @@ UNRATCHETED = {
            "           per-decl walk asks its owner's question a second time",
     "style.mutable_slot_not_cell": "no grep tells a one-element list used as a slot from a list whose\n"
            "           first element is written; the keeper is the review round",
-    "style.impl_method_equals_default": "needs body equality against the trait's default — a native rule\n"
-           "           over the declaration's Code (the formatter's rule engine), not a\n"
-           "           text matcher. `nothing()` (or whatever no-op form applies) is\n"
-           "           transparent to the comparison: a body that wraps the default in\n"
-           "           one still answers exactly what the default answers",
     "style.derive_file_not_alone": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
            "           file with a trait in it — the shape that breaks it is whatever\n"
            "           ELSE the file holds. The keeper is the law in CLAUDE.md and the\n"
@@ -864,16 +870,16 @@ def licensed(lines, i, code):
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
 def collected_rule_ids(binary):
-    """Every rule the compiler carries, by identity — `avra docs rules
+    """Every rule the compiler carries, by identity — `avra rules
     --json` over the cli, whose closure links every rule. An empty
     answer is a failure, never an empty set: a filter that examined
     nothing would count nothing."""
     env = dict(os.environ, AVRA_WATCH_HELD="1", AVRA_CWD=os.path.join(ROOT, "packages", "cli"))
-    out = subprocess.run([binary, "docs", "rules", "--json"], cwd=os.path.join(ROOT, "packages", "cli"),
+    out = subprocess.run([binary, "rules", "--json"], cwd=os.path.join(ROOT, "packages", "cli"),
                          env=env, capture_output=True, text=True, timeout=300).stdout
     ids = {r["id"] for r in json.loads(out or "[]")}
     if not ids:
-        sys.exit("idioms: `avra docs rules --json` answered no rules — refusing to count native findings blind")
+        sys.exit("idioms: `avra rules --json` answered no rules — refusing to count native findings blind")
     return ids
 
 def native_findings():
