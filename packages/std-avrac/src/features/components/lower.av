@@ -4,6 +4,7 @@
 //! that reads a parameter or the world — is not checked.
 use core.{ExprId, StmtId, TypeId, Reg, Annotation, Span, joined, doc_first_paragraph}
 use features.{LowerCx, SettleRoot, Unsettled, nothing}
+use features.structs.{defaulted_reg}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal, warning}
 
@@ -46,13 +47,16 @@ fn annotation_list_reg(mut cx: LowerCx, anns: List<Annotation>, list_ty: TypeId)
 }
 
 /// One annotation's own `R`: its arguments packed positionally when
-/// `R` is a record of exactly that many fields, else its ONE written
+/// `R` is a record — trailing fields it wrote none for default, the
+/// same law an omitted struct-literal field takes (`structs/
+/// lower.av`'s `defaulted_reg`), so `@fixes("before")` fills `Fixes`'
+/// `before` and defaults its `after` — else its ONE written
 /// argument, R's own shape.
 fn annotation_elem_reg(mut cx: LowerCx, a: Annotation, elem_ty: TypeId) -> Reg {
     let one? = a.args.first() else { return cx.mint_ty(elem_ty) }
     let fsig? = cx.fields_of(elem_ty) else { return cx.reg_of(one) }
-    if fsig.names.length != a.args.length { return cx.reg_of(one) }
-    cx.packed_struct(elem_ty, [cx.reg_of(arg) for arg in a.args])
+    if a.args.length > fsig.names.length { return cx.reg_of(one) }
+    cx.packed_struct(elem_ty, [if slot < a.args.length { cx.reg_of(a.args[slot]) } else { defaulted_reg(cx, a.callee, fsig, slot) } for slot in 0..fsig.names.length])
 }
 
 fn checked(mut cx: LowerCx, e: ExprId, check: ExprId) {

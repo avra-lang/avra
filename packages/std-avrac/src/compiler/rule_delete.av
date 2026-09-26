@@ -1,0 +1,174 @@
+//! `Fix.Delete`'s own logic — `rule_fix.av`'s third answer to `Fix`,
+//! split out because a deletion is its own edit transaction: a
+//! target's whole span (its leading doc, its trailing break) when it
+//! is an ordinary declaration, one item dropped from its own `use`
+//! line — well-formed either way, the whole line gone when none are
+//! left — when it names an import instead, PLUS every import in this
+//! file the References relation says a deleted declaration alone kept
+//! alive. Proved through the rule's own `@law`, never the IR proof: a
+//! deletion answers no code for that comparison to read.
+use core.{At, StmtId, DeclId, FileId, NodeStore, Span, same_decl, same_stmt, same_file, flatten, joined}
+use features.{Analysed, Decls, Decl, Ref, Fix, nothing}
+use diagnostics.{spliced, loc_at}
+use @std.errors.{Edit, Loc}
+use compiler.format.{import_item}
+
+impl Program {
+    /// A `Fix.Delete`'s own application — ONE edit transaction over
+    /// every target, guarded by the same remark/license doors a
+    /// rewrite answers to, then trusted on the rule's own `@law`
+    /// (`rule_proof.av`'s `law_proved`: the after-text still
+    /// type-checks) since no IR comparison applies to a removal.
+    fn delete_application(path: string, a: Analysed, text: string, c: Candidate, what: List<DeclId>) -> List<Application> {
+        let edits? = delete_edits(a, text, what) else { return [] }
+        if edits.any((e: Edit) -> holds_remark(a.view.store, e.loc) || licensed_just_above(a.view.store, e.loc.lo)) { return [] }
+        let after? = spliced(text, edits) else { return [] }
+        let by_law = self.law_proved(path, after, declared_law(c.owner))
+        [Application { kind: rule_id(c.owner), edits: edits, proved: false, by_law: by_law }]
+    }
+}
+
+/// `Fix.Delete`'s own targets, or `null` for any other fix — the
+/// harness's own door (`rule_examples.av`'s `checks_delete`) and
+/// `avra check`'s (`rule_pass.av`'s `delete_diag`) both read a
+/// candidate's edits through this ONE builder, never a second
+/// derivation.
+export fn deleted(f: Fix) -> List<DeclId>? {
+    match f {
+        .Delete(what) -> what,
+        .Rewrite(_) or .Say(_) -> null,
+    }
+}
+
+/// Every edit ONE `Fix.Delete` needs: each ordinary-declaration
+/// target's own whole-span removal, every imported-name target's item
+/// dropped from its own `use` line (several sharing one line become
+/// ONE edit), plus every import this file's References relation says
+/// only a deleted declaration still kept alive. `null` for a target
+/// this cannot place at all — outside this file, or a `use` line
+/// whose item count no longer matches its own References rows (a
+/// resolve error already spoken elsewhere, never this rule's to guess
+/// through).
+export fn delete_edits(a: Analysed, text: string, what: List<DeclId>) -> List<Edit>? {
+    let decls = a.view.decls
+    let store = a.view.store
+    let file = a.view.file
+    let src_file = a.view.source.file
+    let import_rows = [r for r in decls.refs_in_file(file) if r.kind is .Import]
+    let import_decl_ids = [r.decl for r in import_rows]
+    let decl_targets = [d for d in what if !decl_in(import_decl_ids, d)]
+    let named_imports = [d for d in what if decl_in(import_decl_ids, d)]
+    let cascaded = flatten([decls.orphaned_imports(store, file, decls.decl(d), import_rows) for d in decl_targets])
+    let import_targets = distinct_decls(named_imports.concat(cascaded))
+    let decl_edits = [decl_delete_edit(store, text, src_file, decls.decl(d)) for d in decl_targets]
+    if decl_edits.any(it == null) { return null }
+    let use_edits? = use_line_edits(store, text, src_file, import_rows, import_targets) else { return null }
+    [e! for e in decl_edits].concat(use_edits)
+}
+
+fn decl_in(ds: List<DeclId>, d: DeclId) -> bool {
+    ds.any((o: DeclId) -> same_decl(o, d))
+}
+
+impl Decls {
+    /// The imports THIS declaration's own deletion orphans: every
+    /// import row whose declaration's uses IN THIS FILE lie entirely
+    /// inside the deleted declaration's span, and there is at least
+    /// one such use — an import nobody in this file ever read is a
+    /// DIFFERENT rule's own finding (`modules.unused_import`), never
+    /// this cascade's to claim.
+    fn orphaned_imports(store: NodeStore, file: FileId, target: Decl, rows: List<Ref>) -> List<DeclId> {
+        let sp? = decl_span(store, target.stmt) else { return [] }
+        [r.decl for r in rows if self.orphaned_by(store, file, sp, r)]
+    }
+
+    fn orphaned_by(store: NodeStore, file: FileId, sp: Span, r: Ref) -> bool {
+        let here = [u for u in self.used(r.decl) if same_file(u.file, file)]
+        !here.is_empty() && here.all((u: Ref) -> at_within(store, u.at, sp))
+    }
+}
+
+fn at_within(store: NodeStore, at: At, sp: Span) -> bool {
+    let usp? = store.span_at(at) else { return false }
+    usp.lo >= sp.lo && usp.hi <= sp.hi
+}
+
+/// A declaration's own span, its leading doc group's start included
+/// when it has one — the deletion's own reach, wider than the bare
+/// statement's.
+fn decl_span(store: NodeStore, s: StmtId) -> Span? {
+    let sp? = store.stmt_span(s) else { return null }
+    let doc_at = store.doc_at(s)
+    Span { lo: if doc_at >= 0 && doc_at < sp.lo { doc_at } else { sp.lo }, hi: sp.hi }
+}
+
+fn decl_delete_edit(store: NodeStore, text: string, file: string?, target: Decl) -> Edit? {
+    let sp? = decl_span(store, target.stmt) else { return null }
+    let loc? = loc_at(file, sp) else { return null }
+    deletion_edit(loc, text)
+}
+
+/// A span erased whole, its own trailing break kept — the shape
+/// every deletion answers with, whether the target is a declaration
+/// or a `use` line with nothing left to keep.
+fn deletion_edit(loc: Loc, text: string) -> Edit {
+    Edit { loc: loc, replacement: swallowed_break(text, loc) }
+}
+
+fn distinct_decls(ds: List<DeclId>) -> List<DeclId> {
+    mut out: List<DeclId> = []
+    for d in ds { if !decl_in(out, d) { out = out.concat([d]) } }
+    out
+}
+
+/// Every affected `use` line's own edit: its targeted items dropped,
+/// well-formed either way — the line rewritten around the survivors,
+/// or the whole line gone when none are left.
+fn use_line_edits(store: NodeStore, text: string, file: string?, rows: List<Ref>, targets: List<DeclId>) -> List<Edit>? {
+    if targets.is_empty() { return [] }
+    let hit_rows = [r for r in rows if decl_in(targets, r.decl)]
+    let stmts = distinct_stmts([r.at for r in hit_rows])
+    let edits = [use_stmt_edit(store, text, file, s, rows, targets) for s in stmts]
+    if edits.any(it == null) { return null }
+    [e! for e in edits]
+}
+
+fn distinct_stmts(ats: List<At>) -> List<StmtId> {
+    mut out: List<StmtId> = []
+    for at in ats {
+        match at {
+            .Stmt(s) -> { if !out.any((o: StmtId) -> same_stmt(o, s)) { out = out.concat([s]) } },
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> nothing(),
+        }
+    }
+    out
+}
+
+/// One `use` line's own edit — `null` when its written item count no
+/// longer matches its own References rows for this statement, the
+/// honest miss a resolve error already spoke elsewhere.
+fn use_stmt_edit(store: NodeStore, text: string, file: string?, s: StmtId, rows: List<Ref>, targets: List<DeclId>) -> Edit? {
+    let u? = store.use_parts(s) else { return null }
+    let stmt_rows = [r for r in rows if stmt_at(r.at, s)]
+    if stmt_rows.length != u.items.length { return null }
+    let kept = [j for j in 0..u.items.length if !decl_in(targets, stmt_rows[j].decl)]
+    let sp? = store.stmt_span(s) else { return null }
+    let loc? = loc_at(file, sp) else { return null }
+    if kept.is_empty() { return deletion_edit(loc, text) }
+    let new_items = [u.items[j] for j in kept]
+    let new_aliases = [u.aliases[j] for j in kept]
+    Edit { loc: loc, replacement: use_line_text(u.path, new_items, new_aliases) + swallowed_break(text, loc) }
+}
+
+fn stmt_at(at: At, s: StmtId) -> bool {
+    match at {
+        .Stmt(x) -> same_stmt(x, s),
+        .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+    }
+}
+
+/// The formatter's own `use` rendering (`compiler/format/
+/// source_text.av`), over a possibly narrowed item list.
+fn use_line_text(path: List<string>, items: List<string>, aliases: List<string>) -> string {
+    "use ${joined(path, ".")}.{${joined([import_item(items[j], aliases[j]) for j in 0..items.length], ", ")}}"
+}
