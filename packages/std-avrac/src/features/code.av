@@ -582,9 +582,16 @@ impl Code {
     /// file leaves the relation unable to say "no use anywhere" —
     /// unsure is never unused.
     fn unused_imports() -> List<string> {
+        [self.of.view.decls.decl(d).name for d in self.unused_import_decls()]
+    }
+
+    /// `unused_imports`' own targets, DeclId for name — `Fix.Delete`'s
+    /// payload for `modules.unused_import`: the DECLARATION each
+    /// unused name imports, never its text.
+    fn unused_import_decls() -> List<DeclId> {
         if self.of.view.decls.refs_are_incomplete() { return [] }
         match self.at {
-            .Stmt(id) -> [self.of.view.decls.decl(r.decl).name for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) && self.of.view.decls.used(r.decl).is_empty()],
+            .Stmt(id) -> [r.decl for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) && self.of.view.decls.used(r.decl).is_empty()],
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
     }
