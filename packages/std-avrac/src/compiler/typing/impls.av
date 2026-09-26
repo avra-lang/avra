@@ -20,10 +20,17 @@ impl TypeCx {
         // scope for it, so a signature naming `Self` does not resolve.
         if self.view.store.is_static(f) {
             self.record_receiver_word(f, [])
-            self.declare(f, DeclSig.Fn(FnSig {
-                params: self.annotated_params(f, fp),
-                ret: self.answer_type(f, fp.name, fp.ret),
-            }))
+            self
+                .declare(
+                    f,
+                    DeclSig
+                        .Fn(
+                            FnSig {
+                                params: self.annotated_params(f, fp),
+                                ret: self.answer_type(f, fp.name, fp.ret),
+                            },
+                        ),
+                )
             // A BODIED ASSOCIATED FN IS ONE DEFINITION FOR THE WHOLE
             // TRAIT, never per-signatory, so it is a method of the
             // trait's OWN name — `Foo.make(…)`, no implementor in
@@ -35,10 +42,17 @@ impl TypeCx {
         self.record_receiver_word(f, [plain_mark])
         // `Self` is in scope for the sig's annotations
         self.enter_target_scope(contract)
-        self.declare(f, DeclSig.Fn(FnSig {
-            params: [self.impl_self_type(contract)].concat(self.annotated_params(f, fp)),
-            ret: self.answer_type(f, fp.name, fp.ret),
-        }))
+        self
+            .declare(
+                f,
+                DeclSig
+                    .Fn(
+                        FnSig {
+                            params: [self.impl_self_type(contract)].concat(self.annotated_params(f, fp)),
+                            ret: self.answer_type(f, fp.name, fp.ret),
+                        },
+                    ),
+            )
         self.leave_tscope()
     }
 
@@ -235,7 +249,8 @@ impl TypeCx {
 
     /// Whether a builtin shape's own vocabulary answers this name.
     fn builtin_answers(sh: Type, name: string) -> bool {
-        method_row(self.view.lang.methods, name, sh) != null || property_row(self.view.lang.properties, name, sh) != null
+        method_row(self.view.lang.methods, name, sh) != null ||
+            property_row(self.view.lang.properties, name, sh) != null
     }
 
     /// A refused declaration still declares — hole seats, so the
@@ -248,7 +263,17 @@ impl TypeCx {
 
     fn declare_holes(f: StmtId, seats: int) {
         let parts? = self.view.store.fn_parts(f) else { return }
-        self.declare(f, DeclSig.Fn(FnSig { params: filled<TypeId>(seats + parts.params.length, self.error_type), ret: self.error_type }))
+        self
+            .declare(
+                f,
+                DeclSig
+                    .Fn(
+                        FnSig {
+                            params: filled<TypeId>(seats + parts.params.length, self.error_type),
+                            ret: self.error_type,
+                        },
+                    ),
+            )
     }
 
     /// THE ORPHAN RULE (spec 16.5): an impl lives in its type's
@@ -303,10 +328,17 @@ impl TypeCx {
         // params both start at the written seats.
         let receiverless = self.view.store.is_static(f)
         self.record_receiver_word(f, if receiverless { [] } else { [plain_mark] })
-        self.declare(f, DeclSig.Fn(FnSig {
-            params: if receiverless { self.annotated_params(f, fp) } else { [ty].concat(self.annotated_params(f, fp)) },
-            ret: self.answer_type(f, fp.name, fp.ret),
-        }))
+        self
+            .declare(
+                f,
+                DeclSig
+                    .Fn(
+                        FnSig {
+                            params: if receiverless { self.annotated_params(f, fp) } else { [ty].concat(self.annotated_params(f, fp)) },
+                            ret: self.answer_type(f, fp.name, fp.ret),
+                        },
+                    ),
+            )
     }
 
     /// THE RECEIVER'S CONTRACT, judged once the body is typed: a
@@ -342,32 +374,95 @@ impl TypeCx {
     }
 
     fn no_such_target(s: StmtId, target: string) {
-        self.emit(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type", "this impl", "declare `${target}` first — `type` or `enum`"))
+        self
+            .emit(
+                refusal(
+                    "type.impl",
+                    self.stmt_loc(s),
+                    "`impl ${target}` serves no declared type",
+                    "this impl",
+                    "declare `${target}` first — `type` or `enum`",
+                ),
+            )
     }
 
     fn alias_target(s: StmtId, target: string, d: DeclId) {
         let of = self.view.types.name_of(self.view.decls.alias_of(d) ?? self.error_type)
-        self.emit(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` is written on an alias — `${target}` names `${of}`", "this impl", "write the impl on the type itself: `impl ${of}`"))
+        self
+            .emit(
+                refusal(
+                    "type.impl",
+                    self.stmt_loc(s),
+                    "`impl ${target}` is written on an alias — `${target}` names `${of}`",
+                    "this impl",
+                    "write the impl on the type itself: `impl ${of}`",
+                ),
+            )
     }
 
     fn generic_target(s: StmtId, target: string) {
-        self.emit(refusal("type.impl", self.stmt_loc(s), "`${target}` is generic — a trait impl over a generic type is recorded, not landed", "this impl", null))
+        self
+            .emit(
+                refusal(
+                    "type.impl",
+                    self.stmt_loc(s),
+                    "`${target}` is generic — a trait impl over a generic type is recorded, not landed",
+                    "this impl",
+                    null,
+                ),
+            )
     }
 
     fn no_such_trait(s: StmtId, of: string) {
-        self.emit(refusal("type.trait", self.stmt_loc(s), "`impl ${of} for` names no trait", "this impl", "declare it — `trait ${of} { … }`"))
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(s),
+                    "`impl ${of} for` names no trait",
+                    "this impl",
+                    "declare it — `trait ${of} { … }`",
+                ),
+            )
     }
 
     fn beyond_the_trait(f: StmtId, of: string, target: string, mn: string) {
-        self.emit(refusal("type.trait", self.stmt_loc(f), "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods", "declared here", "move it to a separate `impl ${target} { … }` block"))
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(f),
+                    "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods",
+                    "declared here",
+                    "move it to a separate `impl ${target} { … }` block",
+                ),
+            )
     }
 
     fn unanswered(s: StmtId, of: string, target: string, mn: string) {
-        self.emit(refusal("type.trait", self.stmt_loc(s), "`impl ${of} for ${target}` must answer `${mn}`", "this impl", "add `fn ${mn}(self, …)`"))
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(s),
+                    "`impl ${of} for ${target}` must answer `${mn}`",
+                    "this impl",
+                    "add `fn ${mn}(self, …)`",
+                ),
+            )
     }
 
     fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
-        self.emit(refusal("type.trait", self.stmt_loc(s), "`${target}.${mn}` does not wear `${of}.${mn}`'s signature", "this impl", "match the trait's parameters and return exactly"))
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(s),
+                    "`${target}.${mn}` does not wear `${of}.${mn}`'s signature",
+                    "this impl",
+                    "match the trait's parameters and return exactly",
+                ),
+            )
     }
 
     /// THE SEATS' CONTRACT: a `mut` seat the body never writes
@@ -382,39 +477,120 @@ impl TypeCx {
     }
 
     fn seat_never_written(x: Decl, seat: string) {
-        self.emit(warning("type.seat_unused", self.stmt_loc(x.stmt), "`${seat}` is a `mut` seat — `${x.name}` never writes through it", "declared `mut`", "drop `mut`: the caller then hands a value"))
+        self
+            .emit(
+                warning(
+                    "type.seat_unused",
+                    self.stmt_loc(x.stmt),
+                    "`${seat}` is a `mut` seat — `${x.name}` never writes through it",
+                    "declared `mut`",
+                    "drop `mut`: the caller then hands a value",
+                ),
+            )
     }
 
     fn never_writes(x: Decl) {
-        self.emit(warning("type.mut_fn_unused", self.stmt_loc(x.stmt), "`mut fn` — `${x.name}` never writes through `self`", "declared `mut`", "drop `mut`: the compiler infers a writing method"))
+        self
+            .emit(
+                warning(
+                    "type.mut_fn_unused",
+                    self.stmt_loc(x.stmt),
+                    "`mut fn` — `${x.name}` never writes through `self`",
+                    "declared `mut`",
+                    "drop `mut`: the compiler infers a writing method",
+                ),
+            )
     }
 
     fn writes_under_plain_sig(x: Decl, of: string) {
-        self.emit(refusal("type.contract_write", self.stmt_loc(x.stmt), "`${x.name}` writes through `self`, but `${of}.${x.name}` declares no `mut`", "writes here", "declare `mut fn ${x.name}(…)` in the trait — the contract decides for every signatory"))
+        self
+            .emit(
+                refusal(
+                    "type.contract_write",
+                    self.stmt_loc(x.stmt),
+                    "`${x.name}` writes through `self`, but `${of}.${x.name}` declares no `mut`",
+                    "writes here",
+                    "declare `mut fn ${x.name}(…)` in the trait — the contract decides for every signatory",
+                ),
+            )
     }
 
     fn generic_method(f: StmtId, name: string) {
-        self.emit(refusal("type.impl", self.stmt_loc(f), "`${name}` is generic — generic methods are recorded, not landed", "this method", null))
+        self
+            .emit(
+                refusal(
+                    "type.impl",
+                    self.stmt_loc(f),
+                    "`${name}` is generic — generic methods are recorded, not landed",
+                    "this method",
+                    null,
+                ),
+            )
     }
 
     fn static_names_a_variant(f: StmtId, tname: string, name: string) {
-        self.emit(refusal("type.static_name", self.stmt_loc(f), "`${tname}.${name}` is already a variant — a `static fn` of that name could never be called", "declared here", "rename the `static fn`: a variant wins the spelling `${tname}.${name}`"))
+        self
+            .emit(
+                refusal(
+                    "type.static_name",
+                    self.stmt_loc(f),
+                    "`${tname}.${name}` is already a variant — a `static fn` of that name could never be called",
+                    "declared here",
+                    "rename the `static fn`: a variant wins the spelling `${tname}.${name}`",
+                ),
+            )
     }
 
     fn builtin_inherent(s: StmtId, target: string) {
-        self.emit(refusal("type.orphan", self.stmt_loc(s), "`${target}` is the language's own type — a package adds to it only by implementing its own trait", "this impl", "declare a trait here and write `impl YourTrait for ${target}`, or write a free fn"))
+        self
+            .emit(
+                refusal(
+                    "type.orphan",
+                    self.stmt_loc(s),
+                    "`${target}` is the language's own type — a package adds to it only by implementing its own trait",
+                    "this impl",
+                    "declare a trait here and write `impl YourTrait for ${target}`, or write a free fn",
+                ),
+            )
     }
 
     fn builtin_foreign(s: StmtId, of: string, target: string) {
-        self.emit(refusal("type.orphan", self.stmt_loc(s), "`impl ${of} for ${target}` belongs in `${of}`'s package — `${target}` is the language's, so only the trait's package may implement it", "this impl", "an impl on a builtin type lives with its trait"))
+        self
+            .emit(
+                refusal(
+                    "type.orphan",
+                    self.stmt_loc(s),
+                    "`impl ${of} for ${target}` belongs in `${of}`'s package — `${target}` is the language's, so only the trait's package may implement it",
+                    "this impl",
+                    "an impl on a builtin type lives with its trait",
+                ),
+            )
     }
 
     fn builtin_renamed(f: StmtId, target: string, name: string) {
-        self.emit(refusal("type.builtin_name", self.stmt_loc(f), "`${target}` already answers `${name}` — an impl on a builtin type adds names, it never changes one", "this method", "rename the trait's method"))
+        self
+            .emit(
+                refusal(
+                    "type.builtin_name",
+                    self.stmt_loc(f),
+                    "`${target}` already answers `${name}` — an impl on a builtin type adds names, it never changes one",
+                    "this method",
+                    "rename the trait's method",
+                ),
+            )
     }
 
     fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {
-        self.emit(refusal("type.orphan", self.stmt_loc(s), "`impl ${heading}` belongs in ${package_word(owner)}, where `${target}` is declared", "this impl", "an impl lives in its type's package — or in its trait's, when the trait is this package's"))
+        self
+            .emit(
+                refusal(
+                    "type.orphan",
+                    self.stmt_loc(s),
+                    "`impl ${heading}` belongs in ${package_word(owner)}, where `${target}` is declared",
+                    "this impl",
+                    "an impl lives in its type's package — or in its trait's, when the trait is this package's",
+                ),
+            )
     }
 }
 

@@ -60,10 +60,7 @@ fn spreads(cx: TypeCx, e: ExprId, v: ExprId) -> bool {
 }
 
 fn is_list(cx: TypeCx, t: TypeId) -> bool {
-    match cx.view.types.seen_shape(t) {
-        .List(_) or .EmptyList -> true,
-        _ -> false,
-    }
+    match cx.view.types.seen_shape(t) { .List(_) or .EmptyList -> true, _ -> false }
 }
 
 /// A collect with lists spread in: the element is the want's, else the
@@ -114,16 +111,22 @@ fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId) -> TypeId {
 fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
     let n = cx.name_at(k)
     let shared = if boxable(cx, elem) && boxable(cx, cx.type_at(k)) { share_a_trait() } else { null }
-    cx.spoken(refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), shared))
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(k),
+                "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`",
+                this_is(n),
+                shared,
+            ),
+        )
 }
 
 /// A declared type — the only kind a trait impl serves, so the only
 /// kind a `dyn` list can hold.
 fn boxable(cx: TypeCx, t: TypeId) -> bool {
-    match cx.view.types.shape_of(t) {
-        .Struct(_, _) or .Enum(_, _) -> true,
-        _ -> false,
-    }
+    match cx.view.types.shape_of(t) { .Struct(_, _) or .Enum(_, _) -> true, _ -> false }
 }
 
 fn share_a_trait() -> string {
@@ -132,7 +135,16 @@ fn share_a_trait() -> string {
 
 fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    cx.spoken(refusal("type.list_element", cx.loc_of(k), "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(k),
+                "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 /// THE COMPREHENSION LAW: the head is the `for` statement's. Over a
@@ -140,7 +152,15 @@ fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
 /// over a range `lo..hi`, both bounds are ints, the name counts,
 /// and there is no index. The filter is a bool; the answer is a
 /// list of the element expression's type.
-fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, index: string?, source: ExprId, hi: ExprId?, cond: ExprId?) -> TypeId {
+fn comp_type(
+    mut cx: TypeCx,
+    e: ExprId,
+    elem: ExprId,
+    index: string?,
+    source: ExprId,
+    hi: ExprId?,
+    cond: ExprId?,
+) -> TypeId {
     let tys = if hi == null { walked_types(cx, index, source) } else { counted_types(cx, index, source, hi!) }
     cx.bind_types(elem, tys)
     if cond != null { filter_checks(cx, cond!, tys) }
@@ -209,9 +229,27 @@ fn binders(cx: TypeCx, index: string?, elem: TypeId) -> List<TypeId> {
 
 fn not_walkable(mut cx: TypeCx, source: ExprId) -> TypeId {
     let n = cx.name_at(source)
-    cx.spoken(refusal("type.list", cx.loc_of(source), "a comprehension walks a list, found `${n}`", this_is(n), "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts"))
+    cx
+        .spoken(
+            refusal(
+                "type.list",
+                cx.loc_of(source),
+                "a comprehension walks a list, found `${n}`",
+                this_is(n),
+                "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts",
+            ),
+        )
 }
 
 fn range_has_no_index(mut cx: TypeCx, lo: ExprId) -> TypeId {
-    cx.spoken(refusal("type.list", cx.loc_of(lo), "a range has no index — the counter IS the position", "counted from here", "write `for i in lo..hi`"))
+    cx
+        .spoken(
+            refusal(
+                "type.list",
+                cx.loc_of(lo),
+                "a range has no index — the counter IS the position",
+                "counted from here",
+                "write `for i in lo..hi`",
+            ),
+        )
 }

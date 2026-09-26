@@ -11,19 +11,27 @@ fn handler() -> string {
 spec "features/structs (aliases)" {
     given "the same type under a second name" {
         then "a declared fn fills an aliased fn seat" {
-            shown("${handler()}fn shout(n: int) -> string { \"n=\${n}\" }\nfn run(h: Handler) -> string { h(3) }\nrun(shout)") == "n=3"
+            shown(
+                "${handler()}fn shout(n: int) -> string { \"n=\${n}\" }\nfn run(h: Handler) -> string { h(3) }\nrun(shout)",
+            ) == "n=3"
         }
         then "a lambda fills it, and a value of it fills the shape" {
-            shown("${handler()}let h: Handler = (n) -> \"L\${n}\"\nlet f: fn(int) -> string = h\nf(4)") == "L4"
+            shown(
+                "${handler()}let h: Handler = (n) -> \"L\${n}\"\nlet f: fn(int) -> string = h\nf(4)",
+            ) == "L4"
         }
         then "an alias of a scalar is that scalar" {
             shown("alias Count = int\nfn more(n: Count) -> int { n + 1 }\nmore(2) + more(3)") == "7"
         }
         then "an alias of a named type is that named type" {
-            shown("type UserId = int\nalias Id = UserId\nfn f(u: UserId) -> int { u.of }\nlet i: Id = 4\nf(i)") == "4"
+            shown(
+                "type UserId = int\nalias Id = UserId\nfn f(u: UserId) -> int { u.of }\nlet i: Id = 4\nf(i)",
+            ) == "4"
         }
         then "an alias of an alias is the type at the end" {
-            shown("alias A = List<int>\nalias B = A\nlet b: B = [1, 2]\nlet a: List<int> = b\na.length") == "2"
+            shown(
+                "alias A = List<int>\nalias B = A\nlet b: B = [1, 2]\nlet a: List<int> = b\na.length",
+            ) == "2"
         }
         then "an alias is declared after its use" {
             shown("alias Fwd = Later\ntype Later = { v: int }\nlet x: Fwd = Later { v: 7 }\nx.v") == "7"
@@ -31,10 +39,14 @@ spec "features/structs (aliases)" {
     }
     given "generic aliases" {
         then "an alias lands its type arguments" {
-            shown("alias Pair<T> = List<T>\nfn first(p: Pair<string>) -> string { p[0] }\nfirst([\"a\", \"b\"])") == "a"
+            shown(
+                "alias Pair<T> = List<T>\nfn first(p: Pair<string>) -> string { p[0] }\nfirst([\"a\", \"b\"])",
+            ) == "a"
         }
         then "an alias applies another alias" {
-            shown("alias Arrow<A, B> = fn(A) -> B\nalias Endo<T> = Arrow<T, T>\nfn ap(f: Endo<int>, n: int) -> int { f(n) }\nap((n) -> n * 3, 2)") == "6"
+            shown(
+                "alias Arrow<A, B> = fn(A) -> B\nalias Endo<T> = Arrow<T, T>\nfn ap(f: Endo<int>, n: int) -> int { f(n) }\nap((n) -> n * 3, 2)",
+            ) == "6"
         }
         then "an alias of its own parameter is its argument" {
             shown("alias Id<T> = T\nfn f(x: Id<int>) -> int { x + 1 }\nf(2)") == "3"
@@ -53,10 +65,16 @@ spec "features/structs (aliases)" {
             refused_with("alias B = C\nalias C = B\n1", "is an alias that names itself")
         }
         then "a generic alias written bare refuses" {
-            refused_with("alias G<T> = List<T>\nfn f(x: G) -> int { 1 }\n1", "`G` is generic — it takes 1 type argument")
+            refused_with(
+                "alias G<T> = List<T>\nfn f(x: G) -> int { 1 }\n1",
+                "`G` is generic — it takes 1 type argument",
+            )
         }
         then "an alias's arguments are counted" {
-            refused_with("alias G<T> = List<T>\nfn f(x: G<int, int>) -> int { 1 }\n1", "`G` is applied to 2 types; it takes 1")
+            refused_with(
+                "alias G<T> = List<T>\nfn f(x: G<int, int>) -> int { 1 }\n1",
+                "`G` is applied to 2 types; it takes 1",
+            )
         }
         then "an alias of an unknown type refuses at the alias" {
             refused_with("alias N = Missing\n1", "`Missing` names no type")
@@ -65,7 +83,10 @@ spec "features/structs (aliases)" {
             refused_with("alias A = int\ntype A = string\n1", "`A` is declared more than once")
         }
         then "an alias lives at the top level" {
-            refused_with("fn f() -> int {\n    alias I = int\n    1\n}\nf()", "type declarations live at the top level")
+            refused_with(
+                "fn f() -> int {\n    alias I = int\n    1\n}\nf()",
+                "type declarations live at the top level",
+            )
         }
         then "`alias` is a keyword" {
             refused_with("fn f(alias: int) -> int { 1 }\nf(1)", "`alias` is a keyword")

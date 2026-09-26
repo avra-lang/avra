@@ -28,7 +28,11 @@ use features.{Decls, Decl, bound_decl_of}
 /// `_<T>` and `_ or E` are not this, and stay ordinary unresolved
 /// names.
 fn is_bare_underscore(tr: TypeRef) -> bool {
-    tr.name == "_" && tr.args.is_empty() && !tr.optional && !tr.dynamic && tr.alternatives.is_empty()
+    tr.name == "_" &&
+        tr.args.is_empty() &&
+        !tr.optional &&
+        !tr.dynamic &&
+        tr.alternatives.is_empty()
 }
 
 /// A written return type spells `Result<_, _>`.
@@ -110,10 +114,7 @@ impl FailSurvey {
     /// that is itself pending or unresolvable has no field/element/
     /// carried type this walk can name either.
     fn unwrapped(e: ExprId) -> TypeId? {
-        match self.site_type(e) {
-            .Type(ty) -> ty,
-            .Edge(_) or .Unresolved -> null,
-        }
+        match self.site_type(e) { .Type(ty) -> ty, .Edge(_) or .Unresolved -> null }
     }
 
     fn wrap(ty: TypeId?) -> SiteType {
@@ -180,10 +181,7 @@ impl FailSurvey {
     }
 
     fn ident_name(e: ExprId) -> string? {
-        match self.dt.store.expr(e) {
-            .Ident(name) -> name.of,
-            rest -> null,
-        }
+        match self.dt.store.expr(e) { .Ident(name) -> name.of, rest -> null }
     }
 
     /// THE GUARD: a callee's own written shape decides before its
@@ -222,10 +220,7 @@ fn fail_values(store: NodeStore) -> List<ExprId> {
 }
 
 fn fail_value(store: NodeStore, s: StmtId) -> List<ExprId> {
-    match store.stmt(s) {
-        .Fail(v) -> [v],
-        rest -> [],
-    }
+    match store.stmt(s) { .Fail(v) -> [v], rest -> [] }
 }
 
 fn fail_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
@@ -237,10 +232,7 @@ fn propagate_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
 }
 
 fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
-    match store.expr(e) {
-        .Propagate(v) -> [v],
-        rest -> [],
-    }
+    match store.expr(e) { .Propagate(v) -> [v], rest -> [] }
 }
 
 /// The declarations this fixpoint holds at all — every `_`-declared,
@@ -262,7 +254,15 @@ impl Workspace {
         self.decls.clear_inferred()
         let sums = [self.fail_summary(d) for d in fns]
         self.decls.settle_failures(fns, sums)
-        self.db.settle(k, fp(21, [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns]))
+        self
+            .db
+            .settle(
+                k,
+                fp(
+                    21,
+                    [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns],
+                ),
+            )
         fns.length
     }
 
@@ -280,12 +280,26 @@ impl Workspace {
         // answer it has not settled yet (empty table, spurious refusal).
         let seats: List<TypeId> = self.decls.sig_so_far(d)?.fn_sig()?.params ?? []
         let store = self.decls.store(d)
-        let fs = FailSurvey { dt: DeclaredTypes { ws: self, decls: self.decls, store: store, names: self.resolved(x.file), receiver: receiver, seats: seats } }
+        let fs = FailSurvey {
+            dt: DeclaredTypes {
+                ws: self,
+                decls: self.decls,
+                store: store,
+                names: self.resolved(x.file),
+                receiver: receiver,
+                seats: seats,
+            },
+        }
         let fails = [fail_contribution(fs, v) for v in fail_sites(store, x.lo, x.hi)]
-        let props = flatten([some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.lo, x.hi)])
+        let props = flatten(
+            [some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.lo, x.hi)],
+        )
         let all = fails.concat(props)
         if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
-        FailSummary { direct: flatten([some_list(direct_ty(c)) for c in all]), calls: flatten([some_list(edge_callee(c)) for c in all]) }
+        FailSummary {
+            direct: flatten([some_list(direct_ty(c)) for c in all]),
+            calls: flatten([some_list(edge_callee(c)) for c in all]),
+        }
     }
 }
 

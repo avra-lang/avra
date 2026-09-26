@@ -222,7 +222,13 @@ fn read_line(meta: command, words: List<string>) -> Result<CliResult, CliError> 
         if options.get(plain(o.name)) == null { options.set(plain(o.name), o.default) }
     }
     let bound = bind_positionals(meta, positional)?
-    CliResult { command: meta.name, flags: flags, options: options, args: bound.named, rest: bound.rest }
+    CliResult {
+        command: meta.name,
+        flags: flags,
+        options: options,
+        args: bound.named,
+        rest: bound.rest,
+    }
 }
 
 /// A word's kind: a declared flag by name, short or alias; a declared
@@ -288,7 +294,10 @@ export fn app_help(app: cli) -> string {
 /// One command's help: its usage line, its description, and each
 /// flag, option and positional with its words.
 export fn command_help(app: cli, meta: command) -> string {
-    let parts = [usage_of(app, meta), "", meta.description].concat(flags_help(meta)).concat(options_help(meta)).concat(args_help(meta))
+    let parts = [usage_of(app, meta), "", meta.description]
+        .concat(flags_help(meta))
+        .concat(options_help(meta))
+        .concat(args_help(meta))
     parts.join("\n")
 }
 
@@ -317,7 +326,11 @@ fn flag_spelling(f: flag) -> string {
 }
 
 fn options_help(meta: command) -> List<string> {
-    section("options:", [option_spelling(o) for o in meta.options], [option_words(o) for o in meta.options])
+    section(
+        "options:",
+        [option_spelling(o) for o in meta.options],
+        [option_words(o) for o in meta.options],
+    )
 }
 
 fn option_spelling(o: option) -> string {
@@ -382,10 +395,7 @@ impl cli {
             return 0
         }
         if words.contains("--help") || words.contains("-h") { return self.helped(first) }
-        match parse(self, words) {
-            .Ok(r) -> self.ran(r),
-            .Err(e) -> self.refused(e),
-        }
+        match parse(self, words) { .Ok(r) -> self.ran(r), .Err(e) -> self.refused(e) }
     }
 
     /// The help for a command by name — the app's own when none, or

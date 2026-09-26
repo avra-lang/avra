@@ -2,14 +2,33 @@
 //! `quote` its `expand` answers and the field each hole reads. An
 //! importing file's parse copies it where an instance stands, so the
 //! reading needs nothing but the provider's text — never its typing.
-use core.{NodeStore, StmtId, ExprId, TypeRef, BodyView, BodyParts, ComponentParts, FnParts, Param, flatten, some_list, body_behavior}
+use core.{
+    NodeStore,
+    StmtId,
+    ExprId,
+    TypeRef,
+    BodyView,
+    BodyParts,
+    ComponentParts,
+    FnParts,
+    Param,
+    flatten,
+    some_list,
+    body_behavior,
+}
 use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced}
 use grammar.{Token, TokenKind, lex_source}
 
 /// An exported component as an importing file's block word.
 export fn word_of(store: NodeStore, s: StmtId, origin: string) -> ComponentWord? {
     let c? = store.component_parts(s) else { return null }
-    ComponentWord { word: c.name, declared: c.name, form: instancing(store, c), store: store, origin: origin }
+    ComponentWord {
+        word: c.name,
+        declared: c.name,
+        form: instancing(store, c),
+        store: store,
+        origin: origin,
+    }
 }
 
 /// A named instance's statement as a name a body may list.
@@ -53,10 +72,7 @@ fn instance_at(tokens: List<Token>, i: int, words: List<ComponentWord>) -> Insta
 /// Whether a named instance of the component binds its name: a
 /// record with no head.
 fn binds_name(c: ComponentWord) -> bool {
-    match c.form {
-        .Record(r) -> r.head.is_empty(),
-        .Template(_) or .Refused(_) -> false,
-    }
+    match c.form { .Record(r) -> r.head.is_empty(), .Template(_) or .Refused(_) -> false }
 }
 
 /// How an instance of the component stands in place: its template,
@@ -70,7 +86,16 @@ fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
     let body? = template_body(store, expand) else { return Instancing.Refused(computes(c.name)) }
     let reads = [self_field(store, h) ?? "" for h in body.holes]
     if !reads.all((r) -> head.contains(r) || r == block) { return Instancing.Refused(computes(c.name)) }
-    Instancing.Template(Template { head: head, block: block, reads: reads, stmts: verbatim(body.view), formats: formats_of(c) })
+    Instancing
+        .Template(
+            Template {
+                head: head,
+                block: block,
+                reads: reads,
+                stmts: verbatim(body.view),
+                formats: formats_of(c),
+            },
+        )
 }
 
 /// A component read as a record: its head in order, the `List` fields
@@ -79,7 +104,11 @@ fn record_of(store: NodeStore, c: ComponentParts) -> Record {
     let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false]
     Record {
         head: [p.name.of for p in c.head],
-        slots: [ChildSlot { name: p.name.of, of: element_name(p), gathers: !declares_component(store, element_name(p)) } for p in c.fields if lists(p)],
+        slots: [ChildSlot {
+            name: p.name.of,
+            of: element_name(p),
+            gathers: !declares_component(store, element_name(p)),
+        } for p in c.fields if lists(p)],
         named: c.fields.any(it.name.of == "name"),
         checks: member(store, c, "check") != null,
         fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.of } else { null },
@@ -143,10 +172,7 @@ export fn formats_of(c: ComponentParts) -> List<string> {
 
 /// A quote's body as written.
 fn verbatim(view: BodyView) -> List<StmtId> {
-    match view {
-        .Verbatim(stmts, _) -> stmts,
-        .None or .Expanded(_) -> [],
-    }
+    match view { .Verbatim(stmts, _) -> stmts, .None or .Expanded(_) -> [] }
 }
 
 /// The field of `self` an expression reads, when that is all it does.
@@ -160,10 +186,7 @@ fn self_field(store: NodeStore, e: ExprId) -> string? {
 
 fn is_self(store: NodeStore, e: ExprId) -> bool {
     let step? = store.place_step(e) else { return false }
-    match step {
-        .Root(name) -> name.of == "self",
-        _ -> false,
-    }
+    match step { .Root(name) -> name.of == "self", _ -> false }
 }
 
 // ── voices ──

@@ -53,10 +53,7 @@ fn no_cores_refused() -> Result<bool, NetError> {
 }
 
 fn refused_invalid(r: Result<int, NetError>, n: int) -> bool {
-    match r {
-        .Ok(_) -> false,
-        .Err(e) -> e.describe().message.starts_with("run on ${n} cores: "),
-    }
+    match r { .Ok(_) -> false, .Err(e) -> e.describe().message.starts_with("run on ${n} cores: ") }
 }
 
 /// A server stopped before it runs answers none accepted.
@@ -78,10 +75,7 @@ fn nothing_crosses_a_fork() -> Result<bool, NetError> {
     defer b.done()
     let served = served_ok(b.c)?
     let _ = x.close()
-    let ended = match within patience() { y.read(16) } {
-        .Ok(got) -> got == null,
-        .Err(_) -> false,
-    }
+    let ended = match within patience() { y.read(16) } { .Ok(got) -> got == null, .Err(_) -> false }
     let _ = y.close()
     let _ = other.close()
     .Ok(served && ended)
@@ -92,11 +86,14 @@ fn nothing_crosses_a_fork() -> Result<bool, NetError> {
 fn a_failing_core_fails_the_server() -> Result<bool, NetError> {
     let other = listen("127.0.0.1", 0)?
     let x = connect("127.0.0.1", other.port, secs(2))?
-    let s = served(Listener { fd: x.fd, port: 0 }, () -> App { hits: Cell.new(0) }, limits(), timing(), echo)
-    let failed = match s.run(cores: 2) {
-        .Ok(_) -> false,
-        .Err(e) -> e.verb == "accept",
-    }
+    let s = served(
+        Listener { fd: x.fd, port: 0 },
+        () -> App { hits: Cell.new(0) },
+        limits(),
+        timing(),
+        echo,
+    )
+    let failed = match s.run(cores: 2) { .Ok(_) -> false, .Err(e) -> e.verb == "accept" }
     let _ = other.close()
     .Ok(failed)
 }

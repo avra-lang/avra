@@ -21,7 +21,22 @@
 //! type resolves under typing (`declare.av`'s `named_type`/
 //! `trait_decl_named` both bottom out at `names.type_decl`). A name
 //! bound as the STATEMENT's OWN type parameter names no declaration.
-use core.{DeclId, FileId, ExprId, StmtId, At, NodeStore, Nominal, TypeRef, UseParts, touch, fp, fp_list, flatten, some_list}
+use core.{
+    DeclId,
+    FileId,
+    ExprId,
+    StmtId,
+    At,
+    NodeStore,
+    Nominal,
+    TypeRef,
+    UseParts,
+    touch,
+    fp,
+    fp_list,
+    flatten,
+    some_list,
+}
 use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
 
 impl Workspace {
@@ -57,9 +72,13 @@ impl Workspace {
         let names = self.resolved(f)
         let facts = self.folded(f)
         let store = self.decls.store_of(f)
-        let expr_rows = flatten([self.expr_refs(f, names, facts, store, ExprId { index: i }) for i in 0..store.exprs.count()])
+        let expr_rows = flatten(
+            [self.expr_refs(f, names, facts, store, ExprId { index: i }) for i in 0..store.exprs.count()],
+        )
         let write_rows = flatten([self.write_refs(f, names, store, s) for s in store.stmt_ids()])
-        let impl_rows = flatten([self.impl_refs(f, names, d) for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Impl])
+        let impl_rows = flatten(
+            [self.impl_refs(f, names, d) for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Impl],
+        )
         let type_rows = flatten([self.type_use_refs(f, names, store, s) for s in store.stmt_ids()])
         expr_rows.concat(write_rows).concat(impl_rows).concat(type_rows).concat(self.import_refs(f))
     }
@@ -73,7 +92,11 @@ impl Workspace {
     fn impl_refs(f: FileId, names: NameFacts, d: DeclId) -> List<Ref> {
         let trait_name = self.decls.facts_of(d)?.of ?? ""
         let trait_rows = if trait_name.is_empty() { [] } else { some_list(self.named_impl_ref(f, names, d, trait_name)) }
-        let target_rows = flatten([some_list(Ref { decl: t, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read }) for t in some_list(self.decls.target_of(d))])
+        let target_rows = flatten(
+            [some_list(
+                Ref { decl: t, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read },
+            ) for t in some_list(self.decls.target_of(d))],
+        )
         trait_rows.concat(target_rows)
     }
 
@@ -86,7 +109,9 @@ impl Workspace {
     /// one row: a `Call`'s callee and a `MethodCall`'s method are
     /// NAME fields, not nested expressions, so one expression id
     /// never contributes twice.
-    fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: NodeStore, e: ExprId) -> List<Ref> {
+    fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: NodeStore, e: ExprId) -> List<
+        Ref,
+    > {
         match store.expr(e) {
             .Call(_, _, _) -> some_list(self.use_of(f, names, e, UseKind.Call)),
             .MethodCall(subject, name, _) -> some_list(self.method_ref(f, facts, store, e, subject, name.of)),
@@ -112,7 +137,14 @@ impl Workspace {
     /// on to be signed; `self.methods(target)` (the QUERY, not the
     /// table) would re-walk that type's whole impl closure per call
     /// site even on a cache hit — the table read never does.
-    fn method_ref(f: FileId, facts: TypeFacts, store: NodeStore, e: ExprId, subject: ExprId, name: string) -> Ref? {
+    fn method_ref(
+        f: FileId,
+        facts: TypeFacts,
+        store: NodeStore,
+        e: ExprId,
+        subject: ExprId,
+        name: string,
+    ) -> Ref? {
         let target? = declaring_decl(self.decls.types.shape_of(facts.type_at(subject))) else { return null }
         let m? = self.decls.methods_of(target).find((d: DeclId) -> self.decls.decl(d).name == name) else { return null }
         Ref { decl: m, file: f, at: At.Expr(e), kind: UseKind.MethodCall }
@@ -157,7 +189,9 @@ impl Workspace {
     /// type has no expression id of its own to point at.
     fn type_use_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
         let tparams = store.decl_tparams(s)
-        flatten([[Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.TypeUse } for d in type_use_decls(names, tparams, t)] for t in store.type_roots(s)])
+        flatten(
+            [[Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.TypeUse } for d in type_use_decls(names, tparams, t)] for t in store.type_roots(s)],
+        )
     }
 
     /// Every `use` line's own imports, one row per item — the site is
@@ -180,7 +214,9 @@ impl Workspace {
 /// resolves a struct literal's name — never a second resolver.
 fn type_use_decls(names: NameFacts, tparams: List<string>, t: TypeRef) -> List<DeclId> {
     let here = if t.name.is_empty() || tparams.contains(t.name) { [] } else { some_list(names.names.type_decl(t.name)) }
-    here.concat(flatten([type_use_decls(names, tparams, a) for a in t.args])).concat(flatten([type_use_decls(names, tparams, a) for a in t.alternatives]))
+    here
+        .concat(flatten([type_use_decls(names, tparams, a) for a in t.args]))
+        .concat(flatten([type_use_decls(names, tparams, a) for a in t.alternatives]))
 }
 
 /// One row's own fingerprint — what the pass settles the whole
@@ -190,12 +226,5 @@ fn ref_fp(r: Ref) -> int {
 }
 
 fn kind_ord(k: UseKind) -> int {
-    match k {
-        .Call -> 0,
-        .MethodCall -> 1,
-        .Read -> 2,
-        .Write -> 3,
-        .Import -> 4,
-        .TypeUse -> 5,
-    }
+    match k { .Call -> 0, .MethodCall -> 1, .Read -> 2, .Write -> 3, .Import -> 4, .TypeUse -> 5 }
 }

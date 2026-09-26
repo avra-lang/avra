@@ -4,7 +4,23 @@
 // name too long, and `env("PATH=")` answered PATH's value because the
 // C library reads a name up to its `=`.
 use @std.text.{from_codepoint}
-use @std.io.{IoError, Entry, kind_of, exists, is_dir, read_text, write_text, read_bytes, write_bytes, list_dir, make_dirs, remove, env, env_or, stamp}
+use @std.io.{
+    IoError,
+    Entry,
+    kind_of,
+    exists,
+    is_dir,
+    read_text,
+    write_text,
+    read_bytes,
+    write_bytes,
+    list_dir,
+    make_dirs,
+    remove,
+    env,
+    env_or,
+    stamp,
+}
 
 /// The scratch directory for the adversarial set, made.
 fn pit() -> string {
@@ -23,10 +39,7 @@ fn cleared(name: string) -> string {
 }
 
 fn said(r: Result<string, IoError>) -> string {
-    match r {
-        .Ok(t) -> "ok:${t}",
-        .Err(e) -> e.describe().message,
-    }
+    match r { .Ok(t) -> "ok:${t}", .Err(e) -> e.describe().message }
 }
 
 fn stands(r: Result<Entry, IoError>) -> string {
@@ -37,10 +50,7 @@ fn stands(r: Result<Entry, IoError>) -> string {
 }
 
 fn names(r: Result<List<string>, IoError>) -> string {
-    match r {
-        .Ok(xs) -> xs.join("|"),
-        .Err(e) -> e.describe().message,
-    }
+    match r { .Ok(xs) -> xs.join("|"), .Err(e) -> e.describe().message }
 }
 
 fn many(n: int) -> string {
@@ -69,13 +79,14 @@ fn peek(p: string) -> string {
 spec "std/io — adversarial" {
     given "degenerate paths" {
         then "the empty path does not exist, whatever is asked of it" {
-            said(read_text("")) == "`` does not exist" && said(write_text("", "x")) == "`` does not exist" && names(list_dir("")) == "`` does not exist" && said(remove("")) == "`` does not exist" && said(make_dirs("")) == "`` does not exist"
+            said(read_text("")) == "`` does not exist" &&
+                said(write_text("", "x")) == "`` does not exist" &&
+                names(list_dir("")) == "`` does not exist" &&
+                said(remove("")) == "`` does not exist" &&
+                said(make_dirs("")) == "`` does not exist"
         }
         then "the empty path stands nowhere — missing, not an error" {
-            match kind_of("") {
-                .Ok(k) -> k is .Missing,
-                .Err(_) -> false,
-            }
+            match kind_of("") { .Ok(k) -> k is .Missing, .Err(_) -> false }
         }
         then "the root is a directory, and making it again is fine" {
             is_dir("/") && said(make_dirs("/")) == "ok:/"
@@ -88,10 +99,7 @@ spec "std/io — adversarial" {
             said(make_dirs("${d}//a/")) == "ok:${d}//a/" && is_dir("${d}/a")
         }
         then "a device reads as empty text and stands as Other" {
-            let other = match kind_of("/dev/null") {
-                .Ok(k) -> k is .Other,
-                .Err(_) -> false,
-            }
+            let other = match kind_of("/dev/null") { .Ok(k) -> k is .Other, .Err(_) -> false }
             said(read_text("/dev/null")) == "ok:" && other
         }
         then "a name too long is the host's refusal, in its words" {
@@ -103,7 +111,9 @@ spec "std/io — adversarial" {
         then "a failed read between two reads leaves each its own text" {
             let p = cleared("kept.txt")
             let _ = write_text(p, "kept")
-            said(read_text(p)) == "ok:kept" && said(read_text("${pit()}/absent")) != "ok:kept" && said(read_text(p)) == "ok:kept"
+            said(read_text(p)) == "ok:kept" &&
+                said(read_text("${pit()}/absent")) != "ok:kept" &&
+                said(read_text(p)) == "ok:kept"
         }
         then "a filename holding a newline lists as ONE name" {
             let d = cleared("newline")
@@ -131,7 +141,10 @@ spec "std/io — adversarial" {
             let p = cleared("nul2.bin")
             let _ = write_text(p, "x${from_codepoint(0)}y")
             let back = read_text(p) catch ""
-            back.length == 3 && back.char_code(0) == 120 && back.char_code(1) == 0 && back.char_code(2) == 121
+            back.length == 3 &&
+                back.char_code(0) == 120 &&
+                back.char_code(1) == 0 &&
+                back.char_code(2) == 121
         }
     }
     given "the descriptor loops — past one chunk, and bytes that are not text" {
@@ -151,10 +164,7 @@ spec "std/io — adversarial" {
             let _ = write_bytes(p, [97, 98, 255, 99, 100].bytes()!)
             match read_text(p) {
                 .Ok(_) -> false,
-                .Err(e) -> match e {
-                    .NotText(at, off) -> at == p && off == 2,
-                    rest -> false,
-                },
+                .Err(e) -> match e { .NotText(at, off) -> at == p && off == 2, rest -> false },
             }
         }
         then "and it says so in words a reader can act on" {
@@ -186,7 +196,8 @@ spec "std/io — adversarial" {
             let p = cleared("raw3.bin")
             let raw = [97, 98, 255, 99, 100].bytes()!
             let _ = write_bytes(p, raw)
-            (read_bytes(p) catch "".bytes()).length == 5 && (read_bytes(p) catch "".bytes()).at(2) == 255
+            (read_bytes(p) catch "".bytes()).length == 5 &&
+                (read_bytes(p) catch "".bytes()).at(2) == 255
         }
         then "a write that cannot open its temp leaves NOTHING beside the target" {
             let d = cleared("nowhere")
@@ -210,7 +221,12 @@ spec "std/io — adversarial" {
         then "every verb that takes a path refuses one, in the law's own words" {
             let p = "${pit()}/a${from_codepoint(0)}/../../etc/passwd"
             let law = "a path holding a NUL is two paths — the host reads to byte ${pit().length + 2} and no further"
-            said(read_text(p)) == law && said(write_text(p, "x")) == law && said(make_dirs(p)) == law && said(remove(p)) == law && names(list_dir(p)) == law && stands(kind_of(p)) == law
+            said(read_text(p)) == law &&
+                said(write_text(p, "x")) == law &&
+                said(make_dirs(p)) == law &&
+                said(remove(p)) == law &&
+                names(list_dir(p)) == law &&
+                stands(kind_of(p)) == law
         }
         then "the asking verbs answer false rather than the truth about a shorter path" {
             let p = "${pit()}/a${from_codepoint(0)}bcd"
@@ -219,10 +235,7 @@ spec "std/io — adversarial" {
         then "the refusal carries the NUL's own offset" {
             match read_text("ab${from_codepoint(0)}cd") {
                 .Ok(_) -> false,
-                .Err(e) -> match e {
-                    .Holed(_, at) -> at == 2,
-                    rest -> false,
-                },
+                .Err(e) -> match e { .Holed(_, at) -> at == 2, rest -> false },
             }
         }
         then "a path with no NUL is untouched by the door" {
@@ -253,10 +266,7 @@ spec "std/io — adversarial" {
     }
     given "crossings" {
         then "a refusal propagates through `?` in a Result fn, its variant intact" {
-            match first("${pit()}/never-there") {
-                .Ok(_) -> false,
-                .Err(e) -> e is .NotFound,
-            }
+            match first("${pit()}/never-there") { .Ok(_) -> false, .Err(e) -> e is .NotFound }
         }
         then "two hundred files written in a loop are listed in byte order" {
             let d = cleared("two-hundred")
@@ -267,7 +277,10 @@ spec "std/io — adversarial" {
                 i = i + 1
             }
             let xs = list_dir(d) catch []
-            xs.length == 200 && xs[0] == "f100" && xs[199] == "f299" && said(read_text("${d}/f299")) == "ok:199"
+            xs.length == 200 &&
+                xs[0] == "f100" &&
+                xs[199] == "f299" &&
+                said(read_text("${d}/f299")) == "ok:199"
         }
         then "a deferred cleanup runs after the frame's own read" {
             let p = cleared("deferred.txt")
@@ -278,10 +291,7 @@ spec "std/io — adversarial" {
             let p = "${pit()}/payload"
             match read_text(p) {
                 .Ok(_) -> false,
-                .Err(e) -> match e {
-                    .NotFound(at) -> at == p,
-                    rest -> false,
-                },
+                .Err(e) -> match e { .NotFound(at) -> at == p, rest -> false },
             }
         }
     }

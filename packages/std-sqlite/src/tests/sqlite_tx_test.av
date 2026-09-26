@@ -15,10 +15,7 @@ fn worked(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
 }
 
 fn seeded_then(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
-    match seed(db) {
-        .Ok(_) -> ran_then_counted(db, work),
-        .Err(e) -> e.cause.kind(),
-    }
+    match seed(db) { .Ok(_) -> ran_then_counted(db, work), .Err(e) -> e.cause.kind() }
 }
 
 fn seed(db: Db) -> Result<int, SqlError> {
@@ -27,10 +24,7 @@ fn seed(db: Db) -> Result<int, SqlError> {
 }
 
 fn ran_then_counted(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
-    match work(db) {
-        .Ok(_) -> tx_counted(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match work(db) { .Ok(_) -> tx_counted(db), .Err(e) -> e.cause.kind() }
 }
 
 fn tx_counted(db: Db) -> string {
@@ -47,17 +41,11 @@ fn stepped_count(s: Stmt) -> string {
 }
 
 fn first_count(s: Stmt) -> string {
-    match s.step() {
-        .Ok(_) -> counted_told(s.int_at(0)),
-        .Err(e) -> e.cause.kind(),
-    }
+    match s.step() { .Ok(_) -> counted_told(s.int_at(0)), .Err(e) -> e.cause.kind() }
 }
 
 fn counted_told(r: Result<int, SqlError>) -> string {
-    match r {
-        .Ok(v) -> "${v}",
-        .Err(e) -> e.cause.kind(),
-    }
+    match r { .Ok(v) -> "${v}", .Err(e) -> e.cause.kind() }
 }
 
 // ── The units of work each case runs ────────────────────────────
@@ -133,10 +121,7 @@ fn mined(mine: bool) -> Result<int, SqlError> {
 /// SPELLED OUT because it answers a `bool`: an open that fails is not a
 /// kind here, it is "the question was never asked".
 fn tx_asked(q: fn(Db) -> bool) -> bool {
-    match Db.memory() {
-        .Ok(db) -> tx_in_db(db, q),
-        .Err(_) -> false,
-    }
+    match Db.memory() { .Ok(db) -> tx_in_db(db, q), .Err(_) -> false }
 }
 
 fn tx_in_db(db: Db, q: fn(Db) -> bool) -> bool {
@@ -149,27 +134,18 @@ fn tx_in_db(db: Db, q: fn(Db) -> bool) -> bool {
 fn is_closed(db: Db) -> bool { !db.in_transaction() }
 
 fn is_open_after_begin(db: Db) -> bool {
-    match db.begin() {
-        .Ok(_) -> db.in_transaction(),
-        .Err(_) -> false,
-    }
+    match db.begin() { .Ok(_) -> db.in_transaction(), .Err(_) -> false }
 }
 
 fn is_closed_after_commit(db: Db) -> bool { closed_after(db, ended_by_commit) }
 fn is_closed_after_rollback(db: Db) -> bool { closed_after(db, ended_by_rollback) }
 
 fn closed_after(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
-    match db.begin() {
-        .Ok(_) -> tx_ended(db, end),
-        .Err(_) -> false,
-    }
+    match db.begin() { .Ok(_) -> tx_ended(db, end), .Err(_) -> false }
 }
 
 fn tx_ended(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
-    match end(db) {
-        .Ok(_) -> !db.in_transaction(),
-        .Err(_) -> false,
-    }
+    match end(db) { .Ok(_) -> !db.in_transaction(), .Err(_) -> false }
 }
 
 fn ended_by_commit(db: Db) -> Result<int, SqlError> { db.commit() }

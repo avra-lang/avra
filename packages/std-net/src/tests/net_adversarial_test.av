@@ -9,10 +9,7 @@ use @std.net.{listen, connect, poller, Read, NetError}
 use @std.time.{secs, ms}
 
 fn words<T>(r: Result<T, NetError>) -> string {
-    match r {
-        .Err(e) -> e.describe().message,
-        .Ok(_) -> "<ok>",
-    }
+    match r { .Err(e) -> e.describe().message, .Ok(_) -> "<ok>" }
 }
 
 /// A connected pair with the server side accepted and NOTHING
@@ -34,7 +31,12 @@ fn gone_names_the_descriptor() -> Result<bool, NetError> {
     let again = words(pr.client.close())
     let read = words(pr.client.try_read(10))
     let write = words(pr.client.try_write("x".bytes(), 0))
-    .Ok(again.starts_with("close fd ") && read.starts_with("read fd ") && write.starts_with("write fd ") && pr.client.peer() == "")
+    .Ok(
+        again.starts_with("close fd ") &&
+            read.starts_with("read fd ") &&
+            write.starts_with("write fd ") &&
+            pr.client.peer() == "",
+    )
 }
 
 fn poller_edges() -> Result<bool, NetError> {
@@ -48,7 +50,13 @@ fn poller_edges() -> Result<bool, NetError> {
     p.watch(l.fd, .None)?
     let still_nothing = p.wait(ms(10))?
     p.close()?
-    .Ok(removed == 999999 && bad.starts_with("watch fd 999999: ") && nothing.is_empty() && still_nothing.is_empty() && words(p.wait(ms(1))).starts_with("wait poller: "))
+    .Ok(
+        removed == 999999 &&
+            bad.starts_with("watch fd 999999: ") &&
+            nothing.is_empty() &&
+            still_nothing.is_empty() &&
+            words(p.wait(ms(1))).starts_with("wait poller: "),
+    )
 }
 
 fn empty_writes_and_reads() -> Result<bool, NetError> {
@@ -60,11 +68,7 @@ fn empty_writes_and_reads() -> Result<bool, NetError> {
 }
 
 fn taken(r: Read) -> int {
-    match r {
-        .Data(b) -> b.length,
-        .Eof -> -1,
-        .Pending -> -2,
-    }
+    match r { .Data(b) -> b.length, .Eof -> -1, .Pending -> -2 }
 }
 
 /// A READ OF ZERO TAKES NOTHING OFF THE WIRE. The size is the
@@ -104,16 +108,24 @@ fn a_negative_budget_never_waits() -> Result<bool, NetError> {
 spec "std.net adversarial" {
     given "degenerate ports and hosts" {
         then "a port past 65535 or below 0 is refused with the verb and the subject" {
-            words(listen("127.0.0.1", 65536)) == "listen 127.0.0.1:65536: Invalid argument" && words(listen("127.0.0.1", -1)) == "listen 127.0.0.1:-1: Invalid argument"
+            words(listen("127.0.0.1", 65536)) == "listen 127.0.0.1:65536: Invalid argument" &&
+                words(listen("127.0.0.1", -1)) == "listen 127.0.0.1:-1: Invalid argument"
         }
         then "the loopback names, both families' wildcards and localhost all listen" {
-            listen("::1", 0) is .Ok && listen("localhost", 0) is .Ok && listen("0.0.0.0", 0) is .Ok && listen("::", 0) is .Ok
+            listen("::1", 0) is .Ok &&
+                listen("localhost", 0) is .Ok &&
+                listen("0.0.0.0", 0) is .Ok &&
+                listen("::", 0) is .Ok
         }
         then "a name that resolves to nothing, a trailing space, and a port inside the host all refuse" {
-            words(listen("no.such.host.invalid", 0)).starts_with("listen no.such.host.invalid:0: ") && words(listen("127.0.0.1 ", 0)).starts_with("listen 127.0.0.1 :0: ") && words(listen("127.0.0.1:80", 0)).starts_with("listen 127.0.0.1:80:0: ")
+            words(listen("no.such.host.invalid", 0))
+                    .starts_with("listen no.such.host.invalid:0: ") &&
+                words(listen("127.0.0.1 ", 0)).starts_with("listen 127.0.0.1 :0: ") &&
+                words(listen("127.0.0.1:80", 0)).starts_with("listen 127.0.0.1:80:0: ")
         }
         then "connect refuses an empty host and a port past 65535" {
-            words(connect("", 80, secs(1))) == "connect \"\":80: Invalid argument" && words(connect("127.0.0.1", 70000, secs(1))).starts_with("connect 127.0.0.1:70000: ")
+            words(connect("", 80, secs(1))) == "connect \"\":80: Invalid argument" &&
+                words(connect("127.0.0.1", 70000, secs(1))).starts_with("connect 127.0.0.1:70000: ")
         }
     }
     given "a timeout is a budget, never a sentinel" {

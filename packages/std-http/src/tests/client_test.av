@@ -11,10 +11,7 @@ use @std.http.client.{Client, Answer, ClientError, connected, request}
 type Duo = { s: Server<App>, c: Client }
 
 fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
-    match r {
-        .Ok(v) -> .Ok(v),
-        .Err(e) -> .Err(.Net(e)),
-    }
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
 }
 
 /// A server whose handler shows what it was asked, and a client
@@ -22,7 +19,10 @@ fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
 fn duo() -> Result<Duo, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
-        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${bumped(app)}")
+        text(
+            200,
+            "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${bumped(app)}",
+        )
     }
     let c = connected("127.0.0.1", l.port, secs(2), limits())?
     .Ok(Duo { s: s, c: c })
@@ -45,8 +45,17 @@ fn get_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
     defer d.done()
-    let a = answered_by(d, .Get, request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!)?
-    .Ok(a.status == 200 && a.body.text() ?? "" == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
+    let a = answered_by(
+        d,
+        .Get,
+        request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!,
+    )?
+    .Ok(
+        a.status == 200 &&
+            a.body.text() ?? "" == "/g||t1|1" &&
+            a.header("Content-Length") == "8" &&
+            a.header("nope") == null,
+    )
 }
 
 fn post_answer() -> Result<bool, ClientError> {
@@ -63,7 +72,11 @@ fn two_on_one_connection() -> Result<bool, ClientError> {
     defer d.done()
     let one = answered_by(d, .Get, request("GET", "/1", "a", [], "".bytes())!)?
     let two = answered_by(d, .Get, request("GET", "/2", "a", [], "".bytes())!)?
-    .Ok((one.body.text() ?? "").ends_with("|1") && (two.body.text() ?? "").ends_with("|2") && d.s.connections() == 1)
+    .Ok(
+        (one.body.text() ?? "").ends_with("|1") &&
+            (two.body.text() ?? "").ends_with("|2") &&
+            d.s.connections() == 1,
+    )
 }
 
 fn head_answer() -> Result<bool, ClientError> {
@@ -72,7 +85,12 @@ fn head_answer() -> Result<bool, ClientError> {
     defer d.done()
     let a = answered_by(d, .Head, request("HEAD", "/h", "a", [], "".bytes())!)?
     let after = answered_by(d, .Get, request("GET", "/g", "a", [], "".bytes())!)?
-    .Ok(a.status == 200 && a.body.length == 0 && a.header("content-length") == "7" && after.body.text() ?? "" == "/g||-|2")
+    .Ok(
+        a.status == 200 &&
+            a.body.length == 0 &&
+            a.header("content-length") == "7" &&
+            after.body.text() ?? "" == "/g||-|2",
+    )
 }
 
 fn bad_reply_is_refused() -> Result<bool, ClientError> {
@@ -84,10 +102,7 @@ fn bad_reply_is_refused() -> Result<bool, ClientError> {
 }
 
 fn passes_client(r: Result<Answer, ClientError>) -> bool {
-    match r {
-        .Ok(_) -> true,
-        .Err(_) -> false,
-    }
+    match r { .Ok(_) -> true, .Err(_) -> false }
 }
 
 spec "std.http client" {
@@ -100,7 +115,9 @@ spec "std.http client" {
     }
     given "ClientError.cause" {
         then "a wrapped net error names itself as the cause" {
-            let e: ClientError = .Net(NetError { verb: "connect", subject: "1.2.3.4:80", errno: 61 })
+            let e: ClientError = .Net(
+                NetError { verb: "connect", subject: "1.2.3.4:80", errno: 61 },
+            )
             let c = e.cause()
             c != null && c!.describe().kind == "net.connect"
         }

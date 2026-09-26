@@ -10,7 +10,24 @@
 //! so a struct carries its fields and an enum its variants, and loading walks
 //! the imports first — a field of another module's type interns only once that
 //! module's types exist.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, sorted_texts, distinct, same_decl, module_path, ModulePath, TypeRegistry, TypeId, DeclId, DeclKind, SeatMark, Span}
+use core.{
+    new_digest,
+    digest_text,
+    digest_key,
+    digest_of,
+    joined,
+    sorted_texts,
+    distinct,
+    same_decl,
+    module_path,
+    ModulePath,
+    TypeRegistry,
+    TypeId,
+    DeclId,
+    DeclKind,
+    SeatMark,
+    Span,
+}
 use features.{DeclSig, DeclFacts, AnnotationFact}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
@@ -216,7 +233,10 @@ fn record_known(ws: Workspace, m: ModulePath, text: string) {
 
 /// What OTHER modules' keys read of a record: its interface digest and its imports.
 fn seen_part(text: string) -> string {
-    joined([line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t")], "\n")
+    joined(
+        [line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t")],
+        "\n",
+    )
 }
 
 /// THE MEMO PATTERN, ONCE: a cache checked, a value made and kept on a miss.
@@ -303,7 +323,9 @@ fn interface_form(line: string) -> string {
     let top = unpacked(p[12])
     let facts = if top.is_empty() { [] } else { top[0].split(";") }
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
-    [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")].concat(p.slice(13, 16)).join("\t")
+    [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
+        .concat(p.slice(13, 16))
+        .join("\t")
 }
 
 /// A record's declaration lines, by the file each names.
@@ -318,7 +340,10 @@ fn lines_by_file(lines: List<string>) -> Map<string, List<string>> {
 
 /// The path a record line names, or "" — the second column, and nothing for a header line.
 fn named_file(line: string) -> string {
-    if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") || line.starts_with("file\t") { return "" }
+    if line.starts_with("import\t") ||
+        line.starts_with("bytes\t") ||
+        line.starts_with("iface\t") ||
+        line.starts_with("file\t") { return "" }
     let parts = line.split("\t")
     if parts.length < 2 { return "" }
     parts[1]
@@ -518,7 +543,8 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
     // AND A RECORD NAMING A FILE THE MODULE NO LONGER HAS is a previous tree's: minting
     // its declarations asks the host for a source that is gone.
     let here = ws.module_files(m)
-    if !record_complete(fields) || fields.any((parts) -> declares(parts) && !here.contains(parts[1])) { return }
+    if !record_complete(fields) ||
+        fields.any((parts) -> declares(parts) && !here.contains(parts[1])) { return }
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_interface(ws, store, prelude_module(), entry, want)
@@ -537,7 +563,13 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
     for parts in fields {
-        if parts.length > 6 && (parts[6] == "impl" || parts[6] == "trait") { ws.hold.named_in.put(parts[5], distinct((ws.hold.named_in.get().get(parts[5]) ?? []).concat([m.text()]))) }
+        if parts.length > 6 && (parts[6] == "impl" || parts[6] == "trait") { ws
+                .hold
+                .named_in
+                .put(
+                    parts[5],
+                    distinct((ws.hold.named_in.get().get(parts[5]) ?? []).concat([m.text()])),
+                ) }
     }
     for f in ws.module_files(m) {
         // EVERY FILE OF THE MODULE IS REGISTERED HERE, held or not: a file the workspace
@@ -590,7 +622,15 @@ impl Reads {
 /// Why a file a record knows is read — null when its hold may be asked. The entry
 /// is read: its law over every other file is spoken from its parse.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
-fn read_why(ws: Workspace, store: Store, m: ModulePath, f: string, at: Placed?, is_entry: bool, want: Want) -> Reads? {
+fn read_why(
+    ws: Workspace,
+    store: Store,
+    m: ModulePath,
+    f: string,
+    at: Placed?,
+    is_entry: bool,
+    want: Want,
+) -> Reads? {
     if is_entry { return Reads.Entry }
     if ws.hold.homes.get().get(f) != null { return Reads.Home }
     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
@@ -672,7 +712,11 @@ fn flag_char(on: bool, c: string) -> string { if on { c } else { "-" } }
 /// unwritten seat, the shape of every seat that promises nothing.
 fn mark_of_word(w: string) -> SeatMark {
     if w.length != 3 { return no_seat_mark }
-    SeatMark { mutable: w.substring(0, 1) == "m", settled: w.substring(1, 2) == "s", unshared: w.substring(2, 3) == "i" }
+    SeatMark {
+        mutable: w.substring(0, 1) == "m",
+        settled: w.substring(1, 2) == "s",
+        unshared: w.substring(2, 3) == "i",
+    }
 }
 
 /// A NOMINAL type's declaration — the one place the registry knows which types a program
@@ -786,7 +830,12 @@ fn kept_runs(at: Placed?) -> List<string> {
 fn view_key(ws: Workspace, store: Store, m: ModulePath) -> string {
     let known: string? = ws.keys.view_keys.get().get(m.text())
     if known != null { return known! }
-    let made = digest_of(joined([bytes_key_cached(ws, store, module_path(dep.split("."))) for dep in seen_modules(ws, store, m)], "\n"))
+    let made = digest_of(
+        joined(
+            [bytes_key_cached(ws, store, module_path(dep.split("."))) for dep in seen_modules(ws, store, m)],
+            "\n",
+        ),
+    )
     ws.keys.view_keys.put(m.text(), made)
     made
 }
@@ -857,6 +906,17 @@ export fn held_stubs(ws: Workspace) -> List<Body> {
         if stub != null { out.push(stub!) }
     }
     // a held file's top level is a body of its object too
-    out.concat([Body { name: program_symbol(path), params: [], ret: ws.decls.types.type(int), gives: null, ins: [], reg_types: [], file: ws.file_id(path) } for path in held_paths(ws)])
+    out
+        .concat(
+            [Body {
+                name: program_symbol(path),
+                params: [],
+                ret: ws.decls.types.type(int),
+                gives: null,
+                ins: [],
+                reg_types: [],
+                file: ws.file_id(path),
+            } for path in held_paths(ws)],
+        )
 }
 

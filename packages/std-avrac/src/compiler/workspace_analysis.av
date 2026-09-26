@@ -1,9 +1,40 @@
 //! The workspace's analysis and memo: parse/resolve/sig/typeck
 //! families and the lowered program. The core accessors live in
 //! workspace.av.
-use core.{StmtId, DeclId, FileId, ExprId, flatten, distinct, TypeId, Type, touch, spelled, module_path}
+use core.{
+    StmtId,
+    DeclId,
+    FileId,
+    ExprId,
+    flatten,
+    distinct,
+    TypeId,
+    Type,
+    touch,
+    spelled,
+    module_path,
+}
 use @std.path.{dir_of}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Decls, Clash, Wanted, nothing, Lifted, bound_decl_of, SeatValue, settled_symbol, quote_meta, SettleRoot}
+use features.{
+    Unsettled,
+    Settled,
+    Settlement,
+    const_symbol,
+    expr_symbol,
+    MetaVal,
+    MetaHeap,
+    new_meta_heap,
+    Decls,
+    Clash,
+    Wanted,
+    nothing,
+    Lifted,
+    bound_decl_of,
+    SeatValue,
+    settled_symbol,
+    quote_meta,
+    SettleRoot,
+}
 use core.{StmtId}
 use diagnostics.{Diag, no_voices, has_errors}
 use compiler.backend.{run_crossed, run_lifted, run_settle}
@@ -24,7 +55,9 @@ impl Workspace {
         let previous: MethodDiagIndex? = self.method_diags.get().first()
         if previous != null {
             let held = previous!
-            if held.revision == self.db.revision() && held.decl_count == self.decls.decls.get().length && f.index < held.by_file.length {
+            if held.revision == self.db.revision() &&
+                held.decl_count == self.decls.decls.get().length &&
+                f.index < held.by_file.length {
                 return held.by_file[f.index]
             }
         }
@@ -47,7 +80,11 @@ impl Workspace {
             }
         }
         while by_file.length < self.decls.files.get().length { by_file.push([]) }
-        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.get().length, by_file: by_file }
+        let current = MethodDiagIndex {
+            revision: self.db.revision(),
+            decl_count: self.decls.decls.get().length,
+            by_file: by_file,
+        }
         if self.method_diags.get().is_empty() { self.method_diags.push(current) } else { self.method_diags.set_at(0, current) }
         by_file[f.index]
     }
@@ -57,7 +94,10 @@ impl Workspace {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
         if self.closed.get() { return self.analyzed(f) }
-        match self.analysis_memo.start_recursive(f.index) { .Reuse(value) -> { return analysis_of(value) }, .Compute -> nothing() }
+        match self.analysis_memo.start_recursive(f.index) {
+            .Reuse(value) -> { return analysis_of(value) },
+            .Compute -> nothing(),
+        }
         let out = self.analyzed(f)
         analysis_of(self.analysis_memo.finish(f.index, DbRow.Analysis(out), self.db.revision()))
     }
@@ -74,7 +114,15 @@ impl Workspace {
             names: names,
             facts: facts,
             lang: self.lang,
-            diagnostics: flatten([p.voices.list, names.voices.list, self.sig_diagnostics(f), self.method_diagnostics(f), facts.voices.list]),
+            diagnostics: flatten(
+                [
+                    p.voices.list,
+                    names.voices.list,
+                    self.sig_diagnostics(f),
+                    self.method_diagnostics(f),
+                    facts.voices.list,
+                ],
+            ),
             program: () -> self.program(path),
         }
     }
@@ -107,8 +155,15 @@ impl Workspace {
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit {
-        match self.lowered_memo.start_recursive(id) { .Reuse(value) -> { return lowered_of(value) }, .Compute -> nothing() }
-        lowered_of(self.lowered_memo.finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()))
+        match self.lowered_memo.start_recursive(id) {
+            .Reuse(value) -> { return lowered_of(value) },
+            .Compute -> nothing(),
+        }
+        lowered_of(
+            self
+                .lowered_memo
+                .finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()),
+        )
     }
 
     /// The store, attached by a build; null outside one.
@@ -124,7 +179,8 @@ impl Workspace {
     fn read_held_asks(s: Store) -> List<string> {
         mut unread: List<string> = []
         for path in held_paths(self) {
-            let wants = self.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
+            let wants = self
+                .wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
             if wants == null { unread.push(path) } else { self.hold.held_wants.set(self.hold.held_wants.get().concat(wants!)) }
         }
         unread
@@ -140,12 +196,20 @@ impl Workspace {
     /// file, and the build starts again with that file parsed.
     fn lower_requested(w: Wanted) -> Unit {
         if self.is_held(w.file) {
-            self.hold.body_asks.set(self.hold.body_asks.get().concat([self.decls.file(w.file).path]))
+            self
+                .hold
+                .body_asks
+                .set(self.hold.body_asks.get().concat([self.decls.file(w.file).path]))
             return Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
         }
         let ws = self
-        let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)
-        let cross: fn(DeclId, TypeId) -> Lifted = (d: DeclId, want: TypeId) -> ws.crossed_lifted(d, want)
+        let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (
+            f: FileId,
+            root: SettleRoot,
+            seats: List<SeatValue>,
+        ) -> ws.settled(f, root, seats)
+        let cross: fn(DeclId, TypeId) -> Lifted = (d: DeclId, want: TypeId) -> ws
+            .crossed_lifted(d, want)
         lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle, cross)
     }
 
@@ -182,7 +246,9 @@ impl Workspace {
         let ws = self
         let reader = self.decls.file(f).path
         self.hold.settling.set(self.hold.settling.get().concat([reader]))
-        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
+        let l = memory(
+            self.decls.settlement(root, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))),
+        )
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
         self.read_by(reader, [self.decls.file(bd.file!).path for bd in l.fns if bd.file != null])
@@ -203,10 +269,7 @@ impl Workspace {
     /// plus the settled seats' fingerprints when a unit fixes them —
     /// so two units of one body settle their own values.
     fn settle_symbol(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> string {
-        let own = match root {
-            .Const(s) -> const_symbol(f, s),
-            .Expr(e) -> expr_symbol(f, e),
-        }
+        let own = match root { .Const(s) -> const_symbol(f, s), .Expr(e) -> expr_symbol(f, e) }
         settled_symbol(own, seats)
     }
 
@@ -262,17 +325,17 @@ impl Workspace {
             .Ok(value) -> { for path in value.embeds { touch(self.source(self.file_id(path))) } },
             .Err(_) -> { let _ = 0 },
         }
-        let held = match r {
-            .Ok(x) -> Settlement.Held(x),
-            .Err(why) -> Settlement.Refused(why),
-        }
+        let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
         let _ = self.settled_memo.finish(id, DbRow.Settled(held), settlement_hash(held))
         r
     }
 
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
-    fn settlement_of(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+    fn settlement_of(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Result<
+        Settled,
+        Unsettled,
+    > {
         // The evaluator's source unit and the program's materialized
         // const unit are different IR under different symbols. The
         // Lowered memo keys by symbol, so sharing one would make query
@@ -280,13 +343,19 @@ impl Workspace {
         let l = self.standalone(f, root, "settling\$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let ws = self
-        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path), (nm: string) -> ws.type_named_lifted(f, nm))
+        run_settle(
+            l,
+            self.budgets(),
+            dir_of(self.decls.file(f).path),
+            (nm: string) -> ws.type_named_lifted(f, nm),
+        )
     }
 
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
     fn standalone(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
-        self.run_lowered_for(f, Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root })
+        self
+            .run_lowered_for(f, Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root })
     }
 
     /// An annotation argument evaluated directly into the crossing
@@ -295,10 +364,12 @@ impl Workspace {
         let l = self.standalone(f, e, expr_symbol(f, e), [])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let ws = self
-        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path), (nm: string) -> ws.type_named_lifted(f, nm)) {
-            .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
-            .Err(why) -> .Err(why),
-        }
+        match run_crossed(
+            l,
+            self.budgets(),
+            dir_of(self.decls.file(f).path),
+            (nm: string) -> ws.type_named_lifted(f, nm),
+        ) { .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)), .Err(why) -> .Err(why) }
     }
 
     /// An annotation fn run over a declaration: the fn's own program
@@ -307,7 +378,10 @@ impl Workspace {
     /// an expanded sibling needs no typed answers of this file), each
     /// argument settled and crossed, and what the fn answered read
     /// back as what it SAID.
-    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<
+        Lifted,
+        Unsettled,
+    > {
         let name = "lift\$${f.index}\$${call.index}\$${d.index}"
         let held = self.lift_asks.get()
         let known = [i for i, a in held if a.name == name]
@@ -342,7 +416,18 @@ impl Workspace {
     /// One annotation call after its recursion guard is standing.
     fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let x = self.decls.decl(d)
-        let l = self.run_lowered_for(f, Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null, seats: [], root: null })
+        let l = self
+            .run_lowered_for(
+                f,
+                Wanted {
+                    file: x.file,
+                    decl: d,
+                    name: self.decls.symbol(d),
+                    sub: null,
+                    seats: [],
+                    root: null,
+                },
+            )
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
@@ -359,17 +444,24 @@ impl Workspace {
             }
         }
         let ws = self
-        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets(), (nm: string) -> ws.type_named_lifted(f, nm)) {
-            .Ok(r2) -> .Ok(r2),
-            .Err(why) -> .Err(why),
-        }
+        match run_lifted(
+            l,
+            self.decls.symbol(d),
+            vals,
+            heap,
+            self.budgets(),
+            (nm: string) -> ws.type_named_lifted(f, nm),
+        ) { .Ok(r2) -> .Ok(r2), .Err(why) -> .Err(why) }
     }
 
     /// An annotation argument crossed — a LITERAL straight off the
     /// parse tree (an isolated run needs this file's analysis, which
     /// is the very resolve the two-tier miss is serving: a cycle),
     /// anything else through the isolated evaluator.
-    fn crossed_arg(f: FileId, e: ExprId, want: TypeId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
+    fn crossed_arg(f: FileId, e: ExprId, want: TypeId, mut heap: MetaHeap) -> Result<
+        MetaVal,
+        Unsettled,
+    > {
         let named: DeclId? = if self.decls.takes_a_decl(want) { bound_decl_of(self.resolved(f), e) } else { null }
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
         let p = self.parsed(f)

@@ -28,20 +28,28 @@ spec "docs — the declaration-leading `///` surface" {
         // and the printer replays it in place, same as a module's
         // `//!` always has. ROADMAP records the missing doc tables.
         then "a module's `//!`, a variant's and a field's `///` all survive as remarks" {
-            projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" && projected("type S = {\n    /// lost\n    v: int,\n}") == "type S = {\n    /// lost\n    v: int,\n}" && projected("enum E {\n    /// lost\n    A,\n}") == "enum E {\n    /// lost\n    A\n}"
+            projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" &&
+                projected("type S = {\n    /// lost\n    v: int,\n}") == "type S = {\n    /// lost\n    v: int,\n}" &&
+                projected("enum E {\n    /// lost\n    A,\n}") == "enum E {\n    /// lost\n    A\n}"
         }
     }
     given "where a group lands" {
 
         then "a doc lands on the nested declaration it precedes, not its owner" {
-            projected("fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()") == "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
+            projected(
+                "fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()",
+            ) == "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
         }
         then "a doc on the first declaration cannot bleed onto the second" {
             projected("/// one\nfn a() -> int { 1 }\nfn b() -> int { 2 }") == "/// one\nfn a() -> int {\n    1\n}\nfn b() -> int {\n    2\n}"
         }
         then "a doc survives each declaration prefix the lexer accepts" {
-            let out = projected("/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }")
-            out.contains("/// k\nconst K: int = 3") && out.contains("/// e\nextern fn puts(s: string) -> int") && out.contains("/// o\nonce fn seed() -> string")
+            let out = projected(
+                "/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }",
+            )
+            out.contains("/// k\nconst K: int = 3") &&
+                out.contains("/// e\nextern fn puts(s: string) -> int") &&
+                out.contains("/// o\nonce fn seed() -> string")
         }
     }
     given "a mark on a declared member" {
@@ -57,11 +65,14 @@ spec "docs — the declaration-leading `///` surface" {
             projected("enum E {\n    /// doc a\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}") == "enum E {\n    /// doc a\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}"
         }
         then "an annotated variant's `///` does not fold into the next real declaration's identity" {
-            let with_enum = parse_source("enum E {\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}\n\n/// real doc\nfn f() {}\n")
+            let with_enum = parse_source(
+                "enum E {\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}\n\n/// real doc\nfn f() {}\n",
+            )
             let alone = parse_source("/// real doc\nfn f() {}\n")
             let f = with_enum.stmts.last()!
             let g = alone.stmts.last()!
-            (with_enum.store.doc_comment(f) ?? []).join("\n") == "real doc" && with_enum.store.stmt_fingerprint(f) == alone.store.stmt_fingerprint(g)
+            (with_enum.store.doc_comment(f) ?? []).join("\n") == "real doc" &&
+                with_enum.store.stmt_fingerprint(f) == alone.store.stmt_fingerprint(g)
         }
     }
 }

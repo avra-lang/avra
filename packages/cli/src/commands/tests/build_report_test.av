@@ -23,29 +23,21 @@ fn outcome() -> Result<Outcome, ProcessError> {
 }
 
 fn exit_code_1(e: Exit) -> bool {
-    match e {
-        .Code(1) -> true,
-        .Code(_) or .Signal(_, _) or .Clean -> false,
-    }
+    match e { .Code(1) -> true, .Code(_) or .Signal(_, _) or .Clean -> false }
 }
 
 fn report() -> string {
-    match outcome() {
-        .Ok(o) -> o.out.stdout,
-        .Err(_) -> "",
-    }
+    match outcome() { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
 }
 
 spec "avra build — a real multi-diagnostic failure" {
     given "a program with two independent, unrelated errors" {
         then "the build refuses, exit 1" {
-            match outcome() {
-                .Ok(o) -> exit_code_1(o.exit),
-                .Err(_) -> false,
-            }
+            match outcome() { .Ok(o) -> exit_code_1(o.exit), .Err(_) -> false }
         }
         then "both diagnostics print, each its own error[...] header" {
-            report().contains("error[resolve.unresolved]") && report().contains("error[type.unknown]")
+            report().contains("error[resolve.unresolved]") &&
+                report().contains("error[type.unknown]")
         }
         then "nothing wraps the report in a Diag's cause chain — no `caused by:` line at all" {
             !report().contains("caused by:")

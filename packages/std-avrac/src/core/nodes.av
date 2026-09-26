@@ -316,7 +316,13 @@ export enum Expr {
     /// wrote them. `view` is the expansion that STANDS IN PLACE of the
     /// instance, the head and block spliced into it; the written
     /// pieces are the printing projection.
-    @expands Component(word: string, heads: List<ExprId>, block: ExprId?, view: BodyView, check: ExprId?)
+    @expands Component(
+        word: string,
+        heads: List<ExprId>,
+        block: ExprId?,
+        view: BodyView,
+        check: ExprId?,
+    )
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -599,7 +605,13 @@ fn spelled_arrow(t: TypeRef) -> string {
 }
 
 /// The pronoun's own seat — what an implicit `it` lambda declares.
-export const pronoun_param: Param = Param { name: "it", ty: null, default: null, promises: plain_mark, span: null }
+export const pronoun_param: Param = Param {
+    name: "it",
+    ty: null,
+    default: null,
+    promises: plain_mark,
+    span: null,
+}
 
 /// A MARK IS DATA; AN ANNOTATION IS A CALL. `@word` or
 /// `@word(a, b)` written before a declared member — a variant, a
@@ -789,7 +801,13 @@ export enum Stmt {
     ExprStmt(value: ExprId)
     /// `let _ = v` — the value run for its effect, never an answer.
     Discard(value: ExprId)
-    @declares FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
+    @declares FnDecl(
+        name: Scoped,
+        tparams: List<Param>,
+        params: List<Param>,
+        ret: TypeRef,
+        body: ExprId,
+    )
     /// `extern fn name(params) -> ret` — a fn the host provides: a
     /// signature with no body, called by its bare symbol.
     ExternFn(name: Scoped, params: List<Param>, ret: TypeRef)
@@ -859,7 +877,14 @@ export enum Stmt {
     /// `collect name: List<T> = kind in scope as Ty { … } by …` —
     /// every declaration of `kind`, in `scope`, projected and
     /// ordered. `order` is the `by` list's `it.field` paths.
-    Collect(name: Scoped, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain>)
+    Collect(
+        name: Scoped,
+        ty: TypeRef,
+        kind: CollectKind,
+        scope: CollectScope,
+        proj: Projection,
+        order: List<Plain>,
+    )
     Error
     /// `name: value` inside a component instance's body — a setting of
     /// the record the instance builds. Consumed where the instance is
@@ -963,15 +988,18 @@ fn mark_fp(m: SeatMark) -> int {
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
-    fp(if written.optional { 101 } else { 100 }, [
-        fp_str(written.name),
-        flagged(written.dynamic),
-        flagged(written.arrow),
-        flagged(written.spliced),
-        fp_list([mark_fp(m) for m in written.marks]),
-        fp_list([type_fp(a) for a in written.args]),
-        fp_list([type_fp(a) for a in written.alternatives]),
-    ])
+    fp(
+        if written.optional { 101 } else { 100 },
+        [
+            fp_str(written.name),
+            flagged(written.dynamic),
+            flagged(written.arrow),
+            flagged(written.spliced),
+            fp_list([mark_fp(m) for m in written.marks]),
+            fp_list([type_fp(a) for a in written.args]),
+            fp_list([type_fp(a) for a in written.alternatives]),
+        ],
+    )
 }
 
 /// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
@@ -986,12 +1014,7 @@ fn collectkind_fp(k: CollectKind) -> int {
 
 /// A collect's scope, the same shape.
 fn collectscope_fp(s: CollectScope) -> int {
-    match s {
-        .Self -> 1,
-        .Package -> 2,
-        .Closure -> 3,
-        .UnknownScope(w) -> fp(133, [fp_str(w)]),
-    }
+    match s { .Self -> 1, .Package -> 2, .Closure -> 3, .UnknownScope(w) -> fp(133, [fp_str(w)]) }
 }
 
 /// One projected field: the name it fills, the path it reads.
@@ -1067,7 +1090,13 @@ fn exact_type_ref(a: TypeRef?, b: TypeRef?) -> bool {
     if a == null || b == null { return a == null && b == null }
     let wa = a!
     let wb = b!
-    wa.name == wb.name && wa.optional == wb.optional && wa.dynamic == wb.dynamic && wa.arrow == wb.arrow && wa.spliced == wb.spliced && exact_seat_marks(wa.marks, wb.marks) && exact_type_refs(wa.args, wb.args)
+    wa.name == wb.name &&
+        wa.optional == wb.optional &&
+        wa.dynamic == wb.dynamic &&
+        wa.arrow == wb.arrow &&
+        wa.spliced == wb.spliced &&
+        exact_seat_marks(wa.marks, wb.marks) &&
+        exact_type_refs(wa.args, wb.args)
 }
 
 fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {

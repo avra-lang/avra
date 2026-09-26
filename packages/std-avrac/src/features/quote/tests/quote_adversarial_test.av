@@ -7,104 +7,224 @@ use @std.avrac.testing.{refused_n}
 /// The wrong-slot fixtures: a bool, a list, a code value and a string
 /// in scope, and the attack's line after them.
 fn slotted(line: string) -> Program {
-    packaged("use @std.meta.{Code}\nlet b = true\nlet xs = [1, 2]\nlet c: Code = quote { 1 }\nlet s = \"n\"\n${line}\n1", provider())
+    packaged(
+        "use @std.meta.{Code}\nlet b = true\nlet xs = [1, 2]\nlet c: Code = quote { 1 }\nlet s = \"n\"\n${line}\n1",
+        provider(),
+    )
 }
 
 spec "features/quote — adversarial" {
     given "an `@std/meta` the compiler was not built against" {
         then "the annotation is REFUSED at the boundary, never run against shapes the crossing reads by slot" {
-            refused_n(packaged_under("use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype P = { x: int }\n1", provider(), renamed_node_field()), "the compiler was built against another `@std/meta`", 1)
+            refused_n(
+                packaged_under(
+                    "use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype P = { x: int }\n1",
+                    provider(),
+                    renamed_node_field(),
+                ),
+                "the compiler was built against another `@std/meta`",
+                1,
+            )
         }
         then "the refusal names the first shape that moved" {
-            refused_n(packaged_under("use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype P = { x: int }\n1", provider(), renamed_node_field()), "`Code` declares `blob` where the crossing reads `node`", 1)
+            refused_n(
+                packaged_under(
+                    "use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype P = { x: int }\n1",
+                    provider(),
+                    renamed_node_field(),
+                ),
+                "`Code` declares `blob` where the crossing reads `node`",
+                1,
+            )
         }
         then "the same program under the real `@std/meta` generates its impl" {
-            clean(packaged("use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype P = { x: int }\nP { x: 1 }.loud()", provider()))
+            clean(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype P = { x: int }\nP { x: 1 }.loud()",
+                    provider(),
+                ),
+            )
         }
     }
     given "the raw body inside a hole" {
         then "a quote inside a quote's hole closes both" {
-            clean(packaged("use @std.meta.{Code}\nlet n = 2\nlet c: Code = quote { outer(\${quote { inner(\${n}) }}) }\nc.text()", provider()))
+            clean(
+                packaged(
+                    "use @std.meta.{Code}\nlet n = 2\nlet c: Code = quote { outer(\${quote { inner(\${n}) }}) }\nc.text()",
+                    provider(),
+                ),
+            )
         }
         then "a quote inside a string's hole reaches typing, which refuses it as unprintable" {
-            refused_n(packaged("use @std.meta.{Code}\n\"\${quote { x }}\"", provider()), "an interpolation hole prints as a scalar or string, found `Code`", 1)
+            refused_n(
+                packaged("use @std.meta.{Code}\n\"\${quote { x }}\"", provider()),
+                "an interpolation hole prints as a scalar or string, found `Code`",
+                1,
+            )
         }
         then "a `}` inside a line comment in the body is the generated program's" {
-            clean(packaged("use @std.meta.{Code}\nlet c: Code = quote { x // }\n}\nc.text()", provider()))
+            clean(
+                packaged(
+                    "use @std.meta.{Code}\nlet c: Code = quote { x // }\n}\nc.text()",
+                    provider(),
+                ),
+            )
         }
     }
     given "a run of templates in a seat that holds one value" {
 
         then "the splice SPEAKS at the hole — the law, not the typer's word about the seat" {
-            refused_n(packaged("use @std.meta.{derive}\nuse @x.prov.{runs}\n@runs()\nfn go() -> int { 0 }\n0", provider()), "a list of templates has no expression position", 1)
+            refused_n(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{runs}\n@runs()\nfn go() -> int { 0 }\n0",
+                    provider(),
+                ),
+                "a list of templates has no expression position",
+                1,
+            )
         }
         then "the refusal names both exits, so neither has to be guessed" {
-            refused_n(packaged("use @std.meta.{derive}\nuse @x.prov.{runs}\n@runs()\nfn go() -> int { 0 }\n0", provider()), "splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole", 1)
+            refused_n(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{runs}\n@runs()\nfn go() -> int { 0 }\n0",
+                    provider(),
+                ),
+                "splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole",
+                1,
+            )
         }
     }
     given "a quote where a literal is expected" {
         then "a `const` holds a quote as a managed value, no defect" {
-            clean(packaged("use @std.meta.{Code}\nconst C: Code = quote { k }\nC.text()", provider()))
+            clean(
+                packaged("use @std.meta.{Code}\nconst C: Code = quote { k }\nC.text()", provider()),
+            )
         }
     }
     given "malformed surface" {
 
         then "an empty hole is one refusal in its own words" {
-            refused_n(packaged("use @std.meta.{Code}\nlet c: Code = quote { \${ } }\n1", provider()), "a hole is empty", 1)
+            refused_n(
+                packaged("use @std.meta.{Code}\nlet c: Code = quote { \${ } }\n1", provider()),
+                "a hole is empty",
+                1,
+            )
         }
         then "a body that does not parse speaks once — its kind is not a second word" {
-            refused_n(packaged("use @std.meta.{Code}\nlet c: Code = quote { fn f( }\n1", provider()), "expected `)`", 1)
+            refused_n(
+                packaged("use @std.meta.{Code}\nlet c: Code = quote { fn f( }\n1", provider()),
+                "expected `)`",
+                1,
+            )
         }
         then "a hole inside a hole is refused at the lexer, and the brace it leaves unbalanced is the one other word" {
-            refused_n(packaged("use @std.meta.{Code}\nlet c: Code = quote { \${\${1}} }\n1", provider()), "a hole inside a hole", 2)
+            refused_n(
+                packaged("use @std.meta.{Code}\nlet c: Code = quote { \${\${1}} }\n1", provider()),
+                "a hole inside a hole",
+                2,
+            )
         }
     }
     given "wrong types in every seat" {
 
         then "a name seat refuses a bool" {
-            refused_n(slotted("let w = quote { fn \${b}() -> int { 1 } }"), "a hole in name position takes a `string`, an `int` or a named meta value, found `bool`", 1)
+            refused_n(
+                slotted("let w = quote { fn \${b}() -> int { 1 } }"),
+                "a hole in name position takes a `string`, an `int` or a named meta value, found `bool`",
+                1,
+            )
         }
         then "a name seat refuses code" {
-            refused_n(slotted("let w = quote { fn \${c}() -> int { 1 } }"), "a hole in name position takes a `string`, an `int` or a named meta value, found `Code`", 1)
+            refused_n(
+                slotted("let w = quote { fn \${c}() -> int { 1 } }"),
+                "a hole in name position takes a `string`, an `int` or a named meta value, found `Code`",
+                1,
+            )
         }
         then "a type seat refuses a list" {
-            refused_n(slotted("let w = quote { fn f(x: \${xs}) -> int { 1 } }"), "a hole in type position takes a `Type`, a `Field`'s or a `string` spelling, found `List<int>`", 1)
+            refused_n(
+                slotted("let w = quote { fn f(x: \${xs}) -> int { 1 } }"),
+                "a hole in type position takes a `Type`, a `Field`'s or a `string` spelling, found `List<int>`",
+                1,
+            )
         }
         then "an expression seat refuses a string, naming both spellings" {
-            refused_n(slotted("let w = quote { fn f() -> int { \${s} } }"), "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name", 1)
+            refused_n(
+                slotted("let w = quote { fn f() -> int { \${s} } }"),
+                "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name",
+                1,
+            )
         }
         then "an expression seat refuses a list" {
-            refused_n(slotted("let w = quote { fn f() -> int { \${xs} } }"), "a hole in expression position takes `Code`, an `int` or a `bool`, found `List<int>`", 1)
+            refused_n(
+                slotted("let w = quote { fn f() -> int { \${xs} } }"),
+                "a hole in expression position takes `Code`, an `int` or a `bool`, found `List<int>`",
+                1,
+            )
         }
         then "an arm seat refuses code" {
-            refused_n(slotted("let w = quote { match 1 { \${c} } }"), "a hole in arm position takes `Arms` or a `List<Arms>`, found `Code`", 1)
+            refused_n(
+                slotted("let w = quote { match 1 { \${c} } }"),
+                "a hole in arm position takes `Arms` or a `List<Arms>`, found `Code`",
+                1,
+            )
         }
         then "a statement seat refuses a bool" {
-            refused_n(slotted("let w = quote { impl T { \${b} } }"), "a hole in statement position takes `Code`, `Stmts` or `Decls`, or a list of them, found `bool`", 1)
+            refused_n(
+                slotted("let w = quote { impl T { \${b} } }"),
+                "a hole in statement position takes `Code`, `Stmts` or `Decls`, or a list of them, found `bool`",
+                1,
+            )
         }
         then "a binder seat refuses code" {
-            refused_n(slotted("let w = quote { .A(\${c}) -> 1 }"), "a hole in binder position takes a name, or a `List<string>` of them, found `Code`", 1)
+            refused_n(
+                slotted("let w = quote { .A(\${c}) -> 1 }"),
+                "a hole in binder position takes a name, or a `List<string>` of them, found `Code`",
+                1,
+            )
         }
     }
     given "the voices, rendered" {
 
         then "a seat refusal renders its law, its label and its remedy" {
             let r = slotted("let w = quote { fn \${b}() -> int { 1 } }").report()
-            r.contains("error[type.quote_hole]: a hole in name position takes a `string`, an `int` or a named meta value, found `bool`") && r.contains("this is `bool`") && r.contains("help: fill the hole with what its seat takes")
+            r
+                    .contains(
+                        "error[type.quote_hole]: a hole in name position takes a `string`, an `int` or a named meta value, found `bool`",
+                    ) &&
+                r.contains("this is `bool`") &&
+                r.contains("help: fill the hole with what its seat takes")
         }
         then "the ambiguous string renders both spellings as its remedy" {
             let r = slotted("let w = quote { fn f() -> int { \${s} } }").report()
-            r.contains("error[type.quote_hole]: a string in expression position is ambiguous") && r.contains("this hole") && r.contains("help: say which: `\${literal(s)}` or `\${name(s)}`")
+            r.contains("error[type.quote_hole]: a string in expression position is ambiguous") &&
+                r.contains("this hole") &&
+                r.contains("help: say which: `\${literal(s)}` or `\${name(s)}`")
         }
         then "a mix of kinds in a body of holes refuses once, at the quote" {
-            refused_n(packaged("use @std.meta.{Code, Arms}\nlet c: Code = quote { 1 }\nlet a: Arms = quote { .A -> 1 }\nlet w = quote { \${c}\n\${a} }\n1", provider()), "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree", 1)
+            refused_n(
+                packaged(
+                    "use @std.meta.{Code, Arms}\nlet c: Code = quote { 1 }\nlet a: Arms = quote { .A -> 1 }\nlet w = quote { \${c}\n\${a} }\n1",
+                    provider(),
+                ),
+                "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree",
+                1,
+            )
         }
     }
     given "names against names" {
 
         then "a generated name the file already declares speaks at the annotation" {
-            let p = packaged("use @std.meta.{derive}\nuse @x.prov.{wrapped}\nfn tmp() -> int { 10 }\nfn go_wrapped() -> int { 5 }\n@wrapped(quote { tmp })\nfn go() -> int { 0 }\ngo_wrapped()", provider())
-            refused_n(p, "`@wrapped` generates `go_wrapped`, which this file already declares", 1) && p.report().contains("main.av:5")
+            let p = packaged(
+                "use @std.meta.{derive}\nuse @x.prov.{wrapped}\nfn tmp() -> int { 10 }\nfn go_wrapped() -> int { 5 }\n@wrapped(quote { tmp })\nfn go() -> int { 0 }\ngo_wrapped()",
+                provider(),
+            )
+            refused_n(
+                    p,
+                    "`@wrapped` generates `go_wrapped`, which this file already declares",
+                    1,
+                ) &&
+                p.report().contains("main.av:5")
         }
     }
 }

@@ -20,7 +20,13 @@ fn ws_files() -> Map<string, string> {
 }
 
 fn ws_names() -> List<string> {
-    ["/w/src/main.av", "/w/src/helper.av", "/w/src/util/mathx.av", "/w/src/util/pair.av", "/w/src/solo.av"]
+    [
+        "/w/src/main.av",
+        "/w/src/helper.av",
+        "/w/src/util/mathx.av",
+        "/w/src/util/pair.av",
+        "/w/src/solo.av",
+    ]
 }
 
 fn ws_of() -> Workspace {
@@ -39,7 +45,11 @@ fn with_main(text: string) -> Workspace {
 fn spec_package(toml: string) -> Workspace {
     mut fs = ws_files()
     fs.set("/w/avra.toml", toml)
-    fs.set("/w/src/main.av", "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n")
+    fs
+        .set(
+            "/w/src/main.av",
+            "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n",
+        )
     new_workspace(memory_host(fs, ws_names().concat(["/w/avra.toml"])), "/w", avra())
 }
 
@@ -52,7 +62,9 @@ fn poisoned_manifest() -> string {
 /// A manifest whose search rows carry environment holes — one that
 /// fills (PATH is always set) and one that names nothing.
 fn holed_manifest() -> string {
-    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"\$" + "{PATH}\", \"\$" + "{AVRA_NO_SUCH_VAR_}\"]\n"
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"\$" +
+        "{PATH}\", \"\$" +
+        "{AVRA_NO_SUCH_VAR_}\"]\n"
 }
 
 /// A root and one dependency, where the DEPENDENCY asks for raw
@@ -65,7 +77,19 @@ fn borrowing_workspace() -> Workspace {
         "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n",
         "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
     }
-    new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/dep/avra.toml", "/w/vendor/dep/src/dep.av"]), "/w", avra())
+    new_workspace(
+        memory_host(
+            files,
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/dep/avra.toml",
+                "/w/vendor/dep/src/dep.av",
+            ],
+        ),
+        "/w",
+        avra(),
+    )
 }
 
 fn main_report(text: string) -> string {
@@ -80,10 +104,7 @@ fn main_refuses(text: string, saying: string) -> bool {
 
 /// Whether a run answered exactly `text`.
 fn ran_as(r: Result<string, string>, text: string) -> bool {
-    match r {
-        .Ok(t) -> t == text,
-        .Err(_) -> false,
-    }
+    match r { .Ok(t) -> t == text, .Err(_) -> false }
 }
 
 spec "compiler/workspace" {
@@ -100,7 +121,11 @@ spec "compiler/workspace" {
         then "a root sibling's fn, a directory module's exports, and a lone-file module resolve" {
             let ws = ws_of()
             let f = ws.visible(ws.file_id("/w/src/main.av"))
-            f.fn_decl("helper") != null && f.fn_decl("twice") != null && f.type_decl("Pair") != null && f.fn_decl("only") != null && f.voices.list.is_empty()
+            f.fn_decl("helper") != null &&
+                f.fn_decl("twice") != null &&
+                f.type_decl("Pair") != null &&
+                f.fn_decl("only") != null &&
+                f.voices.list.is_empty()
         }
         then "a module's private fn is not on its surface" {
             let ws = ws_of()
@@ -124,40 +149,80 @@ spec "compiler/workspace" {
             main_report("use util.{twice}\nlet f = twice\nf(4)\n") == ""
         }
         then "a foreign enum constructs and matches" {
-            main_report("use util.{Shape}\nlet s = Shape.Line(3)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n") == ""
+            main_report(
+                "use util.{Shape}\nlet s = Shape.Line(3)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n",
+            ) == ""
         }
         then "a foreign generic record applies in a signature and instantiates" {
-            main_report("use util.{Box}\nfn peek(b: Box<int>) -> int {\n    b.v\n}\npeek(Box { v: 7 })\n") == ""
+            main_report(
+                "use util.{Box}\nfn peek(b: Box<int>) -> int {\n    b.v\n}\npeek(Box { v: 7 })\n",
+            ) == ""
         }
         then "a foreign generic fn types, and its specialization lowers in its home" {
             ran_as(with_main("use util.{ident}\nident(3)\n").program("/w/src/main.av").run(), "3")
         }
         then "a nested module's fn lowers under its qualified symbol" {
-            with_main("use util.{twice}\ntwice(2)\n").program("/w/src/main.av").lowered().fns.any(it.name == "util.twice")
+            with_main("use util.{twice}\ntwice(2)\n")
+                .program("/w/src/main.av")
+                .lowered()
+                .fns
+                .any(it.name == "util.twice")
         }
         then "the program lowers what the entry reaches — an unreached body stays out" {
-            with_main("use util.{twice}\ntwice(2)\n").program("/w/src/main.av").lowered().fns.any(it.name == "util.ident") == false
+            with_main("use util.{twice}\ntwice(2)\n")
+                .program("/w/src/main.av")
+                .lowered()
+                .fns
+                .any(it.name == "util.ident") == false
         }
     }
     given "the program runs across ws_files — one worklist" {
         then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
-            ran_as(with_main("use util.{twice, ident}\nuse solo.{only}\ntwice(20) + ident(1) + only(1) + helper(1)\n").program("/w/src/main.av").run(), "43")
+            ran_as(
+                with_main(
+                    "use util.{twice, ident}\nuse solo.{only}\ntwice(20) + ident(1) + only(1) + helper(1)\n",
+                )
+                    .program("/w/src/main.av")
+                    .run(),
+                "43",
+            )
         }
         then "a foreign fn worn as a value calls through its wrapper" {
-            ran_as(with_main("use util.{twice}\nlet f = twice\nf(21)\n").program("/w/src/main.av").run(), "42")
+            ran_as(
+                with_main("use util.{twice}\nlet f = twice\nf(21)\n")
+                    .program("/w/src/main.av")
+                    .run(),
+                "42",
+            )
         }
         then "a foreign enum matches by its variants" {
-            ran_as(with_main("use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n").program("/w/src/main.av").run(), "7")
+            ran_as(
+                with_main(
+                    "use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n",
+                )
+                    .program("/w/src/main.av")
+                    .run(),
+                "7",
+            )
         }
         then "a foreign generic record instantiates and reads" {
-            ran_as(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n").program("/w/src/main.av").run(), "9")
+            ran_as(
+                with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n")
+                    .program("/w/src/main.av")
+                    .run(),
+                "9",
+            )
         }
         then "a run-time statement outside the entry refuses, naming the entry" {
             mut fs = ws_files()
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
             let ws = new_workspace(memory_host(fs, ws_names()), "/w", avra())
             let p = ws.program("/w/src/main.av")
-            p.clean() && p.lowered().diagnostics.length == 1 && p.rendered(p.lowered().diagnostics).contains("only the entry `/w/src/main.av` runs statements")
+            p.clean() &&
+                p.lowered().diagnostics.length == 1 &&
+                p
+                    .rendered(p.lowered().diagnostics)
+                    .contains("only the entry `/w/src/main.av` runs statements")
         }
     }
     given "a failed use speaks" {
@@ -165,10 +230,15 @@ spec "compiler/workspace" {
             main_refuses("use nope.{x}\n2\n", "no module `nope` under the package's source root")
         }
         then "an item the module does not export — the exports named" {
-            main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") && main_report("use util.{hidden}\n2\n").contains("its exports: twice, ident, Pair, Box, Shape")
+            main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") &&
+                main_report("use util.{hidden}\n2\n")
+                    .contains("its exports: twice, ident, Pair, Box, Shape")
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
-            main_refuses("use @std.errors.{Loc}\n2\n", "`@std/errors` is not a dependency of this package")
+            main_refuses(
+                "use @std.errors.{Loc}\n2\n",
+                "`@std/errors` is not a dependency of this package",
+            )
         }
     }
     given "the host seam carries words, never a shell line" {
@@ -218,7 +288,10 @@ spec "compiler/workspace" {
             spec_package(poisoned_manifest()).program(null).cases_at("/w//src/main.av").length == 1
         }
         then "a `..` folded into the path" {
-            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/util/../main.av").length == 1
+            spec_package(poisoned_manifest())
+                .program(null)
+                .cases_at("/w/src/util/../main.av")
+                .length == 1
         }
         then "another file selects nothing" {
             spec_package(poisoned_manifest()).program(null).cases_at("/w/src/helper.av").is_empty()
@@ -294,9 +367,14 @@ fn toolchain_app(main: string) -> Workspace {
 /// `@std/text` pointing at a copy under the app.
 fn pinned_app(main: string) -> Workspace {
     mut fs = toolchain_files()
-    fs.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n")
+    fs
+        .set(
+            "/w/avra.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n",
+        )
     fs.set("/w/vendor/text/avra.toml", "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n")
-    fs.set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s + \"?\"\n}\n")
+    fs
+        .set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s + \"?\"\n}\n")
     fs.set("/w/src/main.av", main)
     let names = toolchain_names().concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
     new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra())
@@ -319,37 +397,70 @@ spec "the toolchain's std packages" {
             toolchain_clean(toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n"))
         }
         then "the program runs through the toolchain's code" {
-            ran_as(toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n").program("/w/src/main.av").run(), "hi!")
+            ran_as(
+                toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n")
+                    .program("/w/src/main.av")
+                    .run(),
+                "hi!",
+            )
         }
         then "a package the toolchain does not carry is still not a dependency" {
             let a = toolchain_app("use @std.net.{fetch}\n1\n").analyze_file("/w/src/main.av")
-            a.diagnostics.length == 1 && a.report().contains("`@std/net` is not a dependency of this package")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`@std/net` is not a dependency of this package")
         }
         then "a key outside @std is never the toolchain's" {
             let a = toolchain_app("use @acme.text.{shout}\n1\n").analyze_file("/w/src/main.av")
-            a.diagnostics.length == 1 && a.report().contains("`@acme/text` is not a dependency of this package")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`@acme/text` is not a dependency of this package")
         }
         then "a host with no std root refuses as before" {
             let a = with_main("use @std.text.{shout}\n1\n").analyze_file("/w/src/main.av")
-            a.diagnostics.length == 1 && a.report().contains("`@std/text` is not a dependency of this package")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`@std/text` is not a dependency of this package")
         }
     }
     given "a manifest row for a std package" {
         then "the declared copy is the one read" {
-            ran_as(pinned_app("use @std.text.{shout}\nshout(\"hi\")\n").program("/w/src/main.av").run(), "hi?")
+            ran_as(
+                pinned_app("use @std.text.{shout}\nshout(\"hi\")\n").program("/w/src/main.av").run(),
+                "hi?",
+            )
         }
         then "the pin holds for every package in the graph" {
-            ran_as(pinned_app("use @std.io.{shouted}\nshouted(\"hi\")\n").program("/w/src/main.av").run(), "hi?")
+            ran_as(
+                pinned_app("use @std.io.{shouted}\nshouted(\"hi\")\n")
+                    .program("/w/src/main.av")
+                    .run(),
+                "hi?",
+            )
         }
         then "a dependency's own row disagreeing with the pin is two directories" {
             mut fs = toolchain_files()
-            fs.set("/tc/std-io/avra.toml", "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n")
-            fs.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n")
-            fs.set("/w/vendor/text/avra.toml", "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n")
-            fs.set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s\n}\n")
+            fs
+                .set(
+                    "/tc/std-io/avra.toml",
+                    "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n",
+                )
+            fs
+                .set(
+                    "/w/avra.toml",
+                    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n",
+                )
+            fs
+                .set(
+                    "/w/vendor/text/avra.toml",
+                    "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n",
+                )
+            fs
+                .set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s\n}\n")
             fs.set("/w/src/main.av", "use @std.io.{shouted}\nshouted(\"hi\")\n")
-            let names = toolchain_names().concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
-            package_voice(new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra()), "`@std/text` is claimed by two directories")
+            let names = toolchain_names()
+                .concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
+            package_voice(
+                new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra()),
+                "`@std/text` is claimed by two directories",
+            )
         }
     }
 }
@@ -358,11 +469,30 @@ spec "one directory, one spelling" {
     given "a root opened by a relative path under a host with a cwd" {
         then "a declared relative path and the toolchain's absolute one are one package" {
             mut fs = toolchain_files()
-            fs.set("/tc/std-io/avra.toml", "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n")
-            fs.set("w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"../tc/std-text\" }\n")
+            fs
+                .set(
+                    "/tc/std-io/avra.toml",
+                    "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n",
+                )
+            fs
+                .set(
+                    "w/avra.toml",
+                    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"../tc/std-text\" }\n",
+                )
             fs.set("w/src/main.av", "use @std.io.{shouted}\nshouted(\"hi\")\n")
-            let names = ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "w/avra.toml", "w/src/main.av"]
-            let ws = new_workspace(memory_host_at(fs, names, "/") with { std_root: "/tc" }, "w", avra())
+            let names = [
+                "/tc/std-text/avra.toml",
+                "/tc/std-text/src/text.av",
+                "/tc/std-io/avra.toml",
+                "/tc/std-io/src/io.av",
+                "w/avra.toml",
+                "w/src/main.av",
+            ]
+            let ws = new_workspace(
+                memory_host_at(fs, names, "/") with { std_root: "/tc" },
+                "w",
+                avra(),
+            )
             ws.analyze_file("w/src/main.av").diagnostics.is_empty()
         }
     }
@@ -375,9 +505,22 @@ spec "the prelude" {
         }
         then "the toolchain's own packages see it too" {
             mut fs = toolchain_files()
-            fs.set("/tc/std-text/src/text.av", "export fn shout(s: string) -> string {\n    greet(s) + \"!\"\n}\n")
+            fs
+                .set(
+                    "/tc/std-text/src/text.av",
+                    "export fn shout(s: string) -> string {\n    greet(s) + \"!\"\n}\n",
+                )
             fs.set("/w/src/main.av", "use @std.text.{shout}\nshout(\"x\")\n")
-            ran_as(new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra()).program("/w/src/main.av").run(), "hi x!")
+            ran_as(
+                new_workspace(
+                    memory_host(fs, toolchain_names()) with { std_root: "/tc" },
+                    "/w",
+                    avra(),
+                )
+                    .program("/w/src/main.av")
+                    .run(),
+                "hi x!",
+            )
         }
         then "a host with no std root has no prelude" {
             let a = with_main("greet(\"x\")\n").analyze_file("/w/src/main.av")
@@ -386,24 +529,62 @@ spec "the prelude" {
     }
     given "a name the file holds itself" {
         then "the file's own declaration wins silently" {
-            ran_as(toolchain_app("fn greet(s: string) -> string {\n    \"mine \" + s\n}\ngreet(\"x\")\n").program("/w/src/main.av").run(), "mine x")
+            ran_as(
+                toolchain_app(
+                    "fn greet(s: string) -> string {\n    \"mine \" + s\n}\ngreet(\"x\")\n",
+                )
+                    .program("/w/src/main.av")
+                    .run(),
+                "mine x",
+            )
         }
         then "an explicit import wins silently" {
             mut fs = toolchain_files()
-            fs.set("/tc/std-text/src/text.av", "export fn greet(s: string) -> string {\n    \"text \" + s\n}\n")
+            fs
+                .set(
+                    "/tc/std-text/src/text.av",
+                    "export fn greet(s: string) -> string {\n    \"text \" + s\n}\n",
+                )
             fs.set("/w/src/main.av", "use @std.text.{greet}\ngreet(\"x\")\n")
-            ran_as(new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra()).program("/w/src/main.av").run(), "text x")
+            ran_as(
+                new_workspace(
+                    memory_host(fs, toolchain_names()) with { std_root: "/tc" },
+                    "/w",
+                    avra(),
+                )
+                    .program("/w/src/main.av")
+                    .run(),
+                "text x",
+            )
         }
         then "the prelude's own file does not see itself twice" {
-            new_workspace(memory_host(toolchain_files(), toolchain_names()) with { std_root: "/tc" }, "/tc/std-prelude", avra()).analyze_file("/tc/std-prelude/src/prelude.av").diagnostics.is_empty()
+            new_workspace(
+                memory_host(toolchain_files(), toolchain_names()) with { std_root: "/tc" },
+                "/tc/std-prelude",
+                avra(),
+            )
+                .analyze_file("/tc/std-prelude/src/prelude.av")
+                .diagnostics
+                .is_empty()
         }
     }
     given "the floor" {
         then "a prelude that declares a dependency is refused" {
             mut fs = toolchain_files()
-            fs.set("/tc/std-prelude/avra.toml", "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n")
+            fs
+                .set(
+                    "/tc/std-prelude/avra.toml",
+                    "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n",
+                )
             fs.set("/w/src/main.av", "greet(\"x\")\n")
-            package_voice(new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra()), "`@std/prelude` depends on nothing")
+            package_voice(
+                new_workspace(
+                    memory_host(fs, toolchain_names()) with { std_root: "/tc" },
+                    "/w",
+                    avra(),
+                ),
+                "`@std/prelude` depends on nothing",
+            )
         }
     }
 }
@@ -415,7 +596,10 @@ spec "the unit table" {
             let p = ws.program(null)
             let l = p.lowered()
             let interned = ws.asks.get()
-            l.fns.length > 0 && interned.length > 0 && ws.spec_id(interned[0]) == 0 && ws.asks.get().length == interned.length
+            l.fns.length > 0 &&
+                interned.length > 0 &&
+                ws.spec_id(interned[0]) == 0 &&
+                ws.asks.get().length == interned.length
         }
     }
 }
@@ -444,13 +628,12 @@ spec "avra fmt --write's own receipt" {
             let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
             let ws = with_main(src)
             let f = ws.file_id("/w/src/main.av")
-            match ws.write_checked_source(f) {
-                .Ok(text) -> "${text}\n" == src,
-                .Err(_) -> false,
-            }
+            match ws.write_checked_source(f) { .Ok(text) -> "${text}\n" == src, .Err(_) -> false }
         }
         then "the same comment, mid-chain in the author's own wrapping, lands inside the brace and stays there on a second write" {
-            let ws1 = with_main("fn f(c: int) -> bool {\n    c == 61 ||\n    // the bitwise three\n    c == 124\n}\n")
+            let ws1 = with_main(
+                "fn f(c: int) -> bool {\n    c == 61 ||\n    // the bitwise three\n    c == 124\n}\n",
+            )
             let f1 = ws1.file_id("/w/src/main.av")
             match ws1.write_checked_source(f1) {
                 .Ok(first) -> {
@@ -471,7 +654,11 @@ spec "avra fmt --write's own receipt" {
                 "/w/src/lib.av": "export component Widget {\n    depth: int\n}\n",
                 "/w/src/main.av": "use lib.{Widget}\n\nWidget w {\n    depth: 8\n}\n\nfn names(t: string) -> bool {\n    [\n        \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n        \"ccccccccccccccccccccccccccccccc\"\n    ].any((p) -> t == p)\n}\n",
             }
-            let ws = new_workspace(memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]), "/w", avra())
+            let ws = new_workspace(
+                memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]),
+                "/w",
+                avra(),
+            )
             let f = ws.file_id("/w/src/main.av")
             match ws.write_checked_source(f) {
                 .Ok(text) -> text.contains("ccccccccccccccccccccccccccccccc\",\n    ]"),

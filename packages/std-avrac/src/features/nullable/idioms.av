@@ -12,9 +12,7 @@ use @std.meta.{name}
 /// is already `Expr.If` — no parentheses needed to force it.
 @fixes("let v = if x == null { 0 } else { x! }", "x ?? 0")
 @keeps("let v = if next() == null { 0 } else { next()! }")
-export rule if_null_ternary {
-    quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} },
-}
+export rule if_null_ternary { quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} } }
 
 /// `let x = E` guarded by an immediate absence-exit — `let x? = E
 /// else { … }` — with every later `x!` in the block reading `x`
@@ -37,7 +35,8 @@ export rule let_else_guard {
 /// The guard body is one bare early-exit — `return`/`fail` — nothing
 /// this rule's rewrite would need to preserve past the `else`.
 fn absence_exit(guard: List<Code>) -> bool {
-    guard.length == 1 && (guard[0].text().starts_with("return") || guard[0].text().starts_with("fail"))
+    guard.length == 1 &&
+        (guard[0].text().starts_with("return") || guard[0].text().starts_with("fail"))
 }
 
 /// Whether `name!` appears anywhere in `rest` — the force-unwrap a
@@ -58,7 +57,22 @@ fn let_else_guard_fix(head: List<Code>, x: string, e: Code, guard: List<Code>, r
     let head_text = joined([c.text() for c in head])
     let guard_text = joined([c.text() for c in guard])
     let rest_text = joined([unforced(r.text(), x) for r in rest])
-    Fix.Rewrite(name("{\n" + head_text + "let " + x + "? = " + e.text() + " else {\n" + guard_text + "}\n" + rest_text + "}"))
+    Fix
+        .Rewrite(
+            name(
+                "{\n" +
+                    head_text +
+                    "let " +
+                    x +
+                    "? = " +
+                    e.text() +
+                    " else {\n" +
+                    guard_text +
+                    "}\n" +
+                    rest_text +
+                    "}",
+            ),
+        )
 }
 
 /// `lines`, one per source line — "" for an empty run, never a
@@ -117,12 +131,18 @@ fn is_ident_char(c: int) -> bool {
 @keeps("mut best: Thing = other()")
 @keeps("mut best: Thing? = other()")
 @keeps("mut n = 0")
-export rule nullable_flag_local {
-    quote { ${lit} } if lit.is_nullable_flag_mut() -> nullable_flag_found(lit),
-}
+export rule nullable_flag_local { quote { ${lit} } if lit.is_nullable_flag_mut() -> nullable_flag_found(lit) }
 
 fn nullable_flag_found(lit: Code) -> Fix {
-    Fix.Say(said(lit.loc(), "a nullable flag local — is this scan a find/index_of?", "this local", null))
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "a nullable flag local — is this scan a find/index_of?",
+                "this local",
+                null,
+            ),
+        )
 }
 
 /// A `let` LOCAL forced open (`!`) three or more times within its own
@@ -137,10 +157,16 @@ fn nullable_flag_found(lit: Code) -> Fix {
 /// read) that this pattern's one bound local cannot make on its own.
 @keeps("fn f() {\n    let held = get()\n    take(held!)\n}")
 @keeps("fn f() {\n    mut held = get()\n    use(held!)\n    use(held!)\n    use(held!)\n}")
-export rule repeated_unwrap {
-    quote { ${lit} } if lit.is_repeatedly_forced() -> repeated_unwrap_found(lit),
-}
+export rule repeated_unwrap { quote { ${lit} } if lit.is_repeatedly_forced() -> repeated_unwrap_found(lit) }
 
 fn repeated_unwrap_found(lit: Code) -> Fix {
-    Fix.Say(said(lit.loc(), "forced open three or more times in its own declaration — guard once, bind once, and read the name", "this local", null))
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "forced open three or more times in its own declaration — guard once, bind once, and read the name",
+                "this local",
+                null,
+            ),
+        )
 }

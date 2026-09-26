@@ -6,22 +6,31 @@ use @std.avrac.testing.{shown, refused_with, refusals}
 spec "features/stmt_spine (layout)" {
     given "a line continues" {
         then "after a trailing operator" {
-            shown("let total = 1 +\n    2 +\n    3\ntotal") == "6" && shown("let ok = true &&\n    false\nif ok { 1 } else { 0 }") == "0"
+            shown("let total = 1 +\n    2 +\n    3\ntotal") == "6" &&
+                shown("let ok = true &&\n    false\nif ok { 1 } else { 0 }") == "0"
         }
         then "after `=`" {
             shown("let xs =\n    [1, 2, 3]\nxs.length") == "3"
         }
         then "inside parentheses and brackets, whatever the indentation" {
-            shown("fn add3(a: int, b: int,\n        c: int) -> int {\n    a + b + c\n}\nadd3(1,\n     2,\n     3)") == "6" && shown("let xs = [\n    1,\n    2,\n    3,\n]\nxs.length") == "3"
+            shown(
+                    "fn add3(a: int, b: int,\n        c: int) -> int {\n    a + b + c\n}\nadd3(1,\n     2,\n     3)",
+                ) == "6" &&
+                shown("let xs = [\n    1,\n    2,\n    3,\n]\nxs.length") == "3"
         }
         then "a `.name` line indented deeper continues a chain — arms level with their siblings do not" {
-            shown("let n = [3, 1, 2]\n    .length\nn") == "3" && shown("enum K {\n    a\n    b\n}\nlet v = K.b\nmatch v {\n    .a -> 1\n    .b -> 2\n}") == "2"
+            shown("let n = [3, 1, 2]\n    .length\nn") == "3" &&
+                shown(
+                    "enum K {\n    a\n    b\n}\nlet v = K.b\nmatch v {\n    .a -> 1\n    .b -> 2\n}",
+                ) == "2"
         }
         then "an `else` on its own line continues the if" {
             shown("let n = 5\nlet w = if n > 9 { 1 }\n    else { 2 }\nw") == "2"
         }
         then "a match inside parentheses keeps its arms on their lines" {
-            shown("enum K {\n    a\n    b\n}\nfn f(n: int) -> int {\n    n\n}\nf(match K.b {\n    .a -> 1\n    .b -> 2\n})") == "2"
+            shown(
+                "enum K {\n    a\n    b\n}\nfn f(n: int) -> int {\n    n\n}\nf(match K.b {\n    .a -> 1\n    .b -> 2\n})",
+            ) == "2"
         }
         then "an unclosed bracket runs to the file's end — the bracket law, two refusals" {
             refusals("let x = f(1 +\n2\nlet y = 3\ny") == 2
@@ -32,12 +41,17 @@ spec "features/stmt_spine (layout)" {
             shown("fn poke(n: int) {\n    if n > 0 { return }\n    let m = n\n}\npoke(1)\n5") == "5"
         }
         then "refuses in a fn that declares a value" {
-            refused_with("fn f() -> int {\n    return\n}\nf()", "a bare `return` answers nothing, but this fn declares `int`")
+            refused_with(
+                "fn f() -> int {\n    return\n}\nf()",
+                "a bare `return` answers nothing, but this fn declares `int`",
+            )
         }
     }
     given "a block is an expression" {
         then "a match arm takes a multi-line block" {
-            shown("enum K {\n    a\n    b\n}\nmatch K.a {\n    .a -> {\n        let x = 4\n        x * 2\n    }\n    .b -> 0\n}") == "8"
+            shown(
+                "enum K {\n    a\n    b\n}\nmatch K.a {\n    .a -> {\n        let x = 4\n        x * 2\n    }\n    .b -> 0\n}",
+            ) == "8"
         }
         then "an empty brace pair is still the empty map" {
             shown("let m: Map<string, int> = { }\nm.length") == "0"
@@ -45,13 +59,19 @@ spec "features/stmt_spine (layout)" {
     }
     given "if-chains" {
         then "a statement chain without a final else" {
-            shown("fn sign(n: int) -> int {\n    mut s = 0\n    if n > 0 {\n        s = 1\n    } else if n < 0 {\n        s = -1\n    }\n    s\n}\nsign(-4) + sign(0) + sign(9) * 10") == "9"
+            shown(
+                "fn sign(n: int) -> int {\n    mut s = 0\n    if n > 0 {\n        s = 1\n    } else if n < 0 {\n        s = -1\n    }\n    s\n}\nsign(-4) + sign(0) + sign(9) * 10",
+            ) == "9"
         }
         then "a chain in tail position is the fn's value" {
-            shown("fn grade(n: int) -> string {\n    if n > 90 {\n        \"a\"\n    } else if n > 80 {\n        \"b\"\n    } else {\n        \"c\"\n    }\n}\n\"\${grade(95)}\${grade(85)}\${grade(5)}\"") == "abc"
+            shown(
+                "fn grade(n: int) -> string {\n    if n > 90 {\n        \"a\"\n    } else if n > 80 {\n        \"b\"\n    } else {\n        \"c\"\n    }\n}\n\"\${grade(95)}\${grade(85)}\${grade(5)}\"",
+            ) == "abc"
         }
         then "a chain as a let's value" {
-            shown("let n = 5\nlet w = if n > 9 { \"big\" } else if n > 3 { \"mid\" } else { \"small\" }\nw") == "mid"
+            shown(
+                "let n = 5\nlet w = if n > 9 { \"big\" } else if n > 3 { \"mid\" } else { \"small\" }\nw",
+            ) == "mid"
         }
         then "a chain at the top level is the program's answer" {
             shown("let n = 2\nif n > 5 {\n    1\n} else if n > 1 {\n    2\n} else {\n    3\n}") == "2"

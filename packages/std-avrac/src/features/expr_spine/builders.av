@@ -1,6 +1,27 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, TypeRef, pronoun_param, Plain, Scoped, span_of}
-use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, between, chained_binder, marked_seats}
+use core.{
+    Expr,
+    ExprId,
+    BinOp,
+    want,
+    op_symbol,
+    all_binops,
+    TypeRef,
+    pronoun_param,
+    Plain,
+    Scoped,
+    span_of,
+}
+use features.{
+    LangNode,
+    Builder,
+    token_at,
+    zip_defect,
+    aligned_binds,
+    between,
+    chained_binder,
+    marked_seats,
+}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -196,7 +217,13 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     // a block after a type literal too — a literal is no call
     mut blocked = false
     mut spelled = false
-    while jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length || jb < blocks.length || jt < spellings.length || jq < chained.length {
+    while jn < names.length ||
+        ji < indexes.length ||
+        jc < calls.length ||
+        jf < forces.length ||
+        jb < blocks.length ||
+        jt < spellings.length ||
+        jq < chained.length {
         let np = if jn < names.length { names[jn].span.lo } else { ends }
         let ip = if ji < indexes.length { span_lo(b, indexes[ji]) ?? ends } else { ends }
         let cp = if jc < calls.length { calls[jc].span.lo } else { ends }
@@ -215,8 +242,12 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
             acc = chained_type_literal(b, acc, chained[jq])?
             jq = jq + 1
         } else if bp < np && bp < ip && bp < cp && bp < fp {
-            if spelled { return .Err("a trailing block follows a type literal — a literal is no call, and a block belongs to one") }
-            if blocked { return .Err("a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line") }
+            if spelled { return .Err(
+                    "a trailing block follows a type literal — a literal is no call, and a block belongs to one",
+                ) }
+            if blocked { return .Err(
+                    "a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line",
+                ) }
             let upto = if jb + 1 < blocks.length { span_lo(b, blocks[jb + 1]) ?? ends } else { ends }
             acc = b.trailed(acc, [blocks[jb]].concat(args_between(b, elses, bp, upto)))?
             jb = jb + 1
@@ -225,7 +256,9 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
             blocked = false
             spelled = false
             if fp < np && fp < ip && fp < cp {
-                acc = b.store.alloc_expr(force_link(forces[jf].text, acc), span_of(starts, forces[jf].span.hi))
+                acc = b
+                    .store
+                    .alloc_expr(force_link(forces[jf].text, acc), span_of(starts, forces[jf].span.hi))
                 jf = jf + 1
             } else if np <= ip && np <= cp {
                 let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
@@ -235,20 +268,72 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
                 jn = jn + 1
                 if called {
                     let margs_here = [b.store.pronouned(a) for a in args_between(b, margs, np, upto)]
-                    let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { call_hi(b, name, margs_here) } else { ends }
-                    acc = if link == "?." { chained_call(b, acc, name.text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, Plain(name.text), margs_here), span_of(starts, hi)) }
+                    let hi = if more_links(
+                        jn,
+                        ji,
+                        jc,
+                        jf,
+                        jb,
+                        jt,
+                        jq,
+                        names,
+                        indexes,
+                        calls,
+                        forces,
+                        blocks,
+                        spellings,
+                        chained,
+                    ) { call_hi(b, name, margs_here) } else { ends }
+                    acc = if link == "?." { chained_call(b, acc, name.text, margs_here) } else { b
+                            .store
+                            .alloc_expr(
+                                Expr.MethodCall(acc, Plain(name.text), margs_here),
+                                span_of(starts, hi),
+                            ) }
                 } else {
-                    acc = b.store.alloc_expr(prop_link(link, acc, name.text), span_of(starts, name.span.hi))
+                    acc = b
+                        .store
+                        .alloc_expr(prop_link(link, acc, name.text), span_of(starts, name.span.hi))
                 }
             } else if ip <= cp {
                 ji = ji + 1
-                let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { span_hi(b, indexes[ji - 1]) ?? ends } else { ends }
+                let hi = if more_links(
+                    jn,
+                    ji,
+                    jc,
+                    jf,
+                    jb,
+                    jt,
+                    jq,
+                    names,
+                    indexes,
+                    calls,
+                    forces,
+                    blocks,
+                    spellings,
+                    chained,
+                ) { span_hi(b, indexes[ji - 1]) ?? ends } else { ends }
                 acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji - 1]), span_of(starts, hi))
             } else {
                 let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
                 let args_here = args_between(b, cargs, cp, upto)
                 jc = jc + 1
-                let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { call_hi(b, calls[jc - 1], args_here) } else { ends }
+                let hi = if more_links(
+                    jn,
+                    ji,
+                    jc,
+                    jf,
+                    jb,
+                    jt,
+                    jq,
+                    names,
+                    indexes,
+                    calls,
+                    forces,
+                    blocks,
+                    spellings,
+                    chained,
+                ) { call_hi(b, calls[jc - 1], args_here) } else { ends }
                 acc = b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi))
             }
         }
@@ -268,7 +353,16 @@ fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>) -
 
 /// The nearest UNCONSUMED anchor past the cursors — the window's
 /// end for the link being folded.
-fn next_anchor(b: Builder, names: List<Token>, indexes: List<ExprId>, calls: List<Token>, jn: int, ji: int, jc: int, ends: int) -> int {
+fn next_anchor(
+    b: Builder,
+    names: List<Token>,
+    indexes: List<ExprId>,
+    calls: List<Token>,
+    jn: int,
+    ji: int,
+    jc: int,
+    ends: int,
+) -> int {
     mut best = ends
     if jn < names.length && names[jn].span.lo < best { best = names[jn].span.lo }
     if ji < indexes.length {
@@ -315,8 +409,29 @@ fn call_hi(b: Builder, anchor: Token, args: List<ExprId>) -> int {
 /// end from being short of: `ends`, the whole match's real close, is
 /// exactly right there, and only an interior link needs the
 /// narrower, closing-delimiter-blind estimate.
-fn more_links(jn: int, ji: int, jc: int, jf: int, jb: int, jt: int, jq: int, names: List<Token>, indexes: List<ExprId>, calls: List<Token>, forces: List<Token>, blocks: List<ExprId>, spellings: List<TypeRef>, chained: List<TypeRef>) -> bool {
-    jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length || jb < blocks.length || jt < spellings.length || jq < chained.length
+fn more_links(
+    jn: int,
+    ji: int,
+    jc: int,
+    jf: int,
+    jb: int,
+    jt: int,
+    jq: int,
+    names: List<Token>,
+    indexes: List<ExprId>,
+    calls: List<Token>,
+    forces: List<Token>,
+    blocks: List<ExprId>,
+    spellings: List<TypeRef>,
+    chained: List<TypeRef>,
+) -> bool {
+    jn < names.length ||
+        ji < indexes.length ||
+        jc < calls.length ||
+        jf < forces.length ||
+        jb < blocks.length ||
+        jt < spellings.length ||
+        jq < chained.length
 }
 
 /// The node a link token names — the chain when absence rides it.
@@ -382,7 +497,8 @@ fn build_catch(b: Builder) -> Result<LangNode, string> {
         let tn = b.tokens(12)?
         let ta = b.exprs(13)?
         if tb.length != tn.length || tb.length != ta.length { return .Err(zip_defect) }
-        return b.make_expr(Expr.Catch(l, [Plain(n.text) for n in tn], [Scoped(n.text) for n in tb], ta))
+        return b
+            .make_expr(Expr.Catch(l, [Plain(n.text) for n in tn], [Scoped(n.text) for n in tb], ta))
     }
     let cv = b.tokens(2)?
     if cv.is_empty() {
@@ -396,5 +512,14 @@ fn build_catch(b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if cv.length != ca.length { return .Err(zip_defect) }
     if ends == null { return .Err("defect: a catch without a span — the arena and the grammar disagree") }
-    b.make_expr(Expr.Catch(l, [Plain(v.text) for v in cv], [Scoped(t) for t in aligned_binds(cv, b.tokens(3)?, ends!)], ca))
+    b
+        .make_expr(
+            Expr
+                .Catch(
+                    l,
+                    [Plain(v.text) for v in cv],
+                    [Scoped(t) for t in aligned_binds(cv, b.tokens(3)?, ends!)],
+                    ca,
+                ),
+        )
 }

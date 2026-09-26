@@ -4,10 +4,7 @@ use @std.json.{Json, field, parse, to_text, pretty}
 use @std.text.{from_codepoint}
 
 fn a_round(text: string) -> string {
-    match parse(text) {
-        .Ok(j) -> to_text(j),
-        .Err(e) -> e.describe().message,
-    }
+    match parse(text) { .Ok(j) -> to_text(j), .Err(e) -> e.describe().message }
 }
 
 fn deep(n: int) -> string {
@@ -30,17 +27,22 @@ spec "std/json — adversarial" {
         then "a minus before a word wants a digit" { a_round("-x") == "unexpected \"x\", wanting a digit at byte 1" }
         then "zero, negative zero and leading zeros are integers" { a_round("0") == "0" && a_round("-0") == "0" && a_round("007") == "7" }
         then "past the ceiling on either side is a refusal, not a silent wrap" {
-            a_round("9223372036854775808") == "the number at byte 0 does not fit an int" && a_round("-9223372036854775809") == "the number at byte 0 does not fit an int"
+            a_round("9223372036854775808") == "the number at byte 0 does not fit an int" &&
+                a_round("-9223372036854775809") == "the number at byte 0 does not fit an int"
         }
         then "an empty key is a key" { a_round("{\"\":1}") == "{\"\":1}" }
         then "a duplicate key is kept twice, in order — the reader does not judge" { a_round("{\"a\":1,\"a\":2}") == "{\"a\":1,\"a\":2}" }
         then "the empty string value" { a_round("\"\"") == "\"\"" }
     }
     given "every odd token" {
-        then "capitalized words are not values" { a_round("True") == "unexpected \"T\" at byte 0" && a_round("NULL") == "unexpected \"N\" at byte 0" }
+        then "capitalized words are not values" { a_round("True") == "unexpected \"T\" at byte 0" &&
+                a_round("NULL") == "unexpected \"N\" at byte 0" }
         then "single quotes are not strings" { a_round("'a'") == "unexpected \"'\" at byte 0" }
         then "a bare comma, colon or closer" {
-            a_round(",") == "unexpected \",\" at byte 0" && a_round(":") == "unexpected \":\" at byte 0" && a_round("]") == "unexpected \"]\" at byte 0" && a_round("}") == "unexpected \"}\" at byte 0"
+            a_round(",") == "unexpected \",\" at byte 0" &&
+                a_round(":") == "unexpected \":\" at byte 0" &&
+                a_round("]") == "unexpected \"]\" at byte 0" &&
+                a_round("}") == "unexpected \"}\" at byte 0"
         }
         then "an unclosed object at the end" { a_round("{\"a\":1") == "unexpected the end of the text, wanting `,` or `}` at byte 6" }
         then "an unclosed array at the end" { a_round("[1,2") == "unexpected the end of the text, wanting `,` or `]` at byte 4" }

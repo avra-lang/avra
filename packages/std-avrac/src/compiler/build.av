@@ -2,11 +2,32 @@
 //! hash: its binary is kept under a key over every input's bytes. A changed
 //! one makes the objects of the files that moved and links them with the ones
 //! the store holds for the rest.
-use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, distinct, flatten, sorted_texts, fp_list, RtSig, TypeRegistry}
+use core.{
+    new_digest,
+    digest_text,
+    digest_bytes,
+    digest_key,
+    digest_of,
+    joined,
+    distinct,
+    flatten,
+    sorted_texts,
+    fp_list,
+    RtSig,
+    TypeRegistry,
+}
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
-use compiler.backend.{emit_object, objects_made, Owned, emit_closed, home_of, not_closed, program_closed}
+use compiler.backend.{
+    emit_object,
+    objects_made,
+    Owned,
+    emit_closed,
+    home_of,
+    not_closed,
+    program_closed,
+}
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host, no_target}
@@ -114,7 +135,11 @@ fn compiler_print(ws: Workspace) -> string {
     if known != null && lines.last() == known { return print_of(known!) }
     let print = if known != null { print_of(known!) } else { digest_of_binary(at) }
     if print == UNNAMED_STORE { return print }
-    rolled(ws, roll, [line for line in lines if print_of(line) != print].concat(["${print}\t${at}\t${mark}"]))
+    rolled(
+        ws,
+        roll,
+        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}\t${mark}"]),
+    )
     print
 }
 
@@ -133,7 +158,8 @@ fn digest_of_binary(at: string) -> string {
 /// the stores' directory swept: a store no roll line names is no compiler's.
 // LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace, a path and the lines in.
 fn rolled(ws: Workspace, roll: string, lines: List<string>) {
-    let kept = lines.slice(if lines.length > STORES_KEPT { lines.length - STORES_KEPT } else { 0 }, lines.length)
+    let kept = lines
+        .slice(if lines.length > STORES_KEPT { lines.length - STORES_KEPT } else { 0 }, lines.length)
     let _ = ws.host.write(roll, joined(kept, "\n"))
     let named = [print_of(line) for line in kept].concat(["compilers", UNNAMED_STORE])
     for name in ws.host.list(stores_dir(ws)) {
@@ -165,14 +191,25 @@ export type Keyed = { named: string, beside: List<string> }
 /// A program built: its kept binary when these exact inputs were built
 /// before, else derived, compiled and linked now. A refusal is never kept.
 // LICENSED compiler.free_state_verb: THE ENTRY POINT — the one standard signature.
-export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<BuildOutcome, BuildError> {
+export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<
+    BuildOutcome,
+    BuildError,
+> {
     let binary = binary_name(entry)
     let kept = ws.kept_binary(ws.program_key(entry, []), binary)
     if kept != null { return .Ok(kept!) }
     let d = diagnosed(ws.derived(entry, Want.Binary))?
     let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(ws.root)])) }
     if main.view.stmts.is_empty() { fail BuildError.Empty }
-    d.linked(ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
+    d
+        .linked(
+            ProgramModule {
+                main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
+            },
+            Keyed { named: entry, beside: [] },
+            binary,
+            tools,
+        )
 }
 
 impl Workspace {
@@ -194,7 +231,12 @@ impl Workspace {
     /// package the row has not met is an edit to a file the row covers.
     fn closure(named: string) -> List<string> {
         let kept = remembered(store_at(build_cache_root(self)), self.closure_key(named))
-        sorted_texts(distinct(["${p.src}\t${p.root}" for p in self.packages()].concat([line for line in kept if !line.is_empty()])))
+        sorted_texts(
+            distinct(
+                ["${p.src}\t${p.root}" for p in self.packages()]
+                    .concat([line for line in kept if !line.is_empty()]),
+            ),
+        )
     }
 
     /// Where a program's closure is remembered.
@@ -202,7 +244,11 @@ impl Workspace {
 
     /// The closure as it stands now, remembered for the next key.
     fn keep_closure(named: string) {
-        remember(store_at(build_cache_root(self)), self.closure_key(named), ["${p.src}\t${p.root}" for p in self.packages()])
+        remember(
+            store_at(build_cache_root(self)),
+            self.closure_key(named),
+            ["${p.src}\t${p.root}" for p in self.packages()],
+        )
     }
 
     /// The key a finished derivation keeps under: its closure remembered first,
@@ -251,7 +297,8 @@ impl Workspace {
     fn stamps() -> Map<string, string> {
         if self.keys.stamps_at.get() != stamps_unread { return self.keys.stamped.get() }
         self.keys.stamps_at.set(stamps_read)
-        for line in (store_at(build_cache_root(self)).get(Stored.Fp, stamps_key()) ?? "").split("\n") {
+        for line in (store_at(build_cache_root(self)).get(Stored.Fp, stamps_key()) ?? "")
+            .split("\n") {
             let at = line.index_of("\t")
             if at > 0 { self.keys.stamped.put(line.substring(0, at), line.substring(at + 1, line.length)) }
         }
@@ -267,7 +314,8 @@ impl Workspace {
     fn keep_stamps(paths: List<string>) {
         if self.keys.stamps_at.get() != stamps_moved { return }
         let lines = [line! for line in [self.stamp_line(path) for path in paths] if line != null]
-        let _ = store_at(build_cache_root(self)).keep(Stored.Fp, stamps_key(), joined(lines, "\n"), [])
+        let _ = store_at(build_cache_root(self))
+            .keep(Stored.Fp, stamps_key(), joined(lines, "\n"), [])
     }
 
     /// Whether a body's home cannot emit it: the home is held, so its object
@@ -286,10 +334,17 @@ impl Workspace {
         mut by_name: Map<string, Body> = {}
         // with instantiations owed, the program's module is the STORE's: what roams
         // here is already in it, and stands as a declaration alone
-        for bd in roams { by_name.set(bd.name, if unlowered.is_empty() { bd with { file: null, weak: true } } else { bd with { file: null, weak: true, ins: [], reg_types: [] } }) }
+        for bd in roams { by_name
+                .set(
+                    bd.name,
+                    if unlowered.is_empty() { bd with { file: null, weak: true } } else { bd with { file: null, weak: true, ins: [], reg_types: [] } },
+                ) }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
         let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
-        let stand = held_stubs(self).concat(owed).concat(stay).concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
+        let stand = held_stubs(self)
+            .concat(owed)
+            .concat(stay)
+            .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
         // a held module nobody read is never minted, so nothing else declares its cases
         let brought = [main.case_stub(c.call, self.file_id(c.path)) for c in m.cases]
         lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand) }
@@ -302,7 +357,17 @@ impl Workspace {
         let broke = emit_closed(full, bc, Owned.Program)
         if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
-            .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_key(digest_bytes(new_digest(), bytes)), tools.opt, tools.runtime])),
+            .Ok(bytes) -> .Ok(
+                node_key(
+                    Stored.Obj,
+                    [
+                        "entry",
+                        digest_key(digest_bytes(new_digest(), bytes)),
+                        tools.opt,
+                        tools.runtime,
+                    ],
+                ),
+            ),
             .Err(_) -> .Err(BuildError.ModuleUnreadable(bc)),
         }
     }
@@ -310,7 +375,10 @@ impl Workspace {
     /// THE BUILD: every object the program links — the read files' and the program's
     /// module made or placed, the held ones standing in the store — linked in their
     /// SOURCES' order, and the binary kept under its key.
-    fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, BuildError> {
+    fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
         let main = m.main(d.lowered.types)
         let asked = program_asked_key(d, main, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
@@ -328,27 +396,48 @@ impl Workspace {
         clock.mark("emit")
         let held = self.held_objects(d.store)?
         clock.mark("place")
-        let code = avra_spawn_status(tools.linker, link_objects([o.obj for o in by_source(read.concat(held))].concat([program.obj]), self, tools.runtime, binary))
+        let code = avra_spawn_status(
+            tools.linker,
+            link_objects(
+                [o.obj for o in by_source(read.concat(held))].concat([program.obj]),
+                self,
+                tools.runtime,
+                binary,
+            ),
+        )
         if code != 0 { fail BuildError.LinkFailed(code) }
         clock.mark("link")
         let key = self.kept_key(under)
         let _ = d.store.keep_file(Stored.Bin, key, binary, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
-        BuildOutcome { binary: binary, warnings: d.warnings, reused: false, phases: d.timed(clock.spans) }
+        BuildOutcome {
+            binary: binary,
+            warnings: d.warnings,
+            reused: false,
+            phases: d.timed(clock.spans),
+        }
     }
 
     /// A read file's object: kept under the file's key, standing beside the store's
     /// for the link.
     fn object_of(store: Store, a: Analysis) -> Made {
         let path = a.view.source.file
-        Made { which: Owned.File(a.view.file), key: self.held_okey(store, path), obj: "${build_cache_root(self)}/${node_key(Stored.Obj, [digest_of(path)])}.o", source: path }
+        Made {
+            which: Owned.File(a.view.file),
+            key: self.held_okey(store, path),
+            obj: "${build_cache_root(self)}/${node_key(Stored.Obj, [digest_of(path)])}.o",
+            source: path,
+        }
     }
 
     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered
     /// here — written every build, compiled only when they moved, so a home's edit
     /// that moves no instantiation compiles nothing — and by what it is a function
     /// of when it was not.
-    fn program_object(d: Derived, full: Lowered, asked: string, binary: string, tools: Toolchain) -> Result<Made, BuildError> {
+    fn program_object(d: Derived, full: Lowered, asked: string, binary: string, tools: Toolchain) -> Result<
+        Made,
+        BuildError,
+    > {
         let base = "${build_cache_root(self)}/${node_key(Stored.Obj, [digest_of(binary)])}"
         let key = if d.unlowered.is_empty() { self.bytes_keyed(full, "${base}.bc", tools)? } else { asked }
         Made { which: Owned.Program, key: key, obj: "${base}.o", source: "" }
@@ -358,7 +447,10 @@ impl Workspace {
     /// the rest are made ONE way — here, by the compiler that runs, a worker each —
     /// so a tree's objects are the same bytes however many a build had to make. The
     /// workers are waited for whatever broke: a module handed over is theirs.
-    fn objects_kept(d: Derived, full: Lowered, objects: List<Made>, tools: Toolchain) -> Result<int, BuildError> {
+    fn objects_kept(d: Derived, full: Lowered, objects: List<Made>, tools: Toolchain) -> Result<
+        int,
+        BuildError,
+    > {
         let owed = [o for o in objects if !d.store.place(Stored.Obj, o.key, o.obj)]
         let gone = owed.find(it.which is .Program)
         if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
@@ -379,14 +471,28 @@ impl Workspace {
 
     fn held_object(store: Store, path: string) -> Made {
         let key = self.held_okey(store, path)
-        Made { which: Owned.File(self.file_id(path)), key: key, obj: store.path(Stored.Obj, key), source: path }
+        Made {
+            which: Owned.File(self.file_id(path)),
+            key: key,
+            obj: store.path(Stored.Obj, key),
+            source: path,
+        }
     }
 }
 
 /// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, and
 /// what compiles it.
 fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string {
-    node_key(Stored.Obj, ["program", d.asked, "${fp_list([i.fingerprint() for i in main.body.ins])}", tools.opt, tools.runtime])
+    node_key(
+        Stored.Obj,
+        [
+            "program",
+            d.asked,
+            "${fp_list([i.fingerprint() for i in main.body.ins])}",
+            tools.opt,
+            tools.runtime,
+        ],
+    )
 }
 
 /// The declarations a program's module brings that nothing standing makes — each once.
@@ -409,16 +515,15 @@ fn closed(full: Lowered) -> Result<Lowered, BuildError> {
 
 /// A refusal in the derivation's words is the build's own `Diagnosed` refusal.
 fn diagnosed<T>(r: Result<T, string>) -> Result<T, BuildError> {
-    match r {
-        .Ok(v) -> .Ok(v),
-        .Err(report) -> .Err(BuildError.Diagnosed(report)),
-    }
+    match r { .Ok(v) -> .Ok(v), .Err(report) -> .Err(BuildError.Diagnosed(report)) }
 }
 
 /// Objects in their SOURCES' order: the link's order is never the hold's, so one
 /// tree links to one binary however it was reached.
 fn by_source(objects: List<Made>) -> List<Made> {
-    flatten([[o for o in objects if o.source == source] for source in sorted_texts([o.source for o in objects])])
+    flatten(
+        [[o for o in objects if o.source == source] for source in sorted_texts([o.source for o in objects])],
+    )
 }
 
 /// Where a run stands with the tree's stamps.

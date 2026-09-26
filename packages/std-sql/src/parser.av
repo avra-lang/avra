@@ -3,7 +3,20 @@
 //! function that builds it, nothing spelled twice. See
 //! `@std/grammar`'s `collected.av` for the mechanism this reuses.
 
-use @std.grammar.{grammar_rule, Grammar, Rule, Captured, parse_grammar_text, run_grammar, ready, RunOutcome, LexToken, Lexeme, lex, want}
+use @std.grammar.{
+    grammar_rule,
+    Grammar,
+    Rule,
+    Captured,
+    parse_grammar_text,
+    run_grammar,
+    ready,
+    RunOutcome,
+    LexToken,
+    Lexeme,
+    lex,
+    want,
+}
 use lexicon.{SQL}
 use @std.meta.{Annotation}
 use @std.errors.{Loc}
@@ -125,10 +138,7 @@ export enum SqlNode {
 }
 
 fn text_of(c: Captured<LexToken, SqlNode>) -> string {
-    match c {
-        .Terminal(t) -> t.text,
-        .Node(_) or .Many(_) or .Absent -> "",
-    }
+    match c { .Terminal(t) -> t.text, .Node(_) or .Many(_) or .Absent -> "" }
 }
 
 /// Whether an optional capture matched at all — a marker slot's whole
@@ -141,10 +151,7 @@ fn present(c: Captured<LexToken, SqlNode>) -> bool {
 /// `atom` reads this to decide which `SqlExpr` variant a bare
 /// terminal becomes.
 fn kind_of(c: Captured<LexToken, SqlNode>) -> string {
-    match c {
-        .Terminal(t) -> t.kind,
-        .Node(_) or .Many(_) or .Absent -> "",
-    }
+    match c { .Terminal(t) -> t.kind, .Node(_) or .Many(_) or .Absent -> "" }
 }
 
 /// A `STRING` token's raw text still carries its surrounding quotes
@@ -159,10 +166,7 @@ fn hole_name(text: string) -> string {
 }
 
 fn node_of(c: Captured<LexToken, SqlNode>) -> SqlNode? {
-    match c {
-        .Node(n) -> n,
-        _ -> null,
-    }
+    match c { .Node(n) -> n, _ -> null }
 }
 
 impl SqlNode {
@@ -336,12 +340,18 @@ fn node(n: SqlNode) -> Captured<LexToken, SqlNode> { Captured.Node(n) }
 @grammar_rule("e:or_expr (\"AS\" a:IDENT)?")
 fn col_item(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
     let e? = ex_of(caps[0]) else { return .Err("select item: did not build") }
-    let as_name = match caps[1] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> text_of(caps[1]) }
+    let as_name = match caps[1] {
+        .Absent -> null,
+        .Terminal(_) or .Node(_) or .Many(_) -> text_of(caps[1]),
+    }
     .Ok(node(SqlNode.SelItem(SelectItem { expr: e, as_name: as_name })))
 }
 
 @grammar_rule("c:col_item (\",\" c:col_item)*")
-fn column_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn column_list(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(node(SqlNode.Cols(sel_items_of(caps[0])?)))
 }
 
@@ -359,10 +369,18 @@ fn table_ref(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
     let derived = node_of(caps[0])
     if derived != null {
         let sub? = derived!.as_select() else { return .Err("derived table: subquery did not build") }
-        return .Ok(node(SqlNode.Table(TableRef { source: FromSource.Derived(sub), as_name: text_of(caps[1]) })))
+        return .Ok(
+            node(
+                SqlNode
+                    .Table(TableRef { source: FromSource.Derived(sub), as_name: text_of(caps[1]) }),
+            ),
+        )
     }
     let name = text_of(caps[0])
-    let as_name = match caps[1] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> text_of(caps[1]) }
+    let as_name = match caps[1] {
+        .Absent -> null,
+        .Terminal(_) or .Node(_) or .Many(_) -> text_of(caps[1]),
+    }
     .Ok(node(SqlNode.Table(TableRef { source: FromSource.Named(name), as_name: as_name })))
 }
 
@@ -372,29 +390,46 @@ fn join_item(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
     let kind = text_of(caps[0])
     let t? = table_of(caps[1]) else { return .Err("join: table did not build") }
     let c? = ex_of(caps[2]) else { return .Err("join: condition did not build") }
-    .Ok(node(SqlNode.Join(JoinItem { kind: if kind.is_empty() { "INNER" } else { kind }, other: t, on: c })))
+    .Ok(
+        node(
+            SqlNode
+                .Join(JoinItem { kind: if kind.is_empty() { "INNER" } else { kind }, other: t, on: c }),
+        ),
+    )
 }
 
 @grammar_rule("t:table_ref (j:join_item)*")
-fn from_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn from_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let t? = table_of(caps[0]) else { return .Err("from: table did not build") }
     let joins = join_items_of(caps[1])?
     .Ok(node(SqlNode.From(FromClause { first: t, joins: joins })))
 }
 
 @grammar_rule("e:or_expr (d:(\"ASC\"|\"DESC\"))?")
-fn order_item(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn order_item(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let e? = ex_of(caps[0]) else { return .Err("order: operand did not build") }
     .Ok(node(SqlNode.Ord(OrderItem { expr: e, desc: text_of(caps[1]) == "DESC" })))
 }
 
 @grammar_rule("\"ORDER\" \"BY\" o:order_item (\",\" o:order_item)*")
-fn order_by_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn order_by_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(node(SqlNode.OrderList(ord_items_of(caps[0])?)))
 }
 
 @grammar_rule("\"WHERE\" e:or_expr")
-fn where_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn where_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(caps[0])
 }
 
@@ -495,12 +530,28 @@ fn call_args(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
 /// group), so `pb` and `ob` land in the order their groups appear:
 /// `caps[0]`, `caps[1]`.
 @grammar_rule("\"OVER\" \"(\" (\"PARTITION\" \"BY\" pb:expr_list)? (\"ORDER\" \"BY\" ob:order_item (\",\" ob:order_item)*)? \")\"")
-fn over_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
-    .Ok(node(SqlNode.Over(OverClause { partition_by: ex_list_of(caps[0]), order_by: ord_items_of(caps[1])? })))
+fn over_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
+    .Ok(
+        node(
+            SqlNode
+                .Over(
+                    OverClause {
+                        partition_by: ex_list_of(caps[0]),
+                        order_by: ord_items_of(caps[1])?,
+                    },
+                ),
+        ),
+    )
 }
 
 @grammar_rule("\"WHEN\" w:or_expr \"THEN\" t:or_expr")
-fn when_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn when_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let w? = ex_of(caps[0]) else { return .Err("when: condition did not build") }
     let t? = ex_of(caps[1]) else { return .Err("when: result did not build") }
     .Ok(node(SqlNode.When(WhenClause { cond: w, result: t })))
@@ -623,7 +674,10 @@ fn atom(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, Sq
 /// payload that can't tell "matched empty" from "didn't match"; here,
 /// a nested alt's fixed-but-sparse slots).
 @grammar_rule("\"(\" (s:select_stmt | e:or_expr) \")\"")
-fn paren_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn paren_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     if present(caps[0]) {
         let s? = node_of(caps[0])?.as_select() else { return .Err("subquery: did not build") }
         return .Ok(node(SqlNode.Ex(SqlExpr.Subquery(s))))
@@ -636,7 +690,10 @@ fn paren_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTok
 /// leading `NOT` already wraps any `cmp_expr`, and `EXISTS (...)` is
 /// an ordinary atom to it, same as a bare column would be.
 @grammar_rule("\"EXISTS\" \"(\" s:select_stmt \")\"")
-fn exists_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn exists_expr(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let s? = node_of(caps[0])?.as_select() else { return .Err("exists: subquery did not build") }
     .Ok(node(SqlNode.Ex(SqlExpr.Exists(s))))
 }
@@ -658,12 +715,18 @@ fn in_source(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToke
 }
 
 @grammar_rule("\"GROUP\" \"BY\" e:expr_list")
-fn group_by_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn group_by_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(caps[0])
 }
 
 @grammar_rule("\"HAVING\" e:or_expr")
-fn having_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn having_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(caps[0])
 }
 
@@ -687,7 +750,10 @@ fn cte_def(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken,
 /// own `lim` were equally "direct" and got this backwards — verified,
 /// and corrected, by direct probe rather than trusted on inspection.
 @grammar_rule("(\"WITH\" c:cte_def (\",\" c:cte_def)*)? \"SELECT\" cols:column_list \"FROM\" f:from_clause w:where_clause? g:group_by_clause? h:having_clause? o:order_by_clause? (\"LIMIT\" lim:NUMBER)?")
-fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let cols = cols_of(caps[0])
     let from? = from_of(caps[1]) else { return .Err("select: FROM did not build") }
     let where_ = ex_of(caps[2])
@@ -695,59 +761,122 @@ fn select_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexTo
     let having = ex_of(caps[4])
     let order = order_items_of(caps[5])
     let ctes = cte_items_of(caps[6])?
-    let limit = match caps[7] { .Absent -> null, .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Number(text_of(caps[7])) }
-    .Ok(node(SqlNode.Sel(SqlSelect {
-        ctes: ctes,
-        columns: cols,
-        from: from,
-        where: where_,
-        group_by: group_by,
-        having: having,
-        order_by: order,
-        limit: limit,
-    })))
+    let limit = match caps[7] {
+        .Absent -> null,
+        .Terminal(_) or .Node(_) or .Many(_) -> SqlExpr.Number(text_of(caps[7])),
+    }
+    .Ok(
+        node(
+            SqlNode
+                .Sel(
+                    SqlSelect {
+                        ctes: ctes,
+                        columns: cols,
+                        from: from,
+                        where: where_,
+                        group_by: group_by,
+                        having: having,
+                        order_by: order,
+                        limit: limit,
+                    },
+                ),
+        ),
+    )
 }
 
 /// Shared by `insert_stmt`/`update_stmt`/`delete_stmt` — the same
 /// expression-with-alias shape a `SELECT` list already builds from.
 @grammar_rule("\"RETURNING\" r:column_list")
-fn returning_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn returning_clause(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(caps[0])
 }
 
 /// One `VALUES (...)` row — a plain expression list, the same shape
 /// a function call's arguments already build from.
 @grammar_rule("\"(\" v:expr_list \")\"")
-fn values_row(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn values_row(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     .Ok(caps[0])
 }
 
 @grammar_rule("\"INSERT\" \"INTO\" t:IDENT \"(\" c:IDENT (\",\" c:IDENT)* \")\" \"VALUES\" r:values_row (\",\" r:values_row)* (ret:returning_clause)?")
-fn insert_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn insert_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let table_name = text_of(caps[0])
     let columns = names_of(caps[1])?
     let rows = rows_of(caps[2])?
-    .Ok(node(SqlNode.Ins(InsertStmt { table_name: table_name, columns: columns, rows: rows, returning: returning_of(caps[3]) })))
+    .Ok(
+        node(
+            SqlNode
+                .Ins(
+                    InsertStmt {
+                        table_name: table_name,
+                        columns: columns,
+                        rows: rows,
+                        returning: returning_of(caps[3]),
+                    },
+                ),
+        ),
+    )
 }
 
 @grammar_rule("n:IDENT \"=\" v:or_expr")
-fn assignment(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn assignment(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let name = text_of(caps[0])
     let v? = ex_of(caps[1]) else { return .Err("assignment: value did not build") }
     .Ok(node(SqlNode.Assign(Assignment { column: name, value: v })))
 }
 
 @grammar_rule("\"UPDATE\" t:IDENT \"SET\" a:assignment (\",\" a:assignment)* w:where_clause? (ret:returning_clause)?")
-fn update_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn update_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let table_name = text_of(caps[0])
     let assignments = assignments_of(caps[1])?
-    .Ok(node(SqlNode.Upd(UpdateStmt { table_name: table_name, assignments: assignments, where: ex_of(caps[2]), returning: returning_of(caps[3]) })))
+    .Ok(
+        node(
+            SqlNode
+                .Upd(
+                    UpdateStmt {
+                        table_name: table_name,
+                        assignments: assignments,
+                        where: ex_of(caps[2]),
+                        returning: returning_of(caps[3]),
+                    },
+                ),
+        ),
+    )
 }
 
 @grammar_rule("\"DELETE\" \"FROM\" t:IDENT w:where_clause? (ret:returning_clause)?")
-fn delete_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<Captured<LexToken, SqlNode>, string> {
+fn delete_stmt(caps: List<Captured<LexToken, SqlNode>>) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let table_name = text_of(caps[0])
-    .Ok(node(SqlNode.Del(DeleteStmt { table_name: table_name, where: ex_of(caps[1]), returning: returning_of(caps[2]) })))
+    .Ok(
+        node(
+            SqlNode
+                .Del(
+                    DeleteStmt {
+                        table_name: table_name,
+                        where: ex_of(caps[1]),
+                        returning: returning_of(caps[2]),
+                    },
+                ),
+        ),
+    )
 }
 
 /// The one entry point — `SELECT`/`INSERT`/`UPDATE`/`DELETE` each
@@ -781,7 +910,10 @@ export fn sql_parser_grammar() -> Grammar {
     Grammar { name: "sql_parser", start: "stmt", rules: [s.built() for s in sql_sources] }
 }
 
-fn dispatch(name: string, caps: List<Captured<LexToken, SqlNode>>, _at: Loc?) -> Result<Captured<LexToken, SqlNode>, string> {
+fn dispatch(name: string, caps: List<Captured<LexToken, SqlNode>>, _at: Loc?) -> Result<
+    Captured<LexToken, SqlNode>,
+    string,
+> {
     let found? = sql_sources.find(it.name == name) else { return .Err("no rule named ${name}") }
     found.handler(caps)
 }
@@ -794,7 +926,11 @@ fn sql_lexeme() -> Lexeme<LexToken> {
         wears: (t: LexToken, term: string) -> t.kind == term,
         text: (t: LexToken) -> t.text,
         loc: (t: LexToken) -> t.loc,
-        stated: (text: string, loc: Loc?) -> LexToken { kind: "STATED", text: text, loc: loc ?? Loc { file: null, lo: 0, hi: 0 } },
+        stated: (text: string, loc: Loc?) -> LexToken {
+            kind: "STATED",
+            text: text,
+            loc: loc ?? Loc { file: null, lo: 0, hi: 0 },
+        },
     }
 }
 
@@ -802,5 +938,10 @@ const SQL_KNOWN_TERMINALS: List<string> = ["IDENT", "NUMBER", "STRING", "QUOTED_
 
 export fn parse_sql(source: string) -> RunOutcome<LexToken, SqlNode> {
     let tokens = lex(SQL, source, ["WS", "LINE_COMMENT", "BLOCK_COMMENT"]).tokens
-    run_grammar<LexToken, SqlNode>(ready(sql_parser_grammar(), SQL_KNOWN_TERMINALS), tokens, sql_lexeme(), dispatch)
+    run_grammar<LexToken, SqlNode>(
+        ready(sql_parser_grammar(), SQL_KNOWN_TERMINALS),
+        tokens,
+        sql_lexeme(),
+        dispatch,
+    )
 }

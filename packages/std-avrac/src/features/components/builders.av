@@ -4,8 +4,40 @@
 //! its holes, every copied node wearing the provider's origin; a
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
-use core.{Expr, Stmt, Pat, StmtId, ExprId, Arm, LambdaParts, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, TypeRef, pronoun_param, copier, flatten, some_list}
-use features.{LangNode, Builder, ComponentWord, Template, Record, ChildSlot, marked_seats, pat_id_at, expr_id_at, arms_at}
+use core.{
+    Expr,
+    Stmt,
+    Pat,
+    StmtId,
+    ExprId,
+    Arm,
+    LambdaParts,
+    Nominal,
+    Plain,
+    Scoped,
+    NodeStore,
+    BodyView,
+    HoleKind,
+    Filled,
+    SettingParts,
+    TypeRef,
+    pronoun_param,
+    copier,
+    flatten,
+    some_list,
+}
+use features.{
+    LangNode,
+    Builder,
+    ComponentWord,
+    Template,
+    Record,
+    ChildSlot,
+    marked_seats,
+    pat_id_at,
+    expr_id_at,
+    arms_at,
+}
 use grammar.{Token}
 use @std.path.{stem_of}
 
@@ -64,7 +96,8 @@ fn build_instance_body(b: Builder) -> Result<LangNode, string> {
     if ps.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
     if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
     let unwritten: List<TypeRef?> = [null for p in ps]
-    b.make_expr(Expr.Lambda(marked_seats(ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)))
+    b
+        .make_expr(Expr.Lambda(marked_seats(ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)))
 }
 
 /// A ONE-SEAT FN FIELD'S BODY WRITTEN AS ARMS: `Name inst { pattern
@@ -79,7 +112,9 @@ fn build_instance_body(b: Builder) -> Result<LangNode, string> {
 /// (`{ a, b -> … }`) still falls through cleanly, since a pattern's
 /// own grammar has no comma.
 fn build_instance_arms_body(b: Builder) -> Result<LangNode, string> {
-    let hp? = pat_id_at(b.args, 0) else { return .Err("defect: an arms instance body's first pattern is missing — the arena and the grammar disagree") }
+    let hp? = pat_id_at(b.args, 0) else { return .Err(
+            "defect: an arms instance body's first pattern is missing — the arena and the grammar disagree",
+        ) }
     let hg = expr_id_at(b.args, 1)
     let hv = b.expr(2)?
     let rest = arms_at(b.args, 3)
@@ -133,7 +168,10 @@ impl Builder {
 
     /// An instance: its component's template copied in place, or a
     /// literal of its record. `body` is absent when no block was written.
-    fn instance(word: ComponentWord, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
+    fn instance(word: ComponentWord, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<
+        ExprId,
+        string,
+    > {
         match word.form {
             .Template(t) -> self.templated(word, t, heads, body),
             .Record(r) -> self.recorded(word.word, r, heads, body, name),
@@ -141,7 +179,10 @@ impl Builder {
         }
     }
 
-    fn templated(word: ComponentWord, t: Template, heads: List<ExprId>, body: ExprId?) -> Result<ExprId, string> {
+    fn templated(word: ComponentWord, t: Template, heads: List<ExprId>, body: ExprId?) -> Result<
+        ExprId,
+        string,
+    > {
         if heads.is_empty() { return .Err(headless(word.word)) }
         if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
         if body == null { return .Err(blockless(word.word)) }
@@ -150,7 +191,14 @@ impl Builder {
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
         let expansion = self.store.instantiated(t, word, heads, block, minted)
-        .Ok(self.store.alloc_expr(Expr.Component(word.word, heads, block, BodyView.Expanded(expansion), null), self.span))
+        .Ok(
+            self
+                .store
+                .alloc_expr(
+                    Expr.Component(word.word, heads, block, BodyView.Expanded(expansion), null),
+                    self.span,
+                ),
+        )
     }
 
     /// A record's instance: the head by position, each setting by name,
@@ -158,7 +206,10 @@ impl Builder {
     /// the body's other statements
     /// `collect`ed into its one open `List` field — or, for a body
     /// written as a fn, that fn in the record's one fn field.
-    fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
+    fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<
+        ExprId,
+        string,
+    > {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
         let written_fn: ExprId? = if body != null && self.store.lambda_parts(body!) != null { self.tailed(body!, r.fn_optional) } else { null }
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
@@ -170,10 +221,24 @@ impl Builder {
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let placed_in = [pl.slot for pl in places]
         let set = [Field { name: st.name, value: st.value } for st in settings if !placed_in.contains(st.name)]
-        let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat(fn_filled).concat(set).concat(named).concat([self.collected(pl, settings) for pl in places])
-        let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
+        let filled = [Field { name: f, value: heads[j] } for j, f in r.head]
+            .concat(fn_filled)
+            .concat(set)
+            .concat(named)
+            .concat([self.collected(pl, settings) for pl in places])
+        let literal = self
+            .store
+            .alloc_expr(
+                Expr
+                    .StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]),
+                self.span,
+            )
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
-        .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span))
+        .Ok(
+            self
+                .store
+                .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span),
+        )
     }
 
     /// A one-seat fn field's ARMS BODY, given the tail its coverage
@@ -204,7 +269,10 @@ impl Builder {
     /// `grammar` declaration and hoisted to the file's top level, under a
     /// name no writer can spell and no other file of the module mints.
     /// Absent for a head that is code.
-    fn minted_format(word: ComponentWord, t: Template, field: string, head: ExprId) -> Result<Minted?, string> {
+    fn minted_format(word: ComponentWord, t: Template, field: string, head: ExprId) -> Result<
+        Minted?,
+        string,
+    > {
         if !t.formats.contains(field) { return .Ok(null) }
         let text? = self.store.expr(head).text_of() else { return .Err(pattern_literal(word.word, field)) }
         let name = "${word.word}\$${field}\$${stem_of(self.store.file)}\$${head.index}"
@@ -230,9 +298,16 @@ impl Builder {
     /// A slot filled by `collect { … }` over the children placed in it —
     /// after what a setting of the same name already lists.
     fn collected(pl: Placed, settings: List<SettingParts>) -> Field {
-        let gathered = self.store.alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(pl.stmts, null), self.span)), self.span)
+        let gathered = self
+            .store
+            .alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(pl.stmts, null), self.span)), self.span)
         let first? = settings.find(it.name == pl.slot) else { return Field { name: pl.slot, value: gathered } }
-        Field { name: pl.slot, value: self.store.alloc_expr(Expr.MethodCall(first.value, Plain("concat"), [gathered]), self.span) }
+        Field {
+            name: pl.slot,
+            value: self
+                .store
+                .alloc_expr(Expr.MethodCall(first.value, Plain("concat"), [gathered]), self.span),
+        }
     }
 
     /// Where the children go. A child INSTANCE lands in the slot its
@@ -241,14 +316,21 @@ impl Builder {
     /// slot a setting also names holds the setting's list, then these.
     /// An open slot no child fills is filled empty when it is the only
     /// one.
-    fn placed(word: string, r: Record, settings: List<SettingParts>, children: List<StmtId>) -> Result<List<Placed>, string> {
+    fn placed(word: string, r: Record, settings: List<SettingParts>, children: List<StmtId>) -> Result<
+        List<Placed>,
+        string,
+    > {
         let open = [s for s in r.slots if !settings.any(it.name == s.name)]
-        if children.is_empty() { return .Ok(if open.length == 1 { [Placed { slot: open[0].name, stmts: [] }] } else { [] }) }
+        if children.is_empty() { return .Ok(
+                if open.length == 1 { [Placed { slot: open[0].name, stmts: [] }] } else { [] },
+            ) }
         if r.slots.is_empty() { return .Err(no_slot(word)) }
         let routes = [self.routed(r, s) for s in children]
         let rest = if routes.all(it != null) { "" } else { self.taker(word, r, open)? }
         let landed = [routes[j] ?? rest for j, c in children]
-        .Ok([Placed { slot: s.name, stmts: [c for j, c in children if landed[j] == s.name] } for s in r.slots if landed.contains(s.name)])
+        .Ok(
+            [Placed { slot: s.name, stmts: [c for j, c in children if landed[j] == s.name] } for s in r.slots if landed.contains(s.name)],
+        )
     }
 
     /// The slot a child naming no slot's component lands in: the only
@@ -291,12 +373,23 @@ impl NodeStore {
     /// A template copied in: each hole filled with the head value or
     /// the block its field names, every node it minted marked as the
     /// provider's.
-    fn instantiated(template: Template, word: ComponentWord, heads: List<ExprId>, block: ExprId, minted: List<Minted?>) -> ExprId {
+    fn instantiated(
+        template: Template,
+        word: ComponentWord,
+        heads: List<ExprId>,
+        block: ExprId,
+        minted: List<Minted?>,
+    ) -> ExprId {
         let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
         // a component's own hole grammar has no `..` spelling, so no
         // fill here is ever a run
-        mut rb = copier(word.store, self, [(kind: HoleKind) -> self.filled(kind, f) for f in fills], [false for f in fills])
+        mut rb = copier(
+            word.store,
+            self,
+            [(kind: HoleKind) -> self.filled(kind, f) for f in fills],
+            [false for f in fills],
+        )
         let root = self.template_value(rb.stmts(template.stmts))
         self.note_copied(since, word.origin)
         root
@@ -324,7 +417,18 @@ impl NodeStore {
     /// minted, resolved in the user's file, where it was declared.
     fn pattern_type(f: Fill) -> Filled {
         let minted? = f.record else { return Filled.Unplaceable(unplaceable_field()) }
-        Filled.Type(TypeRef { name: minted.name, args: [], optional: false, dynamic: false, arrow: false, span: self.expr_span(f.value), spliced: true })
+        Filled
+            .Type(
+                TypeRef {
+                    name: minted.name,
+                    args: [],
+                    optional: false,
+                    dynamic: false,
+                    arrow: false,
+                    span: self.expr_span(f.value),
+                    spliced: true,
+                },
+            )
     }
 }
 
@@ -339,7 +443,13 @@ type Minted = { name: string, named: ExprId }
 
 /// The user's node a template hole reads: a head value by its field's
 /// position, or the block.
-fn field_fill(template: Template, read: string, heads: List<ExprId>, block: ExprId, minted: List<Minted?>) -> Fill {
+fn field_fill(
+    template: Template,
+    read: string,
+    heads: List<ExprId>,
+    block: ExprId,
+    minted: List<Minted?>,
+) -> Fill {
     let at = template.head.index_of(read)
     if at < 0 { return Fill { value: block, record: null } }
     Fill { value: heads[at], record: minted[at] }

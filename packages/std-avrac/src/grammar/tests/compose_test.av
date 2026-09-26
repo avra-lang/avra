@@ -12,7 +12,10 @@ fn composed(src: string) -> Grammar {
 /// Renders the build name and its argument's text.
 // LICENSED fns.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
-fn name_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<Captured<Token, string>, string> {
+fn name_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
     let arg = match args[0] {
         .Terminal(t) -> t.text,
         .Node(n) -> n,
@@ -24,13 +27,14 @@ fn name_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> R
 }
 
 fn run_merged(g: Grammar, src: string) -> string {
-    let o = run_grammar<Token, string>(ready(g.merged(), avra_known_terminals()), lex_grammar(src).tokens, avra_lexeme(), name_build)
+    let o = run_grammar<Token, string>(
+        ready(g.merged(), avra_known_terminals()),
+        lex_grammar(src).tokens,
+        avra_lexeme(),
+        name_build,
+    )
     if o.result == null { return "<none>" }
-    match o.result! {
-        .Node(n) -> n,
-        .Terminal(_) or .Many(_) -> "?",
-        .Absent -> "_",
-    }
+    match o.result! { .Node(n) -> n, .Terminal(_) or .Many(_) -> "?", .Absent -> "_" }
 }
 
 spec "grammar/compose" {
@@ -45,7 +49,10 @@ spec "grammar/compose" {
         }
         then "interleaved declarations keep first-appearance rule order" {
             let g = composed("a = x:NAME -> f(x)\nb = STRING\na = v:NUMBER -> g(v)").merged()
-            g.rules.length == 2 && g.rules[0].name == "a" && g.rules[0].body.branches.length == 2 && g.start == "a"
+            g.rules.length == 2 &&
+                g.rules[0].name == "a" &&
+                g.rules[0].body.branches.length == 2 &&
+                g.start == "a"
         }
     }
     given "the executor over a merged alternation" {
@@ -58,11 +65,18 @@ spec "grammar/compose" {
         then "duplicate declarations are a defect naming the rule" {
             let g = composed("s = NAME\ns = NUMBER")
             let ds = g.defects(avra_known_terminals())
-            ds.length == 1 && ds[0].in_rule == "s" && ds[0].message == "declared more than once — merge same-name rules first"
+            ds.length == 1 &&
+                ds[0].in_rule == "s" &&
+                ds[0].message == "declared more than once — merge same-name rules first"
         }
         then "the executor refuses to run it" {
             let g = composed("s = n:NAME BREAK -> only(n)\ns = NUMBER")
-            let o = run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_grammar("y").tokens, avra_lexeme(), name_build)
+            let o = run_grammar<Token, string>(
+                ready(g, avra_known_terminals()),
+                lex_grammar("y").tokens,
+                avra_lexeme(),
+                name_build,
+            )
             o.result == null && o.diagnostics.length == 1
         }
     }

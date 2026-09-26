@@ -3,7 +3,42 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Plain, Variant, Case, Annotation, TypeRef, FormatPart, Hole, CollectKind, CollectScope, Projection, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed, body_behavior, same_expr, some_list, doc_line_text}
+use core.{
+    NodeStore,
+    Remark,
+    Trivia,
+    Span,
+    StmtId,
+    ExprId,
+    PatId,
+    Expr,
+    Stmt,
+    Arm,
+    BinOp,
+    Param,
+    Plain,
+    Variant,
+    Case,
+    Annotation,
+    TypeRef,
+    FormatPart,
+    Hole,
+    CollectKind,
+    CollectScope,
+    Projection,
+    quoted_text,
+    spelled,
+    op_symbol,
+    joined,
+    flatten,
+    filled,
+    mark_prefixed,
+    marks_prefixed,
+    body_behavior,
+    same_expr,
+    some_list,
+    doc_line_text,
+}
 use features.{chained_binder}
 use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
@@ -75,7 +110,10 @@ export fn render_source_of(store: NodeStore, stmts: List<StmtId>, text: string) 
 fn render_with(mut out: SourceText, stmts: List<StmtId>) -> string {
     // NO BLANK LINE OF THE PRINTER'S OWN. A blank between declarations
     // is the AUTHOR's paragraphing and arrives as trivia.
-    let body = joined([joined(out.statement(s, 0), "\n") for s in stmts if !out.store.is_hoisted(s)], "\n")
+    let body = joined(
+        [joined(out.statement(s, 0), "\n") for s in stmts if !out.store.is_hoisted(s)],
+        "\n",
+    )
     // A TRAILING BLANK LINE IS A REAL LINE, NOT AN EMPTY TAIL: the
     // tail's JOINED STRING and its LIST both read "" for a lone
     // trailing `Blank` remark, so testing the string cannot tell "no
@@ -159,7 +197,17 @@ impl SourceText {
         // never all trivia first, then every annotation flat, which
         // would pull a later annotation's comment in front of an
         // earlier annotation it was never written near.
-        let lead = self.trivia_before(doc, depth).concat(self.doc_lines(s, depth)).concat(flatten([self.trivia_before(start_of(a.span), depth).concat([source_line(depth, self.annotation(a, depth))]) for a in self.store.annotations_of(s)])).concat(self.trivia_before(decl, depth))
+        let lead = self
+            .trivia_before(doc, depth)
+            .concat(self.doc_lines(s, depth))
+            .concat(
+                flatten(
+                    [self
+                        .trivia_before(start_of(a.span), depth)
+                        .concat([source_line(depth, self.annotation(a, depth))]) for a in self.store.annotations_of(s)],
+                ),
+            )
+            .concat(self.trivia_before(decl, depth))
         let node_lines = self.statement_node(s, depth)
         lead.concat(trailed(node_lines, self.trailing()))
     }
@@ -228,19 +276,13 @@ impl SourceText {
 /// line as nothing at all — an indented empty line is trailing
 /// whitespace the author did not write.
 fn trivia_line(t: Trivia, depth: int) -> string {
-    match t {
-        .Comment(text) -> source_line(depth, text),
-        .Blank -> "",
-    }
+    match t { .Comment(text) -> source_line(depth, text), .Blank -> "" }
 }
 
 /// A remark's own text — same-line trivia is always a `Comment`, but
 /// the match stays exhaustive over `Trivia` rather than assuming it.
 fn remark_text(t: Trivia) -> string {
-    match t {
-        .Comment(text) -> text,
-        .Blank -> "",
-    }
+    match t { .Comment(text) -> text, .Blank -> "" }
 }
 
 /// `lines` with `trail` appended to its last entry — absence and an
@@ -274,81 +316,225 @@ impl SourceText {
             .MutLet(name, ty, value) -> {
                 let name_part = "mut ${source_name(name.of)}"
                 let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
-                [source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
-            .ConstDecl(name, ty, value) -> [if self.store.is_component_inst(s) { self.component_inst(exported, value, name.of, depth) } else {
-                let name_part = "${exported}const ${source_name(name.of)}"
-                let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
-                source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")
-            }],
+            .ConstDecl(name, ty, value) -> [
+                if self.store.is_component_inst(s) {
+                    self.component_inst(exported, value, name.of, depth)
+                } else {
+                    let name_part = "${exported}const ${source_name(name.of)}"
+                    let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    )
+                },
+            ],
             .Assign(target, value) -> {
                 let prefix = "${self.expression(target, loosest_tier, depth)} = "
-                [source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
             .ExprStmt(value) -> [source_line(depth, self.expression(value, loosest_tier, depth))],
             .Discard(value) -> {
                 let prefix = "let _ = "
-                [source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
             .FnDecl(name, tparams, params, ret, body) -> {
                 let head = "${exported}${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}"
                 let sig = "${head}${self.params_wrapped(params, depth, col_after(head, depth * 4))}"
-                [source_line(depth, "${sig}${self.ret_arrow(ret, depth, col_after(sig, depth * 4))} ${self.block(body, self.stmt_flat(s), depth)}")]
+                [
+                    source_line(
+                        depth,
+                        "${sig}${self.ret_arrow(ret, depth, col_after(sig, depth * 4))} ${self.block(body, self.stmt_flat(s), depth)}",
+                    ),
+                ]
             },
             .ExternFn(name, params, ret) -> {
                 let head = "${exported}extern fn ${source_name(name.of)}"
                 let sig = "${head}${self.params_wrapped(params, depth, col_after(head, depth * 4))}"
-                [source_line(depth, "${sig}${self.ret_arrow(ret, depth, col_after(sig, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${sig}${self.ret_arrow(ret, depth, col_after(sig, depth * 4))}",
+                    ),
+                ]
             },
             .While(cond, stmts) -> {
                 let prefix = "while "
-                [self.statement_block("${prefix}${self.expression(cond, loosest_tier, depth, col_after(prefix, depth * 4))}", stmts, self.stmt_end(s), self.stmt_flat(s), depth)]
+                [
+                    self
+                        .statement_block(
+                            "${prefix}${self.expression(cond, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                            stmts,
+                            self.stmt_end(s),
+                            self.stmt_flat(s),
+                            depth,
+                        ),
+                ]
             },
             .IfStmt(cond, yes, no) -> [self.if_statement(cond, yes, no, self.stmt_end(s), self.stmt_flat(s), depth)],
-            .Return(value) -> [source_line(depth, if value == null { "return" } else { "return ${self.expression(value!, loosest_tier, depth, col_after("return ", depth * 4))}" })],
-            .Fail(value) -> [source_line(depth, "fail ${self.expression(value, loosest_tier, depth, col_after("fail ", depth * 4))}")],
+            .Return(value) -> [
+                source_line(
+                    depth,
+                    if value == null { "return" } else { "return ${self.expression(value!, loosest_tier, depth, col_after("return ", depth * 4))}" },
+                ),
+            ],
+            .Fail(value) -> [
+                source_line(
+                    depth,
+                    "fail ${self.expression(value, loosest_tier, depth, col_after("fail ", depth * 4))}",
+                ),
+            ],
             .ImplDecl(of, target, fns) -> {
                 let itp = self.store.impl_tparams_of(s)
-                [self.impl_decl(exported, of?.of, [p.of for p in itp?.of ?? []], target.of, [p.of for p in itp?.target ?? []], fns, self.stmt_end(s), self.stmt_flat(s), depth)]
+                [
+                    self
+                        .impl_decl(
+                            exported,
+                            of?.of,
+                            [p.of for p in itp?.of ?? []],
+                            target.of,
+                            [p.of for p in itp?.target ?? []],
+                            fns,
+                            self.stmt_end(s),
+                            self.stmt_flat(s),
+                            depth,
+                        ),
+                ]
             },
             .TraitDecl(name, fns) -> [self.trait_decl(exported, name.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
             .Setting(name, value) -> {
                 let prefix = "${source_name(name.of)}: "
-                [source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
             .ComponentDecl(name, head, fields, fns) -> [self.component_decl(exported, name.of, head, fields, fns, self.stmt_end(s), depth)],
             .LetElse(name, subject, stmts) -> {
                 let prefix = "let ${source_name(name.of)}? = "
-                [self.statement_block("${prefix}${self.let_else_subject(subject, depth, col_after(prefix, depth * 4))} else", stmts, self.stmt_end(s), self.stmt_flat(s), depth)]
+                [
+                    self
+                        .statement_block(
+                            "${prefix}${self.let_else_subject(subject, depth, col_after(prefix, depth * 4))} else",
+                            stmts,
+                            self.stmt_end(s),
+                            self.stmt_flat(s),
+                            depth,
+                        ),
+                ]
             },
             .For(name, from, to, _, _, stmts) -> {
                 let prefix = "for ${source_name(name.of)} in "
                 let f = self.expression(from, loosest_tier, depth, col_after(prefix, depth * 4))
                 let head = "${prefix}${f}"
-                [self.statement_block("${head}..${self.expression(to, loosest_tier, depth, col_after(head, depth * 4) + 2)}", stmts, self.stmt_end(s), self.stmt_flat(s), depth)]
+                [
+                    self
+                        .statement_block(
+                            "${head}..${self.expression(to, loosest_tier, depth, col_after(head, depth * 4) + 2)}",
+                            stmts,
+                            self.stmt_end(s),
+                            self.stmt_flat(s),
+                            depth,
+                        ),
+                ]
             },
             .Use(path, items, aliases) -> {
                 let prefix = "use ${joined(path, ".")}."
-                [source_line(depth, "${prefix}${self.wrapped_list("{", [import_item(items[j], aliases[j]) for j in 0..items.length], "}", false, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.wrapped_list("{", [import_item(items[j], aliases[j]) for j in 0..items.length], "}", false, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
             .ForEach(index, name, subject, stmts) -> {
                 let prefix = "for ${self.loop_binds(index?.of, name.of)} in "
-                [self.statement_block("${prefix}${self.expression(subject, loosest_tier, depth, col_after(prefix, depth * 4))}", stmts, self.stmt_end(s), self.stmt_flat(s), depth)]
+                [
+                    self
+                        .statement_block(
+                            "${prefix}${self.expression(subject, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                            stmts,
+                            self.stmt_end(s),
+                            self.stmt_flat(s),
+                            depth,
+                        ),
+                ]
             },
-            .StructDecl(name, tparams, fields) -> [self.struct_or_grammar_decl(s, exported, name.of, [t.of for t in tparams], fields, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .StructDecl(name, tparams, fields) -> [
+                self
+                    .struct_or_grammar_decl(
+                        s,
+                        exported,
+                        name.of,
+                        [t.of for t in tparams],
+                        fields,
+                        self.stmt_end(s),
+                        self.stmt_flat(s),
+                        depth,
+                    ),
+            ],
             .NamedType(name, tparams, of) -> {
                 let prefix = "${exported}type ${source_name(name.of)}${self.named_type_params([t.of for t in tparams])} = "
-                [source_line(depth, "${prefix}${self.type_ref_wrapped(of, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.type_ref_wrapped(of, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
             .Alias(name, tparams, of) -> {
                 let prefix = "${exported}alias ${source_name(name.of)}${self.named_type_params([t.of for t in tparams])} = "
-                [source_line(depth, "${prefix}${self.type_ref_wrapped(of, depth, col_after(prefix, depth * 4))}")]
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.type_ref_wrapped(of, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
             },
-            .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name.of, [t.of for t in tparams], variants, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .EnumDecl(name, tparams, variants) -> [
+                self
+                    .enum_decl(
+                        exported,
+                        name.of,
+                        [t.of for t in tparams],
+                        variants,
+                        self.stmt_end(s),
+                        self.stmt_flat(s),
+                        depth,
+                    ),
+            ],
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
-            .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}")],
-            .Collect(name, ty, kind, scope, proj, order) -> [source_line(depth, self.collect_decl(exported, name.of, ty, kind, scope, proj, order))],
+            .Defer(body, on_error) -> [
+                source_line(
+                    depth,
+                    "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}",
+                ),
+            ],
+            .Collect(name, ty, kind, scope, proj, order) -> [
+                source_line(
+                    depth,
+                    self.collect_decl(exported, name.of, ty, kind, scope, proj, order),
+                ),
+            ],
             .Error -> [source_line(depth, "__error")],
         }
     }
@@ -401,7 +587,15 @@ impl SourceText {
     fn type_ref_wrapped(t: TypeRef, depth: int, col: int = -1) -> string {
         if t.arrow || t.args.is_empty() || !t.alternatives.is_empty() { return spelled(t) }
         let head = "${if t.dynamic { "dyn " } else { "" }}${t.name}"
-        let body = self.wrapped_list("<", [spelled(a) for a in t.args], ">", false, depth, col_after(head, resolved_col(col, depth)))
+        let body = self
+            .wrapped_list(
+                "<",
+                [spelled(a) for a in t.args],
+                ">",
+                false,
+                depth,
+                col_after(head, resolved_col(col, depth)),
+            )
         let base = "${head}${body}"
         if t.optional { "${base}?" } else { base }
     }
@@ -413,10 +607,7 @@ impl SourceText {
     }
 
     fn collect_kind_word(k: CollectKind) -> string {
-        match k {
-            .Component(w) or .UnknownKind(w) -> w,
-            .Annotated(w) -> "@${w}",
-        }
+        match k { .Component(w) or .UnknownKind(w) -> w, .Annotated(w) -> "@${w}" }
     }
 
     fn collect_scope_word(s: CollectScope) -> string {
@@ -493,7 +684,14 @@ impl SourceText {
     /// trailing-block's seat line (`"x ->"`, or `""` for an ordinary
     /// block) — the one thing that stands inside the braces before
     /// the body, on the opening line.
-    mut fn braced(head: string, stmts: List<StmtId>, value: ExprId?, end: int, one_line: bool, depth: int) -> string {
+    mut fn braced(
+        head: string,
+        stmts: List<StmtId>,
+        value: ExprId?,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         let body = flatten([self.statement(s, depth + 1) for s in stmts])
         // AN ANNOTATED TAIL STAYS A STATEMENT (core/store.av's
         // `tail_scoped`): its own answer becomes the block's `value`
@@ -531,13 +729,21 @@ impl SourceText {
     }
 
     mut fn statement_block(head: string, stmts: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
-        let body = flatten([self.statement(s, depth + 1) for s in stmts]).concat(self.trivia_before(end, depth + 1))
+        let body = flatten([self.statement(s, depth + 1) for s in stmts])
+            .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${head} {}") }
         if one_line && body.length == 1 { return source_line(depth, "${head} { ${unpadded(body[0], depth + 1)} }") }
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
-    mut fn if_statement(cond: ExprId, yes: List<StmtId>, no: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
+    mut fn if_statement(
+        cond: ExprId,
+        yes: List<StmtId>,
+        no: List<StmtId>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         source_line(depth, self.if_tail(cond, yes, no, end, one_line, depth))
     }
 
@@ -545,7 +751,14 @@ impl SourceText {
     /// form (its caller wraps it in `source_line`) and an `else if`
     /// chain link's form (embedded straight after `} else `) are the
     /// same text.
-    mut fn if_tail(cond: ExprId, yes: List<StmtId>, no: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
+    mut fn if_tail(
+        cond: ExprId,
+        yes: List<StmtId>,
+        no: List<StmtId>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         let condition = self.expression(cond, loosest_tier, depth, col_after("if ", depth * 4))
         let y = flatten([self.statement(s, depth + 1) for s in yes])
         if no.is_empty() {
@@ -556,7 +769,8 @@ impl SourceText {
         }
         let opened = "if ${condition} {\n${joined(y, "\n")}\n"
         let elif? = self.else_if_tail(no, end, depth) else {
-            let n = flatten([self.statement(s, depth + 1) for s in no]).concat(self.trivia_before(end, depth + 1))
+            let n = flatten([self.statement(s, depth + 1) for s in no])
+                .concat(self.trivia_before(end, depth + 1))
             if one_line && y.length == 1 && n.length == 1 {
                 return "if ${condition} { ${unpadded(y[0], depth + 1)} } else { ${unpadded(n[0], depth + 1)} }"
             }
@@ -594,7 +808,17 @@ impl SourceText {
         self.next < self.trivia.length && self.trivia[self.next].at < at
     }
 
-    mut fn impl_decl(exported: string, of: string?, of_tparams: List<string>, target: string, target_tparams: List<string>, fns: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
+    mut fn impl_decl(
+        exported: string,
+        of: string?,
+        of_tparams: List<string>,
+        target: string,
+        target_tparams: List<string>,
+        fns: List<StmtId>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         let head = if of == null {
             "${exported}impl ${source_name(target)}${self.named_type_params(target_tparams)}"
         } else {
@@ -603,10 +827,21 @@ impl SourceText {
         self.statement_block(head, fns, end, one_line, depth)
     }
 
-    mut fn trait_decl(exported: string, name: string, fns: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
-        let body = flatten([self.trait_member(s, depth + 1) for s in fns]).concat(self.trivia_before(end, depth + 1))
+    mut fn trait_decl(
+        exported: string,
+        name: string,
+        fns: List<StmtId>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
+        let body = flatten([self.trait_member(s, depth + 1) for s in fns])
+            .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${exported}trait ${source_name(name)} {}") }
-        if one_line && body.length == 1 { return source_line(depth, "${exported}trait ${source_name(name)} { ${unpadded(body[0], depth + 1)} }") }
+        if one_line && body.length == 1 { return source_line(
+                depth,
+                "${exported}trait ${source_name(name)} { ${unpadded(body[0], depth + 1)} }",
+            ) }
         "${source_line(depth, "${exported}trait ${source_name(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -616,16 +851,27 @@ impl SourceText {
         let decl = start_of(self.store.stmt_span(s))
         let at = self.store.doc_at(s)
         let doc = if at < 0 { decl } else { at }
-        let lead = self.trivia_before(doc, depth).concat(self.doc_lines(s, depth)).concat(self.trivia_before(decl, depth))
+        let lead = self
+            .trivia_before(doc, depth)
+            .concat(self.doc_lines(s, depth))
+            .concat(self.trivia_before(decl, depth))
         match self.store.stmt(s) {
             .FnDecl(name, tparams, params, ret, body) -> {
                 let name_sig = "${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}"
                 let params_sig = "${name_sig}${self.params_wrapped(params, depth, col_after(name_sig, depth * 4))}"
                 let head = "${params_sig}${self.ret_arrow(ret, depth, col_after(params_sig, depth * 4))}"
-                lead.concat(match self.store.expr(body) {
-                    .Error -> [source_line(depth, head)],
-                    rest -> [source_line(depth, "${head} ${self.block(body, self.stmt_flat(s), depth)}")],
-                })
+                lead
+                    .concat(
+                        match self.store.expr(body) {
+                            .Error -> [source_line(depth, head)],
+                            rest -> [
+                                source_line(
+                                    depth,
+                                    "${head} ${self.block(body, self.stmt_flat(s), depth)}",
+                                ),
+                            ],
+                        },
+                    )
             },
             rest -> lead.concat(self.statement_node(s, depth)),
         }
@@ -637,18 +883,41 @@ impl SourceText {
     /// from a plain `type`. `store.grammar_of` is the mark: present,
     /// this prints the pattern the fields cannot spell; absent, the
     /// ordinary struct form.
-    mut fn struct_or_grammar_decl(s: StmtId, exported: string, name: string, tparams: List<string>, fields: List<Param>, end: int, one_line: bool, depth: int) -> string {
+    mut fn struct_or_grammar_decl(
+        s: StmtId,
+        exported: string,
+        name: string,
+        tparams: List<string>,
+        fields: List<Param>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         let g? = self.store.grammar_of(s) else { return self.struct_decl(exported, name, tparams, fields, end, one_line, depth) }
         source_line(depth, "grammar ${source_name(name)} = ${format_source(g.head, g.parts)}")
     }
 
     /// `component Name(head) { field: T = d … fn … }` — its head in
     /// parentheses, its fields one per line, then its methods.
-    mut fn component_decl(exported: string, name: string, head: List<Param>, fields: List<Param>, fns: List<StmtId>, end: int, depth: int) -> string {
+    mut fn component_decl(
+        exported: string,
+        name: string,
+        head: List<Param>,
+        fields: List<Param>,
+        fns: List<StmtId>,
+        end: int,
+        depth: int,
+    ) -> string {
         let sig = "${exported}component ${source_name(name)}"
         let opened = "${sig}${if head.is_empty() { "" } else { self.params_wrapped(head, depth, col_after(sig, depth * 4)) }}"
-        let lines = flatten([self.trivia_before(start_of(f.span), depth + 1).concat([source_line(depth + 1, self.param(f, depth + 1))]) for f in fields])
-        let body = lines.concat(flatten([self.statement(s, depth + 1) for s in fns])).concat(self.trivia_before(end, depth + 1))
+        let lines = flatten(
+            [self
+                .trivia_before(start_of(f.span), depth + 1)
+                .concat([source_line(depth + 1, self.param(f, depth + 1))]) for f in fields],
+        )
+        let body = lines
+            .concat(flatten([self.statement(s, depth + 1) for s in fns]))
+            .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${opened} {}") }
         "${source_line(depth, "${opened} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
@@ -660,7 +929,10 @@ impl SourceText {
         if self.store.is_component_inst(s) { return self.component_inst("", value, name, depth) }
         let name_part = "let ${source_name(name)}"
         let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
-        source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")
+        source_line(
+            depth,
+            "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+        )
     }
 
     /// A named instance, re-spelled `word name { … }` — a marked
@@ -669,27 +941,70 @@ impl SourceText {
     /// parseable rather than trapping the printer.
     mut fn component_inst(exported: string, value: ExprId, inst: string, depth: int) -> string {
         match self.store.expr(value) {
-            .Component(word, _, block, _, _) -> source_line(depth, exported + joined([source_name(word), source_name(inst)].concat([self.instance_body(b, depth) for b in some_list(block)]), " ")),
+            .Component(word, _, block, _, _) -> source_line(
+                depth,
+                exported +
+                    joined(
+                        [source_name(word), source_name(inst)]
+                            .concat([self.instance_body(b, depth) for b in some_list(block)]),
+                        " ",
+                    ),
+            ),
             rest -> {
                 let prefix = "let ${source_name(inst)} = "
-                source_line(depth, "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}")
+                source_line(
+                    depth,
+                    "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                )
             },
         }
     }
 
-    mut fn struct_decl(exported: string, name: string, tparams: List<string>, fields: List<Param>, end: int, one_line: bool, depth: int) -> string {
+    mut fn struct_decl(
+        exported: string,
+        name: string,
+        tparams: List<string>,
+        fields: List<Param>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         let head = "${exported}type ${source_name(name)}${self.named_type_params(tparams)}"
         if fields.is_empty() { return source_line(depth, "${head} = {}") }
-        if one_line { return source_line(depth, "${head} = { ${joined([self.param(f, depth) for f in fields], ", ")} }") }
-        let body = flatten([self.trivia_before(start_of(f.span), depth + 1).concat([source_line(depth + 1, "${self.param(f, depth + 1)},")]) for f in fields]).concat(self.trivia_before(end, depth + 1))
+        if one_line { return source_line(
+                depth,
+                "${head} = { ${joined([self.param(f, depth) for f in fields], ", ")} }",
+            ) }
+        let body = flatten(
+            [self
+                .trivia_before(start_of(f.span), depth + 1)
+                .concat([source_line(depth + 1, "${self.param(f, depth + 1)},")]) for f in fields],
+        )
+            .concat(self.trivia_before(end, depth + 1))
         "${source_line(depth, "${head} = {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
-    mut fn enum_decl(exported: string, name: string, tparams: List<string>, variants: List<Variant>, end: int, one_line: bool, depth: int) -> string {
+    mut fn enum_decl(
+        exported: string,
+        name: string,
+        tparams: List<string>,
+        variants: List<Variant>,
+        end: int,
+        one_line: bool,
+        depth: int,
+    ) -> string {
         let head = "${exported}enum ${source_name(name)}${self.named_type_params(tparams)}"
         if variants.is_empty() { return source_line(depth, "${head} {}") }
-        if one_line { return source_line(depth, "${head} { ${joined([self.variant(v, depth) for v in variants], ", ")} }") }
-        let body = flatten([self.trivia_before(start_of(v.span), depth + 1).concat([source_line(depth + 1, self.variant(v, depth + 1))]) for v in variants]).concat(self.trivia_before(end, depth + 1))
+        if one_line { return source_line(
+                depth,
+                "${head} { ${joined([self.variant(v, depth) for v in variants], ", ")} }",
+            ) }
+        let body = flatten(
+            [self
+                .trivia_before(start_of(v.span), depth + 1)
+                .concat([source_line(depth + 1, self.variant(v, depth + 1))]) for v in variants],
+        )
+            .concat(self.trivia_before(end, depth + 1))
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -700,16 +1015,28 @@ impl SourceText {
     }
 
     mut fn spec_decl(name: string, cases: List<Case>, end: int, one_line: bool, depth: int) -> string {
-        let body = flatten([self.given_lines(g, one_line, depth + 1) for g in grouped_cases(cases)]).concat(self.trivia_before(end, depth + 1))
+        let body = flatten([self.given_lines(g, one_line, depth + 1) for g in grouped_cases(cases)])
+            .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
-        if one_line && body.length == 1 { return source_line(depth, "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }") }
+        if one_line && body.length == 1 { return source_line(
+                depth,
+                "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }",
+            ) }
         "${source_line(depth, "spec ${quoted_text(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// A collect's projection prints as a struct literal over `it`
     /// paths — empty the bare declaration — and its order as the
     /// `it.field` list `by` named.
-    fn collect_decl(exported: string, name: string, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain>) -> string {
+    fn collect_decl(
+        exported: string,
+        name: string,
+        ty: TypeRef,
+        kind: CollectKind,
+        scope: CollectScope,
+        proj: Projection,
+        order: List<Plain>,
+    ) -> string {
         let fields = joined([self.collect_field(f.field.of, f.path) for f in proj.fields], ", ")
         let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
         "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
@@ -722,7 +1049,16 @@ impl SourceText {
     /// `tail_scoped`, core/store.av), which reads a multi-line body as
     /// flat whenever its one statement happens to fit one line itself.
     mut fn then_line(c: Case, at: int) -> List<string> {
-        self.trivia_before(start_of(c.span), at).concat([source_line(at, "then ${quoted_text(c.name)} ${self.block(c.body, self.span_flat(c.span), at)}")])
+        self
+            .trivia_before(start_of(c.span), at)
+            .concat(
+                [
+                    source_line(
+                        at,
+                        "then ${quoted_text(c.name)} ${self.block(c.body, self.span_flat(c.span), at)}",
+                    ),
+                ],
+            )
     }
 
     /// A `given` group's lines: every case it holds shares ONE
@@ -733,8 +1069,12 @@ impl SourceText {
         if g.group.is_empty() { return self.then_line(g.cases[0], depth) }
         let at = depth + 1
         let thens = flatten([self.then_line(c, at) for c in g.cases])
-        if one_line && thens.length == 1 { return [source_line(depth, "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }")] }
-        [source_line(depth, "given ${quoted_text(g.group)} {")].concat(thens).concat([source_line(depth, "}")])
+        if one_line && thens.length == 1 { return [
+                source_line(depth, "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }"),
+            ] }
+        [source_line(depth, "given ${quoted_text(g.group)} {")]
+            .concat(thens)
+            .concat([source_line(depth, "}")])
     }
 
     /// The source a zero-seat lambda was written as — `defer e`'s and
@@ -779,7 +1119,11 @@ impl SourceText {
             .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth, c), atom_tier, parent),
             .Index(subject, index) -> {
                 let s = self.expression(subject, postfix_tier, depth, c)
-                grouped("${s}[${self.expression(index, loosest_tier, depth, col_after(s, c) + 1)}]", postfix_tier, parent)
+                grouped(
+                    "${s}[${self.expression(index, loosest_tier, depth, col_after(s, c) + 1)}]",
+                    postfix_tier,
+                    parent,
+                )
             },
             .Prop(_, _) -> self.chain_rendered(id, parent, depth, c),
             .Body(word, parts, holes, _) -> {
@@ -789,26 +1133,56 @@ impl SourceText {
             },
             .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth, c), atom_tier, parent),
-            .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth), atom_tier, parent),
+            .When(conds, values, fallback) -> grouped(
+                self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth),
+                atom_tier,
+                parent,
+            ),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
             .Collect(body) -> grouped(self.instance("collect", [body], null, depth), atom_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
-                grouped("${head}${self.call_tail(args, depth, col_after(head, c))}", atom_tier, parent)
+                grouped(
+                    "${head}${self.call_tail(args, depth, col_after(head, c))}",
+                    atom_tier,
+                    parent,
+                )
             },
             .Named(name, value) -> {
                 let head = "${source_name(name.of)}: "
-                grouped("${head}${self.expression(value, loosest_tier, depth, col_after(head, c))}", loosest_tier, parent)
+                grouped(
+                    "${head}${self.expression(value, loosest_tier, depth, col_after(head, c))}",
+                    loosest_tier,
+                    parent,
+                )
             },
             .StructLit(name, fields, values) -> grouped(self.struct_lit_text(id, name.of, fields, values, depth, c), atom_tier, parent),
-            .With(subject, fields, values) -> grouped("${self.expression(subject, 10, depth, c)} with { ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }", 10, parent),
+            .With(subject, fields, values) -> grouped(
+                "${self.expression(subject, 10, depth, c)} with { ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }",
+                10,
+                parent,
+            ),
             .Match(subject, arms) -> grouped(self.match_expr(subject, arms, id, depth, c), atom_tier, parent),
             .NullLit -> grouped("null", atom_tier, parent),
             .Coalesce(left, right) -> {
                 let l = self.expression(left, 5, depth, c)
-                grouped("${l} ?? ${self.expression(right, 6, depth, col_after(l, c) + 4)}", 5, parent)
+                grouped(
+                    "${l} ?? ${self.expression(right, 6, depth, col_after(l, c) + 4)}",
+                    5,
+                    parent,
+                )
             },
-            .MatchOpt(subject, bind, present, absent) -> self.match_optional(subject, bind.of, present, absent, parent, end_of(self.store.expr_span(id)), depth, c),
+            .MatchOpt(subject, bind, present, absent) -> self
+                .match_optional(
+                    subject,
+                    bind.of,
+                    present,
+                    absent,
+                    parent,
+                    end_of(self.store.expr_span(id)),
+                    depth,
+                    c,
+                ),
             // A LAMBDA RIDING THE PRONOUN HAS NO HEADER: `it` was
             // never written as `(it) ->` — the wrap is the sugar's
             // whole mechanism (core/store.av's `pronouned`), and its
@@ -816,7 +1190,11 @@ impl SourceText {
             .Lambda(params, body) if is_pronoun(params) -> self.expression(body, parent, depth, c),
             .Lambda(params, body) -> {
                 let head = self.params_wrapped(params, depth, c)
-                grouped("${head} -> ${self.expression(body, loosest_tier, depth, col_after(head, c) + 4)}", atom_tier, parent)
+                grouped(
+                    "${head} -> ${self.expression(body, loosest_tier, depth, col_after(head, c) + 4)}",
+                    atom_tier,
+                    parent,
+                )
             },
             .Spawn(body) -> grouped("spawn ${self.written_body(body, depth)}", loosest_tier, parent),
             // Parentheses preserve VALUE application. Without the
@@ -824,17 +1202,46 @@ impl SourceText {
             // the direct, declaration-resolved Call variant.
             .CallValue(subject, args) -> {
                 let head = "(${self.expression(subject, loosest_tier, depth, c + 1)})"
-                grouped("${head}${self.call_tail(args, depth, col_after(head, c))}", postfix_tier, parent)
+                grouped(
+                    "${head}${self.call_tail(args, depth, col_after(head, c))}",
+                    postfix_tier,
+                    parent,
+                )
             },
-            .Chain(subject, name) -> grouped("${self.chain_subject(subject, depth, c)}?.${source_name(name.of)}", postfix_tier, parent),
+            .Chain(subject, name) -> grouped(
+                "${self.chain_subject(subject, depth, c)}?.${source_name(name.of)}",
+                postfix_tier,
+                parent,
+            ),
             .Force(value) -> grouped("${self.expression(value, postfix_tier, depth, c)}!", postfix_tier, parent),
-            .Is(subject, variant) -> grouped("${self.expression(subject, 5, depth, c)} is .${source_name(variant.of)}", 4, parent),
+            .Is(subject, variant) -> grouped(
+                "${self.expression(subject, 5, depth, c)} is .${source_name(variant.of)}",
+                4,
+                parent,
+            ),
             .VariantLit(name, args) -> {
                 let head = ".${source_name(name.of)}"
-                grouped("${head}${if args.is_empty() { "" } else { self.args_wrapped(args, depth, col_after(head, c)) }}", atom_tier, parent)
+                grouped(
+                    "${head}${if args.is_empty() { "" } else { self.args_wrapped(args, depth, col_after(head, c)) }}",
+                    atom_tier,
+                    parent,
+                )
             },
             .Propagate(value) -> grouped("${self.chain_subject(value, depth, c)}?", postfix_tier, parent),
-            .Catch(subject, variants, binds, values) -> grouped(self.catch_expr(subject, [t.of for t in variants], [t.of for t in binds], values, end_of(self.store.expr_span(id)), depth, c), 1, parent),
+            .Catch(subject, variants, binds, values) -> grouped(
+                self
+                    .catch_expr(
+                        subject,
+                        [t.of for t in variants],
+                        [t.of for t in binds],
+                        values,
+                        end_of(self.store.expr_span(id)),
+                        depth,
+                        c,
+                    ),
+                1,
+                parent,
+            ),
             .MethodCall(_, _, _) -> self.chain_rendered(id, parent, depth, c),
             .Error -> grouped("__error", atom_tier, parent),
         }
@@ -856,8 +1263,20 @@ impl SourceText {
     /// own flat padding, kept in sync with `comma_list`'s. `col` is
     /// where `open` itself begins on the physical line — exact when
     /// the caller knows it, `resolved_col`'s fallback otherwise.
-    fn wrapped_list(open: string, items: List<string>, close: string, spaced: bool, depth: int, col: int = -1) -> string {
-        render_doc_at(comma_list(open, [text(it) for it in items], close, spaced), self.layout_width(), depth * 4, resolved_col(col, depth))
+    fn wrapped_list(
+        open: string,
+        items: List<string>,
+        close: string,
+        spaced: bool,
+        depth: int,
+        col: int = -1,
+    ) -> string {
+        render_doc_at(
+            comma_list(open, [text(it) for it in items], close, spaced),
+            self.layout_width(),
+            depth * 4,
+            resolved_col(col, depth),
+        )
     }
 
     /// A parameter list's parentheses — a fn's, a lambda's, a
@@ -876,7 +1295,15 @@ impl SourceText {
 
     /// A call's argument parentheses, wrapping-decided the same way.
     mut fn args_wrapped(args: List<ExprId>, depth: int, col: int = -1) -> string {
-        self.wrapped_list("(", [self.expression(a, loosest_tier, depth + 1) for a in args], ")", false, depth, col)
+        self
+            .wrapped_list(
+                "(",
+                [self.expression(a, loosest_tier, depth + 1) for a in args],
+                ")",
+                false,
+                depth,
+                col,
+            )
     }
 
     /// `e`'s run of `op` operands, left to right — the SAME operator
@@ -901,10 +1328,23 @@ impl SourceText {
     /// before the chain decides flat or broken, so each takes the
     /// fallback — only the chain's OWN column, measured against
     /// `col`, needs to be exact.
-    mut fn chain_grouped(op: BinOp, left: ExprId, right: ExprId, p: int, parent: int, depth: int, col: int = -1) -> string {
+    mut fn chain_grouped(
+        op: BinOp,
+        left: ExprId,
+        right: ExprId,
+        p: int,
+        parent: int,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         let operands = self.chain_operands(op, left).concat([right])
         let docs = [text(self.expression(operands[j], if j == 0 { p } else { p + 1 }, depth + 1)) for j in 0..operands.length]
-        let rendered = render_doc_at(chain_doc(op_symbol(op), docs), self.layout_width(), depth * 4, resolved_col(col, depth))
+        let rendered = render_doc_at(
+            chain_doc(op_symbol(op), docs),
+            self.layout_width(),
+            depth * 4,
+            resolved_col(col, depth),
+        )
         if p < parent { "(${rendered})" } else { rendered }
     }
 
@@ -922,9 +1362,29 @@ impl SourceText {
         let tbl? = self.store.table_of(id) else {
             if elems.is_empty() { return "[]" }
             let span = self.store.expr_span(id)
-            if self.width_decides(span) { return self.wrapped_list("[", [self.expression(e, loosest_tier, depth + 1) for e in elems], "]", false, depth, col) }
+            if self.width_decides(span) { return self
+                    .wrapped_list(
+                        "[",
+                        [self.expression(e, loosest_tier, depth + 1) for e in elems],
+                        "]",
+                        false,
+                        depth,
+                        col,
+                    ) }
             if self.span_flat(span) { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
-            let body = flatten([self.trivia_before(start_of(self.store.expr_span(e)), depth + 1).concat([source_line(depth + 1, "${self.expression(e, loosest_tier, depth + 1)},")]) for e in elems]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+            let body = flatten(
+                [self
+                    .trivia_before(start_of(self.store.expr_span(e)), depth + 1)
+                    .concat(
+                        [
+                            source_line(
+                                depth + 1,
+                                "${self.expression(e, loosest_tier, depth + 1)},",
+                            ),
+                        ],
+                    ) for e in elems],
+            )
+                .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
             return "[\n${joined(body, "\n")}\n${source_line(depth, "]")}"
         }
         self.table_text(tbl.row_type, tbl.header, elems, depth)
@@ -932,12 +1392,38 @@ impl SourceText {
 
     /// A map's text, one line or many as it was written — an entry
     /// drains the trivia before its KEY's span, the entry's own start.
-    mut fn map_lit_text(id: ExprId, keys: List<ExprId>, values: List<ExprId>, depth: int, col: int = -1) -> string {
+    mut fn map_lit_text(
+        id: ExprId,
+        keys: List<ExprId>,
+        values: List<ExprId>,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         if keys.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
-        if self.width_decides(span) { return self.wrapped_list("{", ["${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, k in keys], "}", false, depth, col) }
+        if self.width_decides(span) { return self
+                .wrapped_list(
+                    "{",
+                    ["${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, k in keys],
+                    "}",
+                    false,
+                    depth,
+                    col,
+                ) }
         if self.span_flat(span) { return "{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}" }
-        let body = flatten([self.trivia_before(start_of(self.store.expr_span(k)), depth + 1).concat([source_line(depth + 1, "${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)},")]) for j, k in keys]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+        let body = flatten(
+            [self
+                .trivia_before(start_of(self.store.expr_span(k)), depth + 1)
+                .concat(
+                    [
+                        source_line(
+                            depth + 1,
+                            "${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)},",
+                        ),
+                    ],
+                ) for j, k in keys],
+        )
+            .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -969,7 +1455,14 @@ impl SourceText {
     /// expanded into (`store.grammar_lit_of` — the raw block's own
     /// words, never rebuilt from the expansion), the ordinary
     /// field-list form otherwise.
-    mut fn struct_lit_text(id: ExprId, name: string, fields: List<Plain>, values: List<ExprId>, depth: int, col: int = -1) -> string {
+    mut fn struct_lit_text(
+        id: ExprId,
+        name: string,
+        fields: List<Plain>,
+        values: List<ExprId>,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         let text? = self.store.grammar_lit_of(id) else {
             let head = "${source_name(name)} "
             return "${head}${self.struct_fields_text(id, fields, values, depth, col_after(head, resolved_col(col, depth)))}"
@@ -982,12 +1475,38 @@ impl SourceText {
     /// name), so an entry drains the trivia before its VALUE's span;
     /// the value always starts later than the field's own name, so a
     /// comment before the name is still before that offset too.
-    mut fn struct_fields_text(id: ExprId, fields: List<Plain>, values: List<ExprId>, depth: int, col: int = -1) -> string {
+    mut fn struct_fields_text(
+        id: ExprId,
+        fields: List<Plain>,
+        values: List<ExprId>,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         if fields.is_empty() { return "{}" }
         let span = self.store.expr_span(id)
-        if self.width_decides(span) { return self.wrapped_list("{", ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, f in fields], "}", true, depth, col) }
+        if self.width_decides(span) { return self
+                .wrapped_list(
+                    "{",
+                    ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, f in fields],
+                    "}",
+                    true,
+                    depth,
+                    col,
+                ) }
         if self.span_flat(span) { return "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }
-        let body = flatten([self.trivia_before(start_of(self.store.expr_span(values[j])), depth + 1).concat([source_line(depth + 1, "${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)},")]) for j, f in fields]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+        let body = flatten(
+            [self
+                .trivia_before(start_of(self.store.expr_span(values[j])), depth + 1)
+                .concat(
+                    [
+                        source_line(
+                            depth + 1,
+                            "${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)},",
+                        ),
+                    ],
+                ) for j, f in fields],
+        )
+            .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -1036,14 +1555,17 @@ impl SourceText {
             // apart by `written_close` (`block_end`): a real brace sits
             // STRICTLY PAST the wrapped value's own span, where a
             // synthetic wrap's end IS that span — see through only then.
-            .Block(stmts, value) -> if stmts.is_empty() && value != null && self.block_end(no) == end_of(self.store.expr_span(value!)) { self.chained_if(value!, depth) } else { null },
+            .Block(stmts, value) -> if stmts.is_empty() &&
+                value != null &&
+                self.block_end(no) == end_of(self.store.expr_span(value!)) { self.chained_if(value!, depth) } else { null },
             rest -> null,
         }
     }
 
     /// A block EXPRESSION's braces, its written form and its end.
     mut fn block_expr(stmts: List<StmtId>, value: ExprId?, id: ExprId, depth: int) -> string {
-        self.braced("", stmts, value, self.block_end(id), self.span_flat(self.store.expr_span(id)), depth)
+        self
+            .braced("", stmts, value, self.block_end(id), self.span_flat(self.store.expr_span(id)), depth)
     }
 
     mut fn binary(op: BinOp, left: ExprId, right: ExprId, parent: int, depth: int, col: int = -1) -> string {
@@ -1054,7 +1576,11 @@ impl SourceText {
         // mixed left child therefore needs its group even though a
         // conventional precedence table would drop it.
         let lp = if comparison(op) || self.mixed_bitwise(op, left) { p + 1 } else { p }
-        grouped("${self.expression(left, lp, depth, col)} ${op_symbol(op)} ${self.expression(right, p + 1, depth)}", p, parent)
+        grouped(
+            "${self.expression(left, lp, depth, col)} ${op_symbol(op)} ${self.expression(right, p + 1, depth)}",
+            p,
+            parent,
+        )
     }
 
     fn mixed_bitwise(op: BinOp, left: ExprId) -> bool {
@@ -1065,7 +1591,16 @@ impl SourceText {
         }
     }
 
-    mut fn comprehension(elem: ExprId, index: string?, name: string, source: ExprId, hi: ExprId?, cond: ExprId?, parent: int, depth: int) -> string {
+    mut fn comprehension(
+        elem: ExprId,
+        index: string?,
+        name: string,
+        source: ExprId,
+        hi: ExprId?,
+        cond: ExprId?,
+        parent: int,
+        depth: int,
+    ) -> string {
         let binds = if index == null { source_name(name) } else { "${source_name(index!)}, ${source_name(name)}" }
         let element = self.expression(elem, loosest_tier, depth)
         let range = if hi == null { self.expression(source, loosest_tier, depth) } else { "${self.expression(source, loosest_tier, depth)}..${self.expression(hi!, loosest_tier, depth)}" }
@@ -1081,7 +1616,12 @@ impl SourceText {
     /// A component instance as written: its word, its head values, its
     /// block.
     mut fn instance(word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
-        joined([source_name(word)].concat([self.expression(e, loosest_tier, depth) for e in heads]).concat([self.instance_body(b, depth) for b in some_list(block)]), " ")
+        joined(
+            [source_name(word)]
+                .concat([self.expression(e, loosest_tier, depth) for e in heads])
+                .concat([self.instance_body(b, depth) for b in some_list(block)]),
+            " ",
+        )
     }
 
     /// An instance's body: its block, or a fn's braces with its `req ->`
@@ -1152,8 +1692,18 @@ impl SourceText {
     /// own start is deterministic: this DOES thread an exact column,
     /// same as any other spine position — it is only a comma list's
     /// PRE-RENDERED items that must fall back.
-    mut fn when_expr(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId, end: int, depth: int) -> string {
-        let arms = flatten([self.trivia_before(start_of(self.store.expr_span(c)), depth + 1).concat([self.when_arm(c, values[j], depth)]) for j, c in conds])
+    mut fn when_expr(
+        conds: List<ExprId>,
+        values: List<ExprId>,
+        fallback: ExprId,
+        end: int,
+        depth: int,
+    ) -> string {
+        let arms = flatten(
+            [self
+                .trivia_before(start_of(self.store.expr_span(c)), depth + 1)
+                .concat([self.when_arm(c, values[j], depth)]) for j, c in conds],
+        )
         let fallback_head = "_ -> "
         let fallback_line = "${source_line(depth + 1, "${fallback_head}${self.expression(fallback, 0, depth + 1, col_after(fallback_head, (depth + 1) * 4))}")}"
         let tail = self.trivia_before(end, depth + 1).concat(["${fallback_line}${self.trailing()}"])
@@ -1176,7 +1726,8 @@ impl SourceText {
     mut fn arms_braced(arms: List<Arm>, id: ExprId, depth: int, col: int = -1) -> string {
         let span = self.store.expr_span(id)
         if self.width_decides(span) {
-            return self.wrapped_list("{", [self.arm_text(a, depth + 1) for a in arms], "}", true, depth, col)
+            return self
+                .wrapped_list("{", [self.arm_text(a, depth + 1) for a in arms], "}", true, depth, col)
         }
         if self.span_flat(span) {
             return "{ ${joined([self.arm_text(a, depth) for a in arms], ", ")} }"
@@ -1184,7 +1735,10 @@ impl SourceText {
         // AN ARM IS NOT A STATEMENT, so its remarks are drained at the
         // arm's first pattern — the printer emits lines in more places
         // than it has node kinds.
-        let body = flatten([self.trivia_before(self.arm_start(a), depth + 1).concat([self.arm_line(a, depth + 1)]) for a in arms]).concat(self.trivia_before(end_of(span), depth + 1))
+        let body = flatten(
+            [self.trivia_before(self.arm_start(a), depth + 1).concat([self.arm_line(a, depth + 1)]) for a in arms],
+        )
+            .concat(self.trivia_before(end_of(span), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -1214,7 +1768,16 @@ impl SourceText {
         "${line}${self.trailing()}"
     }
 
-    mut fn match_optional(subject: ExprId, bind: string, present: ExprId, absent: ExprId, parent: int, end: int, depth: int, col: int = -1) -> string {
+    mut fn match_optional(
+        subject: ExprId,
+        bind: string,
+        present: ExprId,
+        absent: ExprId,
+        parent: int,
+        end: int,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         let c = resolved_col(col, depth)
         let chained: Expr? = if bind == chained_binder { self.store.expr(present) } else { null }
         if chained != null && self.store.expr(absent) is .NullLit {
@@ -1222,7 +1785,11 @@ impl SourceText {
                 .MethodCall(receiver, name, args) -> {
                     if self.store.ident_name(receiver) == chained_binder {
                         let tail = self.type_lit_tail(present, name, args) ?? "${source_name(name.of)}${self.args_wrapped(args, depth)}"
-                        return grouped("${self.expression(subject, postfix_tier, depth, c)}?.${tail}", postfix_tier, parent)
+                        return grouped(
+                            "${self.expression(subject, postfix_tier, depth, c)}?.${tail}",
+                            postfix_tier,
+                            parent,
+                        )
                     }
                 },
                 rest -> { let _ = 0 },
@@ -1231,18 +1798,58 @@ impl SourceText {
         let head = self.expression(subject, loosest_tier, depth, c + 6)
         let present_head = "${source_name(bind)}? -> "
         let absent_head = "null -> "
-        let arms = self.trivia_before(start_of(self.store.expr_span(present)), depth + 1).concat([source_line(depth + 1, "${present_head}${self.expression(present, 0, depth + 1, col_after(present_head, (depth + 1) * 4))}")]).concat(self.trivia_before(start_of(self.store.expr_span(absent)), depth + 1)).concat([source_line(depth + 1, "${absent_head}${self.expression(absent, 0, depth + 1, col_after(absent_head, (depth + 1) * 4))}")]).concat(self.trivia_before(end, depth + 1))
-        grouped("match ${head} {\n${joined(arms, "\n")}\n${source_line(depth, "}")}", atom_tier, parent)
+        let arms = self
+            .trivia_before(start_of(self.store.expr_span(present)), depth + 1)
+            .concat(
+                [
+                    source_line(
+                        depth + 1,
+                        "${present_head}${self.expression(present, 0, depth + 1, col_after(present_head, (depth + 1) * 4))}",
+                    ),
+                ],
+            )
+            .concat(self.trivia_before(start_of(self.store.expr_span(absent)), depth + 1))
+            .concat(
+                [
+                    source_line(
+                        depth + 1,
+                        "${absent_head}${self.expression(absent, 0, depth + 1, col_after(absent_head, (depth + 1) * 4))}",
+                    ),
+                ],
+            )
+            .concat(self.trivia_before(end, depth + 1))
+        grouped(
+            "match ${head} {\n${joined(arms, "\n")}\n${source_line(depth, "}")}",
+            atom_tier,
+            parent,
+        )
     }
 
-    mut fn catch_expr(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>, end: int, depth: int, col: int = -1) -> string {
+    mut fn catch_expr(
+        subject: ExprId,
+        variants: List<string>,
+        binds: List<string>,
+        values: List<ExprId>,
+        end: int,
+        depth: int,
+        col: int = -1,
+    ) -> string {
         let c = resolved_col(col, depth)
         let held = self.expression(subject, 2, depth, c)
         if values.length == 1 {
             let prefix = "${held} catch ${self.catch_head(variants[0], binds[0])}"
             return "${prefix}${self.expression(values[0], 2, depth, col_after(prefix, c))}"
         }
-        let arms = flatten([self.trivia_before(start_of(self.store.expr_span(v)), depth + 1).concat(["${source_line(depth + 1, "${self.catch_head(variants[j], binds[j])}${self.expression(v, 0, depth + 1)}")}${self.trailing()}"]) for j, v in values]).concat(self.trivia_before(end, depth + 1))
+        let arms = flatten(
+            [self
+                .trivia_before(start_of(self.store.expr_span(v)), depth + 1)
+                .concat(
+                    [
+                        "${source_line(depth + 1, "${self.catch_head(variants[j], binds[j])}${self.expression(v, 0, depth + 1)}")}${self.trailing()}",
+                    ],
+                ) for j, v in values],
+        )
+            .concat(self.trivia_before(end, depth + 1))
         "${held} catch {\n${joined(arms, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -1383,11 +1990,17 @@ impl SourceText {
         match self.store.expr(e) {
             .Prop(subject, name) -> {
                 let inner = self.chain_walk(subject, depth)
-                ChainWalk { root: inner.root, links: inner.links.concat([".${source_name(name.of)}"]) }
+                ChainWalk {
+                    root: inner.root,
+                    links: inner.links.concat([".${source_name(name.of)}"]),
+                }
             },
             .MethodCall(subject, name, args) -> {
                 let inner = self.chain_walk(subject, depth)
-                ChainWalk { root: inner.root, links: inner.links.concat([self.method_link_text(e, name, args, depth)]) }
+                ChainWalk {
+                    root: inner.root,
+                    links: inner.links.concat([self.method_link_text(e, name, args, depth)]),
+                }
             },
             rest -> ChainWalk { root: e, links: [] },
         }
@@ -1405,7 +2018,16 @@ impl SourceText {
         let root = self.expression(walk.root, postfix_tier, depth, c)
         let head = if self.store.expr(walk.root) is .Propagate { "(${root})" } else { root }
         if walk.links.is_empty() { return grouped(head, postfix_tier, parent) }
-        grouped(render_doc_at(postfix_chain_doc(text(head), [text(l) for l in walk.links]), self.layout_width(), depth * 4, c), postfix_tier, parent)
+        grouped(
+            render_doc_at(
+                postfix_chain_doc(text(head), [text(l) for l in walk.links]),
+                self.layout_width(),
+                depth * 4,
+                c,
+            ),
+            postfix_tier,
+            parent,
+        )
     }
 
     /// A postfix chain's subject (`.Chain`, `.Propagate`) — parenthesised
@@ -1442,10 +2064,7 @@ impl SourceText {
     }
 
     fn type_hole_name(id: ExprId) -> string? {
-        match self.store.expr(id) {
-            .Ident(name) -> source_name(name.of),
-            rest -> null,
-        }
+        match self.store.expr(id) { .Ident(name) -> source_name(name.of), rest -> null }
     }
 
     fn type_applied_spelling(variant: string, args: List<ExprId>) -> string? {
@@ -1592,7 +2211,10 @@ fn max_len(strs: List<string>) -> int {
 /// One row's cells, each padded to its column's width and pipe-joined
 /// — the LAST cell never pads, since nothing stands to its right.
 fn padded_row(cells: List<string>, widths: List<int>) -> string {
-    joined([if j == cells.length - 1 { cells[j] } else { pad_to(cells[j], widths[j]) } for j in 0..cells.length], " | ")
+    joined(
+        [if j == cells.length - 1 { cells[j] } else { pad_to(cells[j], widths[j]) } for j in 0..cells.length],
+        " | ",
+    )
 }
 
 fn pad_to(s: string, w: int) -> string {

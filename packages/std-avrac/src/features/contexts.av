@@ -3,7 +3,30 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, MethodParts, same_stmt, same_expr, same_decl, TypeRef, joined, flatten}
+use core.{
+    Expr,
+    FileId,
+    DeclId,
+    StmtId,
+    ExprId,
+    TypeId,
+    PatId,
+    Type,
+    TypeLit,
+    NodeStore,
+    TypeRegistry,
+    Binding,
+    Param,
+    Reg,
+    Ins,
+    MethodParts,
+    same_stmt,
+    same_expr,
+    same_decl,
+    TypeRef,
+    joined,
+    flatten,
+}
 use diagnostics.{Diag, Voices, refusal}
 use @std.errors.{Loc, Frame}
 
@@ -214,13 +237,25 @@ export fn type_named(names: NameFacts, name: string) -> DeclId? {
 /// and a `dyn` of the very trait, or a type parameter bounded by it,
 /// implements it BY CONSTRUCTION — each instantiation re-proves the
 /// bound.
-export fn implements_of(types: TypeRegistry, decls: Decls, names: NameFacts, ty: TypeId, tname: string) -> bool {
+export fn implements_of(
+    types: TypeRegistry,
+    decls: Decls,
+    names: NameFacts,
+    ty: TypeId,
+    tname: string,
+) -> bool {
     implements_named(types, decls, ty, tname, decls.trait_named(names, tname))
 }
 
 /// The same answer, given the trait the name stands for WHERE IT WAS
 /// WRITTEN — absent when that file names no such trait.
-export fn implements_named(types: TypeRegistry, decls: Decls, ty: TypeId, tname: string, tr: DeclId?) -> bool {
+export fn implements_named(
+    types: TypeRegistry,
+    decls: Decls,
+    ty: TypeId,
+    tname: string,
+    tr: DeclId?,
+) -> bool {
     let worn: string? = dyn_contract(types.shape_of(ty))
     if worn != null { return worn! == tname }
     if bound_of(types, decls, ty) == tname { return true }
@@ -230,10 +265,7 @@ export fn implements_named(types: TypeRegistry, decls: Decls, ty: TypeId, tname:
 
 /// The bound a type parameter declares — "" for every other type.
 fn bound_of(types: TypeRegistry, decls: Decls, ty: TypeId) -> string {
-    match types.shape_of(ty) {
-        .Var(d, j, _) -> decls.bound_name(d, j),
-        _ -> "",
-    }
+    match types.shape_of(ty) { .Var(d, j, _) -> decls.bound_name(d, j), _ -> "" }
 }
 
 /// Whether a type registered an impl for the trait DECLARATION — asked
@@ -250,17 +282,11 @@ export fn implements_trait(types: TypeRegistry, decls: Decls, ty: TypeId, tr: De
 export type DynContract = { decl: DeclId, name: string }
 
 export fn dyn_decl(sh: Type) -> DynContract? {
-    match sh {
-        .Dyn(d, n) -> DynContract { decl: d, name: n },
-        _ -> null,
-    }
+    match sh { .Dyn(d, n) -> DynContract { decl: d, name: n }, _ -> null }
 }
 
 export fn dyn_contract(sh: Type) -> string? {
-    match sh {
-        .Dyn(_, n) -> n,
-        _ -> null,
-    }
+    match sh { .Dyn(_, n) -> n, _ -> null }
 }
 
 /// A declared type's DECLARATION as a trait IMPLEMENTOR — the impl
@@ -279,10 +305,7 @@ export fn declared_decl(sh: Type) -> DeclId? {
 /// `UserId(5)`, `Color` in `Color.red`. A PROJECTION: one shape
 /// answers, and the catch-all pins every other to absence.
 export fn type_name_decl(sh: Type) -> DeclId? {
-    match sh {
-        .TypeName(d, _) -> d,
-        _ -> null,
-    }
+    match sh { .TypeName(d, _) -> d, _ -> null }
 }
 
 /// `def_type_of`'s READ half: every branch it can answer without
@@ -333,10 +356,7 @@ impl Decls {
 
     /// The type a const carries, when it carries one.
     fn type_of_const(f: FileId, s: StmtId) -> TypeId? {
-        match self.const_answer(f, s) {
-            .Known(t) -> t,
-            .Refused or .Cyclic -> null,
-        }
+        match self.const_answer(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
     }
 }
 
@@ -473,10 +493,7 @@ impl TypeCx {
     fn is_mut(e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) || self.heard_mut_at(e) }
     fn heard_mut_at(e: ExprId) -> bool {
         let b? = self.names.binding(e) else { return false }
-        match b {
-            .LambdaParam(l, i) -> self.heard_mut(l, i),
-            _ -> false,
-        }
+        match b { .LambdaParam(l, i) -> self.heard_mut(l, i), _ -> false }
     }
     fn def_type(s: StmtId) -> TypeId { def_type_of(self.facts, self.view, self.error_type, s) }
     fn bind_types(v: ExprId, tys: List<TypeId>) { self.facts.bind_types(v, tys) }
@@ -600,11 +617,23 @@ impl Decls {
     }
 
     fn self_referent(d: DeclId) -> Diag {
-        refusal("const.cycle", self.loc(d), "a const's value asks for its own type", "`${self.decl(d).name}` reads itself here", "a const settles from what is written and from other consts — not from its own value")
+        refusal(
+            "const.cycle",
+            self.loc(d),
+            "a const's value asks for its own type",
+            "`${self.decl(d).name}` reads itself here",
+            "a const settles from what is written and from other consts — not from its own value",
+        )
     }
 
     fn not_a_value(d: DeclId) -> Diag {
-        refusal("type.lambda", self.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned")
+        refusal(
+            "type.lambda",
+            self.loc(d),
+            "a generic fn is not a value — no single signature to wear",
+            "declared here",
+            "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned",
+        )
     }
 
     /// An extern names a C SYMBOL, called across the host seam — it
@@ -620,7 +649,13 @@ impl Decls {
         let primary = read_at ?? declared
         let label = if read_at != null { "read as a value here" } else { "declared here" }
         let secondary = if read_at != null { [Frame { label: "declared here", loc: declared }] } else { [] }
-        refusal("type.extern_value", primary, "an extern fn is not a value — it names a C symbol, not a callable Avra fn", label, "wrap it — `${self.wrapper_hint(d)}`") with { secondary: secondary }
+        refusal(
+            "type.extern_value",
+            primary,
+            "an extern fn is not a value — it names a C symbol, not a callable Avra fn",
+            label,
+            "wrap it — `${self.wrapper_hint(d)}`",
+        ) with { secondary: secondary }
     }
 
     /// The wrapper the help offers, over the extern's OWN arity and
@@ -634,7 +669,10 @@ impl Decls {
         let name = self.fn_name(d) ?? "f"
         let params: List<TypeId> = self.sig(d)?.fn_sig()?.params ?? []
         let marks = self.marks_of(d, params.length)
-        let typed = joined([wrapper_typed_seat(i, self.types.name_of(p), marks[i].mutable) for i, p in params], ", ")
+        let typed = joined(
+            [wrapper_typed_seat(i, self.types.name_of(p), marks[i].mutable) for i, p in params],
+            ", ",
+        )
         let names = joined([wrapper_seat(i) for i, _p in params], ", ")
         "(${typed}) -> ${name}(${names})"
     }

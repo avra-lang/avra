@@ -98,8 +98,24 @@ export type Server<A> = {
 /// of it handed to the handler — the last seat, so
 /// a call writes it as a trailing block:
 /// `served(l, () -> App { … }, limits(), timing()) { mut app, q -> … }`.
-export fn served<A>(l: Listener, isolated make: fn() -> A, limits: Limits, timing: Timing, handle: fn(mut A, Request<Unrouted>) -> Response) -> Server<A> {
-    Server { listener: l, make: make, handle: handle, limits: limits, timing: timing, live: Cell.new(0), stopping: Cell.new(false), group: Cell.new(0), core: Cell.new(-1) }
+export fn served<A>(
+    l: Listener,
+    isolated make: fn() -> A,
+    limits: Limits,
+    timing: Timing,
+    handle: fn(mut A, Request<Unrouted>) -> Response,
+) -> Server<A> {
+    Server {
+        listener: l,
+        make: make,
+        handle: handle,
+        limits: limits,
+        timing: timing,
+        live: Cell.new(0),
+        stopping: Cell.new(false),
+        group: Cell.new(0),
+        core: Cell.new(-1),
+    }
 }
 
 // ── A server as a declaration ───────────────────────────────────
@@ -247,7 +263,12 @@ impl Server {
     /// One connection, served on its own copy of the application.
     fn connection(c: Conn, app: A) -> int {
         self.opened(1)
-        mut serving = Serving { app: app, handle: self.handle, limits: self.limits, timing: self.timing }
+        mut serving = Serving {
+            app: app,
+            handle: self.handle,
+            limits: self.limits,
+            timing: self.timing,
+        }
         let fd = serving.conversed(c)
         self.opened(-1)
         fd
@@ -292,7 +313,17 @@ impl Serving {
     /// The link is ONE record, written in place for the whole
     /// conversation.
     mut fn conversed(c: Conn) -> int {
-        mut l = Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), closing: false, served: 0 }
+        mut l = Link {
+            conn: c,
+            peer: c.peer(),
+            buf: "".bytes(),
+            scanned: 0,
+            head: null,
+            decoder: null,
+            out: "".bytes(),
+            closing: false,
+            served: 0,
+        }
         while true {
             self.advanced(l)
             if !self.flushed(l) { return self.dropped(l) }
@@ -390,10 +421,7 @@ impl Serving {
     /// none of it within the idle deadline, or the socket fails.
     fn flushed(l: Link) -> bool {
         if l.out.is_empty() { return true }
-        match within self.timing.idle { l.conn.write(l.out) } {
-            .Ok(_) -> true,
-            .Err(_) -> false,
-        }
+        match within self.timing.idle { l.conn.write(l.out) } { .Ok(_) -> true, .Err(_) -> false }
     }
 
     /// The write side shut after the last byte, the socket closed.

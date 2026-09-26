@@ -6,7 +6,18 @@
 // but changes an operator's meaning.
 use @std.avrac.compiler.{avra, new_workspace, Program, Workspace, Analysis}
 use @std.avrac.compiler.host.{memory_host}
-use @std.avrac.core.{At, Ins, Reg, UnOp, BinOp, alpha_fps, alpha_renamed, same_fps, same_ins_list, fp_str}
+use @std.avrac.core.{
+    At,
+    Ins,
+    Reg,
+    UnOp,
+    BinOp,
+    alpha_fps,
+    alpha_renamed,
+    same_fps,
+    same_ins_list,
+    fp_str,
+}
 use @std.avrac.features.{Analysed}
 use @std.errors.{Edit, Loc}
 
@@ -30,16 +41,27 @@ fn root_at(a: Analysis) -> At {
 // text under test, not a forced-open local of this file's own
 fn edit_over(text: string, needle: string, replacement: string) -> Edit {
     let lo = text.index_of(needle)
-    Edit { loc: Loc { file: "/w/src/main.av", lo: lo, hi: lo + needle.length }, replacement: replacement }
+    Edit {
+        loc: Loc { file: "/w/src/main.av", lo: lo, hi: lo + needle.length },
+        replacement: replacement,
+    }
 }
 
 spec "the IR proof" {
     given "a rewrite that changes ONLY which side of a boolean test it reads" {
         then "the enclosing declaration is PROVED — the coalesce desugar" {
-            mut ws = proof_ws_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n")
+            mut ws = proof_ws_of(
+                "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n",
+            )
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn pick(x: int?) -> int {\n    x ?? 0\n}\n0\n")
+            p
+                .ir_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    root_at(a),
+                    "fn pick(x: int?) -> int {\n    x ?? 0\n}\n0\n",
+                )
         }
     }
     given "a rewrite that changes an operator's own meaning" {
@@ -47,7 +69,13 @@ spec "the IR proof" {
             mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn add(a: int, b: int) -> int {\n    a - b\n}\n0\n")
+            !p
+                .ir_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    root_at(a),
+                    "fn add(a: int, b: int) -> int {\n    a - b\n}\n0\n",
+                )
         }
     }
     given "a rewrite naming a symbol the after-text answers under a different name" {
@@ -55,7 +83,13 @@ spec "the IR proof" {
             mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn added(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+            !p
+                .ir_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    root_at(a),
+                    "fn added(a: int, b: int) -> int {\n    a + b\n}\n0\n",
+                )
         }
     }
     given "a string literal replaced by one whose fp_str HASH COLLIDES with it" {
@@ -63,7 +97,13 @@ spec "the IR proof" {
             mut ws = proof_ws_of("fn word() -> string {\n    \"aihhotaz\"\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn word() -> string {\n    \"eepturoq\"\n}\n0\n")
+            !p
+                .ir_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    root_at(a),
+                    "fn word() -> string {\n    \"eepturoq\"\n}\n0\n",
+                )
         }
     }
 }
@@ -76,21 +116,32 @@ spec "the law door" {
         then "the claim is handed back UNCHANGED — the law is trusted, not re-derived" {
             mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
-            p.law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a - b\n}\n0\n", "a claim the IR proof cannot see") == "a claim the IR proof cannot see"
+            p
+                .law_proved(
+                    "/w/src/main.av",
+                    "fn add(a: int, b: int) -> int {\n    a - b\n}\n0\n",
+                    "a claim the IR proof cannot see",
+                ) == "a claim the IR proof cannot see"
         }
     }
     given "no law at all" {
         then "absence, whatever the after-text does" {
             mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
-            p.law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n", null) == null
+            p
+                .law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n", null) == null
         }
     }
     given "a declared law, over a splice that does not even TYPE-CHECK" {
         then "REFUSED — a law never excuses an unsound splice, only a comparison this proof was never going to make" {
             mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
-            p.law_proved("/w/src/main.av", "fn add(a: int, b: int) -> int {\n    a + undefined_name\n}\n0\n", "trust me") == null
+            p
+                .law_proved(
+                    "/w/src/main.av",
+                    "fn add(a: int, b: int) -> int {\n    a + undefined_name\n}\n0\n",
+                    "trust me",
+                ) == null
         }
     }
 }
@@ -106,7 +157,12 @@ spec "the generalized edit proof" {
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            p.edits_proved("/w/src/main.av", analysed_of(a), [edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")])
+            p
+                .edits_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    [edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")],
+                )
         }
     }
     given "an edit that changes an operator's own meaning" {
@@ -134,7 +190,10 @@ spec "the generalized edit proof" {
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            let edit = Edit { loc: Loc { file: "/w/src/main.av", lo: text.length + 5, hi: text.length + 6 }, replacement: "x" }
+            let edit = Edit {
+                loc: Loc { file: "/w/src/main.av", lo: text.length + 5, hi: text.length + 6 },
+                replacement: "x",
+            }
             !p.edits_proved("/w/src/main.av", analysed_of(a), [edit])
         }
     }
@@ -195,7 +254,8 @@ spec "the fp_str collision does not defeat the proof" {
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            !p.edits_proved("/w/src/main.av", analysed_of(a), [edit_over(text, "aihhotaz", "eepturoq")])
+            !p
+                .edits_proved("/w/src/main.av", analysed_of(a), [edit_over(text, "aihhotaz", "eepturoq")])
         }
     }
     given "the SAME collision reached through a rule's own At, not through edits_proved" {
@@ -203,7 +263,13 @@ spec "the fp_str collision does not defeat the proof" {
             mut ws = proof_ws_of("fn word() -> string {\n    \"aihhotaz\"\n}\n0\n")
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn word() -> string {\n    \"eepturoq\"\n}\n0\n")
+            !p
+                .ir_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    root_at(a),
+                    "fn word() -> string {\n    \"eepturoq\"\n}\n0\n",
+                )
         }
     }
 }
@@ -250,7 +316,10 @@ spec "malformed edit spans refuse cleanly" {
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            let edit = Edit { loc: Loc { file: "/w/src/main.av", lo: 0 - 5, hi: 3 }, replacement: "x" }
+            let edit = Edit {
+                loc: Loc { file: "/w/src/main.av", lo: 0 - 5, hi: 3 },
+                replacement: "x",
+            }
             !p.edits_proved("/w/src/main.av", analysed_of(a), [edit])
         }
     }
@@ -260,7 +329,10 @@ spec "malformed edit spans refuse cleanly" {
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            let edit = Edit { loc: Loc { file: "/w/src/main.av", lo: 0, hi: text.length + 1000 }, replacement: "x" }
+            let edit = Edit {
+                loc: Loc { file: "/w/src/main.av", lo: 0, hi: text.length + 1000 },
+                replacement: "x",
+            }
             !p.edits_proved("/w/src/main.av", analysed_of(a), [edit])
         }
     }
@@ -270,7 +342,12 @@ spec "malformed edit spans refuse cleanly" {
             mut ws = proof_ws_of(text)
             mut p: Program = ws.program("/w/src/main.av")
             let a = p.entry_file()!
-            p.edits_proved("/w/src/main.av", analysed_of(a), [edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")])
+            p
+                .edits_proved(
+                    "/w/src/main.av",
+                    analysed_of(a),
+                    [edit_over(text, "if x == null { 0 } else { x! }", "x ?? 0")],
+                )
         }
     }
 }
@@ -294,12 +371,18 @@ spec "same_ins_list, the fingerprint's structural fallback" {
             same_fps(alpha_fps(word_ins("aihhotaz"), 0), alpha_fps(word_ins("eepturoq"), 0))
         }
         then "the structural walk DISAGREES — the actual strings differ" {
-            !same_ins_list(alpha_renamed(word_ins("aihhotaz"), 0), alpha_renamed(word_ins("eepturoq"), 0))
+            !same_ins_list(
+                alpha_renamed(word_ins("aihhotaz"), 0),
+                alpha_renamed(word_ins("eepturoq"), 0),
+            )
         }
     }
     given "the same instructions, unchanged" {
         then "the structural walk AGREES" {
-            same_ins_list(alpha_renamed(word_ins("aihhotaz"), 0), alpha_renamed(word_ins("aihhotaz"), 0))
+            same_ins_list(
+                alpha_renamed(word_ins("aihhotaz"), 0),
+                alpha_renamed(word_ins("aihhotaz"), 0),
+            )
         }
     }
 }
@@ -334,9 +417,15 @@ fn plain_if_ins() -> List<Ins> {
 }
 
 fn add_ins() -> List<Ins> {
-    [Ins.Bin(Reg { index: 2 }, BinOp.Add, Reg { index: 0 }, Reg { index: 1 }), Ins.RetVal(Reg { index: 2 })]
+    [
+        Ins.Bin(Reg { index: 2 }, BinOp.Add, Reg { index: 0 }, Reg { index: 1 }),
+        Ins.RetVal(Reg { index: 2 }),
+    ]
 }
 
 fn sub_ins() -> List<Ins> {
-    [Ins.Bin(Reg { index: 2 }, BinOp.Sub, Reg { index: 0 }, Reg { index: 1 }), Ins.RetVal(Reg { index: 2 })]
+    [
+        Ins.Bin(Reg { index: 2 }, BinOp.Sub, Reg { index: 0 }, Reg { index: 1 }),
+        Ins.RetVal(Reg { index: 2 }),
+    ]
 }

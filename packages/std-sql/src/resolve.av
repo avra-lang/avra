@@ -7,7 +7,19 @@
 //! `type_named` in is the `sql {}` sublanguage's job, a separate
 //! slice; a stub lookup exercises everything here in isolation.
 
-use parser.{SqlSelect, SqlExpr, TableRef, FromSource, FromClause, JoinItem, SelectItem, OrderItem, WhenClause, InSource, OverClause}
+use parser.{
+    SqlSelect,
+    SqlExpr,
+    TableRef,
+    FromSource,
+    FromClause,
+    JoinItem,
+    SelectItem,
+    OrderItem,
+    WhenClause,
+    InSource,
+    OverClause,
+}
 use @std.meta.{Type, Field}
 use @std.grammar.{flatten}
 
@@ -47,10 +59,7 @@ fn column_refs(e: SqlExpr) -> List<ColumnRef> {
 }
 
 fn in_source_refs(source: InSource) -> List<ColumnRef> {
-    match source {
-        .Values(items) -> flatten([column_refs(e) for e in items]),
-        .Subquery(s) -> [],
-    }
+    match source { .Values(items) -> flatten([column_refs(e) for e in items]), .Subquery(s) -> [] }
 }
 
 fn case_refs(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> List<ColumnRef> {
@@ -93,9 +102,13 @@ fn in_source_selects(source: InSource) -> List<SqlSelect> {
     }
 }
 
-fn case_selects(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> List<SqlSelect> {
+fn case_selects(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> List<
+    SqlSelect,
+> {
     let operand_sels = if operand == null { [] } else { nested_selects(operand!) }
-    let when_sels = flatten([nested_selects(w.cond).concat(nested_selects(w.result)) for w in whens])
+    let when_sels = flatten(
+        [nested_selects(w.cond).concat(nested_selects(w.result)) for w in whens],
+    )
     let else_sels = if else_branch == null { [] } else { nested_selects(else_branch!) }
     operand_sels.concat(when_sels).concat(else_sels)
 }
@@ -105,10 +118,7 @@ fn case_selects(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr
 /// subquery's fields (`resolve_select` recurses into it separately);
 /// its scope entry is keyed by its alias alone.
 fn table_ref_name(t: TableRef) -> string? {
-    match t.source {
-        .Named(name) -> name,
-        .Derived(sub) -> null,
-    }
+    match t.source { .Named(name) -> name, .Derived(sub) -> null }
 }
 
 /// One `FROM`/`JOIN` entry resolved against `lookup` — a named table
@@ -127,10 +137,7 @@ fn resolve_table_ref(t: TableRef, lookup: fn(string) -> Type?) -> ResolveDiag? {
 }
 
 fn table_ref_shape(t: TableRef, lookup: fn(string) -> Type?) -> Type? {
-    match t.source {
-        .Named(name) -> lookup(name),
-        .Derived(sub) -> null,
-    }
+    match t.source { .Named(name) -> lookup(name), .Derived(sub) -> null }
 }
 
 fn table_ref_display_alias(t: TableRef) -> string? {
@@ -179,7 +186,9 @@ fn column_diag(c: ColumnRef, scope: List<ResolvedTable>) -> ResolveDiag? {
     let matches = scope.filter(has_field(it, c.name))
     when {
         matches.is_empty() -> diag("no table in this FROM has a field `${c.name}`")
-        matches.length > 1 -> diag("`${c.name}` is ambiguous — ${matches.length} tables in this FROM have it")
+        matches.length > 1 -> diag(
+            "`${c.name}` is ambiguous — ${matches.length} tables in this FROM have it",
+        )
         _ -> null
     }
 }
@@ -208,7 +217,9 @@ fn select_exprs(s: SqlSelect) -> List<SqlExpr> {
 export fn resolve_select(s: SqlSelect, lookup: fn(string) -> Type?) -> List<ResolveDiag> {
     let scope = from_scope(s.from, lookup)
     let exprs = select_exprs(s)
-    let column_diags = flatten([one_diag(column_diag(c, scope)) for c in flatten([column_refs(e) for e in exprs])])
+    let column_diags = flatten(
+        [one_diag(column_diag(c, scope)) for c in flatten([column_refs(e) for e in exprs])],
+    )
     let nested = flatten([nested_selects(e) for e in exprs])
     let nested_diags = flatten([resolve_select(sub, lookup) for sub in nested])
     let cte_diags = flatten([resolve_select(c.query, lookup) for c in s.ctes])

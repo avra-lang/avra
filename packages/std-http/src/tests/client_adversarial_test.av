@@ -44,11 +44,7 @@ fn awaited(mut w: Wire) -> Result<Answer?, ClientError> {
 
 /// A read the deadline cut short is a client still waiting.
 fn waiting_is_null(r: Result<Answer?, ClientError>) -> Result<Answer?, ClientError> {
-    match r {
-        .Err(.Net(e)) if e.timed_out() -> .Ok(null),
-        .Err(e) -> .Err(e),
-        .Ok(a) -> .Ok(a),
-    }
+    match r { .Err(.Net(e)) if e.timed_out() -> .Ok(null), .Err(e) -> .Err(e), .Ok(a) -> .Ok(a) }
 }
 
 fn outcome(r: Result<Answer?, ClientError>) -> string {
@@ -110,7 +106,9 @@ fn read_to_close() -> Result<bool, ClientError> {
 
 fn chunked_reply() -> Result<bool, ClientError> {
     mut w = wired()?
-    let early = outcome(spoken(w, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nhel\r\n", 2))
+    let early = outcome(
+        spoken(w, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nhel\r\n", 2),
+    )
     let late = outcome(spoken(w, "2\r\nlo\r\n0\r\n\r\n", 5))
     .Ok(early == "waiting" && late == "200 hello")
 }
@@ -123,10 +121,7 @@ fn no_content() -> Result<bool, ClientError> {
 fn never_replies() -> Result<bool, ClientError> {
     mut w = wired()?
     let r = w.c.fetched(.Get, request("GET", "/", "a", [], "".bytes())!, ms(60))
-    .Ok(outcome(match r {
-        .Ok(a) -> .Ok(a),
-        .Err(e) -> .Err(e),
-    }) == "http.timed_out")
+    .Ok(outcome(match r { .Ok(a) -> .Ok(a), .Err(e) -> .Err(e) }) == "http.timed_out")
 }
 
 fn two_replies_one_connection() -> Result<bool, ClientError> {
@@ -163,13 +158,25 @@ spec "std.http client adversarial" {
             ca_server_reads(request("GET", "/", "h\r\nX-Evil: 1", [], ca_nothing())) == "unwritable"
         }
         then "A CRLF IN A HEADER VALUE IS NOT A SECOND FIELD" {
-            ca_server_reads(request("GET", "/", "h", [Header { name: "x", value: "1\r\nX-Evil: 1" }], ca_nothing())) == "unwritable"
+            ca_server_reads(
+                request(
+                    "GET",
+                    "/",
+                    "h",
+                    [Header { name: "x", value: "1\r\nX-Evil: 1" }],
+                    ca_nothing(),
+                ),
+            ) == "unwritable"
         }
         then "A CRLF IN THE TARGET IS NOT A SECOND REQUEST" {
-            ca_server_reads(request("GET", "/ HTTP/1.1\r\nX: 1\r\n\r\nGET /evil", "h", [], ca_nothing())) == "unwritable"
+            ca_server_reads(
+                request("GET", "/ HTTP/1.1\r\nX: 1\r\n\r\nGET /evil", "h", [], ca_nothing()),
+            ) == "unwritable"
         }
         then "and neither is one in the method" {
-            ca_server_reads(request("GET / HTTP/1.1\r\nX: 1\r\n\r\nGET", "/", "h", [], ca_nothing())) == "unwritable"
+            ca_server_reads(
+                request("GET / HTTP/1.1\r\nX: 1\r\n\r\nGET", "/", "h", [], ca_nothing()),
+            ) == "unwritable"
         }
         then "a space in the target is not a target" {
             ca_server_reads(request("GET", "/a b", "h", [], ca_nothing())) == "unwritable"
@@ -190,13 +197,31 @@ spec "std.http client adversarial" {
     given "the framing fields the builder owns" {
 
         then "a caller's content-length does not join the builder's" {
-            ca_server_reads(request("POST", "/", "h", [Header { name: "content-length", value: "0" }], "hi".bytes())) == "unwritable"
+            ca_server_reads(
+                request(
+                    "POST",
+                    "/",
+                    "h",
+                    [Header { name: "content-length", value: "0" }],
+                    "hi".bytes(),
+                ),
+            ) == "unwritable"
         }
         then "and a transfer-encoding beside a length is the smuggling shape" {
-            ca_server_reads(request("POST", "/", "h", [Header { name: "transfer-encoding", value: "chunked" }], "hi".bytes())) == "unwritable"
+            ca_server_reads(
+                request(
+                    "POST",
+                    "/",
+                    "h",
+                    [Header { name: "transfer-encoding", value: "chunked" }],
+                    "hi".bytes(),
+                ),
+            ) == "unwritable"
         }
         then "an ordinary field is written, and the server frames it" {
-            ca_server_reads(request("GET", "/", "h", [Header { name: "x-tag", value: "t1" }], ca_nothing())) == "framed fields=2"
+            ca_server_reads(
+                request("GET", "/", "h", [Header { name: "x-tag", value: "t1" }], ca_nothing()),
+            ) == "framed fields=2"
         }
         then "a plain request frames with its host alone" {
             ca_server_reads(request("GET", "/", "h", [], ca_nothing())) == "framed fields=1"

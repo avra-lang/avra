@@ -12,7 +12,9 @@ use diagnostics.{refusal}
 /// distinctly named, and each hole binds the span it takes — as
 /// text over a `string`, as octets over a `Bytes`, or as the `int`
 /// a typed hole reads it as.
-export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expected: TypeId) -> List<TypeId> {
+export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expected: TypeId) -> List<
+    TypeId,
+> {
     let span? = span_type(cx, expected) else { return not_text(cx, p, expected) }
     let shape: Fault? = adjacent_fault(parts) ?? repeated_fault(parts)
     if shape != null { return broken(cx, p, shape!) }
@@ -23,10 +25,7 @@ export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expect
 
 /// What a hole binds: its span, or the int it reads.
 fn bound_type(cx: TypeCx, r: Reads, span: TypeId) -> TypeId {
-    match r {
-        .Text -> span,
-        .Int -> cx.type(int),
-    }
+    match r { .Text -> span, .Int -> cx.type(int) }
 }
 
 /// What a hole's span IS, by what the subject is made of; absence
@@ -43,7 +42,16 @@ fn span_type(cx: TypeCx, expected: TypeId) -> TypeId? {
 
 fn not_text(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     let n = cx.view.types.name_of(expected)
-    cx.emit(refusal("type.format", cx.pat_loc(p), "a format pattern reads text, found `${n}`", this_is(n), "a format matches a `string` or a `Bytes`"))
+    cx
+        .emit(
+            refusal(
+                "type.format",
+                cx.pat_loc(p),
+                "a format pattern reads text, found `${n}`",
+                this_is(n),
+                "a format matches a `string` or a `Bytes`",
+            ),
+        )
     []
 }
 
@@ -57,18 +65,45 @@ fn broken(mut cx: TypeCx, p: PatId, fault: Fault) -> List<TypeId> {
 }
 
 fn adjacent(mut cx: TypeCx, p: PatId, a: string, b: string) -> List<TypeId> {
-    cx.emit(refusal("type.format_shape", cx.pat_loc(p), "`{${a}}` and `{${b}}` have nothing between them", "here", "a scan needs a literal to stop at — put one between the holes"))
+    cx
+        .emit(
+            refusal(
+                "type.format_shape",
+                cx.pat_loc(p),
+                "`{${a}}` and `{${b}}` have nothing between them",
+                "here",
+                "a scan needs a literal to stop at — put one between the holes",
+            ),
+        )
     []
 }
 
 fn repeated(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
-    cx.emit(refusal("type.format_repeat", cx.pat_loc(p), "`${n}` names two spans of this format", "written twice", "rename one, or write `{_}` for a span you do not need"))
+    cx
+        .emit(
+            refusal(
+                "type.format_repeat",
+                cx.pat_loc(p),
+                "`${n}` names two spans of this format",
+                "written twice",
+                "rename one, or write `{_}` for a span you do not need",
+            ),
+        )
     []
 }
 
 fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
     let n = part.hole.ty!.name
-    cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` reads its span as `${n}`, and a hole reads text as `string` or `int`", "here", "take the span as text and convert it in the arm"))
+    cx
+        .emit(
+            refusal(
+                "type.format_parse",
+                cx.pat_loc(p),
+                "`{${part.hole.name}: ${n}}` reads its span as `${n}`, and a hole reads text as `string` or `int`",
+                "here",
+                "take the span as text and convert it in the arm",
+            ),
+        )
     []
 }
 
