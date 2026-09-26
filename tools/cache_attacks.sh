@@ -192,6 +192,38 @@ steps=$((steps+1)); out=$(./avra test --time $R/t/src/tests/lib_test.av 2>&1); s
 case "$out" in *"held 0/"*|*"cache hit"*) ;; *"held "*) holds=$((holds+1)) ;; esac
 if [ "$st" -eq 0 ]; then [ -n "${VERBOSE:-}" ] && echo "ok    one file's cases under a whole hold [t]"; else fails=$((fails+1)); echo "FAIL  one file's cases under a whole hold [t]: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
 
+# A HELD ENUM'S PAYLOAD NAMES A SIBLING STRUCT: filling it asks that struct's
+# signature, which asks its own file's VISIBLE namespace — this module's, already
+# open while the sibling that carries it is being minted from the same record. A
+# re-entry here must be a smaller view, never a trap (avra-8sb5.25.52/.54: a stale
+# hold once traps "memo family N reused missing key M", and once silently drops a
+# native rule finding for a file the mixed hold never re-examines).
+mkdir -p $R/cyc/src
+cat > $R/cyc/avra.toml <<'TOML'
+[package]
+name = "rt-cyc"
+version = "0.1.0"
+TOML
+cat > $R/cyc/src/cyc_b.av <<'AV'
+export type CycB = { n: int }
+AV
+cat > $R/cyc/src/cyc_a.av <<'AV'
+export enum CycA { Payload(v: CycB) }
+export fn cyc_n(c: CycA) -> int { match c { .Payload(v) -> v.n } }
+AV
+cat > $R/cyc/src/main.av <<'AV'
+println("cyc ${cyc_n(CycA.Payload(CycB { n: 9 }))}")
+AV
+C() { # C <label> <want: ok|trap>
+    steps=$((steps+1)); out=$(./avra check $R/cyc 2>&1); st=$?
+    got=ok; [ "$st" -ne 0 ] && got=trap
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [cyc] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [cyc] wanted $2, got $got: $(printf '%s' "$out" | grep -vE '^watch:' | tail -3 | tr '\n' ' ')"; fi
+}
+C "cold cyc" ok
+C "no-op cyc" ok
+ed $R/cyc/src/cyc_b.av "CycB = { n: int }" "CycB = { n: int, m: int = 0 }"
+C "cyc_b moves alone — cyc_a stays held, its enum payload re-enters cyc_b's own visible namespace mid-mint" ok
+
 # A NAME A HELD FILE REACHES WITHOUT AN IMPORT LEAVES ITS MODULE: the file did not
 # move and is refused all the same — a hold that kept it would hide the refusal
 cp $R/lib/src/sib.av $R/sib.kept

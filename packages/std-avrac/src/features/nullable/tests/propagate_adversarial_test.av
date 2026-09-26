@@ -14,8 +14,7 @@ spec "features/nullable/propagate" {
             refusals("fn f(v: int?) -> int? { (v?)? }\nf(1) ?? 0") == 1
         }
         then "the top level refuses from inside a loop too" {
-            refused_with("${makers}mut t = 0\nfor x in 0..2 {\n    t = t + (some(x)? )\n}\nt",
-                         "the top level has none")
+            refused_with("${makers}mut t = 0\nfor x in 0..2 {\n    t = t + (some(x)? )\n}\nt", "the top level has none")
         }
     }
     given "every wrong type in the operand slot — one refusal each" {
@@ -31,12 +30,10 @@ spec "features/nullable/propagate" {
     }
     given "the sibling operators, interleaved" {
         then "`v!?` — the insist spends the nullable, the `?` refuses" {
-            refused_with("fn f(v: int?) -> int? { v!? }\nf(1) ?? 0",
-                         "`?` propagates a nullable, this is `int`")
+            refused_with("fn f(v: int?) -> int? { v!? }\nf(1) ?? 0", "`?` propagates a nullable, this is `int`")
         }
         then "`v?!` — the propagate spends it, the `!` refuses" {
-            refused_with("fn f(v: int?) -> int? { v?! }\nf(1) ?? 0",
-                         "`!` insists on a nullable, this is `int`")
+            refused_with("fn f(v: int?) -> int? { v?! }\nf(1) ?? 0", "`!` insists on a nullable, this is `int`")
         }
         then "`v? ?? x` — the propagate answered first, so `??` never fires" {
             refused_with("fn f(v: int?) -> int? { v? ?? 3 }\nf(1) ?? 0", "`??` never fires — a `int` is never absent")
@@ -45,8 +42,7 @@ spec "features/nullable/propagate" {
             shown("fn f(v: int?) -> int? { v ? }\n${makers}f(7) ?? 0 - 1") == "7"
         }
         then "a match subject EATS the `?` — the arms then ask a guarantee" {
-            refused_with("fn f(v: int?) -> int? {\n    match v? {\n        w? -> w\n        null -> 0\n    }\n}\nf(1) ?? 0",
-                         "`w?` asks a nullable, this is `int`")
+            refused_with("fn f(v: int?) -> int? {\n    match v? {\n        w? -> w\n        null -> 0\n    }\n}\nf(1) ?? 0", "`w?` asks a nullable, this is `int`")
         }
     }
     given "crossing every other feature" {
@@ -66,8 +62,7 @@ spec "features/nullable/propagate" {
             shown("fn f(v: int?, flip: bool) -> int? {\n    if flip {\n        return 99\n    }\n    v? + 1\n}\n${makers}f(none(), true) ?? 0 - 1") == "99"
         }
         then "an `if let` subject eats the `?` — the bind then asks a guarantee" {
-            refused_with("fn find(id: int) -> int? { if id == 7 { 36 } else { null } }\nfn f(id: int) -> int? {\n    if let u? = find(id)? {\n        u\n    } else {\n        0\n    }\n}\nf(7) ?? 0",
-                         "`u?` asks a nullable, this is `int`")
+            refused_with("fn find(id: int) -> int? { if id == 7 { 36 } else { null } }\nfn f(id: int) -> int? {\n    if let u? = find(id)? {\n        u\n    } else {\n        0\n    }\n}\nf(7) ?? 0", "`u?` asks a nullable, this is `int`")
         }
     }
     given "ownership at the exits" {

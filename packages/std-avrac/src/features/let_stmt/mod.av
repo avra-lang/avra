@@ -1,31 +1,34 @@
 //! `let` — name a value. The first statement feature: its `stmt`
 //! branch merges into the spine's program, and its recovery point
 //! makes a broken statement cost one diagnostic, not the parse.
+//! `let name = expression`, or `let name: type = expression`, the
+//! binding holding what it declares; `let name? = e else { … }`
+//! binds through absence; `let _ = expression` runs it and keeps
+//! nothing.
 use features.{LanguageFeature, BuilderRow}
+use features.let_stmt.{unmutated_mut}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn let_stmt() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name       | build
+        name           | build
         "let_stmt"     | build_let
         "let_else"     | build_let_else
         "discard_stmt" | build_discard
     }
     let codes = table<DiagCode> {
-        kind           | id      | summary
-        "type.binding" | "F2024" | "an annotated binding holds what it declares"
+        kind           | summary
+        "type.binding" | "an annotated binding holds what it declares"
     }
-    component LanguageFeature f {
-        name = "let_stmt"
-        docs = "`let <name> = <expression>` — or `let <name>: <type> = <expression>`, the binding holding what it declares; `let <name>? = <e> else { ... }` binds through absence; `let _ = <expression>` runs it and keeps nothing."
-        gram = grammar {
+    LanguageFeature let_stmt {
+        gram: grammar {
             stmt = "let" "_" "=" v:expression END -> discard_stmt(v)
             stmt = "let" b:NAME "?" "=" s:expression ( tb:trailing )? "else" "{" ( e:stmt | BREAK )* "}" END -> let_else(b, s, tb, e) @head(s)
             stmt = "let" n:NAME ( ":" t:type )? "=" v:expression END @recover(sync_to: "END") -> let_stmt(n, t, v)
         }
-        diags = codes
-        builders = rows
+        diags: codes
+        builders: rows
     }
-    f
+    let_stmt
 }

@@ -1,12 +1,122 @@
 //! The lowering rule — the ONE meaning: the lambda's box is minted
 //! where the statement stands (its captures copied now) and joins
 //! the walk's frame, which calls it when the scope ends or the fn
-//! exits.
-use core.{StmtId, Reg}
-use features.{LowerCx}
+//! exits. A body that is ONE call or ONE method call needs no box
+//! when every argument, and a method's receiver, is a capture or a
+//! scalar literal: they are read now — exactly what the captures
+//! would copy — and the callee is called by name at every exit, its
+//! answer settled by the frame it stands in like any value the frame
+//! never reads again.
+use core.{StmtId, ExprId, Reg, Type, TypeId, DeclId, is_literal}
+use features.{LowerCx, DirectCall, bound_decl_of}
 
 fn lower_defer(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let on_error = runs_on_error(cx.view.store, s)
+    let call: DirectCall? = direct_call(cx, s)
+    if call != null {
+        cx.call_at_exit(call!, on_error)
+        return null
+    }
     let box? = cx.lower_value(s) else { return null }
-    cx.at_exit(box, runs_on_error(cx.view.store, s))
+    cx.at_exit(box, on_error)
     null
+}
+
+/// The deferred body as a call with its arguments in hand — null when
+/// the body needs its box.
+fn direct_call(mut cx: LowerCx, s: StmtId) -> DirectCall? {
+    let lam = cx.view.store.stmt_value(s)?
+    let body = cx.view.store.lambda_parts(lam)?.body?
+    direct_free_call(cx, lam, body) ?? direct_method_call(cx, lam, body)
+}
+
+/// A FREE call: the callee bound by name, an extern one kept to a
+/// void answer (its row's the only shape `run_direct` calls void),
+/// a declared one free to answer anything — dropped either way.
+fn direct_free_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
+    let call = cx.view.store.call_parts(body)?
+    if !call.args.all(fixed_early(cx, it)) { return null }
+    let d = bound_decl_of(cx.names, body)?
+    let seats = seats_of(cx, d)?
+    if skips_a_default(seats, call.args, false) { return null }
+    let host: string? = cx.extern_callee(body)
+    if host != null && !(cx.shape_at(body) is .Void) { return null }
+    let captured = cx.capture_regs(lam)
+    built(cx, host ?? cx.callee_of(body, call.callee), host != null, captured, null, call.args, cx.type_at(body))
+}
+
+/// A METHOD call on the impl table — a callee whose first argument is
+/// its receiver: the receiver a capture, every argument fixed early,
+/// its seats — self included — an exact match with the written call,
+/// so no default seat is silently skipped.
+fn direct_method_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
+    let call = cx.method_at(body)?
+    if cx.facts.wants_alias_copy(call.subject) || cx.facts.wants_thaw(call.subject) { return null }
+    let j = captured_at(cx, call.subject)?
+    if !call.args.all(fixed_early(cx, it)) { return null }
+    let recv_ty = cx.type_at(call.subject)
+    let m = cx.method_of(recv_ty, call.name)?
+    let seats = seats_of(cx, m)?
+    if skips_a_default(seats, call.args, true) { return null }
+    let captured = cx.capture_regs(lam)
+    built(cx, cx.method_symbol(m, body, recv_ty), false, captured, captured[j], call.args, cx.type_at(body))
+}
+
+/// A declared fn or method's seat types — the impl table's `self`
+/// included, when `d` is one.
+fn seats_of(cx: LowerCx, d: DeclId) -> List<TypeId>? {
+    cx.view.decls.sig(d)?.fn_sig()?.params
+}
+
+/// Whether the declared seats outnumber the written arguments — a
+/// seat this path leaves for its DEFAULT, which it has no default
+/// value to fill; `self_seat` counts the receiver this call also
+/// writes, though never in the argument list.
+fn skips_a_default(seats: List<TypeId>, args: List<ExprId>, self_seat: bool) -> bool {
+    seats.length != args.length + if self_seat { 1 } else { 0 }
+}
+
+/// The tail free and method calls share: a resolved callee, its
+/// arguments already captured, the receiver riding seat 0 when there
+/// is one.
+fn built(mut cx: LowerCx, callee: string, host: bool, captured: List<Reg>, recv: Reg?, args: List<ExprId>, ret: TypeId) -> DirectCall {
+    let seated: List<Reg> = if recv != null { [recv!] } else { [] }
+    DirectCall {
+        callee: callee,
+        host: host,
+        args: seated.concat([fixed_now(cx, captured, a) for a in args]),
+        ret: ret,
+    }
+}
+
+/// An argument read the same at the `defer` as at the exit: a
+/// capture — the value a lambda would copy, MANAGED or not — or a
+/// scalar literal; never a place the alias-copy or thaw law would
+/// open unique or fresh, since that opening happens where `reg_of`
+/// reads it, and this path never calls it.
+fn fixed_early(cx: LowerCx, a: ExprId) -> bool {
+    if cx.facts.wants_alias_copy(a) || cx.facts.wants_thaw(a) { return false }
+    captured_at(cx, a) != null || scalar(cx.shape_at(a)) && is_literal(cx.view.store.expr(a))
+}
+
+/// The capture an argument reads, by its place in the lambda's list.
+fn captured_at(cx: LowerCx, a: ExprId) -> int? {
+    match cx.names.binding(a)? {
+        .Capture(_, j) -> j,
+        _ -> null,
+    }
+}
+
+fn scalar(t: Type) -> bool {
+    match t {
+        .Int or .Bool or .Float -> true,
+        _ -> false,
+    }
+}
+
+/// An argument's register at the `defer`: the literal's, or the
+/// captured binding's.
+fn fixed_now(mut cx: LowerCx, captured: List<Reg>, a: ExprId) -> Reg {
+    let j? = captured_at(cx, a) else { return cx.reg_of(a) }
+    captured[j]
 }

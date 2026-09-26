@@ -1,7 +1,7 @@
 // The AST source projection: its output parses, reaches a fixed point
 // after one projection, and keeps the structure readers depend on.
 use @std.avrac.compiler.{parse_source}
-use @std.avrac.compiler.format.{render_statement, render_expression}
+use @std.avrac.compiler.format.{render_statement, render_expression, render_source_of}
 use @std.avrac.core.{Expr, Stmt, new_node_store}
 use @std.avrac.testing.{projected}
 
@@ -23,26 +23,27 @@ fn same_tree(source: string, projected: string) -> bool {
 spec "source text" {
     given "a small program" {
         then "layout and precedence have one canonical spelling" {
-            projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") ==
-                "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
+            projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") == "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
         }
     }
-
     given "the statement surface" {
+
         then "a doc-only edit changes the statement fingerprint" {
             let before = parse_source("/// a\nfn f() -> int { 1 }")
             let after = parse_source("/// b\nfn f() -> int { 1 }")
             before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
         }
         then "an empty documentation line survives as `///`" {
-            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
-                stable("///\nfn a() -> int { 1 }") &&
-                projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
-                stable("/// a\n///\nfn a() -> int { 1 }")
+            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" && stable("///\nfn a() -> int { 1 }") && projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" && stable("/// a\n///\nfn a() -> int { 1 }")
         }
         then "documentation survives annotations, modifiers, and nested trait members" {
             let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
             projected(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" && stable(source)
+        }
+        then "a generic impl keeps its own type parameters — LOSSLESS, not merely stable" {
+            let plain = "impl Traced<E> {\n    fn get() -> E {\n        self.value\n    }\n}"
+            let forred = "impl Convert<X> for Box<T> {\n    fn f() -> int {\n        1\n    }\n}"
+            projected(plain) == plain && stable(plain) && projected(forred) == forred && stable(forred)
         }
         then "declarations, control flow and effects reach a fixed point" {
             stable("""
@@ -112,8 +113,8 @@ fail problem
 """)
         }
     }
-
     given "the expression surface" {
+
         then "literals, aggregates, branches and postfixes reach a fixed point" {
             stable("""
 let scalar = 12 + 3.5 * 2
@@ -136,6 +137,7 @@ let variant = .named(4)
 let matched = match variant {
     .none -> 0
     .one(x) or .named(x) -> x
+    .guarded(x) if x > 0 -> x
     true -> 1
     "x" -> 2
     7 -> 3
@@ -196,9 +198,15 @@ let chained_property = optional?.field
 let recovered = result catch 0
 """)
         }
+        then "`.type(T)` read back over a `?.`-propagate chain, not only a plain receiver, reaches a fixed point" {
+            stable("""
+let plain = n.type(int)
+let chained = some?.type(List<string?>)
+""")
+        }
     }
-
     given "degenerate shapes" {
+
         then "an empty program is already canonical" {
             stable("")
         }
@@ -224,30 +232,97 @@ let one_when = when { _ -> 1 }
 """)
         }
     }
-
     given "recovery nodes" {
+
         then "their projection is explicit and parseable" {
             mut store = new_node_store()
-            let expr = store.alloc_expr(Expr.Error, null)
-            let stmt = store.alloc_stmt(Stmt.Error, null)
-            render_expression(store, expr) == "__error" && render_statement(store, stmt) == "__error" &&
-                stable(render_statement(store, stmt))
+            let expr = store.alloc_expr(Expr.Error)
+            let stmt = store.alloc_stmt(Stmt.Error)
+            render_expression(store, expr) == "__error" && render_statement(store, stmt) == "__error" && stable(render_statement(store, stmt))
         }
     }
-
     given "a value call whose subject is a name" {
+
         then "parentheses keep it distinct from a direct declaration call" {
             mut store = new_node_store()
-            let callee = store.alloc_expr(Expr.Ident("f"), null)
-            let arg = store.alloc_expr(Expr.IntLit(1), null)
-            let call = store.alloc_expr(Expr.CallValue(callee, [arg]), null)
+            let callee = store.alloc_expr(Expr.Ident("f"))
+            let arg = store.alloc_expr(Expr.IntLit(1))
+            let call = store.alloc_expr(Expr.CallValue(callee, [arg]))
             render_expression(store, call) == "(f)(1)"
         }
     }
-
     given "a folded negative literal under a postfix" {
+
         then "its group survives projection" {
             stable("let field = (-3).magnitude")
+        }
+    }
+    given "a format pattern with escaped braces" {
+
+        then "a doubled brace keeps matching its own literal text, not a hole" {
+            stable("fn seen(line: string) -> string {\n    match line {\n        \"a{{b}}c\" -> \"escaped\",\n        _ -> \"other\",\n    }\n}")
+        }
+    }
+    given "a trailing blank line before EOF" {
+
+        then "the blank line survives the printer, not just the statements" {
+            let source = "let x = 1\n\n"
+            let p = parse_source(source)
+            p.voices.list.is_empty() && "${render_source_of(p.store, p.stmts, source)}\n" == source
+        }
+    }
+    given "a triple-quoted raw string" {
+
+        then "its own delimiter survives, not the escaped form its twin reads identically" {
+            kept("let text = \"\"\"hello\nworld\"\"\"")
+        }
+    }
+    given "a grammar declaration's pattern" {
+
+        then "`grammar Name = \"…\"` survives, not the record it desugars to" {
+            kept("grammar R = \"{a} {b}\"")
+        }
+    }
+    given "an expression-position grammar literal" {
+
+        then "`grammar { … }`'s own DSL text survives, not its expansion" {
+            kept("let g = grammar {\n    primary = \"x\" -> ident()\n}")
+        }
+    }
+    given "a component declaration and instantiation" {
+
+        then "the head, fields and fns survive, and the instantiation — not the record and the literal they make" {
+            kept("component C(h: int) {\n    a: int\n    b: int = 1\n    fn f() -> int {\n        1\n    }\n}")
+        }
+    }
+    given "a table literal" {
+
+        then "the header and its column alignment survive, not the list it desugars to" {
+            kept("type Row = { a: int, b: int }\nlet t = table<Row> {\n    a | b\n    1 | 2\n}")
+        }
+    }
+    given "the written-layout rule — a list, a map or a struct literal wrapped across lines" {
+
+        then "a wrapped list keeps one element per line, a comment between two of them included" {
+            kept("let xs = [\n    1,\n    // two\n    2,\n]")
+        }
+        then "a wrapped map keeps one entry per line, a comment between two of them included" {
+            kept("let m = {\n    \"a\": 1,\n    // b next\n    \"b\": 2,\n}")
+        }
+        then "a wrapped struct literal keeps one field per line, a comment between two of them included" {
+            kept("type P = { a: int, b: int }\nlet p = P {\n    a: 1,\n    // b field\n    b: 2,\n}")
+        }
+        then "a flat list, map or struct literal stays flat" {
+            kept("let xs = [1, 2, 3]") && kept("let m = {\"a\": 1, \"b\": 2}") && kept("type P = { a: int, b: int }\nlet p = P { a: 1, b: 2 }")
+        }
+    }
+    given "a raw body's own span, when it holds a hole" {
+
+        then "a quote's internal blank line stays inside it — never relocated past the closing brace it never reached" {
+            kept("fn generated(t: int) -> int {\n    quote {\n        impl \${t} {\n            fn a() -> int { 1 }\n\n            fn b() -> int { 2 }\n        }\n    }\n}")
+        }
+        then "the same law with the hole trailing, and a comment in place of the blank line" {
+            kept("fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}")
         }
     }
 }

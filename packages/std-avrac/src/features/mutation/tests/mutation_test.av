@@ -28,7 +28,7 @@ spec "features/mutation" {
     }
     given "the annotated cell — `mut x: T = v` and the pair unlock" {
         then "a mut nullable SCALAR is a legal cell — the state machine lives" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            // LICENSED style.hand_rolled_scan: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut best: int? = null\nbest = 5\nbest = null\nbest = 4\nbest ?? 0 - 1") == "4"
         }
         then "assignment WIDENS into the declared cell" {
@@ -38,11 +38,11 @@ spec "features/mutation" {
             shown("mut plain: int = 40\nplain = plain + 2\nplain") == "42"
         }
         then "a bool? cell carries present FALSE" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            // LICENSED style.hand_rolled_scan: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut f: bool? = null\nf = false\nif f ?? true { 1 } else { 0 }") == "0"
         }
         then "a MANAGED niche cell works — the null no-ops by construction" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            // LICENSED style.hand_rolled_scan: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut s: string? = null\ns ?? \"d\"") == "d"
         }
         then "the declared-binding law reaches mut: `mut x: int = null` refuses" {
@@ -58,19 +58,15 @@ spec "features/mutation" {
     given "wrong shapes" {
         then "assigning a plain let refuses with the remedy" {
             let a = analyze_source("let x = 1\nx = 2\nx")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`x` is not `mut`") &&
-                a.report().contains("declare it `mut x = ...` to mutate it")
+            a.diagnostics.length == 1 && a.report().contains("`x` is not `mut`") && a.report().contains("declare it `mut x = ...` to mutate it")
         }
         then "assigning a parameter refuses" {
             let a = analyze_source("fn f(x: int) -> int {\n    x = 2\n    x\n}\nf(1)")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`x` is a parameter — parameters are immutable")
+            a.diagnostics.length == 1 && a.report().contains("`x` is a parameter — parameters are immutable")
         }
         then "assignment keeps the declared type" {
             let a = analyze_source("mut x = 1\nx = true\nx")
-            a.diagnostics.length == 1 &&
-                a.report().contains("assignment changes `x`: `int` to `bool`")
+            a.diagnostics.length == 1 && a.report().contains("assignment changes `x`: `int` to `bool`")
         }
         then "a mut string rebinds through the cell — ownership landed" {
             shown("mut s = \"hi\"\ns = \"re \${2}\"\ns") == "re 2"
@@ -98,6 +94,9 @@ spec "features/mutation" {
         }
         then "a value is not a place" {
             refused_with("type P = { x: int }\nfn mk() -> P {\n    P { x: 1 }\n}\nmk().x = 5\n2", "a mutation lands on a place")
+        }
+        then "an unwrap is a step on a path, never a target itself" {
+            refused_with("type R = { x: int }\nmut r: R? = R { x: 1 }\nr! = R { x: 2 }\n3", "a mutation lands on a place")
         }
         then "a slot refuses the wrong type in the slot's words" {
             refused_with("type P = { x: int }\nmut p = P { x: 1 }\np.x = \"s\"\n2", "assignment changes a slot of `p`: `int` to `string`")

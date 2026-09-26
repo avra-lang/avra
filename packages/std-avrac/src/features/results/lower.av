@@ -15,8 +15,7 @@ fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     }
 }
 
-fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
-               binds: List<string>, values: List<ExprId>) -> Reg {
+fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
     let r = cx.reg_of(subject)
     let held? = cx.view.types.res_parts(cx.type_at(subject)) else { return cx.lower_defect(e, "a catch without a Result survived typing") }
     cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, held.ok) } else { cx -> failure_reg(cx, e, r, held, variants, binds, values) }
@@ -24,11 +23,11 @@ fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<strin
 
 /// The failure arm's whole story. A single catch-all arm answers
 /// directly; variant arms switch on the error's tag.
-fn failure_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
-               variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
+fn failure_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides, variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
     if variants.length == 1 && variants[0] == "" {
         return all_arm_reg(cx, r, sides, binds[0], values[0])
     }
+    if cx.view.types.shape_of(sides.err) is .Union { return switched_union_reg(cx, e, r, sides, variants, binds, values) }
     switched_reg(cx, e, r, sides, variants, binds, values)
 }
 
@@ -43,14 +42,13 @@ fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: Ex
 /// like any enum match. A TOTAL catch's last written arm is the
 /// switch's default; a SELECTIVE one gains a default arm that
 /// exits with the subject's own box, propagating the unmatched.
-fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
-                variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
+fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides, variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
     let sig? = cx.variants_of(sides.err) else { return cx.lower_defect(e, "catch arms without variants survived typing") }
     let err = cx.payload_of(r, sides.err)
     let selective = !total(sig, variants)
     let tags = arm_tags(sig, variants, selective)
     cx.emit(Ins.SwitchStart(cx.tag_of(err), tags))
-    // LICENSED I4: the running yield closes each PRIOR arm's bracket — an emit fold, not a scan
+    // LICENSED style.hand_rolled_scan: the running yield closes each PRIOR arm's bracket — an emit fold, not a scan
     mut answer: Reg? = null
     for j, v in values {
         if answer != null { cx.arm_end(answer!) }
@@ -59,8 +57,39 @@ fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
     }
     if selective {
         cx.arm_end(answer!)
+        let leaving = cx.propagated(r)
         cx.failing()
-        cx.emit(Ins.FnExit(r))
+        cx.emit(Ins.FnExit(leaving))
+        answer = cx.hollow_of(cx.type_at(e))
+    }
+    cx.close_region(e, answer!)
+}
+
+/// Member arms as ONE switch, keyed by the member's own GLOBAL type
+/// id — the union box's own discriminant, `switched_reg`'s twin for a
+/// member set instead of an enum's tag table. A SELECTIVE catch's
+/// default exits with `r` itself: the discriminant is valid under any
+/// wider union that still claims the live member, so no repack is
+/// owed here either — `propagated` already knows this.
+fn switched_union_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides, variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
+    let members = [cx.view.types.by_name(vn)! for vn in variants]
+    let err = cx.payload_of(r, sides.err)
+    let selective = !cx.view.types.covers(cx.view.types.union_of(members), sides.err)
+    let upto = if selective { members.length } else { members.length - 1 }
+    let tags = [members[j].index for j in 0..upto]
+    cx.emit(Ins.SwitchStart(cx.tag_of(err), tags))
+    // LICENSED I4: the running yield closes each PRIOR arm's bracket — an emit fold, not a scan
+    mut answer: Reg? = null
+    for j, v in values {
+        if answer != null { cx.arm_end(answer!) }
+        if binds[j] != "" { cx.bind_patterns(v, [cx.payload_of(err, members[j])]) }
+        answer = cx.reg_of(v)
+    }
+    if selective {
+        cx.arm_end(answer!)
+        let leaving = cx.propagated(r)
+        cx.failing()
+        cx.emit(Ins.FnExit(leaving))
         answer = cx.hollow_of(cx.type_at(e))
     }
     cx.close_region(e, answer!)

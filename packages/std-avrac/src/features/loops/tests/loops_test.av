@@ -7,11 +7,10 @@ use compiler.backend.{render_ir}
 spec "features/loops" {
     given "the counter's TYPE — an int, never an absorbing hole" {
         then "the counter refuses where an int must: it is NOT Error" {
-            refused_with("for i in 0..2 {\n    let s: string = i\n}\n1",
-                         "`s` declares `string`, this is `int`")
+            refused_with("for i in 0..2 {\n    let s: string = i\n}\n1", "`s` declares `string`, this is `int`")
         }
         then "the counter WIDENS into a nullable cell like any int" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            // LICENSED style.hand_rolled_scan: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut t: int? = null\nfor i in 0..3 {\n    t = i\n}\nt ?? 0 - 1") == "2"
         }
     }
@@ -44,13 +43,11 @@ spec "features/loops" {
     given "wrong shapes" {
         then "a non-bool condition points at itself" {
             let a = analyze_source("while 1 {\n    2\n}\n3")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a `while` condition is a `bool`, found `int`")
+            a.diagnostics.length == 1 && a.report().contains("a `while` condition is a `bool`, found `int`")
         }
         then "a non-int range bound refuses once, in for's own words" {
             let a = analyze_source("for i in 0..\"x\" {\n    1\n}\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a `for` range ends at an `int`, found `string`")
+            a.diagnostics.length == 1 && a.report().contains("a `for` range ends at an `int`, found `string`")
         }
     }
     given "the loop in the IR, as `avra ir` prints it" {
@@ -120,8 +117,7 @@ ret 0"""
             shown("mut t = 0\nfor (j, y) in [10, 20] {\n    t = t + j + y\n}\nt") == "31"
         }
         then "the index is an int and immutable" {
-            refused_with("for i, x in [1] {\n    i = 5\n}\n2", "`i` is a loop index") &&
-                refused_with("for i, x in [1] {\n    let s: string = i\n}\n2", "declares `string`, this is `int`")
+            refused_with("for i, x in [1] {\n    i = 5\n}\n2", "`i` is a loop index") && refused_with("for i, x in [1] {\n    let s: string = i\n}\n2", "declares `string`, this is `int`")
         }
         then "nested loops keep their own indexes" {
             shown("mut g = 0\nfor i, row in [[1, 2], [3]] {\n    for j, v in row {\n        g = g + i * 10 + j + v\n    }\n}\ng") == "17"

@@ -5,7 +5,9 @@
 //! (`name + 1`) as real nodes, so every pass just walks them and
 //! the IR gains nothing.
 use features.{LanguageFeature, BuilderRow}
+use features.loops.{push_loop, index_walk}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+
 export fn loops() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name         | build
@@ -13,13 +15,11 @@ export fn loops() -> LanguageFeature {
         "for_each"   | build_for_each
         "for_stmt"   | build_for
     }
-    component LanguageFeature f {
-        name = "loops"
-        docs = "`while <cond> { ... }` repeats while true; `for <name> in <lo>..<hi> { ... }` counts."
-        gram = grammar {
+    LanguageFeature loops {
+        gram: grammar {
             stmt = "while" c:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> while_stmt(c, s) @head(c) | "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" exs:expression "{" ( es:stmt | BREAK )* "}" END -> for_each(ix, en, exs, es) @head(exs) | "for" n:NAME "in" lo:expression ".." hi:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> for_stmt(n, lo, hi, s) @head(lo) @head(hi)
         }
-        builders = rows
+        builders: rows
     }
-    f
+    loops
 }

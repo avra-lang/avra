@@ -1,0 +1,62 @@
+//! `rule` — the formatter's own rewrite, dogfooded as a component:
+//! `export rule name { pattern -> value, ... }` is an instance of
+//! `component rule` below, its arms filling `run`
+//! (features/components/builders.av's arms sugar, the implicit
+//! `_ -> null` tail included — a rule's answer is always `Fix?`),
+//! its own `///` filling `doc`, and its `@fixes`/`@keeps`/`@law`
+//! annotations filling `fixes`/`keeps`/`law`
+//! (features/components/lower.av's `augmented`). THE SUBJECT IS
+//! `it`, the general arms-sugar's own pronoun — no bespoke grammar,
+//! no second binding name; `compiler/idioms.av`'s own rules read it
+//! the same way every other component's arms body does. `check`
+//! judges only what it can without running the compiler — whether
+//! the rule proves itself against anything at all; the examples
+//! themselves run in `avra test`'s own suite
+//! (compiler/rule_examples.av). `compiler/rules_table.av`'s own
+//! collect reads one more field this component declares none of:
+//! `root_kind`, folded from `run`'s WRITTEN arms
+//! (compiler/lower/lower.av's `component_root_kind`) — the ROOT-KIND
+//! INDEX every `.Component` kind's collect may ask for, not a `rule`
+//! special case either.
+//!
+//! `@law("...")` is a rule's own EQUIVALENCE CLAIM — a rewrite whose
+//! before and after forms answer the same program by construction
+//! (a different control shape or runtime call, never a different
+//! MEANING), which `avra fix`'s IR proof compares instruction
+//! sequences too literally to ever confirm (compiler/rule_proof.av's
+//! `law_proved`). The words state WHAT is equivalent, never "trust
+//! me" — a law worded as a symptom goes stale the moment the rule's
+//! own implementation moves (CLAUDE.md's "a voice states the law,
+//! not the symptom"). A rule with no `@law` stays behind the IR
+//! proof alone.
+use features.{Code, Fix}
+use @std.meta.{Diagnostic, refuse}
+
+/// One `@fixes` example: code the rule rewrites. `@fixes("before",
+/// "after")` proves a rewrite; `@fixes("before")` — `after` absent —
+/// proves a `Fix.Delete` instead, over `before`'s nearest hit: no
+/// rewritten form exists to compare against, only that the finding's
+/// declaration is gone and the rest still parses
+/// (`compiler/rule_examples.av`'s `checks_delete`).
+export type Fixes = { before: string, after: string? = null }
+
+export component rule {
+    run: fn(Code) -> Fix?
+    doc: string = ""
+    fixes: List<Fixes> = []
+    keeps: List<string> = []
+    law: List<string> = []
+
+    fn check() -> List<Diagnostic> {
+        if self.fixes.is_empty() && self.keeps.is_empty() { return [refuse("a rule with no `@fixes` or `@keeps` has nothing to prove itself against")] }
+        if self.law.length > 1 { return [refuse("a rule takes at most one `@law` — the claim is singular")] }
+        []
+    }
+}
+
+/// Whether an annotation's NAME is one `rule`'s instance reads
+/// itself, never resolved as an ordinary call — there is no `fn
+/// fixes`, no `fn keeps`, no `fn law`.
+export fn example_marks(name: string) -> bool {
+    name == "fixes" || name == "keeps" || name == "law"
+}

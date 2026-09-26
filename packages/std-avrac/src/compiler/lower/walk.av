@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -16,7 +16,11 @@ impl LowerCx {
     mut fn reg_of(e: ExprId) -> Reg {
         let seen: Reg? = self.body.reg_at(e)
         if seen != null { return seen! }
-        let born = if self.facts.wants_alias_copy(e) { self.unique_box(e) } else { semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e) }
+        let born = when {
+            self.facts.wants_alias_copy(e) -> self.unique_box(e)
+            self.facts.wants_thaw(e) -> self.thawed_box(e)
+            _ -> self.spelled_static(e) ?? semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
+        }
         let r = self.widened(e, self.narrowed(e, born))
         self.body.set_reg(e, r)
         r
@@ -47,12 +51,49 @@ impl LowerCx {
         // valid map of anything — identity lifts
         if sh is .List || sh is .Map { return r }
         if sh is .Dyn { return self.boxed_into(into, r) }
+        if sh is .Union { return self.union_boxed(into, r) }
+        if self.view.decls.avrac_type(into, "Fix") { return self.fixed(into, r) }
         self.adopted(into, self.shape_at(e) is .Null, r)
+    }
+
+    /// The union lift: a member value tagged into its union's own
+    /// box — the tag is the member's own GLOBAL type id, which is
+    /// what a `catch` (or a wider union) reads back regardless of
+    /// which union claims it. A value already union-shaped arrives
+    /// through unchanged — a narrower union widening into a wider
+    /// one needs no repack, by the same law.
+    mut fn union_boxed(into: TypeId, r: Reg) -> Reg {
+        let from = self.out.reg_types[r.index]
+        if self.view.decls.types.shape_of(from) is .Union { return r }
+        self.tagged_value(self.view.decls.types.shape_of(into), from.index, [r])
+    }
+
+    /// The `Fix` lift: a generated template widens into `Fix.Rewrite`,
+    /// tagged here at the one widening edge — the auto-Ok wrap's
+    /// twin, one variant of a two-variant enum instead of `Result`'s.
+    /// The tag is READ, never assumed: `Fix`'s own declaration decides
+    /// which ordinal `Rewrite` holds, the same door a quote pattern's
+    /// `Shape` reads its tags through.
+    mut fn fixed(into: TypeId, r: Reg) -> Reg {
+        self.tagged_value(self.view.types.shape_of(into), self.fix_rewrite_tag(into), [r])
+    }
+
+    fn fix_rewrite_tag(into: TypeId) -> int {
+        let sig? = self.variants_of(into) else {
+            self.defect("`Fix` has no variant signature at its own widening edge")
+            return 0
+        }
+        let t? = sig.tag_of("Rewrite") else {
+            self.defect("`Fix` has no `Rewrite` variant — the compiler's own enum moved under this lowering")
+            return 0
+        }
+        t
     }
 
     /// The dyn lift: the box is [value, methods…] in trait order — an
     /// ordinary slot array, minted here at the one widening edge.
-    /// The value's own declared name picks whose methods ride along;
+    /// The value's implementor — its own declaration, or the language's
+    /// for a scalar — picks whose methods ride along;
     /// dispatch reads the same lanes by the same list.
     mut fn boxed_into(into: TypeId, r: Reg) -> Reg {
         let tdecl: DeclId? = match self.view.decls.types.shape_of(into) {
@@ -61,7 +102,7 @@ impl LowerCx {
         }
         // an instantiation may arrive already boxed — identity lift
         if self.view.decls.types.shape_of(self.out.reg_types[r.index]) is .Dyn { return r }
-        let target: DeclId? = self.boxed_decl(r)
+        let target: DeclId? = self.view.decls.implementor(self.out.reg_types[r.index])
         if tdecl == null || target == null {
             self.defect("a dyn lift from an unnamed shape survived typing")
             return r
@@ -75,20 +116,10 @@ impl LowerCx {
                 return r
             }
             let addr = self.out.mint_ty(self.view.decls.types.type(int))
-            self.out.give(Ins.FnAddr(addr, self.method_symbol(m!, null, self.out.reg_types[r.index])))
+            self.out.give(Ins.FnAddr(addr, self.dyn_entry(m!, self.out.reg_types[r.index])))
             self.push_slot(dst, addr)
         }
         dst
-    }
-
-    /// The lifted value's declared name — whose impl the box carries.
-    fn boxed_decl(r: Reg) -> DeclId? {
-        match self.view.decls.types.shape_of(self.out.reg_types[r.index]) {
-            .Struct(d, _) or .Enum(d, _) -> d,
-            .Int or .Float or .Bytes or .Ptr or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Opt(_) or .Null
-                or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
-                or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
     }
 
     /// A `once` FN'S BODY, GUARDED: the cache answers when it holds
@@ -97,9 +128,8 @@ impl LowerCx {
     /// binary by the linker's own law, and in a run by the
     /// evaluator's table.
     mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
-        let key = self.mint_shape(Type.Str)
-        self.emit(Ins.ConstStr(key, symbol))
-        if self.view.types.carried(answer) != null { return self.once_boxed(key, root, answer) }
+        let key = self.const_str(symbol)
+        if self.view.types.carried(answer) != null || !self.view.types.rides_pointer(answer) { return self.once_boxed(key, root, answer) }
         // the cache answers `T?` — under the niche the nullable IS
         // the pointer, so the guard is the presence protocol and the
         // present arm's carry is identity
@@ -113,7 +143,9 @@ impl LowerCx {
     }
 
     /// A NULLABLE answer's null is an answer, so the cache holds it in a
-    /// one-cell list and the cache's own null means only "not yet".
+    /// one-cell list and the cache's own null means only "not yet". An
+    /// answer that is no pointer — a value record, an enum that is its
+    /// tag — rides the same cell.
     mut fn once_boxed(key: Reg, root: ExprId, answer: TypeId) -> Reg {
         let maybe = self.view.decls.types.type(List<answer>?)
         let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
@@ -133,6 +165,35 @@ impl LowerCx {
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
         }
+    }
+
+    /// A `collect`'s body lowered into `into`, the list its kept
+    /// values join.
+    mut fn gathering(into: Reg, body: ExprId) {
+        // LICENSED compiler.bracket_ritual: this IS the bracket
+        self.gathers.push(into)
+        let _ = self.reg_of(body)
+        let _ = self.gathers.pop()
+    }
+
+    /// A statement's value, joining the open `collect`'s list when
+    /// typing kept it.
+    mut fn gather(s: StmtId) {
+        let v? = self.view.store.stmt_value(s) else { return }
+        if !self.facts.keeps(v) { return }
+        let into? = self.gathers.last() else { return self.defect("a kept value outside its `collect`") }
+        if self.facts.spreads_at(v) { return self.spread(into, v) }
+        self.push_slot(into, self.reg_of(v))
+    }
+
+    /// A kept list's elements, each joining the `collect`'s list — the
+    /// comprehension's own walk. An empty list's joins nothing.
+    mut fn spread(into: Reg, v: ExprId) {
+        let elem? = self.view.types.element(self.type_at(v)) else { return }
+        let w = self.opened(v, elem)
+        self.turn_open(w)
+        self.push_slot(into, self.turn_elem(w, self.turn_index(w)))
+        self.turn_close(w)
     }
 
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a
@@ -160,7 +221,7 @@ impl LowerCx {
             .Res(_, _) or .App(_, _, _) -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
             .TypeName(_, n) or .Var(_, _, n) -> n,
             .EmptyList -> "[]",
-            .Opt(_) or .Cell(_) or .Task(_) or .Null or .Dyn(_, _) or .Fn(_, _, _) or .Ptr or .Bytes -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
+            .Opt(_) or .Cell(_) or .Task(_) or .Tasks or .Null or .Dyn(_, _) or .Fn(_, _, _) or .Ptr or .Bytes or .Union(_) -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
             .Int or .Float or .Str or .Bool or .List(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
         if unprintable != null { return self.no_projection(unprintable!) }
@@ -170,9 +231,7 @@ impl LowerCx {
             .Float -> self.float_text(Type.Str, last),
             .Bool -> self.bool_text(Type.Str, last),
             .List(elem) -> self.list_texted(elem, last),
-            .Ptr or .Bytes or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _)
-                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
-                or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Ptr or .Bytes or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Union(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
         if text != null { self.puts(text!) }
         null
@@ -225,7 +284,7 @@ impl LowerCx {
     /// A scope opens — and with it the frame its `defer`s join.
     mut fn scope_enter() {
         self.open_frame()
-        // LICENSED I35: this IS the verb
+        // LICENSED compiler.scope_enter_raw: this IS the verb
         self.out.give(Ins.ScopeEnter(Level.Application))
     }
 
@@ -233,19 +292,19 @@ impl LowerCx {
     /// or the step that follows its statements — and it yields.
     mut fn scope_exit(gives: Reg?) {
         self.close_frame(gives)
-        // LICENSED I35: this IS the verb
+        // LICENSED compiler.scope_exit_raw: this IS the verb
         self.out.give(Ins.ScopeExit(gives))
     }
 
     /// The seats' bracket: a scope holding no statement list, so no
     /// frame — the body inside it is the fn's outermost frame.
     mut fn seats_enter() {
-        // LICENSED I35: this IS the verb
+        // LICENSED compiler.scope_enter_raw: this IS the verb
         self.out.give(Ins.ScopeEnter(Level.Application))
     }
 
     mut fn seats_exit(gives: Reg?) {
-        // LICENSED I35: this IS the verb
+        // LICENSED compiler.scope_exit_raw: this IS the verb
         self.out.give(Ins.ScopeExit(gives))
     }
 
@@ -289,6 +348,12 @@ impl LowerCx {
         self.deferred.push(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
     }
 
+    /// A call to make when the scope ends, its arguments already in
+    /// hand — or, `on_error`, only when the fn fails.
+    mut fn call_at_exit(call: DirectCall, on_error: bool) {
+        self.deferred.push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
+    }
+
     /// An early exit that ANSWERS `answer`: every open frame's
     /// entries run, innermost first — an `errdefer` behind the
     /// answer's tag. Nothing closes — other paths continue.
@@ -319,6 +384,7 @@ impl LowerCx {
         match d.work {
             .Call(box) -> self.run_deferred_call(box),
             .Settle(owner, cell) -> self.settle_owner(owner, cell),
+            .Direct(call) -> self.run_direct(call),
         }
     }
 
@@ -328,6 +394,14 @@ impl LowerCx {
         let ty = self.out.reg_types[owner.index]
         let held = if cell { self.loaded_as(ty, owner) } else { owner }
         if self.view.types.owns_one_task(ty) { self.task_settle(held) } else { self.task_settle_all(held) }
+    }
+
+    /// A deferred call made: the host row, or the declared fn by its
+    /// symbol — its answer dropped; the scope it stands in settles it
+    /// like any other value it never reads again.
+    mut fn run_direct(call: DirectCall) {
+        if call.host { return self.emit(Ins.CallRtVoid(call.callee, call.args)) }
+        let _ = self.call_decl(call.ret, call.callee, call.args)
     }
 
     mut fn run_deferred_call(box: Reg) {

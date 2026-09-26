@@ -15,7 +15,7 @@ export type CaseCall = { symbol: string, label: string }
 /// and the marker naming the case in flight — a suite runs in ONE
 /// process, so a trap kills every case after it, and the marker is
 /// how the wreck says which case it was running.
-export const runner_rows: List<RtSig> = [ extern_row("avra_process_exit", RtKind.Void, [RtKind.I64]), extern_row("avra_case_begin", RtKind.Void, [RtKind.Ptr]), ]
+export const runner_rows: List<RtSig> = [extern_row("avra_process_exit", RtKind.Void, [RtKind.I64]), extern_row("avra_case_begin", RtKind.Void, [RtKind.Ptr])]
 
 /// One program test as the entry needs it: the symbol that runs it,
 /// the line its verdict prints, the text it must print, and whether
@@ -28,7 +28,7 @@ export type ProgramCall = { symbol: string, label: string, expected: string, eva
 /// The host fns a programs binary declares beyond the runner's: the
 /// capture of everything a program prints, so the entry can compare
 /// it in-process.
-export const program_rows: List<RtSig> = runner_rows.concat([ extern_row("avra_capture_begin", RtKind.Void, []), extern_row("avra_capture_end", RtKind.Ptr, []), ])
+export const program_rows: List<RtSig> = runner_rows.concat([extern_row("avra_capture_begin", RtKind.Void, []), extern_row("avra_capture_end", RtKind.Ptr, [])])
 
 /// What a test or programs binary's status MEANS. It says its tally
 /// itself and answers 0 or 1; 127 is a binary that could not start;
@@ -107,6 +107,12 @@ fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     let gives = e.constant(0)
     let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
+    // `got` is `avra_capture_end`'s own answer, owned by this entry —
+    // read by both arms above (the compare, and the red arm's print),
+    // never by the memory pass, which never sees hand-built IR. One
+    // release here, after the arms converge, is what a lowered body
+    // would have emitted for itself.
+    e.give(Ins.Release(got))
 }
 
 /// The engines a program's line names — the evaluator ran it here
@@ -139,7 +145,12 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
     let tail = e.text("/${total} tests passed")
     let line = e.mint(e.types.type(string))
     e.give(Ins.CallRt(line, "avra_str_concat", [text, tail]))
+    // `text` and `line` are each a fresh owned string this hand-built
+    // entry minted and the memory pass never walks — release both
+    // once their one use (the concat, then the print) has read them.
+    e.give(Ins.Release(text))
     e.give(Ins.CallRtVoid("avra_puts", [line]))
+    e.give(Ins.Release(line))
 }
 
 /// One case: called, judged, and counted when it fails.

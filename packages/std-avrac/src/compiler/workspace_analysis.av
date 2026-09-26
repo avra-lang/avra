@@ -56,7 +56,7 @@ impl Workspace {
     fn analysis(f: FileId) -> Analysis {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
-        if self.closed { return self.analyzed(f) }
+        if self.closed.get() { return self.analyzed(f) }
         match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let out = self.analyzed(f)
         self.analyses.finish(f.index, out, self.db.revision())
@@ -70,7 +70,10 @@ impl Workspace {
         let facts = self.folded(f)
         let path = self.decls.file(f).path
         Analysis {
-            view: file_view(self.lang, p, self.decls, f), names: names, facts: facts, lang: self.lang,
+            view: file_view(self.lang, p, self.decls, f),
+            names: names,
+            facts: facts,
+            lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, self.sig_diagnostics(f), self.method_diagnostics(f), facts.voices.list]),
             program: () -> self.program(path),
         }
@@ -109,7 +112,7 @@ impl Workspace {
     }
 
     /// The store, attached by a build; null outside one.
-    mut fn attach_store(s: Store) { self.store = s }
+    fn attach_store(s: Store) { self.store.set(s) }
 
     /// Where a file's asks live: beside its object, under the object's key.
     fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }
@@ -118,7 +121,7 @@ impl Workspace {
     /// not — kept for the lowering — and the held files whose row could NOT be read.
     /// An unread row is a file that must parse: holding it would link a program
     /// missing whatever its bodies ask for.
-    mut fn read_held_asks(s: Store) -> List<string> {
+    fn read_held_asks(s: Store) -> List<string> {
         mut unread: List<string> = []
         for path in held_paths(self) {
             let wants = self.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
@@ -128,7 +131,7 @@ impl Workspace {
     }
 
     fn held_okey(s: Store, path: string) -> string {
-        mut ws = self
+        let ws = self
         obj_key_cached(ws, s, module_path(self.module_of(path).split(".")), path)
     }
 
@@ -142,7 +145,8 @@ impl Workspace {
         }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)
-        lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
+        let cross: fn(DeclId, TypeId) -> Lifted = (d: DeclId, want: TypeId) -> ws.crossed_lifted(d, want)
+        lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle, cross)
     }
 
     /// An isolated compile-time run needs the body of every function it
@@ -273,23 +277,25 @@ impl Workspace {
         // const unit are different IR under different symbols. The
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
-        let l = self.isolated(f, root, "settling$${name}", seats)
+        let l = self.standalone(f, root, "settling\$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
+        let ws = self
+        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path), (nm: string) -> ws.type_named_lifted(f, nm))
     }
 
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
-    fn isolated(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
+    fn standalone(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
         self.run_lowered_for(f, Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root })
     }
 
     /// An annotation argument evaluated directly into the crossing
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
-        let l = self.isolated(f, e, expr_symbol(f, e), [])
+        let l = self.standalone(f, e, expr_symbol(f, e), [])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path)) {
+        let ws = self
+        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path), (nm: string) -> ws.type_named_lifted(f, nm)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
             .Err(why) -> .Err(why),
         }
@@ -302,7 +308,7 @@ impl Workspace {
     /// argument settled and crossed, and what the fn answered read
     /// back as what it SAID.
     fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
-        let name = "lift$${f.index}$${call.index}$${d.index}"
+        let name = "lift\$${f.index}\$${call.index}\$${d.index}"
         let held = self.lift_asks.get()
         let known = [i for i, a in held if a.name == name]
         if !known.is_empty() {
@@ -340,7 +346,7 @@ impl Workspace {
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        let sig = (self.decls.sig(d))?.fn_sig()
+        let sig = self.decls.sig(d)?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
         if shape.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
@@ -352,7 +358,8 @@ impl Workspace {
                 .Err(why) -> { return .Err(why) },
             }
         }
-        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets()) {
+        let ws = self
+        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets(), (nm: string) -> ws.type_named_lifted(f, nm)) {
             .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }
@@ -367,13 +374,13 @@ impl Workspace {
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
         let p = self.parsed(f)
         let raw = p.store.expr(e)
-        let n: int? = (raw).int_of()
+        let n: int? = raw.int_of()
         if n != null { return .Ok(MetaVal.Int(n!)) }
-        let t: string? = (raw).text_of()
+        let t: string? = raw.text_of()
         if t != null { return .Ok(MetaVal.Text(t!)) }
-        let b: bool? = (raw).bool_of()
+        let b: bool? = raw.bool_of()
         if b != null { return .Ok(MetaVal.Bool(b!)) }
-        let bits: int? = (raw).bits_of()
+        let bits: int? = raw.bits_of()
         if bits != null { return .Ok(MetaVal.Float(bits!)) }
         let code: MetaVal? = quote_meta(p.store, self.decls, self.decls.file(f).path, e, heap)
         if code != null { return .Ok(code!) }
@@ -383,9 +390,6 @@ impl Workspace {
     /// A file's GENERATED declarations: every Declares-annotated
     /// WRITTEN fn's directives materialized as real twins in the file's
     /// store and decl table — the two-tier namespace's second tier.
-
-
-
 
 }
 

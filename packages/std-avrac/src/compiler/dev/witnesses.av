@@ -3,12 +3,12 @@
 //! rendering in docs/DIAGNOSTICS.md is MADE rather than written, and
 //! a voice whose wording drifts fails there.
 //!
-//! WHY THE WITNESS AND NOT THE PROSE. A kind keys the F-CODE, not the
-//! law: 45 kinds carry more than one law and `type.mismatch` carries
-//! 38, so a row cannot hold the message. Moving the prose into a
-//! template would also trade a compiler-checked interpolation for an
-//! unchecked hole map, where a mistyped hole name is silent. The
-//! witness keeps every voice as it is and makes the golden anyway.
+//! WHY THE WITNESS AND NOT THE PROSE. A kind keys many LAWS, not one:
+//! 45 kinds carry more than one law and `type.mismatch` carries 38,
+//! so a row cannot hold the message. Moving the prose into a template
+//! would also trade a compiler-checked interpolation for an unchecked
+//! hole map, where a mistyped hole name is silent. The witness keeps
+//! every voice as it is and makes the golden anyway.
 //!
 //! A WITNESS THAT NO LONGER TRIGGERS ITS KIND IS A GREEN TEST PROVING
 //! NOTHING — the compiler moves under it, it starts producing some
@@ -67,9 +67,9 @@ export fn shown_codes() -> List<Shown> {
 }
 
 fn shown(c: DiagCode) -> Shown {
-    let w = witness_for(c.id)
+    let w = witness_for(c.kind)
     let out = rendered_over(w)
-    Shown { code: c, witness: w, rendered: out, fired: out.contains("[${c.id}]") }
+    Shown { code: c, witness: w, rendered: out, fired: out.contains("[${c.kind}]") }
 }
 
 /// The compiler's own words over a witness; nothing where no source
@@ -81,17 +81,17 @@ fn rendered_over(w: Witness) -> string {
     }
 }
 
-/// One code's witness, run — what `avra explain` shows beside the
+/// One code's witness, run — what `avra docs` shows beside the
 /// summary: a REAL refusal with its holes filled, never a template.
-export fn shown_code(id: string) -> Shown? {
-    let c? = avra().rows.codes.find(it.id == id) else { return null }
+export fn shown_code(kind: string) -> Shown? {
+    let c? = avra().rows.codes.find(it.kind == kind) else { return null }
     shown(c)
 }
 
 /// The codes a witness row names that the registry does not — the
 /// other direction a registry forgets in.
 export fn stray_witnesses() -> List<string> {
-    [w.code for w in witnesses() if !avra().rows.codes.any(it.id == w.code)]
+    [w.code for w in witnesses() if !avra().rows.codes.any(it.kind == w.code)]
 }
 
 /// The codes a SECOND row would shadow — the lookup takes the first
@@ -141,7 +141,7 @@ fn index_head(runs: List<Shown>) -> string {
 }
 
 fn entry(s: Shown) -> string {
-    joined(["", "## ${s.code.id} — ${s.code.kind}", "", s.code.summary, ""].concat(body(s)), "\n")
+    joined(["", "## ${s.code.kind}", "", s.code.summary, ""].concat(body(s)), "\n")
 }
 
 fn body(s: Shown) -> List<string> {
@@ -159,84 +159,89 @@ fn body(s: Shown) -> List<string> {
 /// and the golden then pins another code's wording as this one's.
 fn witnesses() -> List<CodeWitness> {
     let rows: List<CodeWitness> = [
-    CodeWitness { code: "F0001", witness: Witness.Source("let a = 1\n$\nlet b = 2") },
-    CodeWitness { code: "F0100", witness: Witness.Source("}") },
-    CodeWitness { code: "F0901", witness: Witness.Source("type P = { x: int }\nP { x: 1 }") },
-    CodeWitness { code: "F2000", witness: Witness.Source("!5") },
-    CodeWitness { code: "F2001", witness: Witness.Source("fn f(x: decimal) -> int { 1 }\nf(1)") },
-    CodeWitness { code: "F2003", witness: Witness.Source("let n = 3\nn.x") },
-    CodeWitness { code: "F2005", witness: Witness.Source("[1, true]\n2") },
-    CodeWitness { code: "F2006", witness: Witness.Source("let xs = [null, null]\n1") },
-    CodeWitness { code: "F2007", witness: Witness.Source("\"\${[1, 2]}\"") },
-    CodeWitness { code: "F2008", witness: Witness.Source("type P = { x: void }\n1") },
-    CodeWitness { code: "F2009", witness: Witness.Source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2") },
-    CodeWitness { code: "F2010", witness: Witness.Source("type P = { x: int }\nlet p = P { x: true }\n2") },
-    CodeWitness { code: "F2011", witness: Witness.Source("let n = 3\nlet m = n with { x: 1 }\n2") },
-    CodeWitness { code: "F2012", witness: Witness.Source("enum E { }\n1") },
-    CodeWitness { code: "F2013", witness: Witness.Source("let n = 3\nmatch n {\n    .a -> 1\n}") },
-    CodeWitness { code: "F2014", witness: Witness.Source("type P = { x: int }\nmut p = P\n1") },
-    CodeWitness { code: "F2015", witness: Witness.Source("enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2") },
-    CodeWitness { code: "F2016", witness: Witness.Source("enum E {\n    a(void)\n    b\n}\n1") },
-    CodeWitness { code: "F2017", witness: Witness.Source("null ?? 1") },
-    CodeWitness { code: "F2019", witness: Witness.Source("let m: Map<int, int> = {}\n1") },
-    CodeWitness { code: "F2020", witness: Witness.Source("fn f(a: int, a: int) -> int { a }\nf(1, 2)") },
-    CodeWitness { code: "F2021", witness: Witness.Source("let n = 1\nn!") },
-    CodeWitness { code: "F2022", witness: Witness.Source("match null {\n    v? -> 1\n    null -> 2\n}") },
-    CodeWitness { code: "F2023", witness: Witness.Source("let n = 1\nn?.x") },
-    CodeWitness { code: "F2024", witness: Witness.Source("let x: int = true\nx") },
-    CodeWitness { code: "F2025", witness: Witness.Source("return 1") },
-    CodeWitness { code: "F2026", witness: Witness.Source("fn f() -> int {\n    let n = 1\n    n?\n}\nf()") },
-    CodeWitness { code: "F2027", witness: Witness.Source("let v? = 1 else { 1 }\nv") },
-    CodeWitness { code: "F2028", witness: Witness.Source("fn f() -> int {\n    fail 1\n}\nf()") },
-    CodeWitness { code: "F2029", witness: Witness.Source("let n = 1 catch 2\nn") },
-    CodeWitness { code: "F2030", witness: Witness.Source("[1].reverse()") },
-    CodeWitness { code: "F2031", witness: Witness.Source("impl Nope {\n    fn f() -> int { 1 }\n}\n1") },
-    CodeWitness { code: "F2032", witness: Witness.Source("trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n    fn extra() -> int { 2 }\n}\n1") },
-    CodeWitness { code: "F2033", witness: Witness.Source("null()") },
-    CodeWitness { code: "F2034", witness: Witness.Source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length") },
-    CodeWitness { code: "F2035", witness: Witness.Source("let m = {1: 2}\n1") },
-    CodeWitness { code: "F2036", witness: Witness.Source("let m = {\"a\": 1, \"b\": true}\n1") },
-    CodeWitness { code: "F2039", witness: Witness.Source("enum E {\n    a(int)\n    b\n}\nmatch E.a(1) {\n    .a(n) or .b -> n\n}") },
-    CodeWitness { code: "F2040", witness: Witness.Source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}") },
-    CodeWitness { code: "F2041", witness: Witness.Source("[x for x in 1]") },
-    CodeWitness { code: "F2042", witness: Witness.Source("spec \"s\" {\n    given \"g\" {\n        then \"t\" { 1 }\n    }\n}") },
-    CodeWitness { code: "F2043", witness: Witness.Source("let x = .foo\n1") },
-    CodeWitness { code: "F2044", witness: Witness.Source("1 ?? 2") },
-    CodeWitness { code: "F2046", witness: Witness.Source("mut fn f() -> int { 1 }\nf()") },
-    CodeWitness { code: "F2047", witness: Witness.Source("type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length") },
-    CodeWitness { code: "F2048", witness: Witness.Source("fn f(mut n: int) -> int { n }\nf(1)") },
-    CodeWitness { code: "F2050", witness: Witness.Source("type C = { n: int }\nimpl C {\n    mut fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.get()") },
-    CodeWitness { code: "F2051", witness: Witness.Source("fn show(mut n: int) -> int { n }\nmut k = 5\nshow(k)") },
-    CodeWitness { code: "F2054", witness: Witness.Source("errdefer 1") },
-    CodeWitness { code: "F2055", witness: Witness.Source("once fn seed() -> int { 7 }\nseed()") },
-    CodeWitness { code: "F2057", witness: Witness.Source("1 << 99") },
-    CodeWitness { code: "F2059", witness: Witness.Source("enum E {\n    a\n}\nimpl E {\n    static fn a() -> int { 1 }\n}\n1") },
-    CodeWitness { code: "F2062", witness: Witness.Source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z") },
-    CodeWitness { code: "F2066", witness: Witness.Source("fn tag() { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x") },
-    CodeWitness { code: "F2083", witness: Witness.Source("type X = X\n1") },
-    CodeWitness { code: "F2092", witness: Witness.Source("enum E {\n    @nobody A\n}") },
-    CodeWitness { code: "F2095", witness: Witness.Source("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}") },
-    CodeWitness { code: "F2093", witness: Witness.Source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")") },
-    CodeWitness { code: "F2096", witness: Witness.Source("type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(p: R) {\n    mut q = p\n    q.bump()\n}\n1") },
-    CodeWitness { code: "F2101", witness: Witness.Source("fn start() -> Task<int> {\n    spawn 1\n}\n1") },
-    CodeWitness { code: "F3000", witness: Witness.Source("nope(1)") },
-    CodeWitness { code: "F3001", witness: Witness.Source("x\nlet x = 1") },
-    CodeWitness { code: "F3002", witness: Witness.Source("if()") },
-    CodeWitness { code: "F3003", witness: Witness.Source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)") },
-    CodeWitness { code: "F3004", witness: Witness.Source("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()") },
-    CodeWitness { code: "F3005", witness: Witness.Source("let x = 1\nx = 2\nx") },
-    CodeWitness { code: "F3006", witness: Witness.Source("type P = { x: int }\nenum P {\n    a\n}\n1") },
-    CodeWitness { code: "F3007", witness: Witness.Source("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()") },
-    CodeWitness { code: "F3008", witness: Witness.Source("enum bool {\n    a\n}") },
-    CodeWitness { code: "F3009", witness: Witness.Source("1 = 2") },
-    CodeWitness { code: "F3010", witness: Witness.Source("for i, i in [1] {\n    1\n}\n1") },
-    CodeWitness { code: "F3015", witness: Witness.Source("use util.{twice}\n1\n") },
-    CodeWitness { code: "F3020", witness: Witness.Source("let x = 1\nfn f() -> int { x }\nf()") },
-    CodeWitness { code: "F3022", witness: Witness.Source("fn f() -> int {\n    spec \"s\" { }\n    1\n}\nf()") },
-    CodeWitness { code: "F3023", witness: Witness.Source("spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n        then \"t\" { true }\n    }\n}") },
-    CodeWitness { code: "F3024", witness: Witness.Source("let self = 1\nself") },
-    CodeWitness { code: "F3025", witness: Witness.Source("fn f() -> int {\n    impl X {\n        fn g() -> int { 1 }\n    }\n    1\n}\nf()") },
-    CodeWitness { code: "F4019", witness: Witness.Beyond("it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for") },
+        CodeWitness { code: "lex.error", witness: Witness.Source("let a = 1\n\$\nlet b = 2") },
+        CodeWitness { code: "parse.expected", witness: Witness.Source("}") },
+        CodeWitness { code: "lower.no_projection", witness: Witness.Source("type P = { x: int }\nP { x: 1 }") },
+        CodeWitness { code: "type.mismatch", witness: Witness.Source("!5") },
+        CodeWitness { code: "type.unknown", witness: Witness.Source("fn f(x: decimal) -> int { 1 }\nf(1)") },
+        CodeWitness { code: "type.unknown_prop", witness: Witness.Source("let n = 3\nn.x") },
+        CodeWitness { code: "type.list_element", witness: Witness.Source("[1, true]\n2") },
+        CodeWitness { code: "type.list_scalar", witness: Witness.Source("let xs = [null, null]\n1") },
+        CodeWitness { code: "type.interp_hole", witness: Witness.Source("\"\${[1, 2]}\"") },
+        CodeWitness { code: "type.struct_scalar", witness: Witness.Source("type P = { x: void }\n1") },
+        CodeWitness { code: "type.duplicate_field", witness: Witness.Source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2") },
+        CodeWitness { code: "type.struct_fields", witness: Witness.Source("type P = { x: int }\nlet p = P { x: true }\n2") },
+        CodeWitness { code: "type.with_struct", witness: Witness.Source("let n = 3\nlet m = n with { x: 1 }\n2") },
+        CodeWitness { code: "type.enum_decl", witness: Witness.Source("enum E { }\n1") },
+        CodeWitness { code: "type.match", witness: Witness.Source("let n = 3\nmatch n {\n    .a -> 1\n}") },
+        CodeWitness { code: "type.type_value", witness: Witness.Source("type P = { x: int }\nmut p = P\n1") },
+        CodeWitness { code: "type.variant_arity", witness: Witness.Source("enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2") },
+        CodeWitness { code: "type.enum_payload", witness: Witness.Source("enum E {\n    a(void)\n    b\n}\n1") },
+        CodeWitness { code: "type.coalesce", witness: Witness.Source("null ?? 1") },
+        CodeWitness { code: "type.applied", witness: Witness.Source("let m: Map<int, int> = {}\n1") },
+        CodeWitness { code: "type.duplicate_param", witness: Witness.Source("fn f(a: int, a: int) -> int { a }\nf(1, 2)") },
+        CodeWitness { code: "type.force", witness: Witness.Source("let n = 1\nn!") },
+        CodeWitness { code: "type.match_opt", witness: Witness.Source("match null {\n    v? -> 1\n    null -> 2\n}") },
+        CodeWitness { code: "type.chain", witness: Witness.Source("let n = 1\nn?.x") },
+        CodeWitness { code: "type.binding", witness: Witness.Source("let x: int = true\nx") },
+        CodeWitness { code: "type.return", witness: Witness.Source("return 1") },
+        CodeWitness { code: "type.propagate", witness: Witness.Source("fn f() -> int {\n    let n = 1\n    n?\n}\nf()") },
+        CodeWitness { code: "type.let_else", witness: Witness.Source("let v? = 1 else { 1 }\nv") },
+        CodeWitness { code: "type.fail", witness: Witness.Source("fn f() -> int {\n    fail 1\n}\nf()") },
+        CodeWitness { code: "type.catch", witness: Witness.Source("let n = 1 catch 2\nn") },
+        CodeWitness { code: "type.method", witness: Witness.Source("[1].reverse()") },
+        CodeWitness { code: "type.impl", witness: Witness.Source("impl Nope {\n    fn f() -> int { 1 }\n}\n1") },
+        CodeWitness { code: "type.trait", witness: Witness.Source("trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n    fn extra() -> int { 2 }\n}\n1") },
+        CodeWitness { code: "type.lambda", witness: Witness.Source("null()") },
+        CodeWitness { code: "type.place", witness: Witness.Source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length") },
+        CodeWitness { code: "type.map_key", witness: Witness.Source("let m = {1: 2}\n1") },
+        CodeWitness { code: "type.map_value", witness: Witness.Source("let m = {\"a\": 1, \"b\": true}\n1") },
+        CodeWitness { code: "type.or_binds", witness: Witness.Source("enum E {\n    a(int)\n    b\n}\nmatch E.a(1) {\n    .a(n) or .b -> n\n}") },
+        CodeWitness { code: "type.registry_hole", witness: Witness.Source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}") },
+        CodeWitness { code: "type.list", witness: Witness.Source("[x for x in 1]") },
+        CodeWitness { code: "type.case", witness: Witness.Source("spec \"s\" {\n    given \"g\" {\n        then \"t\" { 1 }\n    }\n}") },
+        CodeWitness { code: "type.variant_lit", witness: Witness.Source("let x = .foo\n1") },
+        CodeWitness { code: "type.coalesce_never", witness: Witness.Source("1 ?? 2") },
+        CodeWitness { code: "type.mut_fn", witness: Witness.Source("mut fn f() -> int { 1 }\nf()") },
+        CodeWitness { code: "type.receiver", witness: Witness.Source("type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length") },
+        CodeWitness { code: "type.seat", witness: Witness.Source("fn f(mut n: int) -> int { n }\nf(1)") },
+        CodeWitness { code: "type.mut_fn_unused", witness: Witness.Source("type C = { n: int }\nimpl C {\n    mut fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.get()") },
+        CodeWitness { code: "type.seat_unused", witness: Witness.Source("fn show(mut n: int) -> int { n }\nmut k = 5\nshow(k)") },
+        CodeWitness { code: "type.defer_inert", witness: Witness.Source("errdefer 1") },
+        CodeWitness { code: "type.once_fn", witness: Witness.Source("once fn seed() -> int { 7 }\nseed()") },
+        CodeWitness { code: "type.shift_count", witness: Witness.Source("1 << 99") },
+        CodeWitness { code: "type.static_name", witness: Witness.Source("enum E {\n    a\n}\nimpl E {\n    static fn a() -> int { 1 }\n}\n1") },
+        CodeWitness { code: "const.trap", witness: Witness.Source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z") },
+        CodeWitness { code: "annotation.receiver", witness: Witness.Source("fn tag() { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x") },
+        CodeWitness { code: "type.named", witness: Witness.Source("type X = X\n1") },
+        CodeWitness { code: "annotation.unread_mark", witness: Witness.Source("enum E {\n    @nobody A\n}") },
+        CodeWitness { code: "type.derive_contract", witness: Witness.Source("trait T {\n    static fn derive(n: int) -> int { n }\n}\n1") },
+        CodeWitness { code: "type.extern_value", witness: Witness.Source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")") },
+        CodeWitness { code: "type.named_arg", witness: Witness.Source("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, c: 2)") },
+        CodeWitness { code: "type.param_default", witness: Witness.Source("fn o(a: int = 1, b: int) -> int { b }\no(1, 2)") },
+        CodeWitness { code: "type.binds_twice", witness: Witness.Source("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}") },
+        CodeWitness { code: "type.alias_copy", witness: Witness.Source("type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(p: R) {\n    mut q = p\n    q.bump()\n}\n1") },
+        CodeWitness { code: "type.task_escape", witness: Witness.Source("fn start() -> Task<int> {\n    spawn 1\n}\n1") },
+        CodeWitness { code: "type.component_expand", witness: Witness.Beyond("a component's `expand` answers `@std/meta`'s `Code`, which a lone source cannot import — the golden is features/components/tests/components_template_adversarial_test.av") },
+        CodeWitness { code: "type.component_twice", witness: Witness.Beyond("a template is a `quote` of `@std/meta`'s `Code`, which a lone source cannot import — the golden is features/components/tests/components_template_adversarial_test.av") },
+        CodeWitness { code: "resolve.unresolved", witness: Witness.Source("nope(1)") },
+        CodeWitness { code: "resolve.use_before_def", witness: Witness.Source("x\nlet x = 1") },
+        CodeWitness { code: "resolve.reserved", witness: Witness.Source("if()") },
+        CodeWitness { code: "resolve.duplicate_fn", witness: Witness.Source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)") },
+        CodeWitness { code: "resolve.nested_fn", witness: Witness.Source("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()") },
+        CodeWitness { code: "resolve.immutable", witness: Witness.Source("let x = 1\nx = 2\nx") },
+        CodeWitness { code: "resolve.duplicate_type", witness: Witness.Source("type P = { x: int }\nenum P {\n    a\n}\n1") },
+        CodeWitness { code: "resolve.nested_type", witness: Witness.Source("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()") },
+        CodeWitness { code: "resolve.builtin_type", witness: Witness.Source("enum bool {\n    a\n}") },
+        CodeWitness { code: "resolve.place", witness: Witness.Source("1 = 2") },
+        CodeWitness { code: "resolve.paired", witness: Witness.Source("for i, i in [1] {\n    1\n}\n1") },
+        CodeWitness { code: "resolve.unpackaged", witness: Witness.Source("use util.{twice}\n1\n") },
+        CodeWitness { code: "resolve.runtime_binding", witness: Witness.Source("let x = 1\nfn f() -> int { x }\nf()") },
+        CodeWitness { code: "resolve.nested_spec", witness: Witness.Source("fn f() -> int {\n    spec \"s\" { }\n    1\n}\nf()") },
+        CodeWitness { code: "resolve.duplicate_case", witness: Witness.Source("spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n        then \"t\" { true }\n    }\n}") },
+        CodeWitness { code: "resolve.receiver", witness: Witness.Source("let self = 1\nself") },
+        CodeWitness { code: "resolve.nested_impl", witness: Witness.Source("fn f() -> int {\n    impl X {\n        fn g() -> int { 1 }\n    }\n    1\n}\nf()") },
+        CodeWitness { code: "manifest.no_source", witness: Witness.Beyond("it names a directory's own shape — no src/ and no direct .av file — which no lone source text can stand in for") },
     ]
     rows
 }

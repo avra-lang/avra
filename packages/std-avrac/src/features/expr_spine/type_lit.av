@@ -16,27 +16,13 @@ type Word = { name: string, variant: string }
 /// A constructor: the shape it spells and the types it takes.
 type Applied = { name: string, variant: string, arity: int }
 
-export const words: List<Word> = table<Word> {
-    name     | variant
-    "int"    | "Int"
-    "float"  | "Float"
-    "bool"   | "Bool"
-    "string" | "Str"
-    "Bytes"  | "Bytes"
-    "ptr"    | "Ptr"
-    "void"   | "Void"
-}
+export const words: List<Word> = [Word { name: "int", variant: "Int" }, Word { name: "float", variant: "Float" }, Word { name: "bool", variant: "Bool" }, Word { name: "string", variant: "Str" }, Word { name: "Bytes", variant: "Bytes" }, Word { name: "ptr", variant: "Ptr" }, Word { name: "void", variant: "Void" }]
 
-const applieds: List<Applied> = table<Applied> {
-    name     | variant | arity
-    "List"   | "List"  | 1
-    "Map"    | "Map"   | 2
-    "Result" | "Res"   | 2
-}
+export const applieds: List<Applied> = [Applied { name: "List", variant: "List", arity: 1 }, Applied { name: "Map", variant: "Map", arity: 2 }, Applied { name: "Result", variant: "Res", arity: 2 }]
 
 /// The literal's call: the receiver's `interned` over the spelling,
 /// marked so a receiver that cannot answer refuses in the literal's words.
-fn type_literal(mut b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, string> {
+fn type_literal(b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, string> {
     let lit = spelling(b, t)?
     let call = b.store.alloc_expr(Expr.MethodCall(subject, "interned", [lit]), b.span)
     b.store.mark_type_lit(call)
@@ -45,7 +31,7 @@ fn type_literal(mut b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, s
 
 /// `a?.type(T)` IS `match a { null -> null, v? -> v.type(T) }`, the
 /// chain every `?.` link lowers to.
-fn chained_type_literal(mut b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, string> {
+fn chained_type_literal(b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, string> {
     let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
     let call = type_literal(b, carried, t)?
     let absent = b.store.alloc_expr(Expr.NullLit, b.span)
@@ -55,7 +41,7 @@ fn chained_type_literal(mut b: Builder, subject: ExprId, t: TypeRef) -> Result<E
 /// A written type as a `TypeLit` VALUE — bare variants, heard from
 /// the `interned` seat. A hole is marked as the literal's, so a
 /// binding of the wrong type refuses as a hole.
-fn spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
+fn spelling(b: Builder, t: TypeRef) -> Result<ExprId, string> {
     if t.optional { return variant(b, t, "Opt", [spelling(b, plain(t))?]) }
     if t.dynamic { return .Err(no_spelling("`dyn ${t.name}`")) }
     if t.arrow { return fn_spelling(b, t) }
@@ -73,30 +59,21 @@ fn spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
     }
     let applied = found!
     if t.args.length != applied.arity { return .Err("`${t.name}` is applied to ${t.args.length} types; it takes ${applied.arity}") }
-    mut parts: List<ExprId> = []
-    // LICENSED I3: the body allocates through `b.store`, which a comprehension element does not
-    for a in t.args { parts.push(spelling(b, a)?) }
-    variant(b, t, applied.variant, parts)
+    variant(b, t, applied.variant, [spelling(b, a)? for a in t.args])
 }
 
 /// `fn(a, mut b) -> r` — the seats, their marks, the answer: the
 /// LAST written type is the answer, the fn-type builder's contract.
-fn fn_spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
+fn fn_spelling(b: Builder, t: TypeRef) -> Result<ExprId, string> {
     let seats = t.args.length - 1
-    mut params: List<ExprId> = []
-    mut muts: List<ExprId> = []
-    mut consts: List<ExprId> = []
-    // LICENSED I3: the body allocates through `b.store`, which a comprehension element does not
-    for j in 0..seats {
-        params.push(spelling(b, t.args[j])?)
-        muts.push(b.store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span))
-        consts.push(b.store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span))
-    }
+    let params = [spelling(b, t.args[j])? for j in 0..seats]
+    let muts = [b.store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span) for j in 0..seats]
+    let consts = [b.store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span) for j in 0..seats]
     let ret = spelling(b, t.args[seats])?
     variant(b, t, "Fn", [b.store.alloc_expr(Expr.ListLit(params), t.span), b.store.alloc_expr(Expr.ListLit(muts), t.span), b.store.alloc_expr(Expr.ListLit(consts), t.span), ret])
 }
 
-fn variant(mut b: Builder, t: TypeRef, name: string, args: List<ExprId>) -> Result<ExprId, string> {
+fn variant(b: Builder, t: TypeRef, name: string, args: List<ExprId>) -> Result<ExprId, string> {
     .Ok(b.store.alloc_expr(Expr.VariantLit(Plain(name), args), t.span))
 }
 

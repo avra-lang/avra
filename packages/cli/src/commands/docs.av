@@ -1,0 +1,131 @@
+//! `avra docs` — the documentation associated with a thing. No name:
+//! every exported symbol in this package, dumped. A name: that one
+//! thing's own doc — a diagnostic's meaning, or a declared symbol's
+//! `///` doc and its `@name(args)` annotations.
+use @std.cli.{CliResult, Runnable, command, arg, flag}
+use @std.avrac.compiler.{avra, DocRow, build_cache_root, Db, db, db_qualified, DocFacts, FileWitness, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.store.{Store, store_at}
+use @std.avrac.diagnostics.{DiagCode}
+use @std.avrac.compiler.dev.{shown_code}
+use @std.json.{Json, field, to_text}
+
+type DocsCmd = {}
+
+impl Runnable for DocsCmd {
+    fn run(args: CliResult) -> int {
+        let json = args.has_flag("json")
+        let name = args.arg("name")
+        if name == "" { return dumped(json) }
+        let hit: DiagCode? = avra().rows.codes.find(it.kind == name)
+        if hit != null {
+            let c = hit!
+            if json { return print_json(kind_json(c)) }
+            println("${c.kind} — ${c.summary}")
+            shown_witness(c.kind)
+            return 0
+        }
+        explained_decl(name, json)
+    }
+}
+
+fn kind_json(c: DiagCode) -> Json {
+    Json.Obj([field("kind", Json.Str(c.kind)), field("summary", Json.Str(c.summary))])
+}
+
+fn print_json(j: Json) -> int {
+    println(to_text(j))
+    0
+}
+
+/// WHAT THE CODE LOOKS LIKE. The registry's witness, run: the source
+/// that triggers this code and the compiler's own words over it. A
+/// REAL refusal with its holes filled beats a template of the law,
+/// and it is the same rendering docs/DIAGNOSTICS.md pins.
+fn shown_witness(kind: string) {
+    let shown? = shown_code(kind) else { return }
+    if !shown.fired { return }
+    println("")
+    println(shown.witness_source())
+    println("")
+    println(shown.rendered)
+}
+
+/// `avra docs <name>` — a declared fn/type/enum/trait/const's own
+/// `///` doc and `@name(args)` annotations, when `name` is not a
+/// known diagnostic kind. The package is the directory the command
+/// stands in.
+///
+/// THE FAST PATH: a row this package's own db already holds, once its
+/// witnesses still hold, answers with no program built at all — the
+/// whole point of a durable `Db` (compiler/db.av). A miss falls back
+/// to today's derivation and remembers what it found for the process
+/// after this one.
+fn explained_decl(name: string, json: bool) -> int {
+    let root = here()
+    let store = store_at(build_cache_root(root_workspace(root)))
+    mut d = db()
+    let cached? = d.decl(store, db_qualified(root, name)) else { return derived_decl(d, store, root, name, json) }
+    print_decl(name, cached.answer, json)
+    0
+}
+
+fn derived_decl(mut d: Db, store: Store, root: string, name: string, json: bool) -> int {
+    let p? = clean_program() else { return 1 }
+    let found? = p.explain_doc(name) else {
+        eprintln("avra: nothing registered under `${name}` — no diagnostic kind or declared fn/type/enum/trait/const wears it")
+        return 1
+    }
+    d.insert_decl(store, db_qualified(root, name), DocFacts {
+        root: root,
+        answer: found.text,
+        listing_digest: current_listing_digest(root),
+        files: [FileWitness { path: f, digest: current_file_digest(f) } for f in found.files],
+    })
+    print_decl(name, found.text, json)
+    0
+}
+
+fn print_decl(name: string, text: string, json: bool) {
+    if json {
+        println(to_text(Json.Obj([field("address", Json.Str(name)), field("text", Json.Str(text))])))
+        return
+    }
+    println(text)
+}
+
+/// `avra docs` with no name — every EXPORTED declaration's own facts,
+/// this package's own, one row per symbol: `{address, kind, signature,
+/// prose_lines, package}`. A pure read, deliberately: caching each row
+/// into `Db` the way a single lookup does would need the same
+/// collision grouping `explain_doc` already does, and doing that
+/// without an O(n²) scan over a large package is real work this
+/// door doesn't owe yet — left for whoever needs it next.
+fn dumped(json: bool) -> int {
+    let p? = clean_program() else { return 1 }
+    let rows = p.dumped_decls(here())
+    println(if json { to_text(Json.Arr([dump_json(r) for r in rows])) } else { dump_listing(rows) })
+    0
+}
+
+fn dump_json(r: DocRow) -> Json {
+    Json.Obj([
+        field("address", Json.Str(r.address)),
+        field("kind", Json.Str(r.kind)),
+        field("signature", Json.Str(r.signature)),
+        field("prose_lines", Json.Arr([Json.Str(line) for line in r.prose_lines])),
+        field("package", Json.Str(r.package)),
+    ])
+}
+
+/// Every exported symbol's address and signature, one per line, under
+/// a header naming the count.
+export fn dump_listing(rows: List<DocRow>) -> string {
+    ["this package exports — ${rows.length}"].concat(["${r.address} — ${r.signature}" for r in rows]).join("\n")
+}
+
+export command docs {
+    description: "The documentation associated with a thing: no name dumps every exported symbol in this package, a name looks up one (a diagnostic kind or a declared fn/type/enum/trait/const)"
+    arg name { description: "a diagnostic kind or a declared name — every exported symbol in this package when absent" }
+    flag json { description: "JSON instead of text: an array of {address, kind, signature, prose_lines, package} when absent, one object for a name" }
+    run: DocsCmd {}
+}

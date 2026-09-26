@@ -6,7 +6,7 @@
 use core.{StmtId, ExprId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl, Param}
 use core.{SeatMark, plain_mark}
 use diagnostics.{refusal, warning}
-use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig}
+use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig, method_row, property_row}
 
 impl TypeCx {
     /// A trait member's sig: `Self` at seat 0 — the trait's own
@@ -14,7 +14,8 @@ impl TypeCx {
     /// signatory's method answers with its own type.
     fn declare_trait_sig(f: StmtId) {
         let fp? = self.view.store.fn_parts(f) else { return }
-        let contract: DeclId = self.view.decls.decl(self.decl_of(f)).parent!
+        let m = self.decl_of(f)
+        let contract: DeclId = self.view.decls.decl(m).parent!
         // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
         // scope for it, so a signature naming `Self` does not resolve.
         if self.view.store.is_static(f) {
@@ -23,6 +24,12 @@ impl TypeCx {
                 params: self.annotated_params(f, fp),
                 ret: self.answer_type(f, fp.name, fp.ret),
             }))
+            // A BODIED ASSOCIATED FN IS ONE DEFINITION FOR THE WHOLE
+            // TRAIT, never per-signatory, so it is a method of the
+            // trait's OWN name — `Foo.make(…)`, no implementor in
+            // sight. An abstract one (no body) answers only through a
+            // concrete signatory's table, which files its own answer.
+            if self.view.decls.has_body(m) { self.view.decls.declare_method(contract, m) }
             return
         }
         self.record_receiver_word(f, [plain_mark])
@@ -56,21 +63,36 @@ impl TypeCx {
 
     /// A member's sig under its parent: a trait's method declares
     /// its contract; an impl's method declares under the impl's
-    /// verdict — real when the block is lawful, wreckage otherwise.
+    /// verdict — real when the block is lawful, wreckage otherwise; a
+    /// record's own method (a component's) declares under the record.
     fn declare_member(x: Decl) {
         if x.parent == null { return self.declare_wreckage(x.stmt) }
         let parent = self.view.decls.decl(x.parent!)
         match parent.kind {
             .Trait -> self.declare_trait_sig(x.stmt),
             .Impl -> self.declare_under_impl(parent.stmt, x.stmt),
-            .Fn or .Record or .Named or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const -> self.declare_wreckage(x.stmt),
+            .Record -> self.declare_record_method(x),
+            .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Collect -> self.declare_wreckage(x.stmt),
         }
+    }
+
+    /// A record's own method — a component's — signed under it and
+    /// REGISTERED in its table, as an impl block's are.
+    fn declare_record_method(x: Decl) {
+        self.declare_under(x.parent!, x.stmt)
+        if self.registrable(x.stmt) { self.view.decls.declare_method(x.parent!, x.id) }
     }
 
     fn declare_under_impl(block: StmtId, f: StmtId) {
         let parts? = self.view.store.impl_parts(block) else { return self.seated_wreckage(f) }
         let d? = self.impl_target(block, parts, false) else { return self.seated_wreckage(f) }
         self.view.decls.record_target(self.decl_of(block), d)
+        self.declare_under(d, f)
+    }
+
+    /// A method declared under the type it belongs to: that type's
+    /// Vars in scope, `self` its instance.
+    fn declare_under(d: DeclId, f: StmtId) {
         self.enter_target_scope(d)
         self.declare_method(self.impl_self_type(d), f)
         self.leave_tscope()
@@ -83,7 +105,7 @@ impl TypeCx {
     }
 
     fn enter_target_scope(d: DeclId) {
-        // LICENSED I3: pushing through the field alias — concat would rebind the local
+        // LICENSED loops.push_loop: pushing through the field alias — concat would rebind the local
         for v in self.view.decls.instance_vars(d) { self.tscope.push(v) }
     }
 
@@ -135,14 +157,14 @@ impl TypeCx {
         // A declaration's range is over the EXPRESSION arena; statements are
         // their own, so walk the statements and keep the targets this method
         // owns by their place's index.
-        for i in 0..store.stmts.count() {
-            let t: ExprId? = store.assign_target(StmtId { index: i })
+        for s in store.stmt_ids() {
+            let t: ExprId? = store.assign_target(s)
             if t != null {
                 let root: ExprId? = store.place_root(t!)
                 if root != null {
-                        let r = root!
-                        if r.index >= x.lo && r.index < x.hi && store.expr(r) is .Receiver { return true }
-                    }
+                    let r = root!
+                    if r.index >= x.lo && r.index < x.hi && store.expr(r) is .Receiver { return true }
+                }
             }
         }
         false
@@ -156,7 +178,7 @@ impl TypeCx {
         let name? = self.view.store.fn_parts(f)?.name else { return }
         // the DECLARATION answers, never an interned type: a record
         // target would mint a bogus `Type.Enum` the registry keeps
-        let sig: EnumSig? = (self.view.decls.sig(target))?.enum_sig()
+        let sig: EnumSig? = self.view.decls.sig(target)?.enum_sig()
         if sig == null || sig!.tag_of(name) == null { return }
         self.static_names_a_variant(f, tname, name)
     }
@@ -171,12 +193,16 @@ impl TypeCx {
     /// is lawful, else absence — spoken only when `loud`.
     fn impl_target(s: StmtId, parts: ImplParts, loud: bool) -> DeclId? {
         let target = parts.target
-        let decl: DeclId? = self.type_decl_named(target)
-        if decl == null {
+        let d? = self.type_decl_named(target) else {
             if loud { self.no_such_target(s, target) }
             return null
         }
-        let d = decl!
+        // impls are filed under the name they are written on
+        if self.view.decls.is_alias(d) {
+            if loud { self.alias_target(s, target, d) }
+            return null
+        }
+        if self.view.decls.is_builtin(d) { return self.builtin_target(s, d, parts, loud) }
         // a generic target lands for an INHERENT impl; a trait impl
         // over one is recorded
         if parts.of != null && !self.view.decls.tparams(d).is_empty() {
@@ -185,6 +211,31 @@ impl TypeCx {
         }
         self.orphan_law(s, d, parts.of, target, loud)
         d
+    }
+
+    /// THE LANGUAGE OWNS ITS BUILTIN TYPES: an impl on one implements
+    /// this package's own trait, and adds no name the type already
+    /// answers — one name, one meaning on every path. A refusal is
+    /// spoken once and the block still serves its type, so its bodies
+    /// and callers say nothing more.
+    fn builtin_target(s: StmtId, d: DeclId, parts: ImplParts, loud: bool) -> DeclId {
+        if loud { self.builtin_law(s, d, parts) }
+        d
+    }
+
+    fn builtin_law(s: StmtId, d: DeclId, parts: ImplParts) {
+        let target = parts.target
+        let of? = parts.of else { return self.builtin_inherent(s, target) }
+        let tr: DeclId? = self.trait_decl_named(of)
+        if tr != null && self.view.decls.package_of(tr!) != self.view.package() { return self.builtin_foreign(s, of, target) }
+        let sh = self.view.types.shape_of(self.view.decls.self_type_of(d))
+        let taken? = parts.fns.find((f) -> self.builtin_answers(sh, self.fn_named(f))) else { return }
+        self.builtin_renamed(taken, target, self.fn_named(taken))
+    }
+
+    /// Whether a builtin shape's own vocabulary answers this name.
+    fn builtin_answers(sh: Type, name: string) -> bool {
+        method_row(self.view.lang.methods, name, sh) != null || property_row(self.view.lang.properties, name, sh) != null
     }
 
     /// A refused declaration still declares — hole seats, so the
@@ -237,10 +288,10 @@ impl TypeCx {
     /// the trait's DEFAULT — which agrees with itself.
     fn check_trait_member(s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
         let mn = self.view.decls.fn_name(m) ?? ""
-        let want: FnSig? = (self.view.decls.sig(m))?.fn_sig()
+        let want: FnSig? = self.view.decls.sig(m)?.fn_sig()
         let answered? = self.view.decls.method(target, mn) else { return self.unanswered(s, of, tname, mn) }
         if same_decl(answered, m) { return }
-        let got: FnSig? = (self.view.decls.sig(answered))?.fn_sig()
+        let got: FnSig? = self.view.decls.sig(answered)?.fn_sig()
         if want != null && got != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
     }
 
@@ -294,6 +345,11 @@ impl TypeCx {
         self.emit(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type", "this impl", "declare `${target}` first — `type` or `enum`"))
     }
 
+    fn alias_target(s: StmtId, target: string, d: DeclId) {
+        let of = self.view.types.name_of(self.view.decls.alias_of(d) ?? self.error_type)
+        self.emit(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` is written on an alias — `${target}` names `${of}`", "this impl", "write the impl on the type itself: `impl ${of}`"))
+    }
+
     fn generic_target(s: StmtId, target: string) {
         self.emit(refusal("type.impl", self.stmt_loc(s), "`${target}` is generic — a trait impl over a generic type is recorded, not landed", "this impl", null))
     }
@@ -343,6 +399,18 @@ impl TypeCx {
 
     fn static_names_a_variant(f: StmtId, tname: string, name: string) {
         self.emit(refusal("type.static_name", self.stmt_loc(f), "`${tname}.${name}` is already a variant — a `static fn` of that name could never be called", "declared here", "rename the `static fn`: a variant wins the spelling `${tname}.${name}`"))
+    }
+
+    fn builtin_inherent(s: StmtId, target: string) {
+        self.emit(refusal("type.orphan", self.stmt_loc(s), "`${target}` is the language's own type — a package adds to it only by implementing its own trait", "this impl", "declare a trait here and write `impl YourTrait for ${target}`, or write a free fn"))
+    }
+
+    fn builtin_foreign(s: StmtId, of: string, target: string) {
+        self.emit(refusal("type.orphan", self.stmt_loc(s), "`impl ${of} for ${target}` belongs in `${of}`'s package — `${target}` is the language's, so only the trait's package may implement it", "this impl", "an impl on a builtin type lives with its trait"))
+    }
+
+    fn builtin_renamed(f: StmtId, target: string, name: string) {
+        self.emit(refusal("type.builtin_name", self.stmt_loc(f), "`${target}` already answers `${name}` — an impl on a builtin type adds names, it never changes one", "this method", "rename the trait's method"))
     }
 
     fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {

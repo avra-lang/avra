@@ -1,0 +1,37 @@
+//! A derive's crossing must see an enum's EARNED sig even while that
+//! enum's own sig is still being computed (avra-8sb5.11.115): a
+//! payload naming a type declared BEFORE the enum, one declared
+//! AFTER it (a forward reference), a bare primitive, and a nested
+//! shape (`Map`, `List`, `?`) over a declared name must all answer
+//! their real `Kind`, never `Kind.Unspelled`. FIVE SEPARATE derives
+//! read the same enum, matching the node model's own stack — no
+//! derive but the first may leave the next one a smaller, still-
+//! resolving view.
+use @std.meta.{Type, Variant, Directive, literal}
+
+export trait First { static fn derive(t: Type) -> List<Directive> { derived_for(t, "first_kinds") } }
+export trait Second { static fn derive(t: Type) -> List<Directive> { derived_for(t, "second_kinds") } }
+export trait Third { static fn derive(t: Type) -> List<Directive> { derived_for(t, "third_kinds") } }
+export trait Fourth { static fn derive(t: Type) -> List<Directive> { derived_for(t, "fourth_kinds") } }
+export trait Fifth { static fn derive(t: Type) -> List<Directive> { derived_for(t, "fifth_kinds") } }
+
+fn derived_for(t: Type, fn_name: string) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: t.name,
+            at: t.at,
+            source: quote {
+        export fn ${fn_name}() -> string { ${literal(variant_kinds(t))} }
+    },
+        },
+    ]
+}
+
+fn variant_kinds(t: Type) -> string {
+    [variant_row(v) for v in t.variants].join(";")
+}
+
+fn variant_row(v: Variant) -> string {
+    "${v.name}(${[f.kind.spelled() for f in v.fields].join(",")})"
+}

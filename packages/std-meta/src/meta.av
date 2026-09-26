@@ -18,9 +18,12 @@
 //! compile time: the fn's first seat says what it takes (`Fn`, `Type`,
 //! or `Named` for any declaration), and what it answers is its effect —
 //! `List<Diagnostic>` validates (a warning is the declaration's word
-//! for its USES), `void` records, `List<Directive>` generates
-//! declarations beside the annotated one, and `Derived` runs a named
-//! trait's associated `derive` (`@derive(Show)`). A `quote { … }` is
+//! for its USES), `void` records, `List<Directive>` OR `Declared`
+//! generates declarations beside the annotated one — `Declared` is the
+//! same effect with room to also speak problems about the shape it
+//! generated from, exactly where a Validates annotation's own answer
+//! is spoken — and `Derived` runs a named trait's associated `derive`
+//! (`@derive(Show)`). A `quote { … }` is
 //! a TEMPLATE, parsed where it is written: it answers `Code` (an
 //! expression), `Stmts`, `Arms` or `Decls` by what its body is, and
 //! `${e}` is a hole typed by the seat it stands in — a name, a type,
@@ -30,6 +33,8 @@
 use @std.errors.{Loc}
 
 extern fn avra_embed(path: string) -> string
+
+extern fn av_type_named(name: string) -> Type?
 
 /// A TYPE AS A SHAPE, beside the spelling every seat has always
 /// carried. A rule that DISPATCHES on a type asks this; a rule that
@@ -133,8 +138,10 @@ export type Param = { name: string, ty: string, mutable: bool, settled: bool, at
 
 /// A fn declaration as an annotation's first seat receives it. Types
 /// are SPELLED here and SHAPED beside the spelling: `answer` is the
-/// words, `answers` the shape a rule dispatches on.
-export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, answers: Kind = Kind.Unspelled("") }
+/// words, `answers` the shape a rule dispatches on. `doc` is its own
+/// `///` lines joined by a newline, absent where it wrote none;
+/// `annotations` is every `@name(args)` it wears, in written order.
+export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, answers: Kind = Kind.Unspelled(""), doc: string? = null, annotations: List<Annotation> = [] }
 
 /// A MARK a declared member carries — `@frozen`, `@widened(body)`
 /// written before a variant or a field. A MARK IS DATA WHERE AN
@@ -148,28 +155,35 @@ export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, 
 /// cannot sit there doing nothing.
 export type Mark = { name: string, args: List<string>, at: Loc? }
 
+/// `@name(args)` as a DECLARATION's own annotation, never a member's
+/// mark — `Mark`'s twin at the `Fn`/`Type` level: the call's name,
+/// each argument's literal text, and where it was written.
+export type Annotation = { name: string, args: List<string>, at: Loc? }
+
 /// A record's field: its name, its type's spelling, its shape, and
-/// the marks written before it.
-export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [] }
+/// the marks written before it. `doc`/`annotations` read as `Fn`'s.
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [] }
 
 /// An enum's variant: its name, its payload's spellings, and the
 /// payload as FIELDS — each carrying the name a grammar rule's
 /// capture label binds to, beside its spelling and its shape. A
 /// payload IS a parameter compiler-side, so `fields` runs with
-/// `payload` and says what `payload` cannot.
-export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [] }
+/// `payload` and says what `payload` cannot. `doc`/`annotations`
+/// read as `Fn`'s.
+export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [] }
 
 /// A type declaration as an annotation's first seat receives it: a
-/// record has fields, an enum has variants.
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }
+/// record has fields, an enum has variants. `doc`/`annotations` read
+/// as `Fn`'s.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [] }
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
 /// spoken at the place it names (the declaration when it names none),
 /// and each WARNING is kept for the declaration's USES (`warn`).
-/// `kind` names the diagnostic for `avra explain` and the report's
-/// header, under the annotation's PACKAGE (`error[@acme/audit: E1]`);
-/// a kind-less refusal wears the annotation feature's own code.
+/// `kind` names the diagnostic for `avra docs` and the report's
+/// header, under the annotation's PACKAGE (`error[@acme/audit:E1]`);
+/// a kind-less refusal wears the annotation feature's own kind.
 export type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false, kind: string? = null }
 
 /// A refusal at the declaration itself.
@@ -178,7 +192,7 @@ export fn refuse(message: string) -> Diagnostic {
 }
 
 /// A refusal under the package's own kind — `refuse_as("E1", …)`
-/// renders `error[@scope/name: E1]` and `avra explain @scope/name:E1`
+/// renders `error[@scope/name:E1]` and `avra docs @scope/name:E1`
 /// finds it when the kind is spelled as a literal.
 export fn refuse_as(kind: string, message: string) -> Diagnostic {
     Diagnostic { message: message, help: null, at: null, kind: kind }
@@ -218,6 +232,16 @@ export fn deprecated(what: Named, note: string) -> List<Diagnostic> {
 /// no source sits beside the program.
 export fn embed(path: string) -> string {
     avra_embed(path)
+}
+
+/// The whole `Type` a name resolves to from where the CALLER stands
+/// — this file, its imports included, through the same resolution
+/// an ordinary type reference goes through. Absent for a name
+/// nothing declares there, or one that names a fn or a trait, not a
+/// type. Into an annotation processor's own compile-time run only:
+/// a program reaching it at run time has no declaration table.
+export fn type_named(name: string) -> Type? {
+    av_type_named(name)
 }
 
 /// Generated code as a TREE. A `quote { … }` names its own template
@@ -274,6 +298,10 @@ export type Arms = { node: Node }
 /// One or more DECLARATIONS — `quote { impl T { … } }`; what a
 /// `Directive` carries.
 export type Decls = { node: Node }
+/// A PATTERN head — a component field whose instance writes a string
+/// literal (`"/robots/{id}"`), minted as a `grammar` declaration; the
+/// template's hole names that record.
+export type Format = { node: Node }
 
 impl Code { fn text() -> string { self.node.text() } }
 impl Stmts { fn text() -> string { self.node.text() } }
@@ -299,6 +327,11 @@ export fn interpolated(parts: List<string>, holes: List<Code>) -> Code {
 export fn template(file: string, at: int, parts: List<string>, fills: List<Node>) -> Node {
     Node.Template(file, at, parts, fills)
 }
+/// Already-generated CODE, spliced verbatim — a held handle's own
+/// text, parenthesised at its own call site when it needs it. Never
+/// an identifier's name (`name_node`) and never a quoted literal
+/// (`Text`): this text IS a program already, not a word to escape.
+export fn text_node(text: string) -> Node { Node.Name(text) }
 export fn as_code(n: Node) -> Code { Code { node: n } }
 export fn as_stmts(n: Node) -> Stmts { Stmts { node: n } }
 export fn as_arms(n: Node) -> Arms { Arms { node: n } }
@@ -323,10 +356,21 @@ export fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs])
 /// would arm a counterfeit.)
 export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }
 
+/// The OTHER answer a Declares-effect fn may give, beside a bare
+/// `List<Directive>` — the same effect, a second shape, for an
+/// annotation that also wants to speak refusals about the shape it
+/// generates from. `problems` are spoken exactly where a Validates
+/// annotation's own answer is; a plain `List<Directive>` answer never
+/// had problems to speak and stays exactly as it was. This is NOT
+/// `Derived`: `Derived` is `@derive`'s own multi-trait mechanism, and
+/// a fn answering it is never called for its body at all — the
+/// compiler reads its ARGUMENTS as trait names instead. `Declared` is
+/// an ordinary value a Declares-effect fn builds and returns itself.
+export type Declared = { made: List<Directive>, problems: List<Diagnostic> = [] }
 
 /// The trace directive's decoder: `@traced("label")` on `fn sum`
 /// asks for a sibling named `sum_traced`.
-// LICENSED I23: an annotation's decoder wears the annotation's argument list
+// LICENSED style.dead_parameter: an annotation's decoder wears the annotation's argument list
 export fn traced(f: Fn, label: string) -> List<Directive> {
     [Directive { twin: "${f.name}_traced", name: f.name, at: f.at }]
 }
@@ -337,7 +381,22 @@ export type Derived = { made: List<Directive> }
 
 /// `@derive(Show)` runs `Show`'s associated `derive` over the
 /// annotated declaration. Stack the annotation to derive more traits.
-// LICENSED I23: an annotation's decoder wears the annotation's argument list
+///
+/// THE CONTRACT a derivable trait keeps, held where the trait is
+/// declared (F2134) and again at each `@derive` (F2072, F2066):
+///
+///     trait Show {
+///         static fn derive(t: Type) -> List<Directive> { … }
+///         static fn marks(t: Type) -> List<string> { … }   // optional
+///     }
+///
+/// `derive` takes the declaration (`Type` for a record or enum, `Fn`
+/// for a fn, `Named` for any) and answers the code to splice beside
+/// it. `marks` names the field and variant marks it reads, and a mark
+/// no derive claims is refused (F2092). The trait stands in its own
+/// file: its `derive` is typed while the annotated file is still
+/// being made.
+// LICENSED style.dead_parameter: an annotation's decoder wears the annotation's argument list
 export fn derive(what: Named, tr: Trait) -> Derived {
     Derived { made: [] }
 }

@@ -15,16 +15,16 @@
 // it through would have blamed the driver via `Cause.Defect`. Three
 // modes make the contradiction unrepresentable, which is neither.
 use @std.text.{from_codepoint, from_codepoints}
-use @std.sqlite.open.{OpenConfig, Mode, Threading, config_at, flags_of, path_fault}
+use @std.sqlite.open.{OpenConfig, Mode, Threading}
 use @std.sqlite.error.{SqlError}
 
 // ── The fixtures, so each case shows only its attack ────────────
 
 /// The kind a path is refused with, or the word for acceptance.
-fn door(path: string) -> string { verdict(path_fault(config_at(path))) }
+fn door(path: string) -> string { verdict(OpenConfig.config_at(path).path_fault()) }
 
 /// The same, for a caller who asked for URIs.
-fn door_uri(path: string) -> string { verdict(path_fault(config_at(path) with { uri: true })) }
+fn door_uri(path: string) -> string { verdict((OpenConfig.config_at(path) with { uri: true }).path_fault()) }
 
 fn verdict(e: SqlError?) -> string {
     if e == null { return "ACCEPTED" }
@@ -35,13 +35,7 @@ fn nul() -> string { from_codepoint(0) }
 
 /// All 48 configurations: three modes times four flags.
 fn conf(n: int) -> OpenConfig {
-    config_at("/tmp/a.db") with {
-        mode: mode_at(n % 3),
-        uri: bit(n, 3),
-        shared_cache: bit(n, 6),
-        threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized },
-        no_follow: bit(n, 24),
-    }
+    OpenConfig.config_at("/tmp/a.db") with { mode: mode_at(n % 3), uri: bit(n, 3), shared_cache: bit(n, 6), threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized }, no_follow: bit(n, 24) }
 }
 fn mode_at(i: int) -> Mode {
     match i {
@@ -50,23 +44,23 @@ fn mode_at(i: int) -> Mode {
         _ -> Mode.ReadOnly,
     }
 }
-fn bit(n: int, b: int) -> bool { (n / b) % 2 == 1 }
-fn words() -> List<int> { [flags_of(conf(n)) for n in 0..48] }
-fn set_in(word: int, b: int) -> bool { (word & b) != 0 }
+fn bit(n: int, b: int) -> bool { n / b % 2 == 1 }
+fn words() -> List<int> { [conf(n).flags_of() for n in 0..48] }
+fn set_in(word: int, b: int) -> bool { word & b != 0 }
 /// Every bit `sqlite3.h:603-624` marks "Ok for sqlite3_open_v2()".
 fn known() -> int { 1 | 2 | 4 | 64 | 32768 | 65536 | 131072 | 262144 | 16777216 | 33554432 }
 
 spec "std/sqlite open adversarial" {
-
     given "degenerate paths" {
+
         then "empty is refused" { door("") == "sqlite.empty_path" }
         then "one blank is a filename, oddly, and accepted" { door(" ") == "ACCEPTED" }
         then "three blanks likewise" { door("   ") == "ACCEPTED" }
         then "one character is a filename" { door("a") == "ACCEPTED" }
         then "a lone colon is a filename" { door(":") == "ACCEPTED" }
     }
-
     given "a NUL, in every position it can take" {
+
         // Each of these reaches SQLite as the bytes BEFORE the NUL, so
         // the path opened is not the path written. The first two are the
         // empty-path trap exactly.
@@ -81,8 +75,8 @@ spec "std/sqlite open adversarial" {
         then "Avra measured every byte all along" { "/tmp/a.db${nul()}x".length == 11 }
         then "and a NUL path is refused even when URIs were asked for" { door_uri("file:${nul()}") == "sqlite.holds_nul" }
     }
-
     given "the near misses, which must be ACCEPTED" {
+
         // Measured against the library: `:MEMORY:` opens an ordinary
         // FILE named `:MEMORY:`, so SQLite's own check is
         // case-sensitive and refusing it here would refuse a legal
@@ -98,16 +92,16 @@ spec "std/sqlite open adversarial" {
         // honestly, so the door need not guess about case.
         then "`FILE:` upper case is left to the library" { door("FILE:/tmp/a.db") == "ACCEPTED" }
     }
-
     given "the paths that are refused, and the ones that stop being so" {
+
         then "`:memory:` exactly is refused" { door(":memory:") == "sqlite.empty_path" }
         then "`file:` exactly is refused as a URI" { door("file:") == "sqlite.uri_path" }
         then "a URI path is refused by default" { door("file:/tmp/a.db?mode=ro") == "sqlite.uri_path" }
         then "and accepted once the caller asked for URIs" { door_uri("file:/tmp/a.db?mode=ro") == "ACCEPTED" }
         then "an ordinary path is unaffected by that field" { door_uri("/tmp/a.db") == "ACCEPTED" }
     }
-
     given "a URI whose path component is empty — the THIRD spelling" {
+
         // `""` and `":memory:"` were the first two. Measured with URI
         // parsing on, all four of these open a private temporary
         // database and leave nothing on disk: rc=0, `db_filename` empty.
@@ -131,8 +125,8 @@ spec "std/sqlite open adversarial" {
         then "the empty path is refused under uri too" { door_uri("") == "sqlite.empty_path" }
         then "`:memory:` is refused under uri too" { door_uri(":memory:") == "sqlite.empty_path" }
     }
-
     given "flags_of over all 48 configurations" {
+
         then "there are 48" { words().length == 48 }
         // The header allows exactly three combinations and SQLite
         // answers SQLITE_MISUSE to every other spelling — measured for
@@ -146,11 +140,11 @@ spec "std/sqlite open adversarial" {
         // A stray bit is what a mistyped constant looks like, and it
         // would set a flag the header reserves for `sqlite3_open_v2`'s
         // VFS argument rather than this word.
-        then "no word carries a bit the header does not name" { [w for w in words() if (w & ~known()) != 0].length == 0 }
+        then "no word carries a bit the header does not name" { [w for w in words() if w & (known() ^ -1) != 0].length == 0 }
         // The two words open.av records as measured against the
         // library. A number in a doc comment is a claim; here it is a
         // check that fails when a contributor moves.
-        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { flags_of(config_at("/tmp/a.db")) == 33882118 }
-        then "read-only swaps those two write bits for one, and touches nothing else" { flags_of(config_at("/tmp/a.db") with { mode: Mode.ReadOnly }) == 33882113 }
+        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { OpenConfig.config_at("/tmp/a.db").flags_of() == 33882118 }
+        then "read-only swaps those two write bits for one, and touches nothing else" { (OpenConfig.config_at("/tmp/a.db") with { mode: Mode.ReadOnly }).flags_of() == 33882113 }
     }
 }

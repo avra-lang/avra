@@ -1,12 +1,12 @@
-//! The client against the server on one thread: the server turns, the
-//! client polls, and the answer is the handler's.
+//! The client against the server, each on its own task: the client
+//! fetches, parked while the server answers, and the answer is the
+//! handler's.
 use @std.net.{NetError, listen}
-use @std.time.{ms, secs}
+use @std.time.{secs}
 use @std.http.frame.{limits, Method}
 use @std.http.http.{Header, text}
 use @std.http.server.{Server, served, timing}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
-
 
 type Duo = { s: Server<App>, c: Client }
 
@@ -17,44 +17,50 @@ fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
     }
 }
 
+/// A server whose handler shows what it was asked, and a client
+/// connected to it. A test spawns `s.run()` and then defers `done()`.
 fn duo() -> Result<Duo, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
-    let s = lifted(served(l, App { hits: 0 }, limits(), timing()) { mut app, q ->
-        app.hits = app.hits + 1
-        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${app.hits}")
-    })?
+    let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${bumped(app)}")
+    }
     let c = connected("127.0.0.1", l.port, secs(2), limits())?
     .Ok(Duo { s: s, c: c })
 }
 
-/// The request sent, then the server turned and the client polled
-/// until the answer.
-fn answered_by(mut d: Duo, method: Method, req: Bytes) -> Result<Answer, ClientError> {
-    d.c.sent(method, req)?
-    mut turns = 0
-    while turns < 50 {
-        lifted(d.s.turn(ms(20)))?
-        let a: Answer? = d.c.polled(ms(20))?
-        if a != null { return .Ok(a!) }
-        turns = turns + 1
+impl Duo {
+    /// The client closed and the server stopped.
+    fn done() {
+        let _ = self.c.close()
+        self.s.stop()
     }
-    .Err(.TimedOut)
+}
+
+/// The request fetched, within two seconds.
+fn answered_by(mut d: Duo, method: Method, req: Bytes) -> Result<Answer, ClientError> {
+    d.c.fetched(method, req, secs(2))
 }
 
 fn get_answer() -> Result<bool, ClientError> {
     mut d = duo()?
+    spawn d.s.run(cores: 1)
+    defer d.done()
     let a = answered_by(d, .Get, request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!)?
-    .Ok(a.status == 200 && (a.body.text() ?? "") == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
+    .Ok(a.status == 200 && a.body.text() ?? "" == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
 }
 
 fn post_answer() -> Result<bool, ClientError> {
     mut d = duo()?
+    spawn d.s.run(cores: 1)
+    defer d.done()
     let a = answered_by(d, .Post, request("POST", "/p", "a", [], "hello".bytes())!)?
-    .Ok(a.status == 200 && (a.body.text() ?? "") == "/p|hello|-|1")
+    .Ok(a.status == 200 && a.body.text() ?? "" == "/p|hello|-|1")
 }
 
 fn two_on_one_connection() -> Result<bool, ClientError> {
     mut d = duo()?
+    spawn d.s.run(cores: 1)
+    defer d.done()
     let one = answered_by(d, .Get, request("GET", "/1", "a", [], "".bytes())!)?
     let two = answered_by(d, .Get, request("GET", "/2", "a", [], "".bytes())!)?
     .Ok((one.body.text() ?? "").ends_with("|1") && (two.body.text() ?? "").ends_with("|2") && d.s.connections() == 1)
@@ -62,13 +68,17 @@ fn two_on_one_connection() -> Result<bool, ClientError> {
 
 fn head_answer() -> Result<bool, ClientError> {
     mut d = duo()?
+    spawn d.s.run(cores: 1)
+    defer d.done()
     let a = answered_by(d, .Head, request("HEAD", "/h", "a", [], "".bytes())!)?
     let after = answered_by(d, .Get, request("GET", "/g", "a", [], "".bytes())!)?
-    .Ok(a.status == 200 && a.body.length == 0 && a.header("content-length") == "7" && (after.body.text() ?? "") == "/g||-|2")
+    .Ok(a.status == 200 && a.body.length == 0 && a.header("content-length") == "7" && after.body.text() ?? "" == "/g||-|2")
 }
 
 fn bad_reply_is_refused() -> Result<bool, ClientError> {
     mut d = duo()?
+    spawn d.s.run(cores: 1)
+    defer d.done()
     let a = answered_by(d, .Get, request("GET", "/x", "a", [], "".bytes())!)
     .Ok(passes_client(a))
 }
@@ -87,5 +97,15 @@ spec "std.http client" {
         then "two fetches ride one connection" { passes(two_on_one_connection()) }
         then "a HEAD's answer has a length and no body, and the connection goes on" { passes(head_answer()) }
         then "a well-formed reply is an answer, not an error" { passes(bad_reply_is_refused()) }
+    }
+    given "ClientError.cause" {
+        then "a wrapped net error names itself as the cause" {
+            let e: ClientError = .Net(NetError { verb: "connect", subject: "1.2.3.4:80", errno: 61 })
+            let c = e.cause()
+            c != null && c!.describe().kind == "net.connect"
+        }
+        then "the client's own refusals have no cause" {
+            ClientError.Closed.cause() == null && ClientError.TimedOut.cause() == null
+        }
     }
 }

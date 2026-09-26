@@ -1,28 +1,37 @@
 //! The format laws: a format reads TEXT; two holes need a literal
-//! between them; one name binds one span; and a typed hole parses
-//! through a type that reads text. The two laws over the holes are
+//! between them; one name binds one span; and a typed hole reads its
+//! span as a type text reads as — `string` or `int`. The two laws over the holes are
 //! re-derived from the node by the reader's own functions, so the
 //! literal and the pattern it became are judged once.
-use core.{PatId, Type, TypeId, FormatPart, bound_names}
+use core.{PatId, Type, TypeId, FormatPart, binds}
 use features.{TypeCx, MethodCall, this_is}
-use features.formats.{adjacent_fault, repeated_fault, Fault}
+use features.formats.{adjacent_fault, repeated_fault, Fault, Reads, reads_of}
 use diagnostics.{refusal}
 
 /// THE FORMAT LAW: the subject is text, the holes are separable and
 /// distinctly named, and each hole binds the span it takes — as
-/// text over a `string`, as octets over a `Bytes`.
+/// text over a `string`, as octets over a `Bytes`, or as the `int`
+/// a typed hole reads it as.
 export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expected: TypeId) -> List<TypeId> {
     let span? = span_type(cx, expected) else { return not_text(cx, p, expected) }
     let shape: Fault? = adjacent_fault(parts) ?? repeated_fault(parts)
     if shape != null { return broken(cx, p, shape!) }
-    let typed: FormatPart? = parts.find(it.hole.ty != null)
-    if typed != null { return unparsed(cx, p, typed!) }
-    [span for n in bound_names(parts)]
+    let unread: FormatPart? = parts.find(reads_of(it.hole) == null)
+    if unread != null { return unparsed(cx, p, unread!) }
+    [bound_type(cx, reads_of(part.hole)!, span) for part in parts if binds(part.hole)]
+}
+
+/// What a hole binds: its span, or the int it reads.
+fn bound_type(cx: TypeCx, r: Reads, span: TypeId) -> TypeId {
+    match r {
+        .Text -> span,
+        .Int -> cx.type(int),
+    }
 }
 
 /// What a hole's span IS, by what the subject is made of; absence
 /// when the subject is neither.
-fn span_type(mut cx: TypeCx, expected: TypeId) -> TypeId? {
+fn span_type(cx: TypeCx, expected: TypeId) -> TypeId? {
     match cx.view.types.seen_shape(expected) {
         .Str -> cx.type(string),
         .Bytes -> cx.type(Bytes),
@@ -59,7 +68,7 @@ fn repeated(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
 
 fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
     let n = part.hole.ty!.name
-    cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` parses its span, and nothing reads text as `${n}` yet", "here", "take the span as text and convert it in the arm — a typed hole waits on a shared decimal reader"))
+    cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` reads its span as `${n}`, and a hole reads text as `string` or `int`", "here", "take the span as text and convert it in the arm"))
     []
 }
 
@@ -91,7 +100,7 @@ fn read_seat(mut cx: TypeCx, mc: MethodCall) -> Type {
 }
 
 /// The record a type name's declaration stands for.
-fn record_of(mut cx: TypeCx, ty: TypeId) -> TypeId? {
+fn record_of(cx: TypeCx, ty: TypeId) -> TypeId? {
     match cx.view.types.shape_of(ty) {
         .TypeName(decl, tname) -> cx.view.types.intern(Type.Struct(decl, tname)),
         rest -> null,
@@ -105,4 +114,11 @@ export fn check_print(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
     if !cx.seated(mc, "print", [named]) { return cx.error_type }
     cx.type(string?)
+}
+
+/// `Name.pattern()` — the format this grammar reads, spelled as it is
+/// written: what a router indexes by.
+export fn check_pattern(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if record_of(cx, cx.type_at(mc.subject)) == null { return cx.error_type }
+    cx.worded(mc, "pattern", [], Type.Str)
 }

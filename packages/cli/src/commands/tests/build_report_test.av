@@ -1,0 +1,57 @@
+//! THE MULTI-DIAGNOSTIC BUILD FAILURE: a real, two-error program through
+//! the actual `avra build` path. `BuildError.Diagnosed` carries the
+//! program's own report verbatim, with no Diag wrapper or `caused by:`
+//! line ever glued around it — real subprocess, the everyday path, no
+//! mocked pieces.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, Exit, Outcome, ProcessError}
+use @std.time.{ms}
+
+/// A program with two INDEPENDENT, unrelated errors — an undefined call
+/// and an undefined type — the shape a clean program most commonly
+/// fails with.
+fn two_error_program() -> string {
+    let _ = make_dirs(scratch_dir())
+    let path = "${scratch_dir()}/build_report_two_errors.av"
+    let _ = write_text(path, "fn main() {\n    foo()\n    let x: Bar = 1\n}\n")
+    path
+}
+
+fn outcome() -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, ["build", two_error_program()]) with { timeout: ms(20000) }).outcome()
+}
+
+fn exit_code_1(e: Exit) -> bool {
+    match e {
+        .Code(1) -> true,
+        .Code(_) or .Signal(_, _) or .Clean -> false,
+    }
+}
+
+fn report() -> string {
+    match outcome() {
+        .Ok(o) -> o.out.stdout,
+        .Err(_) -> "",
+    }
+}
+
+spec "avra build — a real multi-diagnostic failure" {
+    given "a program with two independent, unrelated errors" {
+        then "the build refuses, exit 1" {
+            match outcome() {
+                .Ok(o) -> exit_code_1(o.exit),
+                .Err(_) -> false,
+            }
+        }
+        then "both diagnostics print, each its own error[...] header" {
+            report().contains("error[resolve.unresolved]") && report().contains("error[type.unknown]")
+        }
+        then "nothing wraps the report in a Diag's cause chain — no `caused by:` line at all" {
+            !report().contains("caused by:")
+        }
+        then "no Diag wrapper leaks its own kind or message around the real report" {
+            !report().contains("build.command_failed") && !report().contains("the build failed")
+        }
+    }
+}

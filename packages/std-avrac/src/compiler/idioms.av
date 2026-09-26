@@ -1,0 +1,1040 @@
+//! The formatter's idioms for the COMPILER's own conventions —
+//! `rule`s over shapes no single feature owns (Ins construction,
+//! refusal assembly, type interning), reached by `rules_table.av`,
+//! the way any declaration is: a finding's kind IS `rule_id`
+//! (`<module>.<name>`, rules_table.av), never a second hand-typed
+//! name. tools/idioms.py once matched several of these by regex,
+//! before the language grew able to say them; a sibling shape not
+//! yet landed is noted at its rule, not silently dropped
+//! (avra-8sb5.25.16).
+use core.{TypeRef}
+use features.{ArmInfo, Code, Fix, rule, said}
+use @std.meta.{name}
+
+/// A refusal assembled from `pointed`/`error_at` by hand — the one
+/// shape is `refusal(kind, at, message, label, help)`.
+@fixes("pointed(error_at(\"E1\", at, \"bad\"), \"here\")", "refusal(\"E1\", at, \"bad\", \"here\", null)")
+@keeps("refusal(\"k\", at, \"m\", \"l\", null)")
+// LICENSED compiler.refusal_assembled: the pattern's own text names the shape it detects
+export rule refusal_assembled {
+    quote { pointed(error_at(${kind}, ${at}, ${msg}), ${label}) } -> quote { refusal(${kind}, ${at}, ${msg}, ${label}, null) },
+}
+
+/// Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field
+/// is read out beside the value that holds it, so the text is never
+/// held alone and every turn copies it. A LOCAL `mut` grows in place
+/// (the memory pass hands the cell's text to the append), so a bare
+/// name is not this smell. Guarded to STRINGS ONLY — `n = n + 1` is an
+/// ordinary int accumulator.
+///
+/// NO REWRITE: the fix is a BUILDER (`builder()`, `push`, `built()`)
+/// seeded before the FIRST accumulating assignment and read at the
+/// LAST — two statements this pattern's one bound assignment never
+/// sees, since a place may be grown by several separate `p = p +
+/// piece` sites scattered through a body, each matching this rule on
+/// its own. Splicing a builder call in for one assignment while its
+/// siblings keep reading/writing the plain string would change the
+/// TYPE `p` wears out from under them — a site-local rewrite cannot
+/// be sound here; the fix is a whole-declaration refactor.
+@keeps("out = out2 + piece")
+@keeps("n = n + 1")
+export rule str_grown_quadratically {
+    quote { ${s} = ${s} + ${piece} } if s.type()?.name() == "string" && s.name() == null -> quadratic_growth(s, piece),
+}
+
+fn quadratic_growth(s: Code, piece: Code) -> Fix {
+    Fix.Say(said(s.loc(), "text grown through a place by `${s.text()} = ${s.text()} + ${piece.text()}` is quadratic — a place is copied every turn; grow a local `mut` and store it once, or use a @std/text builder (builder(), push, built)", "this assignment", null))
+}
+
+/// A payload the value-protocol dispatch GUARANTEES, papered over
+/// with a `??` default — absence here is a DEFECT the caller should
+/// speak (`cx.lower_defect(e, ...)`), never a plausible fallback.
+/// All six of core/protocol.av's projections (`bool_of`, `text_of`,
+/// `int_of`, `bits_of`, `elems_of`, `pairs_of`) are the same shape.
+///
+/// NO REWRITE: dropping `?? d` changes what the ABSENCE path DOES
+/// (quietly answer `d` today, refuse tomorrow), so it is not
+/// meaning-preserving — and the sound replacement, `cx.lower_defect(e,
+/// "…")`, needs a MESSAGE this pattern's bound holes carry nothing of.
+/// Only the author who knows what dispatch was supposed to guarantee
+/// here can write that sentence.
+// LICENSED compiler.bool_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).int_of() ?? 0")
+export rule bool_of_defaulted {
+    // LICENSED compiler.bool_of_defaulted: the pattern's own text names the shape it detects
+    quote { (${e}).bool_of() ?? ${d} } -> protocol_default_papered(e, d, "bool_of"),
+}
+
+// LICENSED compiler.text_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).int_of() ?? 0")
+export rule text_of_defaulted {
+    // LICENSED compiler.text_of_defaulted: the pattern's own text names the shape it detects
+    quote { (${e}).text_of() ?? ${d} } -> protocol_default_papered(e, d, "text_of"),
+}
+
+// LICENSED compiler.int_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule int_of_defaulted {
+    // LICENSED compiler.int_of_defaulted: the pattern's own text names the shape it detects
+    quote { (${e}).int_of() ?? ${d} } -> protocol_default_papered(e, d, "int_of"),
+}
+
+// LICENSED compiler.bits_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule bits_of_defaulted {
+    // LICENSED compiler.bits_of_defaulted: the pattern's own text names the shape it detects
+    quote { (${e}).bits_of() ?? ${d} } -> protocol_default_papered(e, d, "bits_of"),
+}
+
+// LICENSED compiler.elems_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule elems_of_defaulted {
+    // LICENSED compiler.elems_of_defaulted: the pattern's own text names the shape it detects
+    quote { (${e}).elems_of() ?? ${d} } -> protocol_default_papered(e, d, "elems_of"),
+}
+
+// LICENSED compiler.pairs_of_defaulted: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule pairs_of_defaulted {
+    // LICENSED compiler.pairs_of_defaulted: the pattern's own text names the shape it detects
+    quote { (${e}).pairs_of() ?? ${d} } -> protocol_default_papered(e, d, "pairs_of"),
+}
+
+fn protocol_default_papered(e: Code, d: Code, verb: string) -> Fix {
+    Fix.Say(said(e.loc(), "`${e.text()}.${verb}()` is guaranteed by its dispatch — defaulting it with `?? ${d.text()}` papers over a DEFECT this call should speak instead (`cx.lower_defect(e, …)`)", "this projection", null))
+}
+
+/// A refusal asserted as `>= 1` — a cascade of five passes it just
+/// as easily as one; pin the count (`refused_with`, `refused_n`, or
+/// `== n`). Every receiver shape the tree has worn it in:
+/// `refusals(...)`, `.diagnostics`/`.diagnostics.length`, and
+/// `.voices.list.length`.
+///
+/// NO REWRITE: the RIGHT count is exactly what `>= 1` refused to say —
+/// mining it back out would mean running the very check this
+/// assertion exists to guard, which a static pattern cannot do. The
+/// author who wrote the test knows how many refusals it expects; this
+/// rule only sees the one comparison.
+@keeps("refusals(src) == 1")
+export rule uncounted_refusal {
+    // LICENSED compiler.uncounted_refusal: the pattern's own text names the shape it detects
+    quote { refusals(${src}) >= 1 } -> uncounted(src),
+}
+
+@keeps("a.diagnostics.length == 1")
+export rule diagnostics_uncounted {
+    // LICENSED compiler.diagnostics_uncounted: the pattern's own text names the shape it detects
+    quote { ${a}.diagnostics >= 1 } -> uncounted(a),
+}
+
+@keeps("a.diagnostics == 1")
+export rule diagnostics_length_uncounted {
+    // LICENSED compiler.diagnostics_length_uncounted: the pattern's own text names the shape it detects
+    quote { ${a}.diagnostics.length >= 1 } -> uncounted(a),
+}
+
+@keeps("p.voices.list.length == 1")
+export rule voices_uncounted {
+    // LICENSED compiler.voices_uncounted: the pattern's own text names the shape it detects
+    quote { ${p}.voices.list.length >= 1 } -> uncounted(p),
+}
+
+fn uncounted(src: Code) -> Fix {
+    Fix.Say(said(src.loc(), "a refusal asserted as `>= 1` — a cascade of five passes it; pin the count (`refused_with`, `refused_n`, or `== n`)", "this assertion", null))
+}
+
+/// A region instruction emitted raw in a feature — the emission
+/// vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`,
+/// `close_region`/`close_region_as`. The vocabulary's own file is
+/// exempt. Every `Ins` variant `open_region`'s family covers:
+/// `IfStart`, `ArmEnd`, `RegionEnd`, `LoopStart`, `LoopCond`,
+/// `LoopEnd`.
+///
+/// NO REWRITE: the matched call is ONE instruction out of a BRACKET —
+/// `open_region`/`loop_start` wrap the region's OPEN *and* its whole
+/// body *and* its close as one verb, so replacing just this raw emit
+/// would leave its paired raw close (elsewhere in the same body,
+/// outside this pattern's own span) unconverted and the two halves
+/// mismatched. The fix is the enclosing region rewritten as a unit,
+/// which is a judgement call about where that region starts and ends,
+/// not a site-local substitution.
+// LICENSED compiler.if_start_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.ArmEnd(v))")
+export rule if_start_raw {
+    // LICENSED compiler.if_start_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.IfStart(${c})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "IfStart"),
+}
+
+// LICENSED compiler.loop_start_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.LoopEnd)")
+export rule loop_start_raw {
+    // LICENSED compiler.loop_start_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.LoopStart) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopStart"),
+}
+
+// LICENSED compiler.arm_end_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.RegionEnd(dst, last))")
+export rule arm_end_raw {
+    // LICENSED compiler.arm_end_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.ArmEnd(${v})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "ArmEnd"),
+}
+
+// LICENSED compiler.region_end_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.LoopCond(more))")
+export rule region_end_raw {
+    // LICENSED compiler.region_end_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.RegionEnd(${dst}, ${last})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "RegionEnd"),
+}
+
+// LICENSED compiler.loop_cond_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.LoopStart)")
+export rule loop_cond_raw {
+    // LICENSED compiler.loop_cond_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.LoopCond(${more})) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopCond"),
+}
+
+// LICENSED compiler.loop_end_raw: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.IfStart(c))")
+export rule loop_end_raw {
+    // LICENSED compiler.loop_end_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.LoopEnd) } if !it.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopEnd"),
+}
+
+fn raw_region_ins(cx: Code, name: string) -> Fix {
+    Fix.Say(said(cx.loc(), "a region/loop instruction (${name}) emitted raw — speak features/emit.av's verb (open_region / arm_end / close_region / loop_start / loop_cond / loop_end) instead", "this call", null))
+}
+
+/// A raw scope bracket through a lowering context — the frame verbs
+/// (`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`,
+/// `arm_stmts`) are the spelling; a raw bracket is invisible to the
+/// `defer` frames. Their own implementation
+/// (compiler/lower/walk.av) is exempt.
+///
+/// NO REWRITE, the same reason as the region family above: this is
+/// half a bracket, its other half elsewhere in the body.
+// LICENSED compiler.scope_enter_raw: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.ScopeExit(g))")
+export rule scope_enter_raw {
+    // LICENSED compiler.scope_enter_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.ScopeEnter(${tier})) } if !it.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx),
+}
+
+// LICENSED compiler.scope_exit_raw: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.ScopeEnter(t))")
+export rule scope_exit_raw {
+    // LICENSED compiler.scope_exit_raw: the pattern's own text names the shape it detects
+    quote { ${cx}.emit(Ins.ScopeExit(${gives})) } if !it.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx),
+}
+
+fn raw_scope_ins(cx: Code) -> Fix {
+    Fix.Say(said(cx.loc(), "a raw scope bracket through a lowering context — the frame verbs (scope_enter/scope_exit, seats_enter/seats_exit, arm_stmts) are the spelling; a raw bracket is invisible to the defer frames", "this call", null))
+}
+
+/// A structural type interned by hand where a type literal spells
+/// it — a scalar shape's own constructor call, held by hand instead
+/// of read off the surface syntax. The scalar shapes rewrite
+/// directly; the aggregate ones (`Opt`/`List`/`Map`/`Res`) carry an
+/// inner shape a rewrite cannot re-spell without re-deriving it
+/// (`intern(Type.Str)` vs `Type.Str` vs an already-bound `TypeId`
+/// all reach the same inner type by different routes), so they Say.
+/// core/types.av's own `interned`/`substituted` is the fold that
+/// GIVES a type literal its meaning, recursing through `intern(...)`
+/// by construction — the family's one exempt file, on every rule
+/// below: rewriting its OWN base case into `.type(T)` would call
+/// back into the fold this rule's rewrite exists to shortcut.
+// LICENSED compiler.interned_int: the example's own text names the shape it detects
+@fixes("types.intern(Type.Int)", "types.type(int)")
+export rule interned_int {
+    // LICENSED compiler.interned_int: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Int) } if !it.of.view.source.file.ends_with("core/types.av") -> quote { ${r}.type(int) },
+}
+
+// LICENSED compiler.interned_str: the example's own text names the shape it detects
+@fixes("types.intern(Type.Str)", "types.type(string)")
+export rule interned_str {
+    // LICENSED compiler.interned_str: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Str) } if !it.of.view.source.file.ends_with("core/types.av") -> quote { ${r}.type(string) },
+}
+// LICENSED compiler.interned_opt: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(string?)")
+export rule interned_opt {
+    // LICENSED compiler.interned_opt: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Opt(${inner})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Opt", "T?"),
+}
+
+// LICENSED compiler.interned_list: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(List<string>)")
+export rule interned_list {
+    // LICENSED compiler.interned_list: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.List(${inner})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "List", "List<T>"),
+}
+
+// LICENSED compiler.interned_map: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(Map<string, int>)")
+export rule interned_map {
+    // LICENSED compiler.interned_map: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Map(${key}, ${value})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Map", "Map<K, V>"),
+}
+
+// LICENSED compiler.interned_res: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(Result<int, string>)")
+export rule interned_res {
+    // LICENSED compiler.interned_res: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Res(${ok}, ${err})) } if !it.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Res", "Result<T, E>"),
+}
+
+fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
+    Fix.Say(said(r.loc(), "`${r.text()}.intern(Type.${shape}(…))` — a structural shape a type literal spells: `${r.text()}.type(${literal})`", "this call", null))
+}
+
+/// A fact column sized by hand, or an id read through an offset —
+/// `SideTable<V>` states the window, the growth and the
+/// out-of-window defect once: `side_table(name, lo, hi, seed)`,
+/// `get(id)`, `grow_to(n)`.
+///
+/// NO REWRITE: adopting `SideTable<V>` means replacing the surrounding
+/// TABLE's own declaration and every other site that reads or grows
+/// it, all outside this one arithmetic expression's span — an
+/// architectural change this pattern's one bound subtraction cannot
+/// see, let alone perform.
+@keeps("k.length - base_id.length")
+export rule hand_sized_index {
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { ${e}.index - ${k} } -> hand_sized(e, k),
+}
+
+// LICENSED style.filled_by_arena_count: the voice quotes the matched text back, which names the shape it detects
+fn hand_sized(e: Code, k: Code) -> Fix {
+    Fix.Say(said(e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
+}
+
+/// `hand_sized_index`'s sibling half of ONE idiom: a fact column
+/// SEEDED from an arena's own count — `filled(store.exprs.count(),
+/// null)` — rather than through `SideTable<V>`, which states the
+/// storage, the window, the growth and the out-of-window defect once.
+/// TWO ARMS, one shape: `filled(...)` and `filled<T>(...)` — a
+/// pinned type argument is a TYPE-seat hole (avra-8sb5.25.10), held
+/// open only so the SECOND arm's message can quote it back; the smell
+/// is the same either way, the first ARGUMENT ending in `.count()`.
+///
+/// NO REWRITE, `hand_sized_index`'s own reason: adopting `SideTable<V>`
+/// means replacing the surrounding TABLE's own declaration and every
+/// other site that reads or grows it, outside this one call's span.
+@keeps("filled(n, null)")
+@keeps("filled<TypeId>(n, hole)")
+export rule filled_by_arena_count {
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { filled(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, null),
+    // LICENSED style.filled_by_arena_count: the pattern's own text names the shape it detects
+    quote { filled<${t}>(${n}.count(), ${seed}) } -> hand_sized_column(n, seed, t),
+}
+
+// LICENSED style.filled_by_arena_count: the voice quotes the matched text back, which names the shape it detects
+fn hand_sized_column(n: Code, seed: Code, t: TypeRef?) -> Fix {
+    let head = match t {
+        ty? -> "filled<${ty.text()}>"
+        null -> "filled"
+    }
+    Fix.Say(said(n.loc(), "`${head}(${n.text()}.count(), ${seed.text()})` is a fact column sized from an arena's count — SideTable<V> states the storage, the window, the growth and the out-of-window defect once", "this call", null))
+}
+
+/// A walk over a NodeStore's own statements BY INDEX — `for i in
+/// 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()`
+/// hands the ids themselves, the thing every such walk actually
+/// wants. A BARE-HOLE ROOT, structural GUARD (`Code.for_range`,
+/// features/code.av, the same shape `loops.index_walk` reads its own
+/// range head off): the bound is `${owner}.stmts.count()` here
+/// rather than a list's `.length`. `core/store.av` is exempt — its
+/// own `stmt_ids()` IS this walk, the one place it is allowed to be
+/// spelled out.
+///
+/// NO REWRITE: the body may read `i` as a plain int (a map key, an
+/// offset into a side table) as freely as it may use it to look a
+/// statement up by id — only a human reading the body can tell
+/// which, and `decls_mint.av`'s own walk needs the int (a `by_stmt`
+/// map key), not the id.
+@keeps("for i in 0..xs.length { log(i) }")
+export rule stmt_index_walk {
+    quote { ${lit} } if stmt_index_walked(lit) -> stmt_index_walk_found(lit),
+}
+
+fn stmt_index_walked(lit: Code) -> bool {
+    if lit.of.view.source.file.ends_with("core/store.av") { return false }
+    let r? = lit.for_range() else { return false }
+    r.from.text() == "0" && r.to.text().ends_with(".stmts.count()")
+}
+
+fn stmt_index_walk_found(lit: Code) -> Fix {
+    let r = lit.for_range()!
+    Fix.Say(said(r.to.loc(), "an index walk over a store's statements — `for s in store.stmt_ids()` hands the ids themselves", "this loop", null))
+}
+
+/// A VOCABULARY VERB written as a free fn taking a pass STATE first —
+/// `open_region(cx, c)`, `sig(ws, d)` — where the state's own impl IS
+/// its vocabulary, so the verb belongs there as a method
+/// (`cx.open_region(c)`, `ws.sig(d)`). A BARE-HOLE ROOT, structural
+/// GUARD (`Code.fn_params`, features/code.av, the same door
+/// `modified_copy_literal`/`one_body_arms` read a struct literal's
+/// fields and a `match`'s arms through): a param LIST has no fixed
+/// arity a quote pattern can spell, so only the FIRST param's own
+/// written type is asked, structurally, never bound through the
+/// pattern itself. THE REACH is the pass's own files — a `fn`
+/// declared directly under `features/` or `compiler/`, never one
+/// nested a directory deeper (`features/quote/lower.av`'s own
+/// dispatch targets stay free, `push_loop`'s same file-shape test).
+///
+/// NO REWRITE: the fix moves the fn's BODY inside the state's `impl`
+/// block and every CALL SITE loses its first argument — a
+/// whole-declaration refactor this pattern's one bound param cannot
+/// see, let alone perform.
+@keeps("fn f(a: int, b: int) -> int { a + b }")
+@keeps("fn lower(a: Analysis) -> Lowered { a }")
+export rule free_state_verb {
+    quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit),
+}
+
+/// The states a vocabulary verb's OWN impl belongs to — `open_region`,
+/// `accepts`, `sig` and their like all read or write one of these.
+const state_types: List<string> = ["TypeCx", "LowerCx", "ResolveCx", "Survey", "Workspace", "Decls", "Builder", "Body", "Scope"]
+
+/// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
+/// directly under `features/` or `compiler/` and that param's own
+/// written type is one of `state_types` — absent for every other
+/// shape (not a `fn`, no params, a nested feature file, an unrelated
+/// first type, or a `fn` that is not top-level: a trait's own method
+/// SIGNATURE (`fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId`,
+/// features/contract.av's `NodeSemantics`) is a DISPATCH TARGET
+/// `cx` reaches BY NODE KIND, never a vocabulary verb wanting to move
+/// onto `cx`'s own impl, and an `impl`'s method is the same shape one
+/// door over — both are indented, unlike a free fn, which the retired
+/// regex's own column-0 anchor already excluded them by).
+fn free_state_param(lit: Code) -> Code? {
+    if !is_pass_file(lit.of.view.source.file) { return null }
+    if !is_top_level(lit) { return null }
+    let params? = lit.fn_params() else { return null }
+    let p0? = params.first() else { return null }
+    if !is_state_type(p0.decl_type()) { return null }
+    p0
+}
+
+fn is_state_type(t: TypeRef?) -> bool {
+    let ty? = t else { return false }
+    state_types.contains(ty.name)
+}
+
+/// Whether `lit` sits at its file's own column zero — unindented,
+/// never nested inside an `impl`/`trait` body. NOTHING between the
+/// previous newline and `lit`'s own start, not merely nothing but
+/// whitespace there — an indented `fn` is whitespace too, and
+/// `.trim()` would call four leading spaces "empty" as readily as
+/// none. `export` is the one mark this checks for by name: a
+/// `FnDecl`'s own span starts at `fn`, so an EXPORTED top-level fn
+/// carries `"export "` between the line's start and its span, never
+/// nothing — the retired regex's own `(?:export )?` said the same.
+fn is_top_level(lit: Code) -> bool {
+    let loc? = lit.loc() else { return false }
+    let text = lit.of.view.source.text
+    let start = line_start_of(text, loc.lo)
+    let prefix = text.substring(start, loc.lo)
+    prefix.is_empty() || prefix == "export "
+}
+
+/// The index one past the newline before `at`, or 0 when there is
+/// none — where `at`'s own LINE begins.
+fn line_start_of(text: string, at: int) -> int {
+    // LICENSED style.hand_rolled_scan: a backward scan to the previous newline; the subset has no rfind
+    mut i = at
+    while i > 0 && text.char_code(i - 1) != 10 { i = i - 1 }
+    i
+}
+
+/// Whether `file` names a `.av` file DIRECTLY under `features/` or
+/// `compiler/` — one path segment, never a feature's own subdirectory
+/// (`features/quote/lower.av`'s parent is `quote`, not `features`).
+fn is_pass_file(file: string) -> bool {
+    let segs = file.split("/")
+    let n = segs.length
+    n >= 2 && (segs[n - 2] == "features" || segs[n - 2] == "compiler")
+}
+
+fn free_state_verb_found(lit: Code) -> Fix {
+    let p0 = free_state_param(lit)!
+    let ty = p0.decl_type()!
+    Fix.Say(said(lit.loc(), "a vocabulary verb written as a free fn taking a pass state first (`${ty.text()} ${p0.name() ?? "?"}`) — the state's own impl IS its vocabulary, so this belongs there as a method instead", "this fn", null))
+}
+
+/// A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x",
+/// args)` / `Ins.CallRtVoid("avra_x", args)` — instead of through its
+/// GENERATED method (`cx.x(sh, args)`, features/rt.av, minted from
+/// `core/rt_namespace.av`'s projection of `rt_sigs()`). A row's
+/// method carries the row's own arity in its signature, so a
+/// misspelled row is the ordinary "no method" refusal at typing and
+/// a wrong seat count the ordinary fn-arity refusal; a bare string
+/// reopens both holes a typo can hide behind. Two files spell the
+/// string BY DESIGN and are exempt: `compiler/suite_entry.av` builds
+/// the TEST BINARY's own entry from its own separate row table, never
+/// `rt_sigs()`; `compiler/memory/memory.av` rewrites an
+/// ALREADY-LOWERED instruction's string field (the owned-twin
+/// substitution) — neither reads a row through `LowerCx`.
+///
+/// NO REWRITE, but not for the reason it looks: the generated
+/// method's own NAME is a MECHANICAL string transform on the row name
+/// (`short_name`, core/rt_namespace.av — strip the five-character
+/// `avra_` prefix, nothing else). What this pattern cannot mechanize
+/// is the SHAPE: the generated method MINTS the destination itself
+/// (`self.call(sh, …)`), so a sound rewrite folds in the `dst`'s own
+/// mint call too, and that mint sits in an EARLIER statement this
+/// bare `Ins.CallRt(…)` expression never binds — the same
+/// position-shift hazard `raw_mint_emit`'s own family carries (moving
+/// a mint across `${..mid}` statements can reorder side effects), and
+/// the reason that family names `CallRt`/`CallRtVoid` as its
+/// EXCLUSION rather than a tenth sibling.
+@keeps("cx.array_sized(sh, size)")
+export rule raw_rt_call {
+    quote { Ins.CallRt(${dst}, ${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
+}
+
+/// The void twin — no `dst` to bind.
+@keeps("self.array_push(box, v)")
+export rule raw_rt_call_void {
+    quote { Ins.CallRtVoid(${name}, ${args}) } if is_rt_string(name) -> raw_rt_call_found(name),
+}
+
+fn is_rt_string(name: Code) -> bool {
+    if !name.text().starts_with("\"avra_") { return false }
+    let f = name.of.view.source.file
+    !f.ends_with("compiler/suite_entry.av") && !f.ends_with("compiler/memory/memory.av")
+}
+
+fn raw_rt_call_found(name: Code) -> Fix {
+    Fix.Say(said(name.loc(), "a runtime row named by a bare string, ${name.text()} — the generated method carries the row's own arity (`cx.<name>(sh, args)`, features/rt.av), so a misspelled row or a wrong seat count refuses at typing instead of waiting for a typo nothing catches", "this call", null))
+}
+
+/// A `mut` list built to answer "have I seen this before" — a
+/// POSITION law once the whole list is already in hand: the first
+/// index a value occurs at is decided by `.index_of`, compared
+/// against the current one (`xs.index_of(x) < j`, over `enumerate`),
+/// which is what `duplicate_names` (features/contract.av) already
+/// reads instead of accumulating. `${..head}`/`${..body}` — a run
+/// hole (avra-8sb5.25.10) — is what lets this rule sit ANYWHERE in
+/// the enclosing block rather than only as its first statement.
+///
+/// NO REWRITE: the replacement (`xs.index_of(x) < j`) names an `xs`
+/// and a `j` — the enclosing loop's own iterable and index — that
+/// this pattern never binds (it matches a bare accumulator
+/// declaration, not the loop around it), and the `contains`/`push`
+/// call SITES to rewrite live inside `body`'s own text, which a hole
+/// only ever splices whole, never edits.
+@keeps("{\n    mut seen: List<string> = []\n    log(x)\n}")
+export rule seen_accumulator {
+    quote {
+        {
+            ${..head}
+            mut ${seen}: List<string> = ${init}
+            ${..body}
+        }
+    } if calls(body, seen, "contains") && calls(body, seen, "push") -> seen_accumulator_found(seen, init),
+}
+
+/// Whether any of `body`'s statements calls `${seen}.${verb}(`.
+fn calls(body: List<Code>, seen: string, verb: string) -> bool {
+    let want = seen + "." + verb + "("
+    body.any(it.text().contains(want))
+}
+
+fn seen_accumulator_found(seen: string, init: Code) -> Fix {
+    let message = "`mut " + seen + "` accumulates what has been seen so a later turn can ask `" + seen + ".contains(...)` — once the whole list it is scanning is already in hand, that is a POSITION law: `xs.index_of(x) < j`, over `enumerate`"
+    Fix.Say(said(init.loc(), message, "this accumulator", null))
+}
+
+/// `emit` immediately followed by `intern(Type.Error)` — the pair a
+/// typing law's refusal tail always ends with — is `spoken(d)`.
+///
+/// NO REWRITE: `spoken` is `self.emit(d); self.error_type` — a METHOD
+/// on the SAME receiver both statements act through, which this
+/// pattern binds as two SEPARATE holes (`${cx}` and `${r}`) and never
+/// checks agree; when they do not (`r` is `cx.view.types`, say, not
+/// `cx` itself) `cx.spoken(d)` answers `cx`'s cached error type, not
+/// what `${r}.intern(Type.Error)` would have — a DIFFERENT value on a
+/// DIFFERENT receiver. Whether the pair even collapses depends on a
+/// fact this pattern does not hold; the voice differs by site.
+@keeps("{\n    cx.emit(d)\n    other()\n}")
+export rule emit_then_error {
+    quote {
+        {
+            ${..head}
+            ${cx}.emit(${d})
+            ${r}.intern(Type.Error)
+            ${..rest}
+        }
+    } -> emit_then_error_found(cx, d),
+}
+
+fn emit_then_error_found(cx: Code, d: Code) -> Fix {
+    Fix.Say(said(cx.loc(), "`${cx.text()}.emit(${d.text()})` immediately followed by `.intern(Type.Error)` — the pair is `spoken(${d.text()})`", "this pair", null))
+}
+
+/// A `push` held open across a stretch of work until a later `pop`
+/// on the same name — a bracket fn taking a thunk owns the pop on
+/// every path out, not just the one written.
+///
+/// NO REWRITE: the fix wraps `rest` UP TO the matching `pop` in a
+/// thunk and hands it to a bracket fn that owns the pop on every exit
+/// — which needs every early-return/fail/break inside that stretch
+/// found and folded in, and (often) a bracket fn that does not exist
+/// yet to be written. `popped` only confirms a `pop` call's TEXT
+/// appears somewhere in `rest`; it locates none of that.
+@keeps("{\n    let f = go()\n}")
+export rule bracket_ritual {
+    quote {
+        {
+            ${..head}
+            ${v}.push(${x})
+            ${..rest}
+        }
+    } if popped(rest, v.text()) -> bracket_ritual_found(v, x),
+}
+
+fn popped(rest: List<Code>, name: string) -> bool {
+    rest.any(it.text().contains(name + ".pop()"))
+}
+
+fn bracket_ritual_found(v: Code, x: Code) -> Fix {
+    Fix.Say(said(v.loc(), "`${v.text()}.push(${x.text()})` held open across a stretch of work until a later `${v.text()}.pop()` — a bracket fn taking a thunk owns the pop on every path out, not just the one written", "this push", null))
+}
+
+/// A register MINTED, then DEFINED by a raw `emit(Ins...)` a few
+/// statements later, outside the emission vocabulary itself — where
+/// a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a,
+/// b)`, features/emit.av). THE MINT LAW ("a register is defined in
+/// the order it was minted") holds by CONSTRUCTION once the mint and
+/// the emit are one call; split across two statements, a refactor
+/// can separate them and the register defines out of order with
+/// nothing to catch it. `features/emit.av` is exempt — it IS the
+/// vocabulary these verbs collapse into, so its own bodies mint then
+/// emit by hand once, on purpose. Nine sibling rules, one per Ins
+/// variant a vocabulary verb covers (`CallRt`/`CallRtVoid` are
+/// `raw_rt_call`'s concern, never this one's; `FnAddr`, `ConstFloat`
+/// and a bare `Alloca` have no covering verb in any form, so there is
+/// nothing for a rule to measure there yet).
+///
+/// TWO SEPARATE HOLES, `${dst}`/`${dst2}`, checked by TEXT: the let's
+/// own binder is a NAME seat (`own_name_at`'s catalog), the emit's
+/// argument an ordinary VALUE seat, and the matcher compares the two
+/// kinds of seat under incompatible rules — reusing one binder index
+/// across both can never hit (avra-8sb5.25.45).
+///
+/// NO REWRITE: a site whose one minted register is read across
+/// several branches (a match arm per literal kind, a defect arm
+/// answering the same register the success arm defines) cannot
+/// collapse to one call, and telling that shape apart from the
+/// ordinary case needs more than this pattern's two statements hold.
+///
+/// NARROWER THAN THE RETIRED REGEX, structurally: the ROOT is a
+/// BLOCK — `if`/`while`/`for` bodies are flat statement lists on
+/// their OWN node (core/nodes.av's `IfStmt`, `While`, `For`), never a
+/// nested `Block`, so a pair sitting inside one (`hollow_of`'s two
+/// `ConstBool`/`ConstFloat` sites, values.av) is outside this
+/// pattern's reach — the same shape `bracket_ritual`/
+/// `seen_accumulator` already carry. Both stay licensed by comment
+/// for a human reader; a native finding never reaches them to ask.
+fn is_mint_call(mint: Code) -> bool {
+    if mint.of.view.source.file.ends_with("features/emit.av") { return false }
+    let t = mint.text()
+    [
+        "self.mint_shape(",
+        "cx.mint_shape(",
+        "self.mint_ty(",
+        "cx.mint_ty(",
+        "self.mint_like(",
+        "cx.mint_like(",
+        "self.result(",
+        "cx.result(",
+    ].any((p) -> t.starts_with(p))
+}
+
+fn raw_mint_emit_found(dst: Code, variant: string) -> Fix {
+    Fix.Say(said(dst.loc(), "`${dst.text()}` minted, then defined by a raw `emit(Ins.${variant}(…))` a few statements later — a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a, b)`, …, features/emit.av), which holds the mint law by construction", "this mint", null))
+}
+
+export rule raw_mint_emit_bin {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Bin(${dst2}, ${op}, ${a}, ${b}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Bin"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+export rule raw_mint_emit_un {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Un(${dst2}, ${op}, ${src}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Un"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_pack {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Pack(${dst2}, ${elems}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Pack"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_call {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Call(${dst2}, ${callee}, ${args}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Call"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_call_ptr {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.CallPtr(${dst2}, ${f}, ${args}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "CallPtr"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Int)\n    log(dst)\n}")
+export rule raw_mint_emit_const_int {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstInt(${dst2}, ${v}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstInt"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Bool)\n    log(dst)\n}")
+export rule raw_mint_emit_const_bool {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstBool(${dst2}, ${v}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstBool"),
+}
+
+@keeps("{\n    let dst = cx.mint_shape(Type.Str)\n    log(dst)\n}")
+export rule raw_mint_emit_const_str {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.ConstStr(${dst2}, ${s}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "ConstStr"),
+}
+
+@keeps("{\n    let dst = cx.mint_ty(ty)\n    log(dst)\n}")
+export rule raw_mint_emit_load {
+    quote {
+        {
+            ${..head}
+            let ${dst} = ${mint}
+            ${..mid}
+            ${cx}.emit(Ins.Load(${dst2}, ${slot}))
+            ${..rest}
+        }
+    } if is_mint_call(mint) && dst == dst2.text() -> raw_mint_emit_found(dst2, "Load"),
+}
+
+/// A struct literal copying every other field from ONE subject — that
+/// is `with`. Guarded RULE-SIDE over `kids()` (`Expr.StructLit` has no
+/// fixed field count a quote pattern can spell): a field COPIES when
+/// its value is STRUCTURALLY `subject.<its own field name>` — a `Prop`
+/// node whose own name agrees, never a text guess (a compound value
+/// that merely ENDS in `.field`, `a.x + b.x`, is not a `Prop` and is
+/// refused before its "subject" is trusted). The rule fires only when
+/// AT LEAST TWO fields agree on ONE copied subject (the MOST-COPIED
+/// one, when more than one candidate appears) and at least one other
+/// field does not — a lone copy is too weak a signal. A field copying
+/// a DIFFERENT subject than the winner is read as "modified" too,
+/// same as one copying nothing at all — `with` only ever names ONE
+/// subject, so every other field is what it says explicitly, whatever
+/// its own value happens to look like.
+/// Narrower than the retired regex: no DECLARED-TYPE trace for the
+/// FIELDS (a coincidental `x.field` name match is accused too) — but
+/// the SUBJECT's own type IS asked (`same_type`), because `with`
+/// requires it: a subject typed differently from the literal being
+/// built merely SHARES some field names, and `subject with { … }`
+/// there is not a rewrite, it is a type error (`Parsed`'s `store`/
+/// `stmts`/`source` read exactly like a `FileView`'s until the two
+/// are checked against each other).
+@fixes("Widget { name: w.name, value: 2, extra: w.extra }", "w with { value: 2 }")
+@keeps("Widget { name: \"fixed\", value: 2 }")
+@keeps("Widget { name: other.name, value: another.value }")
+@keeps("Tally { a: x.a + y.a, b: x.b + y.b }")
+@keeps("Widget { name: w.name, value: 2, extra: 3 }")
+export rule modified_copy_literal {
+    quote { ${lit} } if lit.is_struct_lit() -> copy_literal_check(lit),
+}
+
+/// A struct literal has no FIXED field count a `quote` pattern OR a
+/// `quote` template can spell (avra-8sb5.25's run holes reach a
+/// statement/arm list, never a field list yet), so `with`'s own
+/// field run is built the same way the SAY voice already built its
+/// message: text, joined, and spliced whole through `@std.meta.name`
+/// — the one door a rule has for a shape templates cannot hold
+/// (`modified_copy_literal`'s own `///`, `features/fix.av`).
+fn copy_literal_check(lit: Code) -> Fix? {
+    let fields = lit.kids()
+    let subject_codes = [s! for s in [field_copy_subject(f) for f in fields] if s != null]
+    let subjects = [s.text() for s in subject_codes]
+    let subj? = most_copied(subjects) else { return null }
+    let modified = [f for f in fields if subject_text(f) != subj]
+    if modified.is_empty() || !modified.all(it.name() != null) { return null }
+    let subj_code? = subject_codes.find(it.text() == subj) else { return null }
+    if !same_type(lit, subj_code) { return null }
+    Fix.Rewrite(name("${subj} with { ${field_list(modified)} }"))
+}
+
+/// Whether `lit` (the literal being built) and `subj` (the copied
+/// value) wear the SAME interned type — `with`'s own requirement,
+/// never assumed from the field-name agreement alone. Absent (never
+/// matched) when either side's type did not resolve.
+fn same_type(lit: Code, subj: Code) -> bool {
+    let lt? = lit.type() else { return false }
+    let st? = subj.type() else { return false }
+    lt.same(st)
+}
+
+fn subject_text(f: Code) -> string? {
+    field_copy_subject(f)?.text()
+}
+
+/// The subject copied by the MOST fields, when at least two agree —
+/// absent when every subject is a lone copy.
+fn most_copied(subjects: List<string>) -> string? {
+    let distinct = [s for i, s in subjects if subjects.index_of(s) == i]
+    // LICENSED style.hand_rolled_scan: a max-by fold; the subset has no reduce/max_by
+    mut best: string? = null
+    mut best_n = 1
+    for s in distinct {
+        let n = [x for x in subjects if x == s].length
+        if n > best_n {
+            best = s
+            best_n = n
+        }
+    }
+    best
+}
+
+/// The subject `f` copies, when its value is exactly `subject.<f's own
+/// name>` — a `Prop` whose own name agrees with the field's; absent
+/// for every other shape, structurally, never a text suffix guess.
+fn field_copy_subject(f: Code) -> Code? {
+    let n? = f.name() else { return null }
+    let value? = f.kids().first() else { return null }
+    if value.prop_name() != n { return null }
+    value.kids().first()
+}
+
+fn field_list(fields: List<Code>) -> string {
+    [described_field(f) for f in fields].join(", ")
+}
+
+fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
+
+/// Two ADJACENT `match` arms answering one IDENTICAL body — `or`
+/// joins their patterns (`.Struct(d, _) -> d`, `.Enum(d, _) -> d` is
+/// `.Struct(d, _) or .Enum(d, _) -> d`), since the alternatives may
+/// bind (every one binding the same names at the same types, F2039's
+/// law). GUARDED RULE-SIDE over `Code.arms()` (`Expr.Match` has no
+/// fixed arm count a quote pattern can spell): two sibling arms agree
+/// when neither carries a guard and their VALUE Codes are text-equal
+/// — wider than the retired regex, which read single-line arms only.
+///
+/// THE LAW TRUSTS THE TYPE-CHECK, NEVER THE IR MATCH: whether the
+/// join is SOUND is the alternatives-bind question — do the two
+/// patterns bind the same names at the same types (F2039)? — a
+/// TYPING fact this rule-side text scan does not carry, so the
+/// rewrite does not answer it either. Two arms sharing one body lower
+/// as TWO copies of it, one per jump-table entry; the merged
+/// `or`-arm lowers as ONE — fewer instructions after every honest
+/// join, so `ir_proved`'s instruction-for-instruction comparison can
+/// never confirm this rewrite BY CONSTRUCTION, whether or not it is
+/// sound. `@law` trusts the equivalence and asks only that the
+/// splice still TYPECHECK: a mismatched bind refuses there (F2039)
+/// exactly as it would have under a full IR match, so the law costs
+/// nothing the proof was ever going to buy — the same door
+/// `modified_copy_literal`'s `with` collapse already stands behind.
+@fixes("match k { .Struct(d, _) -> d, .Enum(d, _) -> d }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
+@keeps("match k { .A -> 1, .B -> 2 }")
+@law("two match arms whose bodies are identical text answer the same value whichever pattern matched, so joining the patterns with `or` changes nothing but which arm parses the choice")
+export rule one_body_arms {
+    quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit),
+}
+
+/// The second arm's own INDEX of the first adjacent, unguarded,
+/// same-body pair — absent when `lit` is not a `match`, or none of
+/// its sibling arms agree. `.arms()` also answers for a `rule {}`
+/// declaration's own arm list (the SAME shape internally), which
+/// carries no real `match SUBJECT { … }` text for the rewrite to
+/// splice a subject into — `lit.text()` starting with the keyword is
+/// what tells a genuine match expression from that borrowed shape.
+fn merge_index(lit: Code) -> int? {
+    if !lit.text().starts_with("match ") { return null }
+    let arms? = lit.arms() else { return null }
+    for i in 1..arms.length {
+        let a = arms[i - 1]
+        let b = arms[i]
+        if a.guard == null && b.guard == null && a.value.text() == b.value.text() { return i }
+    }
+    null
+}
+
+/// The rewrite: every OTHER arm re-spliced as it already reads, the
+/// merged pair's own pattern LISTS concatenated (an already-`or`
+/// sibling's own alternatives ride along whole) under the shared
+/// body, subject to `merge_index`'s own text-equal answer alone.
+fn one_body_arms_fix(lit: Code) -> Fix {
+    let i = merge_index(lit)!
+    let arms = lit.arms()!
+    let subj = lit.kids().first()!.text()
+    Fix.Rewrite(name("match ${subj} { ${merged_arms_text(arms, i)} }"))
+}
+
+fn merged_arms_text(arms: List<ArmInfo>, i: int) -> string {
+    let merged = arm_text(ArmInfo { pats: arms[i - 1].pats.concat(arms[i].pats), guard: null, value: arms[i - 1].value })
+    let before = [arm_text(arms[k]) for k in 0..i - 1]
+    let after = [arm_text(arms[k]) for k in i + 1..arms.length]
+    before.concat([merged]).concat(after).join(", ")
+}
+
+/// One arm, re-spelled: its own patterns joined by `or`, its guard
+/// when it carries one, its value — the same text `avra fmt` would
+/// already print for an untouched arm.
+fn arm_text(a: ArmInfo) -> string {
+    let pats = [p.text() for p in a.pats].join(" or ")
+    let guard = match a.guard {
+        g? -> " if " + g.text()
+        null -> ""
+    }
+    pats + guard + " -> " + a.value.text()
+}
+
+/// A long string literal written twice in one PRODUCT file — a
+/// message repeated rather than named. Guarded to a SHARED-SENTENCE
+/// shape (20+ characters, starting lowercase, the house style every
+/// diagnostic and fixture message already wears) so a short symbolic
+/// literal repeated by coincidence (a type name, a key) never fires;
+/// `fingerprint_siblings()` answers by STRUCTURE, never by re-reading
+/// `.text()`. Tests are exempt: a repeated fixture there is not a
+/// message that can drift.
+///
+/// NO REWRITE: the fix is a fn the caller names — a judgement call
+/// this pattern's one bound literal cannot make on its own.
+@keeps("\"a message long enough to be shared\"")
+export rule duplicated_message {
+    quote { ${lit} } if is_shared_message(lit) -> duplicated_message_found(lit),
+}
+
+fn is_shared_message(lit: Code) -> bool {
+    if lit.of.view.source.file.contains("/tests/") { return false }
+    let v? = lit.str_lit_value() else { return false }
+    // A MESSAGE READS AS PROSE, A CODE READS AS A KEY: `.contains(" ")`
+    // is what tells "pop on an empty list" from "type.derive_contract"
+    // or a builder row's own name — a diagnostic kind and a grammar's
+    // build-call target are MEANT to repeat their one name everywhere
+    // they are read, which is the opposite of the smell this rule
+    // names.
+    v.length >= 20 && v.contains(" ") && starts_lowercase(v) && !lit.fingerprint_siblings().is_empty()
+}
+
+fn starts_lowercase(s: string) -> bool {
+    if s.is_empty() { return false }
+    let c = s.char_code(0)
+    c >= 97 && c <= 122
+}
+
+fn duplicated_message_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "a long string duplicated in this file — a shared message is a fn", "this literal", null))
+}
+
+/// A struct literal written twice in one PRODUCT file, field for
+/// field — a fixture built by hand rather than named. Tests are
+/// exempt: a fixture built twice there is the test being explicit.
+///
+/// NO REWRITE: the fix names a constructor fn — a judgement call
+/// this pattern's one bound literal cannot make on its own.
+@keeps("Span { lo: 0, hi: 1 }")
+@keeps("fn f() {\n    let a = Empty {}\n    let b = Empty {}\n}")
+@keeps("fn f() {\n    let a = ExprId { index: 0 }\n    let b = ExprId { index: 0 }\n}")
+export rule duplicated_literal {
+    quote { ${lit} } if is_shared_literal(lit) -> duplicated_literal_found(lit),
+}
+
+fn is_shared_literal(lit: Code) -> bool {
+    if lit.of.view.source.file.contains("/tests/") { return false }
+    // A fixture worth naming carries at least two fields — an empty
+    // literal (`BlockWords {}`) and a one-field newtype wrap
+    // (`ExprId { index: i }`) are not built, they are spelled, and
+    // every seat wants its own.
+    lit.is_struct_lit() && lit.kids().length >= 2 && !lit.fingerprint_siblings().is_empty()
+}
+
+fn duplicated_literal_found(lit: Code) -> Fix {
+    Fix.Say(said(lit.loc(), "an identical struct literal written twice in this file — name its constructor", "this literal", null))
+}
+
+/// The same method call computed twice on both sides of one `&&`/
+/// `||` — `cx.shape_at(e) && cx.shape_at(e)` — where the second call
+/// answers exactly what the first already holds. Guarded by
+/// FINGERPRINT, so `cx.shape_at(e) && cx.shape_at(f)` (a different
+/// argument) never fires.
+///
+/// NO REWRITE: `pure()` (features/code.av) answers a purity FACT only
+/// for the built-in vocabulary (List/Map/Cell/Bytes/Str) — "a
+/// user-declared method carries no purity fact yet, so it stays
+/// impure like any other call" — and `cx.shape_at` is exactly such a
+/// method. Folding `a && a` into `a` is sound only when `a` runs no
+/// side effect worth running twice; without that fact, the honest
+/// answer is to ask the reader, not the compiler.
+@keeps("let ok = cx.shape_at(e) && cx.shape_at(other)")
+export rule repeated_projection {
+    quote { ${a} && ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
+    quote { ${a} || ${b} } if is_repeated_call(a, b) -> repeated_projection_found(a),
+}
+
+fn is_repeated_call(a: Code, b: Code) -> bool {
+    a.is_method_call() && a.fp() == b.fp()
+}
+
+fn repeated_projection_found(a: Code) -> Fix {
+    Fix.Say(said(a.loc(), "`${a.text()}` computed twice on one line — bind it once and read the name", "this projection", null))
+}

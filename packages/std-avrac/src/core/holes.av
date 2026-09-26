@@ -24,7 +24,7 @@ export fn placeholder(parts: List<string>, holes: List<int>) -> string {
 /// The holes a name carries, or null for a written name. `$` spells
 /// no written name, so the test is one character.
 export fn hole_name(text: string) -> HoleName? {
-    if !text.contains("$") { return null }
+    if !text.contains("\$") { return null }
     mut parts: List<string> = []
     mut holes: List<int> = []
     mut run = 0
@@ -73,6 +73,9 @@ export enum HoleKind {
     Statement
     /// a lone name standing as a whole match arm
     Arm
+    /// a lone `${..name}` among a list of expressions — a call's
+    /// arguments, a list literal's elements
+    Run
 }
 
 /// The kind a template VALUE wears — one per `@std/meta` type.
@@ -109,6 +112,15 @@ export enum FillClass {
     Text
     Texts
     Named
+    /// A `features.Code` HANDLE — the compiler's own, never
+    /// `@std.meta.Code` — spliced as its own source text: an
+    /// expression seat only, and a rule's ONE way to answer a
+    /// rewrite around a bound hole (`quote { ${x} ?? ${d} }` with
+    /// `x` bound from a pattern).
+    Held
+    /// A `Format` head — `@std.meta`'s pattern — naming the record its
+    /// instance mints: where a type or an expression stands.
+    Pattern
 }
 
 /// THE SEAT LAW, one registry read by typing and by the splice: what
@@ -118,28 +130,32 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
     match kind {
         .Expression -> match class {
             .Template(k) -> k is .Code,
-            .Int or .Bool -> true,
+            .Int or .Bool or .Held or .Pattern -> true,
             .Templates(_) or .Text or .Texts or .Named -> false,
         },
         .Name -> match class {
             .Text or .Int or .Named -> true,
-            .Template(_) or .Templates(_) or .Bool or .Texts -> false,
+            .Template(_) or .Templates(_) or .Bool or .Texts or .Held or .Pattern -> false,
         },
         .Binder -> match class {
             .Text or .Int or .Named or .Texts -> true,
-            .Template(_) or .Templates(_) or .Bool -> false,
+            .Template(_) or .Templates(_) or .Bool or .Held or .Pattern -> false,
         },
         .Type -> match class {
-            .Text or .Named -> true,
-            .Template(_) or .Templates(_) or .Int or .Bool or .Texts -> false,
+            .Text or .Named or .Pattern -> true,
+            .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Held -> false,
         },
         .Statement -> match class {
             .Template(k) or .Templates(k) -> !(k is .Arms),
-            .Int or .Bool or .Text or .Texts or .Named -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
         },
         .Arm -> match class {
             .Template(k) or .Templates(k) -> k is .Arms,
-            .Int or .Bool or .Text or .Texts or .Named -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
+        },
+        .Run -> match class {
+            .Templates(k) -> k is .Code,
+            .Template(_) or .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
         },
     }
 }
@@ -159,7 +175,7 @@ export fn class_kind(c: FillClass) -> MetaKind? {
     match c {
         .Template(k) -> k,
         .Templates(k) -> many_of(k),
-        .Int or .Bool -> MetaKind.Code,
+        .Int or .Bool or .Held or .Pattern -> MetaKind.Code,
         .Text or .Texts or .Named -> null,
     }
 }
@@ -173,8 +189,8 @@ fn agrees(c: FillClass, kind: MetaKind) -> bool {
 export fn holes_seat(kind: MetaKind, count: int) -> HoleKind {
     match kind {
         .Arms -> HoleKind.Arm,
-        .Code -> if count == 1 { HoleKind.Expression } else { HoleKind.Statement },
-        .Stmts or .Decls -> HoleKind.Statement,
+        .Code if count == 1 -> HoleKind.Expression,
+        .Code or .Stmts or .Decls -> HoleKind.Statement,
     }
 }
 

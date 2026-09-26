@@ -2,11 +2,11 @@
 //! TYPE. A param's annotation is optional in the PARSE (the typing
 //! law demands it until the expected-type channel lands); spans
 //! re-align them, the same window law fns use.
-use core.{Expr, TypeRef, SeatMark}
+use core.{Expr, Arm, TypeRef, SeatMark, Scoped, pronoun_param}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_param_types, within, marked_seats}
+use features.{LangNode, Builder, aligned_param_types, between, marked_seats, pat_id_at, expr_id_at, arms_at}
 
-fn build_lambda(mut b: Builder) -> Result<LangNode, string> {
+fn build_lambda(b: Builder) -> Result<LangNode, string> {
     let consts = b.tokens(0)?
     let muts = b.tokens(1)?
     let ps = b.tokens(2)?
@@ -30,6 +30,26 @@ fn build_fn_type(b: Builder) -> Result<LangNode, string> {
     b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span, marks: seat_marks(muts, consts, ps, from) })
 }
 
+/// A BLOCK OF MATCH ARMS IN A TRAILING BLOCK IS A FN BODY:
+/// `xs.filter { .Ok(v) -> v > 0, _ -> false }` is `xs.filter((it) ->
+/// match it { .Ok(v) -> v > 0, _ -> false })` — the pronoun's one
+/// seat, its body the match. The FIRST arm's own pattern anchors the
+/// parse away from today's lambda head (`nonbind_pattern` excludes a
+/// bare bind), so a lone unguarded bind arm never reaches here at
+/// all — `{ x -> body }` parses as `build_trailing` (expr_spine)
+/// always did, one node, both spellings meaning the same lambda.
+fn build_trailing_arms(b: Builder) -> Result<LangNode, string> {
+    let hp? = pat_id_at(b.args, 0) else { return .Err("defect: an arms block's first pattern is missing — the arena and the grammar disagree") }
+    let hg = expr_id_at(b.args, 1)
+    let hv = b.expr(2)?
+    let rest = arms_at(b.args, 3)
+    let arms = [Arm { pats: [hp], guard: hg, value: hv }].concat(rest)
+    let subject = b.expr_node(Expr.Ident(Scoped("it")))
+    let matched = b.expr_node(Expr.Match(subject, arms))
+    b.store.mark_sugar_match(matched)
+    b.make_expr(Expr.Lambda([pronoun_param], matched))
+}
+
 /// Each written seat's promises: a `mut` or `const` between the seat
 /// before it (or the `fn` word, for the first) and the seat's own
 /// start.
@@ -39,8 +59,8 @@ fn seat_marks(muts: List<Token>, consts: List<Token>, ps: List<TypeRef>, from: i
         let after = if j == 0 { from } else { ps[j - 1].span?.lo ?? from }
         let before = p.span?.lo ?? after
         out.push(SeatMark {
-            mutable: muts.any(within(it.span.lo, after, before)),
-            settled: consts.any(within(it.span.lo, after, before)),
+            mutable: muts.any(between(it.span.lo, after, before)),
+            settled: consts.any(between(it.span.lo, after, before)),
         })
     }
     out

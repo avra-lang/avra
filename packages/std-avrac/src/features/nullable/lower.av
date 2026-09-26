@@ -12,7 +12,7 @@ fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .NullLit -> null_reg(cx, e),
         .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
-        .Force(v) -> forced_reg(cx, e, v),
+        .Force(v) -> forced_reg(cx, v),
         .Propagate(v) -> propagate_reg(cx, e, v),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
         .Chain(s, name) -> chain_reg(cx, e, s, name.of),
@@ -42,27 +42,26 @@ fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
 /// the answer is that, and what it carries widened otherwise — an
 /// `int??` coalesced with `null` answers the `int?` inside, once.
 fn present_as(mut cx: LowerCx, v: Reg, held: TypeId, answer: TypeId) -> Reg {
-    // LICENSED I9: layout identity — which register shape answers — not type agreement
+    // LICENSED structs.index_compared: layout identity — which register shape answers — not type agreement
     if answer.index == held.index { return v }
     let inner = cx.carried_of(v, held)
     let carried = cx.view.types.carried(held) ?? held
-    // LICENSED I9: layout identity — which register shape answers — not type agreement
+    // LICENSED structs.index_compared: layout identity — which register shape answers — not type agreement
     if answer.index == carried.index { return inner }
     cx.adopted(answer, false, inner)
 }
 
 /// `v!` — the carried value, insisted on; a read a narrowing made
 /// present is that value already.
-fn forced_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+fn forced_reg(mut cx: LowerCx, v: ExprId) -> Reg {
     if cx.view.types.carried(cx.type_at(v)) == null { return cx.reg_of(v) }
-    cx.insisted(e, cx.reg_of(v), cx.type_at(v))
+    cx.insisted(cx.reg_of(v), cx.type_at(v))
 }
 
 /// `match v { b? -> p, null -> a }` — the bind receives what the
 /// nullable carries before the present arm lowers inside its
 /// bracket; the absent arm is the other bracket.
-fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId,
-                 present: ExprId, absent: ExprId) -> Reg {
+fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
     cx.region(cx.presence_of(v, held), e) { cx ->
@@ -84,13 +83,14 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 }
 
 /// `v?` on a RESULT: one region on OKNESS. The ok arm unwraps the
-/// payload; the failure arm exits with THE SUBJECT'S OWN BOX — an
-/// `.Err` of `Result<_, E>` is a valid `.Err` of every `Result<_,
-/// E>`, so propagation moves the pointer and repacks nothing.
+/// payload; the failure arm exits with the subject itself wherever the
+/// fn's Result is laid out alike (`propagated`) — an `.Err` of
+/// `Result<_, E>` is then a valid `.Err` of every such `Result<_, E>`.
 fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, cx.type_at(e)) } else { cx ->
+        let leaving = cx.propagated(r)
         cx.failing()
-        cx.emit(Ins.FnExit(r))
+        cx.emit(Ins.FnExit(leaving))
         cx.hollow_of(cx.type_at(e))
     }
 }
@@ -130,8 +130,7 @@ fn chain_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
 /// The present arm: read the member of what the subject carries,
 /// lifted into the chain's answer — unless the member is that
 /// nullable already (the flatten rule), when it IS the answer.
-fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
-                 name: string, answer: TypeId) -> Reg {
+fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId, name: string, answer: TypeId) -> Reg {
     member_reg(cx, e, cx.carried_of(v, held), cx.carried_type(held), name, answer)
 }
 
@@ -144,8 +143,7 @@ fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 /// it carries is adopted; anything else means the flatten rule
 /// changed without this lowering learning it, which must break
 /// loudly, not lift twice.
-fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
-              name: string, answer: TypeId) -> Reg {
+fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId, name: string, answer: TypeId) -> Reg {
     let fields? = cx.fields_of(held) else { return cx.adopted(answer, false, chained_row(cx, e, carried, held, name)) }
     let at? = fields.slot_of(name) else { return memberless_chain(cx, e) }
     let own = fields.types[at]
@@ -170,7 +168,7 @@ fn memberless_chain(mut cx: LowerCx, e: ExprId) -> Reg {
 }
 
 fn types_differ(a: TypeId, b: TypeId) -> bool {
-    // LICENSED I9: type identity — interned ids ARE the agreement
+    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
     a.index != b.index
 }
 

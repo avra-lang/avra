@@ -277,7 +277,7 @@ the same.
    `emit.av`'s three verbs and the two named exceptions
    (`fns/lower.av`, `memory.av`). New idiom number picked at landing
    time (this worktree's DOGFOODING.md tops out at I55; main has since
-   landed I56 — per DOGFOODING's own collision law, `make idioms`
+   landed I58 — per DOGFOODING's own collision law, `make idioms`
    itself refuses a repeated number, so no manual coordination is
    needed beyond re-checking at landing).
 
@@ -373,7 +373,7 @@ any swept file. `make seed`: regenerated.
 
 **Rung 2** — the idiom ratchet, gate green:
 
-`tools/idioms.py`'s `raw_rt_call` (I56) refuses a NEW
+`tools/idioms.py`'s `raw_rt_call` (I58) refuses a NEW
 `Ins.CallRt(Void)?(..., "avra_...", ...)` site outside the three
 named exceptions (`features/emit.av`'s own primitives,
 `compiler/suite_entry.av`'s separate row table, `compiler/memory/
@@ -395,7 +395,7 @@ sweep itself:
   third — unflagged, since it does not start with `avra_` — tests
   `"sqlite3_open"`, a row `rt_sigs()` does not know at all, so no
   generated method could exist for it regardless). Licensed at both
-  sites (`// LICENSED I56: …`) rather than exempting the whole file:
+  sites (`// LICENSED I58: …`) rather than exempting the whole file:
   a test file CAN still accidentally spell a feature-shaped raw call,
   and a blanket file exemption would stop the ratchet from ever
   seeing that.

@@ -9,7 +9,7 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, RtSig}
+use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, UnOp, RtSig, same_type}
 use features.{MethodCall}
 
 // ── Constants ───────────────────────────────────────────────────
@@ -33,6 +33,95 @@ impl LowerCx {
         r
     }
 
+    // A source literal's OWN node: its answer type may be a NAMED
+    // seat's type (a literal fills a named seat directly), never the
+    // raw scalar the three verbs above mint at — so a literal's
+    // defining register is minted at the node's own answer type.
+
+    mut fn const_int_at(e: ExprId, n: int) -> Reg {
+        let r = self.result(e)
+        self.emit(Ins.ConstInt(r, n))
+        r
+    }
+
+    mut fn const_bool_at(e: ExprId, b: bool) -> Reg {
+        let r = self.result(e)
+        self.emit(Ins.ConstBool(r, b))
+        r
+    }
+
+    mut fn const_str_at(e: ExprId, s: string) -> Reg {
+        let r = self.result(e)
+        self.emit(Ins.ConstStr(r, s))
+        r
+    }
+
+    // ── Arithmetic and packing ──────────────────────────────────
+
+    /// A binary op minted at `sh` — internal plumbing whose shape is
+    /// fixed (a comparison's `Type.Bool`, an offset's `Type.Int`),
+    /// never a source expression's own node.
+    mut fn bin(sh: Type, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.mint_shape(sh)
+        self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type.
+    mut fn bin_at(e: ExprId, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// `!src`, minted `Type.Bool` — `UnOp` has one variant today, so
+    /// the op is never a seat here.
+    mut fn un(src: Reg) -> Reg {
+        let dst = self.mint_shape(Type.Bool)
+        self.emit(Ins.Un(dst, UnOp.Not, src))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type.
+    mut fn un_at(e: ExprId, src: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Un(dst, UnOp.Not, src))
+        dst
+    }
+
+    /// The slots packed into one register of `ty` — a nullable
+    /// scalar's flag-and-word pair, a slot read back whole.
+    mut fn pack(ty: TypeId, elems: List<Reg>) -> Reg {
+        let dst = self.mint_ty(ty)
+        self.emit(Ins.Pack(dst, elems))
+        dst
+    }
+
+    // ── Direct calls ─────────────────────────────────────────────
+    // A declared fn's OWN symbol, called directly — never a runtime
+    // row (that is `call`, below).
+
+    mut fn call_decl(ret: TypeId, callee: string, args: List<Reg>) -> Reg {
+        let dst = self.mint_ty(ret)
+        self.emit(Ins.Call(dst, callee, args))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type.
+    mut fn call_decl_at(e: ExprId, callee: string, args: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Call(dst, callee, args))
+        dst
+    }
+
+    /// A call THROUGH a register holding code — a closure or a `dyn`
+    /// box's method — minted at an expression's own answer type.
+    mut fn call_ptr_at(e: ExprId, f: Reg, args: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.CallPtr(dst, f, args))
+        dst
+    }
+
     // ── Runtime calls ───────────────────────────────────────────
     // The one door a row is called through — `rt()`'s generated
     // wrapper fns are the only callers; a feature spells a runtime
@@ -41,22 +130,98 @@ impl LowerCx {
     /// A row answering a value: minted at `sh`, the row's C symbol
     /// named by `row.name` alone — never a feature's own string.
     mut fn call(sh: Type, row: RtSig, args: List<Reg>) -> Reg {
-        let dst = self.mint_shape(sh)
-        self.emit(Ins.CallRt(dst, row.name, args))
-        dst
+        self.answered(self.view.types.intern(sh), row, args)
     }
 
     /// The same, minted at an expression's own answer type — the
     /// call-site already knows it through typing.
     mut fn call_at(e: ExprId, row: RtSig, args: List<Reg>) -> Reg {
-        let dst = self.result(e)
-        self.emit(Ins.CallRt(dst, row.name, args))
-        dst
+        self.answered(self.type_at(e), row, args)
     }
 
     /// A row answering nothing.
     mut fn call_void(row: RtSig, args: List<Reg>) {
-        self.emit(Ins.CallRtVoid(row.name, args))
+        let seats = [self.crossing(a) for a in args]
+        self.emit(Ins.CallRtVoid(row.name, seats))
+    }
+
+    /// A row's answer at `ty`. A VALUE RECORD crosses every row BOXED:
+    /// a row's seat and answer are one word, so the record goes in as a
+    /// box of its fields and comes out read from one.
+    mut fn answered(ty: TypeId, row: RtSig, args: List<Reg>) -> Reg {
+        let seats = [self.crossing(a) for a in args]
+        if !self.view.types.travels_wide(ty) {
+            let dst = self.mint_ty(ty)
+            self.emit(Ins.CallRt(dst, row.name, seats))
+            return dst
+        }
+        let held = self.mint_ty(self.type(List<int>))
+        self.emit(Ins.CallRt(held, row.name, seats))
+        self.unboxed(held, ty)
+    }
+
+    /// A seat's word: the register itself, a value record's fields in a
+    /// fresh box — a name over one opened to it first — or a value
+    /// enum's tagged box.
+    mut fn crossing(a: Reg) -> Reg {
+        let ty = self.out.type_of_reg(a)
+        if !self.view.types.travels_wide(ty) { return a }
+        if self.valued(ty) {
+            let v = self.opened_enum(a)
+            return self.enum_boxed(self.view.types.shape_of(self.type(List<int>)), self.extracted(v, 0, self.mint_shape(Type.Int)), self.extracted(v, 1, self.mint_shape(Type.Int)), self.const_int(self.view.types.counted_mask(ty)))
+        }
+        let parts = self.leaves(a)
+        let dst = self.array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(parts.length))
+        for r in parts { self.push_slot(dst, r) }
+        dst
+    }
+
+    /// The words a value occupies in a box: itself, or a value record's
+    /// fields — a name over one opened to it first.
+    mut fn leaves(a: Reg) -> List<Reg> {
+        let ty = self.out.type_of_reg(a)
+        if !self.view.types.lays_inline(ty) { return [a] }
+        // a value enum is ONE leaf; the slot verbs lay its tag and word
+        if self.valued(ty) { return [self.opened_enum(a)] }
+        if !self.view.types.is_wide(ty) { return self.leaves(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
+        [self.extracted(a, j, self.mint_ty(f)) for j, f in self.view.types.flat_fields(ty)]
+    }
+
+    /// A value record read back out of the box that carried it — worn
+    /// by every name over it.
+    mut fn unboxed(held: Reg, ty: TypeId) -> Reg {
+        // a value enum crossed a one-word seat as its tagged box
+        if self.valued(ty) { return self.named_over(ty, self.pack(self.view.types.machine_type(ty), [self.enum_tag(Type.Int, held), self.enum_word(Type.Int, held)])) }
+        self.unboxed_at(held, 0, ty)
+    }
+
+    /// A value record read out of a box from slot `base` on; a value
+    /// enum out of its tagged box.
+    mut fn unboxed_at(held: Reg, base: int, ty: TypeId) -> Reg {
+        if self.valued(ty) {
+            let word = self.type(int)
+            return self.named_over(ty, self.pack(self.view.types.machine_type(ty), [self.slot_read(held, base, word), self.slot_read(held, base + 1, word)]))
+        }
+        if !self.view.types.is_wide(ty) { return self.pack(ty, [self.unboxed_at(held, base, self.view.types.flat_fields(ty)[0])]) }
+        self.pack(ty, [self.slot_read(held, base + j, f) for j, f in self.view.types.flat_fields(ty)])
+    }
+
+    /// Whether a value is a VALUE ENUM, seen through names.
+    fn valued(ty: TypeId) -> bool { self.view.types.valued_carrier(ty) }
+
+    /// A value enum's own register: a name over one opened to it.
+    mut fn opened_enum(a: Reg) -> Reg {
+        let ty = self.out.type_of_reg(a)
+        let m = self.view.types.machine_type(ty)
+        if same_type(m, ty) { return a }
+        self.opened_enum(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0])))
+    }
+
+    /// A value worn by the name `ty` stands for: the value itself when
+    /// `ty` is no name, else the name's pack over it.
+    mut fn named_over(ty: TypeId, v: Reg) -> Reg {
+        if same_type(self.view.types.machine_type(ty), ty) { return v }
+        self.pack(ty, [self.named_over(self.view.types.flat_fields(ty)[0], v)])
     }
 
     /// The node's ANSWER register set to integer zero — a void word's
@@ -71,7 +236,7 @@ impl LowerCx {
     // ── Regions ─────────────────────────────────────────────────────
     // `cond.open_region()`, one `value.arm_end()` per arm but the last,
     // then `last.close_region()` — the region's value is the arm taken.
-    // The answer register is minted LAST, after every arm's (I29).
+    // The answer register is minted LAST, after every arm's (style.early_answer_mint).
     mut fn open_region(cond: Reg) {
         self.emit(Ins.IfStart(cond))
     }
@@ -116,7 +281,7 @@ impl LowerCx {
 
     /// A valueless region: `body` runs when `cond` holds, and
     /// nothing reads the merge.
-    mut fn void_region(cond: Reg, body: fn(mut LowerCx)) {
+    mut fn void_region(cond: Reg, body: fn(mut LowerCx) -> void) {
         self.open_region(cond)
         body(self)
         self.void_arm()
@@ -124,7 +289,7 @@ impl LowerCx {
     }
 
     /// A valueless region with both arms.
-    mut fn void_branches(cond: Reg, taken: fn(mut LowerCx), other: fn(mut LowerCx)) {
+    mut fn void_branches(cond: Reg, taken: fn(mut LowerCx) -> void, other: fn(mut LowerCx) -> void) {
         self.open_region(cond)
         taken(self)
         self.void_arm()
@@ -239,9 +404,7 @@ impl LowerCx {
             .Bytes -> self.bytes_len(Type.Int, r),
             .List(_) -> self.array_len(Type.Int, r),
             .Map(_, _) -> self.map_len(Type.Int, r),
-            .Ptr or .Int or .Float or .Bool or .Cell(_) or .Task(_) or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _)
-                or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .EmptyMap
-                or .Struct(_, _) or .Enum(_, _) -> self.unmeasurable(e),
+            .Ptr or .Int or .Float or .Bool or .Cell(_) or .Task(_) or .Tasks or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .EmptyMap or .Struct(_, _) or .Enum(_, _) or .Union(_) -> self.unmeasurable(e),
         }
     }
 
@@ -251,7 +414,7 @@ impl LowerCx {
 
     /// Whether a measured subject (a `List`, `Map` or string) is
     /// EMPTY — its length against zero. The subject lowers FIRST, the
-    /// answer mints last (I29), as every measure does.
+    /// answer mints last (style.early_answer_mint), as every measure does.
     mut fn measured_zero(e: ExprId, subject: ExprId) -> Reg {
         let len = self.measure_of(subject, self.reg_of(subject), self.type_at(subject))
         let zero = self.const_int(0)
@@ -264,7 +427,7 @@ impl LowerCx {
 /// `x.is_empty()` — its length, by the shape's measure word, is zero.
 /// Among the control verbs because it is the ONE method every
 /// measurable shape shares — text, lists, bytes.
-// LICENSED I39: a method ROW holds this fn as a value, and a method is none
+// LICENSED style.free_state_verb: a method ROW holds this fn as a value, and a method is none
 export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.measured_zero(mc.e, mc.subject)
 }
@@ -286,7 +449,7 @@ export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId }
 /// measure table gives the shape; the subject lowers FIRST, the
 /// answer mints last. A shape nothing measures is a defect typing
 /// let through.
-// LICENSED I39: a property ROW holds this fn as a value, and a method is none
+// LICENSED style.free_state_verb: a property ROW holds this fn as a value, and a method is none
 export fn measured_reg(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
     cx.measure_of(e, r, ty)
 }

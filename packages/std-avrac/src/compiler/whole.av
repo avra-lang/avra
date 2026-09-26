@@ -26,31 +26,70 @@ impl Workspace {
         // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
         // wrote down.
         let t1 = self.clock()
-        for fi in self.decls.files.get() { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
+        let _ = self.each_open_file((f: FileId) -> { let _ = self.resolved(f) })
         self.timed("resolve", self.clock() - t1)
         let t2 = self.clock()
-        for fi in self.decls.files.get() { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
+        let _ = self.each_open_file((f: FileId) -> { let _ = self.sig_diagnostics(f) })
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let out = [self.analysis(fi.id) for fi in self.decls.files.get() if !self.is_held(fi.id)]
+        let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
+        let out = [self.analysis(f) for f in ids]
         self.timed("bodies", self.clock() - t3)
         out
     }
 
+    /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
+    /// file's own resolve or its own body can admit a file none of this
+    /// phase's earlier turns had ever seen — an expression reaches
+    /// further than a signature does — so the walk re-reads the table's
+    /// length each turn (`admit_all`'s own shape) instead of a fixed
+    /// snapshot, which would silently skip whatever its own action
+    /// discovers. Answers every id acted on, in walk order, for a
+    /// caller that wants the converged set back.
+    fn each_open_file(act: fn(FileId) -> void) -> List<FileId> {
+        mut out: List<FileId> = []
+        mut i = 0
+        while i < self.decls.files.get().length {
+            let fi = self.decls.files.get()[i]
+            if !self.is_held(fi.id) {
+                act(fi.id)
+                out.push(fi.id)
+            }
+            i = i + 1
+        }
+        out
+    }
 
     /// One file's analysis by path.
     fn analyze_file(path: string) -> Analysis {
         self.analysis(self.file_id(path))
     }
 
+    /// A layout fact moved under typing — the registry's own defect,
+    /// worded at the write site (R11c, avra-8sb5.34.21) — folded into
+    /// the workspace's defect log so `Program.clean()`/`report()` see
+    /// it without lowering ever having to run. `lowered()`'s own
+    /// callers check again, since mono can still mint a fresh
+    /// combination this pass never saw.
+    fn report_layout_defects() {
+        for msg in self.decls.types.drain_stale() { self.defect(msg) }
+    }
+
     /// The program rooted at `ws.root`, entered at one of its files.
     fn program(entry: string?) -> Program {
         let files = self.analyze_all()
+        self.report_layout_defects()
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
         Program {
-            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects.get(),
-            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages if self.has_manifest(pkg)],
+            ws: self,
+            files: files,
+            entry: seat,
+            phases: self.phases.get(),
+            cache: self.db.stats(),
+            defects: self.defects.get(),
+            voices: self.packages_voiced(),
+            manifests: [self.manifest_source(pkg) for pkg in self.packages() if self.has_manifest(pkg)],
         }
     }
 
@@ -61,17 +100,17 @@ impl Workspace {
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
     /// question the analysis asks before it does anything at all.
-    fn is_held(f: FileId) -> bool { self.decls.held.get(self.decls.file(f).path) != null }
+    fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
 
     /// HOLD A FILE: from here it contributes its minted declarations and what the
     /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
     /// files holds forty-nine.
-    mut fn hold_only(path: string) { self.decls.held.set(path, true) }
+    fn hold_only(path: string) { self.decls.held.put(path, true) }
 
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
     /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
     /// module's type, so every name must exist before any held shape is filled.
-    mut fn admit_all() {
+    fn admit_all() {
         mut i = 0
         while i < self.decls.files.get().length {
             // a held file's declarations are minted when something reads them
@@ -133,15 +172,12 @@ impl Workspace {
     /// Each word is ONE argv element, so nothing in any of them means
     /// anything to a shell.
     fn link_words() -> List<string> {
-        flatten([self.package_link(pkg) for pkg in self.packages])
+        flatten([self.package_link(pkg) for pkg in self.packages()])
     }
 
     fn package_link(pkg: Package) -> List<string> {
         let m = self.manifest(pkg.ordinal)
-        [joined_path(pkg.root, o) for o in filled_words(m.objects)]
-            .concat(["-L${d}" for d in filled_words(m.search)])
-            .concat(["-l${l}" for l in filled_words(m.libs)])
-            .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+        [joined_path(pkg.root, o) for o in filled_words(m.objects)].concat(["-L${d}" for d in filled_words(m.search)]).concat(["-l${l}" for l in filled_words(m.libs)]).concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
@@ -157,7 +193,7 @@ impl Workspace {
     /// on the build side, is LOUD: nothing opens and the refusal names
     /// the package.
     fn linked_packages() -> List<LinkedPackage> {
-        [self.linked_of(pkg) for pkg in self.packages if self.owns_native(pkg)]
+        [self.linked_of(pkg) for pkg in self.packages() if self.owns_native(pkg)]
     }
 
     fn owns_native(pkg: Package) -> bool {
@@ -172,7 +208,7 @@ impl Workspace {
     /// The root package's entry file: its `[bin]` path, else
     /// `src/main.av` when that exists, else absence.
     fn entry_of() -> string? {
-        let pkg = self.packages[0]
+        let pkg = self.packages()[0]
         let bin: string? = self.manifest(0).bin
         let path = joined_path(pkg.root, bin ?? "src/main.av")
         if bin == null && !self.host.exists(path) { return null }
@@ -181,7 +217,10 @@ impl Workspace {
 }
 
 fn is_type_decl(x: Decl) -> bool {
-    x.kind is .Record || x.kind is .Named || x.kind is .Enum
+    match x.kind {
+        .Record or .Named or .Alias or .Enum or .Builtin -> true,
+        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+    }
 }
 
 /// A file's own module name: its path with `.av` dropped and `/`
@@ -262,9 +301,9 @@ impl Decls {
         if d == null || self.package_of(d!) != "@std.meta" { return null }
         let message_at: int? = match self.decl(d!).name { "refuse_as" -> 1, "refuse_as_at" -> 2, _ -> null }
         if message_at == null || args.length <= message_at! { return null }
-        let kind: string? = (store.expr(args[0])).text_of()
+        let kind: string? = store.expr(args[0]).text_of()
         if kind == null { return null }
-        Kinded { kind: kind!, message: (store.expr(args[message_at!])).text_of() }
+        Kinded { kind: kind!, message: store.expr(args[message_at!]).text_of() }
     }
 }
 
@@ -282,7 +321,7 @@ export fn case_words(c: TestCase) -> string {
 }
 
 fn same_body(c: Case, body: ExprId) -> bool {
-    // LICENSED I9: node identity — ids compare by index
+    // LICENSED structs.index_compared: node identity — ids compare by index
     c.body.index == body.index
 }
 

@@ -3,7 +3,7 @@
 // whose records differ. A target nothing answers is a 404 — a value.
 // The adversarial half of this story is route_adversarial_test.av.
 use @std.http.frame.{Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, routed, fixed, tailed, compiled, dispatch, faults}
 
 grammar Idea = "/ideas/{id}"
@@ -11,31 +11,33 @@ grammar Search = "/search/{term}/{page}"
 grammar Static = "/static/{path...}"
 grammar Png = "/img/{path...}.png"
 
-fn serve_idea(_q: Request, i: Idea) -> Response { text(200, "idea " + i.id) }
-fn serve_search(_q: Request, s: Search) -> Response { text(200, "search " + s.term + " " + s.page) }
-fn serve_gone(_q: Request, _i: Idea) -> Response { Response { status: 410 } }
-fn serve_static(_q: Request, s: Static) -> Response { text(200, "static " + s.path) }
-fn serve_png(_q: Request, p: Png) -> Response { text(200, "png " + p.path) }
-fn serve_word(_q: Request) -> Response { text(200, "word") }
+fn serve_idea(q: Request<Idea>) -> Response { text(200, "idea " + q.params.id) }
+fn serve_search(q: Request<Search>) -> Response { text(200, "search " + q.params.term + " " + q.params.page) }
+fn serve_gone(_q: Request<Idea>) -> Response { Response { status: 410 } }
+fn serve_static(q: Request<Static>) -> Response { text(200, "static " + q.params.path) }
+fn serve_png(q: Request<Png>) -> Response { text(200, "png " + q.params.path) }
+fn serve_word(_q: Request<Unrouted>) -> Response { text(200, "word") }
 
 fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static) }
 fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse(t), serve_png) }
 
 /// What a table of these routes answers for a target.
-fn under(rows: List<Route>, line: string) -> string {
+fn answer_of(rows: List<Route>, line: string) -> string {
     let q? = asked(line) else { return "unframed" }
     let r = dispatch(compiled(rows), q)
     "${r.status} ${r.body.text() ?? ""}"
 }
 
 fn routes() -> List<Route> {
-    [routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-     routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]
+    [
+        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+        routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+    ]
 }
 
 /// The status and body a target earns, or "unframed" when the framer
 /// refused the line before the router ever saw it.
-fn answered(line: string) -> string { under(routes(), line) }
+fn answered(line: string) -> string { answer_of(routes(), line) }
 
 spec "@std.http route" {
     given "a table of routes whose records differ" {
@@ -61,38 +63,45 @@ spec "@std.http route" {
             answered("POST /ideas/7 HTTP/1.1") == "404 "
         }
     }
-
     given "a handler's own 404" {
+
         then "a handler answering 410 is its answer, not a miss" {
             dispatch(compiled([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]), asked("GET /ideas/7 HTTP/1.1")!).status == 410
         }
         then "a route that does not match still falls through to the next" {
-            dispatch(compiled([routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
-                               routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea)]),
-                     asked("GET /ideas/7 HTTP/1.1")!).status == 200
+            dispatch(compiled([
+                routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+            ]), asked("GET /ideas/7 HTTP/1.1")!).status == 200
         }
     }
-
     given "the law over a table" {
+
         then "two routes of one shape are named, later first" {
-            faults([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                       routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)]).length == 1
+            faults([
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone),
+            ]).length == 1
         }
         then "the refusal names both patterns and says which is unreachable" {
-            let found = faults([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                                   routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)])
+            let found = faults([
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone),
+            ])
             found[0] == "`/ideas/{slug}` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
         }
         then "routes of different shapes do not conflict" {
             faults(routes()).is_empty()
         }
         then "one shape under two methods is two routes, not a conflict" {
-            faults([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                       routed<Idea>(Method.Post, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]).is_empty()
+            faults([
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                routed<Idea>(Method.Post, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone),
+            ]).is_empty()
         }
     }
-
     given "a route matches the path, and the query rides beside it" {
+
         then "a query does not join the capture" {
             answered("GET /ideas/7?q=x HTTP/1.1") == "200 idea 7"
         }
@@ -109,44 +118,44 @@ spec "@std.http route" {
             answered("GET /nowhere?q=/ideas/7 HTTP/1.1") == "404 "
         }
     }
-
     given "a route that takes the rest" {
+
         then "it matches at its own width, binding one segment" {
-            under([r_static()], "GET /static/app.css HTTP/1.1") == "200 static app.css"
+            answer_of([r_static()], "GET /static/app.css HTTP/1.1") == "200 static app.css"
         }
         then "IT MATCHES DEEPER, and the hole holds every segment past its own" {
-            under([r_static()], "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
+            answer_of([r_static()], "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
         }
         then "it keeps holding however deep the target goes" {
-            under([r_static()], "GET /static/a/b/c/d/e.css HTTP/1.1") == "200 static a/b/c/d/e.css"
+            answer_of([r_static()], "GET /static/a/b/c/d/e.css HTTP/1.1") == "200 static a/b/c/d/e.css"
         }
         then "it does not match a target narrower than itself" {
-            under([r_static()], "GET /static HTTP/1.1") == "404 "
+            answer_of([r_static()], "GET /static HTTP/1.1") == "404 "
         }
         then "an empty capture at its own width is still a capture" {
-            under([r_static()], "GET /static/ HTTP/1.1") == "200 static "
+            answer_of([r_static()], "GET /static/ HTTP/1.1") == "200 static "
         }
         then "a target under another prefix is not its own" {
-            under([r_static()], "GET /other/a/b HTTP/1.1") == "404 "
+            answer_of([r_static()], "GET /other/a/b HTTP/1.1") == "404 "
         }
         then "a rest-taking route may anchor its own end" {
-            under([r_png()], "GET /img/a/b/logo.png HTTP/1.1") == "200 png a/b/logo"
+            answer_of([r_png()], "GET /img/a/b/logo.png HTTP/1.1") == "200 png a/b/logo"
         }
         then "and the anchor still refuses what does not end that way" {
-            under([r_png()], "GET /img/a/b/logo.jpg HTTP/1.1") == "404 "
+            answer_of([r_png()], "GET /img/a/b/logo.jpg HTTP/1.1") == "404 "
         }
         then "A ROUTE OF FIXED WIDTH IS STILL REFUSED A DEEPER TARGET, tails in the table or not" {
-            under([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
+            answer_of([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
         }
         then "declaration order decides between a rest-taker and a path it covers" {
-            under([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)], "GET /static/logo.svg HTTP/1.1") == "200 static logo.svg"
+            answer_of([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)], "GET /static/logo.svg HTTP/1.1") == "200 static logo.svg"
         }
         then "and reversing them reverses the answer" {
-            under([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()], "GET /static/logo.svg HTTP/1.1") == "200 word"
+            answer_of([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()], "GET /static/logo.svg HTTP/1.1") == "200 word"
         }
     }
-
     given "what the law says about a rest-taker" {
+
         then "A DOOR THAT TAKES THE REST NEEDS A PATTERN THAT SAYS SO" {
             faults([tailed<Static>(Method.Get, "/static/files", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }

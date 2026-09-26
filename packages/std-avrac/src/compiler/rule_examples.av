@@ -1,0 +1,127 @@
+//! A rule's own proof: each `@fixes`/`@keeps` example, checked
+//! exactly as `avra check` would read it — the before-text analysed,
+//! the rule's nearest hit found (`nearest_fix` — a rule fires at a
+//! node, an example names a program), a rewrite's rendered text
+//! re-parsed and compared by fingerprint (span-blind; text equality
+//! is too strict), a keep answered by absence alone. `avra test`
+//! (`suite.av`) runs one of these per example, for every rule the
+//! package under test declares — the examples themselves are
+//! `RuleEntry.fixes`/`.keeps`, already typed values by the time this
+//! reads them (features/components/lower.av's `augmented`), never a
+//! second read of the declaration's own annotations.
+use core.{root_of, flatten}
+use features.{Code, Fix, Fixes, Decl, Decls, Analysed}
+use compiler.{analyze_source, Analysis}
+use compiler.lower.{component_root_kind}
+use diagnostics.{spliced}
+
+/// The first hit `applied` finds at `root` or under it, depth-first,
+/// or absence when nothing in the whole subtree fires.
+export fn nearest_fix(applied: fn(Code) -> Fix?, root: Code) -> Fix? {
+    applied(root) ?? first_of(applied, root.kids())
+}
+
+fn first_of(applied: fn(Code) -> Fix?, cs: List<Code>) -> Fix? {
+    let hit? = cs.first() else { return null }
+    nearest_fix(applied, hit) ?? first_of(applied, cs.slice(1, cs.length))
+}
+
+/// The example's own root: an expression statement stands as its
+/// expression (the same reduction a rule's own pattern root takes,
+/// `core.root_of`), every other statement as itself; absent for text
+/// that parsed to no statement at all (an @fixes/@keeps whose text
+/// does not parse is the honest miss it looks like, never a crash).
+/// ONE TEXT, ONE TREE (avra-8sb5.25.21): a quote pattern's own body
+/// takes the same tail law a program's does (`features/quote/
+/// builders.av`'s `build_quote`), so a both-branches-answering
+/// `if`/`else` is `Expr.If` on both sides of a match — the pattern
+/// and a bare example alike — and no shielding is owed here for it.
+fn example_root(a: Analysis) -> Code? {
+    let s? = a.view.stmts.first() else { return null }
+    a.code_at(root_of(a.view.store, s))
+}
+
+/// Whether `rule`, applied to `before`, answers a rewrite whose
+/// rendered text — re-parsed — is span-blind equal to `after`.
+export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string) -> bool {
+    let root? = example_root(analyze_source(before)) else { return false }
+    let hit? = nearest_fix(applied, root) else { return false }
+    let text? = hit.rendered() else { return false }
+    same_fingerprint(text, after)
+}
+
+/// Whether the rule answers nothing anywhere in `before`.
+export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
+    let root? = example_root(analyze_source(before)) else { return true }
+    nearest_fix(applied, root) == null
+}
+
+/// An `@fixes(before)` example with no "after": the rule answers a
+/// `Fix.Delete` at `before`'s nearest hit, and deleting what it names
+/// (`rule_delete.av`'s `delete_edits` — the SAME builder `avra fix`
+/// splices) leaves a file that still analyses clean. There is no
+/// rewritten form to fingerprint against, unlike `checks_fixes`.
+export fn checks_delete(applied: fn(Code) -> Fix?, before: string) -> bool {
+    let a = analyze_source(before)
+    let root? = example_root(a) else { return false }
+    let hit? = nearest_fix(applied, root) else { return false }
+    let what? = deleted(hit) else { return false }
+    let edits? = delete_edits(Analysed { view: a.view, names: a.names, facts: a.facts }, a.view.source.text, what) else { return false }
+    let after? = spliced(a.view.source.text, edits) else { return false }
+    analyze_source(after).clean()
+}
+
+fn same_fingerprint(rendered: string, after: string) -> bool {
+    let r? = example_root(analyze_source(rendered)) else { return false }
+    let a? = example_root(analyze_source(after)) else { return false }
+    r.of.view.store.subtree_fp(r.at) == a.of.view.store.subtree_fp(a.at)
+}
+
+// ── THE TABLE'S OWN PROOF ──
+// `rules`' rows are SYNTHESISED, at lowering, from these same
+// declarations (compiler/lower/lower.av's `lower_collect`) — there
+// is no restated list left to hold a row against. What stays worth
+// proving is that the rule's own LOGIC does what its
+// `@fixes`/`@keeps` claim.
+
+/// One example, checked — a line iff it failed.
+export type ExampleCheck = { label: string, ok: bool }
+
+fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
+
+impl Workspace {
+    /// Every rule's synthesised entry, proved against its live
+    /// declaration: the root-kind index `lower_collect` baked in,
+    /// recomputed fresh (`compiler.lower.component_root_kind`), and
+    /// every `@fixes`/`@keeps` the entry itself carries.
+    fn rules_checked() -> List<ExampleCheck> {
+        // The suite proves the WHOLE package it is testing — same
+        // walk `avra check`'s own root-package analysis always does
+        // (root_files() over the package under test), not a
+        // collect-specific admission: a self-test examines everything
+        // it can reach as its own package, the way any package-scope
+        // check does.
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
+        let found = self.decls.decls_of_word("rule")
+        flatten([self.decls.entry_checked(found, r) for r in rules])
+    }
+}
+
+impl Decls {
+    fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
+        let d? = found.find(named(r, it)) else { return [] }
+        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", component_root_kind(self, d) == r.root)
+        [root_check].concat([checked("${rule_id(r)} @fixes", fixes_checked(r.run, f)) for f in r.fixes]).concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
+    }
+}
+
+fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
+
+/// One `@fixes` example, whichever form it wrote: an `after` proves a
+/// rewrite, its absence a `Fix.Delete`.
+fn fixes_checked(applied: fn(Code) -> Fix?, f: Fixes) -> bool {
+    match f.after {
+        after? -> checks_fixes(applied, f.before, after)
+        null -> checks_delete(applied, f.before)
+    }
+}

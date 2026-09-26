@@ -200,7 +200,7 @@ fn fixed_needs_a_node(name: string) -> string {
 /// collapse.
 fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> {
     mut out = [m for m in items]
-    // LICENSED I4: dual channel: finds AND refuses a duplicate
+    // LICENSED style.hand_rolled_scan: dual channel: finds AND refuses a duplicate
     mut rec: Recover? = null
     for an in annots {
         match an {
@@ -209,13 +209,13 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                     return .Err("@expect names `${token}` but the branch has no matching item")
                 }
                 out = [if i == idx { m with { expect: Expect { message: message } } } else { m } for i, m in out]
-            }
+            },
             .ARecover(sync_to) -> {
                 if rec != null { return .Err("duplicate @recover on one branch") }
                 rec = Recover { sync_to: sync_to }
-            }
-            .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? }
-            .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? }
+            },
+            .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? },
+            .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? },
         }
     }
     .Ok(Seq { items: out, build: null, recover: rec })
@@ -273,16 +273,16 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
             let rules = as_rules(args[0])?
             if rules.is_empty() { return .Err("a grammar needs at least one rule") }
             ok<T>(GrammarNode.NGrammar(Grammar { name: "", start: rules[0].name, rules: rules }))
-        }
+        },
         "build_rule" -> {
             let rule_name = tok_text(lex, args[0], "a rule name")?
             let body = want(alt_of(args[1]), "an alternation")?
             ok<T>(GrammarNode.NRule(Rule { name: rule_name, body: body }))
-        }
+        },
         "build_alt" -> {
             let branches = as_seqs(args[0])?
             ok<T>(GrammarNode.NAlt(Alt { branches: branches }))
-        }
+        },
         "build_seq" -> {
             let items = as_items(args[0])?
             let annots = as_annots(args[2])?
@@ -292,10 +292,10 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
                 .Node(_) -> {
                     let b = want(build_of(args[1]), "a build directive")?
                     ok<T>(GrammarNode.NSeq(sq with { build: b }))
-                }
+                },
                 .Terminal(_) or .Many(_) -> .Err("expected a build directive"),
             }
-        }
+        },
         "build_labeled" -> {
             let inner = want(item_of(args[1]), "an item")?
             match args[0] {
@@ -303,24 +303,24 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
                 .Terminal(t) -> ok<T>(GrammarNode.NItem(inner with { label: lex.text(t) })),
                 .Node(_) or .Many(_) -> .Err("expected a label"),
             }
-        }
+        },
         "build_postfix" -> {
             let inner = want(prim_of(args[0]), "an atom")?
             ok<T>(GrammarNode.NItem(item(inner) with { rep: as_rep(lex, args[1])? }))
-        }
+        },
         "build_prim_name" -> {
             let text = tok_text(lex, args[0], "a name")?
             if is_terminal_name(text) { ok<T>(GrammarNode.NPrim(named(text))) }
             else { ok<T>(GrammarNode.NPrim(rule_ref(text))) }
-        }
+        },
         "build_lit" -> {
             let text = tok_text(lex, args[0], "a quoted terminal")?
             ok<T>(GrammarNode.NPrim(lit(text)))
-        }
+        },
         "build_group" -> {
             let inner = want(alt_of(args[0]), "an alternation")?
             ok<T>(GrammarNode.NPrim(Prim.Group(inner)))
-        }
+        },
         "build_build" -> {
             let name_text = tok_text(lex, args[0], "a builder name")?
             let variant: T? = tok_of(args[1])
@@ -331,28 +331,28 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
                 .Terminal(_) -> ok<T>(GrammarNode.NBuild(Build.Call(name_text, [label_arg(a)? for a in written]))),
                 .Node(_) or .Many(_) -> .Err("expected `(`"),
             }
-        }
+        },
         "build_arg" -> {
             let n = tok_text(lex, args[0], "an argument name")?
             ok<T>(GrammarNode.NArg(BuildArg { name: n, fixed: opt_tok_text(lex, args[1]) }))
-        }
+        },
         "build_expect" -> {
             let token = tok_text(lex, args[0], "the expected token")?
             let msg = tok_text(lex, args[1], "the message")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.AExpect(token, msg)))
-        }
+        },
         "build_recover" -> {
             let target = tok_text(lex, args[0], "the sync target")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.ARecover(target)))
-        }
+        },
         "build_head" -> {
             let label = tok_text(lex, args[0], "the head's label")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.AHead(label)))
-        }
+        },
         "build_trailer" -> {
             let label = tok_text(lex, args[0], "the trailer's label")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.ATrailer(label)))
-        }
-        _ -> .Err("unknown builder `${name}`")
+        },
+        _ -> .Err("unknown builder `${name}`"),
     }
 }

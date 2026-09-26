@@ -3,19 +3,19 @@
 //! speaks and vanishes — each answered with a verdict and never a
 //! wreck. The fixtures are the vertical suite's, grown by an attack.
 use @std.net.{Conn, NetError, listen, connect}
-use @std.time.{ms, secs}
+use @std.time.{ms, secs, sleep}
 use @std.http.frame.{limits, Limits}
-use @std.http.http.{Request, Response, Header, text}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
 use @std.http.server.{Server, Timing, served, timing}
 
-fn sized_echo(mut app: App, q: Request) -> Response {
-    app.hits = app.hits + 1
-    text(200, "${q.target() ?? "?"} ${q.body.length} ${app.hits}")
+fn sized_echo(app: App, q: Request<Unrouted>) -> Response {
+    let n = bumped(app)
+    text(200, "${q.target() ?? "?"} ${q.body.length} ${n}")
 }
 
-fn pair_with(lim: Limits, t: Timing) -> Result<Pair, NetError> { paired(sized_echo, lim, t) }
+fn bed_under(lim: Limits, t: Timing) -> Result<Bed, NetError> { bed_with(sized_echo, lim, t) }
 
-fn attacked() -> Result<Pair, NetError> { pair_with(limits(), timing()) }
+fn attacked() -> Result<Bed, NetError> { bed_under(limits(), timing()) }
 
 fn status_line(got: Bytes) -> string {
     let t = got.text() ?? ""
@@ -28,11 +28,13 @@ fn status_line(got: Bytes) -> string {
 /// The same request sent one byte at a time: every read is a turn,
 /// and the verdict is the unsplit one.
 fn one_byte_reads() -> Result<bool, NetError> {
-    mut pr = attacked()?
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
     let req = "GET /s HTTP/1.1\r\nHost: a\r\n\r\n".bytes()
     mut got = "".bytes()
     for i in 0..req.length {
-        got = got.concat(exchanged_bytes(pr, req.slice(i, i + 1), if i == req.length - 1 { 1 } else { 0 })?)
+        got = got.concat(exchanged_bytes(b.c, req.slice(i, i + 1), if i == req.length - 1 { 1 } else { 0 })?)
     }
     .Ok(status_line(got) == "HTTP/1.1 200 OK" && (got.text() ?? "").ends_with("/s 0 1"))
 }
@@ -41,13 +43,15 @@ fn one_byte_reads() -> Result<bool, NetError> {
 fn torn_terminator() -> Result<bool, NetError> {
     mut all = true
     for cut in 1..4 {
-        mut pr = attacked()?
+        let b = attacked()?
+        spawn b.s.run(cores: 1)
+        defer b.done()
         let req = "GET /t HTTP/1.1\r\nHost: a\r\n\r\n"
         let head = req.substring(0, req.length - 4 + cut)
         let tail = req.substring(req.length - 4 + cut, req.length)
-        let early = exchanged_bytes(pr, head.bytes(), 1)?
-        let late = reply(pr, tail)?
-        all = all && early.length == 0 && late.starts_with("HTTP/1.1 200 OK")
+        let silent = unanswered(b.c, head.bytes())?
+        let late = reply(b.c, tail)?
+        all = all && silent && late.starts_with("HTTP/1.1 200 OK")
     }
     .Ok(all)
 }
@@ -57,10 +61,12 @@ fn body_torn_everywhere() -> Result<bool, NetError> {
     mut all = true
     let body = "hello"
     for cut in 0..body.length + 1 {
-        mut pr = attacked()?
+        let b = attacked()?
+        spawn b.s.run(cores: 1)
+        defer b.done()
         let head = "POST /b HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\n" + body.substring(0, cut)
-        let early = exchanged_bytes(pr, head.bytes(), if cut == body.length { 1 } else { 0 })?
-        let late = if cut == body.length { early } else { exchanged_bytes(pr, body.substring(cut, body.length).bytes(), 1)? }
+        let early = exchanged_bytes(b.c, head.bytes(), if cut == body.length { 1 } else { 0 })?
+        let late = if cut == body.length { early } else { exchanged_bytes(b.c, body.substring(cut, body.length).bytes(), 1)? }
         all = all && (late.text() ?? "").ends_with("/b 5 1")
     }
     .Ok(all)
@@ -69,151 +75,148 @@ fn body_torn_everywhere() -> Result<bool, NetError> {
 // ── Bounds ──────────────────────────────────────────────────────
 
 fn head_too_large() -> Result<bool, NetError> {
-    mut pr = pair_with(Limits { head: 200 }, timing())?
+    let b = bed_under(Limits { head: 200 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
     let filler = ["x" for i in 0..300].join("")
-    let got = exchanged_bytes(pr, "GET / HTTP/1.1\r\nHost: a\r\nX-Pad: ${filler}\r\n\r\n".bytes(), 1000)?
-    .Ok(status_line(got) == "HTTP/1.1 431 Request Header Fields Too Large" && pr.s.connections() == 0)
+    let got = exchanged_bytes(b.c, "GET / HTTP/1.1\r\nHost: a\r\nX-Pad: ${filler}\r\n\r\n".bytes(), 1000)?
+    .Ok(status_line(got) == "HTTP/1.1 431 Request Header Fields Too Large" && settles_to(b.s, 0))
 }
 
 fn body_too_large() -> Result<bool, NetError> {
-    mut pr = pair_with(Limits { body: 4 }, timing())?
-    let got = exchanged_bytes(pr, "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello".bytes(), 1000)?
-    .Ok(status_line(got) == "HTTP/1.1 413 Content Too Large" && pr.s.connections() == 0)
+    let b = bed_under(Limits { body: 4 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(b.c, "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello".bytes(), 1000)?
+    .Ok(status_line(got) == "HTTP/1.1 413 Content Too Large" && settles_to(b.s, 0))
 }
 
 fn too_many_fields() -> Result<bool, NetError> {
-    mut pr = pair_with(Limits { fields: 2 }, timing())?
-    let got = exchanged_bytes(pr, "GET / HTTP/1.1\r\nHost: a\r\nA: 1\r\nB: 2\r\n\r\n".bytes(), 1000)?
+    let b = bed_under(Limits { fields: 2 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(b.c, "GET / HTTP/1.1\r\nHost: a\r\nA: 1\r\nB: 2\r\n\r\n".bytes(), 1000)?
     .Ok(status_line(got) == "HTTP/1.1 431 Request Header Fields Too Large")
 }
 
 fn requests_per_connection() -> Result<bool, NetError> {
-    mut pr = pair_with(limits(), Timing { requests: 2 })?
-    let first = reply(pr, "GET /1 HTTP/1.1\r\nHost: a\r\n\r\n")?
-    let second = exchanged_bytes(pr, "GET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 1000)?
-    .Ok(!first.contains("connection: close") && (second.text() ?? "").contains("connection: close\r\n") && pr.s.connections() == 0)
+    let b = bed_under(limits(), Timing { requests: 2 })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, "GET /1 HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let second = exchanged_bytes(b.c, "GET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 1000)?
+    .Ok(!first.contains("connection: close") && (second.text() ?? "").contains("connection: close\r\n") && settles_to(b.s, 0))
 }
 
 // ── Garbage ─────────────────────────────────────────────────────
 
 fn garbage() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let got = exchanged_bytes(pr, [0, 255, 13, 10, 13, 10].bytes()!, 1000)?
-    .Ok(status_line(got) == "HTTP/1.1 400 Bad Request" && pr.s.connections() == 0)
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(b.c, [0, 255, 13, 10, 13, 10].bytes()!, 1000)?
+    .Ok(status_line(got) == "HTTP/1.1 400 Bad Request" && settles_to(b.s, 0))
 }
 
 fn bare_lf() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let got = exchanged_bytes(pr, "GET / HTTP/1.1\nHost: a\n\n".bytes(), 1000)?
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(b.c, "GET / HTTP/1.1\nHost: a\n\n".bytes(), 1000)?
     .Ok(status_line(got) == "HTTP/1.1 400 Bad Request")
 }
 
 fn wrong_major() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let got = exchanged_bytes(pr, "GET / HTTP/2.0\r\nHost: a\r\n\r\n".bytes(), 1000)?
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(b.c, "GET / HTTP/2.0\r\nHost: a\r\n\r\n".bytes(), 1000)?
     .Ok(status_line(got) == "HTTP/1.1 505 HTTP Version Not Supported")
 }
 
 fn empty_write_then_request() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let nothing = exchanged_bytes(pr, "".bytes(), 0)?
-    let r = reply(pr, "GET /e HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let nothing = exchanged_bytes(b.c, "".bytes(), 0)?
+    let r = reply(b.c, "GET /e HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(nothing.length == 0 && r.starts_with("HTTP/1.1 200 OK"))
 }
 
 // ── Peers that vanish ───────────────────────────────────────────
 
 fn vanish_mid_head() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let _ = pr.c.try_write("GET /v HTTP/1.1\r\nHo".bytes(), 0)?
-    let _ = pr.c.close()?
-    // accept, the fragment, then the end: one read per wake-up
-    mut turns = 0
-    while pr.s.connections() > 0 && turns < 3 || turns == 0 {
-        pr.s.turn(ms(20))?
-        turns = turns + 1
-    }
-    .Ok(pr.s.connections() == 0 && turns <= 3)
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = b.c.write("GET /v HTTP/1.1\r\nHo".bytes())?
+    let _ = b.c.close()?
+    .Ok(settles_to(b.s, 0))
 }
 
 fn vanish_after_pipeline() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let _ = pr.c.try_write("GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
-    let _ = pr.c.shutdown_write()?
-    let got = exchanged_bytes(pr, "".bytes(), 1000)?
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = b.c.write("GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
+    let _ = b.c.shutdown_write()?
+    let got = exchanged_bytes(b.c, "".bytes(), 1000)?
     let t = got.text() ?? ""
-    .Ok(t.contains("/1 0 1") && t.contains("/2 0 2") && pr.s.connections() == 0)
+    .Ok(t.contains("/1 0 1") && t.contains("/2 0 2") && settles_to(b.s, 0))
 }
 
 fn head_then_silence_times_out() -> Result<bool, NetError> {
-    mut pr = pair_with(limits(), Timing { head: ms(20) })?
-    let _ = exchanged_bytes(pr, "GET /x HTTP/1.1\r\nHo".bytes(), 0)?
-    let _ = exchanged_bytes(pr, "".bytes(), 1)?
-    .Ok(pr.s.connections() == 0)
+    let b = bed_under(limits(), Timing { head: ms(20) })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = exchanged_bytes(b.c, "GET /x HTTP/1.1\r\nHo".bytes(), 0)?
+    let _ = exchanged_bytes(b.c, "".bytes(), 1)?
+    .Ok(settles_to(b.s, 0))
 }
 
 fn two_clients() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let other = connect("127.0.0.1", pr.s.listener.port, secs(2))?
-    let _ = other.try_write("GET /o HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
-    let mine = reply(pr, "GET /m HTTP/1.1\r\nHost: a\r\n\r\n")?
-    pr.s.turn(ms(20))?
-    let theirs: Bytes? = match other.try_read(65536)? {
-        .Data(b) -> b,
-        .Eof or .Pending -> null,
-    }
-    .Ok(mine.contains("/m 0") && (theirs?.text() ?? "").contains("/o 0") && pr.s.connections() == 2)
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let other = connect("127.0.0.1", b.s.listener.port, secs(2))?
+    defer { let _ = other.close() }
+    let _ = other.write("GET /o HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
+    let mine = reply(b.c, "GET /m HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let theirs = exchanged_bytes(other, "".bytes(), 1)?
+    .Ok(mine.contains("/m 0") && (theirs.text() ?? "").contains("/o 0") && b.s.connections() == 2)
 }
 
-/// Two hundred clients in four bursts of fifty, a turn between each
-/// so the loop accepts as they come (a listen backlog is 128 on
-/// macOS, whatever was asked): every one accepted, answered and
-/// counted; the link table grows past every descriptor.
 fn many_clients() -> Result<bool, NetError> {
-    mut pr = attacked()?
-    let port = pr.s.listener.port
-    mut others: List<Conn> = []
-    for burst in 0..4 {
-        others = others.concat([connect("127.0.0.1", port, secs(2))? for i in 0..50])
-        pr.s.turn(ms(20))?
-    }
-    for o in others { let _ = o.try_write("GET /w HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)? }
-    mut turns = 0
-    while pr.s.app.hits < 200 && turns < 400 {
-        pr.s.turn(ms(20))?
-        turns = turns + 1
-    }
-    // the loopback delivers after the write returns: each socket is
-    // read until its answer lands, a turn between tries
-    mut got = [false for o in others]
-    mut tries = 0
-    while got.any(!it) && tries < 20 {
-        got = [got[i] || replied_to(others[i]) for i in 0..others.length]
-        pr.s.turn(ms(10))?
-        tries = tries + 1
-    }
-    .Ok(pr.s.app.hits == 200 && got.all(it) && pr.s.connections() == 201)
+    let b = attacked()?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let port = b.s.listener.port
+    let others = [connect("127.0.0.1", port, secs(2))? for i in 0..200]
+    defer { for o in others { let _ = o.close() } }
+    for o in others { let _ = o.write("GET /w HTTP/1.1\r\nHost: a\r\n\r\n".bytes())? }
+    let got = [replied_to(o) for o in others]
+    let open = b.s.connections()
+    let count = reply(b.c, "GET /n HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(count.ends_with("/n 0 201") && got.all(it) && open == 201)
 }
 
 fn replied_to(o: Conn) -> bool {
-    match o.try_read(4096) {
-        .Ok(.Data(b)) -> b.length > 0,
-        .Ok(.Eof) or .Ok(.Pending) or .Err(_) -> false,
+    match exchanged_bytes(o, "".bytes(), 1) {
+        .Ok(got) -> got.length > 0,
+        .Err(_) -> false,
     }
 }
 
-/// A handler that answers a response NO PEER COULD READ, carrying a
-/// body: the wire is the server's 500 and the body is this one's, so
-/// anything measuring the handler's body against that wire cuts the
-/// head mid-field.
-fn splitting_echo(mut app: App, _q: Request) -> Response {
-    app.hits = app.hits + 1
+fn splitting_echo(app: App, _q: Request<Unrouted>) -> Response {
+    let _ = bumped(app)
     Response { status: 200, headers: [Header { name: "x", value: "1\r\nevil: 1" }], body: "hello".bytes() }
 }
 
 fn answered_500(sent: string) -> Result<string, NetError> {
-    mut pr = paired(splitting_echo, limits(), timing())?
-    let got = exchanged_bytes(pr, sent.bytes(), 1)?
+    let b = bed_with(splitting_echo, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(b.c, sent.bytes(), 1)?
     .Ok((got.text() ?? "<not text>").replace("\r\n", "|"))
 }
 
@@ -234,8 +237,8 @@ spec "std.http server adversarial" {
             passes_with(answered_500("HEAD /a HTTP/1.1\r\nHost: h\r\n\r\n"), "HTTP/1.1 500 Internal Server Error|content-length: 0||")
         }
     }
-
     given "every split" {
+
         then "a request in one-byte reads is the unsplit verdict" { passes(one_byte_reads()) }
         then "a terminator torn at each of its seams completes, never refuses" { passes(torn_terminator()) }
         then "a body torn at every byte is gathered whole" { passes(body_torn_everywhere()) }

@@ -1,0 +1,143 @@
+//! `@derive(Matchable)` — the structural matcher's per-kind arity
+//! fold (`shallow_*`) and child walk (`kids_*`), read off the node
+//! model exactly as `@derive(Identity)` and `@derive(Children)` are:
+//! identity_derive.av is the MODEL, and core/shape.av is the runtime
+//! `At`/`Shape` this generates against (a trait named `Shape` would
+//! collide with that value type, so the derive wears the matcher's
+//! other name).
+//!
+//! `shallow_*` is IDENTITY'S OWN FOLD with every CHILD's fingerprint
+//! spent as a CONSTANT and every List's LENGTH / every optional's
+//! PRESENCE folded in its place — the arity law: a shape pins the
+//! STRUCTURE a hole list compares positionally, never the CONTENT
+//! underneath it. Every payload Identity does not carry a child id
+//! for folds exactly as Identity folds it — an atom, whole.
+//!
+//! `kids_*` answers every node id a variant carries, in payload
+//! order — the walk a pattern recurses through instead of folding.
+//! A payload type neither registry names is refused at the generated
+//! code (`shallow_part`'s catch-all); `kids`'s catch-all can afford
+//! to stay silent because THAT refusal already closes the hole.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, name}
+
+/// The compiler's derive for the structural matcher.
+export trait Matchable {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            impl NodeStore {
+                fn ${shallow_of(t.name)}(node: ${t}) -> int {
+                    match node { ${[shallow_case(t, v, j) for j, v in t.variants]} }
+                }
+                fn ${kids_of(t.name)}(node: ${t}) -> List<At> {
+                    match node { ${[kids_case(v) for v in t.variants]} }
+                }
+            }
+        },
+            },
+        ]
+    }
+
+    /// No marks: a payload's type says everything this derive folds.
+    static fn marks(t: MetaType) -> List<string> { [] }
+}
+
+/// One variant's shallow arm — its INDEX pins the arity, same as
+/// Identity's.
+fn shallow_case(t: MetaType, v: MetaVariant, at: int) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${shallow_parted(t, v, at)} } }
+    quote { .${v}(${binders(v)}) -> ${shallow_parted(t, v, at)} }
+}
+
+fn shallow_parted(t: MetaType, v: MetaVariant, at: int) -> Code {
+    parted_at(t.name, at, [shallow_part(f) for f in v.fields])
+}
+
+/// HOW A PAYLOAD'S TYPE FOLDS SHALLOWLY — Identity's registry
+/// (identity_derive.av's `part`) with every id-bearing row spent as
+/// a constant, a length or a presence flag; every other row is
+/// Identity's OWN fold, unchanged. A type absent here is a defect at
+/// the generated code, exactly as Identity's own registry refuses
+/// one.
+fn shallow_part(f: Field) -> Code {
+    let b = name(f.name)
+    match f.ty {
+        "ExprId" or "StmtId" or "PatId" -> quote { 0 },
+        "ExprId?" -> quote { flagged(${b} != null) },
+        "List<ExprId>" or "List<StmtId>" or "List<PatId>" -> quote { ${b}.length },
+        "List<Arm>" -> quote { shallow_arms(${b}) },
+        "List<Param>" -> quote { fp_list(self.param_fps(${b})) },
+        "List<Variant>" -> quote { fp_list(self.variant_fps(${b})) },
+        "List<Case>" -> quote { fp_list(self.case_fps(${b})) },
+        "List<FormatPart>" -> quote { fp_list([hole_fp(each) for each in ${b}]) },
+        "string" -> quote { fp_str(${b}) },
+        "List<string>" -> quote { fp_list(str_fps(${b})) },
+        "int" -> b,
+        "bool" -> quote { flagged(${b}) },
+        "BinOp" -> quote { fp_binop(${b}) },
+        "Scoped" or "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
+        "Scoped?" or "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
+        "List<Plain>" -> quote { fp_list(plain_fps(${b})) },
+        "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
+        "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
+        "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
+        "BodyView" -> quote { shallow_view(${b}) },
+        "CollectKind" -> quote { collectkind_fp(${b}) },
+        "CollectScope" -> quote { collectscope_fp(${b}) },
+        "Projection" -> quote { projection_fp(${b}) },
+        _ -> quote { a_payload_type_the_shape_derive_has_no_row_for() },
+    }
+}
+
+/// One variant's kids arm.
+fn kids_case(v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    quote { .${v}(${binders(v)}) -> ${concatenated(reach_parts(v))} }
+}
+
+/// The id-bearing payloads' reach, in declaration order — an ATOM
+/// contributes NO element (never an empty-list one): a run of holes
+/// is folded rather than spliced, and a `[]` fed to `.concat` cannot
+/// know its own element type.
+fn reach_parts(v: MetaVariant) -> List<Code> {
+    let held = [reach_shape(f) for f in v.fields]
+    [r! for r in held if r != null]
+}
+
+/// HOW A PAYLOAD'S TYPE REACHES ITS `At`s — absence for every ATOM,
+/// which `shallow_part` already folded whole.
+fn reach_shape(f: Field) -> Code? {
+    let b = name(f.name)
+    match f.ty {
+        "ExprId" -> quote { [At.Expr(${b})] },
+        "ExprId?" -> quote { [At.Expr(each) for each in some_list(${b})] },
+        "List<ExprId>" -> quote { [At.Expr(each) for each in ${b}] },
+        "StmtId" -> quote { [At.Stmt(${b})] },
+        "List<StmtId>" -> quote { [At.Stmt(each) for each in ${b}] },
+        "PatId" -> quote { [At.Pat(${b})] },
+        "List<PatId>" -> quote { [At.Pat(each) for each in ${b}] },
+        "List<Arm>" -> quote { kids_arms(${b}) },
+        "BodyView" -> quote { kids_view(${b}) },
+        _ -> null,
+    }
+}
+
+/// The three arenas this derive knows, lowercased for the method
+/// names it generates.
+fn kind_of(owner: string) -> string {
+    match owner {
+        "Expr" -> "expr",
+        "Stmt" -> "stmt",
+        "Pat" -> "pat",
+        _ -> "a_type_the_shape_derive_does_not_know",
+    }
+}
+
+fn shallow_of(owner: string) -> string { "shallow_${kind_of(owner)}" }
+fn kids_of(owner: string) -> string { "kids_${kind_of(owner)}" }

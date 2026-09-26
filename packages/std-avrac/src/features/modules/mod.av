@@ -1,9 +1,13 @@
-//! Modules — `use a.b.{x, y}` brings a module's exported items into
-//! scope; `export` marks the declarations a module's surface
-//! carries. Both are keyword anchors: `use` builds the Use node the
-//! workspace resolves before any file's names do; `export` is a
-//! prefix that marks the declaration it heads — no node of its own.
+//! Modules — `use a.b.{x, y as z}` brings a module's exported items
+//! into scope, from a path absolute from the package's source root,
+//! `.`-separated; `use @scope.name.a.{x}` reaches a dependency's
+//! module the same way. `export` marks the declarations a module's
+//! surface carries. Both are keyword anchors: `use` builds the Use
+//! node the workspace resolves before any file's names do; `export`
+//! is a prefix that marks the declaration it heads — no node of its
+//! own.
 use features.{LanguageFeature, BuilderRow}
+use features.modules.{unused_import}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
@@ -14,49 +18,47 @@ export fn modules() -> LanguageFeature {
         "export_stmt" | build_export
     }
     let codes = table<DiagCode> {
-        kind                    | id      | summary
-        "resolve.no_module"     | "F3011" | "a `use` names a module the package does not have"
-        "resolve.not_exported"  | "F3012" | "a `use` names an item the module does not export"
-        "resolve.not_a_dependency" | "F3013" | "a `use` names a package this package's manifest does not depend on"
-        "resolve.export_kind"   | "F3014" | "`export` marks a declaration — a fn, type, enum or trait"
-        "resolve.unpackaged"    | "F3015" | "a `use` line needs a package root (an `avra.toml` above the file)"
-        "resolve.module_ambiguous" | "F3016" | "a module is a directory OR a file, never both"
-        "resolve.duplicate_in_module" | "F3017" | "a module's files share one namespace — a name declares once"
-        "resolve.import_clash"  | "F3018" | "an imported name clashes with one already visible"
-        "resolve.nested_use"    | "F3019" | "use lines live at the top level"
-        "resolve.package_form"  | "F3021" | "a package is `@scope.name` — two segments"
-        "manifest.no_package"   | "F4000" | "a manifest declares `[package]`"
-        "manifest.no_name"      | "F4001" | "`[package]` names the package"
-        "manifest.no_version"   | "F4002" | "`[package]` gives a version"
-        "manifest.bad_version"  | "F4003" | "a version is semver: `MAJOR.MINOR.PATCH`"
-        "manifest.bad_name"     | "F4004" | "a package name is `@scope/name`, or one bare word for a program"
-        "manifest.no_target"    | "F4005" | "running a package needs a `[bin]` or `src/main.av`"
-        "manifest.no_source"    | "F4019" | "checking a root needs a `src/` directory or a program file directly in it"
-        "manifest.self_dependency" | "F4006" | "a package does not depend on itself"
-        "manifest.bad_path"     | "F4007" | "a path dependency points at a package directory"
-        "manifest.bad_opt_level" | "F4008" | "`opt_level` is 0–3, s or z"
-        "manifest.bad_profile"  | "F4009" | "a profile name is `[a-z0-9_-]+`"
-        "manifest.unscoped_dependency" | "F4010" | "a dependency is named `@scope/name`"
-        "manifest.unsupported_dependency" | "F4011" | "only path dependencies resolve; registry and git forms wait on their transports"
-        "manifest.name_mismatch" | "F4012" | "a dependency calls itself what it was keyed as"
-        "manifest.cycle"        | "F4013" | "packages do not depend in a cycle"
-        "manifest.duplicate_package" | "F4014" | "one package name is one directory"
-        "manifest.prelude_floor"     | "F4018" | "the prelude depends on nothing"
-        "manifest.link_option"  | "F4015" | "a `[link]` row names an object, a directory or a library — the option letter is the compiler's to write"
-        "manifest.borrowed_raw" | "F4016" | "`[link.raw]` is the program's own — a dependency names what it needs, never how to link it"
-        "manifest.bad_budget"   | "F4017" | "a `[lifted]` row is a count of at least 1 — `steps` in instructions, `memory` in MiB"
-        "manifest.syntax"       | "F4020" | "the manifest is TOML the compiler reads"
-        "manifest.unknown_section" | "F4030" | "an unknown section is ignored with a warning"
-        "manifest.unknown_key"  | "F4031" | "an unknown key is ignored with a warning"
+        kind                              | summary
+        "resolve.no_module"               | "a `use` names a module the package does not have"
+        "resolve.not_exported"            | "a `use` names an item the module does not export"
+        "resolve.not_a_dependency"        | "a `use` names a package this package's manifest does not depend on"
+        "resolve.export_kind"             | "`export` marks a declaration — a fn, type, enum or trait"
+        "resolve.unpackaged"              | "a `use` line needs a package root (an `avra.toml` above the file)"
+        "resolve.module_ambiguous"        | "a module is a directory OR a file, never both"
+        "resolve.duplicate_in_module"     | "a module's files share one namespace — a name declares once"
+        "resolve.import_clash"            | "an imported name clashes with one already visible"
+        "resolve.nested_use"              | "use lines live at the top level"
+        "resolve.package_form"            | "a package is `@scope.name` — two segments"
+        "manifest.no_package"             | "a manifest declares `[package]`"
+        "manifest.no_name"                | "`[package]` names the package"
+        "manifest.no_version"             | "`[package]` gives a version"
+        "manifest.bad_version"            | "a version is semver: `MAJOR.MINOR.PATCH`"
+        "manifest.bad_name"               | "a package name is `@scope/name`, or one bare word for a program"
+        "manifest.no_target"              | "running a package needs a `[bin]` or `src/main.av`"
+        "manifest.no_source"              | "checking a root needs a `src/` directory or a program file directly in it"
+        "manifest.self_dependency"        | "a package does not depend on itself"
+        "manifest.bad_path"               | "a path dependency points at a package directory"
+        "manifest.bad_opt_level"          | "`opt_level` is 0–3, s or z"
+        "manifest.bad_profile"            | "a profile name is `[a-z0-9_-]+`"
+        "manifest.unscoped_dependency"    | "a dependency is named `@scope/name`"
+        "manifest.unsupported_dependency" | "only path dependencies resolve; registry and git forms wait on their transports"
+        "manifest.name_mismatch"          | "a dependency calls itself what it was keyed as"
+        "manifest.cycle"                  | "packages do not depend in a cycle"
+        "manifest.duplicate_package"      | "one package name is one directory"
+        "manifest.prelude_floor"          | "the prelude depends on nothing"
+        "manifest.link_option"            | "a `[link]` row names an object, a directory or a library — the option letter is the compiler's to write"
+        "manifest.borrowed_raw"           | "`[link.raw]` is the program's own — a dependency names what it needs, never how to link it"
+        "manifest.bad_budget"             | "a `[lifted]` row is a count of at least 1 — `steps` in instructions, `memory` in MiB"
+        "manifest.syntax"                 | "the manifest is TOML the compiler reads"
+        "manifest.unknown_section"        | "an unknown section is ignored with a warning"
+        "manifest.unknown_key"            | "an unknown key is ignored with a warning"
     }
-    component LanguageFeature f {
-        name = "modules"
-        docs = "`use a.b.{x, y as z}` imports a module's exported items; `use @scope.name.a.{x}` reaches a dependency's module; `export fn/type/…` marks a module's surface. Paths are absolute from a package's source root, `.`-separated."
-        gram = grammar {
+    LanguageFeature modules {
+        gram: grammar {
             stmt = "use" ( h:PKG | h:NAME ) ( "." p:NAME )* "." "{" BREAK? i:NAME ( "as" q:NAME )? ( ( "," | BREAK ) BREAK? i:NAME ( "as" q:NAME )? )* ","? BREAK? "}" END @recover(sync_to: "END") -> use_stmt(h, p, i, q) | "export" d:stmt -> export_stmt(d)
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    modules
 }

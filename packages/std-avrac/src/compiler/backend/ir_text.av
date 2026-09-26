@@ -17,6 +17,7 @@ fn static_block(s: Static) -> List<string> {
 fn box_text(b: StaticBox) -> string {
     match b {
         .Slots(cells) -> "[${joined([slot_text(c) for c in cells], ", ")}]",
+        .Octets(b) -> "octets(${b.length})",
         .Table(keys, values) -> "{${joined(["${quoted_text(k)}: ${slot_text(values[j])}" for j, k in keys], ", ")}}",
     }
 }
@@ -30,6 +31,7 @@ fn slot_text(c: Slot) -> string {
         .Box(at) -> "@${at}",
         .Null -> "null",
         .Absent -> "absent",
+        .Code(sym) -> "code(${sym})",
     }
 }
 
@@ -54,43 +56,43 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .ScopeEnter(tier) -> {
                 lines.push(line(depth, "scope ${tier_word(tier)} {"))
                 depth = depth + 1
-            }
+            },
             .ScopeExit(gives) -> {
                 if gives != null { lines.push(yield_line(depth, gives!)) }
                 depth = depth - 1
                 lines.push(line(depth, "}"))
-            }
+            },
             .IfStart(c) -> {
                 lines.push(line(depth, "if r${c.index} {"))
                 switched.push(false)
                 depth = depth + 1
-            }
+            },
             .SwitchStart(sel, cases) -> {
                 lines.push(line(depth, "switch r${sel.index} over [${int_list(cases)}] {"))
-                // LICENSED I15: a region STACK across arms, not a bracket body
+                // LICENSED compiler.bracket_ritual: a region STACK across arms, not a bracket body
                 switched.push(true)
                 depth = depth + 1
-            }
+            },
             .ArmEnd(gives) -> {
                 lines.push(yield_line(depth, gives))
                 depth = depth - 1
                 let word = if switched.last() ?? false { "arm" } else { "else" }
                 lines.push(line(depth, "} ${word} {"))
                 depth = depth + 1
-            }
+            },
             .RegionEnd(dst, gives) -> {
                 lines.push(yield_line(depth, gives))
                 depth = depth - 1
                 let _ = switched.pop()
                 lines.push(line(depth, "} -> r${dst.index}"))
-            }
+            },
             .ConstInt(d, v) -> lines.push(line(depth, "r${d.index} = int ${v}")),
             .ConstFloat(d, bits) -> lines.push(line(depth, "r${d.index} = float ${avra_float_text_bits(bits)}")),
             .ConstStr(d, s) -> lines.push(line(depth, "r${d.index} = str ${quoted_text(s)}")),
             .ConstBool(d, v) -> {
                 let word = if v { "true" } else { "false" }
                 lines.push(line(depth, "r${d.index} = bool ${word}"))
-            }
+            },
             .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_symbol(op)} r${b.index}")),
             .Un(d, op, src) -> lines.push(line(depth, "r${d.index} = ${un_symbol(op)}r${src.index}")),
             .CallRt(d, callee, args) -> lines.push(call_line(depth, d, callee, args)),
@@ -107,12 +109,12 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .LoopStart -> {
                 lines.push(line(depth, "loop {"))
                 depth = depth + 1
-            }
+            },
             .LoopCond(c) -> lines.push(line(depth, "while r${c.index}")),
             .LoopEnd -> {
                 depth = depth - 1
                 lines.push(line(depth, "}"))
-            }
+            },
             .Release(r) -> lines.push(line(depth, "release r${r.index}")),
             .Retain(r) -> lines.push(line(depth, "retain r${r.index}")),
             .RetVal(r) -> lines.push(line(depth, "ret r${r.index}")),

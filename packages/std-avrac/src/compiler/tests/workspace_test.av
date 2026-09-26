@@ -52,7 +52,7 @@ fn poisoned_manifest() -> string {
 /// A manifest whose search rows carry environment holes — one that
 /// fills (PATH is always set) and one that names nothing.
 fn holed_manifest() -> string {
-    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"$" + "{PATH}\", \"$" + "{AVRA_NO_SUCH_VAR_}\"]\n"
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"\$" + "{PATH}\", \"\$" + "{AVRA_NO_SUCH_VAR_}\"]\n"
 }
 
 /// A root and one dependency, where the DEPENDENCY asks for raw
@@ -100,8 +100,7 @@ spec "compiler/workspace" {
         then "a root sibling's fn, a directory module's exports, and a lone-file module resolve" {
             let ws = ws_of()
             let f = ws.visible(ws.file_id("/w/src/main.av"))
-            f.fn_decl("helper") != null && f.fn_decl("twice") != null && f.type_decl("Pair") != null &&
-                f.fn_decl("only") != null && f.voices.list.is_empty()
+            f.fn_decl("helper") != null && f.fn_decl("twice") != null && f.type_decl("Pair") != null && f.fn_decl("only") != null && f.voices.list.is_empty()
         }
         then "a module's private fn is not on its surface" {
             let ws = ws_of()
@@ -158,8 +157,7 @@ spec "compiler/workspace" {
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
             let ws = new_workspace(memory_host(fs, ws_names()), "/w", avra())
             let p = ws.program("/w/src/main.av")
-            p.clean() && p.lowered().diagnostics.length == 1 &&
-                p.rendered(p.lowered().diagnostics).contains("only the entry `/w/src/main.av` runs statements")
+            p.clean() && p.lowered().diagnostics.length == 1 && p.rendered(p.lowered().diagnostics).contains("only the entry `/w/src/main.av` runs statements")
         }
     }
     given "a failed use speaks" {
@@ -167,8 +165,7 @@ spec "compiler/workspace" {
             main_refuses("use nope.{x}\n2\n", "no module `nope` under the package's source root")
         }
         then "an item the module does not export — the exports named" {
-            main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") &&
-                main_report("use util.{hidden}\n2\n").contains("its exports: twice, ident, Pair, Box, Shape")
+            main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") && main_report("use util.{hidden}\n2\n").contains("its exports: twice, ident, Pair, Box, Shape")
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses("use @std.errors.{Loc}\n2\n", "`@std/errors` is not a dependency of this package")
@@ -181,7 +178,7 @@ spec "compiler/workspace" {
         }
         then "an environment hole in a search row is filled from the environment" {
             let words = spec_package(holed_manifest()).link_words()
-            !words.any(it.contains("$" + "{")) && words.any(it.starts_with("-L/"))
+            !words.any(it.contains("\$" + "{")) && words.any(it.starts_with("-L/"))
         }
         then "a hole naming nothing leaves no empty word behind" {
             let words = spec_package(holed_manifest()).link_words()
@@ -274,8 +271,16 @@ fn toolchain_files() -> Map<string, string> {
 }
 
 fn toolchain_names() -> List<string> {
-    ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "/w/avra.toml", "/w/src/main.av",
-     "/tc/std-prelude/avra.toml", "/tc/std-prelude/src/prelude.av"]
+    [
+        "/tc/std-text/avra.toml",
+        "/tc/std-text/src/text.av",
+        "/tc/std-io/avra.toml",
+        "/tc/std-io/src/io.av",
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/tc/std-prelude/avra.toml",
+        "/tc/std-prelude/src/prelude.av",
+    ]
 }
 
 /// The program's root file, under a host whose std root is `/tc`.
@@ -410,10 +415,68 @@ spec "the unit table" {
             let p = ws.program(null)
             let l = p.lowered()
             let interned = ws.asks.get()
-            l.fns.length > 0 &&
-                interned.length > 0 &&
-                ws.spec_id(interned[0]) == 0 &&
-                ws.asks.get().length == interned.length
+            l.fns.length > 0 && interned.length > 0 && ws.spec_id(interned[0]) == 0 && ws.asks.get().length == interned.length
+        }
+    }
+}
+
+spec "avra fmt --write's own receipt" {
+    given "a file already in canonical form" {
+        then "write_checked_source answers it byte-identical, the CLI's own trailing newline included" {
+            let ws = ws_of()
+            let f = ws.file_id("/w/src/helper.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> "${text}\n" == "fn helper(n: int) -> int {\n    n\n}\n",
+                .Err(_) -> false,
+            }
+        }
+        then "a trailing blank line before EOF is not read as an empty tail — write_checked_source's own receipt over the exact hazard render_with's fix closed" {
+            let ws = with_main("let x = 1\n\n")
+            let f = ws.file_id("/w/src/main.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> "${text}\n" == "let x = 1\n\n",
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a scope whose only content is its tail value — `tail_scoped`'s span narrows to the value alone, for a diagnostic pointing at the answer" {
+        then "an own-line comment before the closing brace stays inside it, stable under one write" {
+            let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
+            let ws = with_main(src)
+            let f = ws.file_id("/w/src/main.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> "${text}\n" == src,
+                .Err(_) -> false,
+            }
+        }
+        then "the same comment, mid-chain in the author's own wrapping, lands inside the brace and stays there on a second write" {
+            let ws1 = with_main("fn f(c: int) -> bool {\n    c == 61 ||\n    // the bitwise three\n    c == 124\n}\n")
+            let f1 = ws1.file_id("/w/src/main.av")
+            match ws1.write_checked_source(f1) {
+                .Ok(first) -> {
+                    let ws2 = with_main("${first}\n")
+                    let f2 = ws2.file_id("/w/src/main.av")
+                    match ws2.write_checked_source(f2) {
+                        .Ok(second) -> "${second}\n" == "${first}\n",
+                        .Err(_) -> false,
+                    }
+                },
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a file that imports a cross-module component word — a block word the CANON door's own reparse must be handed too" {
+        then "a hand-wrapped list literal with no trailing comma still writes — CANON-rescued, not refused for a reparse that forgot the file's own block words" {
+            let fs = {
+                "/w/src/lib.av": "export component Widget {\n    depth: int\n}\n",
+                "/w/src/main.av": "use lib.{Widget}\n\nWidget w {\n    depth: 8\n}\n\nfn names(t: string) -> bool {\n    [\n        \"a\",\n        \"b\",\n        \"c\"\n    ].any((p) -> t == p)\n}\n",
+            }
+            let ws = new_workspace(memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]), "/w", avra())
+            let f = ws.file_id("/w/src/main.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> text.contains("\"c\",\n    ].any"),
+                .Err(_) -> false,
+            }
         }
     }
 }

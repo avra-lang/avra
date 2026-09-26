@@ -1,0 +1,176 @@
+//! `avra fix`'s OWN LOGIC: every candidate the rules pass finds, AND
+//! every OTHER diagnostic's own `Diag.suggestions`, turned into ONE
+//! kind of APPLICATION — proved (IR-equal) or merely shown — then the
+//! proved ones spliced at once. The CLI command's whole job is
+//! arguments in, this out; nothing here touches a filesystem.
+use core.{NodeStore, Remark, flatten}
+use features.{Analysed, Decl}
+use diagnostics.{spliced, Diag}
+use @std.errors.{Edit, Loc, Suggestion}
+use compiler.backend.{trimmed}
+
+/// One rewrite's outcome: the diagnostic kind that answered it (a
+/// rule's own `<module>.<name>`, or a plain `Diag.kind` for anything
+/// else), every EDIT it proposes — applied together or not at all —
+/// whether the set is PROVED (the IR proof itself, `ir_proved`/
+/// `edits_proved`), and `by_law` — the rule's own claim
+/// (`RuleEntry.law`), non-null only when the IR proof did NOT hold
+/// and the law trusted it instead (`law_proved`, compiler/
+/// rule_proof.av). `accepted()` is the tier `avra fix` writes,
+/// whichever door opened it. A `Fix.Say` and a rewrite with nowhere
+/// to point an edit never reach here at all (`fix_applications`); a
+/// `Suggestion` with no edits never reaches here either
+/// (`suggestion_applications`) — and carries no law, since a law
+/// lives on a `rule`, never on an arbitrary diagnostic.
+export type Application = { kind: string, edits: List<Edit>, proved: bool, by_law: string? }
+
+impl Application {
+    /// Whether `avra fix` writes this edit — the IR proof holding, or
+    /// the rule's own law trusted in its place. Never both at once:
+    /// `rewrite_application` only asks the law once the IR proof has
+    /// already answered false.
+    fn accepted() -> bool { self.proved || self.by_law != null }
+}
+
+impl Program {
+    /// Every rewrite candidate this file's declarations turn up, each
+    /// checked against the SAME text every other one is checked
+    /// against — a later PROVED edit's proof is asked of the file as
+    /// it stood before ANY edit, never of another edit's result,
+    /// since `avra fix` applies a whole file's edits in ONE splice.
+    fn fix_applications(path: string, a: Analysed, only: string?) -> List<Application> {
+        let text = a.view.source.text
+        let cs = [c for c in rule_candidates(a, a.view.stmts) if only == null || rule_id(c.owner) == only]
+        flatten([self.application_of(path, a, text, c) for c in cs])
+    }
+
+    fn application_of(path: string, a: Analysed, text: string, c: Candidate) -> List<Application> {
+        match c.fix {
+            .Say(_) -> [],
+            .Rewrite(_) -> self.rewrite_application(path, a, text, c),
+            .Delete(what) -> self.delete_application(path, a, text, c, what),
+        }
+    }
+
+    fn rewrite_application(path: string, a: Analysed, text: string, c: Candidate) -> List<Application> {
+        let raw? = c.fix.rendered() else { return [] }
+        let loc? = code_at(a, c.at).loc() else { return [] }
+        if holds_remark(a.view.store, loc) { return [] }
+        if licensed_just_above(a.view.store, loc.lo) { return [] }
+        let edit = Edit { loc: loc, replacement: trimmed(raw) + swallowed_break(text, loc) }
+        let after? = spliced(text, [edit]) else { return [] }
+        let proved = self.ir_proved(path, a, c.at, after)
+        let by_law: string? = if proved { null } else { self.law_proved(path, after, declared_law(c.owner)) }
+        [Application { kind: rule_id(c.owner), edits: [edit], proved: proved, by_law: by_law }]
+    }
+
+    /// `avra fix`'s SECOND source: every OTHER diagnostic's own
+    /// `Suggestion`s, proved the SAME way a rule's rewrite is proved
+    /// (`edits_proved`) — so a Diag built far from the rule DSL (a
+    /// spell-check, a dependency line, a named type's wrap) applies
+    /// exactly as a rule's own rewrite does, once its edits prove the
+    /// same program before and after. `rule_findings`'s own
+    /// suggestions are never read here — `fix_applications` already
+    /// owns them, through the `Candidate` each one answers for; reading
+    /// both would apply the same rewrite twice.
+    fn suggestion_applications(path: string, a: Analysed, diags: List<Diag>, only: string?) -> List<Application> {
+        flatten([self.diag_applications(path, a, d) for d in diags if only == null || d.kind == only])
+    }
+
+    fn diag_applications(path: string, a: Analysed, d: Diag) -> List<Application> {
+        [self.suggestion_application(path, a, d.kind, sg) for sg in d.suggestions if fixable(a.view.store, sg)]
+    }
+
+    fn suggestion_application(path: string, a: Analysed, kind: string, sg: Suggestion) -> Application {
+        Application { kind: kind, edits: sg.edits, proved: self.edits_proved(path, a, sg.edits), by_law: null }
+    }
+}
+
+/// Whether `sg` has anything for `avra fix` to even consider: at
+/// least one edit, none of them over a REMARK or a `// LICENSED`
+/// site — the same two guards `rewrite_application` holds a rule's
+/// own rewrite to, carried into the general gate so a licensed site
+/// refuses ANY automated fix over it, rule-derived or not.
+fn fixable(store: NodeStore, sg: Suggestion) -> bool {
+    !sg.edits.is_empty() && sg.edits.all((e: Edit) -> !holds_remark(store, e.loc) && !licensed_just_above(store, e.loc.lo))
+}
+
+/// A rule's own `///` sentence, by `<module>.<name>` — the table's
+/// own `doc` field (rules_table.av: a native rule's declaration
+/// lives in THIS compiler's source, never in the program being
+/// fixed, so there is nothing to reflect off of at fix time).
+export fn rule_doc(rule_kind: string) -> string? {
+    rules.find(rule_id(it) == rule_kind)?.doc
+}
+
+/// A rewrite whose span holds a REMARK carries a comment nobody
+/// asked it to eat — refused here, never applied: `avra fix`'s
+/// receipt is what a splice guarantees for the bytes OUTSIDE an
+/// edit, and a remark inside one is the one byte range no rewrite's
+/// text speaks for.
+fn holds_remark(store: NodeStore, loc: Loc) -> bool {
+    store.remarks.get().any(it.at >= loc.lo && it.at < loc.hi)
+}
+
+/// A `// LICENSED <rule>: reason` comment sitting just above `lo` is
+/// a human's own decision not to change this site, and a rule that
+/// PROVES a rewrite here is no less bound by it: proof says the
+/// rewrite is safe, never that it is wanted (grammar/tests/layout/
+/// layout.av's own if-chain is the witness — provably `when`-shaped,
+/// and LICENSED if_expr.when_ladder because the chain, not the
+/// ladder, is what that test is FOR).
+fn licensed_just_above(store: NodeStore, lo: int) -> bool {
+    store.remarks.get().any(licensed_remark(it, lo))
+}
+
+fn licensed_remark(r: Remark, lo: int) -> bool {
+    match r.trivia {
+        .Comment(text) -> text.contains("LICENSED") && r.at < lo && lo - r.at < 200,
+        .Blank -> false,
+    }
+}
+
+/// A statement's own span reaches through the BREAK its END consumed
+/// to close it — present only when another statement follows in the
+/// same block, absent when the statement sits last against the `}`
+/// that closes it. A rewrite's template never carries that break of
+/// its own, so a splice that drops it glues the next line onto the
+/// replacement's own; carrying it forward once, here, is what keeps
+/// every rewrite's template blind to where in its block it landed.
+fn swallowed_break(text: string, loc: Loc) -> string {
+    let matched = text.substring(loc.lo, loc.hi)
+    matched.substring(trimmed(matched).length, matched.length)
+}
+
+/// The ACCEPTED applications' edits, ALL of them, spliced into `text`
+/// at once — absence when two overlap (two rules, or a rule and a
+/// suggestion, landing on the same code) or any reaches outside the
+/// text; every application `accepted()` refuses is left exactly as
+/// `check` already showed it, whether that is because nothing proved
+/// it or because a law-carrying rewrite failed even to type-check.
+export fn fix_applied(text: string, apps: List<Application>) -> string? {
+    spliced(text, flatten([ap.edits for ap in apps if ap.accepted()]))
+}
+
+/// The first two ACCEPTED applications with an overlapping edit
+/// between them, named — two rules (or a rule and a suggestion) that
+/// fight over the same code is a defect worth SAYING, not just a
+/// silent "nothing applied". Absence when no two accepted
+/// applications touch.
+export fn fighting_pair(apps: List<Application>) -> string? {
+    let accepted = [ap for ap in apps if ap.accepted()]
+    for i, a in accepted {
+        for j, b in accepted {
+            if i < j && applications_overlap(a, b) { return "${a.kind} and ${b.kind}" }
+        }
+    }
+    null
+}
+
+fn applications_overlap(a: Application, b: Application) -> bool {
+    a.edits.any((e: Edit) -> b.edits.any((f: Edit) -> overlaps(e.loc, f.loc)))
+}
+
+fn overlaps(a: Loc, b: Loc) -> bool {
+    a.lo < b.hi && b.lo < a.hi
+}

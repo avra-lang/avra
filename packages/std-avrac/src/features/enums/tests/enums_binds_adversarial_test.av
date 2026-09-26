@@ -20,6 +20,10 @@ fn ab_enum() -> string {
     "enum E {\n    a(int)\n    b\n}\n"
 }
 
+fn boxed_enum() -> string {
+    "enum E {\n    a(int, int)\n    b\n}\n"
+}
+
 spec "features/enums — pattern binds (adversarial)" {
     given "binds against every scope" {
         then "a bind beats a fn PARAM of the same name" {
@@ -124,46 +128,53 @@ spec "features/enums — pattern binds (adversarial)" {
         }
     }
     given "the payload load, in the IR" {
+        // A BOXED enum on purpose: a variant carrying two ints is a box,
+        // and the load is what these pin. An enum of one-word payloads is
+        // a value — its payload is a register, and the last case shows it.
         then "the load lives INSIDE its arm — an untaken arm never reads it" {
             let expected = """scope application {
   r0 = int 21
-  r1 = int 2
-  r2 = call avra_array_sized(r1)
-  r3 = int 0
-  call avra_array_push(r2, r3)
-  call avra_array_push(r2, r0)
+  r1 = int 0
+  r2 = int 3
+  r3 = call avra_array_sized(r2)
   r4 = int 0
-  r5 = call avra_array_get(r2, r4)
-  switch r5 over [0] {
-    r6 = int 1
-    r7 = call avra_array_get(r2, r6)
-    r8 = int 2
-    r9 = r7 * r8
-    yield r9
-  } arm {
-    r10 = int 0
+  call avra_array_push(r3, r4)
+  call avra_array_push(r3, r0)
+  call avra_array_push(r3, r1)
+  r5 = int 0
+  r6 = call avra_array_get(r3, r5)
+  switch r6 over [0] {
+    r7 = int 1
+    r8 = call avra_array_get(r3, r7)
+    r9 = int 2
+    r10 = r8 * r9
     yield r10
-  } -> r11
-  r12 = call avra_int_text(r11)
-  call avra_puts(r12)
-  release r12
-  release r2
+  } arm {
+    r11 = int 0
+    yield r11
+  } -> r12
+  r13 = call avra_int_text(r12)
+  call avra_puts(r13)
+  release r13
+  release r3
 }
 ret 0"""
-            ir_text("${ab_enum()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
+            ir_text("${boxed_enum()}match E.a(21, 0) {\n    .a(n, _) -> n * 2\n    .b -> 0\n}") == expected
         }
         then "a called subject is lowered ONCE — the arms read one value" {
             let expected = """fn mk() -> E
 scope application {
   r0 = int 1
-  r1 = int 2
-  r2 = call avra_array_sized(r1)
-  r3 = int 0
-  call avra_array_push(r2, r3)
-  call avra_array_push(r2, r0)
-  yield r2
+  r1 = int 0
+  r2 = int 3
+  r3 = call avra_array_sized(r2)
+  r4 = int 0
+  call avra_array_push(r3, r4)
+  call avra_array_push(r3, r0)
+  call avra_array_push(r3, r1)
+  yield r3
 }
-ret r2
+ret r3
 
 scope application {
   r0 = call mk()
@@ -183,7 +194,29 @@ scope application {
   release r0
 }
 ret 0"""
-            ir_text("${ab_enum()}fn mk() -> E { E.a(1) }\nmatch mk() {\n    .a(n) -> n\n    .b -> 0\n}") == expected
+            ir_text("${boxed_enum()}fn mk() -> E { E.a(1, 0) }\nmatch mk() {\n    .a(n, _) -> n\n    .b -> 0\n}") == expected
+        }
+        then "a value enum is its tag and word — no box, and nothing counted when no variant carries a pointer" {
+            let expected = """scope application {
+  r0 = int 21
+  r1 = int 0
+  r2 = pack r1, r0
+  r3 = r2.0
+  switch r3 over [0] {
+    r4 = r2.1
+    r5 = int 2
+    r6 = r4 * r5
+    yield r6
+  } arm {
+    r7 = int 0
+    yield r7
+  } -> r8
+  r9 = call avra_int_text(r8)
+  call avra_puts(r9)
+  release r9
+}
+ret 0"""
+            ir_text("${ab_enum()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
         }
     }
 }

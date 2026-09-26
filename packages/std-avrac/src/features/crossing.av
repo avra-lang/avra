@@ -26,7 +26,7 @@
 //! refusing, one that moves the shape and restores it.
 use core.{TypeId, DeclId, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
 use @std.errors.{Loc}
-use @std.meta.{Param as MetaParam, Fn as MetaFn, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Type as MetaType, Diagnostic, Named, Trait as MetaTrait, Node, Decls as MetaDecls, Directive, Kind, Seat as MetaSeatValue}
+use @std.meta.{Param as MetaParam, Fn as MetaFn, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Type as MetaType, Diagnostic, Named, Trait as MetaTrait, Node, Decls as MetaDecls, Directive, Kind, Seat as MetaSeatValue, Annotation as MetaAnnotation}
 use features.{MetaVal, MetaHeap, Decls, Lifted}
 
 // ── The shapes this compiler was built against ──────────────────
@@ -41,12 +41,13 @@ fn meta_records() -> List<MetaShape> {
     [
         MetaShape { pkg: "@std.errors", name: "Loc", fields: ["file", "lo", "hi"] },
         MetaShape { pkg: "@std.meta", name: "Param", fields: ["name", "ty", "mutable", "settled", "at", "kind"] },
-        MetaShape { pkg: "@std.meta", name: "Fn", fields: ["name", "params", "answer", "at", "answers"] },
+        MetaShape { pkg: "@std.meta", name: "Fn", fields: ["name", "params", "answer", "at", "answers", "doc", "annotations"] },
         MetaShape { pkg: "@std.meta", name: "Mark", fields: ["name", "args", "at"] },
-        MetaShape { pkg: "@std.meta", name: "Field", fields: ["name", "ty", "at", "kind", "marks"] },
-        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at", "fields", "marks"] },
+        MetaShape { pkg: "@std.meta", name: "Annotation", fields: ["name", "args", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Field", fields: ["name", "ty", "at", "kind", "marks", "doc", "annotations"] },
+        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at", "fields", "marks", "doc", "annotations"] },
         MetaShape { pkg: "@std.meta", name: "Seat", fields: ["kind", "mutable", "settled"] },
-        MetaShape { pkg: "@std.meta", name: "Type", fields: ["name", "fields", "variants", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Type", fields: ["name", "fields", "variants", "at", "doc", "annotations"] },
         MetaShape { pkg: "@std.meta", name: "Diagnostic", fields: ["message", "help", "at", "warning", "kind"] },
         MetaShape { pkg: "@std.meta", name: "Named", fields: ["name", "at"] },
         MetaShape { pkg: "@std.meta", name: "Trait", fields: ["name", "at"] },
@@ -150,6 +151,13 @@ fn short_write(name: string, wrote: int, declared: int) {
 
 // ── Inbound: the evaluator's tree as a native value ──────────────
 
+impl Settled {
+    /// Each `Diagnostic` a settled `List<Diagnostic>` holds.
+    fn saids() -> List<Diagnostic> {
+        [crossed_diagnostic(self.heap, item) for item in self.heap.slots(self.answer)]
+    }
+}
+
 impl Lifted {
     /// Each `Diagnostic` the annotation answered.
     fn saids() -> List<Diagnostic> {
@@ -159,6 +167,22 @@ impl Lifted {
     /// Each `Directive` the annotation answered.
     fn directives() -> List<Directive> {
         [crossed_directive(self.heap, item) for item in self.heap.slots(self.answer)]
+    }
+
+    /// A `Declared` answer's own `made` field — a REAL two-field
+    /// struct, never the single-field flattening `directives()` reads
+    /// through, so its field is read by POSITION first and only THEN
+    /// treated as the list it holds.
+    fn declared_made() -> List<Directive> {
+        let field = crossed(self.heap, self.answer).at(0)
+        [crossed_directive(self.heap, item) for item in self.heap.slots(field)]
+    }
+
+    /// The same answer's `problems` — spoken where a Validates
+    /// annotation's own diagnostics are, never generated as code.
+    fn declared_problems() -> List<Diagnostic> {
+        let field = crossed(self.heap, self.answer).at(1)
+        [crossed_diagnostic(self.heap, item) for item in self.heap.slots(field)]
     }
 
     /// Each mark WORD a trait's `marks` claims its `derive` reads.
@@ -243,35 +267,35 @@ fn crossed_loc(heap: MetaHeap, v: MetaVal) -> Loc? {
 fn crossed_int(v: MetaVal) -> int {
     match v {
         .Int(n) -> n,
-        .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) -> 0,
+        .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) or .Octets(_) -> 0,
     }
 }
 
 fn crossed_bits(v: MetaVal) -> int {
     match v {
         .Float(bits) -> bits,
-        .Int(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) -> 0,
+        .Int(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) or .Octets(_) -> 0,
     }
 }
 
 fn crossed_bool(v: MetaVal) -> bool {
     match v {
         .Bool(b) -> b,
-        .Int(_) or .Float(_) or .Text(_) or .Absent or .Gone or .Node(_) or .Map(_) -> false,
+        .Int(_) or .Float(_) or .Text(_) or .Absent or .Gone or .Node(_) or .Map(_) or .Octets(_) -> false,
     }
 }
 
 fn crossed_text(v: MetaVal) -> string {
     match v {
         .Text(s) -> s,
-        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) -> "",
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) or .Octets(_) -> "",
     }
 }
 
 fn crossed_opt_text(v: MetaVal) -> string? {
     match v {
         .Text(s) -> s,
-        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) -> null,
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Gone or .Node(_) or .Map(_) or .Octets(_) -> null,
     }
 }
 
@@ -280,11 +304,11 @@ fn crossed_opt_text(v: MetaVal) -> string? {
 /// A declaration as the seat asks for it — the four shapes an
 /// annotation's first parameter may take.
 export fn meta_of_fn(x: MetaFn, mut heap: MetaHeap) -> MetaVal {
-    written("Fn", [MetaVal.Text(x.name), heap.node([meta_of_param(p, heap) for p in x.params]), MetaVal.Text(x.answer), meta_of_loc(x.at, heap), meta_of_kind(x.answers, heap)], heap)
+    written("Fn", [MetaVal.Text(x.name), heap.node([meta_of_param(p, heap) for p in x.params]), MetaVal.Text(x.answer), meta_of_loc(x.at, heap), meta_of_kind(x.answers, heap), meta_of_opt_text(x.doc), meta_of_annotations(x.annotations, heap)], heap)
 }
 
 export fn meta_of_type(x: MetaType, mut heap: MetaHeap) -> MetaVal {
-    written("Type", [MetaVal.Text(x.name), heap.node([meta_of_field(f, heap) for f in x.fields]), heap.node([meta_of_variant(v, heap) for v in x.variants]), meta_of_loc(x.at, heap)], heap)
+    written("Type", [MetaVal.Text(x.name), heap.node([meta_of_field(f, heap) for f in x.fields]), heap.node([meta_of_variant(v, heap) for v in x.variants]), meta_of_loc(x.at, heap), meta_of_opt_text(x.doc), meta_of_annotations(x.annotations, heap)], heap)
 }
 
 export fn meta_of_named(x: Named, mut heap: MetaHeap) -> MetaVal {
@@ -300,11 +324,11 @@ fn meta_of_param(x: MetaParam, mut heap: MetaHeap) -> MetaVal {
 }
 
 fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
-    written("Field", [MetaVal.Text(x.name), MetaVal.Text(x.ty), meta_of_loc(x.at, heap), meta_of_kind(x.kind, heap), meta_of_marks(x.marks, heap)], heap)
+    written("Field", [MetaVal.Text(x.name), MetaVal.Text(x.ty), meta_of_loc(x.at, heap), meta_of_kind(x.kind, heap), meta_of_marks(x.marks, heap), meta_of_opt_text(x.doc), meta_of_annotations(x.annotations, heap)], heap)
 }
 
 fn meta_of_variant(x: MetaVariant, mut heap: MetaHeap) -> MetaVal {
-    written("Variant", [MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap), heap.node([meta_of_field(f, heap) for f in x.fields]), meta_of_marks(x.marks, heap)], heap)
+    written("Variant", [MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap), heap.node([meta_of_field(f, heap) for f in x.fields]), meta_of_marks(x.marks, heap), meta_of_opt_text(x.doc), meta_of_annotations(x.annotations, heap)], heap)
 }
 
 /// A member's marks — the `@word`s it carries, in written order.
@@ -314,6 +338,16 @@ fn meta_of_marks(ms: List<MetaMark>, mut heap: MetaHeap) -> MetaVal {
 
 fn meta_of_mark(x: MetaMark, mut heap: MetaHeap) -> MetaVal {
     written("Mark", [MetaVal.Text(x.name), meta_of_texts(x.args, heap), meta_of_loc(x.at, heap)], heap)
+}
+
+/// A declaration's own `@name(args)` annotations, in written order —
+/// `meta_of_marks`'s twin one level up.
+fn meta_of_annotations(xs: List<MetaAnnotation>, mut heap: MetaHeap) -> MetaVal {
+    heap.node([meta_of_annotation(a, heap) for a in xs])
+}
+
+fn meta_of_annotation(x: MetaAnnotation, mut heap: MetaHeap) -> MetaVal {
+    written("Annotation", [MetaVal.Text(x.name), meta_of_texts(x.args, heap), meta_of_loc(x.at, heap)], heap)
 }
 
 // ── The type vocabulary, both ways ──────────────────────────────
@@ -372,6 +406,7 @@ export fn kind_of(types: TypeRegistry, id: TypeId) -> Kind {
         .List(elem) -> Kind.List(kind_of(types, elem)),
         .Cell(inner) -> Kind.Cell(kind_of(types, inner)),
         .Task(answer) -> Kind.Named("Task", [kind_of(types, answer)]),
+        .Tasks -> Kind.Named("Tasks", []),
         .Map(key, value) -> Kind.Map(kind_of(types, key), kind_of(types, value)),
         .Opt(inner) -> Kind.Opt(kind_of(types, inner)),
         .Res(ok, err) -> Kind.Result(kind_of(types, ok), kind_of(types, err)),
@@ -380,7 +415,7 @@ export fn kind_of(types: TypeRegistry, id: TypeId) -> Kind {
         .Dyn(_, name) -> Kind.Dyn(name),
         .Var(_, _, name) -> Kind.Var(name),
         .Fn(params, marks, ret) -> Kind.Fn(seat_kinds(types, params, marks), kind_of(types, ret)),
-        .TypeName(_, _) or .Bytes or .Null or .EmptyList or .EmptyMap or .Error -> Kind.Unspelled(types.name_of(id)),
+        .TypeName(_, _) or .Bytes or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error -> Kind.Unspelled(types.name_of(id)),
     }
 }
 

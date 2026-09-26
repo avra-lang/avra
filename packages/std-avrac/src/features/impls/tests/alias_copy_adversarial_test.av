@@ -179,14 +179,114 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn outer(mut r: R) { grow(r) }\nmut r = R { xs: [] }\nouter(r)\nouter(r)\n\"\${r.xs.length}\"") == "2"
         }
     }
-    given "what the copy does not reach yet" {
-        // MEASURED, not asserted as right: spec 11.5 wants this "1 1 0". A
-        // FRESH container holding a shared element is written through a
-        // writing method on the element's path — the path is not opened
-        // unique, since its root is no copy. It flips when a path receiver
-        // opens its intermediates the way a vocabulary write does.
+    given "the root decides: a path through a local copies" {
         then "a pushed element written through its fresh list" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"") == "1 2 2"
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "a local list another name also holds, written through an element" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f() -> string {\n    mut out = [R { xs: [] }]\n    let keep = out\n    out[0].add(1)\n    \"\${out[0].xs.length}\${keep[0].xs.length}\"\n}\nf()") == "10"
+        }
+        then "the warning names the local and the path, once per local" {
+            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f(r: R) {\n    mut out = [r]\n    out[0].add(1)\n    out[0].add(2)\n}\n1")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`out` is a local — a write through `out[…]` stays in `out`, and every other holder of what it reaches keeps its own") && a.report().contains("write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared")
+        }
+        then "a path rooted at `self` or a seat says nothing" {
+            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\n1")
+            a.clean() && a.diagnostics.is_empty()
+        }
+        then "a path rooted at `self` still writes through to the caller" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nmut h = H { r: R { xs: [] } }\nh.bump()\nh.bump()\n\"\${h.r.xs.length}\"") == "2"
+        }
+        then "a path rooted at a `mut` parameter still writes through to the caller" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nfn grow(mut h: H) { h.r.add(1) }\nmut h = H { r: R { xs: [] } }\ngrow(h)\ngrow(h)\n\"\${h.r.xs.length}\"") == "2"
+        }
+        then "a one-field record in a local list another name holds" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype C = { n: int }\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn f() -> string {\n    mut out = [C { n: 0 }]\n    let keep = out\n    out[0].bump()\n    \"\${out[0].n}\${keep[0].n}\"\n}\nf()") == "10"
+        }
+        then "a path written every turn of a loop" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\nfn f(r: R) -> string {\n    mut out = [r]\n    mut i = 0\n    while i < 3 {\n        out[0].add(i)\n        i = i + 1\n    }\n    \"\${out[0].xs.length}\${r.xs.length}\"\n}\nlet r = R { xs: [] }\n\"\${f(r)} \${f(r)}\"") == "30 30"
+        }
+        then "a local path handed to a `mut` seat" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\nfn grow(mut r: R) { r.add(1) }\nfn f(r: R) -> string {\n    mut out = [r]\n    grow(out[0])\n    grow(out[0])\n    \"\${out[0].xs.length}\${r.xs.length}\"\n}\nlet r = R { xs: [] }\n\"\${f(r)} \${f(r)}\"") == "20 20"
+        }
+        then "a list of lists, two steps down" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\nfn f(r: R) -> string {\n    mut g = [[r]]\n    g[0][0].add(1)\n    \"\${g[0][0].xs.length}\${r.xs.length}\"\n}\nlet r = R { xs: [] }\n\"\${f(r)} \${f(r)}\"") == "10 10"
+        }
+        then "a local record built over `self`'s field" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R }\nimpl H {\n    mut fn twice() -> int {\n        mut q = H { r: self.r }\n        q.r.add(1)\n        self.r.xs.length\n    }\n}\nmut h = H { r: R { xs: [] } }\n\"\${h.twice()} \${h.twice()}\"") == "0 0"
+        }
+        then "a local shadowing the `mut` seat it copies" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R }\nfn g(mut h: H) -> int {\n    h.r.add(1)\n    mut h = H { r: h.r }\n    h.r.add(1)\n    h.r.xs.length\n}\nmut h = H { r: R { xs: [] } }\n\"\${g(h)} \${h.r.xs.length}\"") == "2 1"
+        }
+        then "text payloads written through a local path" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype S = { names: List<string> }\nimpl S {\n    mut fn add(n: string) { self.names.push(\"x\${n}\") }\n}\ntype H = { s: S }\nfn f(s: S, tag: string) -> string {\n    mut h = H { s: s }\n    h.s.add(tag)\n    h.s.add(\"\${tag}\${tag}\")\n    h.s.names[1]\n}\nlet s = S { names: [\"a\"] }\n\"\${f(s, \"q\")} \${f(s, \"r\")} \${s.names.length} \${s.names[0]}\"") == "xq xr 1 a"
+        }
+        then "a `dyn` field written through a local path" {
+            shown("trait Grow {\n    mut fn grow()\n    fn size() -> int\n}\ntype G = { xs: List<int> }\nimpl Grow for G {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\ntype H = { g: dyn Grow }\nfn f(g: dyn Grow) -> string {\n    mut h = H { g: g }\n    h.g.grow()\n    \"\${h.g.size()}\${g.size()}\"\n}\nlet g: dyn Grow = G { xs: [] }\n\"\${f(g)} \${f(g)}\"") == "10 10"
+        }
+        then "a vocabulary write through `self` opens a shared element" {
+            shown("type R = { xs: List<int> }\ntype H = { r: R }\nimpl H { mut fn push_one() { self.r.xs.push(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.push_one()\n\"\${h.r.xs.length}\${r.xs.length}\"") == "10"
+        }
+    }
+    given "an unwrap is a step on a place" {
+        then "a write through two unwraps stays in the local" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype A = { b: B? }\ntype B = { r: R? }\nfn f(r: R) -> string {\n    mut a = A { b: B { r: r } }\n    a.b!.r!.add(1)\n    \"\${a.b!.r!.xs.length} \${r.xs.length}\"\n}\nf(R { xs: [] })") == "1 0"
+        }
+        then "a write through an index then an unwrap reaches one element" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nfn f(r: R) -> string {\n    mut hs = [H { r: r }, H { r: r }]\n    hs[0].r!.add(1)\n    \"\${hs[0].r!.xs.length} \${hs[1].r!.xs.length} \${r.xs.length}\"\n}\nf(R { xs: [] })") == "1 0 0"
+        }
+        then "an index write under an unwrap stays in the local" {
+            shown("type H = { xs: List<int>? }\nfn f(ys: List<int>) -> string {\n    mut h = H { xs: ys }\n    h.xs![0] = 9\n    \"\${h.xs![0]} \${ys[0]}\"\n}\nf([1])") == "9 1"
+        }
+        then "a write through `self.r!` leaves the other holder alone" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nimpl H { mut fn bump() { self.r!.add(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.bump()\n\"\${h.r!.xs.length} \${r.xs.length}\"") == "1 0"
+        }
+        then "a write through a seat's `h.r!` leaves the other holder alone" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nfn grow(mut h: H) { h.r!.add(1) }\nlet r = R { xs: [] }\nmut h = H { r: r }\ngrow(h)\n\"\${h.r!.xs.length} \${r.xs.length}\"") == "1 0"
+        }
+        then "an unwrap handed to a `mut` seat is opened like any path" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nfn grow(mut r: R) { r.add(1) }\nfn f(r: R) -> string {\n    mut h = H { r: r }\n    grow(h.r!)\n    \"\${h.r!.xs.length} \${r.xs.length}\"\n}\nf(R { xs: [] })") == "1 0"
+        }
+        then "a write through `h.r!` on a local stays in the local" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R? }\nfn f(r: R) -> int {\n    mut h = H { r: r }\n    h.r!.add(1)\n    r.xs.length * 10 + h.r!.xs.length\n}\nf(R { xs: [] })") == "1"
+        }
+        then "a push through `h.xs!` on a local stays in the local" {
+            shown("type H = { xs: List<int>? }\nfn f(xs: List<int>) -> int {\n    mut h = H { xs: xs }\n    h.xs!.push(4)\n    h.xs!.length * 10 + xs.length\n}\nf([1])") == "21"
+        }
+        then "a flat record's field under an unwrap is written in the local's copy" {
+            shown("type R = { x: int }\ntype H = { r: R? }\nfn f() -> int {\n    mut h = H { r: R { x: 1 } }\n    let before = h\n    h.r!.x = 5\n    h.r!.x * 10 + before.r!.x\n}\nf()") == "51"
+        }
+    }
+    given "the root is written through, the path below it opens" {
+        then "two paths below `self` to one shared element each open their own copy" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { a: R, b: R }\nimpl H { mut fn bump() {\n    self.a.add(1)\n    self.b.add(2)\n} }\nlet r = R { xs: [] }\nmut h = H { a: r, b: r }\nh.bump()\n\"\${h.a.xs.length} \${h.b.xs.length} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "a path below `self` in a trait impl opens too" {
+            shown("trait Bump {\n    mut fn bump()\n}\ntype R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl Bump for H { mut fn bump() { self.r.add(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.bump()\n\"\${h.r.xs.length} \${r.xs.length}\"") == "1 0"
+        }
+        then "a path below `self` in a generic impl opens too" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype Box<T> = { held: T, r: R }\nimpl Box<T> { mut fn bump() { self.r.add(1) } }\nlet r = R { xs: [] }\nmut b: Box<int> = Box { held: 1, r: r }\nb.bump()\n\"\${b.r.xs.length} \${r.xs.length}\"") == "1 0"
+        }
+        then "a managed value pushed through `self.h.r!` survives, and the other holder keeps its own" {
+            shown("type R = { xs: List<string> }\nimpl R { mut fn add(v: string) { self.xs.push(v) } }\ntype H = { r: R? }\ntype B = { h: H }\nimpl B { mut fn bump(s: string) { self.h.r!.add(\"\${s}!\") } }\nlet r = R { xs: [\"a\"] }\nmut b = B { h: H { r: r } }\nb.bump(\"x\")\nb.bump(\"y\")\n\"\${b.h.r!.xs[1]}\${b.h.r!.xs[2]} \${r.xs.length}\"") == "x!y! 1"
+        }
+        then "a writing method through `self` and through a seat leaves a shared element's other holder alone" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nb.bump()\nmut h = H { r: r }\ngrow(h)\n\"\${b.h.r.xs.length} \${h.r.xs.length} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "an identity behind a Cell on the path stays one — every holder sees the write" {
+            shown("type T = { rows: Cell<List<int>> }\nimpl T { fn add(v: int) { self.rows.push(v) } }\ntype H = { t: T }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.t.add(1) } }\nlet seed: List<int> = []\nlet t = T { rows: Cell.new(seed) }\nmut b = B { h: H { t: t } }\nb.bump()\n\"\${b.h.t.rows.get().length} \${t.rows.get().length}\"") == "1 1"
+        }
+    }
+    given "what the root does not reach yet" {
+        // MEASURED, not asserted as right: spec 11.5 wants "1 0 0" of
+        // both. The ROOT a writing call is handed is written through
+        // even when a `let` copy shares its box (ROADMAP: RECEIVER
+        // ALIASING), so the copy sees the write.
+        then "a `let` copy of a receiver sees a write through `self`" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nlet keep = h\nh.bump()\n\"\${h.r.xs.length} \${keep.r.xs.length} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "a `let` copy of a seat's argument sees a write through the seat" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nfn grow(mut b: B) { b.h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nlet keep = b\ngrow(b)\n\"\${b.h.r.xs.length} \${keep.h.r.xs.length} \${r.xs.length}\"") == "1 1 0"
         }
     }
 }

@@ -11,7 +11,7 @@ export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
     let t? = cx.view.store.assign_target(s) else { return }
     let at: Loc? = cx.stmt_loc(s)
     let root: ExprId? = cx.view.store.place_root(t)
-    if root == null { return not_a_place(cx, at) }
+    if root == null || cx.view.store.forced(t) != null { return not_a_place(cx, at) }
     let r = root!
     cx.walk(t)
     let n = cx.view.store.ident_name(r) ?? "this name"
@@ -26,7 +26,11 @@ export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
         // a `mut` seat is written through like a mut local — a PATH
         // under it, never the seat itself; `seat_whole` names the door
         // (`Cell<T>`) for a callee that needs to replace it whole
-        .Param(_) or .LambdaParam(_, _) -> when { !cx.facts.reads_mut_seat(r) -> immutable_param(cx, n, at), same_expr(t, r) -> seat_whole(cx, n, at), _ -> nothing() },
+        .Param(_) or .LambdaParam(_, _) -> when {
+            !cx.facts.reads_mut_seat(r) -> immutable_param(cx, n, at)
+            same_expr(t, r) -> seat_whole(cx, n, at)
+            _ -> nothing()
+        },
         .Index(_) -> immutable_index(cx, n, at),
         .Def(s) -> mut_or_refused(cx, s, n, at),
         .Pattern(_, _) -> immutable_bind(cx, n, at),

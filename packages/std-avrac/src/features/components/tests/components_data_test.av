@@ -1,0 +1,117 @@
+// A data component — no `expand` — is a record its instance builds:
+// the head by position, `key: value` settings by name, and the body's
+// other statements `collect`ed into its one `List` field.
+use @std.avrac.testing.{provided, answered, Module, refused_with, refused_in}
+use @std.avrac.compiler.{Program}
+
+/// The provider: a row with a head, a grid of rows named at its
+/// statement, a nameable secret, and a card of mixed views.
+fn ui() -> string {
+    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component field(label: string) {}\n\nexport component button(label: string) {}\n\nexport component form {\n    fields: List<field> = []\n    buttons: List<button> = []\n}\n\nexport component panel {\n    rows: List<row> = []\n    notes: List<string> = []\n}\n\nexport component hook {\n    run: fn(int) -> int\n}\n\nexport component chain {\n    hooks: List<hook> = []\n    rows: List<row> = []\n}\n"
+}
+
+fn built(main: string) -> Program {
+    provided("use @x.c.{row, grid, secret, note, badge, card, vault, split, field, button, form, panel, hook, chain}\n" + main, ui())
+}
+
+spec "features/components — a record's instance" {
+    given "the instance" {
+        then "a head value fills the head field, a setting its field" {
+            answered(built("let r = row 7 {\n    label: \"seven\"\n}\n\"\${r.id} \${r.label}\"")) == "7 seven"
+        }
+        then "a component's own fn is a method of its record" {
+            answered(built("let r = row 4\nr.doubled()")) == "8"
+        }
+        then "a field left unset takes its default" {
+            answered(built("let r = row 7 { }\nr.label")) == "?"
+        }
+        then "a record with a head needs no block" {
+            answered(built("let r = row 3\nr.id")) == "3"
+        }
+        then "the body's statements are its children, loops and branches included" {
+            answered(built("let orders = [3, 4, 5]\ngrid report {\n    for o in orders {\n        if o != 4 { row o }\n    }\n    row 99\n}\n[\"\${r.id}\" for r in report.rows].join(\",\")")) == "3,5,99"
+        }
+    }
+    given "the named instance" {
+        then "a headless record named at a statement binds the name and fills `name`" {
+            answered(built("grid report {\n    title: \"Orders\"\n}\n\"\${report.name} \${report.title}\"")) == "report Orders"
+        }
+        then "a `name` setting wins over the statement's name" {
+            answered(built("grid report {\n    name: \"orders\"\n}\nreport.name")) == "orders"
+        }
+        then "a named instance needs no block" {
+            answered(built("secret stripe_key\nstripe_key.name")) == "stripe_key"
+        }
+    }
+    given "mixed children" {
+        then "a `dyn` slot boxes each child, the trait unimported by the user" {
+            answered(built("let c = card {\n    note \"hi\"\n    for i in 0..2 { badge i }\n}\n[v.text() for v in c.items].join(\" \")")) == "hi #0 #1"
+        }
+    }
+    given "comprehensions" {
+        then "a comprehension child spreads its rows into the slot" {
+            answered(built("let orders = [3, 4, 5]\ngrid g {\n    [row o for o in orders if o != 4]\n    row 9\n}\ng.rows.length")) == "3"
+        }
+        then "a comprehension of views boxes each into a `dyn` slot" {
+            answered(built("let c = card {\n    [badge i for i in 0..3]\n    note \"x\"\n}\n[v.text() for v in c.items].join(\" \")")) == "#0 #1 #2 x"
+        }
+    }
+    given "named children and named slots" {
+        then "a named child binds for its siblings and is a child at any depth" {
+            answered(built("let v = vault {\n    secret api\n    for i in 0..1 {\n        secret db\n    }\n    api\n}\n[k.name for k in v.keys].join(\",\")")) == "api,db,api"
+        }
+        then "two slots each take a `collect` by name" {
+            answered(built("let s = split {\n    left: collect {\n        row 1\n        row 2\n    }\n    right: collect {\n        for i in 0..3 { row i }\n    }\n}\n\"\${s.left.length} \${s.right.length}\"")) == "2 3"
+        }
+    }
+    given "children routed by their component" {
+        then "a list of a component's records takes its instances, and the one other list takes the rest" {
+            answered(built("let p = panel {\n    row 1\n    \"a\"\n    row 2\n    \"b\"\n}\n\"\${p.rows.length} \${p.notes.join(\",\")}\"")) == "2 a,b"
+        }
+        then "each child instance lands in the list its component is the element of, in order" {
+            answered(built("let f = form {\n    field \"name\"\n    button \"save\"\n    field \"email\"\n    button \"cancel\"\n}\n\"\${[x.label for x in f.fields].join(\",\")} \${[b.label for b in f.buttons].join(\",\")}\"")) == "name,email save,cancel"
+        }
+        then "a setting's list comes first, then the children routed to it" {
+            answered(built("let base = [field \"id\"]\nlet f = form {\n    fields: base\n    field \"name\"\n}\n[x.label for x in f.fields].join(\",\")")) == "id,name"
+        }
+    }
+    given "a named instance listed by its name" {
+        then "it lands in the list its component is the element of" {
+            answered(built("hook doubled { n -> n * 2 }\nlet c = chain {\n    row 1\n    doubled\n    row 2\n}\n\"\${c.hooks.length} \${c.rows.length} \${c.hooks[0].run(4)}\"")) == "1 2 8"
+        }
+        then "a declaration listed before it is written lands the same" {
+            answered(built("let c = chain {\n    tripled\n}\nexport hook tripled { n -> n * 3 }\nc.hooks[0].run(5)")) == "15"
+        }
+        then "one another module exports lands by its imported name" {
+            let hooks = Module { name: "hooks", text: "use @x.c.{hook}\n\nexport hook halved { n -> n / 2 }\n" }
+            answered(provided("use @x.c.{chain, row}\nuse hooks.{halved as half}\nlet c = chain {\n    half\n    row 1\n}\n\"\${c.hooks[0].run(8)} \${c.rows.length}\"", ui(), [hooks])) == "4 1"
+        }
+    }
+    given "a body written as a fn" {
+        then "it fills the record's one fn field" {
+            answered(built("let h = hook { n -> n + 1 }\nh.run(1)")) == "2"
+        }
+        then "a record with no fn field refuses it" {
+            refused_in(built("let g = grid { n -> n }\n0"), "`grid` builds a record with no one fn field")
+        }
+    }
+    given "an exported instance is a declaration" {
+        then "another module imports it by name, built once and holding behaviour" {
+            let decks = Module { name: "decks", text: "use @x.c.{card, note, badge, grid, row}\n\n/// The showcase.\nexport card showcase {\n    note \"hi\"\n    for i in 0..2 { badge i }\n}\n\nexport grid report {\n    title: \"Orders\"\n    row 1\n}\n" }
+            answered(provided("use decks.{showcase, report}\nfn texts() -> string {\n    [v.text() for v in showcase.items].join(\" \")\n}\n\"\${texts()} \${report.name} \${report.rows.length}\"", ui(), [decks])) == "hi #0 #1 report 1"
+        }
+        then "one not exported stays the statement it was written as" {
+            answered(built("let base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id")) == "5"
+        }
+        then "a const holding behaviour is refused with the way to build it" {
+            refused_with("trait T {\n    fn f() -> int\n}\ntype P = { n: int }\nimpl T for P {\n    fn f() -> int { 1 }\n}\ntype Box = { t: dyn T }\nconst b = Box { t: P { n: 1 } }\n0", "export it as a component instance")
+        }
+    }
+    given "visible magic" {
+        then "`expand` notes the record literal each instance became" {
+            let p = built("grid report {\n    title: \"Orders\"\n    row 1\n}\nreport.title")
+            let shown = p.expanded_source(p.ws.file_id("/w/src/main.av"))
+            shown.contains("grid report {") && shown.contains("name: \"report\",") && shown.contains("rows: collect {")
+        }
+    }
+}

@@ -1,0 +1,52 @@
+// `@std/meta`'s `type_named` — a DERIVE's door back to the
+// declaration table, resolved from where the annotated declaration
+// stands. Built on the SAME crossing `crossed_decl_of` writes
+// (crossing.av): the answer is the DECLARED shape, never another
+// declaration's DERIVED output, which is what makes a cycle between
+// two derives naming each other terminate instead of re-entering.
+use @std.avrac.compiler.{Program}
+use @std.avrac.testing.{provided, answered, said}
+
+/// A provider whose `derive` reads each field's declared type NAME
+/// through `type_named`, joining what it finds — proving the WHOLE
+/// crossed `Type` arrived (its own fields), not merely a spelling,
+/// and that a name nothing declares (a builtin scalar, here) answers
+/// null rather than an empty stand-in.
+fn relations_provider() -> string {
+    "use @std.meta.{Type, Directive, literal, type_named}\n" + "export trait Relations {\n" + "    static fn derive(t: Type) -> List<Directive> {\n" + "        let joins = [join_of(unopt(f.ty)) for f in t.fields]\n" + "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn relations() -> string { \${literal(joins.join(\"|\"))} } } } }]\n" + "    }\n" + "}\n" + "fn unopt(ty: string) -> string { if ty.ends_with(\"?\") { ty.substring(0, ty.length - 1) } else { ty } }\n" + "fn join_of(ty: string) -> string {\n" + "    let target? = type_named(ty) else { return \"absent(\${ty})\" }\n" + "    \"found(\${ty})=[\${[f.name for f in target.fields].join(\",\")}]\"\n" + "}\n"
+}
+
+fn relations(main: string) -> Program {
+    provided(main, relations_provider())
+}
+
+spec "@std/meta — type_named" {
+    given "a derive reading another declaration's whole Type" {
+        then "a field's declared type crosses whole — its own fields, not merely its name" {
+            let p = relations("use @std.meta.{derive}\nuse @x.c.{Relations}\ntype User = { id: int, name: string }\n@derive(Relations)\ntype Post = { author: User, title: string }\nPost { author: User { id: 1, name: \"a\" }, title: \"t\" }.relations()")
+            said(p).length == 0 && answered(p) == "found(User)=[id,name]|absent(string)"
+        }
+        then "a name nothing declares (a builtin scalar) answers null" {
+            let p = relations("use @std.meta.{derive}\nuse @x.c.{Relations}\n@derive(Relations)\ntype Q = { n: int }\nQ { n: 1 }.relations()")
+            answered(p) == "absent(int)"
+        }
+    }
+    given "a cycle — two derives naming each other" {
+        then "each answers the OTHER's DECLARED shape, never its DERIVED output, and neither re-enters or traps" {
+            let p = relations("use @std.meta.{derive}\nuse @x.c.{Relations}\n@derive(Relations)\ntype A = { b: B? }\n@derive(Relations)\ntype B = { a: A? }\n\"\${A { b: null }.relations()} :: \${B { a: null }.relations()}\"")
+            answered(p) == "found(B)=[a] :: found(A)=[b]"
+        }
+    }
+    given "two builds of the same shape, User's declaration DIFFERENT between them" {
+        // `Workspace` is single-shot per process — CLAUDE.md's "A
+        // ONE-SHOT WORKSPACE ENDS ITS OWN CYCLES" — so the memo
+        // kernel's dependency is proved ACROSS PROCESSES, sharing
+        // `.avra-cache`, the way `tools/cache_attacks.sh` proves the
+        // build cache: `tools/type_named_cache_attack.sh`.
+        then "a wider User answers a wider join, from a source-only difference" {
+            let before = relations("use @std.meta.{derive}\nuse @x.c.{Relations}\ntype User = { id: int }\n@derive(Relations)\ntype Post = { author: User }\nPost { author: User { id: 1 } }.relations()")
+            let after = relations("use @std.meta.{derive}\nuse @x.c.{Relations}\ntype User = { id: int, name: string }\n@derive(Relations)\ntype Post = { author: User }\nPost { author: User { id: 1, name: \"a\" } }.relations()")
+            answered(before) == "found(User)=[id]" && answered(after) == "found(User)=[id,name]"
+        }
+    }
+}

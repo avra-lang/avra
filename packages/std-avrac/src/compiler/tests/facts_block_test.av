@@ -1,0 +1,94 @@
+// A declaration's facts, as the record's wire — `facts_block` and
+// `facts_unblocked` are one codec, and doc/annotations are the two
+// FREE-TEXT fields in it: a `///` line or a literal argument can
+// spell any of the format's own punctuation (`;`, `~`, `:`, `|`, a
+// tab, a backslash), so the round trip must survive all of it, not
+// merely the type spellings and digits the other facts carry.
+use compiler.{facts_block, facts_unblocked}
+use @std.avrac.features.{DeclFacts, AnnotationFact}
+use @std.avrac.core.{Span}
+
+fn sample() -> DeclFacts {
+    DeclFacts {
+        external: false,
+        stat: true,
+        is_grammar: false,
+        is_component: false,
+        span: Span { lo: 3, hi: 9 },
+        tparams: ["T"],
+        bounds: [""],
+        seats: ["a", "b"],
+        host: ["int", "int"],
+        annotated: true,
+        of: "",
+        doc: ["a line with a\ttab", "a line; with a ~tilde and a :colon and a |pipe"],
+        annotations: [
+            AnnotationFact { name: "m", args: ["a\tb", "x;y~z:w|v", "plain"], span: Span { lo: 1, hi: 2 } },
+            AnnotationFact { name: "n", args: [], span: null },
+        ],
+    }
+}
+
+fn doc_text(d: List<string>?) -> string { (d ?? []).join("\n") }
+
+fn ann_text(a: AnnotationFact) -> string { "${a.name}|${a.args.join(",")}|${a.span?.lo ?? 0 - 1}|${a.span?.hi ?? 0 - 1}" }
+
+fn anns_text(xs: List<AnnotationFact>) -> string { [ann_text(a) for a in xs].join(";") }
+
+/// Every OLD fact the new fields must leave unmoved — bound once, so
+/// the check reads the decoded value's own name rather than forcing
+/// the nullable open at each field.
+fn head_unmoved(back: DeclFacts) -> bool {
+    back.tparams.join(",") == "T" && back.seats.join(",") == "a,b" && back.host.join(",") == "int,int" && back.annotated && back.span?.lo == 3 && back.span?.hi == 9
+}
+
+spec "a declaration's facts survive their record" {
+    given "doc and annotations carrying the record's own punctuation" {
+        then "the doc round-trips byte for byte" {
+            let f = sample()
+            let back_doc = facts_unblocked(facts_block(f))
+            back_doc != null && doc_text(back_doc!.doc) == doc_text(f.doc)
+        }
+        then "the annotations round-trip byte for byte, in written order" {
+            let f = sample()
+            let back_anns = facts_unblocked(facts_block(f))
+            back_anns != null && anns_text(back_anns!.annotations) == anns_text(f.annotations)
+        }
+        then "the decoded value's own fingerprint agrees with the source's" {
+            let f = sample()
+            let back_fp = facts_unblocked(facts_block(f))
+            back_fp != null && back_fp!.fingerprint() == f.fingerprint()
+        }
+        then "the head's own facts still round-trip, unmoved by the new fields" {
+            let f = sample()
+            let back_head = facts_unblocked(facts_block(f))
+            back_head != null && head_unmoved(back_head!)
+        }
+    }
+    given "no doc at all" {
+        then "absence round-trips as null, never an empty-but-present list" {
+            let f = sample() with { doc: null }
+            facts_unblocked(facts_block(f))?.doc == null
+        }
+    }
+    given "no annotations at all" {
+        then "an empty list round-trips as one" {
+            let f = sample() with { annotations: [] }
+            (facts_unblocked(facts_block(f))?.annotations ?? []).is_empty()
+        }
+    }
+    given "only a doc changes" {
+        then "the fingerprint moves" {
+            let a = sample()
+            let b = sample() with { doc: ["a different line"] }
+            a.fingerprint() != b.fingerprint()
+        }
+    }
+    given "only an annotation's argument text changes" {
+        then "the fingerprint moves" {
+            let a = sample()
+            let b = sample() with { annotations: [AnnotationFact { name: "m", args: ["different"], span: null }] }
+            a.fingerprint() != b.fingerprint()
+        }
+    }
+}

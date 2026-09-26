@@ -1,0 +1,70 @@
+// A block of match arms in a trailing block is a fn body:
+// `xs.filter { .Ok(v) -> v > 0, _ -> false }` is `xs.filter((it) ->
+// match it { .Ok(v) -> v > 0, _ -> false })`. A lone unguarded bind
+// arm (`{ x -> body }`) stays today's ordinary lambda — the two
+// spellings are one node by construction, never two parses.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/closures/trailing_arms" {
+    given "a block of arms fills a one-seat fn position" {
+        then "a filter over an enum picks by variant" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n}\n[R.Ok(1), R.Ok(-1), R.Bad].filter { .Ok(v) -> v > 0, _ -> false }.length") == "1"
+        }
+        then "a map over an enum answers a value per arm" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n}\n\"\${[R.Ok(3), R.Bad].map { .Ok(v) -> v, _ -> 0 }[0]}\"") == "3"
+        }
+        then "a guard narrows a variant arm" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n}\n[R.Ok(1), R.Ok(20), R.Bad].filter { .Ok(v) if v > 10 -> true, .Ok(_) -> false, .Bad -> false }.length") == "1"
+        }
+        then "a wildcard-only arms block still needs the wildcard" {
+            shown("[1, 2, 3].filter { _ -> true }.length") == "3"
+        }
+        then "a literal-pattern arm matches by value" {
+            shown("[1, 2, 3].filter { 2 -> true, _ -> false }.length") == "1"
+        }
+    }
+    given "the arms block must cover its subject, as any match does" {
+        then "a missing variant refuses — the exhaustiveness law speaks" {
+            refused_with("enum R {\n    Ok(v: int)\n    Bad\n}\nfn f(xs: List<R>) -> List<R> {\n    xs.filter { .Ok(v) -> v > 0 }\n}\n1", "must handle `.Bad`")
+        }
+    }
+    given "a NULLABLE seat's arms block gets an implicit `_ -> null` tail" {
+        then "the covered variant answers the arm's own value" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n}\nfn probe(x: R, f: fn(R) -> int?) -> int? { f(x) }\n\"\${probe(R.Ok(5)) { .Ok(v) -> v } ?? -1}\"") == "5"
+        }
+        then "an uncovered variant answers null, never a defect or a refusal" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n}\nfn probe(x: R, f: fn(R) -> int?) -> int? { f(x) }\n\"\${probe(R.Bad) { .Ok(v) -> v } ?? -1}\"") == "-1"
+        }
+        then "several uncovered variants all answer null" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n    Weird(s: string)\n}\nfn probe(x: R, f: fn(R) -> int?) -> int? { f(x) }\n\"\${probe(R.Bad) { .Ok(v) -> v } ?? -1} \${probe(R.Weird(\"x\")) { .Ok(v) -> v } ?? -1}\"") == "-1 -1"
+        }
+        then "a guarded arm's fall-through still reaches the implicit tail" {
+            shown("enum R {\n    Ok(v: int)\n    Bad\n}\nfn probe(x: R, f: fn(R) -> int?) -> int? { f(x) }\n\"\${probe(R.Ok(5)) { .Ok(v) if v > 10 -> v } ?? -1}\"") == "-1"
+        }
+        then "a hand-written match under the same nullable want still needs every arm" {
+            refused_with("enum R {\n    Ok(v: int)\n    Bad\n}\nfn probe(x: R) -> int? {\n    match x { .Ok(v) -> v }\n}\n1", "must handle `.Bad`")
+        }
+    }
+    given "a multi-line arms block tolerates a leading break" {
+        then "the first arm may open on its own line" {
+            shown("[1, 2, 3].filter {\n    2 -> true\n    _ -> false\n}.length") == "1"
+        }
+        then "several blank lines before the first arm still parse" {
+            shown("[1, 2, 3].filter {\n\n\n    2 -> true\n    _ -> false\n}.length") == "1"
+        }
+        then "a comment line before the first arm still parses" {
+            shown("[1, 2, 3].filter {\n    // pick 2\n    2 -> true\n    _ -> false\n}.length") == "1"
+        }
+    }
+    given "a lone unguarded bind arm is today's lambda, unchanged" {
+        then "a one-seat trailing block with a bare name still works as before" {
+            shown("[1, -2, 3].filter { x -> x > 0 }.length") == "2"
+        }
+        then "its multi-statement body still reads bare, no wrapping match" {
+            shown("[1, 2].map { x ->\n    let y = x * 10\n    y + 1\n}[1]") == "21"
+        }
+        then "a `mut` seat still writes through — a shape only the old head can spell" {
+            shown("type C = { n: int }\nfn touched(mut c: C, f: fn(mut C) -> int) -> int { f(c) }\nmut c = C { n: 1 }\nlet a = touched(c) { mut c -> c.n = 10\n    c.n }\n\"\${a} \${c.n}\"") == "10 10"
+        }
+    }
+}

@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef, joined}
+use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, MethodParts, same_stmt, same_expr, same_decl, TypeRef, joined, flatten}
 use diagnostics.{Diag, Voices, refusal}
 use @std.errors.{Loc, Frame}
 
@@ -11,12 +11,49 @@ impl Decls {
     /// A record's fields, the declaration's or the instantiation's.
     fn fields_of_type(ty: TypeId) -> StructSig? {
         match self.types.shape_of(ty) {
-            .Struct(decl, _) -> (self.sig(decl))?.record_sig(),
-            .App(decl, _, args) -> subbed_fields(self.types, (self.sig(decl))?.record_sig(), decl, args),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Enum(_, _) or .Res(_, _)
-                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
-                or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Struct(decl, _) -> self.sig(decl)?.record_sig(),
+            .App(decl, _, args) -> subbed_fields(self.types, self.sig(decl)?.record_sig(), decl, args),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) -> null,
         }
+    }
+
+    /// The first IDENTITY inside a value of type `ty` — a `Cell`, a
+    /// task, a host pointer, or what may hold one unseen (a fn value,
+    /// a `dyn`, a type parameter) — or null when the value is plain
+    /// data a copy duplicates whole. `seen` guards a recursive type.
+    fn identity_in(ty: TypeId, seen: List<int>) -> TypeId? {
+        if seen.contains(ty.index) { return null }
+        if self.is_identity(ty) { return ty }
+        let walked = seen.concat([ty.index])
+        let parts: List<TypeId> = match self.types.shape_of(self.types.seen_through(ty)) {
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) -> [],
+            .List(t) or .Opt(t) -> [t],
+            .Map(k, v) or .Res(k, v) -> [k, v],
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> self.parts_of(ty),
+            .Union(members) -> members,
+        }
+        for p in parts {
+            let held: TypeId? = self.identity_in(p, walked)
+            if held != null { return held }
+        }
+        null
+    }
+
+    /// Whether a value of type `ty` IS an identity — one a copy forks —
+    /// or may be one unseen: a fn value, a `dyn`, a type parameter.
+    fn is_identity(ty: TypeId) -> bool {
+        match self.types.shape_of(self.types.seen_through(ty)) {
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) -> true,
+            .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .List(_) or .Opt(_) or .Map(_, _) or .Res(_, _) or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Union(_) -> false,
+        }
+    }
+
+    /// A declared type's contents: its fields, or every variant's
+    /// payloads.
+    fn parts_of(ty: TypeId) -> List<TypeId> {
+        let fields: StructSig? = self.fields_of_type(ty)
+        if fields != null { return fields!.types }
+        flatten(self.variants_of_type(ty)?.payloads ?? [])
     }
 
     /// A record field's TYPE by name, or null — the one `slot_of` then
@@ -31,12 +68,10 @@ impl Decls {
     /// instantiation's.
     fn variants_of_type(ty: TypeId) -> EnumSig? {
         match self.types.shape_of(ty) {
-            .Enum(decl, _) -> (self.sig(decl))?.enum_sig(),
+            .Enum(decl, _) -> self.sig(decl)?.enum_sig(),
             .Res(ok, err) -> res_enum_sig(ok, err),
-            .App(decl, _, args) -> subbed_variants(self.types, (self.sig(decl))?.enum_sig(), decl, args),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _)
-                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
-                or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .App(decl, _, args) -> subbed_variants(self.types, self.sig(decl)?.enum_sig(), decl, args),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) -> null,
         }
     }
 
@@ -50,7 +85,7 @@ impl Decls {
     /// The impl table's answer — a sig whose params[0] is `self`.
     fn method_sig_of(target: DeclId, mname: string) -> FnSig? {
         let m? = self.method(target, mname) else { return null }
-        (self.sig(m))?.fn_sig()
+        self.sig(m)?.fn_sig()
     }
 
     /// A trait method's sig — `Self` at seat 0, like every method — or
@@ -64,7 +99,7 @@ impl Decls {
     /// `dyn` carries, so a contract dispatches wherever it travels.
     fn trait_sig_under(tdecl: DeclId, mname: string) -> FnSig? {
         let f? = self.trait_member(tdecl, mname) else { return null }
-        (self.sig(f))?.fn_sig()
+        self.sig(f)?.fn_sig()
     }
 
     /// A trait's member DECLARATION by name — the contract's own word
@@ -80,9 +115,10 @@ impl Decls {
     /// mistake lives at the read, not at the declaration.
     fn decl_type_of(mut voices: Voices, error_type: TypeId, read_at: Loc?, d: DeclId) -> TypeId {
         let x = self.decl(d)
-        if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
-        let tname: string? = self.type_name(d)
-        if tname != null { return self.types.intern(Type.TypeName(d, tname!)) }
+        if x.kind is .Const || x.kind is .Collect { return self.declared_const_type(voices, error_type, d) }
+        let shown = self.named_by(d) ?? d
+        let tname: string? = self.type_name(shown)
+        if tname != null { return self.types.intern(Type.TypeName(shown, tname!)) }
         if !self.tparams(d).is_empty() {
             voices.speak(self.not_a_value(d))
             return error_type
@@ -91,15 +127,28 @@ impl Decls {
             voices.speak(self.extern_not_a_value(read_at, d))
             return error_type
         }
-        let sig? = (self.sig(d))?.fn_sig() else { return error_type }
+        let sig? = self.sig(d)?.fn_sig() else { return error_type }
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
         // cannot be stored where nothing may write.
-        // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
-        // its declaration wrote travel with the type, so a writing fn
-        // cannot be stored where nothing may write.
-        let held = sig
-        self.types.intern(Type.Fn(held.params, self.marks_of(d, held.params.length), held.ret))
+        self.types.intern(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
+    }
+
+    /// `decl_type_of`'s read door for a rule: the same answer,
+    /// without interning or speaking. On an already-typed program
+    /// every shape `decl_type_of` could mint here is already in the
+    /// registry; a generic fn's refusal is `decl_type_of`'s alone to
+    /// voice, so a rule reading this name as a value sees absence
+    /// instead, same as any other seat it cannot answer.
+    fn known_decl_type_of(d: DeclId) -> TypeId? {
+        let x = self.decl(d)
+        if x.kind is .Const || x.kind is .Collect { return self.type_of_const(x.file, x.stmt) }
+        let shown = self.named_by(d) ?? d
+        let tname: string? = self.type_name(shown)
+        if tname != null { return self.types.known(Type.TypeName(shown, tname!)) }
+        if !self.tparams(d).is_empty() { return null }
+        let sig? = self.sig(d)?.fn_sig() else { return null }
+        self.types.known(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
     }
 }
 
@@ -108,15 +157,25 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     let b? = names.binding(e) else { return null }
     match b {
         .Decl(d) -> d,
-        .Def(_)
-            or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+    }
+}
+
+/// A type's OWN declaration, when its shape declares the impl table
+/// a receiver of it answers through — a struct, an enum, a generic
+/// instance. Null for everything else (a name, a bound parameter, a
+/// contract, a scalar): `method_of` stops there rather than guess.
+export fn declaring_decl(sh: Type) -> DeclId? {
+    match sh {
+        .Struct(d, _) or .Enum(d, _) or .App(d, _, _) -> d,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Error or .Void or .Union(_) -> null,
     }
 }
 
 /// A call's declared signature, when its name is a declared fn.
 export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
     let d? = bound_decl_of(names, e) else { return null }
-    (decls.sig(d))?.fn_sig()
+    decls.sig(d)?.fn_sig()
 }
 
 /// The seats a fn declares: its written params minus a BARE
@@ -151,15 +210,50 @@ export fn type_named(names: NameFacts, name: string) -> DeclId? {
     names.names.type_decl(name)
 }
 
-/// Whether a type registered an impl for the trait — and a `dyn` of
-/// the very trait implements it BY CONSTRUCTION.
+/// Whether a type registered an impl for the trait this file names —
+/// and a `dyn` of the very trait, or a type parameter bounded by it,
+/// implements it BY CONSTRUCTION — each instantiation re-proves the
+/// bound.
 export fn implements_of(types: TypeRegistry, decls: Decls, names: NameFacts, ty: TypeId, tname: string) -> bool {
+    implements_named(types, decls, ty, tname, decls.trait_named(names, tname))
+}
+
+/// The same answer, given the trait the name stands for WHERE IT WAS
+/// WRITTEN — absent when that file names no such trait.
+export fn implements_named(types: TypeRegistry, decls: Decls, ty: TypeId, tname: string, tr: DeclId?) -> bool {
     let worn: string? = dyn_contract(types.shape_of(ty))
     if worn != null { return worn! == tname }
-    let d: DeclId? = declared_decl(types.shape_of(ty))
-    let tr: DeclId? = decls.trait_named(names, tname)
-    if d == null || tr == null { return false }
-    decls.implements(d!, tr!)
+    if bound_of(types, decls, ty) == tname { return true }
+    let t? = tr else { return false }
+    implements_trait(types, decls, ty, t)
+}
+
+/// The bound a type parameter declares — "" for every other type.
+fn bound_of(types: TypeRegistry, decls: Decls, ty: TypeId) -> string {
+    match types.shape_of(ty) {
+        .Var(d, j, _) -> decls.bound_name(d, j),
+        _ -> "",
+    }
+}
+
+/// Whether a type registered an impl for the trait DECLARATION — asked
+/// of the trait itself, so the answer never depends on what the asking
+/// file imports.
+export fn implements_trait(types: TypeRegistry, decls: Decls, ty: TypeId, tr: DeclId) -> bool {
+    let worn: DynContract? = dyn_decl(types.shape_of(ty))
+    if worn != null { return same_decl(worn!.decl, tr) }
+    let d? = decls.implementor(ty) else { return false }
+    decls.implements(d, tr)
+}
+
+/// A `dyn`'s trait: its declaration, and the name it is spelled by.
+export type DynContract = { decl: DeclId, name: string }
+
+export fn dyn_decl(sh: Type) -> DynContract? {
+    match sh {
+        .Dyn(d, n) -> DynContract { decl: d, name: n },
+        _ -> null,
+    }
 }
 
 export fn dyn_contract(sh: Type) -> string? {
@@ -177,9 +271,7 @@ export fn dyn_contract(sh: Type) -> string? {
 export fn declared_decl(sh: Type) -> DeclId? {
     match sh {
         .Struct(d, _) or .Enum(d, _) -> d,
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Opt(_) or .Null
-            or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
-            or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) -> null,
     }
 }
 
@@ -193,21 +285,37 @@ export fn type_name_decl(sh: Type) -> DeclId? {
     }
 }
 
-/// What a `let`/`mut` binding holds: its declared type, its value's
-/// type, or — for a loop's counter — int.
-export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
+/// `def_type_of`'s READ half: every branch it can answer without
+/// interning anything — a rule reads a binding's already-settled
+/// type, and on an already-typed program every shape it could name
+/// is already in the registry. The one branch that COULD mint (a
+/// `for` loop's own `int` counter) asks the registry's lookup door
+/// instead; a miss there is the honest absence, not a reason to grow
+/// the registry from a read.
+export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
     // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
     // body's facts hold only its own range — so a const's type is
     // the program's answer or the HOLE. Falling through would index
     // the asker's table with another body's expression (-1).
-    if view.store.const_value(s) != null {
-        return view.decls.type_of_const(view.file, s) ?? error_type
-    }
+    if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return view.decls.type_of_const(view.file, s) }
     let declared: TypeId? = facts.declared_binding(s)
-    if declared != null { return declared! }
-    if view.store.stmt(s) is .For { return view.types.type(int) }
-    let v? = view.store.stmt_value(s) else { return error_type }
+    if declared != null { return declared }
+    if view.store.stmt(s) is .For { return view.types.known(Type.Int) }
+    let v? = view.store.stmt_value(s) else { return null }
     facts.type_at(v)
+}
+
+/// What a `let`/`mut` binding holds: its declared type, its value's
+/// type, or — for a loop's counter — int. Total: `known_def_type_of`
+/// answers every case but the one that can still need a mint (a
+/// `for` loop's counter, the first time it is asked), which this
+/// alone is trusted to grow the registry for.
+export fn def_type_of(facts: TypeFacts, view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
+    let known? = known_def_type_of(facts, view, s) else {
+        if view.store.stmt(s) is .For { return view.types.type(int) }
+        return error_type
+    }
+    known
 }
 
 impl Decls {
@@ -234,7 +342,7 @@ impl Decls {
 
 /// A literal const's type can be read without asking the workspace.
 /// Computed and nominal types fall through to the ConstTyped family.
-fn settled_type(store: NodeStore, mut types: TypeRegistry, s: StmtId) -> TypeId? {
+fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v? = store.const_value(s) else { return null }
     let word? = literal_shape(store.expr(v)) else { return spelled_type(types, store.binding_ty(s)) }
     let held = types.intern(word)
@@ -246,7 +354,7 @@ fn settled_type(store: NodeStore, mut types: TypeRegistry, s: StmtId) -> TypeId?
 /// `Map<string, …>`, each under `?` — resolved from the registry
 /// alone. A declared type's NAME needs the namespace, which no store
 /// read has; it answers null here.
-export fn spelled_type(mut types: TypeRegistry, ann: TypeRef?) -> TypeId? {
+export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     if ann == null { return null }
     let a = ann!
     let held? = spelled_plain(types, a) else { return null }
@@ -257,15 +365,15 @@ export fn spelled_type(mut types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     types.type(held?)
 }
 
-fn spelled_plain(mut types: TypeRegistry, a: TypeRef) -> TypeId? {
+fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
     if a.args.is_empty() {
         let word: Type? = scalar_named(a.name)
         return if word == null { null } else { types.intern(word!) }
     }
     let elem? = spelled_type(types, a.args.last()) else { return null }
     match a.name {
-        "List" -> if a.args.length == 1 { types.type(List<elem>) } else { null },
-        "Map" -> if a.args.length == 2 && keyed_by_text(a.args[0]) { types.type(Map<string, elem>) } else { null },
+        "List" if a.args.length == 1 -> types.type(List<elem>),
+        "Map" if a.args.length == 2 && keyed_by_text(a.args[0]) -> types.type(Map<string, elem>),
         _ -> null,
     }
 }
@@ -277,23 +385,38 @@ fn keyed_by_text(k: TypeRef) -> bool {
 
 /// The shape a literal wears.
 fn literal_shape(value: Expr) -> Type? {
-    if (value).int_of() != null { return Type.Int }
-    if (value).text_of() != null { return Type.Str }
-    if (value).bool_of() != null { return Type.Bool }
-    if (value).bits_of() != null { return Type.Float }
+    if value.int_of() != null { return Type.Int }
+    if value.text_of() != null { return Type.Str }
+    if value.bool_of() != null { return Type.Bool }
+    if value.bits_of() != null { return Type.Float }
     null
 }
 
 /// What a settlement SPELLS today: a scalar or text, by its word.
 export fn scalar_named(name: string) -> Type? {
-    match name {
-        "int" -> Type.Int,
-        "float" -> Type.Float,
-        "string" -> Type.Str,
-        "bool" -> Type.Bool,
-        _ -> null,
+    scalar_types().find(it.name == name)?.builds(TypeArgs { parts: [] })
+}
+
+/// The scalars as the language's own type declarations — the ONE
+/// spelling of each, and a declaration a trait's own package may
+/// implement its trait for (`impl Respond for string`).
+export once fn scalar_types() -> List<TypeRow> {
+    table<TypeRow> {
+        name     | arity | slots | judge  | builds      | variants
+        "int"    | 0     | false | no_law | int_shape   | no_variants
+        "float"  | 0     | false | no_law | float_shape | no_variants
+        "string" | 0     | false | no_law | str_shape   | no_variants
+        "bool"   | 0     | false | no_law | bool_shape  | no_variants
     }
 }
+
+fn int_shape(_args: TypeArgs) -> Type { Type.Int }
+
+fn float_shape(_args: TypeArgs) -> Type { Type.Float }
+
+fn str_shape(_args: TypeArgs) -> Type { Type.Str }
+
+fn bool_shape(_args: TypeArgs) -> Type { Type.Bool }
 
 /// A type under a body's instantiation — IDENTITY for a plain body.
 export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
@@ -324,7 +447,7 @@ impl TypeCx {
     fn emit(d: Diag) { self.facts.speak(d) }
     fn stmt_sig(s: StmtId) -> FnSig? {
         let d? = self.view.decls.decl_of(self.view.file, s) else { return null }
-        (self.view.decls.sig(d))?.fn_sig()
+        self.view.decls.sig(d)?.fn_sig()
     }
     fn bound_decl(e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
     fn tparams(d: DeclId) -> List<string> { self.view.decls.tparams(d) }
@@ -335,6 +458,15 @@ impl TypeCx {
     fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
     fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
     fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    /// Whether `ty` meets a declaration's bound — the trait read in the
+    /// file that WROTE the bound, never the caller's: a caller need not
+    /// import the trait a callee is bounded by.
+    fn meets_bound(decl: DeclId, tname: string, ty: TypeId) -> bool {
+        let written: DeclId? = self.written_in(self.view.decls.decl(decl).file).type_decl(tname)
+        let tr: DeclId? = if written != null && self.view.decls.is_trait(written!) { written } else { self.view.decls.trait_named(self.names, tname) }
+        implements_named(self.view.types, self.view.decls, ty, tname, tr)
+    }
+    fn implements_decl(ty: TypeId, tr: DeclId) -> bool { implements_trait(self.view.types, self.view.decls, ty, tr) }
     /// A `mut` binding: a `mut` local, a receiver, a `mut` seat — or
     /// a lambda's seat that HEARD its mark from the slot, which only
     /// typing knows.
@@ -386,6 +518,8 @@ impl LowerCx {
     fn emit(i: Ins) { self.out.give(i) }
     fn fail(msg: string) { self.out.record(msg) }
     fn defect(what: string) { self.out.defect(what) }
+    fn seeded() { self.out.seeded() }
+    fn speak(d: Diag) { self.out.voices.speak(d) }
     fn enclosing_ret() -> TypeId? { self.fn_ret }
 
     /// A call's target: the bound declaration's body as instantiated
@@ -404,6 +538,27 @@ impl LowerCx {
     fn fields_of(ty: TypeId) -> StructSig? { self.view.decls.fields_of_type(ty) }
     fn variants_at(e: ExprId) -> EnumSig? { self.view.decls.variants_of_type(self.type_at(e)) }
     fn variants_of(ty: TypeId) -> EnumSig? { self.view.decls.variants_of_type(ty) }
+    /// A method call's pieces, when the expression is one.
+    fn method_at(e: ExprId) -> MethodParts? { self.view.store.method_parts(e) }
+    /// The impl table's method a concrete receiver (a struct, enum or
+    /// generic instance) answers by name — the one arm of
+    /// `impls/callee.av`'s dispatch precedence a receiver of this
+    /// shape can still reach (a fn-typed FIELD of the same name wins
+    /// there first); a caller that needs the WHOLE precedence — a
+    /// variant, a contract, a bounded parameter — asks `impls`
+    /// itself, which this narrow reader is not.
+    fn method_of(ty: TypeId, name: string) -> DeclId? {
+        let d = declaring_decl(self.view.types.shape_of(ty))?
+        if self.fn_typed_field(ty, name) { return null }
+        self.view.decls.method(d, name)
+    }
+    /// A fn-typed FIELD of this name — the impl table's one
+    /// competitor for a struct/enum receiver.
+    fn fn_typed_field(ty: TypeId, name: string) -> bool {
+        let sig? = self.fields_of(ty) else { return false }
+        let slot? = sig.slot_of(name) else { return false }
+        self.view.types.shape_of(sig.types[slot]) is .Fn
+    }
     fn bind_patterns(v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
     /// The registers a pattern's TEST produced, for its BINDS to read.
     fn test_regs_of(p: PatId) -> List<Reg> { self.body.test_regs_of(p) }
@@ -412,8 +567,8 @@ impl LowerCx {
     fn cell_of(e: ExprId) -> Reg? {
         let b? = self.names.binding(e) else { return null }
         match b {
-            .Def(s) -> if self.body.is_boxed(s) { self.body.slot_of(s) } else { null },
-            .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+            .Def(s) if self.body.is_boxed(s) -> self.body.slot_of(s),
+            .Def(_) or .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }
     }
 
@@ -477,7 +632,7 @@ impl Decls {
     /// (a malformed declaration) falls back to a bare `()`.
     fn wrapper_hint(d: DeclId) -> string {
         let name = self.fn_name(d) ?? "f"
-        let params: List<TypeId> = (self.sig(d))?.fn_sig()?.params ?? []
+        let params: List<TypeId> = self.sig(d)?.fn_sig()?.params ?? []
         let marks = self.marks_of(d, params.length)
         let typed = joined([wrapper_typed_seat(i, self.types.name_of(p), marks[i].mutable) for i, p in params], ", ")
         let names = joined([wrapper_seat(i) for i, _p in params], ", ")
@@ -491,6 +646,7 @@ impl Decls {
         let name = self.decl(d).name
         let vars = self.instance_vars(d)
         if self.is_trait(d) { return vars[0] }
+        if self.is_builtin(d) { return self.built_type(d, vars) }
         if !vars.is_empty() { return self.types.intern(Type.App(d, name, vars)) }
         if self.is_enum(d) { return self.types.intern(Type.Enum(d, name)) }
         self.types.intern(Type.Struct(d, name))

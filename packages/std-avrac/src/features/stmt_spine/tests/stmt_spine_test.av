@@ -6,10 +6,10 @@ use @std.avrac.core.{Scoped, Expr, Stmt}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.compiler.{assemble, parse_program, Parsed}
-use @std.avrac.features.{LangNode, LanguageFeature, Builder, BuilderRow, feature}
+use @std.avrac.features.{LangNode, LanguageFeature, Builder, BuilderRow, feature, BlockWords}
 use @std.avrac.features.stmt_spine.{stmt_spine}
 
-fn build_name_stmt(mut b: Builder) -> Result<LangNode, string> {
+fn build_name_stmt(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let e = b.store.alloc_expr(Expr.Ident(Scoped(t.text)), b.span)
     b.make_stmt(Stmt.ExprStmt(e))
@@ -26,7 +26,7 @@ fn name_stmts() -> LanguageFeature {
 }
 
 fn parse_prog(source: string) -> Parsed {
-    parse_program(assemble([stmt_spine(), name_stmts()]), new_source_file("<source>", source), [])
+    parse_program(assemble([stmt_spine(), name_stmts()]), new_source_file("<source>", source), BlockWords {})
 }
 
 spec "features/stmt_spine" {
@@ -35,8 +35,7 @@ spec "features/stmt_spine" {
             let p = parse_prog("alpha\nbeta")
             let shape_ok = p.voices.list.is_empty() && p.stmts.length == 2
             let first = p.store.stmt_value(p.stmts[0])
-            let names_ok = shape_ok && p.store.stmt(p.stmts[0]) is .ExprStmt &&
-                first != null && p.store.expr(first!) is .Ident
+            let names_ok = shape_ok && p.store.stmt(p.stmts[0]) is .ExprStmt && first != null && p.store.expr(first!) is .Ident
             shape_ok && names_ok && p.store.stmts.count() == 2
         }
         then "blank lines between statements are noise" {

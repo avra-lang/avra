@@ -1,0 +1,44 @@
+//! A keep-alive load generator: `CONNS` connections to port 18080, one
+//! task each, every task writing a request and reading its reply until
+//! `SECS` seconds pass. Prints requests a second. One reply is taken to
+//! arrive in one read, which holds for a short answer on loopback.
+use @std.net.{Conn, NetError, connect}
+use @std.io.{env}
+use @std.text.{parse_int}
+use @std.time.{secs, now_ms}
+
+/// Round trips on one connection until `until` (monotonic ms).
+fn driven(c: Conn, req: Bytes, until: int) -> int {
+    mut n = 0
+    while now_ms() < until {
+        let ok = match c.write(req) {
+            .Ok(_) -> match c.read(4096) {
+                .Ok(b) -> b != null,
+                .Err(_) -> false,
+            },
+            .Err(_) -> false,
+        }
+        if !ok { return n }
+        n = n + 1
+    }
+    n
+}
+
+fn loaded(conns: int, seconds: int) -> Result<string, NetError> {
+    let req = "GET / HTTP/1.1\r\nHost: bench\r\nUser-Agent: load\r\nAccept: */*\r\n\r\n".bytes()
+    let cs = [connect("127.0.0.1", 18080, secs(2))? for i in 0..conns]
+    let until = now_ms() + seconds * 1000
+    let counts: Cell<List<int>> = Cell.new([])
+    {
+        let ts = Tasks.new()
+        for c in cs { ts.push(spawn counts.push(driven(c, req, until))) }
+    }
+    for c in cs { let _ = c.close() }
+    mut total = 0
+    for n in counts.get() { total = total + n }
+    .Ok("${conns} connections, ${seconds} s: ${total / seconds} req/s")
+}
+
+fn number(name: string, fallback: int) -> int { parse_int(env(name) ?? "") ?? fallback }
+
+loaded(number("CONNS", 50), number("SECS", 5)) catch e -> "failed: ${e.describe().message}"

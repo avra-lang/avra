@@ -1,0 +1,43 @@
+//! A rule's answer: a REWRITE — a template, proven equivalent or
+//! merely tested, `avra fix`'s tier the difference — a DELETE — a
+//! declaration (or import item) that should not exist at all, named
+//! by its typed id, never by text — or a SAY, a finding with no
+//! rewrite, the rule's own diagnostic. A `quote { … }` under a `Fix`
+//! want widens to `.Rewrite`, exactly as a bare value auto-Ok-wraps
+//! into its `Result` (`checks.av`'s `fix_accepts`).
+use core.{DeclId}
+use @std.meta.{Code as MetaCode}
+use diagnostics.{Diag, warning}
+use @std.errors.{Loc}
+
+export enum Fix {
+    Rewrite(to: MetaCode)
+    /// What this deletes — a declaration whole, or one imported item
+    /// (its own name's declaration): `avra fix` locates each by its
+    /// id, never by re-deriving it from text.
+    Delete(what: List<DeclId>)
+    Say(voice: Diag)
+}
+
+impl Fix {
+    /// The rewrite's own text, span-blind — `null` for a `Delete`
+    /// (no code answers it, only a removal) and for a `Say`, which
+    /// carries no code to splice.
+    fn rendered() -> string? {
+        match self {
+            .Rewrite(to) -> to.text(),
+            .Delete(_) or .Say(_) -> null,
+        }
+    }
+}
+
+/// A rule's own voice — the ONE door into a `Fix.Say`, and it takes
+/// no kind: a rule's finding kind is its `rule_id` (rules_table.av),
+/// stamped by the rules pass at the firing rule (rule_pass.av's
+/// `candidate_diags`), never a paraphrase the rule body types. This
+/// door makes a second name impossible to pass, not merely
+/// discouraged — even a diag built some other way has its kind
+/// overwritten before it reaches a reader.
+export fn said(at: Loc?, message: string, label: string, help: string?) -> Diag {
+    warning("", at, message, label, help)
+}

@@ -1,7 +1,6 @@
 // The manifest read into facts, and every rule of the manifest spec
 // speaking in its own words — errors that refuse, warnings that do
 // not.
-use @std.avrac.compiler.{avra}
 use @std.avrac.diagnostics.{new_source_file, render}
 
 use features.{budgets_of}
@@ -82,8 +81,7 @@ spec "compiler/manifest" {
         then "a dependency on itself" { speaks(packaged("[dependencies]\napp = { path = \".\" }\n"), "manifest.self_dependency") }
         then "an unscoped dependency" { speaks(packaged("[dependencies]\nhttp = { path = \"../http\" }\n"), "manifest.unscoped_dependency") }
         then "a registry or git dependency" {
-            speaks(packaged("[dependencies]\n\"@std/http\" = \"1.2\"\n"), "manifest.unsupported_dependency") &&
-                speaks(packaged("[dependencies]\n\"@std/http\" = { git = \"https://x/y\", rev = \"abc\" }\n"), "manifest.unsupported_dependency")
+            speaks(packaged("[dependencies]\n\"@std/http\" = \"1.2\"\n"), "manifest.unsupported_dependency") && speaks(packaged("[dependencies]\n\"@std/http\" = { git = \"https://x/y\", rev = \"abc\" }\n"), "manifest.unsupported_dependency")
         }
         then "an opt level outside the set" { speaks(packaged("[profile.release]\nopt_level = 7\n"), "manifest.bad_opt_level") }
         then "a profile name outside its charset" { speaks(packaged("[profile.Fast]\nopt_level = 2\n"), "manifest.bad_profile") }
@@ -113,8 +111,8 @@ spec "compiler/manifest" {
             read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).voices.is_empty()
         }
     }
-
     given "the unknown warns" {
+
         then "an unknown section is a warning that names it" {
             let m = read(packaged("[grants]\nnetwork = []\n"))
             m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_section" && m.voices[0].severity is .Warning
@@ -128,12 +126,12 @@ spec "compiler/manifest" {
         then "a `[link]` row spelling an option renders with its code and remedy" {
             let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"-lm\"]\n"
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4015]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]")
+            render(m.voices[0], new_source_file("avra.toml", text)).starts_with("error[manifest.link_option]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]")
         }
         then "a refusal points at its line in the manifest" {
             let text = "[package]\nname = \"app\"\nversion = \"1.2\"\n"
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4003]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
+            render(m.voices[0], new_source_file("avra.toml", text)).starts_with("error[manifest.bad_version]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
         }
     }
     given "[lifted]" {
@@ -143,11 +141,11 @@ spec "compiler/manifest" {
         }
         then "an absent row takes the measured default" {
             let m = read(packaged("\n[lifted]\nsteps = 500\n"))
-            m.budgets.steps == 500 && m.budgets.bytes == budgets_of(null, null).bytes
+            m.budgets.steps == 500 && m.budgets.bytes == budgets_of().bytes
         }
         then "a row that is not a count of at least 1 is refused and reads as the default" {
             let m = read(packaged("\n[lifted]\nsteps = 0\nmemory = \"lots\"\n"))
-            m.voices.length == 2 && m.voices.all(it.kind == "manifest.bad_budget") && m.budgets.steps == budgets_of(null, null).steps
+            m.voices.length == 2 && m.voices.all(it.kind == "manifest.bad_budget") && m.budgets.steps == budgets_of().steps
         }
         then "a memory past what bytes can hold is no ceiling, never a wrapped one" {
             let m = read(packaged("\n[lifted]\nmemory = 9223372036854775807\n"))
@@ -156,7 +154,7 @@ spec "compiler/manifest" {
         then "the refusal names the row and its units" {
             let text = packaged("\n[lifted]\nmemory = 0\n")
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).contains("error[F4017]: `[lifted] memory` is a count of at least 1")
+            render(m.voices[0], new_source_file("avra.toml", text)).contains("error[manifest.bad_budget]: `[lifted] memory` is a count of at least 1")
         }
     }
 }

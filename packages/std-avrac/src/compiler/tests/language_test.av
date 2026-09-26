@@ -4,66 +4,61 @@
 use @std.avrac.compiler.{avra, assemble, language_features, parse_source, project, builtin_codes, analyze_source}
 use @std.avrac.testing.{shown}
 use @std.grammar.{Diagnostic, Cause, Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use @std.avrac.diagnostics.{code_for, new_source_file}
+use @std.avrac.diagnostics.{registered, new_source_file}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.features.{LanguageFeature, feature}
 
 /// True when a cause's projected kind is in the built-in registry.
 fn cause_registered(c: Cause) -> bool {
     let d = Diagnostic { cause: c, message: "m", loc: null, expected: [], in_rule: "r" }
-    code_for(builtin_codes, project(d, null).kind) != null
+    registered(builtin_codes, project(d, null).kind)
 }
 
-/// A feature whose registered code collides with a built-in kind.
+/// A feature whose registered kind collides with a built-in one.
 fn clashing() -> LanguageFeature {
     let rows = table<DiagCode> {
-        kind        | id      | summary
-        "lex.error" | "F9998" | "collides with the builtin kind"
+        kind        | summary
+        "lex.error" | "collides with the builtin kind"
     }
     feature("clash", clash_gram()) with { diags: rows }
-}
-
-/// A feature whose registered F-code collides with a built-in id.
-fn clashing_id() -> LanguageFeature {
-    let rows = table<DiagCode> {
-        kind         | id      | summary
-        "clash.kind" | "F0001" | "collides with the builtin F-code"
-    }
-    feature("clashid", clashid_gram()) with { diags: rows }
 }
 
 spec "language" {
     given "the canonical language" {
         then "it assembles with no defects and the builtin registry" {
             let lang = avra()
-            lang.syntax != null && lang.diagnostics.is_empty() &&
-                code_for(lang.rows.codes, "parse.expected") == "F0100" &&
-                code_for(lang.rows.codes, "resolve.unresolved") == "F3000" &&
-                code_for(lang.rows.codes, "type.mismatch") == "F2000" &&
-                code_for(lang.rows.codes, "type.case") == "F2042" &&
-                code_for(lang.rows.codes, "resolve.nested_spec") == "F3022" &&
-                code_for(lang.rows.codes, "resolve.duplicate_case") == "F3023"
+            lang.syntax != null && lang.diagnostics.is_empty() && registered(lang.rows.codes, "parse.expected") && registered(lang.rows.codes, "resolve.unresolved") && registered(lang.rows.codes, "type.mismatch") && registered(lang.rows.codes, "type.case") && registered(lang.rows.codes, "resolve.nested_spec") && registered(lang.rows.codes, "resolve.duplicate_case")
         }
         then "a feature registering a taken kind refuses assembly" {
             let lang = assemble(language_features().concat([clashing()]))
-            lang.syntax == null && lang.diagnostics.length == 1 &&
-                lang.diagnostics[0].kind == "language.defect" &&
-                lang.diagnostics[0].message == "`lex.error`: diagnostic kind is registered more than once"
-        }
-        then "a reused F-code refuses assembly — codes are API" {
-            let lang = assemble(language_features().concat([clashing_id()]))
-            lang.syntax == null && lang.diagnostics.length == 1 &&
-                lang.diagnostics[0].message == "`F0001`: diagnostic code is registered more than once"
+            lang.syntax == null && lang.diagnostics.length == 1 && lang.diagnostics[0].kind == "language.defect" && lang.diagnostics[0].message == "`lex.error`: diagnostic kind is registered more than once"
         }
         then "a real parse error checks end to end" {
             let lang = avra()
-            let expected = """error[F0100]: expected NAME while parsing `stmt`
+            let expected = """error[parse.expected]: expected NAME while parsing `stmt`
   ╭─[app.av:2:5]
 2 │ let = 3
   ·     ┬
 ──╯"""
-            lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected &&
-                lang.check(new_source_file("<source>", "let a = 1")) == ""
+            lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected && lang.check(new_source_file("<source>", "let a = 1")) == ""
+        }
+        then "a layout fact read before a `mut` seat moves it is a named compiler defect, not a silently wrong mask (R11c, avra-8sb5.34.21)" {
+            let lang = avra()
+            let src = """type Small = { index: int }
+enum Tagged {
+    A(Small)
+    B
+}
+fn reads_tag(x: Tagged) -> int {
+    match x {
+        .A(s) -> s.index,
+        .B -> 0,
+    }
+}
+fn seal(mut s: Small) {
+    s.index = 1
+}"""
+            lang.check(new_source_file("app.av", src)) == "error[language.defect]: `Small`'s flatness was read before a `mut` seat sealed it"
         }
     }
     given "the code table" {
@@ -82,8 +77,7 @@ spec "language" {
         then "lets and expression statements land in order" {
             let p = parse_source("let x = 1 + y\nx")
             let let_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _, _) -> name == "x", _ -> false }
-            p.voices.list.is_empty() && p.stmts.length == 2 && let_ok &&
-                p.store.stmt(p.stmts[1]) is .ExprStmt
+            p.voices.list.is_empty() && p.stmts.length == 2 && let_ok && p.store.stmt(p.stmts[1]) is .ExprStmt
         }
     }
     given "a broken statement between good ones" {
@@ -96,7 +90,7 @@ spec "language" {
     }
     given "a lex error" {
         then "it joins the diagnostics and parsing continues" {
-            let p = parse_source("let a = 1\n$\nlet b = 2")
+            let p = parse_source("let a = 1\n\$\nlet b = 2")
             let lets = [s for s in p.stmts if p.store.stmt(s) is .Let]
             p.voices.list.length == 1 && lets.length == 2
         }
@@ -126,11 +120,5 @@ spec "language — a keyword is never a callee" {
 fn clash_gram() -> Grammar {
     grammar {
         clash_rule = NAME
-    }
-}
-
-fn clashid_gram() -> Grammar {
-    grammar {
-        clashid_rule = NAME
     }
 }

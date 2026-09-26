@@ -5,6 +5,7 @@ use features.{LowerCx, bound_decl_of}
 
 fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
+        .Named(_, value) -> cx.reg_of(value),
         .Call(callee, _, args) -> {
             let host: string? = cx.extern_callee(e)
             if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, args)) }
@@ -13,12 +14,18 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
             if made != null { return made! }
             let through: Reg? = cx.indirect_callee(e)
             if through != null { return valued_call_reg(cx, e, through!, regs) }
-            let dst = cx.result(e)
-            cx.emit(Ins.Call(dst, cx.callee_of(e, callee.of), regs))
-            dst
-        }
-        _ -> cx.foreign_node(e),
+            // THE MINT LAW: the defaults' registers first, the answer last
+            let seated = seated_left(cx, e, args, regs)
+            cx.call_decl_at(e, cx.callee_of(e, callee.of), seated)
+        },
+        rest -> cx.foreign_node(e),
     }
+}
+
+/// A direct call's registers in its callee's seat order.
+fn seated_left(mut cx: LowerCx, e: ExprId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+    let d? = bound_decl_of(cx.names, e) else { return regs }
+    cx.seated_regs(e, d, args, regs)
 }
 
 /// A NAMED TYPE'S CONSTRUCTION — `UserId(5)`: the name is free at
@@ -26,7 +33,8 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
 /// register the NAME's type, which each engine renders as identity.
 /// Absent when the callee is no named type.
 fn named_reg(mut cx: LowerCx, e: ExprId, regs: List<Reg>) -> Reg? {
-    let d: DeclId? = bound_decl_of(cx.names, e)
+    let bound? = bound_decl_of(cx.names, e) else { return null }
+    let d: DeclId? = cx.view.decls.named_by(bound)
     if d == null || !cx.view.decls.is_named(d!) { return null }
     if regs.length != 1 { return cx.lower_defect(e, "a named type built from no single value survived typing") }
     cx.packed(e, regs)

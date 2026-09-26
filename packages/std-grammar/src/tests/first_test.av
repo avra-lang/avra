@@ -1,7 +1,7 @@
 // The FIRST/FIRST gate: shared first tokens, buried keywords,
 // empty-matching branches, and left recursion all refuse to
 // assemble — and the sanctioned keyword-anchor order stays clean.
-use @std.grammar.{Grammar, Rule, Rep, rule, seq, item, cap, lit, named, rule_ref, first_defects, grammar_of_grammars}
+use @std.grammar.{Grammar, Rule, Rep, rule_def, seq, item, cap, lit, named, rule_ref, first_defects, grammar_of_grammars}
 
 fn first_g1(rules: List<Rule>) -> Grammar {
     Grammar { name: "t", start: rules[0].name, rules: rules }
@@ -14,64 +14,76 @@ fn messages(g: Grammar) -> List<string> {
 spec "grammar/first" {
     given "two branches sharing a first token" {
         then "a committing earlier branch names both branches and the loser" {
-            let g = first_g1([rule("a", [
-                seq([item(lit("x"))]),
-                seq([item(lit("x")), item(named("NUMBER"))]),
-            ])])
+            let g = first_g1([
+                rule_def("a", [
+                    seq([item(lit("x"))]),
+                    seq([item(lit("x")), item(named("NUMBER"))]),
+                ]),
+            ])
             let m = messages(g)
             m.length == 1 && m[0] == "branches 1 and 2 both begin with `x` — branch 2 is unreachable"
         }
         then "a branch needing more after the shared token backtracks — no defect" {
-            let g = first_g1([rule("a", [
-                seq([item(lit("x")), item(named("NAME"))]),
-                seq([item(lit("x")), item(named("NUMBER"))]),
-            ])])
+            let g = first_g1([
+                rule_def("a", [
+                    seq([item(lit("x")), item(named("NAME"))]),
+                    seq([item(lit("x")), item(named("NUMBER"))]),
+                ]),
+            ])
             first_defects(g).is_empty()
         }
         then "a shared terminal is the same defect" {
-            let g = first_g1([rule("a", [
-                seq([item(named("NAME"))]),
-                seq([item(named("NAME")), item(lit(":"))]),
-            ])])
+            let g = first_g1([
+                rule_def("a", [
+                    seq([item(named("NAME"))]),
+                    seq([item(named("NAME")), item(lit(":"))]),
+                ]),
+            ])
             let m = messages(g)
             m.length == 1 && m[0] == "branches 1 and 2 both begin with NAME — branch 2 is unreachable"
         }
     }
     given "a keyword and the terminal that subsumes it" {
         then "the anchor order — literal first — is clean" {
-            let g = first_g1([rule("s", [
-                seq([item(lit("let")), item(named("NAME"))]),
-                seq([item(named("NAME"))]),
-            ])])
+            let g = first_g1([
+                rule_def("s", [
+                    seq([item(lit("let")), item(named("NAME"))]),
+                    seq([item(named("NAME"))]),
+                ]),
+            ])
             first_defects(g).is_empty()
         }
         then "the buried order is refused" {
-            let g = first_g1([rule("s", [
-                seq([item(named("NAME"))]),
-                seq([item(lit("let")), item(named("NAME"))]),
-            ])])
+            let g = first_g1([
+                rule_def("s", [
+                    seq([item(named("NAME"))]),
+                    seq([item(lit("let")), item(named("NAME"))]),
+                ]),
+            ])
             let m = messages(g)
             m.length == 1 && m[0] == "branch 2's `let` is shadowed by branch 1's NAME — anchor the literal branch first"
         }
     }
     given "a branch that can match empty input" {
         then "any later branch is unreachable" {
-            let g = first_g1([rule("a", [
-                seq([item(named("NAME")) with { rep: Rep.Opt }]),
-                seq([item(lit("x"))]),
-            ])])
+            let g = first_g1([
+                rule_def("a", [
+                    seq([item(named("NAME")) with { rep: Rep.Opt }]),
+                    seq([item(lit("x"))]),
+                ]),
+            ])
             messages(g)[0] == "branch 1 can match empty input — every later branch is unreachable"
         }
     }
     given "first sets that travel through references" {
         then "an overlap two rules deep is still caught" {
             let g = first_g1([
-                rule("a", [
+                rule_def("a", [
                     seq([cap("v", rule_ref("b"))]),
                     seq([cap("w", rule_ref("c"))]),
                 ]),
-                rule("b", [seq([item(lit("x"))])]),
-                rule("c", [seq([item(lit("x")), item(lit("y"))])]),
+                rule_def("b", [seq([item(lit("x"))])]),
+                rule_def("c", [seq([item(lit("x")), item(lit("y"))])]),
             ])
             let m = messages(g)
             m.length == 1 && m[0] == "branches 1 and 2 both begin with `x` — branch 2 is unreachable"
@@ -79,7 +91,7 @@ spec "grammar/first" {
     }
     given "left recursion" {
         then "the rule is refused by name" {
-            let g = first_g1([rule("e", [seq([cap("l", rule_ref("e")), item(lit("+"))])])])
+            let g = first_g1([rule_def("e", [seq([cap("l", rule_ref("e")), item(lit("+"))])])])
             first_defects(g)[0].message == "rule is left-recursive — no first token can ever commit"
         }
     }

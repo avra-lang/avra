@@ -107,9 +107,9 @@ fn degenerate(g: Grammar, r: Rule, s: Seq) -> List<Attack> {
     flatten([reps_attacks(g, s, r.name, base, rep) for rep in repeats_of(s, [])])
 }
 
-fn reps_attacks(g: Grammar, s: Seq, rule: string, base: string, rep: Repeat) -> List<Attack> {
+fn reps_attacks(g: Grammar, s: Seq, rname: string, base: string, rep: Repeat) -> List<Attack> {
     let counts = if rep.many { [Count.None, Count.Many] } else { [Count.None] }
-    [Attack { class: AttackClass.Degenerate, source: varying(g, s, rule, rep.path, c), base: base } for c in counts]
+    [Attack { class: AttackClass.Degenerate, source: varying(g, s, rname, rep.path, c), base: base } for c in counts]
 }
 
 /// A repeated item and whether its many-copy is self-contained.
@@ -131,8 +131,8 @@ fn is_separator(s: Seq) -> bool {
     }
 }
 
-fn varying(g: Grammar, s: Seq, rule: string, path: List<int>, count: Count) -> string {
-    seq_sample(g, s, [rule], Vary { path: path, count: count }, [])
+fn varying(g: Grammar, s: Seq, rname: string, path: List<int>, count: Count) -> string {
+    seq_sample(g, s, [rname], Vary { path: path, count: count }, [])
 }
 
 /// The malformed class: a required token deleted, duplicated, or
@@ -195,7 +195,6 @@ fn swap_mutants(toks: List<string>) -> List<string> {
     if toks.length < 2 { return [] }
     [join_swap(toks, j) for j in 0..toks.length - 1 if toks[j] != toks[j + 1]]
 }
-
 
 // ── The sample ─────────────────────────────────────────────────────
 // A rule's first branch, spelled once: literals as written, a terminal
@@ -274,8 +273,8 @@ fn repeat_in_item(m: Item, path: List<int>) -> List<Repeat> {
 
 fn group_repeats(p: Prim, path: List<int>) -> List<Repeat> {
     match p {
-        .Group(inner) -> if inner.branches.is_empty() { [] } else { repeats_of(inner.branches[0], path) },
-        .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> [],
+        .Group(inner) if !inner.branches.is_empty() -> repeats_of(inner.branches[0], path),
+        .Group(_) or .Ref(_) or .Lit(_) or .Named(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> [],
     }
 }
 
@@ -299,17 +298,17 @@ fn sample_of(k: TokenKind) -> string {
         .Name -> "x",
         .Num -> "1",
         .Str -> "\"s\"",
-        .IStrBegin -> "\"$" + "{",
+        .IStrBegin -> "\"\$" + "{",
         .IStrMid -> "}",
         .IStrEnd -> "}\"",
         .Op -> "?",
         .Break -> "\n",
         .Eof -> "",
         .Pkg -> "@std",
-        .Hole -> "$" + "{x}",
-        .HoleBegin -> "$" + "{",
+        .Hole -> "\$" + "{x}",
+        .HoleBegin -> "\$" + "{",
         .HoleEnd -> "}",
-        .Block or .Body -> "",
+        .Block or .Body or .Component -> "",
     }
 }
 
@@ -337,7 +336,6 @@ fn swapped(t: string, j: int, at: int, xs: List<string>) -> string {
     if j == at + 1 { return xs[at] }
     t
 }
-
 
 // ── The committed file ─────────────────────────────────────────────
 // THE FIXTURE IS GENERATED, so a case's law is its test body. The
@@ -379,9 +377,11 @@ export fn attack_test_source(feature: string, g: Generated) -> string {
 }
 
 fn case_blocks(cases: List<Attack>) -> List<string> {
-    [given_block(AttackClass.Degenerate, "degenerate shapes — a valid surface, and must stay valid", cases),
-     given_block(AttackClass.Malformed, "malformed surface (delete, duplicate, swap) — must be diagnosed", cases),
-     given_block(AttackClass.Keyword, "keyword-replace — must be diagnosed or a valid program", cases)]
+    [
+        given_block(AttackClass.Degenerate, "degenerate shapes — a valid surface, and must stay valid", cases),
+        given_block(AttackClass.Malformed, "malformed surface (delete, duplicate, swap) — must be diagnosed", cases),
+        given_block(AttackClass.Keyword, "keyword-replace — must be diagnosed or a valid program", cases),
+    ]
 }
 
 /// Whether a case belongs to the class a block renders — a `match`,

@@ -39,9 +39,11 @@ LINE = re.compile(r"`?\b([a-z_][a-z0-9_./-]*\.(?:av|c|h|py|sh)):(\d+)")
 
 
 def allowed():
-    """Names the doctrine may cite without the tree defining them, each
-    with its reason. A NEGATIVE EXAMPLE names a shape the law refuses;
-    a SHORTENING is prose naming half a symbol."""
+    """Names OR PATHS the doctrine may cite without the tree defining
+    or holding them, each with its reason. A NEGATIVE EXAMPLE names a
+    shape the law refuses; a SHORTENING is prose naming half a symbol;
+    a HISTORICAL PATH names a file since removed, whose incident the
+    doctrine still teaches."""
     path = os.path.join(ROOT, "tools", "cited.allow")
     out = {}
     for line in open(path):
@@ -123,7 +125,7 @@ def audit(defined, allow, tree):
             if n not in defined and n not in allow:
                 dead.append((doc, n, "names nothing in the tree"))
         for p in sorted(paths):
-            if not resolves(p, tree):
+            if not resolves(p, tree) and p not in allow:
                 dead.append((doc, p, "is not a file in the tree"))
         for m in LINE.finditer(text):
             dead.append((doc, m.group(0),

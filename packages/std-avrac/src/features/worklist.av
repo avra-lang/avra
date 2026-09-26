@@ -4,7 +4,7 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled, Static}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled, Static, ArenaRuns}
 use @std.errors.{Loc}
 
 /// A settled (`const`) seat's VALUE carried into the unit it selects:
@@ -29,7 +29,7 @@ export type Budgets = { steps: int, bytes: int }
 export const default_steps: int = 600000
 export const default_memory_mib: int = 5
 
-export fn budgets_of(steps: int?, memory_mib: int?) -> Budgets {
+export fn budgets_of(steps: int? = null, memory_mib: int? = null) -> Budgets {
     Budgets { steps: steps ?? default_steps, bytes: bytes_of_mib(memory_mib ?? default_memory_mib) }
 }
 
@@ -98,7 +98,7 @@ export enum SettleRoot {
 
 /// The unit a const's initializer lowers as, named for its statement.
 export fn const_symbol(f: FileId, s: StmtId) -> string {
-    "const$${f.index}$${s.index}"
+    "const\$${f.index}\$${s.index}"
 }
 
 /// A const's PER-UNIT name: its plain symbol, plus the settled seats'
@@ -114,20 +114,20 @@ export fn settled_symbol(base: string, seats: List<SeatValue>) -> string {
 /// value's fingerprint — one layout per value, however many units
 /// read it.
 export fn seat_symbol(ty: TypeId, fp: string) -> string {
-    "seat$${ty.index}$${fp}"
+    "seat\$${ty.index}\$${fp}"
 }
 
 /// A generated declaration's table key — under no WRITTEN name can
 /// collide, so a twin mints once and re-minting is identity.
 /// `name` is the generated fn's TWIN name.
 export fn generated_key(f: FileId, name: string) -> string {
-    "generated$${f.index}$${name}"
+    "generated\$${f.index}\$${name}"
 }
 
 /// The unit an expression lowers as on its own — an annotation's
 /// argument, settled like a const's value.
 export fn expr_symbol(f: FileId, e: ExprId) -> string {
-    "expr$${f.index}$${e.index}"
+    "expr\$${f.index}\$${e.index}"
 }
 
 /// A value CROSSING between the compiler and a lifted call: scalar,
@@ -136,7 +136,7 @@ export fn expr_symbol(f: FileId, e: ExprId) -> string {
 /// share one shape because the evaluator represents both alike.
 /// `Absent` is the null value; `Gone` a slot under the runtime's absent
 /// mark — a nullable nullable's absence, apart from its present null.
-export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int) }
+export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int), Octets(List<int>) }
 
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
@@ -178,14 +178,14 @@ impl MetaHeap {
                 let row = from.maps[id]
                 self.map(row.keys, [self.adopt(from, x) for x in row.values])
             },
-            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone -> v,
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Octets(_) -> v,
         }
     }
 
     fn slots(v: MetaVal) -> List<MetaVal> {
         match v {
             .Node(id) -> self.nodes[id],
-            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Map(_) -> [],
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Map(_) or .Octets(_) -> [],
         }
     }
 }
@@ -223,24 +223,10 @@ impl Origins {
 
 }
 
-/// A half-open run of arena indexes.
-export type IndexRange = { lo: int, hi: int }
-
-/// The arenas' counts at one moment — where a generation's nodes
-/// begin, and where they end.
-export type ArenaMarks = { exprs: int, stmts: int, pats: int }
-
-impl ArenaMarks {
-    /// The ranges between this moment and a later one.
-    fn until(after: ArenaMarks) -> List<IndexRange> {
-        [IndexRange { lo: self.exprs, hi: after.exprs }, IndexRange { lo: self.stmts, hi: after.stmts }, IndexRange { lo: self.pats, hi: after.pats }]
-    }
-}
-
 /// One admitted GENERATION of a file: the arena ranges its nodes
 /// occupy and the annotation that asked for it. Where each node was
 /// WRITTEN is the node's own fact (`Decls.origin_of`).
-export type Generation = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, at: Span? }
+export type Generation = { runs: ArenaRuns, at: Span? }
 
 /// Where a generated declaration came from — the annotation fn that
 /// asked for it, the declaration it wraps, the annotation's site, and
@@ -253,17 +239,23 @@ export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: Lis
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> }
+/// `cross` is `settle`'s sibling: a declaration crossed as the meta
+/// value a seat names (`@std/meta`'s `Fn`/`Type`/`Named`/`Trait`),
+/// the same door an annotation's own receiver crosses through —
+/// `collect`'s bare `it` is its one caller today.
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
-export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
-    Jobs { pending: [], seen: {}, lifts: [], wraps: [], statics: [], externs: externs, settle: settle }
+export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted) -> Jobs {
+    Jobs { pending: [], seen: {}, lifts: [], wraps: [], statics: [], externs: externs, settle: settle, cross: cross }
 }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER
-/// that wears the uniform convention: env at seat 0, forwarded.
-export type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
+/// that wears the uniform convention: env at seat 0, forwarded. A
+/// `dyn` entry for a VALUE RECORD receiver `unboxes` it instead: seat 0
+/// is the box a slot holds, read back into the receiver.
+export type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string, unboxes: TypeId? = null }
 
 /// One lambda awaiting its LIFT: the body lowers as a top-level fn
 /// taking (env, params…) under the enclosing body's view — in the

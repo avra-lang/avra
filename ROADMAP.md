@@ -2762,6 +2762,39 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
+## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
+
+Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.
+On the Linux Sprite the kernel floor (tools/bench/floor — no parsing) is
+0.88 µs CPU per request pipelined; a C server doing @std/http's work is
+~1.0 µs (estimate); Avra is ~6 µs. The gap is PER-REQUEST cost: tasks,
+fibers and cores raise throughput and never lower it.
+
+Landed: R1 reuse in place (a dying value lends its box), R2 records as
+one block (box and cells in one allocation).
+
+The ladder:
+1. **Value records** (R4, avra-8sb5.34.6): records of scalars — `Span`,
+   `Field`, `Line` — live in registers, with no box and no count. The
+   biggest single lever.
+   **Inline embedding** (R4b, avra-8sb5.34.10): R4 as first built makes a
+   record of ints a value, but every one-word seat — a record field, an
+   enum payload, a list cell — re-boxes it, so http's `Span` inside
+   `Field` inside `FieldLine` inside `List<Field>` stayed 40 boxes a
+   request. Embedding lays a value record field as N consecutive slots
+   of the box holding it, as C lays out a struct member: field offsets
+   become sums of widths, and `with`, payload reads, statics and both
+   engines follow. Nested flatten (a `Field` of two `Span`s is four ints)
+   comes with it. After R6; every program benefits.
+2. **Count elision** (R5, avra-8sb5.34.7): no retain or release on a
+   value that never escapes the fn that made it. Consuming params (R3,
+   avra-8sb5.34.4) fold in here.
+3. **Zero-alloc std-http** (R6, avra-8sb5.34.8): header spans in one
+   flat int buffer, once-tables as static addresses, the response
+   written straight into the connection's output buffer.
+4. **Multi-core** (R7, avra-8sb5.34.9): one share-nothing server per
+   core on SO_REUSEPORT — throughput times cores, on top.
+
 ## THE HTTP CAMPAIGN (opened 2026-09-06) — `@std.http`, and the foundations it forces
 
 Lane `lane/http` (worktree `../avra-lane-http`), taken over 2026-09-06 by
@@ -2912,7 +2945,10 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   brace; a pattern with braces used to compile as a literal that could
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
-  - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
+  - [x] TYPED HOLES — FIRED AND PAID 2026-09-24 (COMPONENTS): `{n: int}`
+        reads its span through `parse_int` in a pattern, a `grammar` and a
+        route; a span that is no int fails the match. The entry as it stood:
+        `{n: int}` refused (F2060, naming the
         pending row). FIRES when a TEXT -> INT PARSE ROW lands — the
         framer's `decimal`, the hole and a user's `"42"` are one law.
         ROUTED TWICE WRONG AND SETTLED 2026-09-07 by the SQLITE lead: it
@@ -3326,7 +3362,10 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   brace; a pattern with braces used to compile as a literal that could
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
-  - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
+  - [x] TYPED HOLES — FIRED AND PAID 2026-09-24 (COMPONENTS): `{n: int}`
+        reads its span through `parse_int` in a pattern, a `grammar` and a
+        route; a span that is no int fails the match. The entry as it stood:
+        `{n: int}` refused (F2060, naming the
         pending row). FIRES when a TEXT -> INT PARSE ROW lands — the
         framer's `decimal`, the hole and a user's `"42"` are one law.
         ROUTED TWICE WRONG AND SETTLED 2026-09-07 by the SQLITE lead: it
@@ -3592,78 +3631,4 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
-Collected from FEEDBACK.md. Sorted by how often each appears across phases. See FEEDBACK.md for full context and phase origins.
-
-- [ ] `break` AND `continue` (asked by the owner). WANTING SITES: every read-until-EOF loop over @std/net's parking verbs (packages/std-net/src/tests/parked, parked_many, parked_close) spells a flag — `mut open = true`, `while open`, `null -> { open = false }` — where the thought is `null -> break`.
-- [ ] A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
-- [ ] A REGISTRY'S REMAINDER, SPELLED BY THE COMPILER (filed 2026-09-22, the alias-gaps lane; asked by the owner — "do we seriously not have better syntax for this?!"). A two-answer projection over `Expr` spells all forty variants by hand (`place_step`, core/store.av: seven lines of `or .X(_, _)` to answer `null`), because `_ ->` over a registry forgets the next variant and `rest ->` is licensed for two shapes only. The ask: a remainder arm the compiler EXPANDS and PINS — it records the variants it covered and refuses (F2040's voice) when the enum grows, so the silence is honest without the ceremony. The lane dodged it by splitting one registry into one-arm projections (`forced`, `coalesced`, `chained`); that is not always available.
-- [ ] A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type T<K: Tr, V> = { … }` (not parseable today).
-- [ ] A FIELD ANNOTATION — `@excluded` (or any mark) above a record's field.
-- [ ] A GENERIC NAMED TYPE (`type Box<T> = List<T>`): F2083 "`Box` is a generic type — a trait impl over a generic type is recorded, not landed".
-- [ ] A GUARD THAT STILL COUNTS ARMS — `effect! is .Declares` was the ask.
-- [ ] A LIST SEAT FILLED BY MANY ARGUMENTS — `@derive(Show, Eq)` should accept multiple derives in one annotation.
-- [ ] A LITERAL PATTERN OVER A NAMED ENUM (`match k { .Red -> … }`) — read the enum through the name's shape.
-- [ ] A LOOP THAT DIVERGES STILL OWES A TAIL VALUE (filed 2026-09-08, the HTTP lane's design).
-- [ ] A MUTATING CAPTURE. A lambda's capture is a copy of the binding; allows `(mut x) -> { x = y }`.
-- [ ] A NAME OVER AN ENUM OR A RECORD FORWARDING `match`/`is`/`with` — `match k: K { .A -> … }` refines the type.
-- [ ] A NAMED CONSTRUCTION AT A `const` SEAT: `seat(A(3))` is F2073 "the result is not a constant".
-- [ ] A PRE-COMMIT GATE RUNS THE CHEAP KEEPERS. The lane's own history and proof.
-- [ ] A PRELUDE, or QUALIFIED EXPRESSION PATHS. `grammar { … }` expands without `use`.
-- [ ] A PRIVATE TOP-LEVEL `const` IS MODULE-SCOPED. A private `fn` in a package reaches other files.
-- [ ] A PROJECTION PER VARIANT, generated. `fn_sig_of`, `record_sig_of`, etc. for every declared kind.
-- [ ] A REUSABLE `param` GRAMMAR RULE. Every param list spells `(p:T, mut q:U) -> ret` the same way.
-- [ ] A SESSION HANDOFF ARTIFACT PER LANE. Resuming a dropped agent picks up with work in progress.
-- [ ] A SPEC HELPER THAT IMPORTS. `shown(src)` analyses a LONE source, so every program-test file compiles.
-- [ ] A WILDCARD PARAMETER (filed 2026-09-08, the HTTP lane's review) — `fn f(_: int)` is F3002 "`_` is a keyword".
-- [ ] A `Seat` RECORD — NEVER PARALLEL `params`/`marks`. S5a made seat marks a single unified list.
-- [ ] AN AGGREGATE ARGUMENT TO A DECLARATION-GENERATING ANNOTATION. A derive takes a list of names to recurse on.
-- [ ] AN EMPTY AGGREGATE LITERAL ADOPTS A PLANTED NON-NULLABLE WANT. `let xs: List<int>? = []` is F2024.
-- [ ] AN IDEMPOTENT CONVERSION: `Name(v)` where `v` already wears the name is a conversion that does nothing.
-- [ ] Any expression as a comprehension ELEMENT, generic bodies, wildcard parameters.
-- [ ] BYTES. WANTING SITE: the @std/sqlite lane needs arbitrary bytes without UTF-8 validation.
-- [ ] CHANNEL TRIGGERS, recorded with the landing: a want does not fire until the feature lands.
-- [ ] Comprehension BINDINGS (or `filter_map`): the filter and the map in one expression.
-- [ ] Comprehension destructuring: `[fix(i, m) for (i, m) in xs.enumerate()]`.
-- [ ] DERIVED STRUCTURAL IDENTITY: `fingerprint_expr` is mechanical — it should be `@derive(Fingerprint)`.
-- [ ] EXPRESSION CONTINUATION: a leading-operator continuation line — `a && \n b`.
-- [ ] FIELD PUNNING: `T { name, value }` where a local of each name is bound.
-- [ ] FLAGS, OR A SET OF AN ENUM. `SeatMark { mutable, settled }` as bitfield instead of two bools.
-- [ ] FLOAT (IEEE-754 binary64). WANTING SITE: the @std/sqlite lane — needed for SQL REAL columns.
-- [ ] Fn-typed arguments that carry type evidence through generics — the witness parameter.
-- [ ] GROW A LIST TO SIZE — `xs.resize(n, v)` (a List method).
-- [ ] INTERPOLATE A VALUE, NOT ONLY A SCALAR — `${r.answer}` on a record or list.
-- [ ] In-place mutation through self: `self.diagnostics.push(d)` — the write-through self seat.
-- [ ] LEFT-CHAINED `??` — `a ?? b ?? c` with no parens: relax the left-assoc constraint.
-- [ ] MEMBER AND MODULE DOCS HAVE NO TABLE — a `///` on an enum variant or record field.
-- [ ] MULTI-CLAUSE `if let` — `if let a? = f(), b? = g() { use both }`.
-- [ ] Match THROUGH the nullable: variant arms plus a `null` arm on `K?`.
-- [ ] Module-level constants that cross imports: `reserved()`, `forbidden()` as named sets.
-- [ ] NULLABLE SLOTS, the policy (rt27): a nullable is two words and uses the pointer niche.
-- [ ] ONCE FNS WITH TYPE PARAMETERS — `once fn f<T>() -> List<T>` is "expected `(`" in the grammar.
-- [ ] Per-feature import surfaces — `@std.http.{typed_routes}` for submodule exports.
-- [ ] QUOTED GRAMMAR — `` `a "literal" b` `` as a compile-time shape.
-- [ ] QUOTED VALUES — `` `{ x: 1, y: 2 }` `` as a compile-time literal.
-- [ ] READ-ONLY CAPTURES — a lambda reading a non-`mut` binding does not copy it.
-- [ ] REMAPPING DURING LOWERING — changing a declared slot's signature mid-pass.
-- [ ] RESIZE A LIST IN PLACE — `xs.resize(n)` / `xs.resize(n, v)`.
-- [ ] Result as a named type — `type R<T> = Result<T, Error>` and `R<int>?` works.
-- [ ] SHADOWING IN THE SAME BLOCK — `let x = 1; let x = x + 1;` (allowed, second shadows first).
-- [ ] SLICING A RANGE — `(0..10)[3..7]` for a sub-range.
-- [ ] Splicing QUALIFIED NAMES — `@mod.Name` in a quote.
-- [ ] SPLICING VALUES INTO QUOTES — a hole that is not a name.
-- [ ] SPLICING WHOLE STATEMENTS INTO A BLOCK — `${stmt}` inside a comprehension.
-- [ ] STATIC DISPATCH ON INTRINSICS — `if @comptime_eq(A, B)` for type-level decisions.
-- [ ] STRUCT DESTRUCTURING IN `let` — `let { x, y } = point`.
-- [ ] SUBSTR — `s.substr(start, len)` (not `substring(start, end)`).
-- [ ] SYNTAX SUGAR FOR A BORROW — `let mut r = &mut self.rows` instead of `let r = mut self.rows`.
-- [ ] THE PIPE `|>` — function composition as an operator.
-- [ ] TRAVERSE A TABLE — `table.map(…)`, `table.filter(…)`, `table.fold(…)`.
-- [ ] TYPE NARROWING IN PATTERN MATCHES — `match v { .A(x: T1) -> … }` refines the binding's type.
-- [ ] TYPE REFINEMENT WITH `is` — `if x is .A(n: int) { n + 1 }` narrows the pattern.
-- [ ] UNARY PREFIX `..` FOR RANGE CREATION — `.. n` as `0..n`.
-- [ ] WHEN (a conditional statement) — `when cond { … } else { … }` as sugar for `if cond { … }`.
-- [ ] WHERE CLAUSES ON FNS — `fn f(x: T) where T: Show { … }`.
-- [ ] WILDCARD PATTERNS IN `for` — `for _, item in xs { … }` to skip the first binding.
-- [ ] WITH EXPRESSIONS — `p with { x: new_x }` for record updates.
-
-**Note:** This list is deduplicated from FEEDBACK.md. Some items may be resolved or working differently by now. Cross-check with FEEDBACK.md for phase context and dates.
+Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.

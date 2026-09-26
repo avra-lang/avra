@@ -48,7 +48,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     r.unknowns()
     if !r.doc.has_section("package") {
         r.speak(refusal("manifest.no_package", r.at(0, 0), "a manifest declares its package — `[package]` is missing", "this manifest", "add `[package]` with `name` and `version`"))
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], budgets: budgets_of(null, null), voices: r.voices }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], budgets: budgets_of(), voices: r.voices }
     }
     let name = r.word("name", "manifest.no_name", "a name — `name = \"@scope/name\"`")
     let version = r.word("version", "manifest.no_version", "a version — `version = \"0.1.0\"`")
@@ -56,9 +56,14 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     if version != "" && !is_semver(version) { r.speak(r.bad_version(version)) }
     r.profiles()
     Manifest {
-        name: name, version: version,
-        bin: r.target("bin", "src/main.av"), lib: r.target("lib", "src/lib.av"), excludes: r.excludes(),
-        objects: r.linked("objects"), search: r.linked("search"), libs: r.linked("libs"),
+        name: name,
+        version: version,
+        bin: r.target("bin", "src/main.av"),
+        lib: r.target("lib", "src/lib.av"),
+        excludes: r.excludes(),
+        objects: r.linked("objects"),
+        search: r.linked("search"),
+        libs: r.linked("libs"),
         raw: r.words_of("link.raw", "flags"),
         deps: r.dependencies("dependencies", false, name).concat(r.dependencies("dev-dependencies", true, name)),
         deps_at: r.deps_at(),
@@ -88,8 +93,7 @@ fn is_number(s: string) -> bool {
 
 /// The sections a manifest may hold, and the keys each takes.
 fn known_section(name: string) -> bool {
-    name == "package" || name == "bin" || name == "lib" || name == "dependencies" || name == "dev-dependencies" ||
-        name == "features" || name == "build" || name == "link" || name == "link.raw" || name == "lifted" || name.starts_with("profile.") || is_process_section(name)
+    name == "package" || name == "bin" || name == "lib" || name == "dependencies" || name == "dev-dependencies" || name == "features" || name == "build" || name == "link" || name == "link.raw" || name == "lifted" || name.starts_with("profile.") || is_process_section(name)
 }
 
 /// `[process]` and what hangs off it: the tools, each inline or as
@@ -362,9 +366,7 @@ impl Reader {
     }
 
     fn link_option(key: string, word: string) -> Diag {
-        refusal("manifest.link_option", self.entry_at(self.doc.entry("link", key)!),
-            "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option", "here",
-            "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest")
+        refusal("manifest.link_option", self.entry_at(self.doc.entry("link", key)!), "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option", "here", "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest")
     }
 
     fn self_dependency(at: Loc?, key: string) -> Diag {
@@ -411,7 +413,7 @@ fn terminator_field(v: TomlValue?) -> string? {
     if v == null { return "--" }
     match v! {
         .Str(s) -> s,
-        .Bool(b) -> if b { "--" } else { null },
+        .Bool(b) if !b -> null,
         rest -> "--",
     }
 }

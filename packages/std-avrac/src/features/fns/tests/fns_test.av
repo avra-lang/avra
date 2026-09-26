@@ -52,8 +52,8 @@ spec "features/fns" {
             refused_with("extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nc_open(c_null())", "seat 1 of `c_open` is `mut`, and this is a value")
         }
     }
-
     given "an extern seat's machine WIDTH" {
+
         then "a width word on a seat and on the answer reaches the extern's row" {
             extern_shape("extern fn c_int(v: i32) -> u32\nc_int(1)", "c_int") == "i32 -> u32"
         }
@@ -85,8 +85,8 @@ spec "features/fns" {
             refused_with("type P = {\n    n: u32,\n}\nP { n: 1 }.n", "`u32` is a machine WIDTH")
         }
     }
-
     given "extern fns — the host's, by their bare symbol" {
+
         then "an extern naming a runtime row must wear that row's shape" {
             // both engines call a row by the REGISTRY's seats, so a
             // declaration that disagrees is called on the row's shape
@@ -104,15 +104,13 @@ spec "features/fns" {
             // `avra_host_env(null)` checked CLEAN and the two engines
             // wrecked differently: `defect: a non-string reached text
             // in a clean program` evaluated, a `getenv(NULL)` natively.
-            refused_with("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length",
-                         "seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence")
+            refused_with("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length", "seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence")
         }
         then "octets are refused there in the same words — the box is not the axis" {
-            refused_with("extern fn avra_str_len(s: Bytes?) -> int\navra_str_len(null)",
-                         "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
+            refused_with("extern fn avra_str_len(s: Bytes?) -> int\navra_str_len(null)", "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
         }
         then "the row's absence law renders whole" {
-            analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2088]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
+            analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[type.host_absence]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
         }
         then "a row with no evaluator arm is called by its name, as any extern is" {
             // `avra run` answered `defect: a runtime callee the
@@ -161,8 +159,7 @@ spec "features/fns" {
             refused_with("extern fn zz(xs: List<string>)\nzz([\"a\"])", "seat 1 of `zz` wears `List<string>`, which cannot cross to C")
         }
         then "a map seat cannot cross, and a record seat cannot either" {
-            refused_with("extern fn zz(m: Map<string, int>) -> i64\nzz({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C") &&
-                refused_with("type P = {\n    s: string,\n}\nextern fn zz(p: P) -> i64\nzz(P { s: \"a\" })", "wears `P`, which cannot cross to C")
+            refused_with("extern fn zz(m: Map<string, int>) -> i64\nzz({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C") && refused_with("type P = {\n    s: string,\n}\nextern fn zz(p: P) -> i64\nzz(P { s: \"a\" })", "wears `P`, which cannot cross to C")
         }
         then "a ROW is the exemption — its arm materialises the box on both sides" {
             shown("extern fn avra_str_join(xs: List<string>, sep: string) -> string\navra_str_join([\"a\", \"b\"], \"-\")") == "a-b"
@@ -210,7 +207,7 @@ spec "features/fns" {
             shown("extern fn avra_host_is_dir(path: string) -> int\nlet f = (x: string) -> avra_host_is_dir(x)\nf(\"corpus\") >= 0") == "true"
         }
         then "the refusal renders whole — at the READ, the declaration second" {
-            analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")").report().starts_with("error[F2093]: an extern fn is not a value — it names a C symbol, not a callable Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x0: string) -> avra_host_is_dir(x0)`")
+            analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")").report().starts_with("error[type.extern_value]: an extern fn is not a value — it names a C symbol, not a callable Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x0: string) -> avra_host_is_dir(x0)`")
         }
         then "the help's own wrapper compiles as written — a bare lambda needs a type, and the suggestion gives it one" {
             shown("extern fn avra_now_ns() -> int\nlet f = () -> avra_now_ns()\nf() >= 0") == "true"
@@ -242,12 +239,10 @@ spec "features/fns" {
             refused_with("return 5\n1", "a `return` answers a fn, and there is none enclosing")
         }
         then "a return's value must be ACCEPTED by the declared answer" {
-            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return \"no\"\n    }\n    n\n}\nf(1)",
-                         "`return` answers `int`, this is `string`")
+            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return \"no\"\n    }\n    n\n}\nf(1)", "`return` answers `int`, this is `string`")
         }
         then "the TAIL value is still the law — return is for early exits" {
-            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return 0\n    }\n    \"tail\"\n}\nf(1)",
-                         "the body answers `string` but `f` declares `int`")
+            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return 0\n    }\n    \"tail\"\n}\nf(1)", "the body answers `string` but `f` declares `int`")
         }
     }
     given "declarations and calls" {
@@ -278,19 +273,15 @@ spec "features/fns" {
         }
         then "an argument matches its param" {
             let a = analyze_source("fn f(x: int) -> int { x }\nf(\"no\")")
-            a.diagnostics.length == 1 &&
-                a.report().contains("argument 1 of `f` wants `int`, found `string`")
+            a.diagnostics.length == 1 && a.report().contains("argument 1 of `f` wants `int`, found `string`")
         }
         then "the body must answer the declared return" {
             let a = analyze_source("fn f(x: int) -> string { x + 1 }\nf(1)")
-            a.diagnostics.length == 1 &&
-                a.report().contains("the body answers `int` but `f` declares `string`")
+            a.diagnostics.length == 1 && a.report().contains("the body answers `int` but `f` declares `string`")
         }
         then "an unknown type annotation names today's types — and ABSORBS at the call" {
             let a = analyze_source("fn f(x: decimal) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`decimal` names no type") &&
-                a.report().contains("the types today are `int`, `string`, `bool`, and your declared types")
+            a.diagnostics.length == 1 && a.report().contains("`decimal` names no type") && a.report().contains("the types today are `int`, `string`, `bool`, and your declared types")
         }
         then "two fns cannot share a name" {
             let a = analyze_source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)")
@@ -350,14 +341,117 @@ ret r1"""
             shown("once fn tag() -> string {\n    \"x\"\n}\nfn twice() -> string {\n    \"\${tag()}\${tag()}\"\n}\ntwice()") == "xx"
         }
     }
+    given "a seat's default — a body of its own, run by every call that leaves the seat unwritten" {
+        then "a call leaving the seat unwritten runs the default; one writing it does not" {
+            shown("fn add(a: int, b: int = 5) -> int { a + b }\nadd(1) * 100 + add(1, 2)") == "603"
+        }
+        then "a default sees declarations, and runs fresh per call" {
+            shown("fn seed() -> int { 40 }\nfn f(n: int = seed() + 2) -> int { n }\nf() + f()") == "84"
+        }
+        then "a method's and a static's defaults fill the same way" {
+            shown("type C = { n: int }\nimpl C {\n    fn plus(k: int = 1) -> int { self.n + k }\n    static fn make(n: int = 7) -> C { C { n: n } }\n}\nC.make().plus() * 10 + C.make(2).plus(3)") == "85"
+        }
+        then "the refusal renders whole — a count outside the range names both ends" {
+            analyze_source("fn ok(a: int, b: int = 2) -> int { a + b }\nok()").report().starts_with("error[type.mismatch]: `ok` takes 1 to 2 arguments, found 0\n  ╭─[<source>:2:1]\n2 │ ok()\n  · ┬\n  · ╰── this call\n──╯\nhelp: the last seat has a default, and a call may leave it unwritten")
+        }
+        then "two defaulted seats are counted in the plural" {
+            refused_with("fn ok(a: int, b: int = 2, c: int = 3) -> int { a }\nok(1, 2, 3, 4)", "the last 2 seats have defaults, and a call may leave them unwritten")
+        }
+        then "the default law renders whole — a seat without a default after one with" {
+            analyze_source("fn o(a: int = 1, b: int) -> int { b }\n0").report().starts_with("error[type.param_default]: `b` has no default and follows `a`, which has one — a call writes its seats in order, so `a` could never be left to its default\n  ╭─[<source>:1:15]\n1 │ fn o(a: int = 1, b: int) -> int { b }\n  ·               ┬\n  ·               ╰── the first default\n──╯\nhelp: move the defaulted seats last, or give `b` a default too")
+        }
+        then "a generic fn's seat whose type names no parameter takes a default" {
+            shown("fn g<T>(xs: List<T>, n: int = 1) -> int { xs.length + n }\ng([7, 8]) * 10 + g([\"a\"], n: 5)") == "36"
+        }
+        then "a generic type's method takes a default on a seat naming no parameter" {
+            shown("type B<T> = { v: T }\nimpl B<T> {\n    fn f(n: int = 1) -> int { n }\n}\nB { v: \"x\" }.f() + B { v: 2 }.f(4)") == "5"
+        }
+        then "a seat whose type names a type parameter takes no default" {
+            refused_with("fn g<T>(x: T, ys: List<T> = []) -> int { ys.length }\n0", "`ys` carries a default, and its type names a type parameter of `g`")
+        }
+        then "a generic type's parameter is a type parameter of its methods' seats" {
+            refused_with("type B<T> = { v: T }\nimpl B<T> {\n    fn f(w: T? = null) -> int { 0 }\n}\n0", "`w` carries a default, and its type names a type parameter of `f`")
+        }
+        then "a `mut` seat takes no default — a default body is no place" {
+            refused_with("fn m(mut xs: List<int> = []) {\n    xs.push(1)\n}\n0", "`xs` is a `mut` seat of `m`, and a default body is neither a place nor a settled value")
+        }
+        then "a `const` seat takes no default" {
+            refused_with("fn c(const n: int = 1) -> int { n }\n0", "`n` is a `const` seat of `c`")
+        }
+        then "the seat judges its default" {
+            refused_with("fn w(a: string = 5) -> int { 0 }\n0", "parameter `a` defaults to `int`, and it is `string`")
+        }
+        then "a default reads no param beside it" {
+            refused_with("fn f(a: int, b: int = a) -> int { b }\nf(1)", "`a` is not defined")
+        }
+        then "a fn value's seats have no defaults — every seat is written" {
+            refused_with("fn add(a: int, b: int = 5) -> int { a + b }\nlet f = add\nf(1)", "takes 2 arguments, found 1")
+        }
+    }
+    given "an `isolated` seat — a fn that shares nothing with its caller" {
+        then "a lambda capturing plain data fills it, and runs" {
+            shown("fn run(isolated make: fn() -> string) -> string { make() }\nlet name = \"a\"\nrun(() -> name + \"b\")") == "ab"
+        }
+        then "a lambda making its own cell fills it" {
+            shown("fn run(isolated make: fn() -> Cell<int>) -> int { make().get() }\nrun(() -> Cell.new(3))") == "3"
+        }
+        then "a declared fn fills it" {
+            shown("fn seven() -> int { 7 }\nfn run(isolated make: fn() -> int) -> int { make() }\nrun(seven)") == "7"
+        }
+        then "an isolated parameter passes on to another isolated seat" {
+            shown("fn run(isolated make: fn() -> int) -> int { make() }\nfn relay(isolated make: fn() -> int) -> int { run(make) + 1 }\nrelay(() -> 4)") == "5"
+        }
+        then "the refusal renders whole — a captured cell" {
+            analyze_source("fn run(isolated make: fn() -> int) -> int { make() }\nlet c = Cell.new(1)\nrun(() -> c.get())").report().starts_with("error[type.isolated]: `make` of `run` is `isolated`, and this fn captures `c`, which is `Cell<int>` — an isolated fn shares nothing with its caller\n  ╭─[<source>:3:5]\n3 │ run(() -> c.get())\n  ·     ┬\n  ·     ╰── captured here\n──╯\nhelp: make it inside the fn, so each place it runs makes its own")
+        }
+        then "a record holding a cell is refused, naming what it holds" {
+            refused_with("type App = { hits: Cell<int> }\nfn run(isolated make: fn() -> App) -> int { make().hits.get() }\nlet app = App { hits: Cell.new(0) }\nrun(() -> app)", "captures `app`, which holds `Cell<int>`")
+        }
+        then "a captured fn value is refused — it may hold anything" {
+            refused_with("fn run(isolated make: fn() -> int) -> int { make() }\nfn f() -> int { 1 }\nlet g = f\nrun(() -> g())", "captures `g`, which is `fn() -> int`")
+        }
+        then "a recursive record of plain data fills it" {
+            shown("type Node = { v: int, next: Node? }\nfn run(isolated make: fn() -> int) -> int { make() }\nlet n = Node { v: 2, next: Node { v: 3, next: null } }\nrun(() -> n.v + (n.next?.v ?? 0))") == "5"
+        }
+        then "an enum carrying a cell in one variant is refused" {
+            refused_with("enum Slot {\n    Empty\n    Held(c: Cell<int>)\n}\nfn run(isolated make: fn() -> int) -> int { make() }\nlet s = Slot.Empty\nrun(() -> if s is .Empty { 0 } else { 1 })", "captures `s`, which holds `Cell<int>`")
+        }
+        then "a plain parameter is no promise" {
+            refused_with("fn run(isolated make: fn() -> int) -> int { make() }\nfn leaky(make: fn() -> int) -> int { run(make) }\n0", "this fn value may hold anything its maker captured")
+        }
+        then "a fn taking an isolated seat is not a fn value promising none" {
+            refused_with("fn run(isolated make: fn() -> int) -> int { make() }\nlet r: fn(fn() -> int) -> int = run\n0", "this is `fn(isolated fn() -> int) -> int`")
+        }
+    }
+    given "a named argument — the seat of its name" {
+        then "names fill seats in any order, beside positional ones" {
+            shown("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 1, a: 5) * 10 + sub(5, b: 1)") == "44"
+        }
+        then "a name skips a defaulted seat between written ones" {
+            shown("fn f(a: int, b: int = 2, c: int = 3) -> int { a * 100 + b * 10 + c }\nf(1, c: 9)") == "129"
+        }
+        then "arguments run in written order, whatever seats they fill" {
+            shown("type Log = { xs: List<string> }\nfn note(mut l: Log, s: string) -> int {\n    l.xs.push(s)\n    l.xs.length\n}\nfn pair(a: int, b: int) -> int { a * 10 + b }\nmut log = Log { xs: [] }\nlet r = pair(b: note(log, \"b\"), a: note(log, \"a\"))\n\"\${r} \${log.xs.join(\",\")}\"") == "21 b,a"
+        }
+        then "a method's and a static's seats take names" {
+            shown("type C = { n: int }\nimpl C {\n    fn m(a: int, b: int = 0) -> int { self.n + a * 10 + b }\n    static fn make(n: int = 1, scale: int = 1) -> C { C { n: n * scale } }\n}\nC { n: 1 }.m(b: 3, a: 2) * 10 + C.make(scale: 5).n") == "245"
+        }
+        then "the refusal renders whole — a name that is no seat lists the seats" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, c: 2)").report().starts_with("error[type.named_arg]: `sub` has no seat named `c`\n  ╭─[<source>:2:11]\n2 │ sub(a: 1, c: 2)\n  ·           ┬\n  ·           ╰── named here\n──╯\nhelp: its seats are `a`, `b`")
+        }
+        then "the refusal renders whole — a seat no argument writes" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 2)").report().starts_with("error[type.named_arg]: seat `a` of `sub` is written by no argument, and has no default\n  ╭─[<source>:2:1]\n2 │ sub(b: 2)\n  · ┬\n  · ╰── this call\n──╯\nhelp: write it — `a: …`")
+        }
+        then "the refusal renders whole — a fn value's seats have no names" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nlet f = sub\nf(a: 1, b: 2)").report().starts_with("error[type.named_arg]: `a:` names a seat, and `f`'s seats have no names\n  ╭─[<source>:3:3]\n3 │ f(a: 1, b: 2)\n  ·   ┬\n  ·   ╰── named here\n──╯\nhelp: drop the name — a fn value, a runtime method, a contract's member and an extern are called by position")
+        }
+    }
     given "a `const` seat — settled at compile time" {
         then "a plain seat refuses a settled callee — the two fn types differ" {
-            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0",
-                         "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0", "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")
         }
         then "a settled seat refuses a writing callee — `const` is not `mut`" {
-            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(mut int) -> int = takes\n0",
-                         "`bad` declares `fn(mut int) -> int`, this is `fn(const int) -> int`")
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(mut int) -> int = takes\n0", "`bad` declares `fn(mut int) -> int`, this is `fn(const int) -> int`")
         }
         then "a settled seat accepts a callee that settles nothing — the sound direction" {
             shown("fn plain(x: int) -> int {\n    x\n}\nlet good: fn(const int) -> int = plain\ngood(2)") == "2"
@@ -367,33 +461,31 @@ ret r1"""
         }
         then "two distinct settled values lower TWO units; a repeated one shares" {
             let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"y\", \"2\")\nlet c = pick(\"x\", \"3\")\na + b + c"
-            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("pick\$@")).length == 2
         }
         then "a settled seat refuses a value computed at run time" {
-            refused_with("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet p = \"x\"\npick(p, \"1\")",
-                         "`pattern` is a `const` seat")
+            refused_with("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet p = \"x\"\npick(p, \"1\")", "`pattern` is a `const` seat")
         }
         then "a settled seat accepts a `const` — computed or written" {
             shown("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nconst P: string = \"a\" + \"b\"\npick(P, \"1\")") == "ab1"
         }
         then "a METHOD's settled seat obeys the same law" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 1 }\nlet v = 5\nc.m(v)",
-                         "`x` is a `const` seat")
+            refused_with("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 1 }\nlet v = 5\nc.m(v)", "`x` is a `const` seat")
         }
         then "a generic fn's settled seat specializes like a plain one" {
             let src = "fn first<T>(const x: T, y: T) -> T {\n    x\n}\nlet a = first(1, 2)\nlet b = first(1, 3)\nlet c = first(2, 4)\na + b + c"
-            ir_of(src).fns.filter(it.name.starts_with("first$")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("first\$")).length == 2
         }
         then "two settled seats keep their ORDER — (1,2) and (2,1) are distinct units" {
             let src = "fn pair(const a: int, const b: int) -> int {\n    a * 10 + b\n}\npair(1, 2) + pair(2, 1)"
-            ir_of(src).fns.filter(it.name.starts_with("pair$@")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("pair\$@")).length == 2
         }
         then "a settled seat FORWARDS — the inner unit keys on the outer's value" {
             shown("fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)") == "9"
         }
         then "forwarded units split PER VALUE — inner is lowered once per outer value" {
             let src = "fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)"
-            ir_of(src).fns.filter(it.name.starts_with("inner$@")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("inner\$@")).length == 2
         }
         then "a `const` in the body folds to the settled seat's value" {
             shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"y\")") == "x!y"

@@ -2,9 +2,9 @@
 //! every pass's facts, every diagnostic, and every question —
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
-use core.{ExprId, TypeId, joined, FileId, Binding}
+use core.{ExprId, TypeId, At, joined, FileId, Binding}
 use diagnostics.{Diag, SourceFile, render, has_errors}
-use features.{Decls, NameFacts, TypeFacts, FileView}
+use features.{Decls, NameFacts, TypeFacts, FileView, Code, Analysed}
 use compiler.lower.{Lowered}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
@@ -31,7 +31,7 @@ impl Analysis {
     /// Any diagnostics rendered for the terminal — analysis's or a
     /// later stage's, one look everywhere.
     fn rendered(ds: List<Diag>) -> string {
-        joined([render(d, self.lang.rows.codes, self.view.source) for d in ds], "\n\n")
+        joined([render(d, self.view.source) for d in ds], "\n\n")
     }
 
     /// What an expression's name resolves to, when it does — the
@@ -46,13 +46,20 @@ impl Analysis {
         self.view.decls.types.name_of(self.type_at(e))
     }
 
+    /// The ONE constructor a rule or a spec builds a `Code` from —
+    /// this analysis's three shared tables, plus the one node in
+    /// hand.
+    fn code_at(at: At) -> Code {
+        Code { of: Analysed { view: self.view, names: self.names, facts: self.facts }, at: at }
+    }
+
     /// The program's printed answer, or the report/refusal that
     /// stopped it — the ONE semantics, interpreted over the SAME
     /// post-memory stream the backend compiles: every instruction,
     /// Retain and Release included, shared to the last bracket. A
     /// lone file is a program of one; the Program owns the law.
     fn run() -> Result<string, string> {
-        mut p = self.program()
+        let p = self.program()
         p.run()
     }
 
@@ -60,7 +67,7 @@ impl Analysis {
     /// Everything spoken, rendered — refusals or, failing those, the
     /// warnings; "" when nothing spoke.
     fn check() -> string {
-        mut p = self.program()
+        let p = self.program()
         match p.check() {
             .Ok(warned) -> warned,
             .Err(report) -> report,
@@ -70,7 +77,7 @@ impl Analysis {
     /// The program as IR, memory strategy applied — what `avra
     /// build` compiles.
     fn lowered() -> Lowered {
-        mut p = self.program()
+        let p = self.program()
         p.lowered()
     }
 
@@ -93,9 +100,6 @@ impl Language {
     /// declarations are its scope, and a `use` has no package to
     /// reach.
     fn analyze(src: SourceFile) -> Analysis {
-        // NOT `mut`: the answer's `program` closure captures this same
-        // workspace box (workspace_analysis.av's `analyzed`), so
-        // `disarmed()` must write through it, not into a private copy.
         let ws = lone_workspace(src.file, src.text, self)
         let a = ws.analysis(ws.file_id(src.file))
         ws.disarmed()

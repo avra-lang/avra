@@ -4,7 +4,9 @@
 //! own first word, and the entry reads it before its commands do. The first
 //! red suite stops the run, so a failure names one thing.
 use @std.avrac.compiler.{verdict_of, staged_binaries}
-use @std.process.{status_of}
+use @std.process.{status_of, tool, cmd, Env, Outcome, ProcessError, minimal}
+use @std.text.{parse_int}
+use @std.io.{env}
 use commands.{run_binary, refused_by_host}
 
 /// The light phase's exit when the words are a hand-off; null when
@@ -14,14 +16,31 @@ export fn light_phase(words: List<string>) -> int? {
     first_red(binaries)
 }
 
-/// Each suite run in turn: the first red one's code, or 0.
+/// `AVRA_SOUNDNESS` asks for the two extra runs below — off by
+/// default, the way `AVRA_LIGHT` and `--time` are asked for rather
+/// than assumed: two more processes per suite measure noticeably on a
+/// suite already spawning dozens, and the guard's own inflated memory
+/// can trip a budget a plain run never approaches (found on this very
+/// tree's own `features/crossing` stress spec — see the doc's §32).
+fn soundness_wanted() -> bool {
+    env("AVRA_SOUNDNESS") != null
+}
+
+/// Each suite run in turn: the first red one's code, or 0. A suite the
+/// plain run proved green is then run SOUND, when asked — there is
+/// nothing to check in one the plain run already refused.
 fn first_red(binaries: List<string>) -> int {
+    let checked = soundness_wanted()
     for binary in binaries {
         let code = match run_binary(binary) {
             .Ok(x) -> judged(status_of(x)),
             .Err(e) -> refused_by_host(e),
         }
         if code != 0 { return code }
+        if checked {
+            let sound = soundness_of(binary)
+            if sound != 0 { return sound }
+        }
     }
     0
 }
@@ -34,10 +53,94 @@ fn judged(status: int) -> int {
         .CouldNotStart -> {
             println("the binary could not start — the link answered a path that does not run")
             1
-        }
+        },
         .Died -> {
             println("STOPPED — the case or program named above trapped, and everything after it never ran")
             1
-        }
+        },
     }
+}
+
+// ── SOUNDNESS: the same binary, twice more ────────────────────────
+// A green suite is run again under `AVRA_RC_GUARD=1` — a released box
+// is KEPT, poisoned and marked dead, so a stale read answers garbage
+// or traps instead of finding a plausible value by luck (CLAUDE.md's
+// debug guard) — and again under `AVRA_MEM_STATS=1`, whose exact-byte
+// ledger already credits out every `once` cache's answer (a cache
+// held for the process's life is not a leak) and every static
+// aggregate (never touched the ledger to begin with), so zero is what
+// a suite that freed everything it was owed prints. Both runs are the
+// SAME already-linked binary, captured rather than streamed to the
+// terminal — a pass costs two more short-lived processes and says
+// nothing; only a disagreement speaks.
+
+/// The two soundness runs, in order: a stale read would as soon show
+/// up in the tally the guard changes as in the memory the leak check
+/// counts, so the cheaper, more specific signal goes first.
+fn soundness_of(binary: string) -> int {
+    let g = match guarded_run(binary) {
+        .Ok(out) -> guard_verdict(binary, out),
+        .Err(e) -> refused_by_host(e),
+    }
+    if g != 0 { return g }
+    match measured_run(binary) {
+        .Ok(live) -> leak_verdict(binary, live),
+        .Err(e) -> refused_by_host(e),
+    }
+}
+
+/// The binary run again with nothing changed but the guard.
+fn guarded_run(binary: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool(binary)?, []) with { env: soundness_env("AVRA_RC_GUARD") }).outcome()
+}
+
+/// The binary run again with nothing changed but the accounting —
+/// the exact byte count its own ledger printed, or absent when the
+/// line never arrived.
+fn measured_run(binary: string) -> Result<int?, ProcessError> {
+    let out = (cmd(tool(binary)?, []) with { env: soundness_env("AVRA_MEM_STATS") }).outcome()?
+    .Ok(live_bytes(out.out.stderr))
+}
+
+/// A minimal, reproducible environment plus the one flag being asked
+/// for — never the developer's whole world, which a soundness run has
+/// no more need of than the plain run already had.
+fn soundness_env(flag: string) -> Env {
+    minimal().with_var(flag, "1")
+}
+
+/// The guarded run's own verdict, spelled: Green passes silently, and
+/// every other shape is a disagreement the plain run's own compare
+/// did not have the poison to catch.
+fn guard_verdict(binary: string, out: Outcome) -> int {
+    match verdict_of(status_of(out.exit)) {
+        .Green -> 0,
+        .Red -> unsound(binary, "AVRA_RC_GUARD=1 disagreed: a stale read changed the answer"),
+        .CouldNotStart -> unsound(binary, "AVRA_RC_GUARD=1: the binary would not start"),
+        .Died -> unsound(binary, "AVRA_RC_GUARD=1: trapped — a stale read or a double free"),
+    }
+}
+
+/// The measured run's own verdict: zero bytes passes silently, a
+/// present nonzero count is bytes owed and never freed, and an absent
+/// line is the check unable to speak at all — never read as zero.
+fn leak_verdict(binary: string, live: int?) -> int {
+    let n? = live else { return unsound(binary, "AVRA_MEM_STATS=1: no live-byte line printed — the run died before it, or predates the ledger") }
+    if n == 0 { 0 } else { unsound(binary, "AVRA_MEM_STATS=1: ${n} bytes still live at exit") }
+}
+
+/// The exact byte count off the runtime's own line (CLAUDE.md's
+/// mortal ledger, `runtime/avra_runtime.c`'s `acc_report`) — the one
+/// place this check reads, never the MB-rounded categories beside it.
+fn live_bytes(stderr: string) -> int? {
+    let line? = stderr.split("\n").find(it.starts_with("mem: live ")) else { return null }
+    parse_int(line.substring("mem: live ".length, line.index_of(" bytes")))
+}
+
+/// One soundness voice for both checks: the binary named, the
+/// disagreement in its own words, red.
+fn unsound(binary: string, why: string) -> int {
+    println("SOUNDNESS: ${binary}")
+    println("  ${why}")
+    1
 }

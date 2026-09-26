@@ -4,6 +4,7 @@
 // the visible hole.
 use @std.avrac.core.{BinOp}
 use @std.avrac.compiler.{assemble, parse_program, Parsed, analyze_source}
+use @std.avrac.features.{BlockWords}
 use @std.avrac.testing.{shown, refused_with, refusals}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.features.stmt_spine.{stmt_spine}
@@ -14,7 +15,7 @@ use core.{TypeRef}
 
 /// This feature subset: programs of lets only.
 fn parse_prog(source: string) -> Parsed {
-    parse_program(assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]), new_source_file("<source>", source), [])
+    parse_program(assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]), new_source_file("<source>", source), BlockWords {})
 }
 
 /// The binding is named `x` and declares `int?`.
@@ -29,8 +30,7 @@ spec "features/let_stmt" {
             let p = parse_prog("let x = 1 + y")
             let tree_ok = match p.store.stmt(p.stmts[0]) {
                 .Let(name, _, value) -> name == "x" && match p.store.expr(value) {
-                    .Binary(op, l, r) -> op == BinOp.Add &&
-                        p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
+                    .Binary(op, l, r) -> op == BinOp.Add && p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
                     _ -> false,
                 },
                 _ -> false,
@@ -69,8 +69,7 @@ spec "features/let_stmt" {
     }
     given "the declared-binding law" {
         then "the SPEC'S OWN SENTENCE: `let x: int = null` refuses; `let x: int? = null` is fine" {
-            refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") &&
-                analyze_source("let x: int? = null\nx ?? 7").diagnostics.is_empty()
+            refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") && analyze_source("let x: int? = null\nx ?? 7").diagnostics.is_empty()
         }
         then "a mismatch names the binding and both sides" {
             refused_with("let x: int = \"s\"\nx", "`x` declares `int`, this is `string`")
@@ -96,8 +95,7 @@ spec "features/let_stmt" {
         then "one diagnostic, a visible hole, and whole neighbors" {
             let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
             let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _, _) -> name == "y", _ -> false }
-            p.voices.list.length == 1 && p.stmts.length == 3 &&
-                p.store.stmt(p.stmts[1]) is .Error && tail_ok
+            p.voices.list.length == 1 && p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error && tail_ok
         }
     }
     given "the discard — `let _ = v`" {

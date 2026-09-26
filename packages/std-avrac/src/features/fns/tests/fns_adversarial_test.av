@@ -5,21 +5,147 @@ use @std.avrac.compiler.{analyze_source}
 use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, ir_of, halver}
 
 spec "features/fns (adversarial)" {
+    given "a seat's default — degenerate shapes" {
+        then "every seat defaulted, and none written" {
+            shown("fn f(a: int = 1, b: int = 2, c: int = 3) -> int { a * 100 + b * 10 + c }\nf() + f(9)") == "1046"
+        }
+        then "a default that answers nothing refuses at its seat" {
+            refused_with("fn v() {\n}\nfn f(a: int = v()) -> int { a }\nf()", "parameter `a` defaults to `void`, and it is `int`")
+        }
+        then "an empty aggregate fills its seat's want" {
+            shown("fn f(xs: List<string> = [], m: Map<string, int> = {}) -> int { xs.length + m.length }\nf()") == "0"
+        }
+    }
+    given "a seat's default — every kind of value it may be" {
+        then "absence, a bare variant, a lambda and a boxed contract" {
+            shown("enum K { A, B }\nfn f(k: K = .B, n: int? = null, g: fn(int) -> int = (x: int) -> x + 1) -> int { match k { .A -> 0, .B -> g(n ?? 1) } }\nf()") == "2"
+        }
+        then "`null` at a seat that holds no absence refuses" {
+            refused_with("fn f(a: int = null) -> int { a }\nf()", "parameter `a` defaults to `null`, and it is `int`")
+        }
+    }
+    given "a seat's default — the positions that take none" {
+        then "an extern's seat" {
+            refusals("extern fn g(a: int = 1) -> int\n0") == 1
+        }
+        then "a trait's seat" {
+            refusals("trait T { fn m(a: int = 1) -> int }\n0") == 1
+        }
+        then "a lambda's seat" {
+            refusals("let h = (a: int = 1) -> a\n0") == 2
+        }
+    }
+    given "a seat's default — names against names" {
+        then "two types' methods of one name keep their own defaults" {
+            shown("type P = { x: int }\ntype Q = { x: int }\nimpl P { fn m(k: int = 1) -> int { self.x + k } }\nimpl Q { fn m(k: int = 100) -> int { self.x + k } }\nP { x: 0 }.m() + Q { x: 0 }.m()") == "101"
+        }
+        then "a free fn and a method of one name keep their own defaults" {
+            shown("fn m(k: int = 5) -> int { k }\ntype P = { x: int }\nimpl P { fn m(k: int = 1) -> int { self.x + k } }\nm() * 10 + P { x: 0 }.m()") == "51"
+        }
+        then "a default names a fn declared after it" {
+            shown("fn f(a: int = later()) -> int { a }\nfn later() -> int { 11 }\nf()") == "11"
+        }
+        then "a method's default has no receiver — it is a body of its own" {
+            refused_with("type P = { x: int }\nimpl P { fn m(k: int = self.x) -> int { k } }\nP { x: 3 }.m()", "`self` names a method's receiver — a default is a body of its own, and has none")
+        }
+        then "and the remedy it names compiles as written" {
+            shown("type P = { x: int }\nimpl P { fn m(k: int? = null) -> int { k ?? self.x } }\nP { x: 3 }.m() * 10 + P { x: 3 }.m(5)") == "35"
+        }
+        then "a `static fn` keeps its own words for the same read" {
+            refused_with("type P = { x: int }\nimpl P { static fn s() -> int { self.x } }\n0", "a `static fn` has none")
+        }
+    }
+    given "a seat's default — crossed with other features" {
+        then "a recursive call leaves its accumulator to the default" {
+            shown("fn f(n: int, acc: int = 0) -> int { if n == 0 { acc } else { f(n - 1, acc + n) } }\nf(10)") == "55"
+        }
+        then "a default beside a `mut` seat and a `const` seat" {
+            shown("fn f(const k: int, mut xs: List<int>, n: int = 7) { xs.push(k + n) }\nmut ys: List<int> = []\nf(1, ys)\nf(1, ys, 2)\nys[0] * 10 + ys[1]") == "83"
+        }
+        then "a trailing block fills its fn seat, and the seat after it defaults" {
+            shown("fn f(x: int, g: fn(int) -> int, k: int = 100) -> int { g(x) + k }\nf(1) { it + 1 }") == "102"
+        }
+        then "a trailing block never fills a defaulted non-fn seat" {
+            refused_with("fn f(a: int, n: int = 1) -> int { a + n }\nf(1) { 2 }", "the trailing block fills seat 2 of `f`, which takes `int`")
+        }
+        then "a call through `?` leaves a seat to its default" {
+            shown("fn f(a: int = 1) -> Result<int, string> { .Ok(a) }\nfn g() -> Result<int, string> {\n    let x = f()?\n    .Ok(x + 1)\n}\ng() catch e -> 0") == "2"
+        }
+    }
+    given "a seat's default — arity at every call shape" {
+        then "a method handed too many" {
+            refused_with("type C = { n: int }\nimpl C { fn plus(k: int = 1) -> int { self.n + k } }\nC { n: 1 }.plus(1, 2)", "`C.plus` takes 0 to 1 arguments, found 2")
+        }
+        then "a static handed too many" {
+            refused_with("type C = { n: int }\nimpl C { static fn make(n: int = 7) -> C { C { n: n } } }\nC.make(1, 2).n", "`C.make` takes 0 to 1 arguments, found 2")
+        }
+    }
+    given "a named argument — every way to write a seat twice or not at all" {
+        then "a name and the positional argument at its place" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(1, a: 2)", "seat `a` of `sub` is written twice")
+        }
+        then "one name written twice" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, a: 2)", "seat `a` of `sub` is written twice")
+        }
+        then "a positional argument after a name, landing on the named seat" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 1, 5)", "seat `b` of `sub` is written twice")
+        }
+        then "a positional argument past every seat, beside a name" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, b: 2, 3)", "`sub` takes 2 arguments, found 3")
+        }
+        then "a named value its seat does not accept" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(a: \"x\", b: 2)", "argument 1 of `sub` wants `int`, found `string`")
+        }
+    }
+    given "a named argument — callees whose seats have no names" {
+        then "a runtime method" {
+            refused_with("let xs = [1]\nxs.push(v: 2)\n0", "`v:` names a seat, and `push`'s seats have no names")
+        }
+        then "an applied value" {
+            refused_with("let f = (x: int) -> x\nf(x: 1)", "`x:` names a seat, and `f`'s seats have no names")
+        }
+        then "an extern" {
+            refused_with("extern fn strlen(s: string) -> int\nstrlen(s: \"a\")", "`s:` names a seat, and `strlen`'s seats have no names")
+        }
+        then "an extern handed too few arguments refuses — it names no seat, so none defaults" {
+            refused_with("extern fn strlen(s: string) -> int\nstrlen()", "`strlen` takes 1 arguments, found 0")
+        }
+    }
+    given "a named argument — crossed with other features" {
+        then "a `mut` seat written by name writes through" {
+            shown("fn put(mut xs: List<int>, n: int) { xs.push(n) }\nmut ys: List<int> = []\nput(n: 4, xs: ys)\nput(ys, n: 5)\nys[0] * 10 + ys[1]") == "45"
+        }
+        then "a `const` seat written by name settles" {
+            shown("fn k(const n: int, m: int) -> int { n * m }\nk(m: 3, n: 4)") == "12"
+        }
+        then "a generic fn's seats take names" {
+            shown("fn g<T>(x: T, n: int) -> T { x }\ng(n: 2, x: 7)") == "7"
+        }
+        then "a trailing block fills its seat beside named ones" {
+            shown("fn ap(x: int, f: fn(int) -> int, k: int = 100) -> int { f(x) + k }\nap(x: 1) { it + 1 }") == "102"
+        }
+        then "a named call through `?`" {
+            shown("fn f(a: int = 1) -> Result<int, string> { .Ok(a) }\nfn g() -> Result<int, string> {\n    let x = f(a: 5)?\n    .Ok(x)\n}\ng() catch e -> 0") == "5"
+        }
+        then "the pronoun rides a named argument and keeps its name" {
+            shown("type C = { n: int }\nimpl C { fn ap(x: int, f: fn(int) -> int) -> int { f(x) + self.n } }\nC { n: 1 }.ap(f: it * 2, x: 3)") == "7"
+        }
+        then "a method handing its field to a `mut` seat by name writes its receiver" {
+            refusals("type B = { xs: List<int> }\nfn put(n: int, mut xs: List<int>) { xs.push(n) }\nimpl B {\n    mut fn add(n: int) { put(xs: self.xs, n: n) }\n}\n0") == 0
+        }
+    }
     given "`return` under attack — depths, tails, boundaries" {
         then "TWO loop depths unwind at once" {
             shown("fn f(n: int) -> int {\n    mut i = 0\n    while i < n {\n        mut j = 0\n        while j < n {\n            if i * j == 6 {\n                return i * 10 + j\n            }\n            j = j + 1\n        }\n        i = i + 1\n    }\n    0 - 1\n}\nf(5) + f(2)") == "22"
         }
         then "the tail after a certain return is UNREACHABLE but still typed" {
-            shown("fn f() -> int {\n    return 1\n    2\n}\nf()") == "1" &&
-                refused_with("fn f() -> int {\n    return 1\n    \"tail\"\n}\nf()",
-                             "the body answers `string` but `f` declares `int`")
+            shown("fn f() -> int {\n    return 1\n    2\n}\nf()") == "1" && refused_with("fn f() -> int {\n    return 1\n    \"tail\"\n}\nf()", "the body answers `string` but `f` declares `int`")
         }
         then "the guard-then-bang reads straight: absence answered, then insisted" {
             shown("${halver}fn f(v: int?) -> int {\n    if v == null {\n        return 0 - 1\n    }\n    v!\n}\nf(half(4)) + f(half(3))") == "1"
         }
         then "a return at the TOP LEVEL is told where answers live" {
-            refused_with("mut i = 0\nwhile i < 3 {\n    return 5\n    i = i + 1\n}\ni",
-                         "a `return` answers a fn, and there is none enclosing")
+            refused_with("mut i = 0\nwhile i < 3 {\n    return 5\n    i = i + 1\n}\ni", "a `return` answers a fn, and there is none enclosing")
         }
         then "a return ENDS an expression block — divergence-aware tails" {
             // The trigger fired with the error spine: a block that
@@ -40,8 +166,7 @@ spec "features/fns (adversarial)" {
             a.diagnostics.length == 1 && a.report().contains("declares `a` more than once")
         }
         then "each EXTRA copy speaks — the same count a record gives" {
-            refusals("fn f(a: int, a: int, a: int) -> int { a }\nf(1, 2, 3)") ==
-                refusals("type P = { x: int, x: int, x: int }\n1")
+            refusals("fn f(a: int, a: int, a: int) -> int { a }\nf(1, 2, 3)") == refusals("type P = { x: int, x: int, x: int }\n1")
         }
         then "two DIFFERENT names are fine" {
             shown("fn f(a: int, b: int) -> int { a + b }\nf(1, 2)") == "3"
@@ -98,14 +223,12 @@ spec "features/fns (adversarial)" {
             shown("let k = 1\nfn f(k: int) -> int {\n    let j = k + 1\n    j\n}\nf(41) + k") == "43"
         }
         then "a METHOD body stands on the same floor" {
-            refused_with("type P = { x: int }\nlet k = 3\nimpl P {\n    fn m() -> int {\n        k\n    }\n}\nP { x: 1 }.m()",
-                         "`k` is a run-time binding of the top level")
+            refused_with("type P = { x: int }\nlet k = 3\nimpl P {\n    fn m() -> int {\n        k\n    }\n}\nP { x: 1 }.m()", "`k` is a run-time binding of the top level")
         }
     }
     given "`once` under attack — what a settled answer may be" {
         then "arguments refuse: a once answer is one value for the process" {
-            refused_with("once fn f(a: int) -> string {\n    \"x\"\n}\nf(1)",
-                         "`once fn f` takes arguments — a `once` answer is one value for the whole process")
+            refused_with("once fn f(a: int) -> string {\n    \"x\"\n}\nf(1)", "`once fn f` takes arguments — a `once` answer is one value for the whole process")
         }
         then "a scalar answer refuses — the runtime keeps no copies" {
             refused_with("once fn n() -> int {\n    1\n}\nn()", "`once fn n` answers `int`, which the runtime cannot keep")
@@ -120,15 +243,13 @@ spec "features/fns (adversarial)" {
             shown("type P = { x: int, y: int }\nonce fn p() -> P {\n    P { x: 5, y: 2 }\n}\np().x + p().y") == "7"
         }
         then "a method cannot be `once` — its answer would depend on a receiver" {
-            refused_with("type P = { x: int }\nimpl P {\n    once fn tag() -> string {\n        \"p\"\n    }\n}\nP { x: 1 }.tag()",
-                         "`once fn tag` is a method — its answer would depend on a receiver")
+            refused_with("type P = { x: int }\nimpl P {\n    once fn tag() -> string {\n        \"p\"\n    }\n}\nP { x: 1 }.tag()", "`once fn tag` is a method — its answer would depend on a receiver")
         }
         then "each refusal speaks once" {
             refusals("once fn f(a: int) -> int {\n    a\n}\nf(1)") == 1
         }
         then "a MARKED parameter loses no law — the same words, not a parse error" {
-            refused_with("once fn f(mut x: List<int>) -> string {\n    \"a\"\n}\n1",
-                         "`once fn f` takes arguments — a `once` answer is one value for the whole process")
+            refused_with("once fn f(mut x: List<int>) -> string {\n    \"a\"\n}\n1", "`once fn f` takes arguments — a `once` answer is one value for the whole process")
         }
         then "an absent answer is honest — it settles nothing and stays absent" {
             shown("once fn t() -> string? {\n    null\n}\nt() ?? \"absent\"") == "absent"
@@ -141,33 +262,25 @@ spec "features/fns (adversarial)" {
         // while the native binary SEGFAULTED — one user mistake, two
         // internal failures, in two different ways.
         then "a record ANSWER refuses — a foreign pointer is not a box in our layout" {
-            refused_with("type R = { a: int, b: int }\nextern fn c_get() -> R\nc_get().a",
-                         "the answer of `c_get` wears `R`, which cannot cross to C")
+            refused_with("type R = { a: int, b: int }\nextern fn c_get() -> R\nc_get().a", "the answer of `c_get` wears `R`, which cannot cross to C")
         }
         then "an enum answer refuses in the same words" {
-            refused_with("enum E { A, B }\nextern fn c_get() -> E\nc_get() is .A",
-                         "the answer of `c_get` wears `E`, which cannot cross to C")
+            refused_with("enum E { A, B }\nextern fn c_get() -> E\nc_get() is .A", "the answer of `c_get` wears `E`, which cannot cross to C")
         }
         then "a `dyn` answer refuses" {
-            refused_with("trait Show {\n    fn show() -> string\n}\nextern fn c_get() -> dyn Show\nc_get().show()",
-                         "the answer of `c_get` wears `dyn Show`, which cannot cross to C")
+            refused_with("trait Show {\n    fn show() -> string\n}\nextern fn c_get() -> dyn Show\nc_get().show()", "the answer of `c_get` wears `dyn Show`, which cannot cross to C")
         }
         then "a `Bytes` answer refuses — no length crosses back" {
-            refused_with("extern fn c_get() -> Bytes\nc_get().length",
-                         "the answer of `c_get` wears `Bytes`, which cannot cross to C")
+            refused_with("extern fn c_get() -> Bytes\nc_get().length", "the answer of `c_get` wears `Bytes`, which cannot cross to C")
         }
         then "a ROW answering `Bytes` is the exemption, and stands" {
             refusals("extern fn avra_fd_taken(token: int) -> Bytes\n1") == 0
         }
         then "every answer the frame reads back is taken" {
-            refusals("extern fn c_w() -> int\nextern fn c_n(x: int) -> i32\nextern fn c_u(x: int) -> u32\n" +
-                     "extern fn c_l(x: int) -> i64\nextern fn c_f(x: int) -> f64\nextern fn c_g(x: int) -> float\n" +
-                     "extern fn c_b(x: int) -> bool\nextern fn c_s(x: int) -> string\nextern fn c_o(x: int) -> string?\n" +
-                     "extern fn c_p(x: int) -> ptr\nextern fn c_q(x: int) -> ptr?\nextern fn c_v(x: int)\n1") == 0
+            refusals("extern fn c_w() -> int\nextern fn c_n(x: int) -> i32\nextern fn c_u(x: int) -> u32\n" + "extern fn c_l(x: int) -> i64\nextern fn c_f(x: int) -> f64\nextern fn c_g(x: int) -> float\n" + "extern fn c_b(x: int) -> bool\nextern fn c_s(x: int) -> string\nextern fn c_o(x: int) -> string?\n" + "extern fn c_p(x: int) -> ptr\nextern fn c_q(x: int) -> ptr?\nextern fn c_v(x: int)\n1") == 0
         }
         then "a `void` SEAT refuses — the frame calls it a defect and LLVM refuses the module" {
-            refused_with("extern fn c_take(x: void) -> int\n1",
-                         "seat 1 of `c_take` wears `void`, which cannot cross to C")
+            refused_with("extern fn c_take(x: void) -> int\n1", "seat 1 of `c_take` wears `void`, which cannot cross to C")
         }
         then "one mistake in the answer earns one message" {
             refusals("type R = { a: int, b: int }\nextern fn c_get() -> R\n1") == 1
@@ -182,13 +295,10 @@ spec "features/fns (adversarial)" {
         // counted separately, so a rule that read one for both would
         // pass every test in the tree.
         then "the FP file carries eight seats" {
-            shown("extern fn avra_selfhost_argc(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) -> int\n" +
-                  "avra_selfhost_argc(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5) >= 1") == "true"
+            shown("extern fn avra_selfhost_argc(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) -> int\n" + "avra_selfhost_argc(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5) >= 1") == "true"
         }
         then "the NINTH is past the file, and says so" {
-            refused_at_run("extern fn avra_selfhost_argc(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> int\n" +
-                           "avra_selfhost_argc(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5) >= 1",
-                           "takes more seats than one frame carries")
+            refused_at_run("extern fn avra_selfhost_argc(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> int\n" + "avra_selfhost_argc(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5) >= 1", "takes more seats than one frame carries")
         }
         then "no seats at all is a call, not a special case" {
             shown("extern fn avra_selfhost_argc() -> int\navra_selfhost_argc() >= 1") == "true"
@@ -257,8 +367,7 @@ spec "features/fns (adversarial)" {
         }
         then "TWO independent misuses answer TWO diagnostics, each at its own read — not a cascade" {
             let a = analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = if true { avra_host_is_dir } else { avra_host_is_dir }\n1")
-            a.diagnostics.length == 2 &&
-                a.report().contains(":2:19") && a.report().contains(":2:45")
+            a.diagnostics.length == 2 && a.report().contains(":2:19") && a.report().contains(":2:45")
         }
         then "a LOCAL shadowing the extern's own name is read as the local, not refused" {
             shown("extern fn avra_host_is_dir(path: string) -> int\nfn shadow() -> int {\n    let avra_host_is_dir = 5\n    avra_host_is_dir\n}\nshadow()") == "5"
@@ -303,8 +412,7 @@ spec "features/fns (adversarial)" {
             refusals("fn f(const mut x: int) -> int {\n    x\n}\nf(1)") == 2
         }
         then "a plain seat refuses a settled callee in a CALL argument too" {
-            refused_with("fn takes(f: fn(int) -> int) -> int {\n    f(1)\n}\nfn needs(const x: int) -> int {\n    x\n}\ntakes(needs)",
-                         "argument 1 of `takes` wants `fn(int) -> int`, found `fn(const int) -> int`")
+            refused_with("fn takes(f: fn(int) -> int) -> int {\n    f(1)\n}\nfn needs(const x: int) -> int {\n    x\n}\ntakes(needs)", "argument 1 of `takes` wants `fn(int) -> int`, found `fn(const int) -> int`")
         }
         then "a `once fn` with a settled seat meets the arity law, not a parse error" {
             refused_with("once fn f(const x: int) -> int {\n    x\n}\n1", "takes arguments")
@@ -317,7 +425,7 @@ spec "features/fns (adversarial)" {
         }
         then "a settled seat keys on THE VALUE alone — other arguments do not split it" {
             let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"x\", \"2\")\na + b"
-            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 1
+            ir_of(src).fns.filter(it.name.starts_with("pick\$@")).length == 1
         }
         then "an aggregate literal settles inline — every field is source-spelled" {
             shown("type P = { x: int, y: int }\nfn take(const p: P) -> int {\n    p.x + p.y\n}\ntake(P { x: 3, y: 4 })") == "7"

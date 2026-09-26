@@ -1,0 +1,134 @@
+// Every declaration's `///` doc and its `@name(args)` annotations,
+// captured once at admit (features/decls.av's `capture_facts`) and
+// read back through the one door — `Decls.doc_of`/`annotations_of`
+// — and the `Code` handle (features/code.av) a rule or the formatter
+// holds. `compiler/tests/facts_block_test.av` proves the record
+// codec; this proves the door reads what the parse wrote, and that a
+// held declaration (no store at all) answers identically.
+use @std.avrac.compiler.{analyze_source, Analysis, avra, new_workspace, Program}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.features.{Decl, Decls, new_decls, DeclFacts, AnnotationFact}
+use @std.avrac.core.{DeclId, ExprId, FileId, DeclKind, no_stmt, At}
+
+fn decl_named(a: Analysis, name: string) -> DeclId {
+    a.view.decls.decls.get().find((d: Decl) -> d.name == name)!.id
+}
+
+fn doc_of(a: Analysis, name: string) -> List<string>? {
+    a.view.decls.doc_of(decl_named(a, name))
+}
+
+fn annotations_of(a: Analysis, name: string) -> List<AnnotationFact> {
+    a.view.decls.annotations_of(decl_named(a, name))
+}
+
+/// A REAL package's entry analysis — `analyze_source`'s `lone_workspace`
+/// shortcut does not align a builtin's hard-coded `FileId { index: 0 }`
+/// (features/decls.av's `admit_builtin`) with any real file's store the
+/// same way a genuine multi-file build does, so the builtin case below
+/// needs the actual door: `new_workspace`/`memory_host`, `rule_proof_test.av`'s
+/// own pattern.
+fn workspace_analysis(main: string) -> Analysis {
+    let ws = new_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w", avra())
+    let p: Program = ws.program("/w/src/main.av")
+    p.entry_file()!
+}
+
+fn first_builtin(a: Analysis) -> DeclId {
+    a.view.decls.decls.get().find((d: Decl) -> d.kind is .Builtin)!.id
+}
+
+/// The first statement's own fn body, when it has one — a named
+/// helper so the null case never needs a bare `then` block to
+/// `return` out of.
+fn first_body(a: Analysis) -> ExprId? {
+    a.view.store.fn_parts(a.view.stmts[0])?.body
+}
+
+spec "declaration facts — one door, every declaration" {
+    given "a fn" {
+        then "its `///` lines come back through Decls.doc_of, in written order" {
+            let a = analyze_source("/// line one\n/// line two\nfn f() -> int {\n    1\n}\nf()")
+            (doc_of(a, "f") ?? []).join("\n") == "line one\nline two"
+        }
+        then "no `///` at all reads null, never an empty-but-present list" {
+            let a = analyze_source("fn f() -> int {\n    1\n}\nf()")
+            doc_of(a, "f") == null
+        }
+        then "its `@name(args)` come back in written order, with literal argument text" {
+            let a = analyze_source("fn tag(s: string, n: int) { }\n@tag(\"x\", 3)\nfn f() -> int {\n    1\n}\nf()")
+            let anns = annotations_of(a, "f")
+            anns.length == 1 && anns[0].name == "tag" && anns[0].args.join(",") == "x,3"
+        }
+        then "no annotation at all reads an empty list" {
+            let a = analyze_source("fn f() -> int {\n    1\n}\nf()")
+            annotations_of(a, "f").is_empty()
+        }
+        then "stacked annotations keep the author's order" {
+            let a = analyze_source("fn a() { }\nfn b(n: int) { }\n@a\n@b(1)\nfn f() -> int {\n    1\n}\nf()")
+            [x.name for x in annotations_of(a, "f")].join(",") == "a,b"
+        }
+    }
+    given "a type" {
+        then "its doc and its annotation both read back" {
+            let a = analyze_source("fn tag() { }\n/// a pair\n@tag\ntype P = { x: int, y: int }\nP { x: 1, y: 2 }.x")
+            (doc_of(a, "P") ?? []).join("\n") == "a pair" && annotations_of(a, "P").length == 1 && annotations_of(a, "P")[0].name == "tag"
+        }
+    }
+    given "a const" {
+        then "its doc reads back" {
+            let a = analyze_source("/// the answer\nconst K: int = 42\nK")
+            (doc_of(a, "K") ?? []).join("\n") == "the answer"
+        }
+    }
+    given "the Code door (features/code.av), which every rule and the formatter hold" {
+        then "doc() and annotations() agree with Decls' own door, for the declaring statement" {
+            let a = analyze_source("fn tag() { }\n/// documented\n@tag\nfn f() -> int {\n    1\n}\nf()")
+            let s = a.view.stmts[1]
+            let c = a.code_at(At.Stmt(s))
+            c.doc() == "documented" && c.annotations().length == 1 && c.annotations()[0].name == "tag"
+        }
+        then "a node that is not itself a declaring statement answers null/empty, not its enclosing fn's" {
+            let a = analyze_source("/// documented\nfn f() -> int {\n    1\n}\nf()")
+            let c = a.code_at(At.Expr(first_body(a)!))
+            c.doc() == null && c.annotations().is_empty()
+        }
+    }
+    given "a builtin — every one minted at FileId { index: 0 } (features/decls.av's `admit_builtin`), with no `///` of its own" {
+        then "its doc is null, never whatever `//!` header a REAL package's own file 0 opens with" {
+            let a = workspace_analysis("//! What this file is for.\nfn f() -> int {\n    1\n}\nf()\n")
+            a.view.decls.doc_of(first_builtin(a)) == null
+        }
+    }
+    given "a held declaration — adopted straight from a record, with no store behind it" {
+        then "doc_of and annotations_of answer exactly what was adopted, same as a parsed one" {
+            mut decls = new_decls()
+            let f: FileId = decls.file_id("/held/src/lib.av", "lib", false)
+            let d: DeclId = decls.mint("held::lib::K", f, no_stmt, "K", DeclKind.Const, true, "", null, false, null)
+            let facts = DeclFacts {
+                external: false,
+                stat: true,
+                is_grammar: false,
+                is_component: false,
+                span: null,
+                tparams: [],
+                bounds: [],
+                seats: [],
+                host: [],
+                annotated: true,
+                of: "",
+                doc: ["a held const"],
+                annotations: [AnnotationFact { name: "kept", args: ["x"], span: null }],
+            }
+            decls.adopt_facts(d, facts)
+            let anns = decls.annotations_of(d)
+            (decls.doc_of(d) ?? []).join("\n") == "a held const" && anns.length == 1 && anns[0].name == "kept" && anns[0].args.join(",") == "x"
+        }
+        then "a declaration minted with no facts at all reads null doc and no annotations, never a crash" {
+            mut decls = new_decls()
+            let f: FileId = decls.file_id("/held/src/other.av", "other", false)
+            let d: DeclId = decls.mint("held::other::Z", f, no_stmt, "Z", DeclKind.Const, true, "", null, false, null)
+            decls.doc_of(d) == null && decls.annotations_of(d).is_empty()
+        }
+    }
+}

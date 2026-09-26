@@ -1,0 +1,218 @@
+// The kernel's laws, over a toy family: an input `n` and a derived
+// `double` that reads it. Runs are counted so reuse is observable.
+use @std.avrac.query.{Kernel, new_kernel, Key, new_memo}
+
+/// A derived family over the kernel: computes 2n, counting runs.
+/// The tally and values are explicit shared cells, so the verifier's
+/// captured Toy and the caller's Toy observe the same query state.
+type Toy = { db: Kernel, input: int, double_family: int, runs: Cell<int>, values: Cell<List<int>> }
+
+fn toy() -> Toy {
+    let db = new_kernel()
+    let input = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+    let t = Toy { db: db, input: input, double_family: 0, runs: Cell.new(0), values: Cell.new([0, 0, 0, 0]) }
+    let double_family = db.family(verified_double(t, it))
+    t with { double_family: double_family }
+}
+
+fn verified_double(t: Toy, arg: int) -> int {
+    let _ = double_of(t, arg)
+    t.db.changed_at(Key { family: t.double_family, arg: arg })
+}
+
+fn set(t: Toy, arg: int, v: int) {
+    t.db.set_input(Key { family: t.input, arg: arg }, v)
+}
+
+/// The derived query: reads the input, answers 2n; the hash IS the
+/// value, so an unchanged answer cuts the wave.
+fn double_of(t: Toy, arg: int) -> int {
+    let key = Key { family: t.double_family, arg: arg }
+    match t.db.ask(key) {
+        .Reuse -> t.values.get()[arg],
+        .Cycle -> 0 - 1,
+        .Compute -> {
+            t.db.begin(key)
+            let in_key = Key { family: t.input, arg: arg }
+            t.db.record_dep(in_key)
+            let v = t.db.changed_at(in_key) * 0 + read_input(t, arg) * 2
+            t.runs.set(t.runs.get() + 1)
+            mut vs = t.values.get()
+            vs.set(arg, v)
+            t.values.set(vs)
+            t.db.settle(key, v)
+            v
+        },
+    }
+}
+
+/// The input's value rides beside the kernel — its hash is the value.
+fn read_input(t: Toy, arg: int) -> int {
+    t.values.get()[arg + 2]
+}
+
+fn put(t: Toy, arg: int, v: int) {
+    mut vs = t.values.get()
+    vs.set(arg + 2, v)
+    t.values.set(vs)
+    set(t, arg, v)
+}
+
+spec "query/db" {
+    given "reuse" {
+        then "an unchanged input reuses the derived answer without running" {
+            mut t = toy()
+            put(t, 0, 21)
+            let a = double_of(t, 0)
+            put(t, 0, 21)
+            let b = double_of(t, 0)
+            a == 42 && b == 42 && t.runs.get() == 1
+        }
+        then "a changed input recomputes" {
+            mut t = toy()
+            put(t, 0, 1)
+            let _ = double_of(t, 0)
+            put(t, 0, 5)
+            double_of(t, 0) == 10 && t.runs.get() == 2
+        }
+        then "the counters tell the story" {
+            mut t = toy()
+            put(t, 0, 1)
+            let _ = double_of(t, 0)
+            let _ = double_of(t, 0)
+            t.db.stats() == "rev 1: 1 hits, 1 misses"
+        }
+    }
+    given "early cutoff" {
+        then "a recomputed answer with the same hash keeps its changed_at" {
+            mut t = toy()
+            put(t, 0, 4)
+            let _ = double_of(t, 0)
+            let before = t.db.changed_at(Key { family: t.double_family, arg: 0 })
+            put(t, 0, 4)
+            let _ = double_of(t, 0)
+            t.db.changed_at(Key { family: t.double_family, arg: 0 }) == before
+        }
+    }
+    given "cycles and sweeps" {
+        then "a query that reaches itself is answered Cycle, not recursed" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.begin(key)
+            let v = db.ask(key)
+            db.settle(key, 0)
+            v is .Cycle
+        }
+        then "a sweep drops what the last revision never verified" {
+            mut t = toy()
+            put(t, 0, 1)
+            put(t, 1, 2)
+            let _ = double_of(t, 0)
+            let _ = double_of(t, 1)
+            put(t, 0, 3)
+            let _ = double_of(t, 0)
+            t.db.sweep()
+            t.db.cell(Key { family: t.double_family, arg: 1 }) == null && t.db.cell(Key { family: t.double_family, arg: 0 }) != null
+        }
+    }
+    given "the open stack — `active` is the bracket, seen from outside" {
+        then "an unopened key is not active" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            !db.active(Key { family: fam, arg: 0 })
+        }
+        then "a key is active between begin and settle, and not after" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.begin(key)
+            let during = db.active(key)
+            db.settle(key, 0)
+            during && !db.active(key)
+        }
+        then "the OUTER key stays active while an inner one is open" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let outer = Key { family: fam, arg: 0 }
+            let inner = Key { family: fam, arg: 1 }
+            db.begin(outer)
+            db.begin(inner)
+            let both = db.active(outer) && db.active(inner)
+            db.settle(inner, 0)
+            let outer_only = db.active(outer) && !db.active(inner)
+            db.settle(outer, 0)
+            both && outer_only && !db.active(outer)
+        }
+    }
+    given "the flat layout — arg-major, grown by appending" {
+        then "a cell far past every earlier arg is written, and the earlier ones stand" {
+            mut t = toy()
+            put(t, 0, 4)
+            t.db.set_input(Key { family: t.input, arg: 300 }, 7)
+            t.db.changed_at(Key { family: t.input, arg: 0 }) == 1 && t.db.changed_at(Key { family: t.input, arg: 300 }) == 1
+        }
+        then "two families at one arg keep apart" {
+            mut t = toy()
+            t.db.set_input(Key { family: t.input, arg: 5 }, 1)
+            t.db.set_input(Key { family: t.input, arg: 5 }, 2)
+            t.db.set_input(Key { family: t.double_family, arg: 5 }, 9)
+            t.db.set_input(Key { family: t.input, arg: 5 }, 3)
+            t.db.changed_at(Key { family: t.double_family, arg: 5 }) == 2 && t.db.changed_at(Key { family: t.input, arg: 5 }) == 3
+        }
+        then "a key the kernel never saw is as new as now, wherever it would sit" {
+            let t = toy()
+            t.db.changed_at(Key { family: t.double_family, arg: 9999 }) == t.db.revision()
+        }
+    }
+}
+
+spec "query/memo" {
+    given "a typed family" {
+        then "copies share values and dependency state" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+            let memo = new_memo<int>(db, family)
+            let copy = memo
+            let runs = Cell.new(0)
+            let first = copy.demand(0, () -> {
+                runs.set(runs.get() + 1)
+                21
+            }, (v: int) -> v)
+            let second = memo.demand(0, () -> {
+                runs.set(runs.get() + 1)
+                99
+            }, (v: int) -> v)
+            first == 21 && second == 21 && runs.get() == 1
+        }
+        then "a memo's query is open between begin and finish, and not after" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let memo = new_memo<int>(db, family)
+            let before = memo.open(3)
+            memo.begin(3)
+            let during = memo.open(3)
+            let _ = memo.finish(3, 1, 1)
+            !before && during && !memo.open(3)
+        }
+        then "eviction removes values and kernel reuse together" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+            let memo = new_memo<int>(db, family)
+            let _ = memo.demand(0, () -> 21, (v: int) -> v)
+            memo.evict()
+            memo.demand(0, () -> 34, (v: int) -> v) == 34
+        }
+        then "eviction leaves neighboring families intact" {
+            let db = new_kernel()
+            let left_family = db.family((arg: int) -> 0)
+            let right_family = db.family((arg: int) -> 0)
+            let left = new_memo<int>(db, left_family)
+            let right = new_memo<int>(db, right_family)
+            let _ = left.demand(0, () -> 11, (v: int) -> v)
+            let _ = right.demand(0, () -> 22, (v: int) -> v)
+            left.evict()
+            left.demand(0, () -> 33, (v: int) -> v) == 33 && right.demand(0, () -> 44, (v: int) -> v) == 22
+        }
+    }
+}

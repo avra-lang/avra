@@ -1,0 +1,66 @@
+// A STORE MOVES what dies there: the scope's reference goes into the
+// slot and is never released. Each attack keeps the value alive past
+// a store some other way, and reads it back.
+type Holder = { xs: List<string>, tag: string }
+
+fn made(s: string) -> string { "${s}${s.length}" }
+
+/// The same value into two lists: only the last store may move.
+fn two_lists() -> string {
+    let s = made("a")
+    let xs = [s]
+    let ys = [s]
+    "${xs[0]}/${ys[0]}"
+}
+
+/// Made outside a loop, stored every turn: never moved.
+fn every_turn() -> string {
+    let s = made("b")
+    mut out: List<string> = []
+    for i in 0..3 { out.push(s) }
+    out.join(",")
+}
+
+/// A view of the value read after the value is stored.
+fn view_after() -> string {
+    let h = Holder { xs: [made("c")], tag: made("d") }
+    let v = h.xs
+    let pair = [h]
+    "${v.length}/${v[0]}/${pair[0].xs[0]}"
+}
+
+/// Stored on one branch only.
+fn one_branch(k: int) -> string {
+    let s = made("e")
+    mut out: List<string> = []
+    if k > 0 { out.push(s) }
+    "${out.length}/${s}"
+}
+
+/// A slot written with a value that dies there, then the old one read.
+fn slot_written() -> string {
+    mut xs = [made("f"), made("g")]
+    let old = xs[0]
+    xs[0] = made("h")
+    "${old}/${xs[0]}/${xs[1]}"
+}
+
+/// Moved into a record, the record copied, both read.
+fn record_copied() -> string {
+    let r = Holder { xs: [], tag: made("i") }
+    let r2 = r with { xs: [made("j")] }
+    "${r.tag}/${r2.tag}/${r2.xs[0]}"
+}
+
+/// Stored into a holder that dies before the value is read.
+fn holder_dies() -> string {
+    let s = made("k")
+    mut xs = [s]
+    xs = []
+    let r = Holder { xs: [], tag: made("l") }
+    mut hs = [r]
+    hs = []
+    "${s}/${xs.length}/${r.tag}/${hs.length}"
+}
+
+[holder_dies(), two_lists(), every_turn(), view_after(), one_branch(1), one_branch(0), slot_written(), record_copied()].join(" ")

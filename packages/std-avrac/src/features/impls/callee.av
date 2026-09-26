@@ -25,7 +25,7 @@ export enum Callee {
     Nameless
 }
 
-export fn callee_of(mut view: FileView, ty: TypeId, name: string) -> Callee {
+export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
     // A NAME IS TRANSPARENT AT A READ, and its OWN impl answers
     // first: a method the name declares wins, and everything else
     // the shape answers — so `rows.best()` and `rows.push(v)` are
@@ -41,7 +41,15 @@ export fn callee_of(mut view: FileView, ty: TypeId, name: string) -> Callee {
     if field != null { return field! }
     let row: MethodRow? = method_row(view.lang.methods, name, sh)
     if row != null { return Callee.Row(row!) }
-    declared(sh) ?? Callee.Nameless
+    declared(sh) ?? implemented(view, ty, name) ?? Callee.Nameless
+}
+
+/// A scalar answers a method an impl filed under its builtin
+/// declaration — `"hi".response()` once `impl Respond for string`.
+fn implemented(view: FileView, ty: TypeId, name: string) -> Callee? {
+    let d? = view.decls.scalar_decl(ty) else { return null }
+    if view.decls.method(d, name) == null { return null }
+    Callee.Declared(d, view.decls.decl(d).name)
 }
 
 /// A structural built-in type's static vocabulary — the LANGUAGE's
@@ -55,7 +63,7 @@ fn builtin_static(view: FileView, sh: Type, name: string) -> Callee? {
             if names_a_variant(view, decl, name) || static_method(view, decl, name) != null { return null }
             let row? = method_row(view.lang.methods, name, sh) else { return null }
             Callee.Row(row)
-        }
+        },
         _ -> null,
     }
 }
@@ -67,9 +75,7 @@ fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
         .TypeName(decl, tname) -> type_receiver(view, decl, tname, name),
         .Var(decl, j, tname) -> Callee.Bounded(decl, j, tname),
         .Dyn(d, n) -> Callee.Contract(d, n),
-        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_)
-            or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap
-            or .Error or .Void -> null,
+        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void -> null,
     }
 }
 
@@ -105,7 +111,7 @@ fn static_method(view: FileView, target: DeclId, name: string) -> DeclId? {
 }
 
 fn names_a_variant(view: FileView, decl: DeclId, name: string) -> bool {
-    let sig: EnumSig? = (view.decls.sig(decl))?.enum_sig()
+    let sig: EnumSig? = view.decls.sig(decl)?.enum_sig()
     sig != null && sig!.tag_of(name) != null
 }
 
@@ -120,7 +126,7 @@ fn stood_over(view: FileView, ty: TypeId, name: string) -> TypeId? {
 }
 
 /// A fn-typed field of the name — the capability-record pattern.
-fn fn_field(mut view: FileView, ty: TypeId, name: string) -> Callee? {
+fn fn_field(view: FileView, ty: TypeId, name: string) -> Callee? {
     let sig? = view.decls.fields_of_type(ty) else { return null }
     let slot? = sig.slot_of(name) else { return null }
     let fty = sig.types[slot]
@@ -132,8 +138,6 @@ fn fn_field(mut view: FileView, ty: TypeId, name: string) -> Callee? {
 fn declared(sh: Type) -> Callee? {
     match sh {
         .Struct(d, n) or .Enum(d, n) or .App(d, n, _) -> Callee.Declared(d, n),
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_)
-            or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap
-            or .Error or .Void -> null,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void -> null,
     }
 }

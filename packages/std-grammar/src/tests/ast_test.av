@@ -14,8 +14,12 @@ fn term_rule() -> Rule {
         items: [
             Item { label: null, prim: Prim.Lit("("), rep: Rep.One, expect: null },
             Item { label: "e", prim: Prim.Ref("expression"), rep: Rep.One, expect: null },
-            Item { label: null, prim: Prim.Lit(")"), rep: Rep.One,
-                   expect: Expect { message: "expected ')'" } },
+            Item {
+                label: null,
+                prim: Prim.Lit(")"),
+                rep: Rep.One,
+                expect: Expect { message: "expected ')'" },
+            },
         ],
         build: Build.Var("e"),
         recover: null,
@@ -27,24 +31,33 @@ fn term_rule() -> Rule {
 fn expression_rule() -> Rule {
     let plus = Seq {
         items: [Item { label: "op", prim: Prim.Lit("+"), rep: Rep.One, expect: null }],
-        build: null, recover: null,
+        build: null,
+        recover: null,
     }
     let minus = Seq {
         items: [Item { label: "op", prim: Prim.Lit("-"), rep: Rep.One, expect: null }],
-        build: null, recover: null,
+        build: null,
+        recover: null,
     }
     let tail = Item {
         label: null,
-        prim: Prim.Group(Alt { branches: [
-            Seq {
-                items: [
-                    Item { label: null, prim: Prim.Group(Alt { branches: [plus, minus] }),
-                           rep: Rep.One, expect: null },
-                    Item { label: "r", prim: Prim.Ref("term"), rep: Rep.One, expect: null },
-                ],
-                build: null, recover: null,
-            },
-        ] }),
+        prim: Prim.Group(Alt {
+            branches: [
+                Seq {
+                    items: [
+                        Item {
+                            label: null,
+                            prim: Prim.Group(Alt { branches: [plus, minus] }),
+                            rep: Rep.One,
+                            expect: null,
+                        },
+                        Item { label: "r", prim: Prim.Ref("term"), rep: Rep.One, expect: null },
+                    ],
+                    build: null,
+                    recover: null,
+                },
+            ],
+        }),
         rep: Rep.Star,
         expect: null,
     }
@@ -70,11 +83,13 @@ fn defer_rule() -> Rule {
             Item { label: null, prim: Prim.Lit("if"), rep: Rep.One, expect: null },
             Item { label: "e", prim: Prim.Ref("expression"), rep: Rep.One, expect: null },
         ],
-        build: null, recover: null,
+        build: null,
+        recover: null,
     }
     let again = Seq {
         items: [Item { label: null, prim: Prim.Lit("defer"), rep: Rep.One, expect: null }],
-        build: null, recover: null,
+        build: null,
+        recover: null,
     }
     let branch = Seq {
         items: [
@@ -82,7 +97,8 @@ fn defer_rule() -> Rule {
             Item { label: null, prim: Prim.Group(Alt { branches: [iffed, again] }), rep: Rep.One, expect: null },
             Item { label: null, prim: Prim.Named("BREAK"), rep: Rep.One, expect: null },
         ],
-        build: null, recover: null,
+        build: null,
+        recover: null,
     }
     Rule { name: "defer_stmt", body: Alt { branches: [branch] } }
 }
@@ -104,7 +120,7 @@ spec "grammar/ast" {
         }
         then "a captured Ref carries its label" {
             let e = term_rule().body.branches[1].items[1]
-            let target = match e.prim { .Ref(rule) -> rule, .Named(_) or .Lit(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> "" }
+            let target = match e.prim { .Ref(name) -> name, .Named(_) or .Lit(_) or .Group(_) or .CharRange(_, _) or .AnyChar or .NotChar(_) or .Until(_) -> "" }
             e.label == "e" && target == "expression"
         }
         then "an Expect lives on the item it guards" {

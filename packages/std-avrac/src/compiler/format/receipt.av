@@ -1,0 +1,122 @@
+//! `avra fmt --write`'s gate: a rewrite is safe only when nothing a
+//! reader would notice moved. LEX BOTH TEXTS and compare — never a
+//! whitespace-stripped diff, which cannot tell a dropped comment
+//! from a collapsed blank line (CLAUDE.md, "A CAP BELONGS ON A LOG,
+//! NEVER ON DATA THAT IS COMPARED" is the same law one door over: a
+//! comparison that throws away information before comparing can
+//! manufacture agreement).
+//!
+//! THE RECEIPT HAS THREE PARTS, because a token stream, the file's
+//! remarks and its doc groups are three SEPARATE tables (core/
+//! nodes.av), never one: SIGNIFICANT TOKENS (every one but BREAK and
+//! EOF, which are layout — a canonical reformat may add or drop
+//! breaks freely), REMARKS (every `//` and blank-run, by content, in
+//! order — their OFFSETS move under any reflow, so only the content
+//! and the order are compared), and DOC GROUPS (every `///` run's
+//! lines, in order). Absence names the first thing that moved;
+//! agreement on all three is what `--write` requires before it
+//! touches a file BYTE-IDENTICALLY.
+//!
+//! TEXT AND ORDER ARE NOT WHERE A REMARK LIVES — ITS BRACE NESTING IS.
+//! A remark's OFFSET moves under any reflow and is never compared, but
+//! its SCOPE — how many `{`s stand open around it — is part of what it
+//! means: a comment inside a fn's closing brace documents that fn, and
+//! the same text sitting after it documents nothing. Two remark lists
+//! can agree on every text, in the same order, while one of them
+//! stepped out of its enclosing brace, so each remark's brace depth is
+//! compared too (`brace_depth_at`) — blind to a token count that moved
+//! elsewhere (the canon door's trailing comma, its dropped paren),
+//! since neither touches a `{`/`}`.
+//!
+//! A SECOND DOOR (compiler/workspace.av's `canon_defect`) answers a
+//! DIFFERENT question for the case this one refuses: not "did nothing
+//! move" but "did the MEANING move" — every top-line statement's
+//! `stmt_fingerprint` agrees, span-blind, and the remarks/doc groups
+//! above still hold whole. A trailing comma, a dropped redundant
+//! paren, the `void` arrow, a `MatchOpt` arm's order all move tokens
+//! without moving meaning, and the second door is where that is
+//! told apart from an actual loss.
+use grammar.{lex_source, Token, TokenKind, DocComment}
+use core.{Trivia, Remark}
+
+/// The first thing a rewrite lost or moved, or absence when nothing
+/// did — safe to write.
+export fn lossless_defect(before: string, after: string) -> string? {
+    let a = lex_source(before)
+    let b = lex_source(after)
+    token_mismatch(significant(a.tokens), significant(b.tokens)) ?? remark_mismatch(a.remarks, a.tokens, b.remarks, b.tokens) ?? doc_mismatch(a.docs, b.docs)
+}
+
+/// The receipt's non-token two thirds, alone: every comment and doc
+/// group preserved in order. A CANON rewrite — same meaning, moved
+/// tokens (compiler/workspace.av's `canon_defect`) — still owes this
+/// whole; only the TOKEN third is the part it may differ on.
+export fn remarks_and_docs_defect(before: string, after: string) -> string? {
+    let a = lex_source(before)
+    let b = lex_source(after)
+    remark_mismatch(a.remarks, a.tokens, b.remarks, b.tokens) ?? doc_mismatch(a.docs, b.docs)
+}
+
+/// Every token but BREAK and EOF — the layout the printer is free to
+/// reflow.
+fn significant(ts: List<Token>) -> List<Token> {
+    [t for t in ts if t.kind != TokenKind.Break && t.kind != TokenKind.Eof]
+}
+
+fn token_mismatch(a: List<Token>, b: List<Token>) -> string? {
+    if a.length != b.length { return "the token count moved: ${a.length} -> ${b.length}" }
+    for i, t in a {
+        let u = b[i]
+        if t.kind != u.kind || t.text != u.text { return "a token moved at position ${i}: `${t.text}` became `${u.text}`" }
+    }
+    null
+}
+
+fn remark_mismatch(a: List<Remark>, at: List<Token>, b: List<Remark>, bt: List<Token>) -> string? {
+    if a.length != b.length { return "a comment was lost: ${a.length} remark(s) became ${b.length}" }
+    for i, r in a {
+        let u = b[i]
+        if !trivia_same(r.trivia, u.trivia) { return "a comment moved: `${trivia_text(r.trivia)}`" }
+        if brace_depth_at(at, r.at) != brace_depth_at(bt, u.at) { return "a comment's scope moved: `${trivia_text(r.trivia)}`" }
+    }
+    null
+}
+
+/// How many `{`s stand open around `at` — a remark's SCOPE, blind to
+/// everything a canonical reflow may move (its own offset, any token
+/// that is not a brace). Two lists agreeing here and on text/order
+/// still disagree if one moved a comment across a closing brace.
+fn brace_depth_at(tokens: List<Token>, at: int) -> int {
+    let before = [t for t in tokens if t.kind == TokenKind.Op && t.span.lo < at && (t.text == "{" || t.text == "}")]
+    [t for t in before if t.text == "{"].length - [t for t in before if t.text == "}"].length
+}
+
+fn doc_mismatch(a: List<DocComment>, b: List<DocComment>) -> string? {
+    if a.length != b.length { return "a doc comment group was lost: ${a.length} group(s) became ${b.length}" }
+    for i, d in a {
+        if lines_differ(d.lines, b[i].lines) { return "a doc comment moved" }
+    }
+    null
+}
+
+fn trivia_same(t: Trivia, u: Trivia) -> bool {
+    match t {
+        .Comment(a) -> match u { .Comment(c) -> a == c, .Blank -> false },
+        .Blank -> match u { .Blank -> true, .Comment(_) -> false },
+    }
+}
+
+fn trivia_text(t: Trivia) -> string {
+    match t {
+        .Comment(text) -> text,
+        .Blank -> "",
+    }
+}
+
+fn lines_differ(a: List<string>, b: List<string>) -> bool {
+    if a.length != b.length { return true }
+    for i, s in a {
+        if s != b[i] { return true }
+    }
+    false
+}

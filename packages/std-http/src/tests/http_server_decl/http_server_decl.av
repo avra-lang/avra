@@ -1,0 +1,87 @@
+use @std.net.{Conn, NetError, connect}
+use @std.time.{ms, secs, within}
+use @std.http.http.{Request, Unrouted, Response, Handler, text}
+use @std.http.route.{get, post, delete, group}
+use @std.http.server.{server, layer}
+
+/// Answers the order probe — reached only when nothing outside it did.
+fn timed(q: Request<Unrouted>, next: Handler) -> Response {
+    let target = q.target() ?? ""
+    if target == "/order" { return text(200, "timed") }
+    next(q)
+}
+
+export server app {
+    port: 0
+    guarded
+    layer { wraps: timed }
+
+    get "/health" { _req -> "ok" }
+    get "/ideas/{id}" { req -> "idea " + req.params.id }
+    post "/ideas" { req -> text(201, "made " + (req.body.text() ?? "?")) }
+    delete "/ideas/{id}" { _req -> 204 }
+    group "/api" {
+        get "/ideas/{id}" { req -> "api idea " + req.params.id }
+        get "/files/{path...}" { req -> "file " + req.params.path }
+    }
+    get "/admin/panel" { _req -> "secret" }
+}
+
+/// Refuses the admin tree, and answers the order probe first.
+export layer guarded { q, next ->
+    let target = q.target() ?? ""
+    when {
+        target.starts_with("/admin") -> text(401, "no")
+        target == "/order" -> text(200, "guarded")
+        _ -> next(q)
+    }
+}
+
+/// `sent` written, then read until the server closes or goes quiet.
+fn exchanged(c: Conn, sent: string) -> Result<string, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    mut open = true
+    while open {
+        match within ms(300) { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? "".bytes())
+            },
+            .Err(_) -> { open = false },
+        }
+    }
+    let parts = (got.text() ?? "?").split("\r\n\r\n")
+    let body = if parts.length > 1 { parts[1] } else { "" }
+    .Ok("${parts[0].split("\r\n").first() ?? "?"} ${body}")
+}
+
+fn asked(port: int, line: string) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    exchanged(c, line + "\r\nHost: a\r\nConnection: close\r\nContent-Length: 4\r\n\r\nnote")
+}
+
+fn shown() -> Result<string, NetError> {
+    let s = app.listening()?
+    spawn s.run(1)
+    defer s.stop()
+    let port = s.listener.port
+    let lines = [
+        asked(port, "GET /health HTTP/1.1")?,
+        asked(port, "GET /ideas/7 HTTP/1.1")?,
+        asked(port, "POST /ideas HTTP/1.1")?,
+        asked(port, "DELETE /ideas/7 HTTP/1.1")?,
+        asked(port, "GET /nope HTTP/1.1")?,
+        asked(port, "GET /api/ideas/9 HTTP/1.1")?,
+        asked(port, "GET /api/files/css/app.css HTTP/1.1")?,
+        asked(port, "GET /admin/panel HTTP/1.1")?,
+        asked(port, "GET /order HTTP/1.1")?,
+    ]
+    .Ok(lines.join("\n"))
+}
+
+match shown() {
+    .Ok(t) -> t,
+    .Err(e) -> "failed: ${e.describe().message}",
+}

@@ -1,24 +1,28 @@
 //! `if cond { a } else { b }` — the expression form: both branches
 //! present, both typed, one taken. The `if` keyword anchor merges
 //! ahead of the spine's NAME branch, like the boolean literals.
+//! ELSELESS `if cond { statements }` is the statement form, on one
+//! line or many — the guard idiom's home. Elseless keeps the two
+//! forms unambiguous; the opening BREAK keeps single-line
+//! expression arms out of the statement parse.
 use features.{LanguageFeature, BuilderRow}
+use features.if_expr.{when_ladder}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+
 export fn if_expr() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name      | build
         "if_expr" | build_if
         "if_stmt" | build_if_stmt
     }
-    component LanguageFeature f {
-        name = "if_expr"
-        docs = "`if <cond> { <expr> } else { <expr> }` as a value; ELSELESS `if <cond> { <stmts> }` as a statement, on one line or many — the guard idiom's home. Elseless keeps the two forms unambiguous; the opening BREAK keeps single-line expression arms out of the statement parse."
-        gram = grammar {
+    LanguageFeature if_expr {
+        gram: grammar {
             stmt = v:if_stmt END -> v
             if_stmt = "if" c:expression "{" ( t:stmt | BREAK )* "}" ( "else" ( "{" ( e:stmt | BREAK )* "}" | e:if_stmt ) )? -> if_stmt(c, t, e) @head(c)
             primary = "if" c:expression t:block "else" ( e:block | e:if_expr ) @expect("else", "an `if` expression needs its `else` branch") -> if_expr(c, t, e) @head(c)
             if_expr = "if" c:expression t:block "else" ( e:block | e:if_expr ) -> if_expr(c, t, e) @head(c)
         }
-        builders = rows
+        builders: rows
     }
-    f
+    if_expr
 }

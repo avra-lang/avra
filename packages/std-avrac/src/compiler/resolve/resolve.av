@@ -16,7 +16,7 @@ use core.{StmtId, ExprId, FileId, Param, flatten, Binding, found_at, NodeStore, 
 use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
+use features.{ResolveCx, SelfSeat, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound, example_marks}
 
 /// Words the spec reserves for future levels, memory, and
 /// concurrency: refusing them as names today means they become
@@ -28,13 +28,23 @@ export const reserved: List<string> = ["systems", "bare", "hardware", "owned", "
 export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace, elsewhere: Elsewhere, generated: List<StmtId>) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
     mut r = ResolveCx {
-        view: view, dispatch: dispatch, keywords: keywords, all_defs: defs,
+        view: view,
+        dispatch: dispatch,
+        keywords: keywords,
+        all_defs: defs,
         facts: new_name_facts(view.store.exprs.count(), scope),
         def_names: [d.name for d in defs],
-        visible: {}, overlays: [], lframes: [], floors: [], receivers: [], marks: [],
+        visible: {},
+        overlays: [],
+        lframes: [],
+        floors: [],
+        receivers: [],
+        marks: [],
         walked: side_table("walked", 0, view.store.exprs.count(), false),
         scoped: side_table("scoped", 0, view.store.stmts.count(), false),
-        scope: [], in_block: false, elsewhere: elsewhere,
+        scope: [],
+        in_block: false,
+        elsewhere: elsewhere,
     }
     r.name_laws()
     r.resolve_stmts(false, view.stmts)
@@ -60,7 +70,14 @@ impl ResolveCx {
         self.in_block = in_block
         for s in stmts {
             stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s)
-            for a in self.view.store.annotations_of(s) { self.walk_annotation(a) }
+            // A rule's `@fixes`/`@keeps` NAME no declared fn — the callee
+            // is never resolved — but its ARGS are read at lowering as
+            // ordinary values (components/lower.av's `augmented`,
+            // features/rule.av's `example_marks` names the two words),
+            // so they walk like any other expression's.
+            for a in self.view.store.annotations_of(s) {
+                if example_marks(a.name) { for e in a.args { self.walk(e) } } else { self.walk_annotation(a) }
+            }
         }
         self.in_block = was
     }
@@ -109,18 +126,20 @@ impl ResolveCx {
     }
 
     /// One match arm's scope: its binds (in pattern order) hold for
-    /// the arm's value and die with it — the first scope in the
-    /// language opened by an EXPRESSION rather than a statement.
-    mut fn arm_scope(binds: List<Bound>, value: ExprId) {
+    /// the arm's guard AND value, and die with both — the first scope
+    /// in the language opened by an EXPRESSION rather than a
+    /// statement. An unguarded arm writes no guard.
+    mut fn arm_scope(binds: List<Bound>, value: ExprId, guard: ExprId? = null) {
         self.open_overlay()
-        self.arm_body(binds, value)
+        self.arm_body(binds, value, guard)
         self.close_overlay()
     }
 
-    mut fn arm_body(binds: List<Bound>, value: ExprId) {
+    mut fn arm_body(binds: List<Bound>, value: ExprId, guard: ExprId?) {
         for j, b in binds {
             if !self.refused_binder(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
         }
+        if guard != null { self.walk(guard!) }
         self.walk(value)
     }
 
@@ -145,7 +164,7 @@ impl ResolveCx {
             let _ = self.refused_binder(pp.name.of, self.loc_of(lam))
         }
         let origin: FileId? = self.view.origin_of(lam)
-        // LICENSED I15: this IS the bracket
+        // LICENSED compiler.bracket_ritual: this IS the bracket
         self.lframes.push(LFrame { lam: lam, params: [keyed(pp.name.of, origin) for pp in params], floor: self.overlays.length })
         self.walk(body)
         let _ = self.lframes.pop()
@@ -172,14 +191,14 @@ impl ResolveCx {
     /// One member. A `static fn` resolves with NO receiver, so
     /// `self` inside it refuses and its seats start at 0.
     mut fn impl_member(s: StmtId) {
-        self.receivers.push(!self.view.store.is_static(s))
+        self.receivers.push(if self.view.store.is_static(s) { SelfSeat.Static } else { SelfSeat.Receiver })
         self.resolve_stmts(false, [s])
         let _ = self.receivers.pop()
     }
 
     /// Is the innermost enclosing fn a method — one WITH a receiver?
     fn in_a_method() -> bool {
-        self.receivers.last() ?? false
+        self.receivers.last() ?? SelfSeat.Static is .Receiver
     }
 
     /// A fn's body walks behind a FLOOR: the overlay depth at entry.
@@ -188,11 +207,19 @@ impl ResolveCx {
     /// bindings. The seats' names and `mut` marks are in scope for
     /// exactly the walk, so a read of a `mut` seat is recorded as
     /// one.
+    /// A seat's default: a body of its own — no seats, and no
+    /// receiver though its owner is a method.
+    mut fn walk_default(body: ExprId) {
+        self.receivers.push(SelfSeat.Default)
+        self.walk_under([], body)
+        let _ = self.receivers.pop()
+    }
+
     mut fn walk_under(ps: List<Param>, body: ExprId) {
         let seats = written_seats(self.keywords, ps)
         let outer = self.scope
         let origin: FileId? = self.view.origin_of(body)
-        // LICENSED I15: this IS the bracket
+        // LICENSED compiler.bracket_ritual: this IS the bracket
         self.floors.push(self.overlays.length)
         self.marks.push([pp.promises for pp in seats])
         self.scope = [keyed(pp.name.of, origin) for pp in seats]
@@ -213,7 +240,7 @@ impl ResolveCx {
 
 /// The topmost overlay INDEX holding `name`, or null.
 fn overlay_index(overlays: List<Map<string, Binding>>, name: string) -> int? {
-    // LICENSED I19: a REVERSE scan — the nearest scope wins
+    // LICENSED loops.index_walk: a REVERSE scan — the nearest scope wins
     mut j = overlays.length - 1
     while j >= 0 {
         if overlays[j].get(name) != null { return j }
@@ -234,7 +261,7 @@ const no_frame: int = 0 - 1
 /// The innermost frame whose FLOOR admits the overlay — the frame
 /// the overlay was opened inside.
 fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
-    // LICENSED I19: a REVERSE scan — innermost frame first
+    // LICENSED loops.index_walk: a REVERSE scan — innermost frame first
     mut k = lframes.length - 1
     while k >= 0 {
         if lframes[k].floor <= ohit { return k }
@@ -245,7 +272,7 @@ fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
 
 /// The innermost frame whose PARAMS hold `name`, or null.
 fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
-    // LICENSED I19: a REVERSE scan — innermost frame first
+    // LICENSED loops.index_walk: a REVERSE scan — innermost frame first
     mut k = lframes.length - 1
     while k >= 0 {
         if found_at(lframes[k].params, name) != null { return k }
@@ -256,7 +283,7 @@ fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
 
 /// Every let definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
-    // LICENSED I13: a comprehension's filter and element cannot share a
+    // LICENSED style.repeated_projection: a comprehension's filter and element cannot share a
     // binding — comprehension bindings are on the sugar backlog
     [Def { name: store.let_name(s)!, stmt: s } for s in stmts if store.let_name(s) != null]
 }

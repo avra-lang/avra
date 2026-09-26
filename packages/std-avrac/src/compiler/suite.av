@@ -3,7 +3,7 @@
 //! it must print beside it. Every proof is both engines: a program the
 //! evaluator has not agreed with since anything it can see last moved runs
 //! there first, and a disagreement stops the run before a binary exists.
-use core.{sorted_texts, joined, flatten, module_path, TypeRegistry}
+use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized}
 use @std.io.{make_dirs}
 use compiler.backend.{run_program}
@@ -16,12 +16,12 @@ impl Workspace {
     /// its sources — a module tree, a vendored dependency, a test that reaches
     /// past the library's own dependencies — each proved on its own. `only` is
     /// one file's cases and nothing else; labels are told from `told_from`.
-    mut fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<List<BuildOutcome>, string> {
+    fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<List<BuildOutcome>, string> {
         let own: BuildOutcome? = self.suite(only, told_from, tools)?
         mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
         if only != null { return out }
         for root in nested_roots(self.host, joined_path(self.root, "src")) {
-            mut inner = self.nested_at(root)
+            let inner = self.nested_at(root)
             let made: BuildOutcome? = inner.suite(null, told_from, tools)?
             if made != null { out.push(made!) }
         }
@@ -36,7 +36,20 @@ impl Workspace {
     }
 
     /// One suite's binary, or null when there is nothing to prove.
-    mut fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
+    fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
+        // A rule's examples run NATIVE, right here, at build time —
+        // no evaluator, no generated case: std-avrac testing ITSELF
+        // means its own rules are already part of the standing
+        // binary. Gated to std-avrac's own suite alone, so testing an
+        // unrelated package never runs a stranger's rules — and this
+        // is also the one build where `rules` can be held to what
+        // `self.decls` actually declares (`rules_checked`).
+        if self.manifest(0).name == "@std/avrac" {
+            let results = self.rules_checked()
+            let missed = [c.label for c in results if !c.ok]
+            if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }
+            println("${counted(results.length, "example")} proved, as cases")
+        }
         let programs = if only == null { self.program_tests() } else { [] }
         let under = Keyed { named: "suite:${only ?? ""}", beside: [beside(path, "expected") for path in programs] }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
@@ -44,14 +57,17 @@ impl Workspace {
         if kept != null { return kept }
         let store = store_at(build_cache_root(self))
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
-        mut d = self.evaluated(store, owed, told_from)?
+        let d = self.evaluated(store, owed, told_from)?
         let told = [s for s in d.said if only == null || normalized(s.path) == normalized(only!)]
         let cases = flatten([s.cases for s in told])
         if cases.is_empty() && programs.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
         let calls = [self.program_call(path, told_from) for path in programs]
         let homes = flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told])
-        let made: BuildOutcome? = d.program.ws.linked(d, ProgramModule { main: (types: TypeRegistry) -> suite_entry(types, cases, calls), rows: program_rows, cases: homes }, under, binary, tools)?
+        let made: BuildOutcome? = match d.linked(ProgramModule { main: (types: TypeRegistry) -> suite_entry(types, cases, calls), rows: program_rows, cases: homes }, under, binary, tools) {
+            .Ok(b) -> b,
+            .Err(e) -> { fail e.describe().message },
+        }
         made
     }
 
@@ -59,15 +75,15 @@ impl Workspace {
     /// each run and held to its text — and remembered, so an unmoved program is
     /// not run again. A quarrel under a hold is asked again of the sources: a
     /// held body the record did not foresee is no verdict on the program.
-    mut fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+    fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
         let reach = flatten([self.seen_files(store, path) for path in owed])
         let met = self.derived_reading(null, Want.Binary, reach)?
         // the evaluator runs bodies, an instantiation's among them
-        mut d = if owed.is_empty() { met } else { met.program.ws.whole(met, reach)? }
+        let d = if owed.is_empty() { met } else { met.program.ws.whole(met, reach)? }
         let first = d.program.ws.quarrels(d, owed, told_from)
         if first.is_empty() { return d.program.ws.agreed(store, d, owed) }
         if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
-        mut sure = self.from_sources(null, Want.Binary)?
+        let sure = self.from_sources(null, Want.Binary)?
         let last = sure.program.ws.quarrels(sure, owed, told_from)
         if !last.is_empty() { fail joined(last, "\n") }
         sure.program.ws.agreed(store, sure, owed)
@@ -75,7 +91,7 @@ impl Workspace {
 
     /// The evaluator agreed with each: remembered under what the program can see.
     fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
-        for path in owed { let _ = store.keep_once(Stored.Unit, self.proved_key(store, path), "", []) }
+        for path in owed { let _ = store.keep_once(Stored.Unit, self.proved_key(store, path), "") }
         d
     }
 
@@ -108,7 +124,7 @@ impl Workspace {
     /// Every file a program's bodies can reach: the files of the modules its
     /// own module sees.
     fn seen_files(store: Store, path: string) -> List<string> {
-        mut ws = self
+        let ws = self
         flatten([self.module_files(module_path(dep.split("."))) for dep in seen_modules(ws, store, module_path(self.module_of(path).split(".")))])
     }
 
@@ -144,6 +160,10 @@ fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
 }
 
 // ── The voices ──
+
+fn rule_example_missed(label: string) -> string {
+    "${label}: a @fixes missed its `after`, or a @keeps fired"
+}
 
 fn said_otherwise(pr: ProgramCall, out: string) -> string {
     "${pr.label}: eval != expected\n${out}"

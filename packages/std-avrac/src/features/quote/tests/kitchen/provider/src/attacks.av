@@ -14,7 +14,7 @@ export trait Kitchen {
                     for x in xs { total = total + x }
                     let doubled = [x * 2 for x in xs if x > 1]
                     let k = if total > 3 { "big" } else { "small" }
-                    let m = match xs.length { 3 -> "three", _ -> "other" }
+                    let m = match xs.length { 3 if total > ${n} + 100 -> "huge", 3 -> "three", _ -> "other" }
                     let f = (a: int) -> a + total
                     let opt: int? = null
                     let o = opt ?? 7
@@ -37,13 +37,20 @@ fn helper(x: int) -> int { x * 10 }
 /// `@run_with(quote { … })` on `fn f` generates `f_run`, splicing the
 /// user's STATEMENTS before a tail of its own.
 export fn run_with(f: Fn, stmts: Stmts) -> List<Directive> {
-    [Directive { twin: "", name: f.name, at: f.at, source: quote {
+    [
+        Directive {
+            twin: "",
+            name: f.name,
+            at: f.at,
+            source: quote {
         fn ${f}_run() -> int {
             let acc = 100
             ${stmts}
             acc + ${f}()
         }
-    } }]
+    },
+        },
+    ]
 }
 
 /// Two impls from one directive — a `Many` of declarations.
@@ -58,11 +65,18 @@ export trait Twice {
 export trait Armed {
     static fn derive(t: Type) -> List<Directive> {
         let arms = [arm_of(v) for v in t.variants]
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             impl ${t} {
                 fn tag() -> string { match self { ${arms} } }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
@@ -76,11 +90,18 @@ fn arm_of(v: Variant) -> Arms {
 /// A generated fn that itself answers a template.
 export trait Nested {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             impl ${t} {
                 fn q() -> Code { quote { 1 + 1 } }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
@@ -90,35 +111,56 @@ export trait Nested {
 /// wrong thing.
 export trait NestedHoled {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             impl ${t} {
                 fn holed_q(n: int) -> Code { quote { ${name("inner")} + ${n} } }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
 /// A template that DECLARES a name and READS it.
 export trait SelfRead {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             fn ${t}_base() -> int { 40 }
             impl ${t} {
                 fn read() -> int { ${t}_base() + 2 }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
 /// A template that DECLARES a name of its own and READS it.
 export trait SelfReadPlain {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             fn plain_base() -> int { 40 }
             impl ${t} {
                 fn read() -> int { plain_base() + 2 }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
@@ -129,7 +171,12 @@ export trait Names {
         let tail = t.fields.length
         let mid = "mid"
         let v = "v"
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             impl ${t} {
                 fn ${t}${mid}() -> int { 1 }
                 fn pre${mid}${tail}post() -> int {
@@ -137,13 +184,15 @@ export trait Names {
                     ${name("v${tail}")} + 2
                 }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
 /// What a payload pattern needs, declared HERE: a template's names
 /// resolve in the file that wrote the quote.
-export enum Held { One(v: int) Two }
+export enum Held { One(v: int), Two }
 
 /// A failing answer the template catches — declared HERE, with the
 /// enum, because a template's names resolve where it was written.
@@ -161,7 +210,12 @@ export enum Bad { Sad(why: string) }
 export trait Binders {
     static fn derive(t: Type) -> List<Directive> {
         let q = "q"
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             fn ${q}free() -> int { 100 }
 
             impl ${t} {
@@ -191,6 +245,11 @@ export trait Binders {
 
                 fn ${q}method() -> int { 1000 }
             }
-        } }]
+        },
+
+
+
+            },
+        ]
     }
 }

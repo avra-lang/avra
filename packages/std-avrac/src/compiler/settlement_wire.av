@@ -10,12 +10,23 @@ fn wire_value(v: MetaVal) -> string {
         .Int(n) -> wire_field("i") + wire_field("${n}"),
         .Float(bits) -> wire_field("f") + wire_field("${bits}"),
         .Text(s) -> wire_field("t") + wire_field(s),
+        .Octets(xs) -> wire_field("o") + wire_field(["${x}" for x in xs].join(",")),
         .Bool(b) -> wire_field("b") + wire_field(if b { "1" } else { "0" }),
         .Absent -> wire_field("a"),
         .Gone -> wire_field("g"),
         .Node(i) -> wire_field("n") + wire_field("${i}"),
         .Map(i) -> wire_field("m") + wire_field("${i}"),
     }
+}
+
+/// One map's own wire form: its key count, then each key paired with
+/// its value — `keys`/`values` are parallel lists, so the walk
+/// enumerates the one it names and indexes the other by the same
+/// position.
+fn wire_map(row: MetaMap) -> string {
+    mut out = wire_field("${row.keys.length}")
+    for i, k in row.keys.enumerate() { out = out + wire_field(k) + wire_value(row.values[i]) }
+    out
 }
 
 /// A unit row contains the answer, its heap, embed dependencies, and the value
@@ -30,10 +41,7 @@ fn settled_wire(s: Settled) -> string {
         for v in slots { out = out + wire_value(v) }
     }
     out = out + wire_field("${s.heap.maps.length}")
-    for row in s.heap.maps {
-        out = out + wire_field("${row.keys.length}")
-        for i in 0..row.keys.length { out = out + wire_field(row.keys[i]) + wire_value(row.values[i]) }
-    }
+    for row in s.heap.maps { out = out + wire_map(row) }
     out + wire_value(s.answer)
 }
 
@@ -85,6 +93,7 @@ impl WireReader {
         if tag == "g" { return MetaVal.Gone }
         let data? = self.field() else { return null }
         if tag == "t" { return MetaVal.Text(data) }
+        if tag == "o" { return octets_of(data) }
         if tag == "b" { return MetaVal.Bool(data == "1") }
         let n? = wire_number(data) else { return null }
         match tag {
@@ -150,10 +159,6 @@ fn settled_from_wire(raw: string) -> Settled? {
 use core.{FileId, DeclId, TypeId}
 use features.{Wanted, Sub, SeatValue}
 
-
-
-
-
 fn heap_wire(h: MetaHeap) -> string {
     mut out = wire_field("${h.nodes.length}")
     for slots in h.nodes {
@@ -161,148 +166,159 @@ fn heap_wire(h: MetaHeap) -> string {
         for v in slots { out = out + wire_value(v) }
     }
     out = out + wire_field("${h.maps.length}")
-    for row in h.maps {
-        out = out + wire_field("${row.keys.length}")
-        for i in 0..row.keys.length { out = out + wire_field(row.keys[i]) + wire_value(row.values[i]) }
-    }
+    for row in h.maps { out = out + wire_map(row) }
     out
 }
 
 impl Workspace {
 
-fn decl_from_ref(raw: string) -> DeclId? {
-    if raw == "" { return null }
-    let parts = raw.split("~")
-    if parts.length != 2 { return null }
-    let f? = self.decls.paths.get().get(parts[0]) else { return null }
-    let at? = wire_number(parts[1]) else { return null }
-    let ids = self.decls.decls_of_file(f)
-    if at < 0 || at >= ids.length { return null }
-    ids[at]
-}
-
-fn decl_ref(d: DeclId?) -> string {
-    if d == null { return "" }
-    self.decls.decl_wire( d!)
-}
-
-fn file_ref(f: FileId) -> string { self.decls.file(f).path }
-
-fn seat_wire(s: SeatValue) -> string {
-    wire_field("${s.index}") + wire_field(s.fp) + wire_field(self.type_ref( s.ty)) + wire_value(s.value) + heap_wire(s.heap)
-}
-
-fn sub_wire(sub: Sub?) -> string {
-    if sub == null { return wire_field("-") }
-    let s = sub!
-    mut out = wire_field("+") + wire_field(self.decl_ref( s.target)) + wire_field("${s.args.length}")
-    for a in s.args { out = out + wire_field(self.type_ref( a)) }
-    out = out + wire_field("${s.consts.length}")
-    for c in s.consts { out = out + wire_field(c) }
-    out
-}
-
-fn type_from_wire(raw: string) -> TypeId? {
-    if !raw.starts_with("^") { return null }
-    let words = raw.substring(1, raw.length).split("~")
-    let d = self.decls.read_type_wire( words, 0)
-    if d == null || d!.next != words.length { return null }
-    d!.id
-}
-
-fn type_ref(t: TypeId) -> string { self.decls.type_wire( t) }
-
-fn wanted_list_from_wire(raw: string) -> List<Wanted>? {
-    if !raw.starts_with("W1") { return null }
-    mut r = wire_reader(raw)
-    let count? = r.number() else { return null }
-    if count < 0 { return null }
-    mut out: List<Wanted> = []
-    for i in 0..count {
-        let name? = r.field() else { return null }
-        let file_path? = r.field() else { return null }
-        let decl_raw? = r.field() else { return null }
-        let sub_mark? = r.field() else { return null }
-        let f? = self.decls.paths.get().get(file_path) else { return null }
-        let decl = self.decl_from_ref( decl_raw)
-        let sub: Sub? = if sub_mark == "+" {
-            let target_raw? = r.field() else { return null }
-            let target = self.decl_from_ref( target_raw)
-            if target == null { return null }
-            let arg_count? = r.number() else { return null }
-            if arg_count < 0 { return null }
-            mut args: List<TypeId> = []
-            for j in 0..arg_count {
-                let tw? = r.field() else { return null }
-                let ty? = self.type_from_wire( tw) else { return null }
-                args.push(ty)
-            }
-            let const_count? = r.number() else { return null }
-            if const_count < 0 { return null }
-            mut consts: List<string> = []
-            for j in 0..const_count {
-                let c? = r.field() else { return null }
-                consts.push(c)
-            }
-            Sub { target: target!, args: args, consts: consts }
-        } else { null }
-        let seat_count? = r.number() else { return null }
-        if seat_count < 0 { return null }
-        mut seats: List<SeatValue> = []
-        for j in 0..seat_count {
-            let index? = r.number() else { return null }
-            let fp? = r.field() else { return null }
-            let tw? = r.field() else { return null }
-            let ty = self.type_from_wire( tw)
-            if ty == null { return null }
-            let value? = r.value() else { return null }
-            let node_count? = r.number() else { return null }
-            if node_count < 0 { return null }
-            mut nodes: List<List<MetaVal>> = []
-            for k in 0..node_count {
-                let c? = r.number() else { return null }
-                if c < 0 { return null }
-                mut slots: List<MetaVal> = []
-                for m in 0..c {
-                    let v? = r.value() else { return null }
-                    slots.push(v)
-                }
-                nodes.push(slots)
-            }
-            let map_count? = r.number() else { return null }
-            if map_count < 0 { return null }
-            mut maps: List<MetaMap> = []
-            for k in 0..map_count {
-                let c? = r.number() else { return null }
-                if c < 0 { return null }
-                mut keys: List<string> = []
-                mut values: List<MetaVal> = []
-                for m in 0..c {
-                    let key? = r.field() else { return null }
-                    let v? = r.value() else { return null }
-                    keys.push(key)
-                    values.push(v)
-                }
-                maps.push(meta_map(keys, values))
-            }
-            seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: meta_heap(nodes, maps) })
-        }
-        out.push(Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: null })
+    fn decl_from_ref(raw: string) -> DeclId? {
+        if raw == "" { return null }
+        let parts = raw.split("~")
+        if parts.length != 2 { return null }
+        let f? = self.decls.paths.get().get(parts[0]) else { return null }
+        let at? = wire_number(parts[1]) else { return null }
+        let ids = self.decls.decls_of_file(f)
+        if at < 0 || at >= ids.length { return null }
+        ids[at]
     }
-    if r.pos != raw.length { return null }
-    out
+
+    fn decl_ref(d: DeclId?) -> string {
+        if d == null { return "" }
+        self.decls.decl_wire(d!)
+    }
+
+    fn file_ref(f: FileId) -> string { self.decls.file(f).path }
+
+    fn seat_wire(s: SeatValue) -> string {
+        wire_field("${s.index}") + wire_field(s.fp) + wire_field(self.type_ref(s.ty)) + wire_value(s.value) + heap_wire(s.heap)
+    }
+
+    fn sub_wire(sub: Sub?) -> string {
+        if sub == null { return wire_field("-") }
+        let s = sub!
+        mut out = wire_field("+") + wire_field(self.decl_ref(s.target)) + wire_field("${s.args.length}")
+        for a in s.args { out = out + wire_field(self.type_ref(a)) }
+        out = out + wire_field("${s.consts.length}")
+        for c in s.consts { out = out + wire_field(c) }
+        out
+    }
+
+    fn type_from_wire(raw: string) -> TypeId? {
+        if !raw.starts_with("^") { return null }
+        let words = raw.substring(1, raw.length).split("~")
+        let d = self.decls.read_type_wire(words, 0)
+        if d == null || d!.next != words.length { return null }
+        d!.id
+    }
+
+    fn type_ref(t: TypeId) -> string { self.decls.type_wire(t) }
+
+    fn wanted_list_from_wire(raw: string) -> List<Wanted>? {
+        if !raw.starts_with("W1") { return null }
+        mut r = wire_reader(raw)
+        let count? = r.number() else { return null }
+        if count < 0 { return null }
+        mut out: List<Wanted> = []
+        for i in 0..count {
+            let name? = r.field() else { return null }
+            let file_path? = r.field() else { return null }
+            let decl_raw? = r.field() else { return null }
+            let sub_mark? = r.field() else { return null }
+            let f? = self.decls.paths.get().get(file_path) else { return null }
+            let decl = self.decl_from_ref(decl_raw)
+            let sub: Sub? = if sub_mark == "+" {
+                let target_raw? = r.field() else { return null }
+                let target? = self.decl_from_ref(target_raw) else { return null }
+                let arg_count? = r.number() else { return null }
+                if arg_count < 0 { return null }
+                mut args: List<TypeId> = []
+                for j in 0..arg_count {
+                    let tw? = r.field() else { return null }
+                    let ty? = self.type_from_wire(tw) else { return null }
+                    args.push(ty)
+                }
+                let const_count? = r.number() else { return null }
+                if const_count < 0 { return null }
+                mut consts: List<string> = []
+                for j in 0..const_count {
+                    let c? = r.field() else { return null }
+                    consts.push(c)
+                }
+                Sub { target: target, args: args, consts: consts }
+            } else {
+                null
+            }
+            let seat_count? = r.number() else { return null }
+            if seat_count < 0 { return null }
+            mut seats: List<SeatValue> = []
+            for j in 0..seat_count {
+                let index? = r.number() else { return null }
+                let fp? = r.field() else { return null }
+                let tw? = r.field() else { return null }
+                let ty = self.type_from_wire(tw)
+                if ty == null { return null }
+                let value? = r.value() else { return null }
+                let node_count? = r.number() else { return null }
+                if node_count < 0 { return null }
+                mut nodes: List<List<MetaVal>> = []
+                for k in 0..node_count {
+                    let c? = r.number() else { return null }
+                    if c < 0 { return null }
+                    mut slots: List<MetaVal> = []
+                    for m in 0..c {
+                        let v? = r.value() else { return null }
+                        slots.push(v)
+                    }
+                    nodes.push(slots)
+                }
+                let map_count? = r.number() else { return null }
+                if map_count < 0 { return null }
+                mut maps: List<MetaMap> = []
+                for k in 0..map_count {
+                    let c? = r.number() else { return null }
+                    if c < 0 { return null }
+                    mut keys: List<string> = []
+                    mut values: List<MetaVal> = []
+                    for m in 0..c {
+                        let key? = r.field() else { return null }
+                        let v? = r.value() else { return null }
+                        keys.push(key)
+                        values.push(v)
+                    }
+                    maps.push(meta_map(keys, values))
+                }
+                seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: meta_heap(nodes, maps) })
+            }
+            out.push(Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: null })
+        }
+        if r.pos != raw.length { return null }
+        out
+    }
+
+    fn wanted_list_wire(xs: List<Wanted>) -> string {
+        mut out = "W1" + wire_field("${xs.length}")
+        for w in xs { out = out + self.wanted_wire(w) }
+        out
+    }
+
+    fn wanted_wire(w: Wanted) -> string {
+        mut out = wire_field(w.name) + wire_field(self.file_ref(w.file)) + wire_field(self.decl_ref(w.decl))
+        out = out + self.sub_wire(w.sub) + wire_field("${w.seats.length}")
+        for s in w.seats { out = out + self.seat_wire(s) }
+        out
+    }
 }
 
-fn wanted_list_wire(xs: List<Wanted>) -> string {
-    mut out = "W1" + wire_field("${xs.length}")
-    for w in xs { out = out + self.wanted_wire( w) }
-    out
-}
-
-fn wanted_wire(w: Wanted) -> string {
-    mut out = wire_field(w.name) + wire_field(self.file_ref( w.file)) + wire_field(self.decl_ref( w.decl))
-    out = out + self.sub_wire( w.sub) + wire_field("${w.seats.length}")
-    for s in w.seats { out = out + self.seat_wire( s) }
-    out
-}
+/// A wired octet list — its numbers, comma-joined, the empty text none —
+/// or absence when a field is not a number, so the record is rebuilt.
+fn octets_of(data: string) -> MetaVal? {
+    if data == "" { return MetaVal.Octets([]) }
+    mut out: List<int> = []
+    // LICENSED loops.push_loop: a parse that refuses at the first field that is not a number
+    for x in data.split(",") {
+        let n? = wire_number(x) else { return null }
+        out.push(n)
+    }
+    MetaVal.Octets(out)
 }

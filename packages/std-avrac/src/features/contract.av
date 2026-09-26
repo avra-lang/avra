@@ -22,7 +22,7 @@
 use @std.meta.{derive}
 use core.{Expr, ExprId, StmtId, PatId, FileId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
 use core.{SeatMark, SideTable, Fingerprint, nothing_bound}
-// LICENSED I24: the GENERATED impls call these; the keeper reads source, and generated code is not source
+// LICENSED style.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use core.{fp, fp_list, fp_str}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -30,8 +30,9 @@ use @std.errors.{Loc}
 /// Resolve capabilities: an impl reports a name use — as a value
 /// (`use_name`), a callee (`use_call`), a type (`use_type`) or the
 /// receiver (`use_receiver`) — and opens the scopes it owns
-/// (`arm_scope` walks one match arm's value under its own binds, the
-/// first scope an EXPRESSION opens; `block_scope`; `lambda_scope`).
+/// (`arm_scope` walks one match arm's guard and value under its own
+/// binds, the first scope an EXPRESSION opens; `block_scope`;
+/// `lambda_scope`).
 /// The statement spine walks (`walk`, `walk_under`), applies the
 /// binding law (`bind_checked`, `check_params`), opens its scopes
 /// (`scope_stmts`, `bound_scope`, `impl_stmts`) and speaks. The
@@ -55,7 +56,7 @@ export type ResolveCx = {
     // body's seat contracts, by written position
     lframes: List<LFrame>,
     floors: List<int>,
-    receivers: List<bool>,
+    receivers: List<SelfSeat>,
     marks: List<List<SeatMark>>,
     // a name resolves ONCE; a scoped binder never counts as a later
     // definition
@@ -75,7 +76,6 @@ export type ResolveCx = {
 /// and a template's own name lives in the namespace of the file that
 /// WROTE the quote — origin hygiene.
 export type Elsewhere = { generated: fn(string) -> DeclId?, written_in: fn(FileId) -> Namespace }
-
 
 /// One `let` definition of the program, in order.
 export type Def = { name: string, stmt: StmtId }
@@ -175,6 +175,10 @@ export fn res_enum_sig(ok: TypeId, err: TypeId) -> EnumSig {
 /// the parallel resolve tables became one Binding. A new declared
 /// kind is a new VARIANT, and the projections below break at
 /// compile time until it is handled.
+/// What seat 0 holds in an open impl or trait member: its receiver, or
+/// nothing — a `static fn`'s, or a seat's default, a body of its own.
+export enum SelfSeat { Receiver, Static, Default }
+
 @derive(Projections)
 @derive(Fingerprint)
 export enum DeclSig {
@@ -182,6 +186,9 @@ export enum DeclSig {
     Record(sig: StructSig)
     Enum(sig: EnumSig)
     Named(sig: NamedSig)
+    /// An alias: the type its name stands for, over its own type
+    /// parameters.
+    Alias(of: TypeId)
 }
 
 /// Typing capabilities: read children's computed types (post-order —
@@ -205,6 +212,11 @@ export enum DeclSig {
 export type TypeCx = {
     view: FileView,
     names: NameFacts,
+    // the namespace of the file that WROTE a node — a template's
+    // written types resolve there, as its names do; `writer` is that
+    // namespace while one is being read, null for this file's own
+    written_in: fn(FileId) -> Namespace,
+    writer: Namespace?,
     facts: TypeFacts,
     error_type: TypeId,
     // the language's semantics and keywords: the walk dispatches
@@ -225,12 +237,22 @@ export type TypeCx = {
     tscope: List<TypeId>,
     pairs: List<ExprId>,
     task_bodies: List<ExprId>,
+    // the open `collect`s, innermost last — what each has gathered
+    gathers: List<Gathering> = [],
+    // the enclosing fn's seats' promises, by seat — what a parameter
+    // passed on still promises
+    scope_marks: List<SeatMark> = [],
     starving: bool,
-    // F2096's dedup: a bare `mut` local's declaring statement, once its
+    // F2106's dedup: a bare `mut` local's declaring statement, once its
     // alias-copy law has spoken for it — the first writing call through
     // it is the tell, later ones on the same local repeat nothing new.
     aliased_warned: List<int>,
 }
+
+/// One open `collect`: the lambda barriers standing when it opened —
+/// a statement behind another is a lambda's, never its — and the
+/// values its statements discarded, in order.
+export type Gathering = { bars: int, values: List<ExprId> }
 
 /// One narrow in force: the proven binding's key, the INNER its
 /// reads answer, and the OPT each read is recorded as wearing, for
@@ -280,16 +302,27 @@ export type LowerCx = {
     // runs and drops its own, an early exit runs them all
     deferred: List<Deferred>,
     depth: int,
+    // the open `collect`s' lists, innermost last — a lambda's body is
+    // its own context, so none reaches through one
+    gathers: List<Reg> = [],
 }
 
 /// One registered `defer`: the fn box to call, the depth of the
 /// frame that registered it, and whether only a failing exit runs it.
-/// What a closing frame runs: a deferred closure, called; or an owner's
-/// tasks, joined — the owner's register, or the cell it lives in.
+/// What a closing frame runs: a deferred closure, called; a deferred
+/// call, made; or an owner's tasks, joined — the owner's register, or
+/// the cell it lives in.
 export enum Deferral {
     Call(box: Reg)
     Settle(owner: Reg, cell: bool)
+    /// a call whose arguments were fixed where the `defer` stands —
+    /// no box to build, the callee named directly at every exit
+    Direct(call: DirectCall)
 }
+
+/// A deferred call with its arguments in hand: a declared fn's symbol,
+/// or a host row's (`host`) — answering `ret`, which the call drops.
+export type DirectCall = { callee: string, host: bool, args: List<Reg>, ret: TypeId }
 
 export type Deferred = { work: Deferral, depth: int, on_error: bool }
 
@@ -482,7 +515,7 @@ export fn named_bind(b: string) -> List<string> {
 
 /// A declared sig with the declaration's Vars substituted — how an
 /// instantiation answers `variants_of`.
-export fn subbed_variants(mut types: TypeRegistry, sig: EnumSig?, decl: DeclId, args: List<TypeId>) -> EnumSig? {
+export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: DeclId, args: List<TypeId>) -> EnumSig? {
     if sig == null { return null }
     EnumSig {
         names: sig!.names,
@@ -490,18 +523,14 @@ export fn subbed_variants(mut types: TypeRegistry, sig: EnumSig?, decl: DeclId, 
     }
 }
 
-fn subbed_payloads(mut types: TypeRegistry, ps: List<TypeId>, decl: DeclId, args: List<TypeId>) -> List<TypeId> {
+fn subbed_payloads(types: TypeRegistry, ps: List<TypeId>, decl: DeclId, args: List<TypeId>) -> List<TypeId> {
     [types.substituted(p, decl, args) for p in ps]
 }
 
 /// The struct twin.
-export fn subbed_fields(mut types: TypeRegistry, sig: StructSig?, decl: DeclId, args: List<TypeId>) -> StructSig? {
+export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: DeclId, args: List<TypeId>) -> StructSig? {
     if sig == null { return null }
     let held = sig!
-    StructSig {
-        names: held.names,
-        types: [types.substituted(t, decl, args) for t in held.types],
-        defaults: held.defaults,
-    }
+    held with { types: [types.substituted(t, decl, args) for t in held.types] }
 }
 

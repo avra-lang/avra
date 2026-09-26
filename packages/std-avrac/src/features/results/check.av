@@ -4,7 +4,7 @@
 //! recovers to the ok side; a SELECTIVE one stays the Result, and
 //! the unmatched keep propagating — which needs the same channel
 //! `?` needs.
-use core.{ExprId, Type, TypeId, ResSides, TypeRegistry}
+use core.{ExprId, Type, TypeId, ResSides, TypeRegistry, same_type}
 use features.{TypeCx, EnumSig, this_is, variants_are, TypeArgs, res_enum_sig, Refusal}
 use diagnostics.{refusal}
 
@@ -16,12 +16,14 @@ fn catch_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     }
 }
 
-fn catched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
-                binds: List<string>, values: List<ExprId>) -> TypeId {
+fn catched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
     let sides? = cx.view.types.res_parts(cx.type_at(subject)) else { return not_a_result(cx, subject) }
     let t = sides.ok
     let err = sides.err
+    if cx.view.types.shape_of(err) is .Union && !variants.contains("") {
+        return catched_union_type(cx, e, err, t, variants, binds, values)
+    }
     for j, vn in variants { arm_bind(cx, e, err, vn, binds[j], values[j]) }
     for v in values { arm_answer(cx, t, v) }
     if covers(cx, err, variants) { return t }
@@ -31,9 +33,52 @@ fn catched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variants: List<strin
     let ret: TypeId? = cx.enclosing_ret()
     if ret != null && cx.errored_ty(ret!) { return cx.error_type }
     let rsides: ResSides? = if ret == null { null } else { cx.view.types.res_parts(ret!) }
-    // LICENSED I9: type identity — interned ids ARE the agreement
+    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
     if rsides == null || rsides!.err.index != err.index { return uncarried_rest(cx, e, err) }
     t
+}
+
+/// A UNION catch: each arm names a MEMBER, never a payload — the
+/// bind narrows to that member WHOLE (a member IS the error, unlike
+/// an enum's projected field). Coverage is MEMBERSHIP: total when
+/// the named members cover the whole set, selective otherwise — and
+/// the rest is a genuine NARROWER union, which the enclosing fn must
+/// itself promise or catch further.
+fn catched_union_type(mut cx: TypeCx, e: ExprId, err: TypeId, t: TypeId, variants: List<string>, binds: List<string>, values: List<ExprId>) -> TypeId {
+    let bound: List<TypeId?> = [union_arm_bind(cx, e, err, variants[j], binds[j], values[j]) for j in 0..variants.length]
+    mut named: List<TypeId> = []
+    // LICENSED I4: a fold naming each member once and refusing the repeats
+    for j, member in bound {
+        if member != null {
+            let m = member!
+            if named.any(same_type(it, m)) { duplicate_member(cx, e, variants[j]) } else { named.push(m) }
+        }
+    }
+    for v in values { arm_answer(cx, t, v) }
+    if named.is_empty() { return cx.error_type }
+    if cx.view.types.covers(cx.view.types.union_of(named), err) { return t }
+    let remaining = cx.view.types.union_of(cx.view.types.subtracted(err, named))
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret != null && cx.errored_ty(ret!) { return cx.error_type }
+    let rsides: ResSides? = if ret == null { null } else { cx.view.types.res_parts(ret!) }
+    if rsides == null || !cx.view.types.covers(rsides!.err, remaining) { return uncarried_union_rest(cx, e, remaining) }
+    t
+}
+
+/// One union arm's BIND: `vn` names a MEMBER of the union, checked
+/// against its own set — the bind, when written, narrows to that
+/// member's own type.
+fn union_arm_bind(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: string, value: ExprId) -> TypeId? {
+    let member? = cx.view.types.by_name(vn) else {
+        no_such_member(cx, e, err, vn)
+        return null
+    }
+    if !cx.view.types.covers(err, member) {
+        no_such_member(cx, e, err, vn)
+        return null
+    }
+    if bind != "" { cx.bind_types(value, [member]) }
+    member
 }
 
 /// One arm's BIND, spoken before its value walks: a catch-all arm
@@ -72,7 +117,7 @@ fn arm_answer(mut cx: TypeCx, t: TypeId, value: ExprId) {
 }
 
 /// TOTAL when a catch-all arm exists, or every variant is named.
-fn covers(mut cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
+fn covers(cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
     if variants.any(it == "") { return true }
     let sig? = cx.variants_of(err) else { return false }
     total(sig, variants)
@@ -110,6 +155,18 @@ fn not_a_result(mut cx: TypeCx, subject: ExprId) -> TypeId {
 
 fn uncarried_rest(mut cx: TypeCx, e: ExprId, err: TypeId) -> TypeId {
     cx.spoken(refusal("type.catch", cx.loc_of(e), "a selective `catch` lets the other failures pass, and this fn cannot carry them", "the rest propagate", "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(err)}>`"))
+}
+
+fn uncarried_union_rest(mut cx: TypeCx, e: ExprId, remaining: TypeId) -> TypeId {
+    cx.spoken(refusal("type.catch", cx.loc_of(e), "a selective `catch` lets the other members pass, and this fn cannot carry them", "the rest propagate", "name every member (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(remaining)}>`"))
+}
+
+fn no_such_member(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string) {
+    cx.emit(refusal("type.catch", cx.loc_of(e), "`${vn}` names no member of `${cx.view.types.name_of(err)}`", "in this arm", "catch by one of its members' own type names"))
+}
+
+fn duplicate_member(mut cx: TypeCx, e: ExprId, vn: string) {
+    cx.emit(refusal("type.catch", cx.loc_of(e), "`${vn}` is named twice in this catch", "in this arm", "each member answers once"))
 }
 
 fn no_variants_to_name(mut cx: TypeCx, e: ExprId, vn: string, err: TypeId) {

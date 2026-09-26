@@ -7,7 +7,7 @@
 use core.{Expr, ExprId, StmtId, TypeId, Reg, NodeStore}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
-export type StructsSemantics = { }
+export type StructsSemantics = {}
 
 impl NodeSemantics for StructsSemantics {
     fn kids(e: Expr) -> List<ExprId> {
@@ -35,7 +35,7 @@ impl NodeSemantics for StructsSemantics {
     }
 }
 
-export type StructDeclSemantics = { }
+export type StructDeclSemantics = {}
 
 impl StmtSemantics for StructDeclSemantics {
     // a default is a body of its own: it sees declarations, never
@@ -46,17 +46,14 @@ impl StmtSemantics for StructDeclSemantics {
     }
 
     // a field's default is a declaration of its own, typed as one
-
 }
 
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
 fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
     if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
-    match cx.view.store.stmt(s) {
-        .StructDecl(_, _, fields) -> cx.check_params(fields, s),
-        _ -> nothing(),
-    }
+    let record? = cx.view.store.struct_parts(s) else { return }
+    cx.check_params(record.fields, s)
 }
 
 /// The defaults a declaration's fields carry.
@@ -65,11 +62,11 @@ fn default_exprs(store: NodeStore, s: StmtId) -> List<ExprId> {
     [f.default! for f in sp.fields if f.default != null]
 }
 
-/// A NAMED TYPE declares nothing to walk: no field names to run the
-/// naming law over, and no default bodies. The nesting law and the
-/// shape's own laws speak at declare (typing/declare.av's
-/// `declare_named`).
-export type NamedTypeSemantics = { }
+/// A NAMED TYPE, and an ALIAS, declares nothing to walk: no field
+/// names to run the naming law over, and no default bodies. The
+/// nesting law and the shape's own laws speak at declare
+/// (typing/declare.av's `declare_named`, `declare_alias`).
+export type NamedTypeSemantics = {}
 
 impl StmtSemantics for NamedTypeSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {

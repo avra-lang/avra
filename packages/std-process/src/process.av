@@ -480,7 +480,7 @@ impl Command {
     /// only when the child never ran, timed out, or outgrew its cap.
     fn outcome() -> Result<Outcome, ProcessError> {
         let began = now_ms()
-        mut s = launched(self, 0 - 1)?
+        let s = launched(self, 0 - 1)?
         let done = pumped(s, self.drain_grace.ms)
         let word = avra_proc_reap(done.h)
         let _ = avra_proc_close(done.h)
@@ -545,7 +545,7 @@ fn timeout_ms(d: Duration?) -> int {
 }
 
 fn has_bit(word: int, bit: int) -> bool {
-    (word / bit) % 2 == 1
+    word / bit % 2 == 1
 }
 
 /// The status word decoded once: the tag above (1 exited, 2 signalled),
@@ -553,7 +553,7 @@ fn has_bit(word: int, bit: int) -> bool {
 fn exit_of(word: int) -> Exit {
     let tag = word / tag_base
     let payload = word - tag * tag_base
-    if tag == 2 { return Exit.Signal(payload % 256, (payload / 256) % 2 == 1) }
+    if tag == 2 { return Exit.Signal(payload % 256, payload / 256 % 2 == 1) }
     if payload == 0 { return Exit.Clean }
     Exit.Code(payload)
 }
@@ -601,10 +601,10 @@ export type Child = { stage: Stage, command: Command, out: string = "", err: str
 impl Command {
     /// The child started and READY by the sign asked for — or stopped
     /// and refused with what it said so far. `Started` is the pid alone.
-    fn start(ready: Ready, within: Duration) -> Result<Child, ProcessError> {
+    fn start(ready: Ready, limit: Duration) -> Result<Child, ProcessError> {
         let s = launched(self, 0 - 1)?
         mut child = Child { stage: s, command: self }
-        child.until_ready(ready, within)?
+        child.until_ready(ready, limit)?
         child
     }
 }
@@ -632,9 +632,11 @@ impl Child {
     fn ended_with(began: int) -> Outcome {
         let word = avra_proc_reap(self.stage.h)
         let _ = avra_proc_close(self.stage.h)
-        let o = Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
-                          out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
-                          took_ms: now_ms() - began }
+        let o = Outcome {
+            exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+            out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
+            took_ms: now_ms() - began,
+        }
         self.out = ""
         self.err = ""
         self.ended = o
@@ -643,16 +645,16 @@ impl Child {
 
     /// Ticks until the sign shows, the child dies first, or the window
     /// closes — the last two stop the child and refuse.
-    fn until_ready(ready: Ready, within: Duration) -> Result<int, ProcessError> {
+    fn until_ready(ready: Ready, limit: Duration) -> Result<int, ProcessError> {
         if ready is .Started { return 0 }
         let began = now_ms()
-        let deadline = began + within.ms
+        let deadline = began + limit.ms
         mut waited = 0
         while true {
             let gone = self.pump(100)
             if self.satisfied(ready) { return now_ms() - began }
             waited = now_ms() - began
-            if (gone && !(ready is .Exit)) || now_ms() >= deadline {
+            if gone && !(ready is .Exit) || now_ms() >= deadline {
                 let partial = Output { stdout: self.out, stderr: self.err, truncated: false }
                 self.stop()
                 fail ProcessError.NotReady(waited, partial)
@@ -685,13 +687,13 @@ impl Child {
         let _ = avra_proc_shut(self.stage.h, 0)
     }
 
-    /// The next line the child says on stdout, waiting up to `within` —
+    /// The next line the child says on stdout, waiting up to `limit` —
     /// absent when the window closes with no complete line, or the child
     /// is done and said nothing more. A last line without its newline is
     /// answered once the child is gone.
-    fn read_line(within: Duration) -> string? {
+    fn read_line(limit: Duration) -> string? {
         if self.ended != null { return null }
-        let deadline = now_ms() + within.ms
+        let deadline = now_ms() + limit.ms
         while true {
             let cut = self.out.index_of("\n")
             if cut >= 0 {
@@ -712,10 +714,10 @@ impl Child {
 
     /// The child seen out: pumped to its end, or stopped at the deadline
     /// with what it said so far. The handle is released either way.
-    fn wait(within: Duration?) -> Result<Outcome, ProcessError> {
+    fn wait(limit: Duration?) -> Result<Outcome, ProcessError> {
         if self.ended != null { return self.ended! }
         let began = now_ms()
-        let deadline = timeout_ms(within)
+        let deadline = timeout_ms(limit)
         mut gone = self.pump(0)
         while !gone && (deadline < 0 || now_ms() - began < deadline) {
             gone = self.pump(100)
@@ -771,8 +773,8 @@ fn probe_clean(probe: Command) -> bool {
 
 /// The bracket: the child up and ready around `body`, and stopped when
 /// it returns — however it returns. What `body` answered is the answer.
-export fn serving<T>(c: Command, ready: Ready, within: Duration, body: fn() -> T) -> Result<T, ProcessError> {
-    mut child = c.start(ready, within)?
+export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T) -> Result<T, ProcessError> {
+    mut child = c.start(ready, limit)?
     let answer = body()
     child.stop()
     answer
@@ -1159,7 +1161,7 @@ impl Pipeline {
                 },
             }
         }
-        // LICENSED I4: the first failure over pump TURNS — a fold in time, not a scan of a list
+        // LICENSED style.hand_rolled_scan: the first failure over pump TURNS — a fold in time, not a scan of a list
         mut failure: ProcessError? = null
         mut pending = live.length
         while pending > 0 {
@@ -1274,7 +1276,7 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
             next = next + 1
             next_at = now_ms() + stagger.ms
         }
-        // LICENSED I4: the first stage to finish over pump TURNS — a fold in time, not a scan of a list
+        // LICENSED style.hand_rolled_scan: the first stage to finish over pump TURNS — a fold in time, not a scan of a list
         mut winner: Outcome? = null
         mut grown: List<Stage> = []
         mut waited = false
@@ -1312,7 +1314,7 @@ export fn run_through(r: dyn Runner, c: Command) -> Result<Output, ProcessError>
     judged(c, r.outcome(c)?)
 }
 
-type HostRunner = { }
+type HostRunner = {}
 
 impl Runner for HostRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
@@ -1322,7 +1324,7 @@ impl Runner for HostRunner {
 
 /// The host: children really run.
 export fn host() -> dyn Runner {
-    let r: dyn Runner = HostRunner { }
+    let r: dyn Runner = HostRunner {}
     r
 }
 
@@ -1351,7 +1353,7 @@ export fn scripted(rows: List<Script>) -> dyn Runner {
     r
 }
 
-type PlanRunner = { }
+type PlanRunner = {}
 
 impl Runner for PlanRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
@@ -1362,7 +1364,7 @@ impl Runner for PlanRunner {
 
 /// The dry run: every command is printed and answered clean.
 export fn plan() -> dyn Runner {
-    let r: dyn Runner = PlanRunner { }
+    let r: dyn Runner = PlanRunner {}
     r
 }
 

@@ -1,0 +1,155 @@
+//! `avra fix <file>` — apply every ACCEPTED rewrite, splicing it into
+//! the source: a rule's own, and every OTHER diagnostic's own
+//! `Diag.suggestions` (a spell-check, a dependency line, a named
+//! type's wrap), proved the same way. A rewrite is accepted when the
+//! IR proof confirms it, OR — a rule's own rewrite only — when the
+//! rule DECLARES a law (`RuleEntry.law`) the splice still
+//! type-checks under; every rewrite neither door accepts is only
+//! SHOWN (`avra check` already reported it) and left untouched —
+//! Confidence is never the gate, proof or a declared law is.
+//! `--dry` prints what would change and writes nothing; `--only
+//! <kind>` limits to one rule's `<module>.<name>` or one diagnostic's
+//! own kind.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{write_text}
+use @std.avrac.compiler.{Program, Application, fix_applied, fighting_pair, analysed, rule_doc}
+use @std.avrac.core.{joined}
+use @std.errors.{Edit}
+use @std.json.{Json, field, to_text}
+
+type FixCmd = {}
+
+impl Runnable for FixCmd {
+    fn run(args: CliResult) -> int {
+        let held? = program_at(args) else { return 2 }
+        let p = held
+        match fixed(p, args) {
+            .Ok(code) -> code,
+            .Err(report) -> {
+                println(report)
+                1
+            },
+        }
+    }
+}
+
+fn fixed(p: Program, args: CliResult) -> Result<int, string> {
+    if !p.clean() { fail p.report() }
+    let a? = p.entry_file() else { fail "the program is empty" }
+    let named = args.option("only")
+    let only = if named == "" { null } else { named }
+    let json = args.has_flag("json")
+    let path = a.view.source.file
+    let an = analysed(a)
+    let apps = p.fix_applications(path, an, only).concat(p.suggestion_applications(path, an, a.diagnostics, only))
+    let text = a.view.source.text
+    report(text, apps, json)
+    if apps.is_empty() { return 0 }
+    let after? = fix_applied(text, apps) else { fail fight_report(apps) }
+    if args.has_flag("dry") {
+        if !json { println(diff_of(text, after)) }
+        return 0
+    }
+    if after == text {
+        if !json { println("avra fix: nothing here is PROVED — every finding stays shown, not applied") }
+        return 0
+    }
+    match write_text(a.view.source.file, after) {
+        .Ok(_) -> 0,
+        .Err(e) -> host_refused(e.describe().message),
+    }
+}
+
+/// The findings, printed either as prose lines or as one JSON array
+/// (--json: kind, every edit's before/after text, WHY it was
+/// accepted — `proved` true or `by_law` the rule's own claim, P7's
+/// visible magic — the rule's own /// sentence when it has one, and
+/// the `docs_cmd` link) — the empty case is `[]`, never omitted.
+fn report(text: string, apps: List<Application>, json: bool) {
+    if json {
+        println(to_text(Json.Arr([application_json(text, ap) for ap in apps])))
+        return
+    }
+    if apps.is_empty() {
+        println("avra fix: nothing to fix")
+        return
+    }
+    for line in application_lines(apps) { println(line) }
+}
+
+fn application_json(text: string, ap: Application) -> Json {
+    Json.Obj([
+        field("kind", Json.Str(ap.kind)),
+        field("proved", Json.Bool(ap.proved)),
+        field("by_law", opt_json(ap.by_law)),
+        field("edits", Json.Arr([edit_json(text, e) for e in ap.edits])),
+        field("doc", opt_json(rule_doc(ap.kind))),
+        field("docs_cmd", Json.Str("avra docs ${ap.kind}")),
+    ])
+}
+
+fn edit_json(text: string, e: Edit) -> Json {
+    Json.Obj([
+        field("before", Json.Str(text.substring(e.loc.lo, e.loc.hi))),
+        field("after", Json.Str(e.replacement)),
+    ])
+}
+
+fn opt_json(s: string?) -> Json {
+    match s {
+        s? -> Json.Str(s)
+        null -> Json.Null
+    }
+}
+
+/// Two rules landing accepted, overlapping edits — named, when the
+/// pair is known, over the bare "nothing applied".
+fn fight_report(apps: List<Application>) -> string {
+    let pair? = fighting_pair(apps) else { return "avra fix: accepted rewrites overlap — nothing applied" }
+    "avra fix: ${pair} fight over the same code — accepted rewrites overlap, nothing applied"
+}
+
+/// One line per application: accepted ones the write acts on —
+/// proved by IR, or trusted by the rule's own law — shown ones named
+/// as what `avra check` already reported.
+fn application_lines(apps: List<Application>) -> List<string> {
+    [application_line(ap) for ap in apps]
+}
+
+fn application_line(ap: Application) -> string {
+    "${ap.kind} (${tier_word(ap)}): ${joined([edit_summary(e) for e in ap.edits], ", ")}"
+}
+
+/// The three tiers a reader sees: the IR proof held, a rule's own
+/// law was trusted instead (its wording named, never just "law"),
+/// or neither — `check` already showed it, `fix` leaves it alone.
+fn tier_word(ap: Application) -> string {
+    if ap.proved { return "proved" }
+    match ap.by_law {
+        law? -> "by law: ${law}"
+        null -> "shown, not applied"
+    }
+}
+
+/// A deleting edit answers "" — named, never a bare empty slot in
+/// the joined list.
+fn edit_summary(e: Edit) -> string {
+    if e.replacement.is_empty() { "(removed)" } else { e.replacement }
+}
+
+/// A whole-file before/after, printed plainly — enough to review a
+/// small change without pulling in a diff algorithm this command
+/// does not otherwise need.
+fn diff_of(before: string, after: string) -> string {
+    "--- before\n${before}\n+++ after\n${after}"
+}
+
+export command fix {
+    description: "Apply every proved rewrite, splicing it into the source"
+    flags: [time]
+    flag dry { description: "print what would change, write nothing" }
+    flag json { description: "print findings as one JSON array (kind, edits, doc, docs_cmd)" }
+    args: [file]
+    option only { description: "apply only this kind (a rule's <module>.<name>, or a diagnostic's own kind)" }
+    run: FixCmd {}
+}

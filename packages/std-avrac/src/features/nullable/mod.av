@@ -15,36 +15,35 @@
 //! absence, a scalar rides the tagged slot array. This file never
 //! knows which — lowering asks the verbs.
 use features.{LanguageFeature, BuilderRow}
+use features.nullable.{if_null_ternary, let_else_guard, nullable_flag_local}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn nullable() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name          | build
-        "null_lit"    | build_null
-        "match_opt"   | build_match_opt
+        name        | build
+        "null_lit"  | build_null
+        "match_opt" | build_match_opt
     }
     let codes = table<DiagCode> {
-        kind                   | id      | summary
-        "type.coalesce"        | "F2017" | "`??` answers a nullable with a value of its type"
-        "type.force"           | "F2021" | "`!` insists on a nullable"
-        "type.match_opt"       | "F2022" | "the `v?`/`null` arms ask a nullable"
-        "type.chain"           | "F2023" | "`?.` reaches into a nullable"
-        "type.propagate"       | "F2026" | "`?` passes absence to the caller"
-        "type.let_else"        | "F2027" | "`let v? =` asks a nullable; its `else` must leave"
-        "type.coalesce_never" | "F2044" | "`??` on a value that is never absent"
+        kind                  | summary
+        "type.coalesce"       | "`??` answers a nullable with a value of its type"
+        "type.force"          | "`!` insists on a nullable"
+        "type.match_opt"      | "the `v?`/`null` arms ask a nullable"
+        "type.chain"          | "`?.` reaches into a nullable"
+        "type.propagate"      | "`?` passes absence to the caller"
+        "type.let_else"       | "`let v? =` asks a nullable; its `else` must leave"
+        "type.coalesce_never" | "`??` on a value that is never absent"
     }
-    component LanguageFeature f {
-        name = "nullable"
-        docs = "`T?` may be absent; `null` is the absence, `a ?? b` answers it, `a?.b` reaches through it and `a?.m(args)` calls through it, `v?` passes it to the caller, and `if let v? = e` binds it fresh."
-        gram = grammar {
+    LanguageFeature nullable {
+        gram: grammar {
             primary = "if" "let" b:NAME "?" "=" s:expression p:block "else" a:block @expect("else", "an `if let` needs its `else` branch — absence must be answered") -> match_opt(s, b, p, a) @head(s)
             primary = "match" s:expression "{" BREAK? b:NAME "?" "->" p:expression BREAK? "null" "->" a:expression BREAK? "}" -> match_opt(s, b, p, a) @head(s)
             primary = "match" s:expression "{" BREAK? "null" "->" a:expression BREAK? b:NAME "?" "->" p:expression BREAK? "}" -> match_opt(s, b, p, a) @head(s)
             primary = "null" -> null_lit()
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    nullable
 }

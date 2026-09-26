@@ -41,13 +41,27 @@ spec "features/impls/statics" {
             refused_with("static fn f() -> int { 1 }\nf()", "`static fn` marks a method with no receiver — `f` is already a plain fn")
         }
         then "a trait's associated fn is answered by the impl and called through the type" {
-            shown("trait Show {\n    fn show() -> string\n    static fn derive(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn derive(t: int) -> int { t + 1 }\n}\nP.derive(3)") == "4"
+            shown("trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn lifted(t: int) -> int { t + 1 }\n}\nP.lifted(3)") == "4"
         }
         then "an associated fn's signature names no `Self`" {
             refused_with("trait T {\n    static fn make() -> Self\n}\n1", "`Self` names no type")
         }
         then "an unanswered associated fn is the contract's refusal" {
             refused_with("trait T {\n    static fn make() -> int\n}\ntype P = { x: int }\nimpl T for P {\n}\n1", "`impl T for P` must answer `make`")
+        }
+    }
+    given "a bodied associated fn — the trait's own name is a receiver too" {
+        then "a Self-free one is called through the trait's own name" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\nFoo.make(41)") == "42"
+        }
+        then "two on one trait are both reachable that way" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n    static fn make2(n: int) -> int { n + 2 }\n}\nFoo.make(1) + Foo.make2(1)") == "5"
+        }
+        then "reachable from inside another trait's own default body" {
+            shown("trait Foo {\n    static fn make(n: int) -> int { n + 1 }\n}\ntrait Bar {\n    fn go(n: int) -> int { Foo.make(n) }\n}\ntype P = { x: int }\nimpl Bar for P {}\nP { x: 0 }.go(9)") == "10"
+        }
+        then "an abstract one has no single body to answer through the trait" {
+            refused_with("trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\nShow.lifted(3)", "`Show.lifted` has no one body — each signatory answers its own")
         }
     }
     given "a call that does not fit" {

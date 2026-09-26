@@ -1,14 +1,13 @@
 // A diagnostic IS an error: it answers through the @std.errors trait,
-// its kind namespaces by prefix, and the F-code is a registry
-// projection of the kind.
-use @std.errors.{Loc, Error}
+// and its kind namespaces by prefix.
+use @std.errors.{Loc, Frame, Error}
 use @std.avrac.core.{joined}
-use @std.avrac.diagnostics.{DiagCode, Severity, error_at, code_for, Diag, by_position, no_voices}
+use @std.avrac.diagnostics.{DiagCode, Severity, error_at, registered, Diag, by_position, no_voices}
 
 fn registry() -> List<DiagCode> {
     let rows = table<DiagCode> {
-        kind             | id      | summary
-        "parse.expected" | "F0100" | "the parse needed a token that is not there"
+        kind             | summary
+        "parse.expected" | "the parse needed a token that is not there"
     }
     rows
 }
@@ -30,15 +29,17 @@ spec "diagnostics" {
             let at = Loc { file: "app.av", lo: 4, hi: 5 }
             let d = error_at("parse.expected", at, "expected NAME")
             let described = d.describe()
-            described.kind == "parse.expected" && described.message == "expected NAME" &&
-                d.describe().kind.starts_with("parse.")
+            described.kind == "parse.expected" && described.message == "expected NAME" && d.describe().kind.starts_with("parse.")
         }
         then "error_at fills the quiet fields" {
             let at = Loc { file: null, lo: 4, hi: 5 }
             let d = error_at("parse.expected", at, "expected NAME")
-            d.severity == Severity.Error && d.help == null &&
-                d.suggestions.is_empty() && d.secondary.is_empty() &&
-                d.primary.loc?.lo == 4 && d.primary.label == null
+            d.severity == Severity.Error && d.help == null && d.suggestions.is_empty() && d.secondary.is_empty() && d.primary.loc?.lo == 4 && d.primary.label == null && d.cause == null
+        }
+        then "context() and trace() answer the diagnostic's own secondary frames — one list, not two" {
+            let f = Frame { label: "note", loc: null }
+            let d = error_at("parse.expected", null, "m") with { secondary: [f] }
+            d.context().length == 1 && d.trace().length == 1 && d.context()[0].label == "note" && d.trace()[0].label == "note"
         }
         then "an anchorless diagnostic carries an unlocated mark" {
             let d = error_at("language.defect", null, "rule `x` is declared twice") with { help: "merge same-name rules" }
@@ -46,9 +47,8 @@ spec "diagnostics" {
         }
     }
     given "the code projection" {
-        then "a registered kind yields its F-code; an unknown one null" {
-            code_for(registry(), "parse.expected") == "F0100" &&
-                code_for(registry(), "no.such.kind") == null
+        then "a registered kind is found; an unknown one is not" {
+            registered(registry(), "parse.expected") && !registered(registry(), "no.such.kind")
         }
     }
     given "by_position — source order, spoken order breaking ties" {

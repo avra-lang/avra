@@ -2,7 +2,7 @@
 //! the QUALIFIED name, the subject riding the self seat. The name
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
-use core.{ExprId, Reg, Ins, DeclId, TypeId}
+use core.{ExprId, Reg, DeclId, TypeId}
 use features.{LowerCx, MethodCall}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
@@ -36,9 +36,7 @@ fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name
     let s = seated(cx, subject, args)
     let data = boxed_value(cx, subject, s.recv)
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallPtr(dst, fp, [data].concat(s.args)))
-    dst
+    cx.call_ptr_at(e, fp, [data].concat(s.args))
 }
 
 /// A contract box's value, the method's `self`. A copied receiver's box
@@ -72,7 +70,7 @@ fn path_indexes(cx: LowerCx, e: ExprId) -> List<ExprId> {
     let step? = cx.view.store.place_step(e) else { return [] }
     match step {
         .Root(_) -> [],
-        .Field(subject, _) -> path_indexes(cx, subject),
+        .Field(subject, _) or .Unwrap(subject) -> path_indexes(cx, subject),
         .At(subject, index) -> path_indexes(cx, subject).concat([index]),
     }
 }
@@ -87,7 +85,7 @@ fn in_cell(cx: LowerCx, subject: ExprId) -> bool {
 /// box's slot 0 — the code address — and go through the pointer,
 /// the box riding seat 0.
 fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty: TypeId, args: List<ExprId>) -> Reg {
-    let box = cx.slot_read(cx.reg_of(subject), slot, fty)
+    let box = cx.field_read(cx.reg_of(subject), cx.type_at(subject), slot, fty)
     cx.called_through(e, box, [cx.reg_of(a) for a in args])
 }
 
@@ -96,9 +94,8 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let s = seated(cx, subject, args)
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
-    let dst = cx.result(e)
-    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [s.recv].concat(s.args)))
-    dst
+    let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
+    cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(subject)), seats)
 }
 
 /// A STATIC's dispatch: a direct Call to the method's qualified
@@ -106,9 +103,8 @@ fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, 
 fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) -> Reg {
     // THE MINT LAW: the operands' registers first, the answer last
     let regs = [cx.reg_of(a) for a in args]
-    let dst = cx.result(e)
-    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(e)), regs))
-    dst
+    let seated = cx.seated_regs(e, m, args, regs)
+    cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(e)), seated)
 }
 
 /// The type-receiver half lowered: the variant's tagged box — the
@@ -118,6 +114,5 @@ fn built_variant(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -
     let which: int? = sig.tag_of(name)
     if which == null || args.is_empty() { return cx.lower_defect(e, "an undeclared variant survived typing") }
     let carried = [cx.reg_of(a) for a in args]
-    let size = cx.box_size(1 + carried.length)
-    cx.tagged_value(cx.shape_at(e), size, which!, carried)
+    cx.tagged_value(cx.shape_at(e), which!, carried)
 }

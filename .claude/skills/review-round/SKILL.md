@@ -120,13 +120,16 @@ future idiom engine's rulebook, written by dogfooding. Every round:
 - Apply the registry back at the code (that is axis 2), and HUNT
   for idioms the registry does not know yet — a repeated shape
   with a more beautiful form is a NEW entry, landed in the round.
-- A new idiom that a grep can catch gets a RATCHET RULE in
-  tools/idioms.sh with its count pinned in tools/idioms.baseline;
-  `make idioms` runs inside the gate and FAILS when a smell count
-  rises. Deliberate exceptions bump the baseline in the same
-  commit, visibly.
-- When a round's fixes make a count FALL, re-pin with
-  `make idioms-accept` in that round — a slack baseline lets new
+- A new idiom the language can state is a `rule` declaration
+  (a feature's own idioms.av, or compiler/idioms.av for a shape no
+  single feature owns), found by `avra check` itself — never a
+  second regex racing it. `tools/idioms.baseline` lists every
+  currently-accepted SITE (never a count); `make idioms` runs inside
+  the gate and FAILS on any site the baseline does not already list.
+  Deliberate exceptions are added to the baseline BY HAND, in the
+  same commit, visibly — no tool path adds one.
+- When a round's fixes make sites disappear, prune with
+  `make idioms-accept` in that round — a stale baseline lets new
   smells hide under old headroom.
 - The write-time twin is CLAUDE.md's "idiom bar": first drafts are
   idiomatic, probes beat defensive loops, and probe results are

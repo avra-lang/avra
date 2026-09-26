@@ -9,9 +9,10 @@
 //! are both anchors — a window set short of the payloads reads a
 //! variant's last payload's mark as the NEXT variant's.
 use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
-use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, type_lo, MarkWindows}
+use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, between, marks_at, type_lo, MarkWindows, expr_id_at}
 use grammar.{Token}
-fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
+
+fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     let ends? = b.span_end() else { return .Err("defect: an enum declaration without a span — the arena and the grammar disagree") }
@@ -47,36 +48,36 @@ fn name_before(names: List<Token>, t: TypeRef, after: int) -> string {
     let lo: int = t.span?.lo ?? after
     mut best = ""
     for n in names {
-        if within(n.span.lo, after, lo) { best = n.text }
+        if between(n.span.lo, after, lo) { best = n.text }
     }
     best
 }
 
-fn build_match(mut b: Builder) -> Result<LangNode, string> {
+fn build_match(b: Builder) -> Result<LangNode, string> {
     let subject = b.expr(0)?
     b.make_expr(Expr.Match(subject, arms_at(b.args, 1)))
 }
 
 fn build_arm(b: Builder) -> Result<LangNode, string> {
-    let value = b.expr(1)?
-    b.make_arm(pat_ids_at(b.args, 0), value)
+    let value = b.expr(2)?
+    b.make_arm(pat_ids_at(b.args, 0), value, expr_id_at(b.args, 1))
 }
 
 /// A template's hole standing as a whole arm: the one hole as the
 /// arm's pattern and its value, so the walk that classifies holes
-/// reads it as an ARM seat.
-fn build_hole_arm(mut b: Builder) -> Result<LangNode, string> {
+/// reads it as an ARM seat. Never guarded — the hole IS the arm.
+fn build_hole_arm(b: Builder) -> Result<LangNode, string> {
     let h = b.token(0)?
     let value = b.expr_node(Expr.Ident(Scoped(h.text)))
-    b.make_arm([b.store.alloc_pat(Pat.Bind(Scoped(h.text)), b.span)], value)
+    b.make_arm([b.store.alloc_pat(Pat.Bind(Scoped(h.text)), b.span)], value, null)
 }
 
-fn build_variant_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_variant_pat(b: Builder) -> Result<LangNode, string> {
     let name = b.token(0)?
     b.make_pat(Pat.Variant(Plain(name.text), pat_ids_at(b.args, 1)))
 }
 
-fn build_wild_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_wild_pat(b: Builder) -> Result<LangNode, string> {
     b.make_pat(Pat.Wild)
 }
 
@@ -84,28 +85,28 @@ fn build_wild_pat(mut b: Builder) -> Result<LangNode, string> {
 /// remainder, and `null`, a LITERAL never a binder: read as
 /// `Pat.Bind` it earns the keyword refusal beside whatever else the
 /// arm earns, one mistake wearing two voices.
-fn build_bind_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     if n.text == "rest" { return b.make_pat(Pat.Rest) }
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
 }
 
-fn build_num_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_num_pat(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.IntLit(t.int_value() ?? 0), b.span)))
 }
 
-fn build_true_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_true_pat(b: Builder) -> Result<LangNode, string> {
     b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.BoolLit(true), b.span)))
 }
 
-fn build_false_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_false_pat(b: Builder) -> Result<LangNode, string> {
     b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.BoolLit(false), b.span)))
 }
 
 /// `.name(args)` — the variant the expected type will name.
-fn build_variant_lit(mut b: Builder) -> Result<LangNode, string> {
+fn build_variant_lit(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     b.make_expr(Expr.VariantLit(Plain(n.text), b.exprs(1)?))
 }

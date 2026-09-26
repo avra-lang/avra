@@ -1,0 +1,97 @@
+// A SEAT MAY CARRY A DEFAULT: a body of its own that every call leaving
+// the seat unwritten runs, fresh each time. Written seats fill in order,
+// so only a trailing run of seats carries one.
+type Counter = { n: int }
+
+const step: int = 10
+
+fn add(a: int, b: int = 5) -> int { a + b }
+
+fn greet(name: string, greeting: string = "hi") -> string { "${greeting} ${name}" }
+
+fn stepped(a: int, by: int = step * 2) -> int { a + by }
+
+fn base() -> int { 100 }
+
+fn called(a: int, b: int = base() + 1) -> int { a + b }
+
+/// A managed default is minted per call: a caller's write to one
+/// answer never reaches the next.
+fn fresh(xs: List<int> = [1, 2]) -> List<int> { xs }
+
+fn apply(x: int, f: fn(int) -> int, twice: bool = false) -> int {
+    if twice { return f(f(x)) }
+    f(x)
+}
+
+fn all_three(a: int = 1, b: int = 2, c: int = 3) -> string { "${a}${b}${c}" }
+
+impl Counter {
+    fn plus(k: int = 1) -> int { self.n + k }
+
+    mut fn bump(k: int = 1) { self.n = self.n + k }
+
+    static fn make(n: int = 7) -> Counter { Counter { n: n } }
+}
+
+/// Two types' methods of one name, each with its own default — and a
+/// free fn of that name too: every default is its owner's alone.
+type Other = { n: int }
+
+impl Other {
+    fn plus(k: int = 100) -> int { self.n + k }
+}
+
+fn plus(k: int = 1000) -> int { k }
+
+/// A generic fn's seat whose type names no parameter is one body too:
+/// every instantiation runs the same default.
+fn counted<T>(xs: List<T>, extra: int = 3, tag: string = "n") -> string { "${tag}${xs.length + extra}" }
+
+/// Reached from inside another generic body, the default still fills.
+fn relayed<T>(xs: List<T>) -> string { counted(xs) }
+
+type Held<T> = { v: T }
+
+impl Held {
+    fn padded(by: int = 2) -> int { by * 10 }
+}
+
+fn run() -> string {
+    mut first = fresh()
+    first.push(9)
+    let second = fresh()
+    mut c = Counter.make()
+    c.bump()
+    c.bump(3)
+    let parts = [
+        "${add(1)}",
+        "${add(1, 2)}",
+        greet("ann"),
+        greet("bo", "yo"),
+        "${stepped(1)}",
+        "${called(1)}",
+        "${first.length}",
+        "${second.length}",
+        "${apply(3) { it * 2 }}",
+        "${apply(3, (v) -> v * 2, true)}",
+        all_three(),
+        all_three(7),
+        all_three(7, 8),
+        all_three(7, 8, 9),
+        "${c.n}",
+        "${c.plus()}",
+        "${c.plus(10)}",
+        "${Counter.make(2).n}",
+        "${Other { n: 0 }.plus()}",
+        "${plus()}",
+        counted([1, 2]),
+        counted(["a"], tag: "s"),
+        relayed([true]),
+        "${Held { v: "x" }.padded()}",
+        "${Held { v: 1.5 }.padded(1)}",
+    ]
+    parts.join(" ")
+}
+
+run()

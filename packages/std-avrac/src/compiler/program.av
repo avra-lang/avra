@@ -5,16 +5,17 @@ use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, span_of, 
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
-use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type}
+use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
 use @std.grammar.{Captured, RunOutcome, run_grammar, run_untold, run_from, lex_diagnostic, Diagnostic, Cause}
 use grammar.{Token, DocComment, lex_source, lex_blocks, TokenKind, avra_lexeme}
-// LICENSED I24: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
+// LICENSED style.unused_import: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
-use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockGrammar}
+use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockWords}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
-use features.quote.{QuoteSemantics}
+use features.quote.{QuoteSemantics, QuotePatSemantics}
 use features.sublang.{SublangSemantics, SyntaxSemantics}
+use features.components.{ComponentSemantics, ComponentDeclSemantics}
 use features.bool_lit.{BoolSemantics}
 use features.if_expr.{IfSemantics, IfStmtSemantics}
 use features.when_expr.{WhenSemantics}
@@ -39,12 +40,13 @@ use features.loops.{WhileSemantics, ForSemantics, ForEachSemantics}
 use features.structs.{StructsSemantics, StructDeclSemantics, NamedTypeSemantics}
 use features.enums.{EnumsSemantics, EnumDeclSemantics, EnumPatSemantics}
 use features.formats.{FormatPatSemantics}
+use features.collects.{CollectStmtSemantics}
 use diagnostics.{SourceFile, Voices}
 use compiler.backend.{run_lowered, run_live, Ended}
 use compiler.lower.{Lowered}
 use compiler.memory.{memory}
 use compiler.host.{no_target}
-use compiler.format.{render_statement}
+use compiler.format.{render_statement, render_expression}
 
 /// One parsed source: the tree (holes included), the SourceFile it
 /// came from, and every diagnostic from lexing and parsing, in
@@ -56,65 +58,117 @@ export type Parsed = {
     voices: Voices,
 }
 
+/// `explain_doc`'s answer: the rendered text, and the files it read to
+/// say so — a durable cache of it needs both (compiler/db.av).
+export type DocAnswer = { text: string, files: List<string> }
+
+/// One exported declaration's own facts, as `avra docs dump` rows
+/// them: its qualified address, its kind's word (features/decls.av's
+/// `kind_word`), a best-effort signature, its `///` lines, and the
+/// package it came from.
+export type DocRow = { address: string, kind: string, signature: string, prose_lines: List<string>, package: string }
+
 export fn new_dispatch() -> Dispatch {
-    let enumpats: dyn PatSemantics = EnumPatSemantics { }
-    let formatpats: dyn PatSemantics = FormatPatSemantics { }
+    let enumpats: dyn PatSemantics = EnumPatSemantics {}
+    let formatpats: dyn PatSemantics = FormatPatSemantics {}
+    let quotepats: dyn PatSemantics = QuotePatSemantics {}
     Dispatch {
-        spine: SpineSemantics { }, strs: StrSemantics { }, bools: BoolSemantics { }, ifs: IfSemantics { }, whens: WhenSemantics { },
-        blocks: BlockSemantics { }, calls: FnsSemantics { }, aggs: ListSemantics { }, structs: StructsSemantics { }, enums: EnumsSemantics { },
-        nullables: NullableSemantics { }, catches: CatchSemantics { }, quotes: QuoteSemantics { }, sublangs: SublangSemantics { }, syntaxes: SyntaxSemantics { },
-        lets: LetStmtSemantics { }, exprs: ExprStmtSemantics { }, decls: FnStmtSemantics { }, holes: HoleSemantics { },
-        mutlets: MutLetSemantics { }, consts: ConstSemantics { }, assigns: AssignSemantics { }, whiles: WhileSemantics { }, fors: ForSemantics { },
-        structdecls: StructDeclSemantics { }, namedtypes: NamedTypeSemantics { }, enumdecls: EnumDeclSemantics { },
-        ifstmts: IfStmtSemantics { }, returns: ReturnSemantics { }, letelses: LetElseSemantics { }, fails: FailSemantics { },
-        foreaches: ForEachSemantics { }, implds: ImplSemantics { }, methods: MethodSemantics { },
-        lambdas: ClosureSemantics { }, tasks: TasksSemantics { }, maps: MapsSemantics { }, uses: UseSemantics { }, specs: SpecSemantics { },
-        defers: DeferSemantics { },
-        enumpats: enumpats, formatpats: formatpats,
+        spine: SpineSemantics {},
+        strs: StrSemantics {},
+        bools: BoolSemantics {},
+        ifs: IfSemantics {},
+        whens: WhenSemantics {},
+        blocks: BlockSemantics {},
+        calls: FnsSemantics {},
+        aggs: ListSemantics {},
+        structs: StructsSemantics {},
+        enums: EnumsSemantics {},
+        nullables: NullableSemantics {},
+        catches: CatchSemantics {},
+        quotes: QuoteSemantics {},
+        sublangs: SublangSemantics {},
+        components: ComponentSemantics {},
+        componentdecls: ComponentDeclSemantics {},
+        syntaxes: SyntaxSemantics {},
+        lets: LetStmtSemantics {},
+        exprs: ExprStmtSemantics {},
+        decls: FnStmtSemantics {},
+        holes: HoleSemantics {},
+        mutlets: MutLetSemantics {},
+        consts: ConstSemantics {},
+        assigns: AssignSemantics {},
+        whiles: WhileSemantics {},
+        fors: ForSemantics {},
+        structdecls: StructDeclSemantics {},
+        namedtypes: NamedTypeSemantics {},
+        enumdecls: EnumDeclSemantics {},
+        ifstmts: IfStmtSemantics {},
+        returns: ReturnSemantics {},
+        letelses: LetElseSemantics {},
+        fails: FailSemantics {},
+        foreaches: ForEachSemantics {},
+        implds: ImplSemantics {},
+        methods: MethodSemantics {},
+        lambdas: ClosureSemantics {},
+        tasks: TasksSemantics {},
+        maps: MapsSemantics {},
+        uses: UseSemantics {},
+        specs: SpecSemantics {},
+        defers: DeferSemantics {},
+        collects: CollectStmtSemantics {},
+        enumpats: enumpats,
+        formatpats: formatpats,
+        quotepats: quotepats,
     }
 }
 
 /// Parse a source into a FRESH store — the whole-file entry — under
-/// the sublanguage words the file imports (none for a file that
-/// imports none).
+/// the block words the file imports (`BlockWords {}` for a file that
+/// imports none). No default: an omitted `words` parses a NARROWER
+/// language than the file was written in, silently — the caller
+/// states which words it parses under, even when that answer is
+/// none.
 ///
 /// THE UNTOLD RUN FIRST: a file that parses clean is parsed once, with no miss
 /// keeping its story. Anything spoken is spoken again by the telling run, over a
 /// store of its own — the builders wrote into the first.
-export fn parse_program(lang: Language, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
-    let quiet = parsed_fresh(lang, src, blocks, false)
-    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, blocks, true) }
+export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> Parsed {
+    let quiet = parsed_fresh(lang, src, words, false)
+    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
 }
 
-fn parsed_fresh(lang: Language, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
-    mut store = new_node_store()
-    parsed_as(lang, store, src, blocks, telling)
+fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
+    let store = new_node_store(src.file)
+    parsed_as(lang, store, src, words, telling)
 }
 
 /// Parse into a store ALREADY standing — the target file's, when a
 /// generated declaration's source is admitted beside the one that
 /// asked for it. The returned statements are the newly minted ones.
-export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
-    parsed_as(lang, store, src, blocks, true)
+export fn parse_into(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords) -> Parsed {
+    parsed_as(lang, store, src, words, true)
 }
 
-fn parsed_as(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
+fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     if lang.syntax == null {
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
-    let lexed = lex_blocks(src.text, [b.word for b in blocks])
-    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), src.text, blocks)
+    let lexed = lex_blocks(src.text, [g.word for g in words.grammars], [c.word for c in words.components])
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), src.text, words)
     let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
-    attach_docs(store, lexed.docs)
     // a remark means nothing to any pass; it rides the store so the
-    // printer can put it back where it was written
+    // printer can put it back where it was written. Set before
+    // attach_docs: an orphaned doc group extends this list, and
+    // needs it already standing to merge into.
     store.keep_remarks(lexed.remarks)
+    attach_docs(store, lexed.docs)
+    if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
     // what a block's grammar refused speaks with the parse, at the block
-    let blocked = [block_diagnostic(v) for v in store.block_voices]
+    let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
     let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
     Parsed {
         store: store,
-        stmts: program_stmts(store, o),
+        stmts: [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls()),
         source: src,
         voices: Voices { list: project_all(engine, src.file, lang.rows.codes) },
     }
@@ -142,10 +196,10 @@ fn span_loc(s: Span) -> Loc {
 /// when the spelling is not a type.
 export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     if lang.syntax == null { return null }
-    mut store = new_node_store()
+    let store = new_node_store()
     let lexed = lex_source(text)
     if !lexed.errors.is_empty() { return null }
-    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), text, [])
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(lang.builders, store, name, args, loc_span(loc), text, BlockWords {})
     let o = run_from<Token, LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], avra_lexeme(), build)
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
@@ -157,32 +211,56 @@ impl Decls {
     /// here too; each has its own signature shape, not a struct's).
     fn struct_type_ref(name: string) -> TypeId? {
         let decl? = self.decls.get().find(it.name == name) else { return null }
-        let _sig? = (self.sig(decl.id))?.record_sig() else { return null }
+        let _sig? = self.sig(decl.id)?.record_sig() else { return null }
         self.record_type(decl.id)
     }
 }
 
-/// Attach each source-ordered doc group to the nearest statement
-/// beginning after its declaration-prefix anchor. This includes
-/// nested methods; annotations and `export` precede the declaration
-/// node's own span, so token equality is deliberately not required.
-fn attach_docs(mut store: NodeStore, docs: List<DocComment>) {
+/// Attach each source-ordered doc group to the declaration its
+/// prefix run opens — the nearest statement beginning after the
+/// group's anchor, but only where nothing besides that run (an
+/// `export`/marker keyword, or the annotations that wrap the
+/// statement) stands in between. This includes nested methods;
+/// annotations and `export` precede the declaration node's own
+/// span, so token equality is deliberately not required there. A
+/// group whose claim fails — its anchor was a MARK's `@word`, not
+/// an ANNOTATION's, and nothing else stands between it and the
+/// next real statement to redeem it — is not forced onto whatever
+/// statement happens to follow; it survives as a remark instead.
+fn attach_docs(store: NodeStore, docs: List<DocComment>) {
     for doc in docs {
-        let target = store.statement_after(doc.before)
-        if target != null { store.document(target!, doc.lines, doc.at) }
+        let target = doc_target(store, doc)
+        if target == null {
+            store.orphan_doc(doc.lines, doc.line_ats)
+        } else {
+            store.document(target!, doc.lines, doc.at)
+        }
     }
+}
+
+/// The statement `doc` opens, or null when its anchor cannot be
+/// claimed. A keyword anchor (`fn`, `export`, …) always opens a
+/// real declaration, however far `export` or an annotation run sits
+/// ahead of the statement's own span — those are the only things a
+/// keyword can precede. A `@word` anchor is ambiguous at the lexer,
+/// so it claims a statement only when the parse recorded an
+/// ANNOTATION starting at that exact offset; a MARK never does.
+fn doc_target(store: NodeStore, doc: DocComment) -> StmtId? {
+    let target? = store.statement_after(doc.before) else { return null }
+    if !doc.pkg { return target }
+    if store.annotations_of(target).any(it.span != null && it.span!.lo == doc.before) { target } else { null }
 }
 
 /// The program's statements in order. A recovery hole becomes an
 /// explicit Stmt.Error node — the tree survives bad input visibly.
-fn program_stmts(mut store: NodeStore, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
+fn program_stmts(store: NodeStore, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
     mut out: List<StmtId> = []
     if o.result == null { return out }
     let items = list_at([o.result!], 0)
     for j in 0..items.length {
         let sid: StmtId? = stmt_id_at(items, j)
         if sid == null {
-            out.push(store.alloc_stmt(Stmt.Error, null))
+            out.push(store.alloc_stmt(Stmt.Error))
         } else {
             out.push(sid!)
         }
@@ -197,20 +275,100 @@ impl Program {
         self.files[self.entry!.at]
     }
 
+    /// Every rule the compiler carries (rules_table.av's `rules`
+    /// collect), by module then name — `avra docs rules` (P7: the
+    /// rule table a native idiom finding's kind is checked against
+    /// is inspectable the same way any other registry is).
+    fn rule_listing() -> List<RuleEntry> { rules }
+
     /// An annotation fn's signature, which IS its effect — `avra
-    /// explain @name`. Null when no declared fn wears the name.
+    /// explain @name`. Null when no declared fn wears the name. Asks
+    /// `file_doc_of` explicitly for an undocumented fn: this names ONE
+    /// declaration, the `avra docs <name>` shape `doc_of`'s fallback
+    /// once carried — `explain_doc` shares the same door.
     fn explain_annotation(name: string) -> string? {
         let decls = self.ws.decls
         let decl? = decls.decls.get().find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else { return null }
-        let sig? = (decls.sig(decl.id))?.fn_sig() else { return null }
+        let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
         let holes = [decls.types.name_of(pt) for pt in sig.params]
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
-        let doc = decls.store(decl.id).doc_comment(decl.stmt)
+        let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file)
         if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
     }
 
+    /// A declaration's `///` doc — or, absent one, its FILE's `//!`
+    /// header, asked for explicitly (`doc_of`'s door carries no such
+    /// fallback of its own) — and its own `@name(args)` annotations.
+    /// `avra docs <name>`'s general form. Null for a name no declared
+    /// fn, type, enum, trait or const of this package wears. A name
+    /// TWO modules both declare — legal, since each namespaces on its
+    /// own — is named as a collision rather than silently answered
+    /// from whichever one the compiler happened to reach first.
+    ///
+    /// The FILES an answer read ride along too — never the answer's own
+    /// business, but exactly what a durable cache of this answer needs
+    /// to know is still true (compiler/db.av's `DocFacts`).
+    fn explain_doc(name: string) -> DocAnswer? {
+        let decls = self.ws.decls
+        let matches = [d for d in decls.decls.get() if d.name == name]
+        if matches.length > 1 { return self.collision_answer(decls, name, matches) }
+        let decl? = matches.first() else { return null }
+        let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file) ?? []
+        let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
+        let lines = doc.concat(anns)
+        let text = if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+        DocAnswer { text: text, files: [decls.file(decl.file).path] }
+    }
+
+    /// `name` names more than one declaration — never guessed at. Every
+    /// matching declaration's own file backs the answer: a new module
+    /// declaring the same name changes it just as much as an edit to
+    /// one already listed.
+    fn collision_answer(decls: Decls, name: string, matches: List<Decl>) -> DocAnswer {
+        let qualified = [decls.module_of(d.id) + "." + name for d in matches].join(", ")
+        DocAnswer {
+            text: "`${name}` names more than one declaration in this package — qualify it: ${qualified}",
+            files: [decls.file(d.file).path for d in matches],
+        }
+    }
+
+    /// Every EXPORTED declaration this package's own — `avra docs
+    /// dump`. A qualified address (`module.name`, `collision_answer`'s
+    /// spelling) so two modules exporting the same bare name never
+    /// collide in one array the way a single-name lookup would refuse.
+    /// `Builtin` is excluded: the LANGUAGE declares it, not this
+    /// package — every package would otherwise repeat the same rows
+    /// for `int`/`List`/`Task`/…. Each row's `prose_lines` is its OWN
+    /// `///` alone (`doc_of` carries no file fallback): dump lists
+    /// every exported symbol in a package at once, so an undocumented
+    /// one inheriting whatever `//!` its file happens to open with is
+    /// the same borrowed-paragraph hazard the rule listing had.
+    fn dumped_decls(package: string) -> List<DocRow> {
+        let decls = self.ws.decls
+        [self.dump_row(decls, d, package) for d in decls.decls.get() if d.exported && !(d.kind is .Builtin)]
+    }
+
+    fn dump_row(decls: Decls, d: Decl, package: string) -> DocRow {
+        DocRow {
+            address: "${decls.module_of(d.id)}.${d.name}",
+            kind: kind_word(d.kind),
+            signature: self.dump_signature(decls, d),
+            prose_lines: decls.doc_of(d.id) ?? [],
+            package: package,
+        }
+    }
+
+    /// A FN's signature, `explain_annotation`'s own spelling reused;
+    /// every other kind has no params/ret to print, so its word and
+    /// name stand in rather than a fabricated shape.
+    fn dump_signature(decls: Decls, d: Decl) -> string {
+        let sig? = decls.sig(d.id)?.fn_sig() else { return "${kind_word(d.kind)} ${d.name}" }
+        let holes = [decls.types.name_of(pt) for pt in sig.params]
+        "fn ${d.name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
+    }
+
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s
-    /// words (features/values.av) — `avra explain repr <type>` (P7: a
+    /// words (features/values.av) — `avra repr <type>` (P7: a
     /// representation the compiler chose is inspectable wherever a
     /// tool exists to ask). Resolves a built-in scalar, `List<…>` or
     /// `Map<…>` from the registry alone, or a declared STRUCT by
@@ -220,7 +378,7 @@ impl Program {
     /// yet).
     fn explain_repr(type_text: string) -> string? {
         let ann? = parse_type_ref(avra(), type_text) else { return null }
-        mut decls = self.ws.decls
+        let decls = self.ws.decls
         let base? = spelled_type(decls.types, ann with { optional: false }) ?? decls.struct_type_ref(ann.name) else { return null }
         let ty = if ann.optional { decls.types.type(base?) } else { base }
         repr_word(decls.types, ty)
@@ -228,7 +386,7 @@ impl Program {
 
     /// A fn's seat-0 WRITE-FLOW CHAIN — a method's receiver, a free
     /// fn's first parameter — from `write_chain` (compiler/
-    /// receivers.av). `avra explain writes <fn>`. Null when no
+    /// receivers.av). `avra writes <fn>`. Null when no
     /// declared fn wears the name, its seat 0 is not written, or it
     /// has no seat 0 at all (a fn with no receiver and no parameters).
     /// A `mut` parameter PAST seat 0 is the pass's data too, not yet
@@ -253,9 +411,10 @@ impl Program {
         [self.decl_line(d) for d in self.ws.expanded(f)]
     }
 
-    /// A file as compiled: written nodes in source order, with every
-    /// generated declaration immediately after the declaration its
-    /// annotation wrapped.
+    /// A file as compiled: written nodes in source order, each
+    /// component instance's expansion noted under its statement, and
+    /// every generated declaration immediately after the declaration
+    /// its annotation wrapped.
     fn expanded_source(f: FileId) -> string {
         let made = self.ws.expanded(f)
         let parsed = self.ws.parsed(f)
@@ -263,6 +422,7 @@ impl Program {
         mut attached: List<DeclId> = []
         for s in parsed.stmts {
             chunks.push(render_statement(parsed.store, s))
+            chunks = chunks.concat([self.expansion_note(parsed.store, e) for e in parsed.store.instances_in(s)])
             let written: DeclId? = self.ws.decls.decl_of(f, s)
             if written != null {
                 let name = self.ws.decls.decl(written!).name
@@ -282,6 +442,18 @@ impl Program {
             if !attached.any(same_decl(it, d)) { chunks.push(self.decl_block(d)) }
         }
         joined(chunks, "\n\n")
+    }
+
+    /// What an instance became — its expansion as source, under the
+    /// module its names resolve in. A comment, since those names are
+    /// the provider's: a template may call what this file cannot name.
+    fn expansion_note(store: NodeStore, e: ExprId) -> string {
+        let x? = store.expansion_of(e) else { return "" }
+        let word? = store.instance_word(e) else { return "" }
+        let home: string? = store.foreign_of(x)?.path
+        let module = if home == null { "" } else { " (from ${self.ws.decls.module_name(self.ws.decls.file(self.ws.file_id(home!)).module_id)})" }
+        let lines = ["// `${word}`${module} expands to:"].concat(["//     ${l}" for l in render_expression(store, x).split("\n")])
+        joined(lines, "\n")
     }
 
     /// One generated declaration as source with provenance appended.
@@ -343,19 +515,18 @@ impl Program {
     /// of this package, or the dependency file that wrote a template.
     fn rendered(ds: List<Diag>) -> string {
         let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files.get()])
-        let codes = self.ws.lang.rows.codes.concat(self.spoken_codes(ds))
-        joined([render_among(d, codes, sources) for d in ds], "\n\n")
+        joined([render_among(d, sources) for d in ds], "\n\n")
     }
 
     /// The rows the PACKAGE kinds among `ds` render under — one per
     /// diagnostic that wears one, its message the summary. A kind
     /// spoken is registered by being spoken; `kind_rows` is the
-    /// registry `avra explain` walks without a diagnostic in hand.
+    /// registry `avra docs` walks without a diagnostic in hand.
     fn spoken_codes(ds: List<Diag>) -> List<DiagCode> {
         [user_code(d.kind, d.message) for d in ds if is_user_kind(d.kind)]
     }
 
-    /// THE PACKAGE KINDS `avra explain @scope/name:E1` answers from:
+    /// THE PACKAGE KINDS `avra docs @scope/name:E1` answers from:
     /// every `refuse_as("E1", "…")` with a literal kind in the
     /// annotation fns the workspace holds (the complete walk — a
     /// dependency's fns are where a package's kinds are spelled, and
@@ -425,6 +596,8 @@ impl Program {
     fn files_checked() -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_as(null, true, true)
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         let spoken = lo.diagnostics.concat(self.ws.decls.outside_entry(self.files, self.entry?.at))
         if !spoken.is_empty() { return .Err(self.rendered(spoken)) }
         .Ok(lo)
@@ -433,8 +606,20 @@ impl Program {
     fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_from(entry, every)
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
         .Ok(lo)
+    }
+
+    /// A layout fact moved under lowering, the way typing's own
+    /// `Workspace.program` already checked it did not — MONO can
+    /// still mint a fresh combination (R11c, avra-8sb5.34.21). `?`
+    /// reads odd here on purpose: absence is the clean case.
+    fn layout_report() -> string? {
+        let stale = self.ws.decls.types.drain_stale()
+        if stale.is_empty() { return null }
+        joined(stale, "\n\n")
     }
 
     fn run() -> Result<string, string> {
@@ -464,6 +649,8 @@ impl Program {
     fn check_bodies(every: bool) -> Result<string, string> {
         if !self.clean() { return .Err(self.report()) }
         let lowered = self.lowered_from(self.entry?.at, every).diagnostics
+        let stale = self.layout_report()
+        if stale != null { return .Err(stale!) }
         if has_errors(lowered) { return .Err(self.rendered(lowered)) }
         .Ok(self.warnings())
     }

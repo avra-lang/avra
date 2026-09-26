@@ -10,14 +10,13 @@
 use @std.meta.{derive, Field, Mark as MetaMark}
 use @std.errors.{Loc}
 
-
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
 export type ExprId = { index: int }
 
 /// Node identity — two ids name one node when their indexes agree.
 export fn same_expr(a: ExprId, b: ExprId) -> bool {
-    // LICENSED I9: node identity — ids compare by index
+    // LICENSED structs.index_compared: node identity — ids compare by index
     a.index == b.index
 }
 
@@ -39,13 +38,13 @@ export type DeclId = { index: int }
 /// Statement identity — two ids name one statement when their
 /// indexes agree.
 export fn same_stmt(a: StmtId, b: StmtId) -> bool {
-    // LICENSED I9: statement identity — ids compare by index
+    // LICENSED structs.index_compared: statement identity — ids compare by index
     a.index == b.index
 }
 
 /// Declaration identity — one id, one declaration.
 export fn same_decl(a: DeclId, b: DeclId) -> bool {
-    // LICENSED I9: declaration identity, not type agreement — ids compare by index
+    // LICENSED structs.index_compared: declaration identity, not type agreement — ids compare by index
     a.index == b.index
 }
 
@@ -55,7 +54,7 @@ export fn same_decl(a: DeclId, b: DeclId) -> bool {
 export type FileId = { index: int }
 
 export fn same_file(a: FileId, b: FileId) -> bool {
-    // LICENSED I9: file identity, not type agreement — ids compare by index
+    // LICENSED structs.index_compared: file identity, not type agreement — ids compare by index
     a.index == b.index
 }
 
@@ -119,6 +118,8 @@ export enum DeclKind {
     Record
     /// `type Name = <type>` — a name over a shape, distinct from it.
     Named
+    /// `alias Name = <type>` — a second name for a shape, the SAME type.
+    Alias
     Enum
     Trait
     /// a sublanguage — a block word and its grammar
@@ -132,7 +133,45 @@ export enum DeclKind {
     /// A settled value the compiler computes — a declaration whose
     /// READ is its value, cross-file like any other.
     Const
+    /// A `collect` — every declaration of a kind, closed at link,
+    /// as one ordered value.
+    Collect
 }
+
+/// The declaration kinds a `collect` may gather — grown with the
+/// build order (fn, case next). An unknown word is KEPT, never
+/// refused at the parse: `collect`'s own laws speak the refusal
+/// (features/collects/check.av), with the word in hand to name. A
+/// word that names no imported component is `UnknownKind`; one that
+/// names a component (`model in closure`, `rule in closure`) is
+/// `Component` — the owner's ruling: `collect` is a keyword, so the
+/// kind is bare, never `instance of`. `@name in scope` — a kind
+/// slot spelled with its `@` — is `Annotated`: every declaration
+/// wearing that annotation, of any DeclKind, gathered by its
+/// written name alone (a declaration's annotations are a fact of
+/// the declaration, not a word a component index minted).
+export enum CollectKind {
+    Component(word: string)
+    UnknownKind(word: string)
+    Annotated(name: string)
+}
+
+/// Where a `collect` gathers from.
+export enum CollectScope {
+    Self
+    Package
+    Closure
+    UnknownScope(word: string)
+}
+
+/// One projected field: the name it fills, and the `it` path that
+/// answers it — `[]` for the bare declaration itself, a fn value.
+/// `path` is a NAME run because the grammar may grow multi-segment
+/// paths; today it holds zero or one.
+export type ProjField = { field: Plain, path: List<Plain> }
+
+/// A collect's projection: the type it builds, and each field's fill.
+export type Projection = { ty: TypeRef, fields: List<ProjField> }
 
 /// A MODULE's identity — a directory under the root, interned.
 export type ModuleId = { index: int }
@@ -174,10 +213,26 @@ export fn op_symbol(op: BinOp) -> string {
 }
 
 /// Every binary operator — the roster symbol->op derivations scan.
-export const all_binops: List<BinOp> = [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Div, BinOp.Mod,
-     BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge,
-     BinOp.And, BinOp.Or,
-     BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
+export const all_binops: List<BinOp> = [
+    BinOp.Add,
+    BinOp.Sub,
+    BinOp.Mul,
+    BinOp.Div,
+    BinOp.Mod,
+    BinOp.Eq,
+    BinOp.Ne,
+    BinOp.Lt,
+    BinOp.Le,
+    BinOp.Gt,
+    BinOp.Ge,
+    BinOp.And,
+    BinOp.Or,
+    BinOp.BitAnd,
+    BinOp.BitOr,
+    BinOp.BitXor,
+    BinOp.Shl,
+    BinOp.Shr,
+]
 
 // THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree is
 // text; what differs is WHAT IT KEYS, and that fact used to live only
@@ -208,9 +263,7 @@ export type Nominal = string
 /// module can call what it made — so the union is written beside the
 /// enums it unions.
 export fn node_payload_rows() -> List<PayloadRow> {
-    grammar_payloads_Expr()
-        .concat(grammar_payloads_Pat())
-        .concat(grammar_payloads_Stmt())
+    grammar_payloads_Expr().concat(grammar_payloads_Pat()).concat(grammar_payloads_Stmt())
 }
 
 @derive(ValueProtocol)
@@ -218,6 +271,8 @@ export fn node_payload_rows() -> List<PayloadRow> {
 @derive(Grammar)
 @derive(Children)
 @derive(Identity)
+@derive(Matchable)
+@derive(Exact)
 export enum Expr {
     IntLit(value: int)
     /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -256,6 +311,12 @@ export enum Expr {
     /// projection; `holes` are the expressions that fill them and ARE
     /// the node's children; `view` is its parsed form or expansion.
     Body(word: string, parts: List<string>, holes: List<ExprId>, view: BodyView)
+    /// A COMPONENT INSTANCE — `within ms(500) { … }`: an imported
+    /// component's word, its head values and its block as the user
+    /// wrote them. `view` is the expansion that STANDS IN PLACE of the
+    /// instance, the head and block spliced into it; the written
+    /// pieces are the printing projection.
+    @expands Component(word: string, heads: List<ExprId>, block: ExprId?, view: BodyView, check: ExprId?)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -267,6 +328,9 @@ export enum Expr {
     /// A direct call by name; fn values arrive later. `pins` are
     /// explicit type arguments (`f<int>(x)`) — empty when inferred.
     Call(callee: Scoped, pins: List<TypeRef>, args: List<ExprId>)
+    /// `name: value` in an argument list — the seat it fills, by the
+    /// callee's name for it.
+    Named(name: Plain, value: ExprId)
     /// `Name { field: value, ... }` — fields in WRITTEN order
     /// (evaluation order); lowering reorders to declaration slots.
     StructLit(name: Nominal, fields: List<Plain>, values: List<ExprId>)
@@ -332,16 +396,30 @@ export enum Expr {
     MethodCall(subject: ExprId, name: Plain, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
+    /// `collect { … }` — a list of every value its statements would
+    /// discard, in the order they ran; `body` is a block with no tail.
+    Collect(body: ExprId)
 }
 /// Whether the parse tree already HOLDS this value — an int, float,
 /// bool or string literal. A computed expression is not a literal:
 /// reading it needs typed answers that do not exist before analysis.
 export fn is_literal(e: Expr) -> bool {
-    (e).int_of() != null || (e).bits_of() != null || (e).bool_of() != null || (e).text_of() != null
+    e.int_of() != null || e.bits_of() != null || e.bool_of() != null || e.text_of() != null
+}
+
+/// Whether a node HEARS its seat's want: a list whose elements each
+/// answer to the seat's element, or a lambda whose parameters and
+/// answer the seat's fn type gives — typed again under that want when
+/// it was typed before the seat was known.
+export fn hears_want(e: Expr) -> bool {
+    match e {
+        .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .Lambda(_, _) -> true,
+        _ -> false,
+    }
 }
 
 /// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
-/// map, a variant, `null`. The parts inside may be computed; the
+/// map, a variant, a lambda, `null`. The parts inside may be computed; the
 /// FORM is what this asks about.
 ///
 /// A NAMED TYPE'S SEAT TAKES ONE DIRECTLY (`let id: UserId = 5`):
@@ -353,15 +431,8 @@ export fn is_literal(e: Expr) -> bool {
 export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_)
-            or .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit
-            or .VariantLit(_, _) or .StructLit(_, _, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _)
-            or .If(_, _, _) or .When(_, _, _)
-            or .Block(_, _) or .Call(_, _, _) or .With(_, _, _) or .Match(_, _)
-            or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Spawn(_)
-            or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_)
-            or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) -> true,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }
 
@@ -430,9 +501,38 @@ export enum BodyView {
 /// What a block's grammar refused, in the file's offsets — spoken
 /// with the parse's own words.
 export type BlockVoice = { message: string, lo: int, hi: int, expected: List<string>, in_rule: string }
-/// A run of nodes minted from a sublanguage's actions, and the file
-/// whose fns they name — their origin.
-export type ForeignRange = { lo: int, hi: int, path: string }
+/// A half-open run of arena indexes.
+export type IndexRange = { lo: int, hi: int }
+
+impl IndexRange {
+    fn holds(i: int) -> bool { self.lo <= i && i < self.hi }
+}
+
+/// The arenas' counts at one moment — where a run of minted nodes
+/// begins, and where it ends.
+export type ArenaMarks = { exprs: int, stmts: int, pats: int }
+
+/// What each arena grew by between two moments.
+export type ArenaRuns = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange }
+
+impl ArenaMarks {
+    fn until(after: ArenaMarks) -> ArenaRuns {
+        ArenaRuns {
+            exprs: IndexRange { lo: self.exprs, hi: after.exprs },
+            stmts: IndexRange { lo: self.stmts, hi: after.stmts },
+            pats: IndexRange { lo: self.pats, hi: after.pats },
+        }
+    }
+}
+
+/// Nodes minted into a file from another file's text — a
+/// sublanguage's actions, a component's template — and that file,
+/// their origin. Every arena's run, so a template's binders are
+/// its own as well as its reads. `spanned_home` says their spans are
+/// in the ORIGIN's offsets (a copied template's, so its errors point
+/// home) rather than this file's (a sublanguage's, shifted into the
+/// block).
+export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
@@ -443,7 +543,12 @@ export type ForeignRange = { lo: int, hi: int, path: string }
 /// expression — no second name law.
 export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
 
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [] }
+/// `spliced` marks a type that came through a template's HOLE: it
+/// names a type where it lands, never where the template was written.
+/// A non-empty `alternatives` makes this ref a UNION — `A or B` — and
+/// every other field is unused: the 2+ members are ordinary written
+/// types in their own right, each resolved the usual way.
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -466,9 +571,21 @@ export fn plain(t: TypeRef) -> TypeRef {
     t with { optional: false }
 }
 
+impl TypeRef {
+    /// This type, spelled back — `spelled`, as a method a quote
+    /// pattern's bound TYPE hole reads the same way a bound NAME
+    /// hole reads its own text.
+    fn text() -> string { spelled(self) }
+}
+
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
-    let base = when { t.arrow -> spelled_arrow(t), t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}", _ -> "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>" }
+    if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
+    let base = when {
+        t.arrow -> spelled_arrow(t)
+        t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
+        _ -> "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>"
+    }
     if t.optional { return "${base}?" }
     base
 }
@@ -526,6 +643,13 @@ fn mark_spelled(m: Mark) -> string {
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }
 
+/// Pattern identity — two ids name one pattern when their indexes
+/// agree.
+export fn same_pat(a: PatId, b: PatId) -> bool {
+    // LICENSED structs.index_compared: pattern identity — ids compare by index
+    a.index == b.index
+}
+
 /// What an arm accepts. A pattern is a tree over the subject's
 /// shape: a variant test with one pattern per payload, a literal to
 /// equal, a name that binds the value at its path, or the hole —
@@ -533,6 +657,8 @@ export type PatId = { index: int }
 /// remainder, exempt).
 @derive(Rebuild)
 @derive(Grammar)
+@derive(Matchable)
+@derive(Exact)
 export enum Pat {
     Wild
     Rest
@@ -545,6 +671,10 @@ export enum Pat {
     /// alone. The count relationship between literals and holes is
     /// true by construction and unspellable otherwise.
     Format(head: string, parts: List<FormatPart>)
+    /// A CODE SHAPE: `body` is the quote expression the primary
+    /// already mints, wrapped — the same node, matched structurally
+    /// instead of spliced. A hole binds the code at its seat.
+    Quote(body: ExprId)
 }
 
 /// One hole of a format: the name it binds — `_` binds nothing, as
@@ -566,6 +696,13 @@ export type FormatPart = { hole: Hole, piece: string }
 /// so the format is kept beside the statement that declared it.
 export type GrammarSpec = { head: string, parts: List<FormatPart> }
 
+/// A `table<Row> { header | … }` literal's own header, by the list
+/// it desugared to — an EMPTY table carries no row to read a header
+/// back from (`features/tables/builders.av`'s `build_table` answers
+/// a bare `[]` for zero rows), so the header is kept beside the list
+/// rather than read off its first element.
+export type TableSpec = { row_type: string, header: List<string> }
+
 /// One name a pattern binds, and the pattern node it binds under.
 export type Binder = { pat: PatId, name: string }
 
@@ -586,8 +723,10 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
     [p.hole.name for p in parts if binds(p.hole)]
 }
 
-/// One match arm: its alternatives (`a or b`) and its value.
-export type Arm = { pats: List<PatId>, value: ExprId }
+/// One match arm: its alternatives (`a or b`), an optional guard, and
+/// its value. A false guard tries the next arm; a guarded arm covers
+/// nothing, so coverage and repeats never count it.
+export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
 /// single positional payload, or named fields — and the marks
@@ -596,13 +735,14 @@ export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null, 
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
-export type Case = { group: string, name: string, body: ExprId }
+export type Case = { group: string, name: string, body: ExprId, span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
     Root(name: Scoped)
     Field(subject: ExprId, name: Plain)
     At(subject: ExprId, index: ExprId)
+    Unwrap(subject: ExprId)
 }
 
 /// A method call's projection: the receiver, the name, the arguments.
@@ -611,10 +751,23 @@ export type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
 /// A `use` statement's projection: the path, the items, the site.
 export type UseParts = { path: List<string>, items: List<string>, aliases: List<string>, stmt: StmtId }
 
+impl UseParts {
+    /// The alias item `j` was imported under — empty when none.
+    fn alias_at(j: int) -> string { if j < self.aliases.length { self.aliases[j] } else { "" } }
+
+    /// The name item `j` binds in the importing file.
+    fn bound_as(j: int) -> string {
+        let renamed = self.alias_at(j)
+        if renamed.is_empty() { self.items[j] } else { renamed }
+    }
+}
+
 @derive(Rebuild)
 @derive(Grammar)
 @derive(Children)
 @derive(Identity)
+@derive(Matchable)
+@derive(Exact)
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
@@ -636,9 +789,6 @@ export enum Stmt {
     ExprStmt(value: ExprId)
     /// `let _ = v` — the value run for its effect, never an answer.
     Discard(value: ExprId)
-    /// `tparams` are the declared type parameters, in order — the
-    /// ordinal IS the Var identity; a tparam's `ty` names its
-    /// BOUND (`<T: Show>`), absent when unconstrained.
     @declares FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// `extern fn name(params) -> ret` — a fn the host provides: a
     /// signature with no body, called by its bare symbol.
@@ -658,15 +808,7 @@ export enum Stmt {
     /// `fail value` — raise: the enclosing fn answers the failure
     /// channel of its Result right here. Diverges, like `return`.
     Fail(value: ExprId)
-    /// `impl Target { fns… }` — methods for a declared type: each
-    /// fn is a method: `self` types as the target, and the
-    /// fn lowers under a QUALIFIED name (`Target.method`). `of`
-    /// names the TRAIT being implemented — null for an inherent impl
-    /// — and an impl-for must answer every trait method.
     @declares ImplDecl(of: Nominal?, target: Nominal, fns: List<StmtId>)
-    /// `trait Name { fn sigs… }` — a nominal behavior contract.
-    /// The sigs ride as BODYLESS fn declarations (body = a hole no
-    /// pass walks), so declare and totality reuse fn machinery.
     @declares TraitDecl(name: Scoped, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
@@ -689,7 +831,7 @@ export enum Stmt {
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: Scoped, tparams: List<Plain>, fields: List<Param>)
     /// `type Name = <type>` — a DISTINCT type over a written shape,
-    /// never an alias: the name counts at every seat and the shape
+    /// never an `alias`: the name counts at every seat and the shape
     /// answers every read. It travels AS its shape (a flat record
     /// of one anonymous field), so the name is free at runtime.
     NamedType(name: Scoped, tparams: List<Plain>, of: TypeRef)
@@ -700,6 +842,11 @@ export enum Stmt {
     /// `spec "name" { given "…" { then "…" { … } } }` — a test
     /// suite; each case is a declaration of its own.
     Spec(name: string, cases: List<Case>)
+    /// `component name(head) { field: T … fn … }` — a record type
+    /// with defaults that a block instantiates. The head's fields
+    /// are filled positionally, the rest by name; the fns are its
+    /// methods, and `expand` among them is its effect.
+    @declares ComponentDecl(name: Scoped, head: List<Param>, fields: List<Param>, fns: List<StmtId>)
     /// `syntax sql { … }` — a sublanguage declared: the block word and
     /// the grammar notation, kept as text; the workspace readies it.
     SyntaxDecl(name: Scoped, text: string)
@@ -709,7 +856,19 @@ export enum Stmt {
     /// failure channel. The body is a lambda of no seats: captures
     /// are copied at the statement, the call happens at the exit.
     Defer(body: ExprId, on_error: bool)
+    /// `collect name: List<T> = kind in scope as Ty { … } by …` —
+    /// every declaration of `kind`, in `scope`, projected and
+    /// ordered. `order` is the `by` list's `it.field` paths.
+    Collect(name: Scoped, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain>)
     Error
+    /// `name: value` inside a component instance's body — a setting of
+    /// the record the instance builds. Consumed where the instance is
+    /// built, so no pass meets one elsewhere.
+    Setting(name: Plain, value: ExprId)
+    /// `alias Name<T> = <type>` — a SHORTHAND: the name stands for the
+    /// shape it is written over, which is the same type wherever it is
+    /// read. `type` makes a new type; `alias` names an existing one.
+    Alias(name: Scoped, tparams: List<Plain>, of: TypeRef)
 }
 
 /// The language AST's arenas plus their fingerprint side tables. A
@@ -736,7 +895,13 @@ export enum Trivia {
     Blank
 }
 
-export type Remark = { trivia: Trivia, at: int }
+/// `same_line` marks a TRAILING remark — one sharing its line with
+/// code (`let x = 1 // note`) — so the printer appends it to the
+/// line it trails instead of giving it a line of its own. Absent for
+/// an own-line comment and for a Blank, both of which own no code to
+/// trail: the empty-value law forbids reading that from `trivia`
+/// alone, since a `Comment` can be either kind.
+export type Remark = { trivia: Trivia, at: int, same_line: bool = false }
 
 fn mark_fps(marks: List<Mark>) -> List<int> {
     [fp(131, [fp_str(m.name), fp_list(str_fps(m.args))]) for m in marks]
@@ -788,7 +953,7 @@ fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 /// `x`, so the marks ride the identity as the interner's key already
 /// says they ride the type.
 fn mark_fp(m: SeatMark) -> int {
-    fp(126, [flagged(m.mutable), flagged(m.settled)])
+    fp(126, [flagged(m.mutable), flagged(m.settled), flagged(m.unshared)])
 }
 
 /// A written type's identity: absence is its own value, and the `?`,
@@ -798,10 +963,45 @@ fn mark_fp(m: SeatMark) -> int {
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
-    fp(if written.optional { 101 } else { 100 },
-       [fp_str(written.name), flagged(written.dynamic), flagged(written.arrow),
+    fp(if written.optional { 101 } else { 100 }, [
+        fp_str(written.name),
+        flagged(written.dynamic),
+        flagged(written.arrow),
+        flagged(written.spliced),
         fp_list([mark_fp(m) for m in written.marks]),
-        fp_list([type_fp(a) for a in written.args])])
+        fp_list([type_fp(a) for a in written.args]),
+        fp_list([type_fp(a) for a in written.alternatives]),
+    ])
+}
+
+/// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
+/// costs no tag; only the payload-carrying variant folds one.
+fn collectkind_fp(k: CollectKind) -> int {
+    match k {
+        .Component(w) -> fp(136, [fp_str(w)]),
+        .UnknownKind(w) -> fp(132, [fp_str(w)]),
+        .Annotated(w) -> fp(137, [fp_str(w)]),
+    }
+}
+
+/// A collect's scope, the same shape.
+fn collectscope_fp(s: CollectScope) -> int {
+    match s {
+        .Self -> 1,
+        .Package -> 2,
+        .Closure -> 3,
+        .UnknownScope(w) -> fp(133, [fp_str(w)]),
+    }
+}
+
+/// One projected field: the name it fills, the path it reads.
+fn projfield_fp(f: ProjField) -> int {
+    fp(134, [fp_str(f.field.of), fp_list(plain_fps(f.path))])
+}
+
+/// A collect's whole projection: its built type, every field.
+fn projection_fp(p: Projection) -> int {
+    fp(135, [type_fp(p.ty), fp_list([projfield_fp(f) for f in p.fields])])
 }
 
 fn fp_binop(op: BinOp) -> int {
@@ -827,4 +1027,91 @@ fn fp_binop(op: BinOp) -> int {
     }
 }
 
+// ── Exact equality, `@derive(Exact)`'s own siblings ────────────────
+// Every compound type ABOVE that a `*_fp` fold hashes gets an exact
+// twin here — never a hash, always the actual fields, span-blind (a
+// `span` field is skipped exactly where its `*_fp` sibling skips it).
+// `@derive(Exact)` (exact_derive.av) calls these for the payload
+// types it does not itself own.
+
+fn exact_strs(a: List<string>, b: List<string>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it] == b[it])
+}
+
+fn exact_plains(a: List<Plain>, b: List<Plain>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it].of == b[it].of)
+}
+
+fn exact_scopeds(a: List<Scoped>, b: List<Scoped>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it].of == b[it].of)
+}
+
+fn exact_seat_mark(a: SeatMark, b: SeatMark) -> bool {
+    a.mutable == b.mutable && a.settled == b.settled && a.unshared == b.unshared
+}
+
+fn exact_seat_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_seat_mark(a[it], b[it]))
+}
+
+fn exact_mark(a: Mark, b: Mark) -> bool {
+    a.name == b.name && exact_strs(a.args, b.args)
+}
+
+fn exact_marks(a: List<Mark>, b: List<Mark>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_mark(a[it], b[it]))
+}
+
+/// `type_fp`'s exact twin: the same fields, compared, never hashed.
+fn exact_type_ref(a: TypeRef?, b: TypeRef?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    let wa = a!
+    let wb = b!
+    wa.name == wb.name && wa.optional == wb.optional && wa.dynamic == wb.dynamic && wa.arrow == wb.arrow && wa.spliced == wb.spliced && exact_seat_marks(wa.marks, wb.marks) && exact_type_refs(wa.args, wb.args)
+}
+
+fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_type_ref(a[it], b[it]))
+}
+
+fn exact_collect_kind(a: CollectKind, b: CollectKind) -> bool {
+    match a {
+        .Component(w1) -> match b { .Component(w2) -> w1 == w2, rest -> false },
+        .UnknownKind(w1) -> match b { .UnknownKind(w2) -> w1 == w2, rest -> false },
+        .Annotated(w1) -> match b { .Annotated(w2) -> w1 == w2, rest -> false },
+    }
+}
+
+fn exact_collect_scope(a: CollectScope, b: CollectScope) -> bool {
+    match a {
+        .Self -> match b { .Self -> true, rest -> false },
+        .Package -> match b { .Package -> true, rest -> false },
+        .Closure -> match b { .Closure -> true, rest -> false },
+        .UnknownScope(w1) -> match b { .UnknownScope(w2) -> w1 == w2, rest -> false },
+    }
+}
+
+fn exact_proj_field(a: ProjField, b: ProjField) -> bool {
+    a.field.of == b.field.of && exact_plains(a.path, b.path)
+}
+
+fn exact_proj_fields(a: List<ProjField>, b: List<ProjField>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_proj_field(a[it], b[it]))
+}
+
+fn exact_projection(a: Projection, b: Projection) -> bool {
+    exact_type_ref(a.ty, b.ty) && exact_proj_fields(a.fields, b.fields)
+}
+
+fn exact_hole(a: Hole, b: Hole) -> bool {
+    a.name == b.name && exact_type_ref(a.ty, b.ty) && a.greedy == b.greedy
+}
+
+fn exact_format_part(a: FormatPart, b: FormatPart) -> bool {
+    a.piece == b.piece && exact_hole(a.hole, b.hole)
+}
+
+fn exact_format_parts(a: List<FormatPart>, b: List<FormatPart>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_format_part(a[it], b[it]))
+}
 

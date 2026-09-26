@@ -4,18 +4,19 @@ use core.{Expr, ExprId, TypeId, Reg}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 use diagnostics.{refusal}
 
-export type ListSemantics = { }
+export type ListSemantics = {}
 
 impl NodeSemantics for ListSemantics {
     /// A literal's elements are kids; a comprehension's SOURCE and
     /// range bound are — they resolve outside the binders — while
-    /// its element and filter are heirs, walked under them.
+    /// its element and filter are heirs, walked under them. A
+    /// `collect` owns its body's walk, as a block owns its own.
     fn kids(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
         match e {
             .Comp(_, _, _, source, hi, _) -> if hi == null { [source] } else { [source, hi!] },
-            // LICENSED I18: kids() has no failure channel; [] is the right answer for a node that is not a list
-            _ -> (e).elems_of() ?? [],
+            // LICENSED compiler.elems_of_defaulted: kids() has no failure channel; [] is the right answer for a node that is not a list
+            _ -> e.elems_of() ?? [],
         }
     }
 
@@ -31,7 +32,8 @@ impl NodeSemantics for ListSemantics {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Comp(elem, index, name, _, _, cond) -> resolve_comp(cx, e, elem, index?.of, name.of, cond),
-            _ -> nothing(),
+            .Collect(body) -> cx.walk(body),
+            rest -> nothing(),
         }
     }
 
@@ -39,7 +41,8 @@ impl NodeSemantics for ListSemantics {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Comp(elem, index, _, source, hi, cond) -> comp_type(cx, e, elem, index?.of, source, hi, cond),
-            _ -> literal_type(cx, e),
+            .Collect(body) -> collect_type(cx, e, body),
+            rest -> literal_type(cx, e),
         }
     }
 
@@ -47,7 +50,8 @@ impl NodeSemantics for ListSemantics {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Comp(elem, index, _, source, hi, cond) -> comp_reg(cx, e, elem, index?.of, source, hi, cond),
-            _ -> literal_reg(cx, e),
+            .Collect(body) -> collect_reg(cx, e, body),
+            rest -> literal_reg(cx, e),
         }
     }
 
@@ -75,11 +79,11 @@ fn paired_alike(mut cx: ResolveCx, e: ExprId, name: string) {
 }
 
 fn literal_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let elems? = (cx.view.store.expr(e)).elems_of() else { return cx.error_type }
+    let elems? = cx.view.store.expr(e).elems_of() else { return cx.error_type }
     list_type(cx, e, elems)
 }
 
 fn literal_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    let elems? = (cx.view.store.expr(e)).elems_of() else { return cx.lower_defect(e, "a list literal without its elements") }
+    let elems? = cx.view.store.expr(e).elems_of() else { return cx.lower_defect(e, "a list literal without its elements") }
     list_reg(cx, e, elems)
 }

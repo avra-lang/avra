@@ -1,0 +1,84 @@
+//! THE REFERENCES RELATION's own contract (compiler/references.av)
+//! and the `Code` facts built over it (features/code.av): `callers()`
+//! crosses files through a declaration, `dead_params()`/
+//! `is_unwritten_mut()` answer from one file's own body, and
+//! `unused_imports()` reaches a MODULE's sibling files. Two
+//! regressions pinned here by name: a method's WRITTEN parameters
+//! start at seat 1 (the receiver holds seat 0), and a param read
+//! inside a comprehension's lambda is a `.Capture`, never a
+//! `.Param`, at its use site — both read every parameter as dead the
+//! day this pass first ran clean.
+use compiler.{analyze_source}
+use core.{At, DeclKind, StmtId}
+use features.{Code}
+
+fn top_level(source: string, i: int) -> Code {
+    let a = analyze_source(source)
+    a.code_at(At.Stmt(a.view.stmts[i]))
+}
+
+/// The one METHOD a source declares, by its own statement — never a
+/// top-level index, since a method's statement nests inside its
+/// `impl` block.
+fn one_method(source: string) -> Code {
+    let a = analyze_source(source)
+    let d = a.view.decls.decls_of_kind(DeclKind.Method).first()!
+    a.code_at(At.Stmt(d.stmt))
+}
+
+/// The one `mut` LOCAL a source declares, wherever it nests — the
+/// file's whole statement arena, flat, never just its top level.
+fn first_mut(source: string) -> Code {
+    let a = analyze_source(source)
+    let id = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .MutLet)!
+    a.code_at(At.Stmt(id))
+}
+
+spec "compiler/references — the relation and its Code facts" {
+    given "a fn called once, elsewhere in the same file" {
+        then "callers() finds the one call site" {
+            top_level("fn a() -> int { 1 }\nfn b() -> int { a() }", 0).callers().length == 1
+        }
+    }
+    given "a fn never called" {
+        then "callers() is empty" {
+            top_level("fn a() -> int { 1 }\nlet x = 1", 0).callers().is_empty()
+        }
+    }
+    given "a fn called twice" {
+        then "callers() finds both" {
+            top_level("fn a() -> int { 1 }\nfn b() -> int { a() + a() }", 0).callers().length == 2
+        }
+    }
+    given "a free fn's parameter, read directly" {
+        then "dead_params() does not name it" {
+            let dead = top_level("fn f(a: int, b: int) -> int { a }", 0).dead_params()
+            dead.length == 1 && dead.first() == "b"
+        }
+    }
+    given "a method's parameter, past the receiver's own seat 0" {
+        then "dead_params() does not name it — the seat offset is paid" {
+            one_method("type Box = { held: int }\nimpl Box {\n    fn plus(n: int) -> int { self.held + n }\n}").dead_params().is_empty()
+        }
+    }
+    given "a parameter read only inside a comprehension's own lambda" {
+        then "dead_params() does not name it — the capture chain is walked to its root" {
+            top_level("fn f(xs: List<int>, n: int) -> List<int> { [x for x in xs if x > n] }", 0).dead_params().is_empty()
+        }
+    }
+    given "a parameter named `_prefixed`" {
+        then "dead_params() exempts it by convention" {
+            top_level("fn f(_a: int) -> int { 1 }", 0).dead_params().is_empty()
+        }
+    }
+    given "a `mut` local nothing ever assigns" {
+        then "is_unwritten_mut() answers true" {
+            first_mut("fn f() {\n    mut n = 0\n}").is_unwritten_mut()
+        }
+    }
+    given "a `mut` local an ordinary assignment writes" {
+        then "is_unwritten_mut() answers false" {
+            !first_mut("fn f() {\n    mut n = 0\n    n = n + 1\n}").is_unwritten_mut()
+        }
+    }
+}

@@ -172,7 +172,7 @@ impl Ins {
             .ConstInt(dst, v) -> derived([fp_str("Ins"), 0, dst.fingerprint(), v]),
             .ConstFloat(dst, bits) -> derived([fp_str("Ins"), 1, dst.fingerprint(), bits]),
             .ConstStr(dst, s) -> derived([fp_str("Ins"), 2, dst.fingerprint(), fp_str(s)]),
-            .ConstBool(dst, v) -> derived([fp_str("Ins"), 3, dst.fingerprint(), (if v { 1 } else { 0 })]),
+            .ConstBool(dst, v) -> derived([fp_str("Ins"), 3, dst.fingerprint(), if v { 1 } else { 0 }]),
             .Bin(dst, op, a, b) -> derived([fp_str("Ins"), 4, dst.fingerprint(), op.fingerprint(), a.fingerprint(), b.fingerprint()]),
             .Un(dst, op, src) -> derived([fp_str("Ins"), 5, dst.fingerprint(), op.fingerprint(), src.fingerprint()]),
             .CallRtVoid(callee, args) -> derived([fp_str("Ins"), 6, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
@@ -182,7 +182,7 @@ impl Ins {
             .FnAddr(dst, sym) -> derived([fp_str("Ins"), 10, dst.fingerprint(), fp_str(sym)]),
             .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
             .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
-            .ScopeExit(gives) -> derived([fp_str("Ins"), 13, (if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) })]),
+            .ScopeExit(gives) -> derived([fp_str("Ins"), 13, if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) }]),
             .IfStart(cond) -> derived([fp_str("Ins"), 14, cond.fingerprint()]),
             .SwitchStart(selector, cases) -> derived([fp_str("Ins"), 15, selector.fingerprint(), fp_list(cases)]),
             .ArmEnd(gives) -> derived([fp_str("Ins"), 16, gives.fingerprint()]),
@@ -202,6 +202,247 @@ impl Ins {
             .Ret(code) -> derived([fp_str("Ins"), 30, code]),
         }
     }
+}
+
+/// `i` WITH EVERY REGISTER PASSED THROUGH `m` — every `Reg`-typed
+/// payload, destination and operands alike, one arm per variant
+/// (compiler.refusal_assembled's registry: a new instruction owes this arm or the rewrite
+/// is silently incomplete). The ONE fn two callers share for an
+/// ALPHA-RENAMED comparison: fold `[remapped(i, m).fingerprint() for
+/// i in ins]` over a register-renumbering `m` and two bodies that
+/// differ only in which numbers their registers happened to mint
+/// compare equal.
+export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
+    match i {
+        .ConstInt(dst, v) -> Ins.ConstInt(m(dst), v),
+        .ConstFloat(dst, bits) -> Ins.ConstFloat(m(dst), bits),
+        .ConstStr(dst, s) -> Ins.ConstStr(m(dst), s),
+        .ConstBool(dst, v) -> Ins.ConstBool(m(dst), v),
+        .Bin(dst, op, a, b) -> Ins.Bin(m(dst), op, m(a), m(b)),
+        .Un(dst, op, src) -> Ins.Un(m(dst), op, m(src)),
+        .CallRtVoid(callee, args) -> Ins.CallRtVoid(callee, [m(x) for x in args]),
+        .CallRt(dst, callee, args) -> Ins.CallRt(m(dst), callee, [m(x) for x in args]),
+        .Pack(dst, elems) -> Ins.Pack(m(dst), [m(x) for x in elems]),
+        .Extract(dst, src, at) -> Ins.Extract(m(dst), m(src), at),
+        .FnAddr(dst, sym) -> Ins.FnAddr(m(dst), sym),
+        .StaticAddr(dst, sym) -> Ins.StaticAddr(m(dst), sym),
+        .ScopeEnter(tier) -> Ins.ScopeEnter(tier),
+        .ScopeExit(gives) -> Ins.ScopeExit(remapped_opt(gives, m)),
+        .IfStart(cond) -> Ins.IfStart(m(cond)),
+        .SwitchStart(selector, cases) -> Ins.SwitchStart(m(selector), cases),
+        .ArmEnd(gives) -> Ins.ArmEnd(m(gives)),
+        .RegionEnd(dst, gives) -> Ins.RegionEnd(m(dst), m(gives)),
+        .Call(dst, callee, args) -> Ins.Call(m(dst), callee, [m(x) for x in args]),
+        .CallPtr(dst, f, args) -> Ins.CallPtr(m(dst), m(f), [m(x) for x in args]),
+        .RetVal(r) -> Ins.RetVal(m(r)),
+        .FnExit(gives) -> Ins.FnExit(m(gives)),
+        .Alloca(dst) -> Ins.Alloca(m(dst)),
+        .Load(dst, slot) -> Ins.Load(m(dst), m(slot)),
+        .Store(slot, src) -> Ins.Store(m(slot), m(src)),
+        .LoopStart -> Ins.LoopStart,
+        .LoopCond(c) -> Ins.LoopCond(m(c)),
+        .LoopEnd -> Ins.LoopEnd,
+        .Retain(r) -> Ins.Retain(m(r)),
+        .Release(r) -> Ins.Release(m(r)),
+        .Ret(code) -> Ins.Ret(code),
+    }
+}
+
+fn remapped_opt(r: Reg?, m: fn(Reg) -> Reg) -> Reg? {
+    if r == null { return null }
+    m(r!)
+}
+
+/// `ins`, WITH EVERY `Un(dst, Not, c)` THAT FEEDS THE `IfStart`
+/// RIGHT AFTER IT — AND NOWHERE ELSE — REWRITTEN TO TEST `c`
+/// DIRECTLY, ITS TWO ARMS SWAPPED. `if !c {A} else {B}` and `if c
+/// {B} else {A}` are the SAME REGION: a rewrite that only flips
+/// which side of a test it reads (`x == null` becoming the coalesce
+/// it desugars to) must not compare unequal because of it — every
+/// other pair of programs still must. Nested regions canonicalize
+/// too: each arm's own body is walked before it is spliced back.
+export fn canon_not_if(ins: List<Ins>) -> List<Ins> {
+    canon_run(ins, 0, ins.length)
+}
+
+fn canon_run(ins: List<Ins>, lo: int, hi: int) -> List<Ins> {
+    mut out: List<Ins> = []
+    mut i = lo
+    while i < hi {
+        let sp = not_if_span(ins, i)
+        if sp == null {
+            out.push(ins[i])
+            i = i + 1
+        } else {
+            let s = sp!
+            // ARM1's close (`ArmEnd(gives1)`) and the region's close
+            // (`RegionEnd(dst, gives2)`) TRADE PLACES along with the
+            // bodies they used to follow — a NON-LAST arm closes
+            // with `ArmEnd`, the LAST with `RegionEnd`, whichever arm
+            // that is now.
+            let gives1 = arm_end_gives(ins[s.arm1_end])
+            let region = region_end_parts(ins[s.region_end])
+            out.push(Ins.IfStart(s.cond))
+            out = out.concat(canon_run(ins, s.arm2_lo, s.arm2_hi))
+            out.push(Ins.ArmEnd(region.gives))
+            out = out.concat(canon_run(ins, s.arm1_lo, s.arm1_end))
+            out.push(Ins.RegionEnd(region.dst, gives1))
+            i = s.region_end + 1
+        }
+    }
+    out
+}
+
+/// One `Un(dst, Not, c)` immediately followed by `IfStart(dst)`,
+/// `dst` read nowhere else — the SPAN its two arms occupy.
+type NotIfSpan = { cond: Reg, arm1_lo: int, arm1_end: int, arm2_lo: int, arm2_hi: int, region_end: int }
+
+fn not_if_span(ins: List<Ins>, i: int) -> NotIfSpan? {
+    if i + 1 >= ins.length { return null }
+    let dst_c? = not_pair(ins[i]) else { return null }
+    let cond? = if_cond(ins[i + 1]) else { return null }
+    if !same_reg(cond, dst_c.dst) { return null }
+    if !used_once(ins, dst_c.dst, i + 1) { return null }
+    let if_at = i + 1
+    let a1e = arm1_end(ins, if_at)
+    let re = region_end(ins, if_at)
+    NotIfSpan { cond: dst_c.src, arm1_lo: if_at + 1, arm1_end: a1e, arm2_lo: a1e + 1, arm2_hi: re, region_end: re }
+}
+
+type NotPair = { dst: Reg, src: Reg }
+
+fn not_pair(i: Ins) -> NotPair? {
+    match i {
+        .Un(dst, op, src) if op is .Not -> NotPair { dst: dst, src: src },
+        rest -> null,
+    }
+}
+
+fn if_cond(i: Ins) -> Reg? {
+    match i {
+        .IfStart(cond) -> cond,
+        rest -> null,
+    }
+}
+
+/// Whether `dst` is read anywhere OTHER than the `IfStart` at
+/// `if_at` — a `Un(Not, …)` minted for any other reason keeps its
+/// pair unswapped.
+fn used_once(ins: List<Ins>, dst: Reg, if_at: int) -> bool {
+    [j for j, step in ins if j != if_at && reads_of(step).any(same_reg(it, dst))].is_empty()
+}
+
+/// A register that reads NOTHING — the trap-branch answer below,
+/// named once: the compiler's own defect, never a program's value.
+fn defect_reg() -> Reg { Reg { index: 0 - 1 } }
+
+/// `i`'s own `gives` — `arm1_end`'s own answer is always an `ArmEnd`,
+/// which is what makes the other arm a defect this compiler made,
+/// not a program it is reading.
+fn arm_end_gives(i: Ins) -> Reg {
+    match i {
+        .ArmEnd(gives) -> gives,
+        rest -> {
+            avra_trap("canon_not_if: arm1_end named a non-ArmEnd")
+            defect_reg()
+        },
+    }
+}
+
+type RegionEndParts = { dst: Reg, gives: Reg }
+
+/// `i`'s own parts — `region_end`'s own answer is always a
+/// `RegionEnd`.
+fn region_end_parts(i: Ins) -> RegionEndParts {
+    match i {
+        .RegionEnd(dst, gives) -> RegionEndParts { dst: dst, gives: gives },
+        rest -> {
+            avra_trap("canon_not_if: region_end named a non-RegionEnd")
+            RegionEndParts { dst: defect_reg(), gives: defect_reg() }
+        },
+    }
+}
+
+/// The index of arm1's OWN `ArmEnd` — the first one at the SAME
+/// nesting depth as `if_at`'s region (a nested region's own ArmEnd
+/// closes at a deeper depth and is skipped).
+fn arm1_end(ins: List<Ins>, if_at: int) -> int {
+    mut depth = 1
+    mut i = if_at + 1
+    mut found = 0 - 1
+    while found < 0 {
+        let step = ins[i]
+        if opens_region(step) { depth = depth + 1 }
+        if closes_region(step) { depth = depth - 1 }
+        if step is .ArmEnd && depth == 1 { found = i }
+        if found < 0 { i = i + 1 }
+    }
+    found
+}
+
+/// The index of the WHOLE region's own `RegionEnd`, bracket-matched
+/// from `if_at`'s own `IfStart`.
+fn region_end(ins: List<Ins>, if_at: int) -> int {
+    mut depth = 1
+    mut i = if_at + 1
+    mut found = 0 - 1
+    while found < 0 {
+        let step = ins[i]
+        if opens_region(step) { depth = depth + 1 }
+        if closes_region(step) { depth = depth - 1 }
+        if depth == 0 { found = i }
+        if found < 0 { i = i + 1 }
+    }
+    found
+}
+
+/// A REGISTER'S RENAME, BY FIRST APPEARANCE: every parameter maps to
+/// its own index (both sides open with the same seats, or they are
+/// not the same declaration), then every instruction's OWN
+/// destination (`dst_of`) is assigned the next sequential number the
+/// first time it is DEFINED — which, the IR being SSA, is the only
+/// time. A register no instruction defines (an operand alone) keeps
+/// its own index: nothing in a well-formed body reads before
+/// something writes.
+export fn alpha_table(ins: List<Ins>, nparams: int) -> Map<string, int> {
+    mut m: Map<string, int> = {}
+    for i in 0..nparams { m.set("${i}", i) }
+    mut next = nparams
+    for step in ins {
+        let d = dst_of(step)
+        if d != null {
+            m.set("${d!.index}", next)
+            next = next + 1
+        }
+    }
+    m
+}
+
+/// `raw`'s instructions, renamed by first appearance — the shape
+/// `alpha_fps` folds into fingerprints and `same_ins_list` compares
+/// structurally, so a hash pre-filter and its exact fallback walk the
+/// SAME renamed values.
+export fn alpha_renamed(raw: List<Ins>, nparams: int) -> List<Ins> {
+    let ins = canon_not_if(raw)
+    let renames = alpha_table(ins, nparams)
+    let rename = (r: Reg) -> Reg { index: renames.get("${r.index}") ?? r.index }
+    [remapped(i, rename) for i in ins]
+}
+
+/// One body's instructions as an ALPHA-RENAMED fingerprint list —
+/// the register NUMBERS folded (`Ins.fingerprint`'s `dst.fingerprint()`
+/// et al) never enter it; only their RENAMED positions do. A shared
+/// fingerprint is a FAST PRE-FILTER, never the verdict: the fold is an
+/// un-keyed rolling hash (`fp_mix`, core/fp.av) and two different
+/// instruction lists can share one — `same_ins_list` is the proof.
+export fn alpha_fps(raw: List<Ins>, nparams: int) -> List<int> {
+    [i.fingerprint() for i in alpha_renamed(raw, nparams)]
+}
+
+/// Two fingerprint lists, elementwise — `==` compares scalars only,
+/// so an instruction-list comparison spells the scan.
+export fn same_fps(a: List<int>, b: List<int>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it] == b[it])
 }
 
 // ── Static data ─────────────────────────────────────────────────
@@ -225,12 +466,38 @@ export enum Slot {
     /// A nullable SCALAR that is not there: the word zero, its cell
     /// marked absent (runtime/avra_box.h's `MARK_ABSENT`).
     Absent
+    /// A CODE ADDRESS — the symbol a `FnAddr` would resolve at run
+    /// time, laid out once instead: a capture-free closure's slot 0.
+    Code(sym: string)
 }
 
 /// One box: a slot array, or a map's keys beside its values.
 export enum StaticBox {
     Slots(cells: List<Slot>)
     Table(keys: List<string>, values: List<Slot>)
+    /// Octets laid out as the binary's own immortal box — the layout
+    /// text shares.
+    Octets(b: Bytes)
+}
+
+/// The code addresses these boxes name — a `Slot.Code` is a body
+/// reference as real as an instruction's, just not one an `Ins` scan
+/// would ever see.
+export fn static_code_syms(boxes: List<StaticBox>) -> List<string> {
+    flatten([box_code_syms(b) for b in boxes])
+}
+
+fn box_code_syms(b: StaticBox) -> List<string> {
+    match b {
+        .Slots(cells) -> flatten([slot_code_sym(c) for c in cells]),
+        .Table(_, values) -> flatten([slot_code_sym(c) for c in values]),
+        .Octets(_) -> [],
+    }
+}
+
+/// One slot's code address, or none — every slot but `.Code` names one.
+fn slot_code_sym(c: Slot) -> List<string> {
+    match c { .Code(sym) -> [sym], rest -> [] }
 }
 
 /// A settled aggregate as its boxes, the ROOT last — the address a
@@ -254,8 +521,77 @@ export fn closes_region(i: Ins) -> bool {
 /// Register identity — two registers are one when their indexes
 /// agree.
 export fn same_reg(a: Reg, b: Reg) -> bool {
-    // LICENSED I9: register identity, not type agreement — ids compare by index
+    // LICENSED structs.index_compared: register identity, not type agreement — ids compare by index
     a.index == b.index
+}
+
+/// Two register lists equal element by element — `same_fps`'s shape,
+/// for `Reg` rather than `int`.
+fn same_regs(a: List<Reg>, b: List<Reg>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_reg(a[it], b[it]))
+}
+
+/// Two OPTIONAL registers equal — absent on both sides, or the same
+/// register on both.
+fn same_reg_opt(a: Reg?, b: Reg?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    same_reg(a!, b!)
+}
+
+/// `a` and `b` STRUCTURALLY EQUAL — the actual proof behind a
+/// fingerprint match. Every fingerprint bottoms out in an un-keyed
+/// rolling hash (core/fp.av), so `same_fps` agreeing is a claim two
+/// DIFFERENT instruction lists can make; this walks the values
+/// themselves. Like `fingerprint()` and `remapped()`, it answers by
+/// variant with no catch-all on `a` — a new `Ins` variant owes this
+/// arm too, or the proof silently favours "equal" for the case
+/// nobody wrote. The inner match against `b` is a PROJECTION (one
+/// variant answers, `rest` is honestly false for every other one,
+/// present or future) rather than a second registry: a different
+/// variant is never equal, so its answer needs no update when `Ins`
+/// grows.
+export fn same_ins(a: Ins, b: Ins) -> bool {
+    match a {
+        .ConstInt(d1, v1) -> match b { .ConstInt(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .ConstFloat(d1, v1) -> match b { .ConstFloat(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .ConstStr(d1, s1) -> match b { .ConstStr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .ConstBool(d1, v1) -> match b { .ConstBool(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .Bin(d1, op1, l1, r1) -> match b { .Bin(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2), rest -> false },
+        .Un(d1, op1, s1) -> match b { .Un(d2, op2, s2) -> same_reg(d1, d2) && op1 == op2 && same_reg(s1, s2), rest -> false },
+        .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
+        .CallRt(d1, c1, args1) -> match b { .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2), rest -> false },
+        .Pack(d1, e1) -> match b { .Pack(d2, e2) -> same_reg(d1, d2) && same_regs(e1, e2), rest -> false },
+        .Extract(d1, s1, at1) -> match b { .Extract(d2, s2, at2) -> same_reg(d1, d2) && same_reg(s1, s2) && at1 == at2, rest -> false },
+        .FnAddr(d1, s1) -> match b { .FnAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
+        .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
+        .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
+        .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && same_fps(cs1, cs2), rest -> false },
+        .ArmEnd(g1) -> match b { .ArmEnd(g2) -> same_reg(g1, g2), rest -> false },
+        .RegionEnd(d1, g1) -> match b { .RegionEnd(d2, g2) -> same_reg(d1, d2) && same_reg(g1, g2), rest -> false },
+        .Call(d1, c1, args1) -> match b { .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2), rest -> false },
+        .CallPtr(d1, f1, args1) -> match b { .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2), rest -> false },
+        .RetVal(r1) -> match b { .RetVal(r2) -> same_reg(r1, r2), rest -> false },
+        .FnExit(g1) -> match b { .FnExit(g2) -> same_reg(g1, g2), rest -> false },
+        .Alloca(d1) -> match b { .Alloca(d2) -> same_reg(d1, d2), rest -> false },
+        .Load(d1, s1) -> match b { .Load(d2, s2) -> same_reg(d1, d2) && same_reg(s1, s2), rest -> false },
+        .Store(s1, v1) -> match b { .Store(s2, v2) -> same_reg(s1, s2) && same_reg(v1, v2), rest -> false },
+        .LoopStart -> match b { .LoopStart -> true, rest -> false },
+        .LoopCond(c1) -> match b { .LoopCond(c2) -> same_reg(c1, c2), rest -> false },
+        .LoopEnd -> match b { .LoopEnd -> true, rest -> false },
+        .Retain(r1) -> match b { .Retain(r2) -> same_reg(r1, r2), rest -> false },
+        .Release(r1) -> match b { .Release(r2) -> same_reg(r1, r2), rest -> false },
+        .Ret(c1) -> match b { .Ret(c2) -> c1 == c2, rest -> false },
+    }
+}
+
+/// Two alpha-renamed instruction lists, STRUCTURALLY. `same_fps`
+/// compares their hashes as a cheap pre-filter; a hash match proves
+/// nothing on its own, so `same_ir` (compiler/rule_proof.av) never
+/// calls a rewrite proved without this walk agreeing too.
+export fn same_ins_list(a: List<Ins>, b: List<Ins>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_ins(a[it], b[it]))
 }
 
 /// A slot in a runtime signature — the CallRt contract's currency,
@@ -292,7 +628,12 @@ export enum RtHost {
     ArrayGet
     ArrayLen
     CellRelease
+    CellForget
     CellUnique
+    CellThawed
+    EnumBoxed
+    EnumTag
+    EnumWord
     SlotUnique
     SlotSet
     MapNew
@@ -392,9 +733,18 @@ export enum RtHost {
     TaskDone
     TaskSettle
     TaskSettleAll
+    TasksPush
     FiberYield
     FiberSleep
     FiberParkFd
+    FiberWithin
+    FiberWithinEnd
+    /// A named TYPE, resolved from where the calling annotation
+    /// processor stands. Natively it traps — a running program has
+    /// no declaration table; the interpreter's arm reaches the
+    /// workspace directly, the one row whose C body is never its
+    /// real answer.
+    TypeNamed
     /// Reached by the backend only — an instruction or a Bin op
     /// covers it in the interpreter.
     Unhosted
@@ -441,11 +791,14 @@ export enum RtHost {
 /// What a runtime row REACHES: `Pure` answers from its arguments
 /// alone, so a settlement may run it; `Embed` reads a file the BUILD
 /// owns, beside the source, so a settlement may run it and records
-/// the file; `World` reads or writes the process's world — io, time,
-/// env, a child — and no compile-time evaluation may.
-export enum Reach { Pure, Embed, World }
+/// the file; `Lookup` reads the compiler's OWN declaration table —
+/// deterministic for a given program, never the process's world, so
+/// every compile-time run may use it; `World` reads or writes the
+/// process's world — io, time, env, a child — and no compile-time
+/// evaluation may.
+export enum Reach { Pure, Embed, Lookup, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false }
 
 /// WHICH BOX a `Ptr` seat takes — and, in `answer`, which box a `Ptr`
 /// ANSWER hands back. A pointer says only that a header

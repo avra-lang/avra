@@ -1,17 +1,17 @@
-//! The server loop, turned by hand on one thread: a client on the
-//! loopback writes a request, the server turns until the response has
-//! landed, and the client reads it. Every exchange is exact bytes.
-use @std.net.{Conn, Poller, NetError, listen, connect, poller}
-use @std.time.{ms, secs}
+//! The server on its own task beside the test: a client on the
+//! loopback writes a request and reads the response, each side parked
+//! while the other runs. Every exchange is exact bytes.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{Duration, ms, secs, sleep, within}
 use @std.http.frame.{limits, Limits, Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Table, routed, compiled, dispatch}
 use @std.http.server.{Server, Timing, served, timing}
 
 grammar Note = "/notes/{id}"
 
-fn serve_note(q: Request, n: Note) -> Response {
-    text(200, "note ${n.id} redirect:${q.query().has("redirect")}")
+fn serve_note(q: Request<Note>) -> Response {
+    text(200, "note ${q.params.id} redirect:${q.query().has("redirect")}")
 }
 
 once fn notes_table() -> Table {
@@ -20,174 +20,238 @@ once fn notes_table() -> Table {
 
 /// A handler that is the router: the loop hands it the request, the
 /// table answers.
-fn routed_app(mut app: App, q: Request) -> Response {
-    app.hits = app.hits + 1
+fn routed_app(app: App, q: Request<Unrouted>) -> Response {
+    let _ = bumped(app)
     dispatch(notes_table(), q)
 }
 
-/// The application: a counter the handler bumps, so a test can see
-/// that state threads through the loop as a value.
-type App = { hits: int }
+/// The application: a counter every connection shares, so a test can
+/// see the state handlers write across the server.
+type App = { hits: Cell<int> }
 
-fn echo(mut app: App, q: Request) -> Response {
-    app.hits = app.hits + 1
-    text(200, "${q.head.method is .Get} ${q.target() ?? "?"} ${q.body.text() ?? "?"} ${app.hits}")
+/// The counter bumped; answers the new count.
+fn bumped(app: App) -> int {
+    app.hits.set(app.hits.get() + 1)
+    app.hits.get()
 }
 
-/// A server on a kernel-chosen loopback port with a client attached.
-type Pair = { s: Server<App>, c: Conn, p: Poller }
+fn echo(app: App, q: Request<Unrouted>) -> Response {
+    let n = bumped(app)
+    text(200, "${q.head.method is .Get} ${q.target() ?? "?"} ${q.body.text() ?? "?"} ${n}")
+}
+
+/// A server under test and a client connected to it. A test spawns
+/// `s.run()` and then defers `done()` — in that order, so the server
+/// stops before the block joins its task.
+type Bed = { s: Server<App>, c: Conn }
 
 /// A server running `handle` under `lim` and `t`, with a client
-/// attached — THE ONE PAIR BUILDER. A suite that spells its own is
-/// testing its own scaffolding beside the loop.
-fn paired(handle: fn(mut App, Request) -> Response, lim: Limits, t: Timing) -> Result<Pair, NetError> {
+/// attached — THE ONE BED BUILDER. A suite that spells its own is
+/// testing its own scaffolding beside the server.
+fn bed_with(handle: fn(mut App, Request<Unrouted>) -> Response, lim: Limits, t: Timing) -> Result<Bed, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, lim, t, handle)?
     let c = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(c.fd, .Read)?
-    .Ok(Pair { s: s, c: c, p: p })
+    .Ok(Bed { s: served(l, () -> App { hits: Cell.new(0) }, lim, t, handle), c: c })
 }
 
-fn pair(t: Timing) -> Result<Pair, NetError> { paired(echo, limits(), t) }
+fn bed(t: Timing) -> Result<Bed, NetError> { bed_with(echo, limits(), t) }
 
-/// The client's bytes written whole — the server turned whenever the
-/// socket takes none, so a write larger than the buffer cannot spin —
-/// then the server turned and the client read until `expected` bytes
-/// have arrived or the peer ends. Every read is one turn of the
-/// server, so the exchange is deterministic.
-fn exchanged_bytes(mut pr: Pair, sent: Bytes, expected: int) -> Result<Bytes, NetError> {
-    mut from = 0
-    while from < sent.length {
-        let n = pr.c.try_write(sent, from)?
-        if n == 0 { pr.s.turn(ms(20))? }
-        from = from + n
+impl Bed {
+    /// The client closed and the server stopped.
+    fn done() {
+        let _ = self.c.close()
+        self.s.stop()
     }
+}
+
+/// How long a test waits for bytes it expects — generous, since a read
+/// answers the moment they land and a loaded machine is slow.
+fn patience() -> Duration { secs(5) }
+
+/// How long silence is listened for before it counts as silence.
+fn quiet() -> Duration { ms(300) }
+
+/// `sent` written whole, then read until `expected` bytes have come,
+/// the peer ends, or `patience()` passes with nothing more.
+fn exchanged_bytes(c: Conn, sent: Bytes, expected: int) -> Result<Bytes, NetError> {
+    c.write(sent)?
     mut got = "".bytes()
-    mut turns = 0
-    while got.length < expected && turns < 60 {
-        pr.s.turn(ms(20))?
-        pr.p.wait(ms(20))?
-        let chunk: Bytes? = match pr.c.try_read(65536)? {
-            .Data(b) -> b,
-            .Eof -> { return .Ok(got) },
-            .Pending -> null,
+    mut open = true
+    while open && got.length < expected {
+        match within patience() { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? "".bytes())
+            },
+            .Err(e) -> {
+                if !e.timed_out() { return .Err(e) }
+                open = false
+            },
         }
-        got = got.concat(chunk ?? "".bytes())
-        turns = turns + 1
     }
     .Ok(got)
 }
 
-fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<Bytes, NetError> {
-    exchanged_bytes(pr, sent.bytes(), expected)
+fn exchanged(c: Conn, sent: string, expected: int) -> Result<Bytes, NetError> {
+    exchanged_bytes(c, sent.bytes(), expected)
 }
 
-fn reply(mut pr: Pair, sent: string) -> Result<string, NetError> {
-    let got = exchanged(pr, sent, 1)?
+/// `sent` written whole, then `quiet()` listened to: whether nothing
+/// came back.
+fn unanswered(c: Conn, sent: Bytes) -> Result<bool, NetError> {
+    c.write(sent)?
+    match within quiet() { c.read(65536) } {
+        .Ok(_) -> .Ok(false),
+        .Err(e) -> if e.timed_out() { .Ok(true) } else { .Err(e) },
+    }
+}
+
+fn reply(c: Conn, sent: string) -> Result<string, NetError> {
+    let got = exchanged(c, sent, 1)?
     .Ok(got.text() ?? "<not text>")
 }
 
+/// Whether the server's open connections fall to `n` within
+/// `patience()` — a close is the server's to notice, on its own task.
+fn settles_to(s: Server<App>, n: int) -> bool {
+    mut waited = 0
+    while s.connections() != n && waited < patience().ms {
+        sleep(ms(5))
+        waited = waited + 5
+    }
+    s.connections() == n
+}
+
 fn get_root() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let r = reply(pr, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(r == "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 10\r\n\r\ntrue /x  1")
 }
 
 fn keep_alive_twice() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let first = reply(pr, "GET /a HTTP/1.1\r\nHost: a\r\n\r\n")?
-    let second = reply(pr, "GET /b HTTP/1.1\r\nHost: a\r\n\r\n")?
-    .Ok(first.ends_with("true /a  1") && second.ends_with("true /b  2") && pr.s.connections() == 1)
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let second = reply(b.c, "GET /b HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(first.ends_with("true /a  1") && second.ends_with("true /b  2") && b.s.connections() == 1)
 }
 
 fn pipelined() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let both = exchanged(pr, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 200)?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let both = exchanged(b.c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 200)?
     let t = both.text() ?? ""
     .Ok(t.index_of("true /a  1") < t.index_of("true /b  2") && t.index_of("true /b  2") > 0)
 }
 
 fn posted() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let r = reply(pr, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello")?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello")?
     .Ok(r.ends_with("false /p hello 1"))
 }
 
 fn body_in_two_reads() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let partial = exchanged(pr, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel", 1)?
-    let rest = reply(pr, "lo")?
-    .Ok(partial.length == 0 && rest.ends_with("false /p hello 1"))
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let silent = unanswered(b.c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel".bytes())?
+    let rest = reply(b.c, "lo")?
+    .Ok(silent && rest.ends_with("false /p hello 1"))
 }
 
 fn chunked_body() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let r = reply(pr, "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n")?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n")?
     .Ok(r.ends_with("false /c hello 1"))
 }
 
 fn refused_then_closed() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let got = exchanged(pr, "GET  /x HTTP/1.1\r\nHost: a\r\n\r\n", 1000)?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, "GET  /x HTTP/1.1\r\nHost: a\r\n\r\n", 1000)?
     let t = got.text() ?? ""
-    .Ok(t.starts_with("HTTP/1.1 400 Bad Request\r\n") && t.contains("connection: close\r\n") && pr.s.connections() == 0)
+    .Ok(t.starts_with("HTTP/1.1 400 Bad Request\r\n") && t.contains("connection: close\r\n") && settles_to(b.s, 0))
 }
 
 fn head_carries_no_body() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let r = reply(pr, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(r.ends_with("content-length: 11\r\n\r\n"))
 }
 
 fn expect_continue() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let first = reply(pr, "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")?
-    let second = reply(pr, "ok")?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")?
+    let second = reply(b.c, "ok")?
     .Ok(first == "HTTP/1.1 100 Continue\r\n\r\n" && second.ends_with("false /e ok 1"))
 }
 
 fn closes_when_asked() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let got = exchanged(pr, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", 1000)?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", 1000)?
     let t = got.text() ?? ""
-    .Ok(t.contains("connection: close\r\n") && pr.s.connections() == 0)
+    .Ok(t.contains("connection: close\r\n") && settles_to(b.s, 0))
 }
 
 fn idle_is_dropped() -> Result<bool, NetError> {
-    mut pr = pair(Timing { idle: ms(20) })?
-    let _ = reply(pr, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
-    let before = pr.s.connections()
-    let _ = exchanged(pr, "", 1)?
-    .Ok(before == 1 && pr.s.connections() == 0)
+    let b = bed(Timing { idle: ms(20) })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let before = b.s.connections()
+    let _ = exchanged(b.c, "", 1)?
+    .Ok(before == 1 && settles_to(b.s, 0))
 }
 
 fn peer_ends_first() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let _ = pr.c.try_write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
-    let _ = pr.c.shutdown_write()?
-    let got = exchanged(pr, "", 1000)?
-    .Ok((got.text() ?? "").ends_with("true /x  1") && pr.s.connections() == 0)
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = b.c.write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
+    let _ = b.c.shutdown_write()?
+    let got = exchanged(b.c, "", 1000)?
+    .Ok((got.text() ?? "").ends_with("true /x  1") && settles_to(b.s, 0))
 }
 
 fn old_client_keeps_alive() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let r = reply(pr, "GET /k HTTP/1.0\r\nHost: a\r\nConnection: keep-alive\r\n\r\n")?
-    .Ok(r.contains("connection: keep-alive\r\n") && pr.s.connections() == 1)
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "GET /k HTTP/1.0\r\nHost: a\r\nConnection: keep-alive\r\n\r\n")?
+    .Ok(r.contains("connection: keep-alive\r\n") && b.s.connections() == 1)
 }
 
 fn old_client_is_closed() -> Result<bool, NetError> {
-    mut pr = pair(timing())?
-    let got = exchanged(pr, "GET /c HTTP/1.0\r\nHost: a\r\n\r\n", 1000)?
-    .Ok((got.text() ?? "").contains("connection: close\r\n") && pr.s.connections() == 0)
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, "GET /c HTTP/1.0\r\nHost: a\r\n\r\n", 1000)?
+    .Ok((got.text() ?? "").contains("connection: close\r\n") && settles_to(b.s, 0))
 }
 
 /// The loop under the router: a target with a query holding a `/`
 /// still finds its route, and the query is read beside the path.
 fn routed_through_the_loop() -> Result<bool, NetError> {
-    mut pr = paired(routed_app, limits(), timing())?
-    let found = reply(pr, "GET /notes/7?redirect=/home HTTP/1.1\r\nHost: a\r\n\r\n")?
-    let missing = reply(pr, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let b = bed_with(routed_app, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let found = reply(b.c, "GET /notes/7?redirect=/home HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let missing = reply(b.c, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(found.ends_with("note 7 redirect:true") && missing.starts_with("HTTP/1.1 404 Not Found"))
 }
 

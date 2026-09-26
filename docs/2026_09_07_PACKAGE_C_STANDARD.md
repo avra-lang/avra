@@ -1765,7 +1765,7 @@ every declaration is typed as a value regardless of which feature
 declared it. `is_extern` was already shared `Decls` infrastructure,
 not `fns`-private, so no feature came to import another's file. The
 new code is registered in `fns/mod.av` (`"type.extern_value" |
-"F2093"`), since the LAW is fns' even though the shared reader is
+"F2103"`), since the LAW is fns' even though the shared reader is
 where it is asked. The check-time refusal fires before lowering is
 ever reached, so `check`, `run` and `build` now agree by construction
 rather than by each independently reproducing the defect.

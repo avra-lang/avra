@@ -9,6 +9,8 @@
 //! (NAME, NUMBER, STRING, BREAK, END, EOF, ...); a future SQL grammar
 //! passes its own.
 
+use core.{flatten, some_list}
+
 impl Seq {
     /// This branch's capture labels, including those inside nested
     /// groups — capture accumulation makes them all visible to the
@@ -46,12 +48,12 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
     }
     let labels = s.labels()
     match s.build! {
-        .Var(name) ->
-            if labels.contains(name) { [] }
-            else { [defect(rule_name, "build returns uncaptured label `${name}`")] },
-        .Call(_, args) ->
-            [defect(rule_name, "build argument `${a}` is not captured in its branch")
-                for a in args if !labels.contains(a)],
+        .Var(name) -> if labels.contains(name) {
+            []
+        } else {
+            [defect(rule_name, "build returns uncaptured label `${name}`")]
+        },
+        .Call(_, args) -> [defect(rule_name, "build argument `${a}` is not captured in its branch") for a in args if !labels.contains(a)],
         // A node build's labels are checked against the NODE's
         // payloads, by whoever holds the node model — never here.
         .Node(_, _, _, _) -> [],
@@ -80,7 +82,7 @@ impl Grammar {
         }
         // The executor indexes rules by name; a duplicate would silently
         // shadow. Same-name rules must merge before a grammar runs.
-        // LICENSED I16: duplicate DETECTION across rules, not one list
+        // LICENSED compiler.seen_accumulator: duplicate DETECTION across rules, not one list
         mut seen: List<string> = []
         for r in self.rules {
             if seen.contains(r.name) {

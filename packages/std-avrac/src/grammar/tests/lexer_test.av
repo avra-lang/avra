@@ -17,11 +17,7 @@ spec "grammar/lexer" {
             let r = lex_grammar("term = NUMBER")
             let t0 = r.tokens[0]
             let t2 = r.tokens[2]
-            r.tokens.length == 5 &&
-                t0.kind == TokenKind.Name && t0.text == "term" && t0.span.lo == 0 && t0.span.hi == 4 &&
-                r.tokens[1].text == "=" &&
-                t2.text == "NUMBER" && t2.span.lo == 7 && t2.span.hi == 13 &&
-                r.tokens[3].kind == TokenKind.Break && r.tokens[4].kind == TokenKind.Eof
+            r.tokens.length == 5 && t0.kind == TokenKind.Name && t0.text == "term" && t0.span.lo == 0 && t0.span.hi == 4 && r.tokens[1].text == "=" && t2.text == "NUMBER" && t2.span.lo == 7 && t2.span.hi == 13 && r.tokens[3].kind == TokenKind.Break && r.tokens[4].kind == TokenKind.Eof
         }
         then "a final Break is guaranteed without a trailing newline" {
             let r = lex_grammar("a = b")
@@ -44,7 +40,7 @@ spec "grammar/lexer" {
             op_texts(r)[1] == ".." && op_texts(lone)[1] == "." && lone.errors.is_empty()
         }
         then "a stray character is an error and lexing continues" {
-            let r = lex_grammar("x = $")
+            let r = lex_grammar("x = \$")
             r.errors.length == 1 && r.tokens.last()!.kind == TokenKind.Eof
         }
         then "@expect lexes as one PKG token — the `@name` class" {
@@ -56,13 +52,11 @@ spec "grammar/lexer" {
         then "a digit run is one Num token with exact span" {
             let r = lex_grammar("x = 42 7")
             let n = r.tokens[2]
-            n.kind == TokenKind.Num && n.text == "42" && n.span.lo == 4 && n.span.hi == 6 &&
-                r.tokens[3].kind == TokenKind.Num
+            n.kind == TokenKind.Num && n.text == "42" && n.span.lo == 4 && n.span.hi == 6 && r.tokens[3].kind == TokenKind.Num
         }
         then "digits then letters lex as Num then Name" {
             let r = lex_grammar("x = 1abc")
-            r.tokens[2].kind == TokenKind.Num && r.tokens[2].text == "1" &&
-                r.tokens[3].kind == TokenKind.Name && r.tokens[3].text == "abc"
+            r.tokens[2].kind == TokenKind.Num && r.tokens[2].text == "1" && r.tokens[3].kind == TokenKind.Name && r.tokens[3].text == "abc"
         }
     }
     given "strings" {
@@ -84,12 +78,12 @@ spec "grammar/lexer" {
     given "line structure" {
         then "a Break appears exactly at rule boundaries" {
             let cases = table<BreakCase> {
-                src                       | breaks
-                "a = b\n   | c\nd = e"    | 2
-                "a = b\n\n\nc = d"        | 2
-                "\na = b"                 | 1
-                "a = b\n    c\nd = e"     | 2
-                "a = b -> f\nc = d"       | 2
+                src                    | breaks
+                "a = b\n   | c\nd = e" | 2
+                "a = b\n\n\nc = d"     | 2
+                "\na = b"              | 1
+                "a = b\n    c\nd = e"  | 2
+                "a = b -> f\nc = d"    | 2
             }
             cases.all(count_breaks(lex_grammar(it.src)) == it.breaks)
         }
@@ -103,8 +97,7 @@ spec "grammar/lexer" {
             let src = lex_source("a // trailing words\nb")
             let dsl = lex_grammar("a = b // trailing\nc = d")
             let names = [t.text for t in src.tokens if t.kind == TokenKind.Name]
-            names.length == 2 && names[1] == "b" && count_breaks(dsl) == 2 &&
-                op_texts(dsl).length == 2
+            names.length == 2 && names[1] == "b" && count_breaks(dsl) == 2 && op_texts(dsl).length == 2
         }
         then "a comment-only line is a blank line" {
             count_breaks(lex_source("a\n// note\nb")) == 2
@@ -117,8 +110,7 @@ spec "grammar/lexer" {
             // 4-character comment. Every prefix answers alike.
             let body = "x = f()\n    .g()"
             let alone = count_breaks(lex_source(body))
-            [count_breaks(lex_source("${p}\n${body}")) for p in ["//", "//a", "//ab", "// leading", "/// doc", "//! header"]]
-                .all(it == alone)
+            [count_breaks(lex_source("${p}\n${body}")) for p in ["//", "//a", "//ab", "// leading", "/// doc", "//! header"]].all(it == alone)
         }
         then "a comment at end of input needs no newline" {
             let r = lex_source("a // last")
@@ -132,13 +124,11 @@ spec "grammar/lexer" {
         }
         then "contiguous declaration-leading `///` lines are retained as one group" {
             let r = lex_source("/// First line.\n/// Second line.\nexport fn answer() -> int { 42 }")
-            r.docs.length == 1 && r.docs[0].lines.join("\n") == "First line.\nSecond line." &&
-                r.docs[0].before == 33
+            r.docs.length == 1 && r.docs[0].lines.join("\n") == "First line.\nSecond line." && r.docs[0].before == 33
         }
         then "an empty `///` line is a line of the group" {
             let r = lex_source("///\n/// a\nfn a() -> int { 1 }")
-            r.docs.length == 1 && r.docs[0].lines.length == 2 &&
-                r.docs[0].lines[0].is_empty() && r.docs[0].lines[1] == "a"
+            r.docs.length == 1 && r.docs[0].lines.length == 2 && r.docs[0].lines[0].is_empty() && r.docs[0].lines[1] == "a"
         }
         then "an ordinary comment inside a doc group does not detach it" {
             let r = lex_source("/// kept\n// note\nfn a() {}")
@@ -157,14 +147,11 @@ spec "grammar/lexer" {
     given "interpolation pieces" {
         then "a holed string lexes as begin, hole tokens, end" {
             let r = lex_source("\"a \${x} b\"")
-            r.errors.is_empty() && r.tokens[0].kind == TokenKind.IStrBegin &&
-                r.tokens[0].text == "a " && r.tokens[1].kind == TokenKind.Name &&
-                r.tokens[2].kind == TokenKind.IStrEnd && r.tokens[2].text == " b"
+            r.errors.is_empty() && r.tokens[0].kind == TokenKind.IStrBegin && r.tokens[0].text == "a " && r.tokens[1].kind == TokenKind.Name && r.tokens[2].kind == TokenKind.IStrEnd && r.tokens[2].text == " b"
         }
         then "two holes meet at a mid piece; braces nest by depth" {
             let r = lex_source("\"\${if a { 1 } else { 2 }}-\${y}\"")
-            let kinds = [t for t in r.tokens if t.kind == TokenKind.IStrBegin ||
-                t.kind == TokenKind.IStrMid || t.kind == TokenKind.IStrEnd]
+            let kinds = [t for t in r.tokens if t.kind == TokenKind.IStrBegin || t.kind == TokenKind.IStrMid || t.kind == TokenKind.IStrEnd]
             r.errors.is_empty() && kinds.length == 3 && kinds[1].text == "-"
         }
         then "an escaped dollar never opens a hole" {
@@ -172,33 +159,30 @@ spec "grammar/lexer" {
             r.tokens[0].kind == TokenKind.Str && r.tokens[0].text == "a \${x}"
         }
         then "the grammar DSL never interpolates" {
-            let r = lex_grammar("x = \"$\"")
+            let r = lex_grammar("x = \"\$\"")
             r.errors.is_empty() && r.tokens[2].kind == TokenKind.Str
         }
         then "a string nested inside a hole opens its own holes" {
             let r = lex_source("\"\${f(\"\${y}\")}\"")
-            r.errors.is_empty() &&
-                [t for t in r.tokens if t.kind == TokenKind.IStrBegin].length == 2
+            r.errors.is_empty() && [t for t in r.tokens if t.kind == TokenKind.IStrBegin].length == 2
         }
         then "an unclosed hole says which brace is missing, once" {
             let r = lex_source("\"a \${x\n1")
-            r.errors.length == 1 &&
-                r.errors[0].message == "an interpolation hole is missing its `}`"
+            r.errors.length == 1 && r.errors[0].message == "an interpolation hole is missing its `}`"
         }
         then "an unclosed hole at end of input is the same complaint" {
             let r = lex_source("\"a \${x")
-            r.errors.length == 1 &&
-                r.errors[0].message == "an interpolation hole is missing its `}`"
+            r.errors.length == 1 && r.errors[0].message == "an interpolation hole is missing its `}`"
         }
     }
     given "language source line structure" {
         then "every line break separates; runs collapse; leading drops" {
             let cases = table<BreakCase> {
-                src               | breaks
-                "a\nb"            | 2
-                "a\n\n\nb"        | 2
-                "\na"             | 1
-                ""                | 0
+                src        | breaks
+                "a\nb"     | 2
+                "a\n\n\nb" | 2
+                "\na"      | 1
+                ""         | 0
             }
             cases.all(count_breaks(lex_source(it.src)) == it.breaks)
         }
@@ -207,13 +191,13 @@ spec "grammar/lexer" {
             r.tokens[1].kind == TokenKind.Break && r.tokens[2].kind == TokenKind.Eof
         }
     }
-
     given "one depth law — a body in a hole closes" {
+
         then "a raw block opened inside a quote hole closes, and its hole is its own" {
             // The block's `{` is not counted against the enclosing hole,
             // and the block's `}` is the block's — the outer hole still
             // closes at ITS `}`, so the source lexes whole.
-            let r = lex_blocks("quote { \${ sql { a \${1} } } }", ["sql"])
+            let r = lex_blocks("quote { \${ sql { a \${1} } } }", ["sql"], [])
             let bodies = [t for t in r.tokens if t.kind == TokenKind.Body].length
             r.errors.is_empty() && bodies == 1
         }
@@ -225,13 +209,13 @@ spec "grammar/lexer" {
             r.errors.length == 1 && r.errors[0].message.contains("a hole inside a hole")
         }
         then "a raw block's closer closes it, not the hole around it" {
-            let r = lex_blocks("quote { \${ sql { a }.relation } }", ["sql"])
+            let r = lex_blocks("quote { \${ sql { a }.relation } }", ["sql"], [])
             let names = [t.text for t in r.tokens if t.kind == TokenKind.Name]
             r.errors.is_empty() && names.contains("relation")
         }
     }
-
     given "an integer literal's ceiling" {
+
         // `v * 10 + d` past the ceiling wraps in SILENCE, and the
         // wrapped number is not the one on the page: 99999999999-
         // 999999999 answered 7766279631452241919 with no message.

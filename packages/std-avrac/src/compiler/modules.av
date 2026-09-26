@@ -11,7 +11,7 @@ impl Workspace {
     // ── Modules ──
     /// A path as a diagnostic shows it: under its package's source root.
     fn shown(path: string) -> string {
-        below(path, self.packages[self.holder_of_path(path)].src)
+        below(path, self.packages()[self.holder_of_path(path)].src)
     }
 
     /// The module a file belongs to: its directory under its package's
@@ -20,7 +20,7 @@ impl Workspace {
     fn module_of(path: string) -> string {
         // the answer is a walk over every package, and packages are admitted as
         // `use` lines reach them: it is remembered for ONE size of that table
-        let key = "${self.packages.length}\t${path}"
+        let key = "${self.packages().length}\t${path}"
         let known: string? = self.module_names_of.get().get(key)
         if known != null { return known! }
         let made = self.module_named(path)
@@ -29,7 +29,7 @@ impl Workspace {
     }
 
     fn module_named(path: string) -> string {
-        let pkg = self.packages[self.holder_of_path(path)]
+        let pkg = self.packages()[self.holder_of_path(path)]
         // EVERY FILE ITS OWN MODULE in a directory of programs: the
         // module is the file's path under the root, stem included, so
         // seventy programs' `P`s never share a namespace
@@ -48,7 +48,7 @@ impl Workspace {
         // a listing is the host's to give, and a `use` line asks it of the same
         // module a hundred times: remembered for ONE size of the package table,
         // since a package admitted later answers for modules it holds
-        let key = "${self.packages.length}\t${m.text()}"
+        let key = "${self.packages().length}\t${m.text()}"
         let known: List<string>? = self.files_of.get().get(key)
         if known != null { return known! }
         let made = self.listed_files(m)
@@ -62,7 +62,7 @@ impl Workspace {
         if self.crosses_package(src, m.local()) { return [] }
         let dir = m.dir_under(src)
         if self.host.is_dir(dir) {
-            return [ joined_path(dir, f) for f in self.host.list(dir) if self.listed_source(dir, f) ]
+            return [joined_path(dir, f) for f in self.host.list(dir) if self.listed_source(dir, f)]
         }
         let file = m.file_under(src)
         if self.host.exists(file) { return [file] }
@@ -86,7 +86,7 @@ impl Workspace {
     /// package — the spelling the resolver uses, so the record cannot mean a
     /// different module than the compiler does.
     fn imported_by(path: string) -> List<ModulePath> {
-        let from = self.packages[self.holder_of_path(path)]
+        let from = self.packages()[self.holder_of_path(path)]
         [self.canonical(qualified(module_path(u.path), from)) for u in use_lines(self.parsed(self.file_id(path)))]
     }
 
@@ -99,7 +99,7 @@ impl Workspace {
     /// Whether a path — a directory or a file — is one its package's
     /// manifest EXCLUDES.
     fn excluded(path: string) -> bool {
-        let pkg = self.packages[self.holder_of_path(path)]
+        let pkg = self.packages()[self.holder_of_path(path)]
         self.manifest(pkg.ordinal).excludes.any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
     }
 
@@ -178,14 +178,14 @@ impl Workspace {
         // source root, tests included, and analysing one as a program fails in its own
         // words — "a module file holds declarations, only the entry runs statements" —
         // which is a diagnostic about the TEST rather than about the build.
-        [f for f in flatten([self.all_files(pkg.src) for pkg in self.packages]) if !self.is_test_path(f)]
+        [f for f in flatten([self.all_files(pkg.src) for pkg in self.packages()]) if !self.is_test_path(f)]
     }
 
     /// Whether a source path is a package's TEST tree rather than its code.
     fn is_test_path(path: string) -> bool { path.contains("/tests/") }
 
     fn root_files() -> List<string> {
-        self.all_files(self.packages[0].src)
+        self.all_files(self.packages()[0].src)
     }
 
     /// The tree the toolchain's packages stand in: `<tree>/packages`
@@ -202,8 +202,9 @@ impl Workspace {
         mut out: List<string> = []
         for f in self.host.list(dir) {
             let full = joined_path(dir, f)
-            if self.host.is_dir(full) { out = out.concat(self.engine_sources(full)) }
-            else if f.ends_with(".c") || f.ends_with(".h") { out.push(full) }
+            if self.host.is_dir(full) {
+                out = out.concat(self.engine_sources(full))
+            } else if f.ends_with(".c") || f.ends_with(".h") { out.push(full) }
         }
         out
     }
@@ -233,7 +234,7 @@ impl Workspace {
 
     /// A module's exported names.
     fn surface(m: ModulePath) -> Map<string, DeclId> {
-        let slot = "${self.packages.length}\t${m.text()}"
+        let slot = "${self.packages().length}\t${m.text()}"
         let known: Map<string, DeclId>? = self.surfaces.get().get(slot)
         if known != null { return known! }
         mut out: Map<string, DeclId> = {}
@@ -248,7 +249,7 @@ impl Workspace {
     /// and listed once.
     fn imported_line(p: Parsed, u: UseParts) -> Imported {
         let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
-        let from = self.packages[self.holder_of_path(p.source.file)]
+        let from = self.packages()[self.holder_of_path(p.source.file)]
         let m = qualified(module_path(u.path), from)
         if self.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
         if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
@@ -262,14 +263,13 @@ impl Workspace {
         mut diags: List<Diag> = []
         mut listed: List<string> = []
         for j, item in u.items {
-            let alias = if j < u.aliases.length { u.aliases[j] } else { "" }
             let id: DeclId? = surf.get(item)
             if listed.contains(item) {
                 diags.push(listed_twice(at, item))
             } else if id == null {
                 diags.push(not_exported(at, m, item, self.exported_names(m)))
             } else {
-                imports.push(Import { decl: id!, at: at, alias: alias })
+                imports.push(Import { decl: id!, at: at, renamed: u.alias_at(j) })
             }
             listed.push(item)
         }

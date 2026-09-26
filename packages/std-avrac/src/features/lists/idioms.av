@@ -1,0 +1,47 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+
+/// Last-element index arithmetic is `xs.last()!` — the same trap on
+/// an empty list, spelled once.
+// LICENSED lists.last_index: the example text names the idiom it proves — the
+// site the scanner is built to find, held as a string, not written
+@fixes("xs[xs.length - 1]", "xs.last()!")
+@keeps("xs[xs.length - 2]")
+export rule last_index {
+    quote { ${xs}[${xs}.length - 1] } -> quote { ${xs}.last()! },
+}
+
+/// A comprehension over a LIST folded to a bool is a SCAN —
+/// `xs.all(pred)` stops at the first answer and builds nothing,
+/// where `[e for j in src].all(it)` mints the whole list first. A
+/// comprehension with its own `if` filter is not yet reached (the
+/// subset today).
+///
+/// The predicate is `(${j}) -> ${e}` — the comprehension's own
+/// binder and element, unchanged; a SEPARATE rule (`pronoun_lambda`)
+/// folds it to `it` on its own next pass when the shape allows, so
+/// this rewrite does not need to re-derive that itself.
+@fixes("[n > 0 for n in src].all(it)", "src.all((n) -> n > 0)")
+@keeps("[e for j in src]")
+export rule bool_comprehension_list {
+    // LICENSED lists.bool_comprehension_list: the pattern's own text names the shape it detects
+    quote { [${e} for ${j} in ${src}].all(it) } -> quote { ${src}.all((${j}) -> ${e}) },
+}
+
+/// The range-source twin — `[e for j in lo..hi].all(it)`.
+///
+/// NO REWRITE: a bare range has no methods (`(lo..hi).all(…)` is
+/// F0100 — a range is a `for`-head and a comprehension's iterable,
+/// nothing more, probed on this tree). There is no scan form this
+/// rewrite could land on without first minting a list, which is
+/// exactly the cost the idiom exists to avoid.
+@keeps("[e for j in lo..hi]")
+export rule bool_comprehension_range {
+    // LICENSED lists.bool_comprehension_range: the pattern's own text names the shape it detects
+    quote { [${e} for ${j} in ${lo}..${hi}].all(it) } -> folded_comprehension(lo),
+}
+
+fn folded_comprehension(src: Code) -> Fix {
+    Fix.Say(said(src.loc(), "a comprehension over a range folded to a bool — that is a scan, but a bare range has no `.all` to land on without first minting a list", "this comprehension", null))
+}

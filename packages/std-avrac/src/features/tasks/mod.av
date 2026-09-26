@@ -1,8 +1,12 @@
 //! Tasks: `spawn e` runs `e` beside the spawner and answers its handle,
 //! a `Task<T>`; `t.await` parks until `e` answers and answers it. A task
 //! is joined when the last thing holding it ends — a binding, a list —
-//! so none outlives the block it was made in.
-use features.{LanguageFeature, BuilderRow, PropertyRow, TypeRow, no_law, no_variants, TypeArgs}
+//! so none outlives the block it was made in. A `Tasks` owner holds
+//! tasks whose answers nobody reads — `conns.push(spawn serve(c))` —
+//! shedding each as it finishes, so a loop that never ends owns only
+//! the tasks still running. A deadline is `@std/time`'s `within`
+//! component, over the scheduler's rows.
+use features.{LanguageFeature, BuilderRow, PropertyRow, MethodRow, ReceiverEffect, TypeRow, no_law, no_variants, TypeArgs}
 use core.{Type}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
@@ -18,27 +22,43 @@ export fn tasks() -> LanguageFeature {
         "done"  | on_task | check_done  | lower_done
     }
     let codes = table<DiagCode> {
-        kind               | id      | summary
-        "type.task_escape" | "F2101" | "a task is joined by the block that spawned it"
+        kind               | summary
+        "type.task_escape" | "a task is joined by the block that spawned it"
+    }
+    let methods = table<MethodRow> {
+        name   | takes         | check      | lower      | effect
+        "new"  | on_tasks_type | check_new  | lower_new  | ReceiverEffect.Read
+        "push" | on_tasks      | check_push | lower_push | ReceiverEffect.Shared
     }
     let types = table<TypeRow> {
-        name   | arity | slots | judge  | builds     | variants
-        "Task" | 1     | true  | no_law | task_shape | no_variants
+        name    | arity | slots | judge  | builds      | variants
+        "Task"  | 1     | true  | no_law | task_shape  | no_variants
+        "Tasks" | 0     | true  | no_law | tasks_shape | no_variants
     }
-    component LanguageFeature f {
-        name = "tasks"
-        docs = "`spawn e` runs `e` as a task beside the spawner and answers its `Task<T>`; `t.await` parks until it answers; `t.done` asks without parking. A task is joined where the last binding or list holding it ends."
-        gram = grammar {
+    LanguageFeature tasks {
+        gram: grammar {
             primary = "spawn" v:expression -> spawn(v)
         }
-        builders = rows
-        properties = properties
-        diags = codes
-        types = types
+        builders: rows
+        properties: properties
+        methods: methods
+        diags: codes
+        types: types
     }
-    f
+    tasks
 }
 
 fn on_task(t: Type) -> bool { t is .Task }
 
 fn task_shape(args: TypeArgs) -> Type { Type.Task(args.parts[0]) }
+
+fn on_tasks_type(t: Type) -> bool {
+    match t {
+        .TypeName(_, "Tasks") -> true,
+        _ -> false,
+    }
+}
+
+fn on_tasks(t: Type) -> bool { t is .Tasks }
+
+fn tasks_shape(_args: TypeArgs) -> Type { Type.Tasks }

@@ -32,8 +32,8 @@ spec "features/impls adversarial" {
             refused_with("type C = { n: int }\ntype S = { app: C }\nfn bump(mut c: C, by: int) -> int {\n    c.n = c.n + by\n    c.n\n}\nimpl S {\n    mut fn turn(by: int) -> int { bump(self.app, by) }\n}\nlet s = S { app: C { n: 0 } }\ns.turn(2)", "`s` is not `mut` — `turn` writes through it")
         }
     }
-
     given "the receiver outside a method" {
+
         then "at the top level" {
             refused_with("self", "`self` names a method's receiver — this is not a method")
         }
@@ -164,8 +164,7 @@ spec "features/impls adversarial" {
             refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nmut s = \"x\"\ngrow(s)\n2", "argument 1 of `grow` wants `List<int>`, found `string`")
         }
         then "a field path under a `mut` root fills a seat; under a `let` it refuses" {
-            shown("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nmut b = B { xs: [] }\ngrow(b.xs)\nb.xs.length") == "1" &&
-                refused_with("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nlet b = B { xs: [] }\ngrow(b.xs)\nb.xs.length", "`b` is not `mut` — seat 1 of `grow` writes through it")
+            shown("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nmut b = B { xs: [] }\ngrow(b.xs)\nb.xs.length") == "1" && refused_with("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nlet b = B { xs: [] }\ngrow(b.xs)\nb.xs.length", "`b` is not `mut` — seat 1 of `grow` writes through it")
         }
         then "an index path fills a seat" {
             shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut g = [[1]]\ngrow(g[0])\ng[0].length") == "2"
@@ -210,12 +209,10 @@ spec "features/impls adversarial" {
     }
     given "trait defaults under attack" {
         then "a default reading a field of `self` refuses — `Self` has no fields, only the trait's members" {
-            refused_with("trait Show {\n    fn show() -> int\n    fn peek() -> int {\n        self.x\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.peek()",
-                         "no property `x` on `Self`")
+            refused_with("trait Show {\n    fn show() -> int\n    fn peek() -> int {\n        self.x\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.peek()", "no property `x` on `Self`")
         }
         then "a default's body must answer its declared type — one refusal, at the default" {
-            refused_with("trait Show {\n    fn show() -> int\n    fn word() -> string {\n        self.show()\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.word()",
-                         "the body answers `int` but `word` declares `string`")
+            refused_with("trait Show {\n    fn show() -> int\n    fn word() -> string {\n        self.show()\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.word()", "the body answers `int` but `word` declares `string`")
         }
         then "an empty default body is a void method" {
             shown("trait Greet {\n    fn hi() {\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()\n2") == "2"
@@ -230,8 +227,7 @@ spec "features/impls adversarial" {
             refused_with("type Self = { x: int }\n1", "`Self` is a trait's name for its implementor")
         }
         then "overriding a default with the wrong signature refuses naming both sides" {
-            refused_with("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> bool {\n        true\n    }\n}\n1",
-                         "`G.twice` does not wear `Show.twice`'s signature")
+            refused_with("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> bool {\n        true\n    }\n}\n1", "`G.twice` does not wear `Show.twice`'s signature")
         }
         then "calling a default with the wrong arity refuses in the method's words" {
             refused_with("${defaulted()}P { x: 1 }.twice(3)", "`P.twice` takes 0 arguments beside `self`, found 1")

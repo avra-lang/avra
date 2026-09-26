@@ -1,0 +1,45 @@
+//! `avra rules` — every rule the compiler carries (compiler/
+//! rules_table.av's `rules` collect), by identity: the ground truth a
+//! native idiom finding's kind is checked against.
+use @std.cli.{CliResult, Runnable, command, flag}
+use @std.avrac.compiler.{RuleEntry, rule_id, declared_law}
+use @std.json.{Json, field, to_text}
+
+type RulesCmd = {}
+
+impl Runnable for RulesCmd {
+    fn run(args: CliResult) -> int {
+        let entries = root_program(here()).rule_listing()
+        println(if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in entries])) } else { rules_listing(entries) })
+        0
+    }
+}
+
+fn rule_json(r: RuleEntry) -> Json {
+    Json.Obj([
+        field("id", Json.Str(rule_id(r))),
+        field("module", Json.Str(r.module)),
+        field("name", Json.Str(r.name)),
+        field("doc", Json.Str(r.doc)),
+        field("law", law_json(declared_law(r))),
+    ])
+}
+
+fn law_json(law: string?) -> Json {
+    match law {
+        s? -> Json.Str(s)
+        null -> Json.Null
+    }
+}
+
+/// Every rule's identity and doc, one per line in the collect's own
+/// order, under a header naming the count.
+export fn rules_listing(entries: List<RuleEntry>) -> string {
+    ["rules this package declares — ${entries.length}"].concat(["${rule_id(r)} — ${r.doc}" for r in entries]).join("\n")
+}
+
+export command rules {
+    description: "Every rule the compiler carries, by identity — the ground truth a native idiom finding's kind is checked against"
+    flag json { description: "one JSON array of {id, module, name, doc, law}" }
+    run: RulesCmd {}
+}

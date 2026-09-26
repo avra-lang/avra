@@ -14,13 +14,13 @@ export enum MemoStart<T> { Reuse(T), Compute }
 /// One input read with the fingerprint of the bytes that produced it.
 export type Loaded<T> = { value: T, fingerprint: int }
 
-export type Memo<T> = { db: Db, family: int, values: Table<T> }
+export type Memo<T> = { db: Kernel, family: int, values: Table<T> }
 
-export fn new_memo<T>(db: Db, family: int) -> Memo<T> {
+export fn new_memo<T>(db: Kernel, family: int) -> Memo<T> {
     Memo { db: db, family: family, values: new_table<T>() }
 }
 
-impl Memo<T> {
+impl Memo {
     fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
 
     fn ask(arg: int) -> MemoAsk<T> {
@@ -45,7 +45,7 @@ impl Memo<T> {
             .Compute -> {
                 self.db.begin(self.query_key(arg))
                 MemoStart.Compute
-            }
+            },
         }
     }
 
@@ -62,7 +62,7 @@ impl Memo<T> {
             .Compute -> {
                 self.db.begin(self.query_key(arg))
                 MemoStart.Compute
-            }
+            },
         }
     }
 
@@ -133,7 +133,7 @@ impl Memo<T> {
                 self.db.begin(self.query_key(arg))
                 let value = compute()
                 self.settle(arg, value, fingerprint(value))
-            }
+            },
         }
     }
 

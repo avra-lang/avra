@@ -1,0 +1,53 @@
+// A VALUE-RECORD PAYLOAD IS LAID INLINE after the tag: its fields are
+// slots of the variant's box, and every payload after it sits past its
+// width. Each attack reads payloads on both sides of a wide one.
+type Span = { lo: int, hi: int }
+type Code = { n: int, why: int }
+enum Piece {
+    At(s: Span)
+    Pair(tag: string, s: Span, n: int)
+    Two(a: Span, b: Span)
+    Nothing
+}
+type Holds = { name: string, p: Piece }
+
+const CP: Piece = Piece.Pair("c", Span { lo: 5, hi: 6 }, 7)
+const CL: List<Piece> = [Piece.At(Span { lo: 1, hi: 2 }), Piece.Two(Span { lo: 3, hi: 4 }, Span { lo: 5, hi: 6 })]
+
+fn sp(n: int) -> Span { Span { lo: n, hi: n + 1 } }
+
+fn shown(p: Piece) -> string {
+    match p {
+        .At(s) -> "at${s.lo}${s.hi}",
+        .Pair(t, s, n) -> "pair${t}${s.lo}${s.hi}${n}",
+        .Two(a, b) -> "two${a.hi}${b.lo}",
+        .Nothing -> "none",
+    }
+}
+
+fn span_of(k: int) -> Result<Span, Code> {
+    if k < 0 { fail Code { n: k, why: 9 } }
+    .Ok(sp(k))
+}
+
+fn width(k: int) -> Result<int, Code> {
+    let s = span_of(k)?
+    .Ok(s.hi - s.lo + k)
+}
+
+fn resulted() -> string {
+    let a = width(4) catch e -> -1
+    let b = match width(-3) {
+        .Ok(n) -> "ok${n}",
+        .Err(c) -> "err${c.n}${c.why}",
+    }
+    "${a} ${b}"
+}
+
+fn in_record() -> string {
+    let h = Holds { name: "h", p: Piece.Pair("x", sp(2), 8) }
+    let xs = [Piece.At(sp(1)), Piece.Nothing, Piece.Two(sp(3), sp(7))]
+    "${h.name}${shown(h.p)} ${[shown(p) for p in xs].join(",")} ${Piece.At(sp(9)) is .At}"
+}
+
+[shown(Piece.At(sp(1))), shown(Piece.Pair("t", sp(2), 3)), shown(Piece.Two(sp(4), sp(6))), resulted(), in_record(), shown(CP), shown(CL[1]), "${CL.length}"].join(" | ")

@@ -18,5 +18,17 @@
  * at every call site of this macro.
  */
 #include "sqlite3.h"
+#include <stdint.h>
+#include <string.h>
 
 void* avra_sqlite_transient(void) { return (void*)SQLITE_TRANSIENT; }
+
+/* A BORROWED, NUL-TERMINATED BUFFER'S LENGTH.
+ *
+ * `sqlite3_column_name` answers "a zero-terminated UTF-8 string"
+ * (sqlite3.h) with no companion length function the way
+ * `sqlite3_column_text`/`sqlite3_column_blob` pair with
+ * `sqlite3_column_bytes` — so this measures it, the one wall answer
+ * where the length is not already a call away.
+ */
+int64_t avra_sqlite_cstr_len(const void* p) { return p ? (int64_t)strlen((const char*)p) : 0; }

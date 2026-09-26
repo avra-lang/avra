@@ -14,7 +14,7 @@ use @std.http.frame.{framed, limits, Refusal, Method, status_of}
 
 fn fa_verdict(b: Bytes) -> string {
     match framed(b, 0, 0, limits()) {
-        .Complete(h) -> "complete ${h.fields.length} ${h.end}",
+        .Complete(h) -> "complete ${h.fields.count()} ${h.end}",
         .Partial -> "partial",
         .Refused(why) -> "refused",
     }
@@ -26,7 +26,7 @@ fn fa_frames(src: string) -> bool { why(src.bytes()) == null && !fa_partial(src)
 
 fn fa_value(src: string, i: int) -> string {
     let h = head_of(src.bytes())!
-    let f = h.fields[i]
+    let f = h.fields.field(i)
     src.bytes().slice(f.value.lo, f.value.hi).text() ?? "<not text>"
 }
 
@@ -54,8 +54,8 @@ spec "@std.http frame adversarial" {
             fa_verdict(req_text("X:   \r\n").bytes()) == "complete 2 34"
         }
     }
-
     given "the request line, word by word" {
+
         then "ONE WORD IS NOT A REQUEST LINE" { fa_refuses("GET\r\nHost: a\r\n\r\n", .RequestLine) }
         then "TWO WORDS ARE NOT EITHER, and the law is the line's rather than its ends'" {
             fa_refuses("GET /\r\nHost: a\r\n\r\n", .RequestLine)
@@ -86,8 +86,8 @@ spec "@std.http frame adversarial" {
             why(("GET /a" + nul() + "b HTTP/1.1\r\nHost: a\r\n\r\n").bytes()) == Refusal.RequestLine
         }
     }
-
     given "line ends, each torn" {
+
         then "a CR with no LF in the request line is refused" {
             fa_refuses("GET / HTTP/1.1\rHost: a\r\n\r\n", .LineEnd)
         }
@@ -102,8 +102,8 @@ spec "@std.http frame adversarial" {
             fa_partial("GET / HTTP/1.1\r\nHost: a\r\n\n")
         }
     }
-
     given "field lines, position by position" {
+
         then "a line with no colon is not a field" { fa_refuses(req_text("XY\r\n"), .FieldName) }
         then "an empty name is not a token" { fa_refuses(req_text(": v\r\n"), .FieldName) }
         then "a space before the colon is not part of the name" { fa_refuses(req_text("X : v\r\n"), .FieldName) }
@@ -123,8 +123,8 @@ spec "@std.http frame adversarial" {
             fa_verdict(req_text("X: 1\r\nX: 2\r\n").bytes()) == "complete 3 39"
         }
     }
-
     given "content-length, every spelling" {
+
         then "zero is a length" { fa_length_of("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n") == 0 }
         then "leading zeros are read as the number" {
             fa_length_of("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0005\r\n\r\n") == 5
@@ -145,8 +145,8 @@ spec "@std.http frame adversarial" {
             fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n", .ContentLength)
         }
     }
-
     given "transfer-encoding against content-length" {
+
         then "chunked beside a length is the smuggling shape and is refused" {
             fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n", .TransferEncoding)
         }

@@ -1,9 +1,11 @@
 //! The let statement's StmtSemantics: walk the value, then bind —
-//! the driver owns the binding law, the slot, and the scope.
+//! the driver owns the binding law, the slot, and the scope. A NAMED
+//! INSTANCE (`secret api`) is a statement of its own that binds AND
+//! leaves its value, so a `collect` around it keeps it as a child.
 use core.{StmtId, Reg}
 use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
 
-export type LetStmtSemantics = { }
+export type LetStmtSemantics = {}
 
 impl StmtSemantics for LetStmtSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
@@ -15,9 +17,12 @@ impl StmtSemantics for LetStmtSemantics {
         plant_let(cx, s)
         cx.walk_value(s)
         check_let(cx, s)
+        if cx.view.store.is_component_inst(s) { cx.gather(s) }
     }
 
     fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
-        cx.lower_value(s)
+        let r = cx.lower_value(s)
+        if cx.view.store.is_component_inst(s) { cx.gather(s) }
+        r
     }
 }

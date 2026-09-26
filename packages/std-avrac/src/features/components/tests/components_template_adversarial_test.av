@@ -1,0 +1,74 @@
+// Template components under attack: degenerate declarations, the
+// malformed instance, names wearing the word, and the library's own
+// laws — each refusal once, where its mistake is.
+use @std.avrac.testing.{refused_in, provided, answered}
+
+/// The standard template: a `Span` head, an `int` block.
+fn lim() -> string {
+    "export type Span = { n: int }\nexport fn span(n: int) -> Span {\n    Span { n: n }\n}\nexport component lim(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            {\n                let limit: Span = \${self.limit}\n                \${self.body} + limit.n\n            }\n        }\n    }\n}\n"
+}
+
+/// One component over `quote { … }` with this head, these fields and
+/// this template.
+fn made(head: string, fields: string, template: string) -> string {
+    "export component made(${head}) {\n${fields}    fn expand() -> Code { quote { ${template} } }\n}\n"
+}
+
+fn use_lim() -> string { "use @x.c.{lim, span}\n" }
+
+spec "features/components/template — adversarial" {
+    given "degenerate shapes" {
+        then "an empty block and an instance standing as a statement run" {
+            answered(provided("use @x.c.{made}\nmade 1 { }\n0", made("h: Code", "    body: Code\n", "{\n    let ignored = \${self.h}\n    \${self.body}\n}"))) == "0" && answered(provided(use_lim() + "lim span(1) { 2 }\n5", lim())) == "5"
+        }
+        then "a template reading its block twice refuses at the library — code runs where it is written, once" {
+            refused_in(provided("use @x.c.{made}\n0", made("h: Code", "    body: Code\n", "\${self.body} + \${self.body}")), "the template of `made` reads `self.body` twice")
+        }
+        then "a component with no field for its block refuses its instance in the library's words" {
+            refused_in(provided("use @x.c.{made}\nmade 1 { 2 }", made("h: Code", "", "\${self.h}")), "`made` declares no field for an instance's block")
+        }
+        then "a component of two head fields refuses an instance of one value" {
+            refused_in(provided("use @x.c.{made}\nmade 1 { 2 }", made("a: Code, b: Code", "    body: Code\n", "\${self.body}")), "`made` declares 2 head fields, and its instance writes one value")
+        }
+        then "a component whose `expand` computes refuses an instance in place" {
+            refused_in(provided("use @x.c.{made}\nmade 1 { 2 }", "export component made(h: Code) {\n    body: Code\n    fn expand() -> Code {\n        let c = quote { 1 }\n        c\n    }\n}\n"), "the `expand` of `made` is not one `quote` over its own fields")
+        }
+    }
+    given "the malformed instance" {
+        then "a missing head names the order" {
+            refused_in(provided(use_lim() + "let v = lim { 1 }\nv", lim()), "`lim` writes its head value before its block")
+        }
+        then "a missing block names the block" {
+            refused_in(provided(use_lim() + "let v = lim span(1)\nv", lim()), "an instance of `lim` writes its block after its head")
+        }
+        then "a component word nobody imported names the `use` that brings it" {
+            answered(provided("use @x.c.{span}\nlim span(1) { 1 }", lim())).contains("`use @x.c.{lim}`")
+        }
+        then "a head of the wrong type is the template's typed binding, at the user's head" {
+            refused_in(provided(use_lim() + "let v = lim 5 { 1 }\nv", lim()), "`limit` declares `Span`, this is `int`")
+        }
+    }
+    given "names against names" {
+        then "a fn, a binding and a parameter may not wear the word" {
+            let at = "`lim` is a block word here, and nothing else in this file may wear it"
+            refused_in(provided(use_lim() + "fn lim() -> int {\n    1\n}\n0", lim()), at) && refused_in(provided(use_lim() + "let lim = 1\n0", lim()), at) && refused_in(provided(use_lim() + "fn f(lim: int) -> int {\n    lim\n}\n0", lim()), at)
+        }
+        then "a user type named like the template's never reaches the template" {
+            answered(provided(use_lim() + "type Span = { n: int, extra: int }\nlim span(2) { 1 }", lim())) == "3"
+        }
+        then "a property may wear the word — a field another module declares, written and read here" {
+            answered(provided("use @x.c.{lim, Holder}\nHolder { lim: 3 }.lim", lim() + "export type Holder = { lim: int }\n")) == "3"
+        }
+    }
+    given "the library's laws" {
+        then "a hole reading a field the component lacks refuses once" {
+            refused_in(provided("use @x.c.{made}\n0", made("h: Code", "    body: Code\n", "\${self.nope}")), "no field `nope` on `made`")
+        }
+        then "an `expand` answering no code refuses at the library" {
+            refused_in(provided("use @x.c.{made}\n0", "export component made(h: Code) {\n    body: Code\n    fn expand() -> int { 1 }\n}\n"), "`expand` answers the code an instance becomes")
+        }
+        then "an instance in the component's own module is no instance — the parse refuses it once" {
+            refused_in(provided("use @x.c.{span}\n0", lim() + "fn f() -> int {\n    lim span(1) { 1 }\n}\n"), "expected BREAK")
+        }
+    }
+}

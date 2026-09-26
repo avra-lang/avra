@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace}
+use core.{Variant, counted, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace, FileId}
 use diagnostics.{refusal}
 use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
@@ -26,8 +26,7 @@ impl TypeCx {
     fn declare_named(s: StmtId) {
         let parts? = self.view.store.named_parts(s) else { return }
         if !parts.tparams.is_empty() { return self.named_is_generic(s, parts.name) }
-        let of = self.slot_law(s, "type.named", "a named type cannot stand over nothing",
-                               "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
+        let of = self.slot_law(s, "type.named", "a named type cannot stand over nothing", "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
         // interned DIRECTLY, never through `declared_type`: that door
         // forces a named declaration, and this IS that declaration
         let named = self.view.types.intern(Type.Struct(self.decl_of(s), parts.name))
@@ -36,6 +35,17 @@ impl TypeCx {
         if self.view.types.names_itself(named, of) { return self.named_is_circular(s, parts.name) }
         self.view.types.mark_named(named, of)
         self.view.types.mark_flat(named, [of])
+    }
+
+    /// An ALIAS's table: the type its name stands for, read under
+    /// its own type parameters so an application lands them.
+    fn declare_alias(s: StmtId) {
+        let parts? = self.view.store.alias_parts(s) else { return }
+        self.refuse_taken_tparams(s, parts.name)
+        self.enter_tscope(s)
+        let of = self.full_type(self.stmt_loc(s), parts.of)
+        self.leave_tscope()
+        self.declare(s, DeclSig.Alias(of))
     }
 
     /// An enum's table, from its declaration alone.
@@ -68,8 +78,7 @@ impl TypeCx {
     fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
         if p.ty == null { return null }
         let who = if p.name.is_empty() { "`.${variant}`" } else { "`${p.name}`" }
-        self.held_slot(s, "type.enum_payload", "an enum payload cannot hold nothing",
-                         "${who} carries `${spelled(p.ty!)}`", p.ty!)
+        self.held_slot(s, "type.enum_payload", "an enum payload cannot hold nothing", "${who} carries `${spelled(p.ty!)}`", p.ty!)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -89,14 +98,29 @@ impl TypeCx {
         self.declare(s, DeclSig.Record(sig))
     }
 
-    /// A field default's signature: a body of no parameters
-    /// answering the field's declared type — every literal that
-    /// omits the field calls it.
+    /// A default's signature: a body of no parameters answering its
+    /// field's or seat's declared type — every literal or call that
+    /// leaves it unwritten calls it.
     fn declare_default(x: Decl) {
-        let rs: StructSig? = (self.view.decls.sig(x.parent!))?.record_sig()
-        let slot: int? = rs?.slot_of(x.name)
-        let ret: TypeId = if slot == null { self.error_type } else { rs!.types[slot!] }
+        let ret: TypeId = self.defaulted_type(x.parent!, x.name) ?? self.error_type
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: ret }))
+    }
+
+    /// The type a default answers: its field's, or its seat's — a
+    /// method's receiver leads its seats and is never written.
+    fn defaulted_type(owner: DeclId, name: string) -> TypeId? {
+        let sig? = self.view.decls.sig(owner) else { return null }
+        let rs: StructSig? = sig.record_sig()
+        if rs != null {
+            let slot? = rs!.slot_of(name) else { return null }
+            return rs!.types[slot]
+        }
+        let fs? = sig.fn_sig() else { return null }
+        let seats: List<string> = self.view.decls.facts_of(owner)?.seats ?? []
+        let j = seats.index_of(name)
+        let at = fs.params.length - seats.length + j
+        if j < 0 || at < 0 { return null }
+        fs.params[at]
     }
 
     /// A test case's signature: no parameters, a bool answer.
@@ -108,8 +132,7 @@ impl TypeCx {
     /// unreachable.
     fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        self.held_slot(s, "type.struct_scalar", "a struct field cannot hold nothing",
-                         "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
+        self.held_slot(s, "type.struct_scalar", "a struct field cannot hold nothing", "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
     }
 
     /// THE declared-slot law: a slot inside an aggregate holds a value
@@ -118,8 +141,7 @@ impl TypeCx {
     /// one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
-    fn slot_law(s: StmtId, kind: string, message: string,
-                label: string, ty: TypeRef) -> TypeId {
+    fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
         let named = self.full_type(self.stmt_loc(s), ty)
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
@@ -220,7 +242,7 @@ impl TypeCx {
         // reads the registry mid-flight answers by declaration order.
         let named: DeclId? = declared_decl(self.view.types.shape_of(answer))
         if named != null { let _ = self.view.decls.sig(named!) }
-        if !self.view.types.rides_pointer(answer) { self.once_answers_a_copy(s, fp.name, answer) }
+        if !self.view.types.rides_pointer(answer) && !self.view.types.travels_wide(answer) && !(self.view.types.shape_of(answer) is .Enum) { self.once_answers_a_copy(s, fp.name, answer) }
     }
 
     fn once_takes_arguments(s: StmtId, name: string) {
@@ -261,11 +283,16 @@ impl TypeCx {
         }
         for n in tp {
             if builtin_type_name(self.view.lang.types, n) { self.owned_name(s, n) }
+            if self.keywords.contains(n) { self.keyword_tparam(s, n) }
         }
     }
 
+    fn keyword_tparam(s: StmtId, n: string) {
+        self.emit(refusal("resolve.reserved", self.stmt_loc(s), "`${n}` is a keyword", "cannot be a name", fresh_tparam()))
+    }
+
     fn owned_name(s: StmtId, n: string) {
-        self.emit(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", "pick another name — `T`, `E`, `Elem`"))
+        self.emit(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", fresh_tparam()))
     }
 
     /// A declaration's type parameters as interned Vars — fns and
@@ -278,7 +305,7 @@ impl TypeCx {
     /// The type-parameter scope brackets — one fn at a time, no
     /// nesting (the language has no nested fns).
     fn enter_tscope(s: StmtId) {
-        // LICENSED I3: pushing through the field alias — concat would rebind the local
+        // LICENSED loops.push_loop: pushing through the field alias — concat would rebind the local
         for v in self.tvars_of(s) { self.tscope.push(v) }
     }
 
@@ -291,9 +318,20 @@ impl TypeCx {
     /// An annotation's TypeId: what its NAME stands for, wrapped
     /// once when `?` was written. An absent annotation cannot reach
     /// here from any grammar the language assembles.
-    fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
+    /// A statement's written type.
+    mut fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
-        self.full_type(self.stmt_loc(s), ann!)
+        self.written_by(self.view.origin_of_stmt(s), self.stmt_loc(s), ann!)
+    }
+
+    /// A written type, read in the namespace of the file that WROTE it
+    /// — a template's types are its own, as its names are.
+    mut fn written_by(origin: FileId?, at: Loc?, t: TypeRef) -> TypeId {
+        let was = self.writer
+        self.writer = if origin == null { null } else { self.written_in(origin!) }
+        let ty = self.full_type(at, t)
+        self.writer = was
+        ty
     }
 
     /// A written type in full — its arguments and its `?` both. The
@@ -310,11 +348,33 @@ impl TypeCx {
 
     /// What a written type stands for, arguments included: a bare
     /// name, or an application like `List<int>`.
-    fn written_type(at: Loc?, t: TypeRef) -> TypeId {
+    mut fn written_type(at: Loc?, t: TypeRef) -> TypeId {
+        if t.spliced && self.writer != null { return self.written_by(null, at, t with { spliced: false }) }
+        if !t.alternatives.is_empty() { return self.union_written(at, t.alternatives) }
         if t.arrow { return self.fn_written(at, t) }
         if t.dynamic { return self.dyn_type(at, t.name) }
-        if t.args.is_empty() { return self.named_type(at, t.name) }
+        if t.args.is_empty() { return self.bare_row(t.name) ?? self.named_type(at, t.name) }
         self.applied(at, t)
+    }
+
+    /// `A or B` — every alternative its own written type, unioned. A
+    /// member that already refused absorbs, as every seat does.
+    fn union_written(at: Loc?, alts: List<TypeRef>) -> TypeId {
+        mut parts: List<TypeId> = []
+        for a in alts {
+            let ty = self.full_type(at, a)
+            if self.view.types.shape_of(ty) is .Error { return ty }
+            parts.push(ty)
+        }
+        self.view.types.union_of(parts)
+    }
+
+    /// A builtin that takes no type arguments — `Tasks` — is its row's
+    /// shape, written bare.
+    fn bare_row(name: string) -> TypeId? {
+        let row? = type_row(self.view.lang.types, name) else { return null }
+        if row.arity != 0 { return null }
+        self.view.types.intern(row.builds(TypeArgs { parts: [] }))
     }
 
     /// `fn(a, b) -> r` — the args carry the seats, the LAST is the
@@ -322,7 +382,7 @@ impl TypeCx {
     fn fn_written(at: Loc?, t: TypeRef) -> TypeId {
         mut seats: List<TypeId> = []
         mut answer = self.error_type
-        // LICENSED I3: the tail is the answer; comprehensions cannot split it off
+        // LICENSED loops.push_loop: the tail is the answer; comprehensions cannot split it off
         for j, a in t.args {
             let ty = self.full_type(at, a)
             if self.view.types.shape_of(ty) is .Error { return ty }
@@ -386,7 +446,18 @@ impl TypeCx {
         let refused: List<Refusal> = r.judge(self.view.types, args)
         if !refused.is_empty() { return self.applied_refused(at, refused[0]) }
         let sh: Type = r.builds(args)
+        // A RESULT'S LAYOUT IS JUDGED WHERE IT IS FIRST INTERNED, from its
+        // sides' layouts — so each side's declaration is asked first
+        if sh is .Res { for p in parts { self.asked_layout(p) } }
         self.view.types.intern(sh)
+    }
+
+    /// A record's layout made by asking its declaration.
+    fn asked_layout(ty: TypeId) {
+        match self.view.types.shape_of(ty) {
+            .Struct(d, _) -> { let _ = self.view.decls.sig(d) },
+            rest -> nothing(),
+        }
     }
 
     fn unslottable_slot(at: Loc?, name: string, ty: TypeId) -> TypeId {
@@ -405,12 +476,18 @@ impl TypeCx {
     /// declared (source order — a construction judges again anyway).
     fn applied_decl(at: Loc?, name: string, parts: List<TypeId>) -> TypeId {
         let target? = self.type_decl_named(name) else { return self.error_type }
+        if self.view.decls.is_alias(target) { return self.aliased(at, target, name, parts) }
         if self.refused_app(at, name, target, parts) { return self.error_type }
         self.view.types.intern(Type.App(target, name, parts))
     }
 
     /// The declaration a type name stands for, in this file's scope.
-    fn type_decl_named(name: string) -> DeclId? { type_named(self.names, name) }
+    /// A declared type by name — in the namespace of the file that wrote
+    /// the type being read.
+    fn type_decl_named(name: string) -> DeclId? {
+        let writer? = self.writer else { return type_named(self.names, name) }
+        writer.type_decl(name)
+    }
 
     /// Every declared slot of the instantiation, substituted and
     /// judged — a `Pair<string, int>` refuses like the field law.
@@ -428,9 +505,9 @@ impl TypeCx {
 
     /// A declaration's slot types, whichever kind declares.
     fn declared_slots(decl: DeclId) -> List<TypeId> {
-        let rs: StructSig? = (self.view.decls.sig(decl))?.record_sig()
+        let rs: StructSig? = self.view.decls.sig(decl)?.record_sig()
         if rs != null { return rs!.types }
-        let vs? = (self.view.decls.sig(decl))?.enum_sig() else { return [] }
+        let vs? = self.view.decls.sig(decl)?.enum_sig() else { return [] }
         flatten(vs.payloads)
     }
 
@@ -443,7 +520,7 @@ impl TypeCx {
         let sh: Type? = shape_named(name)
         if sh != null { return self.view.types.intern(sh!) }
         let decl: DeclId? = self.type_decl_named(name)
-        if decl != null { return self.declared_type(decl!, name) }
+        if decl != null { return self.declared_type(at, decl!, name) }
         if width_named(name) != null { return self.width_off_a_seat(at, name) }
         qtrace("Q\tnamed_type_fail\t${name}\t${self.view.decls.file(self.view.file).path}\n")
         self.emit(refusal("type.unknown", at, "`${name}` names no type", "in this signature", "the types today are `int`, `string`, `bool`, and your declared types"))
@@ -460,13 +537,19 @@ impl TypeCx {
 
     /// A declared name's type: an enum's value shape or a record's —
     /// and a GENERIC declaration needs its arguments.
-    fn declared_type(d: DeclId, name: string) -> TypeId {
+    fn declared_type(at: Loc?, d: DeclId, name: string) -> TypeId {
         let arity = self.view.decls.tparams(d).length
         if arity > 0 {
-            self.emit(refusal("type.applied", self.view.decls.loc(d), "`${name}` is generic — it takes ${arity} type arguments", "written bare", "write `${name}<...>`"))
+            self.emit(refusal("type.applied", at, "`${name}` is generic — it takes ${counted(arity, "type argument")}", "written bare", "write `${name}<...>`"))
             return self.error_type
         }
-        if self.view.decls.is_enum(d) { return self.view.types.intern(Type.Enum(d, name)) }
+        // AN ENUM'S LAYOUT IS MADE AT ITS DECLARATION — a word, a value
+        // enum or a box — so it is asked before the id is handed out
+        if self.view.decls.is_enum(d) {
+            let _ = self.view.decls.sig(d)
+            return self.view.types.intern(Type.Enum(d, name))
+        }
+        if self.view.decls.is_alias(d) { return self.aliased(at, d, name, []) }
         // A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION, so the
         // declaration is ASKED before the id is handed out. Without
         // it the registry answers by declaration ORDER — right under
@@ -474,6 +557,25 @@ impl TypeCx {
         // types a body first, and only the first reader is wrong.
         if self.view.decls.is_named(d) { let _ = self.view.decls.sig(d) }
         self.view.types.intern(Type.Struct(d, name))
+    }
+
+    /// What an alias stands for, its type parameters landed. An alias
+    /// still being read when it is named again names itself.
+    fn aliased(at: Loc?, d: DeclId, name: string, args: List<TypeId>) -> TypeId {
+        let of? = self.view.decls.alias_of(d) else { return self.alias_names_itself(at, name) }
+        let empty = args.find((t) -> !slot_worthy(self.view.types.shape_of(t)))
+        if empty != null { return self.alias_takes_values(at, name, empty!) }
+        self.view.types.substituted(of, d, args)
+    }
+
+    fn alias_takes_values(at: Loc?, name: string, arg: TypeId) -> TypeId {
+        self.emit(refusal("type.alias", at, "`${name}<...>` is given `${self.view.types.name_of(arg)}`, which is no value", "applied here", "an alias's type arguments are the types of values"))
+        self.error_type
+    }
+
+    fn alias_names_itself(at: Loc?, name: string) -> TypeId {
+        self.emit(refusal("type.alias", at, "`${name}` is an alias that names itself", "named again here", "an alias is a shorthand for a type that already exists — a type that holds itself is a `type`"))
+        self.error_type
     }
 
     /// A declaration's signature — the ONE entry the `sig` query runs.
@@ -484,18 +586,22 @@ impl TypeCx {
         match x.kind {
             .Record -> self.declare_record(x.stmt),
             .Named -> self.declare_named(x.stmt),
+            .Alias -> self.declare_alias(x.stmt),
             .Enum -> self.declare_enum(x.stmt),
             .Fn -> self.declare_fn(x.stmt),
             .Method -> self.declare_member(x),
             .Default -> self.declare_default(x),
             .Impl -> self.declare_impl_block(x.stmt),
             .Case -> self.declare_case(x),
-            .Const -> nothing(),
-            // a builtin was signed at admission, from its row
-            .Trait or .Syntax or .Main or .Builtin -> nothing(),
+            // Const/Collect have no separate signature phase (typing settles
+            // them directly); a builtin was signed at admission, from its row
+            .Const or .Collect or .Trait or .Syntax or .Main or .Builtin -> nothing(),
         }
     }
 }
+
+/// The remedy for a type parameter whose name is taken.
+fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }
 
 /// An extern's seats, each width word read as the `int` it carries.
 fn widthless_seats(ps: List<Param>) -> List<Param> {

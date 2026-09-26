@@ -9,11 +9,56 @@ use grammar.{Token}
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: NodeStore, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [], payloads: List<Field> = [] }
+export type Builder = { store: NodeStore, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [] }
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
 export type BlockGrammar = { word: string, ready: Ready, origin: string }
+
+/// An imported component: its word, how an instance of it stands in
+/// place, and the store and file its provider parsed it in.
+export type ComponentWord = { word: string, declared: string, form: Instancing, store: NodeStore, origin: string }
+
+/// How an instance stands in place: by its TEMPLATE, as a literal of
+/// its RECORD, or REFUSED in the library's words, spoken at the
+/// instance.
+export enum Instancing {
+    Template(template: Template)
+    Record(record: Record)
+    Refused(why: string)
+}
+
+/// A component with no `expand`: its instance is a literal of the
+/// record. The head's fields in order, the fields an instance's
+/// statements may fill as children — its `List` fields beside the
+/// head — whether a `name` field takes a named instance's name, and
+/// whether a `check` judges each instance at compile time, and the
+/// field a body written as a fn fills — the record's one fn field,
+/// and whether ITS ANSWER is nullable, which decides whether an ARMS
+/// body written over it takes an implicit `_ -> null` tail.
+export type Record = { head: List<string>, slots: List<ChildSlot>, named: bool, checks: bool, fn_field: string? = null, fn_optional: bool = false }
+
+/// A `List` field children fill, and the name its elements are
+/// written with — a child instance of that component lands here.
+export type ChildSlot = { name: string, of: string, gathers: bool = true }
+
+/// An `expand` of ONE `quote`: the head's fields in order, the field
+/// the block fills, the field each hole reads, the quote's statements,
+/// and the head fields that are PATTERNS (`Format`) — each read as its
+/// text where a value stands and as its record where a type does.
+export type Template = { head: List<string>, block: string, reads: List<string>, stmts: List<StmtId>, formats: List<string> = [] }
+
+/// A named instance a record's body may list by its name alone: the
+/// name, and the component it instances.
+export type Instanced = { name: string, declared: string }
+
+/// The words a file's imports open blocks with — named grammars and
+/// components — and the named instances its bodies may list.
+export type BlockWords = { grammars: List<BlockGrammar> = [], components: List<ComponentWord> = [], instances: List<Instanced> = [] }
+
+impl BlockWords {
+    fn is_empty() -> bool { self.grammars.is_empty() && self.components.is_empty() }
+}
 
 impl Builder {
     /// The token argument at `i`.
@@ -104,13 +149,7 @@ impl Builder {
     /// level — every body survives bad input visibly.
     fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
-        mut out: List<StmtId> = []
-        // LICENSED I3: the body allocates through `self.store`, which a comprehension element does not
-        for j in 0..items.length {
-            let sid: StmtId? = stmt_id_at(items, j)
-            out.push(sid ?? self.store.alloc_stmt(Stmt.Error, null))
-        }
-        .Ok(out)
+        .Ok([stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length])
     }
 
     /// A new pattern node, spanning the matched branch.
@@ -118,9 +157,9 @@ impl Builder {
         .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
     }
 
-    /// One match arm, as data.
-    fn make_arm(pats: List<PatId>, value: ExprId) -> Result<LangNode, string> {
-        .Ok(LangNode.NArm(Arm { pats: pats, value: value }))
+    /// One match arm, as data — `guard` null for an unguarded one.
+    fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
+        .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
     }
 
     /// A new expression node, spanning the matched branch.
@@ -147,6 +186,13 @@ impl Builder {
     /// An already-allocated expression as this build's result.
     fn wrap_expr(id: ExprId) -> Result<LangNode, string> {
         .Ok(LangNode.NExpr(id))
+    }
+
+    /// An already-allocated statement as this build's result — for a
+    /// builder that marks the statement between allocating it and
+    /// answering it.
+    fn wrap_stmt(id: StmtId) -> Result<LangNode, string> {
+        .Ok(LangNode.NStmt(id))
     }
 
     /// A head WIDENED by its trailing blocks — each marked as one,
@@ -358,7 +404,7 @@ export fn type_lo(t: TypeRef) -> int {
 
 /// The marks whose `@` stands strictly inside a window.
 fn marks_inside(marks: List<Mark>, after: int, before: int) -> List<Mark> {
-    [m for m in marks if m.span != null && within(m.span!.lo, after, before)]
+    [m for m in marks if m.span != null && between(m.span!.lo, after, before)]
 }
 
 export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
@@ -372,7 +418,7 @@ export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) 
 
 /// The one optional token written between two anchors, or "".
 fn token_between(tokens: List<Token>, after: int, before: int) -> string {
-    let hit? = tokens.find(within(it.span.lo, after, before)) else { return "" }
+    let hit? = tokens.find(between(it.span.lo, after, before)) else { return "" }
     hit.text
 }
 
@@ -388,6 +434,12 @@ impl Builder {
         .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), promises: plain_mark, span: f.span, marks: w.at(f.span.lo) } for j, f in fs])
     }
 
+    /// Seats with the defaults some carry — a default finds its seat
+    /// by POSITION, as a field's does.
+    fn defaulted(ps: List<Token>, seats: List<Param>, pds: List<ExprId>) -> List<Param> {
+        [p with { default: self.default_before(ps, pds, j) } for j, p in seats]
+    }
+
     /// The default whose position falls between field `j`'s name and
     /// the next field's — null when none does.
     fn default_before(fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
@@ -398,12 +450,12 @@ impl Builder {
 
     fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
         let sp: Span? = self.store.expr_span(e)
-        sp != null && within(sp!.lo, lo, hi)
+        sp != null && between(sp!.lo, lo, hi)
     }
 }
 
 /// Strictly inside the window `after..before`.
-export fn within(at: int, after: int, before: int) -> bool {
+export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
 }
 
@@ -422,6 +474,12 @@ export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, muts: List<Token>, 
     [Param { name: Scoped(p.text), ty: tys[j], default: null, promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
 }
 
+/// Seats marked `isolated` by the tokens in their windows — the same
+/// window law `marked_seats` reads.
+export fn isolating(seats: List<Param>, ps: List<Token>, isos: List<Token>, from: int) -> List<Param> {
+    [s with { promises: s.promises with { unshared: isos.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) } } for j, s in seats]
+}
+
 /// One seat's contract: the `mut` and `const` tokens written in its
 /// window — the window a mark shares with the name it precedes.
 fn seat_mark_of(muts: List<Token>, consts: List<Token>, after: int, before: int) -> SeatMark {
@@ -437,7 +495,7 @@ fn seat_since(ps: List<Token>, j: int, from: int) -> int {
 }
 
 fn mark_within(t: Token, after: int, before: int) -> bool {
-    within(t.span.lo, after, before)
+    between(t.span.lo, after, before)
 }
 
 /// A build asked for a payload its variant does not declare.

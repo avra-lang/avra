@@ -5,6 +5,7 @@
 //! more; the runner (`avra test`, over @std/testing) reports each
 //! case by its three names.
 use features.{LanguageFeature, BuilderRow}
+use features.specs.{refusal_uncounted_contains}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
@@ -16,21 +17,19 @@ export fn specs() -> LanguageFeature {
         "then_case"   | build_then
     }
     let codes = table<DiagCode> {
-        kind                  | id      | summary
-        "resolve.nested_spec"    | "F3022" | "a spec lives at the top level"
-        "resolve.duplicate_case" | "F3023" | "a group names each case once"
-        "type.case"              | "F2042" | "a `then` answers a bool"
+        kind                     | summary
+        "resolve.nested_spec"    | "a spec lives at the top level"
+        "resolve.duplicate_case" | "a group names each case once"
+        "type.case"              | "a `then` answers a bool"
     }
-    component LanguageFeature f {
-        name = "specs"
-        docs = "`spec \"name\" { given \"setup\" { then \"claim\" { … condition } } }` declares tests; each `then` is a case answering a bool, a `given` groups them (a `then` may stand directly under the spec), and the three words are keywords."
-        gram = grammar {
+    LanguageFeature specs {
+        gram: grammar {
             stmt = "spec" n:STRING "{" ( BREAK | g:given_group | g:then_case )* "}" END @recover(sync_to: "END") -> spec_decl(n, g)
             given_group = "given" n:STRING "{" ( BREAK | t:then_case )* "}" @expect("}", "expected `}` to close the `given` — it holds `then` cases") @recover(sync_to: "END") -> given_group(n, t)
             then_case = "then" n:STRING b:block @recover(sync_to: "END") -> then_case(n, b)
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    specs
 }

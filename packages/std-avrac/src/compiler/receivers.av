@@ -98,7 +98,7 @@ impl Workspace {
         let n = self.decls.seat_count(d)
         if x.root == null { return Summary { own: filled(n, false), edges: [] } }
         let receiver: TypeId? = self.receiver_type(x)
-        let seats: List<TypeId> = (self.decls.sig(d))?.fn_sig()?.params ?? []
+        let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
         mut cx = Survey { ws: self, decls: self.decls, store: self.decls.store(d), names: self.resolved(x.file), receiver: receiver, seats: seats, lo: x.lo, hi: x.hi, own: filled(n, false), edges: [] }
         cx.assigns()
         for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
@@ -114,12 +114,9 @@ type Survey = { ws: Workspace, decls: Decls, store: NodeStore, names: NameFacts,
 impl Survey {
     /// Every assignment in the range rooted in a seat writes it.
     mut fn assigns() {
-        mut i = 0
-        let n = self.store.stmts.count()
-        while i < n {
-            let t: ExprId? = self.store.assign_target(StmtId { index: i })
+        for s in self.store.stmt_ids() {
+            let t: ExprId? = self.store.assign_target(s)
             if t != null && self.in_range(t!) { self.mark(self.seat_of(t!)) }
-            i = i + 1
         }
     }
 
@@ -210,18 +207,18 @@ impl Survey {
             return
         }
         match self.callee_of(ty!, mp.name) {
-            .Row(writes) -> if writes { self.mark(seat) } else { nothing() },
+            .Row(writes) if writes -> self.mark(seat),
             .Method(d) -> {
                 self.flow(seat, d, 0)
                 self.feed(d, mp.args, 1)
-            }
+            },
             .Static(d) -> self.feed(d, mp.args, 0),
             .FnSeats(held) -> self.feed_marks(held.marks, mp.args),
             .Contract(d) -> {
                 if self.decls.declares_writing(d) { self.mark(seat) }
                 self.feed(d, mp.args, 1)
-            }
-            .None -> nothing(),
+            },
+            .Row(_) or .None -> nothing(),
         }
     }
 
@@ -233,9 +230,7 @@ impl Survey {
         let ty? = self.place_type(a) else { return true }
         match self.decls.types.shape_of(ty) {
             .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
-            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _)
-                or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _)
-                or .Var(_, _, _) or .Error -> true,
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Union(_) or .Error -> true,
         }
     }
 
@@ -247,8 +242,8 @@ impl Survey {
             .Field(subject, name) -> {
                 let holder: TypeId? = self.place_type(subject)
                 holder != null && property_row(self.ws.lang.rows.properties, name.of, self.decls.types.shape_of(holder!)) != null
-            }
-            .Root(_) or .At(_, _) -> false,
+            },
+            .Root(_) or .At(_, _) or .Unwrap(_) -> false,
         }
     }
 
@@ -258,7 +253,7 @@ impl Survey {
     /// infer from: its declared `mut` is the write, by permission.
     mut fn feed(callee: DeclId, args: List<ExprId>, base: int) {
         let contract = self.under_trait(callee)
-        for j, a in args {
+        for j, a in self.store.seated_args(args, self.decls.facts_of(callee)?.seats ?? []) {
             if self.decls.seat_mark(callee, base + j).mutable {
                 let seat: int? = self.seat_of(a)
                 if contract { self.mark(seat) } else { self.flow(seat, callee, base + j) }
@@ -288,15 +283,14 @@ impl Survey {
         if under != null { return self.named_callee(ty, under!, name) }
         let sh: Type = self.decls.types.shape_of(ty)
         match sh {
-            .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
+            .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
             .Struct(d, _) -> self.field_or_method(ty, d, name),
             .Enum(d, _) -> self.declared_method(d, name),
             .App(d, _, _) -> self.field_or_method(ty, d, name),
             .Var(d, j, _) -> self.bounded_member(d, j, name),
             .Dyn(d, _) -> self.contract_member(d, name),
             .TypeName(d, _) -> self.static_member(d, name),
-            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null
-                or .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
+            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Union(_) or .Error or .Void or .EmptyMap -> Callee.None,
         }
     }
 
@@ -362,6 +356,7 @@ impl Survey {
             .Root(_) -> self.root_type(e),
             .Field(subject, name) -> self.field_type(self.place_type(subject), name.of),
             .At(subject, _) -> self.element_type(self.place_type(subject)),
+            .Unwrap(subject) -> self.carried_type(self.place_type(subject)),
         }
     }
 
@@ -373,9 +368,9 @@ impl Survey {
         let b? = self.names.binding(e) else { return null }
         match b {
             .Receiver -> self.receiver,
-            .Param(i) -> if i < self.seats.length { self.seats[i] } else { null },
+            .Param(i) if i < self.seats.length -> self.seats[i],
             .Def(s) -> self.bound_type(s),
-            .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+            .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
         }
     }
 
@@ -385,13 +380,13 @@ impl Survey {
         let placed: TypeId? = self.place_type(value)
         if placed != null { return placed }
         let callee: DeclId? = bound_decl_of(self.names, value)
-        if callee != null { return (self.decls.sig(callee!))?.fn_sig()?.ret }
+        if callee != null { return self.decls.sig(callee!)?.fn_sig()?.ret }
         let m? = self.store.method_parts(value) else { return self.constructed_type(value) }
         let subject? = self.place_type(m.subject) else { return null }
         match self.callee_of(subject, m.name) {
-            .Method(d) or .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Method(d) or .Static(d) -> self.decls.sig(d)?.fn_sig()?.ret,
             .FnSeats(held) -> held.answer,
-            .Contract(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Contract(d) -> self.decls.sig(d)?.fn_sig()?.ret,
             .Row(_) or .None -> null,
         }
     }
@@ -407,6 +402,11 @@ impl Survey {
     fn field_type(holder: TypeId?, name: string) -> TypeId? {
         if holder == null { return null }
         self.decls.field_type_named(holder!, name)
+    }
+
+    fn carried_type(holder: TypeId?) -> TypeId? {
+        if holder == null { return null }
+        self.decls.types.carried(holder!)
     }
 
     fn element_type(holder: TypeId?) -> TypeId? {
@@ -448,7 +448,7 @@ impl Workspace {
     /// A WITNESS for why seat `i` of `d` is written — one path through
     /// the fixpoint's own edges, from the asked seat to the fn whose
     /// declaration or body writes it directly. `settle_writers` proves
-    /// the boolean; this walks it back to its cause — `avra explain
+    /// the boolean; this walks it back to its cause — `avra docs
     /// writes` prints the same names, in the same order, as fn names
     /// joined by their calls. `self.summary(d)` is recomputed here
     /// rather than read from a stored table: the pass keeps only the
@@ -463,7 +463,7 @@ impl Workspace {
         if !decls.seat_writes_so_far(d, i) { return null }
         let hop = decls.decl(d).name
         let s = self.summary(d)
-        if (i == 0 && decls.declares_writing(d)) || s.own[i] { return [hop] }
+        if i == 0 && decls.declares_writing(d) || s.own[i] { return [hop] }
         if seen.any(same_decl(it, d)) { return null }
         let edge? = s.edges.find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else { return null }
         let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }

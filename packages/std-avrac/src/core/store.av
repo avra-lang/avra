@@ -14,128 +14,388 @@ fn no_stmt_marks() -> StmtMarks {
     StmtMarks { is_exported: false, is_mutating: false, is_once: false, is_static: false }
 }
 
+/// An impl's OWN written type-parameter lists (`impl Traced<E>`,
+/// `impl Show<X> for Box<T>`) — typing reads the target's declared
+/// tparams instead of this copy; kept only so the printer can spell
+/// back what was written.
+export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
+
+/// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
+/// the store allocates into the same arenas as the original.
 export type NodeStore = {
     exprs: Arena<Expr>,
-    expr_fingerprints: List<int>,
+    expr_fingerprints: Cell<List<int>>,
     stmts: Arena<Stmt>,
-    stmt_fingerprints: List<int>,
-    marks: List<StmtMarks>,
+    stmt_fingerprints: Cell<List<int>>,
+    marks: Cell<List<StmtMarks>>,
     // the format a `grammar` declaration read, by its statement
-    grammars: List<GrammarSpec?>,
+    grammars: Cell<List<GrammarSpec?>>,
+    // a named instance's component, by its statement — the record it
+    // desugars to carries every field the sugar would print, so the
+    // mark alone is enough to read the spelling back
+    component_insts: Cell<List<string?>>,
+    // an impl's own written type-parameter lists, by its statement —
+    // printing only, absent on a plain (non-generic) impl
+    impl_tparams: Cell<List<ImplTypeParams?>>,
+    // declarations an instance MINTED while its file parsed — a
+    // route's pattern record — joining the file's top level
+    hoisted: Cell<List<StmtId>>,
+    // the path of the file this store parsed — "" for a fragment
+    file: string,
     // `@name(args)` marks per statement, in written order
-    annotations: List<List<Annotation>>,
+    annotations: Cell<List<List<Annotation>>>,
     // declaration-leading `///` lines; absent on synthesized nodes
-    docs: List<List<string>?>,
+    docs: Cell<List<List<string>?>>,
+    // the file's own `//!` header — a leading run before anything
+    // else, absent when the file opens with something other than
+    // one. Not folded into any statement's fingerprint yet: an
+    // edit to only this text is invisible to program_hash-keyed
+    // caches until a consumer needs that (today's one-shot `avra
+    // docs` never holds a stale cell across an edit).
+    file_doc: Cell<List<string>?>,
     // the offset each doc group's FIRST `///` was written at, and -1
     // for none, so the printer can put a remark between a doc and its
     // declaration back in the author's order
-    doc_ats: List<int>,
+    doc_ats: Cell<List<int>>,
     // plain `//` lines, by source offset — printing only
-    remarks: List<Remark>,
-    pats: List<Pat>,
-    pat_spans: List<Span?>,
-    pat_fingerprints: List<int>,
+    remarks: Cell<List<Remark>>,
+    pats: Cell<List<Pat>>,
+    pat_spans: Cell<List<Span?>>,
+    pat_fingerprints: Cell<List<int>>,
     // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
-    trailing: List<bool>,
+    trailing: Cell<List<bool>>,
     // a call written as a TYPE LITERAL (`v.type(T)`), and a NAME
     // written inside one — a hole
-    type_lits: List<bool>,
-    holes: List<bool>,
+    type_lits: Cell<List<bool>>,
+    holes: Cell<List<bool>>,
+    // a `${..name}` hole — a RUN, binding a sibling span rather than
+    // one node; the mark rides the hole's own CONTENT expr, never the
+    // quote body's placeholder
+    run_holes: Cell<List<bool>>,
+    // a string written `"""raw"""`, never `"escaped"` — the printer's
+    // only way to tell them apart once both are one StrLit
+    raw_strings: Cell<List<bool>>,
+    // a Match a trailing-block ARM sugar synthesized — never one a
+    // program wrote — so a missing arm under a nullable seat answers
+    // `null` instead of refusing; the mark is the ONE way the checker
+    // tells the two apart
+    sugar_matches: Cell<List<bool>>,
+    // a component instance's WRAPPING STATEMENT — where its `///`
+    // and `@name(args)` annotations live, attached from OUTSIDE once
+    // the instance's own expression already stands; absent for an
+    // instance that binds no statement of its own (a nested child)
+    instance_owners: Cell<List<StmtId?>>,
+    // the DSL text an expression-position `grammar { … }` literal
+    // read, by the `Grammar` struct literal it fully expanded into —
+    // the raw block's own words, never rebuilt from the expansion
+    grammar_lits: Cell<List<string?>>,
+    // a `table<Row> { … }` literal's row type and header, by the
+    // list it desugared to
+    tables: Cell<List<TableSpec?>>,
+    // a written `{ … }`'s own closing-brace offset, by the Block whose
+    // span `tail_scoped` narrowed to its lone tail value for
+    // diagnostics — printing only, absent everywhere the node's own
+    // span already reaches the brace
+    written_close: Cell<List<int?>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
-    quotes_at: Map<string, int>,
+    quotes_at: Cell<Map<string, int>>,
     // the file's sublanguage blocks, in order, and each one's body
     // offset in the source; what their grammars refused; the node
     // runs their actions minted, with the library each names
-    sublangs: List<ExprId>,
-    body_starts: Map<string, int>,
-    block_voices: List<BlockVoice>,
-    foreign: List<ForeignRange>,
+    sublangs: Cell<List<ExprId>>,
+    body_starts: Cell<Map<string, int>>,
+    block_voices: Cell<List<BlockVoice>>,
+    foreign: Cell<List<ForeignRange>>,
 }
 
-export fn new_node_store() -> NodeStore {
+export fn new_node_store(file: string = "") -> NodeStore {
+    let no_file_doc: List<string>? = null
     NodeStore {
-        exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], marks: [], grammars: [], annotations: [], docs: [], doc_ats: [], remarks: [],
-        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
+        file: file,
+        exprs: new_arena(),
+        expr_fingerprints: list_cell(),
+        stmts: new_arena(),
+        stmt_fingerprints: list_cell(),
+        marks: list_cell(),
+        grammars: list_cell(),
+        component_insts: list_cell(),
+        impl_tparams: list_cell(),
+        hoisted: list_cell(),
+        annotations: list_cell(),
+        docs: list_cell(),
+        file_doc: Cell.new(no_file_doc),
+        doc_ats: list_cell(),
+        remarks: list_cell(),
+        pats: list_cell(),
+        pat_spans: list_cell(),
+        pat_fingerprints: list_cell(),
+        trailing: list_cell(),
+        type_lits: list_cell(),
+        holes: list_cell(),
+        run_holes: list_cell(),
+        raw_strings: list_cell(),
+        sugar_matches: list_cell(),
+        instance_owners: list_cell(),
+        grammar_lits: list_cell(),
+        tables: list_cell(),
+        written_close: list_cell(),
+        quotes_at: map_cell(),
+        sublangs: list_cell(),
+        body_starts: map_cell(),
+        block_voices: list_cell(),
+        foreign: list_cell(),
     }
+}
+
+/// One `///` line as written back: the conventional space restored,
+/// `///` alone for a line that carried none. The one spelling of this
+/// projection — a statement's own doc lines print through it, and so
+/// does an orphaned group falling back to remarks, so the two paths
+/// agree on what a doc line looks like.
+export fn doc_line_text(line: string) -> string {
+    if line.is_empty() { "///" } else { "/// ${line}" }
+}
+
+/// Two remark lists, each already in source order, folded into one.
+/// A doc group orphaned after the file's remarks were set is not
+/// appended — appending would leave the list unsorted and the
+/// printer's forward-only cursor would misplace or skip it.
+fn merged_remarks(a: List<Remark>, b: List<Remark>) -> List<Remark> {
+    mut out: List<Remark> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length && j < b.length {
+        if a[i].at <= b[j].at {
+            out.push(a[i])
+            i = i + 1
+        } else {
+            out.push(b[j])
+            j = j + 1
+        }
+    }
+    out.concat(a.slice(i, a.length)).concat(b.slice(j, b.length))
 }
 
 impl NodeStore {
     /// The one expression-allocation seam.
-    fn alloc_expr(e: Expr, span: Span?) -> ExprId {
+    fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
         self.trailing.push(false)
         self.type_lits.push(false)
         self.holes.push(false)
+        self.run_holes.push(false)
+        self.raw_strings.push(false)
+        self.sugar_matches.push(false)
+        self.instance_owners.push(null)
+        self.grammar_lits.push(null)
+        self.tables.push(null)
+        self.written_close.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
     /// A lambda written as a TRAILING BLOCK — the mark is part of the
     /// node: the block's refusals speak in the block's words.
     fn mark_trailing(e: ExprId) {
-        self.trailing.set(e.index, true)
-        self.expr_fingerprints.set(e.index, fp(111, [self.expr_fingerprints[e.index]]))
+        self.trailing.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(111, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_trailing(e: ExprId) -> bool {
-        self.trailing[e.index]
+        self.trailing.get()[e.index]
+    }
+
+    /// The seat an argument names, when it is written `name: value`.
+    fn arg_label(a: ExprId) -> string? {
+        match self.expr(a) {
+            .Named(name, _) -> name.of,
+            _ -> null,
+        }
+    }
+
+    /// An argument's value, its name stripped.
+    fn unnamed(a: ExprId) -> ExprId {
+        match self.expr(a) {
+            .Named(_, value) -> value,
+            _ -> a,
+        }
+    }
+
+    /// A call's arguments in SEAT order, names stripped; a seat no
+    /// argument writes is skipped. A callee that names fewer seats
+    /// than it is handed keeps the written order.
+    fn seated_args(args: List<ExprId>, seats: List<string>) -> List<ExprId> {
+        if seats.length < args.length { return [self.unnamed(a) for a in args] }
+        [self.unnamed(args[i]) for i in self.seat_plan(args, seats) if i >= 0]
+    }
+
+    /// Which argument fills each seat: its index among `args`, or -1
+    /// for a seat no argument writes. A positional argument fills the
+    /// seat at its own position; a named one, the seat of its name.
+    fn seat_plan(args: List<ExprId>, seats: List<string>) -> List<int> {
+        let labels = [self.arg_label(a) ?? "" for a in args]
+        [filler(labels, seats[j], j) for j in 0..seats.length]
     }
 
     /// A call written as a TYPE LITERAL — the mark is part of the
     /// node: a receiver that cannot answer refuses in the literal's words.
     fn mark_type_lit(e: ExprId) {
-        self.type_lits.set(e.index, true)
-        self.expr_fingerprints.set(e.index, fp(112, [self.expr_fingerprints[e.index]]))
+        self.type_lits.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(112, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_type_lit(e: ExprId) -> bool {
-        self.type_lits[e.index]
+        self.type_lits.get()[e.index]
+    }
+
+    /// A string written `"""raw"""` — the mark is part of the node:
+    /// the printer spells its own delimiters back, never the escaped
+    /// form its twin reads identically.
+    fn mark_raw_string(e: ExprId) {
+        self.raw_strings.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(144, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    fn is_raw_string(e: ExprId) -> bool {
+        self.raw_strings.get()[e.index]
+    }
+
+    /// An expression-position `grammar { … }` literal fully expanded
+    /// into this `Grammar` struct literal — its own DSL text, the
+    /// mark's code 147.
+    fn mark_grammar_lit(e: ExprId, text: string) {
+        self.grammar_lits.set_at(e.index, text)
+        self.expr_fingerprints.set_at(e.index, fp(147, [self.expr_fingerprints.get()[e.index], fp_str(text)]))
+    }
+
+    fn grammar_lit_of(e: ExprId) -> string? {
+        self.grammar_lits.get()[e.index]
+    }
+
+    /// A `table<Row> { … }` literal desugared into this list — the
+    /// row type and header the rows' own fields cannot answer once
+    /// the table is empty, the mark's code 148.
+    fn mark_table(e: ExprId, tbl: TableSpec) {
+        self.tables.set_at(e.index, tbl)
+        self.expr_fingerprints.set_at(e.index, fp(148, [self.expr_fingerprints.get()[e.index], fp_str(tbl.row_type), fp_list(str_fps(tbl.header))]))
+    }
+
+    fn table_of(e: ExprId) -> TableSpec? {
+        self.tables.get()[e.index]
+    }
+
+    /// `tail_scoped` narrowed this Block's own span to its lone tail
+    /// value's — printing keeps the written brace's real offset here,
+    /// never folded into the fingerprint: the value is unchanged, only
+    /// where a trailing comment stops belonging to this scope.
+    fn mark_written_close(e: ExprId, hi: int) {
+        self.written_close.set_at(e.index, hi)
+    }
+
+    fn written_close(e: ExprId) -> int? {
+        self.written_close.get()[e.index]
     }
 
     /// A name written inside a type literal — a HOLE, the id it
     /// names: a binding of the wrong type refuses as a hole.
     fn mark_hole(e: ExprId) {
-        self.holes.set(e.index, true)
-        self.expr_fingerprints.set(e.index, fp(113, [self.expr_fingerprints[e.index]]))
+        self.holes.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(113, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_hole(e: ExprId) -> bool {
-        self.holes[e.index]
+        self.holes.get()[e.index]
+    }
+
+    /// A hole written `${..name}` — a RUN, standing for zero or more
+    /// sibling nodes rather than one.
+    fn mark_run_hole(e: ExprId) {
+        self.run_holes.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    fn is_run_hole(e: ExprId) -> bool {
+        self.run_holes.get()[e.index]
+    }
+
+    /// A `Match` a trailing block of arms sugar built (`{ .Ok(v) ->
+    /// … }`), never one a program wrote — the mark is part of the
+    /// node: an implicit tail changes what it means to leave a
+    /// variant unhandled.
+    fn mark_sugar_match(e: ExprId) {
+        self.sugar_matches.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(150, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    fn is_sugar_match(e: ExprId) -> bool {
+        self.sugar_matches.get()[e.index]
+    }
+
+    /// The statement a component instance's expression is bound
+    /// under — set once, at the statement that wraps it, before any
+    /// `@name(args)` outside it attaches (`annotate`/`annotate_before`
+    /// run AFTER the wrapped statement is whole).
+    fn mark_instance_owner(e: ExprId, s: StmtId) {
+        self.instance_owners.set_at(e.index, s)
+    }
+
+    fn instance_owner(e: ExprId) -> StmtId? {
+        self.instance_owners.get()[e.index]
     }
 
     /// Where a quote's runs of text start in the source, one per part.
     fn mark_quote_at(e: ExprId) {
         let sp: Span? = self.expr_span(e)
-        if sp != null { self.quotes_at.set("${sp!.lo}", e.index) }
+        if sp != null { self.quotes_at.put("${sp!.lo}", e.index) }
     }
 
     /// The quote starting at a source offset, when one does.
     fn quote_at(offset: int) -> ExprId? {
-        let i? = self.quotes_at.get("${offset}") else { return null }
+        let i? = self.quotes_at.get().get("${offset}") else { return null }
         ExprId { index: i }
     }
 
     /// A sublanguage block and where its body starts in the source.
     fn mark_sublang(e: ExprId, body_at: int) {
         self.sublangs.push(e)
-        self.body_starts.set("${e.index}", body_at)
+        self.body_starts.put("${e.index}", body_at)
     }
 
-    fn body_start(e: ExprId) -> int { self.body_starts.get("${e.index}") ?? 0 }
+    fn body_start(e: ExprId) -> int { self.body_starts.get().get("${e.index}") ?? 0 }
 
     fn speak_block(v: BlockVoice) { self.block_voices.push(v) }
 
-    fn note_foreign(lo: int, hi: int, path: string) { self.foreign.push(ForeignRange { lo: lo, hi: hi, path: path }) }
+    /// The arenas' counts now.
+    fn marks() -> ArenaMarks { ArenaMarks { exprs: self.exprs.count(), stmts: self.stmts.count(), pats: self.pat_count() } }
+
+    /// The run of another file's nodes an expression belongs to, when
+    /// it was minted from one.
+    fn foreign_of(e: ExprId) -> ForeignRange? { self.foreign.get().find(it.runs.exprs.holds(e.index)) }
+
+    /// Whether an expression's span is another file's — a node a
+    /// template was copied from.
+    fn spanned_elsewhere(e: ExprId) -> bool { self.foreign_of(e)?.spanned_home ?? false }
+
+    /// Every node minted since `since` was written in the file at
+    /// `path`, and spanned in this file's offsets.
+    fn note_foreign(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, false)) }
+
+    /// Every node minted since `since` was copied from the file at
+    /// `path`, and keeps that file's spans.
+    fn note_copied(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, true)) }
+
+    fn minted_since(since: ArenaMarks, path: string, spanned_home: bool) -> ForeignRange {
+        ForeignRange { runs: since.until(self.marks()), path: path, spanned_home: spanned_home }
+    }
 
     /// The block words the file's blocks wear.
     fn sublang_words() -> List<string> {
-        [(self.expr(e)).body_of()?.word ?? "" for e in self.sublangs]
+        [self.expr(e).body_of()?.word ?? "" for e in self.sublangs.get()]
     }
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Body(_, _, _, .Expanded(x)) -> x,
+            .Body(_, _, _, .Expanded(x)) or .Component(_, _, _, .Expanded(x), _) -> x,
             _ -> null,
         }
     }
@@ -189,12 +449,7 @@ impl NodeStore {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _)
-                or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Receiver
-                or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _)
-                or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _)
-                or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_)
-                or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -204,7 +459,9 @@ impl NodeStore {
     /// pronoun's WHOLE mechanism: nothing downstream knows it exists.
     fn pronouned(a: ExprId) -> ExprId {
         if !self.pronoun_rides(a) { return a }
-        self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a))
+        let label? = self.arg_label(a) else { return self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a)) }
+        // a named argument keeps its name: the wrap goes inside it
+        self.alloc_expr(Expr.Named(Plain(label), self.pronouned(self.unnamed(a))), self.expr_span(a))
     }
 
     /// The value a tail statement answers with: an expression
@@ -216,10 +473,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
-                or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_)
-                or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _)
-                or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .Error -> null,
         }
     }
 
@@ -247,8 +501,18 @@ impl NodeStore {
     /// case — a Builder's matched branch, or the tail statement's own.
     fn tail_scoped(stmts: List<StmtId>, tail: StmtId, value: ExprId, span: Span?) -> ExprId {
         if !self.annotations_of(tail).is_empty() { return self.alloc_expr(Expr.Block(stmts, value), span) }
-        if stmts.length == 1 { return self.alloc_expr(Expr.Block([], value), self.expr_span(value)) }
+        if stmts.length == 1 { return self.lone_tail(value, span) }
         self.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value), span)
+    }
+
+    /// A one-statement scope's Block, narrowed to its value's own span
+    /// (the law above) — `written_close` keeps the enclosing `{ }`'s
+    /// real offset ALONGSIDE the narrowed span, so the printer can
+    /// still find where a trailing comment before that brace belongs.
+    fn lone_tail(value: ExprId, span: Span?) -> ExprId {
+        let node = self.alloc_expr(Expr.Block([], value), self.expr_span(value))
+        if span != null { self.mark_written_close(node, span!.hi) }
+        node
     }
 
     /// A branch's statements as its answer: the one expression when
@@ -284,16 +548,17 @@ impl NodeStore {
     }
 
     /// The one pattern-allocation seam.
-    fn alloc_pat(p: Pat, span: Span?) -> PatId {
+    fn alloc_pat(p: Pat, span: Span? = null) -> PatId {
         self.pat_fingerprints.push(self.fingerprint_pat(p))
         self.pat_spans.push(span)
         self.pats.push(p)
-        PatId { index: self.pats.length - 1 }
+        PatId { index: self.pats.get().length - 1 }
     }
 
-    fn pat(id: PatId) -> Pat { self.pats[id.index] }
-    fn pat_span(id: PatId) -> Span? { self.pat_spans[id.index] }
-    fn pat_fingerprint(id: PatId) -> int { self.pat_fingerprints[id.index] }
+    fn pat_count() -> int { self.pats.get().length }
+    fn pat(id: PatId) -> Pat { self.pats.get()[id.index] }
+    fn pat_span(id: PatId) -> Span? { self.pat_spans.get()[id.index] }
+    fn pat_fingerprint(id: PatId) -> int { self.pat_fingerprints.get()[id.index] }
 
     /// The names a pattern binds, in pre-order — the arm's bind
     /// order, which every pass keys by index.
@@ -304,7 +569,8 @@ impl NodeStore {
         match self.pat(id) {
             .Bind(name) -> [Binder { pat: id, name: name.of }],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
-            .Format(_, parts) -> [Binder { pat: id, name: n } for n in bound_names(parts)],
+            .Format(_, parts) -> named_binders(id, bound_names(parts)),
+            .Quote(body) -> named_binders(id, quote_pat_names(quote_pat_holes(self, body))),
             .Wild or .Rest or .Lit(_) -> [],
         }
     }
@@ -321,7 +587,7 @@ impl NodeStore {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) or .Format(_, _) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) -> false,
         }
     }
 
@@ -335,6 +601,7 @@ impl NodeStore {
             .Variant(name, args) -> fp(53, [fp_str(name.of), fp_list([self.pat_fingerprint(a) for a in args])]),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
             .Format(head, parts) -> fp(129, [fp_str(head), fp_list([hole_fp(p) for p in parts])]),
+            .Quote(body) -> fp(143, [self.expr_fingerprint(body)]),
         }
     }
 
@@ -345,14 +612,16 @@ impl NodeStore {
     /// sequence and the same fingerprint. Two different programs,
     /// one identity, and the memo kernel cannot tell them apart.
     fn arm_fps(arms: List<Arm>) -> List<int> {
-        [fp(29, [fp_list([self.pat_fingerprint(p) for p in a.pats]), self.expr_fingerprint(a.value)]) for a in arms]
+        [fp(29, [fp_list([self.pat_fingerprint(p) for p in a.pats]), fp_list([self.expr_fingerprint(g) for g in some_list(a.guard)]), self.expr_fingerprint(a.value)]) for a in arms]
     }
 
     /// The one statement-allocation seam.
-    fn alloc_stmt(s: Stmt, span: Span?) -> StmtId {
+    fn alloc_stmt(s: Stmt, span: Span? = null) -> StmtId {
         self.stmt_fingerprints.push(self.fingerprint_stmt(s))
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
+        self.component_insts.push(null)
+        self.impl_tparams.push(null)
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -364,8 +633,8 @@ impl NodeStore {
     /// must not be cut off by the parsed-program memo. Lines never
     /// contain a newline, so the joined text is a lossless key.
     /// The file's plain `//` lines, by the offset each was written at.
-    mut fn keep_remarks(rs: List<Remark>) {
-        self.remarks = rs
+    fn keep_remarks(rs: List<Remark>) {
+        self.remarks.set(rs)
     }
 
     /// Store the declaration-leading documentation as part of the
@@ -373,28 +642,48 @@ impl NodeStore {
     /// must not be cut off by the parsed-program memo. Lines never
     /// contain a newline, so the joined text is a lossless key.
     fn document(s: StmtId, lines: List<string>, at: int) {
-        self.docs.set(s.index, lines)
-        self.doc_ats.set(s.index, at)
-        self.stmt_fingerprints.set(s.index, fp(115, [self.stmt_fingerprints[s.index], fp_str(lines.join("\n"))]))
+        self.docs.set_at(s.index, lines)
+        self.doc_ats.set_at(s.index, at)
+        self.stmt_fingerprints.set_at(s.index, fp(115, [self.stmt_fingerprints.get()[s.index], fp_str(lines.join("\n"))]))
     }
 
     fn doc_comment(s: StmtId) -> List<string>? {
-        self.docs[s.index]
+        self.docs.get()[s.index]
+    }
+
+    /// The file's own `//!` header — set once, at most, per file.
+    fn document_file(lines: List<string>) {
+        self.file_doc.set(lines)
+    }
+
+    /// The file's own `//!` header, absent when it opened with
+    /// anything else.
+    fn file_doc() -> List<string>? {
+        self.file_doc.get()
     }
 
     /// Where a declaration's doc group began, or -1 when it has none.
     fn doc_at(s: StmtId) -> int {
-        self.doc_ats[s.index]
+        self.doc_ats.get()[s.index]
+    }
+
+    /// A `///` group whose anchor opened a MARK, not a declaration —
+    /// no statement claims it, so it survives as one remark per line,
+    /// in the author's place. Merged into the file's remark order by
+    /// offset: `keep_remarks` runs first, so this extends what it set
+    /// rather than racing it.
+    fn orphan_doc(lines: List<string>, line_ats: List<int>) {
+        let added = [Remark { trivia: Trivia.Comment(doc_line_text(line)), at: line_ats[i] } for i, line in lines]
+        self.remarks.set(merged_remarks(self.remarks.get(), added))
     }
 
     /// The statement whose span begins at or after `at`, earliest
     /// first — where a doc group's anchor lands.
     fn statement_after(at: int) -> StmtId? {
-        // LICENSED I4: a min-by fold; the subset has no min_by
+        // LICENSED style.hand_rolled_scan: a min-by fold; the subset has no min_by
         mut best: StmtId? = null
         mut best_lo = 0
-        for i in 0..self.stmts.count() {
-            let s = StmtId { index: i }
+        for s in self.stmt_ids() {
             let span = self.stmt_span(s)
             if span != null {
                 let lo = span!.lo
@@ -409,24 +698,46 @@ impl NodeStore {
 
     /// `@name(args)` crossed this declaration: the call the compiler
     /// makes over it, recorded as a fact of the declaration — its
-    /// callee an ident node, so every pass reads it as one.
-    mut fn annotate(s: StmtId, a: Annotation) {
-        mut held = self.annotations[s.index]
-        held.push(a)
-        self.annotations.set(s.index, held)
-        self.stmt_fingerprints.set(s.index, fp(114, [self.stmt_fingerprints[s.index], self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]))
+    /// callee an ident node, so every pass reads it as one. Appends —
+    /// `annotations_of` reads in the order `annotate` was called.
+    fn annotate(s: StmtId, a: Annotation) {
+        self.annotations.set_at(s.index, self.annotations_of(s).concat([a]))
+        self.restamp_annotation(s, a)
+    }
+
+    /// `@name(args)` crossed this declaration OUTSIDE one already
+    /// recorded — the one caller that needs it is the parser's:
+    /// `@a @b decl` parses as `a` wrapping a recursive `stmt` that is
+    /// `b` wrapping `decl`, so the INNER build (`b`, closer to `decl`,
+    /// later in the source) runs before the OUTER one (`a`, first in
+    /// the source) — the recursion returns outside-in. Called
+    /// nearest-to-farthest from the declaration, the reverse of
+    /// reading order, it PREPENDS: the first call (nearest) seeds the
+    /// list and every call after it stands for something written
+    /// EARLIER, ahead of what is already there — so `annotations_of`
+    /// still reads in the author's order.
+    fn annotate_before(s: StmtId, a: Annotation) {
+        self.annotations.set_at(s.index, [a].concat(self.annotations_of(s)))
+        self.restamp_annotation(s, a)
+    }
+
+    fn restamp_annotation(s: StmtId, a: Annotation) {
+        self.stmt_fingerprints.set_at(s.index, fp(114, [self.stmt_fingerprints.get()[s.index], self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]))
     }
 
     fn annotations_of(s: StmtId) -> List<Annotation> {
-        self.annotations[s.index]
+        self.annotations.get()[s.index]
     }
 
     /// A statement's marks, replaced by what `upd` computes from what it
     /// already wears — the one seam every `mark_*` verb writes through,
     /// so a bit lands beside its siblings rather than overwriting them.
     fn update_marks(s: StmtId, upd: fn(StmtMarks) -> StmtMarks) {
-        self.marks.set(s.index, upd(self.marks[s.index]))
+        self.marks.set_at(s.index, upd(self.marks_at(s)))
     }
+
+    /// The marks a statement wears.
+    fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
 
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
@@ -436,7 +747,7 @@ impl NodeStore {
     }
 
     fn is_mutating(s: StmtId) -> bool {
-        self.marks[s.index].is_mutating
+        self.marks_at(s).is_mutating
     }
 
     /// `once fn` crossed this declaration — its answer settles for
@@ -447,7 +758,7 @@ impl NodeStore {
     }
 
     fn is_once(s: StmtId) -> bool {
-        self.marks[s.index].is_once
+        self.marks_at(s).is_once
     }
 
     /// `static fn` crossed this declaration — it lives under an impl
@@ -458,20 +769,77 @@ impl NodeStore {
         self.restamp(s, 110)
     }
 
-    fn is_static(s: StmtId) -> bool { if s.index < self.marks.length { self.marks[s.index].is_static } else { true } }
+    fn is_static(s: StmtId) -> bool { if s.index < self.marks.get().length { self.marks_at(s).is_static } else { true } }
 
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code
     /// is 113 and the format is its PAYLOAD: the head, then the holes
     /// folded to one value.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
-        self.grammars.set(s.index, read)
+        self.grammars.set_at(s.index, read)
         self.restamp_carrying(s, 113, [fp_str(read.head), fp_list([hole_fp(p) for p in read.parts])])
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
-        if s.index < self.grammars.length { self.grammars[s.index] } else { null }
+        if s.index < self.grammars.get().length { self.grammars.get()[s.index] } else { null }
     }
+
+    /// A named instance (`grid report { … }`) of the component
+    /// declared `of` bound this `let` — the mark's code is 146.
+    fn mark_component_inst(s: StmtId, of: string) {
+        self.component_insts.set_at(s.index, of)
+        self.restamp(s, 146)
+    }
+
+    /// `impl Traced<E>`/`impl Show<X> for Box<T>` crossed this
+    /// declaration wearing type parameters of its own — the mark's
+    /// code is 151, carrying what was written.
+    fn mark_impl_tparams(s: StmtId, of: List<Plain>, target: List<Plain>) {
+        self.impl_tparams.set_at(s.index, ImplTypeParams { of: of, target: target })
+        self.restamp_carrying(s, 151, [fp_list(plain_fps(of)), fp_list(plain_fps(target))])
+    }
+
+    fn impl_tparams_of(s: StmtId) -> ImplTypeParams? {
+        self.impl_tparams.get()[s.index]
+    }
+
+    /// A declaration an instance minted, joining its file's top level.
+    fn hoist(s: StmtId) {
+        self.hoisted.push(s)
+    }
+
+    /// The declarations instances minted, in the order they were.
+    fn hoisted_decls() -> List<StmtId> {
+        self.hoisted.get()
+    }
+
+    /// Whether an instance minted this declaration — the compiler's,
+    /// never the author's, so no printer writes it.
+    fn is_hoisted(s: StmtId) -> bool {
+        self.hoisted.get().any(same_stmt(it, s))
+    }
+
+    /// An EXPORTED named instance at a file's top level is a
+    /// declaration — a `const` built once per run at its first read,
+    /// never a statement of `main` — carrying what was written over it.
+    /// One not exported stays the statement it was written as.
+    fn declared_instance(s: StmtId) -> StmtId {
+        if !self.is_component_inst(s) || !self.is_exported(s) { return s }
+        let name? = self.let_name(s) else { return s }
+        let value? = self.stmt_value(s) else { return s }
+        let d = self.alloc_stmt(Stmt.ConstDecl(Scoped(name), null, value), self.stmt_span(s))
+        self.mark_component_inst(d, self.instance_of(s)!)
+        self.mark_exported(d)
+        let docs: List<string>? = self.doc_comment(s)
+        if docs != null { self.document(d, docs!, self.doc_at(s)) }
+        for a in self.annotations_of(s) { self.annotate(d, a) }
+        d
+    }
+
+    fn is_component_inst(s: StmtId) -> bool { self.instance_of(s) != null }
+
+    /// The component a named instance's statement instances.
+    fn instance_of(s: StmtId) -> string? { self.component_insts.get()[s.index] }
 
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,
     /// `once fn f()`, `static fn f()` and `export fn f()` declare
@@ -484,7 +852,7 @@ impl NodeStore {
     /// that CARRIES something folds what it carries to ONE value, so
     /// the codes stay a registry and no run's boundary can move.
     fn restamp_carrying(s: StmtId, tag: int, carried: List<int>) {
-        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index], fp_list(carried)]))
+        self.stmt_fingerprints.set_at(s.index, fp(tag, [self.stmt_fingerprints.get()[s.index], fp_list(carried)]))
     }
 
     /// `export` crossed this declaration — the module's surface
@@ -496,8 +864,26 @@ impl NodeStore {
     }
 
     fn is_exported(s: StmtId) -> bool {
-        self.marks[s.index].is_exported
+        self.marks_at(s).is_exported
     }
+
+    /// Every `use` statement the parse BUILT, in order — whether or not
+    /// the program around it parsed. The block-word pre-scan reads
+    /// these: a line its words would have parsed must not hide the
+    /// imports that name them.
+    fn built_uses() -> List<UseParts> {
+        flatten([some_list(self.use_parts(s)) for s in self.stmt_ids()])
+    }
+
+    /// Every statement the store holds, in the order it was built.
+    // LICENSED style.stmt_index_walk: the one index walk every other reader asks for
+    fn stmt_ids() -> List<StmtId> { [StmtId { index: i } for i in 0..self.stmts.count()] }
+
+    /// Every expression the store holds, in the order it was built —
+    /// `stmt_ids`'s own twin, the whole file's arena, never one
+    /// declaration's range alone.
+    // LICENSED style.stmt_index_walk: the one index walk every other reader asks for
+    fn expr_ids() -> List<ExprId> { [ExprId { index: i } for i in 0..self.exprs.count()] }
 
     /// A `use` statement's parts, when the statement is one.
     fn use_parts(s: StmtId) -> UseParts? {
@@ -511,8 +897,10 @@ impl NodeStore {
     fn stmt(id: StmtId) -> Stmt { self.stmts.node_at(id.index) }
     fn expr_span(id: ExprId) -> Span? { self.exprs.span_at(id.index) }
     fn stmt_span(id: StmtId) -> Span? { self.stmts.span_at(id.index) }
-    fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints[id.index] }
-    fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints[id.index] }
+    /// Whether `id` is the `null` literal.
+    fn null_literal(id: ExprId) -> bool { self.expr(id) is .NullLit }
+    fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints.get()[id.index] }
+    fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints.get()[id.index] }
 
     /// The span containing both expressions, when both are known.
     fn cover(a: ExprId, b: ExprId) -> Span? {
@@ -523,7 +911,8 @@ impl NodeStore {
     }
 
     /// A PLACE's last step, when the expression is one: a bare name,
-    /// a field of a subject, or an index into one. The one
+    /// a field of a subject, an index into one, or an unwrap of one
+    /// (`h.r!` — a path runs through what the nullable carries). The one
     /// projection for the place category — every other shape is a
     /// value, not a place.
     fn place_step(e: ExprId) -> PlaceStep? {
@@ -532,12 +921,8 @@ impl NodeStore {
             .Receiver -> PlaceStep.Root("self"),
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _)
-                or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Call(_, _, _)
-                or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _)
-                or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _)
-                or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _)
-                or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
+            .Force(subject) -> PlaceStep.Unwrap(subject),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -571,7 +956,7 @@ impl NodeStore {
         let step? = self.place_step(e) else { return null }
         match step {
             .Root(_) -> e,
-            .Field(subject, _) or .At(subject, _) -> self.place_root(subject),
+            .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> self.place_root(subject),
         }
     }
 
@@ -668,6 +1053,12 @@ impl NodeStore {
 
 }
 
+/// Several names, all bound by the one pattern — a hole is not a
+/// sub-pattern, so every binder it names shares the hole's `id`.
+fn named_binders(id: PatId, names: List<string>) -> List<Binder> {
+    [Binder { pat: id, name: n } for n in names]
+}
+
 impl NodeStore {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
@@ -691,7 +1082,84 @@ impl NodeStore {
     }
 }
 
-/// A mark list's fingerprint parts — ONE VALUE PER MARK, its
-/// arguments folded to one of their own. `@a(x)` and `@a @x` are
-/// different declarations, and a flat splice would give them one
-/// identity.
+// ── Exact equality, the store-bound half ───────────────────────────
+// `@derive(Exact)` (core/exact_derive.av) generates `exact_expr`/
+// `exact_stmt`/`exact_pat` themselves; every compound type an Expr,
+// Stmt or Pat carries THROUGH THE STORE (an id that dereferences, a
+// list of them, an Arm/Param/Variant/Case that holds one) is walked
+// here instead — `case_fps`/`param_fps`/`variant_fps`'s own siblings,
+// comparing rather than folding.
+impl NodeStore {
+    fn exact_opt_expr(a: ExprId?, b: ExprId?) -> bool {
+        if a == null || b == null { return a == null && b == null }
+        self.exact_expr(self.expr(a!), self.expr(b!))
+    }
+
+    fn exact_expr_ids(a: List<ExprId>, b: List<ExprId>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_expr(self.expr(a[k]), self.expr(b[k])))
+    }
+
+    fn exact_stmt_ids(a: List<StmtId>, b: List<StmtId>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_stmt(self.stmt(a[k]), self.stmt(b[k])))
+    }
+
+    fn exact_pat_ids(a: List<PatId>, b: List<PatId>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_pat(self.pat(a[k]), self.pat(b[k])))
+    }
+
+    /// An arm's own equality — `arm_fps`'s exact twin.
+    fn exact_arm(a: Arm, b: Arm) -> bool {
+        self.exact_pat_ids(a.pats, b.pats) && self.exact_opt_expr(a.guard, b.guard) && self.exact_expr(self.expr(a.value), self.expr(b.value))
+    }
+
+    fn exact_arms(a: List<Arm>, b: List<Arm>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_arm(a[k], b[k]))
+    }
+
+    /// A seat's own equality — `param_fps`'s exact twin.
+    fn exact_param(a: Param, b: Param) -> bool {
+        a.name.of == b.name.of && exact_type_ref(a.ty, b.ty) && exact_seat_mark(a.promises, b.promises) && self.exact_opt_expr(a.default, b.default) && exact_marks(a.marks, b.marks)
+    }
+
+    fn exact_params(a: List<Param>, b: List<Param>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_param(a[k], b[k]))
+    }
+
+    /// A variant's own equality — `variant_fps`'s exact twin.
+    fn exact_variant(a: Variant, b: Variant) -> bool {
+        a.name.of == b.name.of && self.exact_params(a.payloads, b.payloads) && exact_marks(a.marks, b.marks)
+    }
+
+    fn exact_variants(a: List<Variant>, b: List<Variant>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_variant(a[k], b[k]))
+    }
+
+    /// A case's own equality — `case_fps`'s exact twin.
+    fn exact_case(a: Case, b: Case) -> bool {
+        a.group == b.group && a.name == b.name && self.exact_expr(self.expr(a.body), self.expr(b.body))
+    }
+
+    fn exact_cases(a: List<Case>, b: List<Case>) -> bool {
+        a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_case(a[k], b[k]))
+    }
+
+    /// `view_fp`'s exact twin: an EXPANSION compares equal to any
+    /// other expansion, unread — a node wears one identity either
+    /// side of its own expansion, and equality is no different.
+    fn exact_view(a: BodyView, b: BodyView) -> bool {
+        match a {
+            .None -> match b { .None -> true, rest -> false },
+            .Verbatim(stmts1, arms1) -> match b { .Verbatim(stmts2, arms2) -> self.exact_stmt_ids(stmts1, stmts2) && self.exact_arms(arms1, arms2), rest -> false },
+            .Expanded(_) -> match b { .Expanded(_) -> true, rest -> false },
+        }
+    }
+}
+
+/// The argument that fills seat `j`: the one named for it, else the
+/// positional one at its position, else -1.
+fn filler(labels: List<string>, seat: string, j: int) -> int {
+    let named = labels.index_of(seat)
+    if named >= 0 { return named }
+    if j < labels.length && labels[j] == "" { return j }
+    0 - 1
+}

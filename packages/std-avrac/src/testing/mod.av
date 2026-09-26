@@ -1,7 +1,8 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use compiler.{analyze_source, parse_source, Program}
+use compiler.{analyze_source, parse_source, Program, avra, new_workspace}
+use compiler.host.{memory_host}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
 use @std.meta.{embed}
@@ -124,4 +125,36 @@ export fn real_meta_source() -> string {
 /// What `vendored_meta` adds, for the host's path list.
 export fn vendored_meta_paths() -> List<string> {
     ["/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av", "/w/vendor/errors/avra.toml", "/w/vendor/errors/src/errors.av"]
+}
+
+/// A program at `/w` with `@std/meta` and a provider package `@x/c`
+/// whose one file is `provider`, which sees `Code` — the shape every
+/// component test compiles. Each of `modules` is one more module of
+/// the program's own, a file under `src/<name>/`.
+export fn provided(main: string, provider: string, modules: List<Module> = []) -> Program {
+    mut files = vendored_meta({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
+        "/w/src/main.av": main,
+        "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + provider,
+    })
+    for m in modules { files.set(m.path(), m.text) }
+    let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"].concat([m.path() for m in modules])
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+/// One module of a test program: its name and its one file's text.
+export type Module = { name: string, text: string }
+
+impl Module {
+    fn path() -> string { "/w/src/${self.name}/${self.name}.av" }
+}
+
+/// What a program answers when run, or the words it stopped with.
+export fn answered(p: Program) -> string {
+    match p.run() {
+        .Ok(v) -> v,
+        .Err(why) -> why,
+    }
 }

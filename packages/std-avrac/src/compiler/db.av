@@ -1,0 +1,160 @@
+//! THE DB — every heterogeneous thing the compiler can answer about a
+//! package, addressed by kind and name. An in-memory hit answers within
+//! this process at once; a durable hit is re-validated against the
+//! package's CURRENT state before it is trusted, so a stale answer is
+//! never returned; a miss is the caller's to derive and `insert`.
+//!
+//! PHASE 1 CARRIES ONE KIND, `Decl` — `avra docs <name>`'s own answer,
+//! not yet the general recorded-dependency design: its validity rests on
+//! two witnesses recorded at capture time, the package's FILE LISTING (so
+//! a name declared newly, anywhere, is caught) and the CONTENT of every
+//! file the answer read (so an edit to a file already read is caught). A
+//! later kind whose answer depends on RESOLVED types, not just parse
+//! facts, needs the wider recorded-dependency walk this narrows past —
+//! that is Phase 3's, not this one's.
+use core.{digest_of, joined, sorted_texts, flatten}
+use compiler.store.{Store, Stored, node_key}
+use @std.io.{list_dir, is_dir, read_text}
+use @std.path.{joined_path}
+use @std.text.{parse_int}
+use @std.meta.{derive}
+
+export enum DbKind { Decl }
+
+impl DbKind {
+    fn tag() -> string { match self { .Decl -> "Decl" } }
+}
+
+/// A file an answer's validity rides on: its path, and its content's
+/// digest at the moment the answer was captured.
+export type FileWitness = { path: string, digest: string }
+
+/// `avra docs <name>`'s own answer for one package: the rendered text
+/// (a decl's doc and annotations, or the collision message when more
+/// than one declaration wears the name), and what says it is still true
+/// — the package's own root (`still_valid` has nothing else to re-walk
+/// from), its file LISTING at capture time, and every file the answer
+/// read.
+export type DocFacts = {
+    root: string,
+    answer: string,
+    listing_digest: string,
+    files: List<FileWitness>,
+}
+
+@derive(Rows)
+export enum DbRow {
+    Decl(name: string, facts: DocFacts)
+}
+
+impl DbRow {
+    fn kind() -> DbKind { match self { .Decl(_, _) -> DbKind.Decl } }
+    fn key() -> string { match self { .Decl(name, _) -> name } }
+}
+
+/// One process's rows, in memory. `once`: every caller in this process
+/// shares the same answers, the way every other process-wide table does.
+export type Db = { rows: Map<string, DbRow> }
+
+export once fn db() -> Db { Db { rows: {} } }
+
+/// A row's name, over the package it belongs to — every `DbRow` key is
+/// one package's alone, and two packages never share a row by
+/// coincidence of a bare name colliding.
+export fn db_qualified(root: string, name: string) -> string { "${root}::${name}" }
+
+fn index_key(kind: DbKind, name: string) -> string { "${kind.tag()}\t${name}" }
+
+impl Db {
+    /// The row under `kind`/`name` — this process's own answer when it has
+    /// one, else a durable one once its witnesses still hold, else
+    /// nothing.
+    fn get(store: Store, kind: DbKind, name: string) -> DbRow? {
+        let k = index_key(kind, name)
+        let hit: DbRow? = self.rows.get(k)
+        if hit != null { return hit }
+        let found? = self.recalled(store, kind, name) else { return null }
+        self.rows.set(k, found)
+        found
+    }
+
+    /// A row, remembered for the rest of this process AND for every
+    /// process after it.
+    fn insert(store: Store, row: DbRow) {
+        self.rows.set(index_key(row.kind(), row.key()), row)
+        let _ = store.keep(Stored.Rows, durable_key(row.kind(), row.key()), encoded(row), [])
+    }
+
+    fn recalled(store: Store, kind: DbKind, name: string) -> DbRow? {
+        let text? = store.get(Stored.Rows, durable_key(kind, name)) else { return null }
+        let row? = decoded(kind, name, text) else { return null }
+        if !still_valid(row) { return null }
+        row
+    }
+}
+
+fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [kind.tag(), name]) }
+
+/// Whether a recalled row's witnesses still hold. One arm today; a kind
+/// with its own notion of freshness adds its own.
+fn still_valid(row: DbRow) -> bool {
+    match row {
+        .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) && facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
+    }
+}
+
+/// A package's own `.av` files, sorted and folded to one digest — a file
+/// added or removed anywhere moves it, however far from any file a
+/// cached answer already read.
+export fn current_listing_digest(root: string) -> string {
+    let dir = if is_dir(joined_path(root, "src")) { joined_path(root, "src") } else { root }
+    digest_of(joined(sorted_texts(av_files(dir)), "\n"))
+}
+
+fn av_files(dir: string) -> List<string> {
+    flatten([av_files_at(dir, f) for f in list_dir(dir) catch []])
+}
+
+fn av_files_at(dir: string, name: string) -> List<string> {
+    let full = joined_path(dir, name)
+    when {
+        is_dir(full) -> av_files(full)
+        name.ends_with(".av") -> [full]
+        _ -> []
+    }
+}
+
+/// A file's own current content, digested — absent as "".
+export fn current_file_digest(path: string) -> string {
+    digest_of(read_text(path) catch "")
+}
+
+fn encoded(row: DbRow) -> string {
+    match row { .Decl(_, facts) -> encoded_decl(facts) }
+}
+
+fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
+    match kind {
+        .Decl -> {
+            let facts? = decoded_decl(text) else { return null }
+            DbRow.Decl(name, facts)
+        },
+    }
+}
+
+fn encoded_decl(facts: DocFacts) -> string {
+    let header = [facts.root, facts.listing_digest, "${facts.files.length}"]
+    let file_lines = flatten([[w.path, w.digest] for w in facts.files])
+    joined(header.concat(file_lines).concat([facts.answer]), "\n")
+}
+
+fn decoded_decl(text: string) -> DocFacts? {
+    let lines = text.split("\n")
+    if lines.length < 3 { return null }
+    let count? = parse_int(lines[2]) else { return null }
+    let start = 3
+    let end = start + count * 2
+    if lines.length <= end { return null }
+    let files = [FileWitness { path: lines[start + j * 2], digest: lines[start + j * 2 + 1] } for j in 0..count]
+    DocFacts { root: lines[0], listing_digest: lines[1], files: files, answer: joined(lines.slice(end, lines.length), "\n") }
+}

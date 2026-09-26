@@ -24,6 +24,7 @@ export type Dispatch = {
     catches: dyn NodeSemantics,
     quotes: dyn NodeSemantics,
     sublangs: dyn NodeSemantics,
+    components: dyn NodeSemantics,
     syntaxes: dyn StmtSemantics,
     lets: dyn StmtSemantics,
     exprs: dyn StmtSemantics,
@@ -35,6 +36,7 @@ export type Dispatch = {
     whiles: dyn StmtSemantics,
     fors: dyn StmtSemantics,
     structdecls: dyn StmtSemantics,
+    componentdecls: dyn StmtSemantics,
     namedtypes: dyn StmtSemantics,
     enumdecls: dyn StmtSemantics,
     ifstmts: dyn StmtSemantics,
@@ -50,8 +52,10 @@ export type Dispatch = {
     uses: dyn StmtSemantics,
     specs: dyn StmtSemantics,
     defers: dyn StmtSemantics,
+    collects: dyn StmtSemantics,
     enumpats: dyn PatSemantics,
     formatpats: dyn PatSemantics,
+    quotepats: dyn PatSemantics,
 }
 
 /// The semantics of each expression node — THE exhaustive map,
@@ -70,21 +74,20 @@ fn body_semantics(d: Dispatch, word: string) -> dyn NodeSemantics {
 
 export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
     match e {
-        .IntLit(_) or .FloatLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_)
-            or .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
-        .ListLit(_) or .Comp(_, _, _, _, _, _) -> d.aggs,
+        .IntLit(_) or .FloatLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
+        .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) -> d.aggs,
         .MapLit(_, _) -> d.maps,
         .StrLit(_) -> d.strs,
         .Body(word, _, _, _) -> body_semantics(d, word),
+        .Component(_, _, _, _, _) -> d.components,
         .BoolLit(_) -> d.bools,
         .If(_, _, _) -> d.ifs,
         .When(_, _, _) -> d.whens,
         .Block(_, _) -> d.blocks,
-        .Call(_, _, _) -> d.calls,
+        .Call(_, _, _) or .Named(_, _) -> d.calls,
         .StructLit(_, _, _) or .With(_, _, _) -> d.structs,
         .Match(_, _) or .Is(_, _) or .VariantLit(_, _) -> d.enums,
-        .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_)
-            or .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
+        .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
         .Catch(_, _, _, _) -> d.catches,
         .MethodCall(_, _, _) or .Receiver -> d.methods,
         .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
@@ -101,6 +104,7 @@ export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
     match p {
         .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) -> d.enumpats,
         .Format(_, _) -> d.formatpats,
+        .Quote(_) -> d.quotepats,
     }
 }
 
@@ -118,7 +122,8 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .While(_, _) -> d.whiles,
         .For(_, _, _, _, _, _) -> d.fors,
         .StructDecl(_, _, _) -> d.structdecls,
-        .NamedType(_, _, _) -> d.namedtypes,
+        .ComponentDecl(_, _, _, _) -> d.componentdecls,
+        .NamedType(_, _, _) or .Alias(_, _, _) -> d.namedtypes,
         .EnumDecl(_, _, _) -> d.enumdecls,
         .IfStmt(_, _, _) -> d.ifstmts,
         .Return(_) -> d.returns,
@@ -130,7 +135,10 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .Use(_, _, _) -> d.uses,
         .Spec(_, _) -> d.specs,
         .Defer(_, _) -> d.defers,
-        .Error -> d.holes,
+        .Collect(_, _, _, _, _, _) -> d.collects,
+        // a setting lives in an instance's body, consumed where the
+        // instance is built — it reaches a pass only as a hole would
+        .Setting(_, _) or .Error -> d.holes,
     }
 }
 

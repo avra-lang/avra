@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, FnSig, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -25,10 +25,27 @@ impl LowerCx {
     /// seats THEMSELVES: a FORWARDED seat's value is per-unit, so
     /// only the caller's unit can key it.
     fn symbol_at(d: DeclId, e: ExprId) -> string {
-        let sub? = self.facts.subst_at(e) else { return self.wanted(d, null, []) }
+        let sub? = self.facts.subst_at(e) else { return self.wanted(d) }
         let seats: List<SeatValue> = self.call_seats(d, e)
-        if !self.seats_complete(d, e, seats) { return self.wanted(d, null, []) }
+        if !self.seats_complete(d, e, seats) { return self.wanted(d) }
         self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: [sv.fp for sv in seats] }, seats)
+    }
+
+    /// A declared call's registers in SEAT order: each written
+    /// argument's — lowered by the caller in written order — and a
+    /// call to its own default body for each seat no argument writes.
+    /// Typing held every unwritten seat to a default.
+    mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        if seats.length < regs.length { return regs }
+        let defaults = self.view.decls.seat_defaults(d)
+        [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+    }
+
+    mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {
+        let d? = body else { return self.lower_defect(e, "a call leaving a seat without a default survived typing") }
+        let ret? = self.view.decls.sig(d)?.fn_sig()?.ret else { return self.lower_defect(e, "a default with no signature survived typing") }
+        self.call_decl(ret, self.wanted(d), [])
     }
 
     /// Whether every `const` seat resolved. A TEMPLATE body has no unit
@@ -42,7 +59,7 @@ impl LowerCx {
 
     /// The call's `const` seats, by count.
     fn settled_count(d: DeclId, e: ExprId) -> int {
-        let args: List<ExprId> = self.call_args(e)
+        let args: List<ExprId> = self.call_args(d, e)
         let base: int = self.call_base(d, e)
         let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
         let settled = [settled_mark(marks, base + j) for j in 0..args.length]
@@ -57,22 +74,22 @@ impl LowerCx {
         let parent: DeclId? = self.view.decls.decl(m).parent
         if parent != null && self.view.decls.is_trait(parent!) {
             let contract = parent!
-            if at == null { return self.wanted(m, Sub { target: contract, args: [recv], consts: [] }, []) }
+            if at == null { return self.wanted(m, Sub { target: contract, args: [recv], consts: [] }) }
             let call = at!
             let seats: List<SeatValue> = self.call_seats(m, call)
-            if !self.seats_complete(m, call, seats) { return self.wanted(m, null, []) }
+            if !self.seats_complete(m, call, seats) { return self.wanted(m) }
             return self.wanted(m, Sub { target: contract, args: [recv], consts: [sv.fp for sv in seats] }, seats)
         }
-        if at == null { return self.wanted(m, null, []) }
+        if at == null { return self.wanted(m) }
         self.symbol_at(m, at!)
     }
 
     /// A declaration's body under an instantiation, as the symbol a
     /// call or an address names — enqueued on first sight, so the
     /// program lowers exactly what it reaches.
-    fn wanted(d: DeclId, sub: Sub?, seats: List<SeatValue>) -> string {
+    fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
         let sym = self.view.decls.symbol(d)
-        let name = if sub == null { sym } else { self.view.decls.mangle( sym, sub!) }
+        let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
         if self.unseen(name) {
             self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub, seats: seats, root: null })
         }
@@ -85,7 +102,7 @@ impl LowerCx {
     /// unit. A seat the source alone does not spell carries nothing
     /// (typing refused it).
     fn call_seats(d: DeclId, e: ExprId) -> List<SeatValue> {
-        let args: List<ExprId> = self.call_args(e)
+        let args: List<ExprId> = self.call_args(d, e)
         let base: int = self.call_base(d, e)
         let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
         mut out: List<SeatValue> = []
@@ -177,11 +194,13 @@ impl LowerCx {
     }
 
     /// A call node's arguments.
-    fn call_args(e: ExprId) -> List<ExprId> {
-        match self.view.store.expr(e) {
+    /// A call node's arguments in the SEAT order of `d`.
+    fn call_args(d: DeclId, e: ExprId) -> List<ExprId> {
+        let written: List<ExprId> = match self.view.store.expr(e) {
             .Call(_, _, args) or .MethodCall(_, _, args) -> args,
             rest -> [],
         }
+        self.view.store.seated_args(written, self.view.decls.facts_of(d)?.seats ?? [])
     }
 
     /// A call node's first written seat — 0 for a free fn, 1 past a
@@ -189,7 +208,7 @@ impl LowerCx {
     /// 0 even though its call node is dotted.
     fn call_base(d: DeclId, e: ExprId) -> int {
         match self.view.store.expr(e) {
-            .MethodCall(_, _, _) -> if self.view.decls.is_static_of(d) { 0 } else { 1 },
+            .MethodCall(_, _, _) if !self.view.decls.is_static_of(d) -> 1,
             rest -> 0,
         }
     }
@@ -229,11 +248,24 @@ impl LowerCx {
             .Def(s) -> self.defined_reg(e, s, ty),
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
             // valid only inside the LIFTED body: env rides seat 0
-            .LambdaParam(_, i) -> Reg { index: i + 1 },
+            .LambdaParam(lam, i) -> if self.facts.takes_by_name(lam) { self.offered_reg(lam, i, ty) } else { Reg { index: i + 1 } },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
-            .Decl(d) -> when { self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d, null, [])), self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty), _ -> null },
+            .Decl(d) -> when {
+                self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d))
+                self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty)
+                self.view.decls.decl(d).kind is .Collect -> self.collect_value_reg(e, d)
+                _ -> null
+            },
         }
+    }
+
+    /// A parameter a lambda took BY NAME: a field of the one record
+    /// its seat hands it, read by that name.
+    fn offered_reg(lam: ExprId, i: int, ty: TypeId) -> Reg {
+        let record = self.view.types.arrow_parts(self.concrete(self.facts.type_at(lam)))!.seats[0]
+        let name = self.view.store.lambda_parts(lam)!.params[i].name.of
+        self.field_named(Reg { index: 1 }, record, name, ty)
     }
 
     /// A DEFINITION read: a const IS its value, so the READ emits
@@ -243,6 +275,8 @@ impl LowerCx {
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
+        let own: DeclId? = self.view.decls.decl_of(self.view.file, s)
+        if own != null && self.view.decls.is_instance(own!) { return self.instance_value_reg(e, own!) }
         let init = value!
         if self.sub == null && self.reads_settled_seat(init) {
             // a TEMPLATE body, not a unit: its `const` seats have no
@@ -260,10 +294,31 @@ impl LowerCx {
     /// A DECLARED const read: settled in the declaration's OWN file, on
     /// no seats — a declaration has none.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
+        if self.view.decls.is_instance(d) { return self.instance_value_reg(e, d) }
+        let x = self.view.decls.decl(d)
         let held = self.view.decls.held_value(d)
         if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
-        let x = self.view.decls.decl(d)
         self.const_reg(e, x.file, x.stmt, ty, [])
+    }
+
+    /// A DECLARED VALUE — an exported top-level instance — is built once
+    /// per run: its read calls the unit that builds it (`lower_root`'s
+    /// `once` body), never a settled constant, so it may hold what no
+    /// static can: behaviour. The unit is its FILE's, like a fn's body.
+    fn instance_value_reg(e: ExprId, d: DeclId) -> Reg {
+        let unit = self.view.decls.instance_unit(d)
+        if self.unseen(unit.name) { self.jobs.pending.push(unit) }
+        self.call_decl_at(e, unit.name, [])
+    }
+
+    /// A `collect`'s read: its value is SYNTHESISED as its own unit
+    /// (`compiler/lower/lower.av`'s `lower_collect`, keyed on `d`
+    /// through `wanted` exactly as a lambda's wrap is), never a
+    /// literal to inline — so a read CALLS it, once per read site;
+    /// `once` binding it program-wide is the sugar backlog's, same as
+    /// any other computed const.
+    fn collect_value_reg(e: ExprId, d: DeclId) -> Reg {
+        self.call_decl_at(e, self.wanted(d), [])
     }
 
     /// The const at `s` in file `f`, read here: a literal as written,
@@ -295,13 +350,13 @@ impl LowerCx {
     /// template body; in a real unit its value must be carried.
     fn runtime_read(root: ExprId) -> string? {
         for node in self.view.store.every_expr(root) {
-            let b: Binding? = self.names.binding(node)
+            let b: Binding? = self.names.binding(node) // LICENSED structs.index_compared: a seat's ordinal, not a type identity
             if b != null {
                 match b! {
                     .Param(i) -> {
                         if !settled_mark(self.seat_marks, i) { return "parameter ${i + 1}" }
-                        if self.sub != null && !self.seats.any(it.index == i) { return "parameter ${i + 1}" } // LICENSED I9: a seat's ordinal, not a type identity
-                    }
+                        if self.sub != null && !self.seats.any(it.index == i) { return "parameter ${i + 1}" }
+                    },
                     rest -> nothing(),
                 }
             }
@@ -318,7 +373,7 @@ impl LowerCx {
                 match b! {
                     .Param(i) -> {
                         if settled_mark(self.seat_marks, i) { return true }
-                    }
+                    },
                     rest -> nothing(),
                 }
             }
@@ -336,12 +391,12 @@ impl LowerCx {
             let ty = self.seat_ty(j)
             let r: Reg = match self.seat_at(j) {
                 // a gap: nothing settled this seat, and no const may read it
+                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
                 null -> {
                     let dst = self.out.mint_ty(ty)
                     self.out.give(Ins.ConstInt(dst, 0))
                     dst
                 }
-                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
             }
             self.seat_regs.push(r)
         }
@@ -356,7 +411,7 @@ impl LowerCx {
     }
 
     fn seat_at(j: int) -> SeatValue? {
-        self.seats.find(it.index == j) // LICENSED I9: a seat's ordinal, not a type identity
+        self.seats.find(it.index == j) // LICENSED structs.index_compared: a seat's ordinal, not a type identity
     }
 
     fn seat_ty(j: int) -> TypeId {
@@ -375,25 +430,25 @@ impl LowerCx {
 
     /// A literal's register, minted at the literal's OWN shape.
     fn constant_reg(value: Expr) -> Reg? {
-        let n: int? = (value).int_of()
+        let n: int? = value.int_of()
         if n != null {
             let dst = self.shaped(Type.Int)
             self.out.give(Ins.ConstInt(dst, n!))
             return dst
         }
-        let t: string? = (value).text_of()
+        let t: string? = value.text_of()
         if t != null {
             let dst = self.shaped(Type.Str)
             self.out.give(Ins.ConstStr(dst, t!))
             return dst
         }
-        let b: bool? = (value).bool_of()
+        let b: bool? = value.bool_of()
         if b != null {
             let dst = self.shaped(Type.Bool)
             self.out.give(Ins.ConstBool(dst, b!))
             return dst
         }
-        let bits? = (value).bits_of() else { return null }
+        let bits? = value.bits_of() else { return null }
         let dst = self.shaped(Type.Float)
         self.out.give(Ins.ConstFloat(dst, bits))
         dst
@@ -420,9 +475,10 @@ impl LowerCx {
 
     /// A NAMED fn as a value: a captureless box holding a WRAPPER's
     /// address — the wrapper wears the uniform (env, args…)
-    /// convention, so one call path serves lambdas and fns alike.
+    /// convention, so one call path serves lambdas and fns alike. No
+    /// captures ever ride it, so it is laid out once as static data.
     fn fn_value_reg(e: ExprId, symbol: string) -> Reg? {
-        let wname = "${symbol}$w"
+        let wname = "${symbol}\$w"
         if self.unseen(wname) {
             let fnty = self.concrete(self.facts.type_at(e))
             let held: Arrow? = self.view.decls.types.arrow_parts(fnty)
@@ -433,8 +489,28 @@ impl LowerCx {
                 name: wname,
             })
         }
-        let size = self.box_size(1)
-        self.fn_box(self.view.types.shape_of(self.concrete(self.facts.type_at(e))), size, wname, [])
+        self.static_fn_box(self.view.types.shape_of(self.concrete(self.facts.type_at(e))), wname)
+    }
+
+    /// The symbol a `dyn` box calls for method `m`: the method itself,
+    /// or — for a VALUE RECORD receiver, which the box's slot holds
+    /// boxed — a shim that reads the receiver back first.
+    fn dyn_entry(m: DeclId, recv: TypeId) -> string {
+        let symbol = self.method_symbol(m, null, recv)
+        if !self.view.decls.types.travels_wide(recv) { return symbol }
+        let shim = "${symbol}\$v"
+        if self.unseen(shim) {
+            let sig: FnSig? = self.view.decls.sig(m)?.fn_sig()
+            let params = sig?.params ?? []
+            self.jobs.wraps.push(Wrap {
+                target: symbol,
+                seats: [self.view.decls.types.type(List<int>)].concat(params.slice(1, params.length)),
+                ret: sig?.ret ?? self.view.decls.types.intern(Type.Error),
+                name: shim,
+                unboxes: recv,
+            })
+        }
+        shim
     }
 
     /// A capture read: its LANE of the env box, worn at `ty` — the
@@ -471,8 +547,8 @@ impl LowerCx {
 
     fn lifted_as(e: ExprId, kind: LiftKind) -> string {
         let base = self.view.decls.lifted_symbol(self.view.file, e)
-        let sym = if kind is .Task { "${base}$task" } else { base }
-        let name = if self.sub == null { sym } else { self.view.decls.mangle( sym, self.sub!) }
+        let sym = if kind is .Task { "${base}\$task" } else { base }
+        let name = if self.sub == null { sym } else { self.view.decls.mangle(sym, self.sub!) }
         if self.unseen(name) {
             self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub, kind: kind })
         }
@@ -503,8 +579,7 @@ impl LowerCx {
         let b? = self.names.binding(e) else { return null }
         let direct: bool = match b {
             .Decl(d) -> self.view.decls.fn_name(d) != null,
-            .Def(_)
-                or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
         if direct { return null }
         self.callee_binding(e, b)
