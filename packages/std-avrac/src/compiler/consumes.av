@@ -1,0 +1,154 @@
+//! THE CONSUMES PASS — which of a fn's own param seats the body
+//! CONSUMES: the bare subject of a `with` or a method call, a bare
+//! value stored into a fresh list or struct, or an early `return` —
+//! the evidence a caller can hand a dying argument over for instead
+//! of retaining across the call (R3, docs/2026_09_23_REUSE_IN_PLACE.md
+//! §31). Unlike the seats pass (receivers.av), this asks nothing of
+//! any OTHER declaration: a seat's evidence lives wholly in its own
+//! body, so declarations settle independently, one seat's answer
+//! never depends on a fixpoint, and a recursive callee needs no
+//! special case.
+use core.{DeclId, ExprId, StmtId, TypeId, NodeStore, MethodParts, WithParts, filled}
+use features.{NameFacts, Decls, Decl, Ref}
+use compiler.memory.{is_managed}
+
+impl Workspace {
+    /// The pass: asking IS the query — the hook the workspace arms
+    /// computes a declaration's own answer on first ask and records
+    /// it; the table only holds.
+    fn computed_consumed(d: DeclId) -> List<bool> {
+        let x = self.decls.decl(d)
+        let n = self.decls.seat_count(d)
+        if x.root == null || self.is_held(x.file) || self.taken_as_value(d) {
+            let none = filled(n, false)
+            self.decls.record_consumed(d, none)
+            return none
+        }
+        let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
+        mut cx = Consumed { store: self.decls.store(d), names: self.resolved(x.file), lo: x.lo, hi: x.hi, eligible: [self.eligible_seat(x, i, seats) for i in 0..n], out: filled(n, false) }
+        cx.scan()
+        self.decls.record_consumed(d, cx.out)
+        cx.out
+    }
+
+    /// A seat is a candidate at all only as an ordinary BY-VALUE
+    /// parameter: never a method's receiver (seat 0 of an instance
+    /// method — "owned self" is a real question for its own day, not
+    /// this one), never `mut`/`const`/`isolated` (each already
+    /// carries a different, incompatible contract), never a scalar
+    /// (owning one gains nothing — nothing there is ever retained or
+    /// released), and never a seat an IMPL-FOR-TRAIT method declares:
+    /// a `dyn`/generic call dispatches through the TRAIT's OWN
+    /// (bodiless, never-inferred) signature, so an override whose own
+    /// body infers a seat consumed would be CALLED as plain and RUN
+    /// as consuming — a caller that never hands ownership over,
+    /// answered by a callee that releases what it was never given.
+    /// `sigs_agree` (typing/impls.av) checks types, never marks, so
+    /// nothing else stands between an override and that mismatch.
+    fn eligible_seat(x: Decl, i: int, seats: List<TypeId>) -> bool {
+        if i == 0 && x.parent != null && !self.decls.is_static_of(x.id) { return false }
+        if self.under_trait_impl(x) { return false }
+        let m = self.decls.declared_mark(x.id, i)
+        if m.mutable || m.settled || m.unshared { return false }
+        i < seats.length && is_managed(self.decls.types, seats[i])
+    }
+
+    /// Whether `x` is a method an IMPL-FOR-TRAIT block declares —
+    /// never a free fn, an inherent method, or a trait's own default
+    /// (one body for the whole trait, never per-signatory, so it
+    /// carries no such mismatch).
+    fn under_trait_impl(x: Decl) -> bool {
+        if x.parent == null { return false }
+        let parent = self.decls.decl(x.parent!)
+        if !(parent.kind is .Impl) { return false }
+        self.decls.store(parent.id).impl_parts(parent.stmt)?.of != null
+    }
+
+    /// Whether `d` is ever referenced AS A VALUE — bound by name,
+    /// stored in a field or a list, handed to a seat — anywhere in
+    /// the program, rather than called directly. Such a reference's
+    /// TYPE carries whatever this pass infers, so a plain seat it
+    /// fills, or a `dyn`/generic dispatch through it, would face the
+    /// same mismatch `under_trait_impl` refuses — and unlike a direct
+    /// call (which reads the callee's OWN marks by name or DeclId,
+    /// never through the mismatched type), nothing stands between a
+    /// VALUE reference and it. `fn_fits`'s asymmetry (features/
+    /// checks.av) still refuses the mismatch outright rather than
+    /// building the adapter the full design calls for — excluding the
+    /// DECLARATION here, not the call site, is what landing without
+    /// that adapter means for it.
+    fn taken_as_value(d: DeclId) -> bool {
+        self.decls.refs_of(d).any((r: Ref) -> r.kind is .Read)
+    }
+}
+
+/// What one body's survey reads and gathers: its file's parts, the
+/// expression range its declaration owns, which seats are still
+/// candidates, and the evidence as it accrues.
+type Consumed = { store: NodeStore, names: NameFacts, lo: int, hi: int, eligible: List<bool>, out: List<bool> }
+
+impl Consumed {
+    mut fn scan() {
+        for i in self.lo..self.hi { self.site_evidence(ExprId { index: i }) }
+        for s in self.store.stmt_ids() { self.return_evidence(s) }
+    }
+
+    fn in_range(e: ExprId) -> bool {
+        e.index >= self.lo && e.index < self.hi
+    }
+
+    /// The seat a BARE occurrence names — null for anything else,
+    /// including a capture (a lambda's copy) and a seat this survey
+    /// already excluded.
+    fn seat_of(e: ExprId) -> int? {
+        let b? = self.names.binding(e) else { return null }
+        match b {
+            .Param(i) if i < self.eligible.length && self.eligible[i] -> i,
+            _ -> null,
+        }
+    }
+
+    mut fn mark(seat: int?) {
+        if seat != null { self.out.set(seat!, true) }
+    }
+
+    /// One expression's evidence: a `with`'s or a method call's bare
+    /// subject (the same shape a reusing row's first seat takes,
+    /// memory.av's `handed_seat`), or a bare value stored into a
+    /// fresh list or struct literal (the same shape a pushing row's
+    /// owned twin takes, memory.av's `pushes_managed`). Either way
+    /// the memory pass ALREADY owns what happens next once the seat
+    /// is scope-owned — this pass only says where looking pays off.
+    mut fn site_evidence(e: ExprId) {
+        let w: WithParts? = self.store.with_parts(e)
+        if w != null {
+            self.mark(self.seat_of(w!.subject))
+            for v in w!.values { self.mark(self.seat_of(v)) }
+            return
+        }
+        let mp: MethodParts? = self.store.method_parts(e)
+        if mp != null { return self.mark(self.seat_of(mp!.subject)) }
+        let sv: List<ExprId>? = self.store.struct_lit_parts(e)?.values
+        if sv != null {
+            for v in sv! { self.mark(self.seat_of(v)) }
+            return
+        }
+        let lv: List<ExprId>? = self.store.list_lit_values(e)
+        if lv != null { for v in lv! { self.mark(self.seat_of(v)) } }
+    }
+
+    /// An EXPLICIT `return p` — the one tail shape that costs nothing
+    /// regardless of how many scopes it exits, because `Ins.FnExit`
+    /// asks every OPEN scope, not only the closing one
+    /// (memory.av's `owned_open`). The IMPLICIT tail through a nested
+    /// block is not this: a value the block's OWN scope does not
+    /// itself own mints a retain on its way out (`moved_out`) and the
+    /// outer seats scope — already owning the seed this pass would
+    /// have planted — releases the spare: one instruction WORSE than
+    /// leaving the seat borrowed. Excluded on that arithmetic, not by
+    /// oversight.
+    mut fn return_evidence(s: StmtId) {
+        let v? = self.store.return_value(s) else { return }
+        if self.in_range(v) { self.mark(self.seat_of(v)) }
+    }
+}

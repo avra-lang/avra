@@ -58,10 +58,31 @@ impl NodeStore {
         }
     }
 
+    /// A construction's pieces, when the expression is one.
+    fn struct_lit_parts(e: ExprId) -> StructLitParts? {
+        match self.expr(e) {
+            .StructLit(name, fields, values) -> StructLitParts { name: name.of, fields: [f.of for f in fields], values: values },
+            _ -> null,
+        }
+    }
+
     /// A construction's type name, when the expression is one.
     fn struct_lit_name(e: ExprId) -> string? {
+        self.struct_lit_parts(e)?.name
+    }
+
+    /// A functional update's pieces, when the expression is one.
+    fn with_parts(e: ExprId) -> WithParts? {
         match self.expr(e) {
-            .StructLit(name, _, _) -> name.of,
+            .With(subject, fields, values) -> WithParts { subject: subject, fields: [f.of for f in fields], values: values },
+            _ -> null,
+        }
+    }
+
+    /// A list literal's elements, when the expression is one.
+    fn list_lit_values(e: ExprId) -> List<ExprId>? {
+        match self.expr(e) {
+            .ListLit(elems) -> elems,
             _ -> null,
         }
     }
@@ -70,6 +91,17 @@ impl NodeStore {
     fn method_parts(e: ExprId) -> MethodParts? {
         match self.expr(e) {
             .MethodCall(subject, name, args) -> MethodParts { subject: subject, name: name.of, args: args },
+            _ -> null,
+        }
+    }
+
+    /// A `return`'s own value, when the statement is one — `stmt_value`
+    /// answers a `Let`'s and an `Assign`'s value too, so a reader that
+    /// needs specifically a RETURN (compiler/consumes.av's early-exit
+    /// evidence) asks here instead.
+    fn return_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .Return(v) -> v,
             _ -> null,
         }
     }
@@ -430,6 +462,12 @@ export type CallParts = { callee: string, args: List<ExprId> }
 /// A call on an EXPRESSION's projection: the fn value applied and
 /// its arguments.
 export type AppliedParts = { subject: ExprId, args: List<ExprId> }
+
+/// A construction's pieces, projected once.
+export type StructLitParts = { name: string, fields: List<string>, values: List<ExprId> }
+
+/// A functional update's pieces, projected once.
+export type WithParts = { subject: ExprId, fields: List<string>, values: List<ExprId> }
 
 /// What a trait declaration carries, projected once.
 export type TraitParts = { name: string, fns: List<StmtId> }

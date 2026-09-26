@@ -82,6 +82,16 @@ impl TypeCx {
     /// that promised neither refuses one that asks for more. Nothing
     /// else about a type widens, and a NAME over a fn shape is opaque
     /// at a seat like any name.
+    ///
+    /// `consumed` (R3, a param's inferred ownership) NAMES NO SEAT
+    /// HERE, on purpose: `Decls.seat_mark` never merges it into a fn
+    /// VALUE's type (features/decls.av), because it depends on the
+    /// whole-program references pass, which settles AFTER a site like
+    /// this one is typed — merging it in would bake a too-early
+    /// answer into an interned TYPE nothing re-asks. Consuming a
+    /// param through a fn VALUE, `dyn` dispatch or `.CallPtr` is
+    /// deferred; only a DIRECT, by-name `.Call` reads it, off the
+    /// callee's own `Body.marks` (compiler/memory/memory.av).
     fn fn_fits(got: TypeId, want: TypeId) -> bool {
         if self.view.types.stands_for(got) != null || self.view.types.stands_for(want) != null { return false }
         let seat: Arrow? = self.view.types.arrow_parts(want)
