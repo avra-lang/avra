@@ -31,18 +31,26 @@ fn text_of(c: Captured<LexToken, SqlNode>) -> string {
     }
 }
 
-fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
+fn node_of(c: Captured<LexToken, SqlNode>) -> SqlNode? {
     match c {
-        .Node(n) -> match n { .Ex(e) -> e, .Cols(_) or .Sel(_) -> null },
-        .Terminal(_) or .Many(_) or .Absent -> null,
+        .Node(n) -> n,
+        _ -> null,
     }
+}
+
+impl SqlNode {
+    fn as_ex() -> SqlExpr? { match self { .Ex(e) -> e, _ -> null } }
+    fn as_cols() -> List<string>? { match self { .Cols(names) -> names, _ -> null } }
+}
+
+fn ex_of(c: Captured<LexToken, SqlNode>) -> SqlExpr? {
+    node_of(c)?.as_ex()
 }
 
 fn cols_of(c: Captured<LexToken, SqlNode>) -> List<string> {
     match c {
-        .Node(n) -> match n { .Cols(names) -> names, .Ex(_) or .Sel(_) -> [] },
         .Many(items) -> [text_of(i) for i in items],
-        .Terminal(_) or .Absent -> [],
+        _ -> node_of(c)?.as_cols() ?? [],
     }
 }
 

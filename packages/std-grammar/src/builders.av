@@ -48,8 +48,13 @@ fn ok<T>(g: GrammarNode) -> Result<Captured<T, GrammarNode>, string> {
     .Ok(Captured.Node(g))
 }
 
-// ── Per-kind extractors: one nested pattern each — the payload when
-// the capture is that node, null otherwise. ──
+// ── Per-kind extractors. `Captured` is generic and foreign (from
+// executor.av) — an impl over one concrete instantiation of it does
+// not specialize (probed: the payload stays typed as the abstract T),
+// so unwrapping IT stays one free function. `GrammarNode` is ours and
+// concrete, so ITS variants are a proper vocabulary: `as_alt`/`as_prim`/
+// etc, one nested pattern each, the payload when self is that variant
+// and null otherwise. ──
 
 fn tok_of<T>(v: Captured<T, GrammarNode>) -> T? {
     match v {
@@ -58,53 +63,22 @@ fn tok_of<T>(v: Captured<T, GrammarNode>) -> T? {
     }
 }
 
-fn alt_of<T>(v: Captured<T, GrammarNode>) -> Alt? {
+fn node_of<T>(v: Captured<T, GrammarNode>) -> GrammarNode? {
     match v {
-        .Node(.NAlt(a)) -> a,
+        .Node(n) -> n,
         _ -> null,
     }
 }
 
-fn prim_of<T>(v: Captured<T, GrammarNode>) -> Prim? {
-    match v {
-        .Node(.NPrim(p)) -> p,
-        _ -> null,
-    }
-}
-
-fn item_of<T>(v: Captured<T, GrammarNode>) -> Item? {
-    match v {
-        .Node(.NItem(m)) -> m,
-        _ -> null,
-    }
-}
-
-fn seq_of<T>(v: Captured<T, GrammarNode>) -> Seq? {
-    match v {
-        .Node(.NSeq(sq)) -> sq,
-        _ -> null,
-    }
-}
-
-fn rule_of<T>(v: Captured<T, GrammarNode>) -> Rule? {
-    match v {
-        .Node(.NRule(r)) -> r,
-        _ -> null,
-    }
-}
-
-fn build_of<T>(v: Captured<T, GrammarNode>) -> Build? {
-    match v {
-        .Node(.NBuild(b)) -> b,
-        _ -> null,
-    }
-}
-
-fn annot_of<T>(v: Captured<T, GrammarNode>) -> PendingAnnot? {
-    match v {
-        .Node(.NAnnot(an)) -> an,
-        _ -> null,
-    }
+impl GrammarNode {
+    fn as_alt() -> Alt? { match self { .NAlt(a) -> a, _ -> null } }
+    fn as_prim() -> Prim? { match self { .NPrim(p) -> p, _ -> null } }
+    fn as_item() -> Item? { match self { .NItem(m) -> m, _ -> null } }
+    fn as_seq() -> Seq? { match self { .NSeq(sq) -> sq, _ -> null } }
+    fn as_rule() -> Rule? { match self { .NRule(r) -> r, _ -> null } }
+    fn as_build() -> Build? { match self { .NBuild(b) -> b, _ -> null } }
+    fn as_annot() -> PendingAnnot? { match self { .NAnnot(an) -> an, _ -> null } }
+    fn as_arg() -> BuildArg? { match self { .NArg(a) -> a, _ -> null } }
 }
 
 /// List delivery for a repeated capture. A label repeated across a
@@ -121,19 +95,19 @@ fn as_list<T>(v: Captured<T, GrammarNode>) -> Result<List<Captured<T, GrammarNod
 }
 
 fn as_seqs<T>(v: Captured<T, GrammarNode>) -> Result<List<Seq>, string> {
-    .Ok([want(seq_of(x), "a branch")? for x in as_list(v)?])
+    .Ok([want(node_of(x)?.as_seq(), "a branch")? for x in as_list(v)?])
 }
 
 fn as_items<T>(v: Captured<T, GrammarNode>) -> Result<List<Item>, string> {
-    .Ok([want(item_of(x), "an item")? for x in as_list(v)?])
+    .Ok([want(node_of(x)?.as_item(), "an item")? for x in as_list(v)?])
 }
 
 fn as_rules<T>(v: Captured<T, GrammarNode>) -> Result<List<Rule>, string> {
-    .Ok([want(rule_of(x), "a rule")? for x in as_list(v)?])
+    .Ok([want(node_of(x)?.as_rule(), "a rule")? for x in as_list(v)?])
 }
 
 fn as_annots<T>(v: Captured<T, GrammarNode>) -> Result<List<PendingAnnot>, string> {
-    .Ok([want(annot_of(x), "an annotation")? for x in as_list(v)?])
+    .Ok([want(node_of(x)?.as_annot(), "an annotation")? for x in as_list(v)?])
 }
 
 /// The repetition a notation suffix names — the inverse of `Rep.suffix`.
@@ -158,7 +132,7 @@ fn as_rep<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> Result<Rep, string>
 
 /// The builder-call argument names from a repeated NAME capture.
 fn call_args<T>(v: Captured<T, GrammarNode>) -> Result<List<BuildArg>, string> {
-    .Ok([want(arg_of(x), "a build argument")? for x in as_list(v)?])
+    .Ok([want(node_of(x)?.as_arg(), "a build argument")? for x in as_list(v)?])
 }
 
 /// A branch that NAMES A NODE: its arguments state payloads the rule
@@ -176,15 +150,6 @@ fn fixed_arg(a: BuildArg) -> Result<Fixed, string> {
 fn label_arg(a: BuildArg) -> Result<string, string> {
     if a.fixed != null { return .Err(fixed_needs_a_node(a.name)) }
     .Ok(a.name)
-}
-
-/// One captured argument's text. (Never `want(...)?.text` — the
-/// `?.`-after-`?` shape corrupts inside a comprehension.)
-fn arg_of<T>(v: Captured<T, GrammarNode>) -> BuildArg? {
-    match v {
-        .Node(.NArg(a)) -> a,
-        _ -> null,
-    }
 }
 
 // ── Voices: what a build's own words refuse. ──
@@ -280,7 +245,7 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
         },
         "build_rule" -> {
             let rule_name = tok_text(lex, args[0], "a rule name")?
-            let body = want(alt_of(args[1]), "an alternation")?
+            let body = want(node_of(args[1])?.as_alt(), "an alternation")?
             ok<T>(GrammarNode.NRule(Rule { name: rule_name, body: body }))
         },
         "build_alt" -> {
@@ -294,14 +259,14 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
             match args[1] {
                 .Absent -> ok<T>(GrammarNode.NSeq(sq)),
                 .Node(_) -> {
-                    let b = want(build_of(args[1]), "a build directive")?
+                    let b = want(node_of(args[1])?.as_build(), "a build directive")?
                     ok<T>(GrammarNode.NSeq(sq with { build: b }))
                 },
                 .Terminal(_) or .Many(_) -> .Err("expected a build directive"),
             }
         },
         "build_labeled" -> {
-            let inner = want(item_of(args[1]), "an item")?
+            let inner = want(node_of(args[1])?.as_item(), "an item")?
             match args[0] {
                 .Absent -> ok<T>(GrammarNode.NItem(inner)),
                 .Terminal(t) -> ok<T>(GrammarNode.NItem(inner with { label: lex.text(t) })),
@@ -309,7 +274,7 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
             }
         },
         "build_postfix" -> {
-            let inner = want(prim_of(args[0]), "an atom")?
+            let inner = want(node_of(args[0])?.as_prim(), "an atom")?
             ok<T>(GrammarNode.NItem(item(inner) with { rep: as_rep(lex, args[1])? }))
         },
         "build_prim_name" -> {
@@ -325,11 +290,11 @@ export fn grammar_build<T>(lex: Lexeme<T>, name: string, args: List<Captured<T, 
             ok<T>(GrammarNode.NPrim(lit(text)))
         },
         "build_group" -> {
-            let inner = want(alt_of(args[0]), "an alternation")?
+            let inner = want(node_of(args[0])?.as_alt(), "an alternation")?
             ok<T>(GrammarNode.NPrim(Prim.Group(inner)))
         },
         "build_not" -> {
-            let inner = want(prim_of(args[0]), "an atom")?
+            let inner = want(node_of(args[0])?.as_prim(), "an atom")?
             ok<T>(GrammarNode.NPrim(Prim.NotChar(inner)))
         },
         "build_build" -> {
