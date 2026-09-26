@@ -11,6 +11,7 @@ use @std.grammar.{
     parse_grammar_text,
     run_grammar,
     ready,
+    Ready,
     RunOutcome,
     LexToken,
     Lexeme,
@@ -934,14 +935,11 @@ fn sql_lexeme() -> Lexeme<LexToken> {
     }
 }
 
-const SQL_KNOWN_TERMINALS: List<string> = ["IDENT", "NUMBER", "STRING", "QUOTED_IDENT", "HOLE"]
+/// The parser grammar prepared once, at compile time — every parse
+/// reads it, none rebuilds it.
+const SQL_PARSER: Ready = ready(sql_parser_grammar(), ["IDENT", "NUMBER", "STRING", "QUOTED_IDENT", "HOLE"])
 
 export fn parse_sql(source: string) -> RunOutcome<LexToken, SqlNode> {
     let tokens = lex(SQL, source, ["WS", "LINE_COMMENT", "BLOCK_COMMENT"]).tokens
-    run_grammar<LexToken, SqlNode>(
-        ready(sql_parser_grammar(), SQL_KNOWN_TERMINALS),
-        tokens,
-        sql_lexeme(),
-        dispatch,
-    )
+    run_grammar<LexToken, SqlNode>(SQL_PARSER, tokens, sql_lexeme(), dispatch)
 }
