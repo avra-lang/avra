@@ -1,0 +1,164 @@
+//! A document algebra for width-aware layout — Wadler/Prettier's
+//! shape. TEXT is a leaf; LINE is a space flat and a break indented
+//! otherwise (SOFTLINE the same with nothing where LINE puts a
+//! space); GROUP renders its content flat when it fits the width
+//! remaining on the line, broken otherwise, each nested group free to
+//! fit even where its parent did not; NEST raises the indent a broken
+//! LINE inside it lands at; IF_BREAK answers one of two docs by the
+//! ENCLOSING group's own decision — a trailing comma is the one case
+//! flat and broken disagree on outright, not merely in whitespace.
+//!
+//! THE FITS CHECK IS SHALLOW, ON PURPOSE: a group is measured against
+//! its OWN flattened width alone, never against what stands after it
+//! on the same line — a full Wadler renderer looks ahead into the
+//! rest of the document to decide that; this one does not, so a
+//! group may end a line a few columns past the limit when a short
+//! suffix (a closing paren, a comma) immediately follows it. A
+//! documented trade for a renderer this small: `render_seq`'s running
+//! column is what keeps every SIBLING measuring from where the line
+//! actually stands, even though a group's own fits check cannot see
+//! past its own close.
+use @std.text.{Text, builder, repeat}
+
+export enum Doc {
+    Text(s: string)
+    Line
+    SoftLine
+    HardLine
+    Seq(parts: List<Doc>)
+    Group(inner: Doc)
+    Nest(amount: int, inner: Doc)
+    IfBreak(broken: Doc, flat: Doc)
+}
+
+export fn text(s: string) -> Doc { .Text(s) }
+export fn line() -> Doc { .Line }
+export fn softline() -> Doc { .SoftLine }
+export fn hardline() -> Doc { .HardLine }
+export fn seq(parts: List<Doc>) -> Doc { .Seq(parts) }
+export fn group(inner: Doc) -> Doc { .Group(inner) }
+export fn nest(amount: int, inner: Doc) -> Doc { .Nest(amount, inner) }
+export fn if_break(broken: Doc, flat: Doc) -> Doc { .IfBreak(broken, flat) }
+
+/// `parts` with `sep` between every pair — the algebra's `joined`.
+export fn doc_joined(parts: List<Doc>, sep: Doc) -> Doc {
+    seq([if j == 0 { p } else { seq([sep, p]) } for j, p in parts])
+}
+
+/// A same-operator run, the LINE LAW's own shape: flat joins with a
+/// trailing space after the symbol (`a && b`), broken puts the
+/// symbol at the END of the line it continues and the next operand at
+/// `depth + 1` — never a leading operator, which the lexer reads as a
+/// new statement.
+export fn chain_doc(sym: string, operands: List<Doc>) -> Doc {
+    group(nest(4, doc_joined(operands, seq([text(" ${sym}"), line()]))))
+}
+
+/// A bracketed comma list: flat joins with `", "` and no padding past
+/// `open`/`close` when `spaced` is false (`(a, b)`), one space in when
+/// it is (`{ a, b }`); broken puts one item per line, every one — the
+/// last included — with a trailing comma, and the closer dedented
+/// back onto its own line. Every comma list in the grammar takes a
+/// trailing comma, which is what makes the broken form parse.
+export fn comma_list(open: string, items: List<Doc>, close: string, spaced: bool) -> Doc {
+    if items.is_empty() { return text("${open}${close}") }
+    let boundary = if spaced { line() } else { softline() }
+    let body = doc_joined(items, seq([text(","), line()]))
+    group(seq([text(open), nest(4, seq([boundary, body, if_break(text(","), text(""))])), boundary, text(close)]))
+}
+
+enum Mode { Flat, Break }
+
+type Rendered = { text: string, col: int }
+
+/// `d` rendered at `width` columns, starting at column 0.
+export fn render_doc(d: Doc, width: int) -> string {
+    render_doc_at(d, width, 0, 0)
+}
+
+/// The same, starting from an existing line: `indent` is the column a
+/// broken LINE inside `d` returns to before any NEST inside `d` adds
+/// to it, `col` is where `d` itself begins — the caller's own prefix,
+/// already on the line, that a fits check must be measured against.
+export fn render_doc_at(d: Doc, width: int, indent: int, col: int) -> string {
+    render_at(d, width, indent, col, Mode.Break).text
+}
+
+fn render_at(d: Doc, width: int, indent: int, col: int, mode: Mode) -> Rendered {
+    match d {
+        .Text(s) -> Rendered { text: s, col: col_after(s, col) },
+        .Seq(parts) -> render_seq(parts, width, indent, col, mode),
+        .Nest(amount, inner) -> render_at(inner, width, indent + amount, col, mode),
+        .Group(inner) -> render_at(inner, width, indent, col, group_mode(inner, width, col, mode)),
+        .Line -> if mode == Mode.Flat { Rendered { text: " ", col: col + 1 } } else { broken_line(indent) },
+        .SoftLine -> if mode == Mode.Flat { Rendered { text: "", col: col } } else { broken_line(indent) },
+        .HardLine -> broken_line(indent),
+        .IfBreak(broken, flat) -> render_at(if mode == Mode.Break { broken } else { flat }, width, indent, col, mode),
+    }
+}
+
+fn broken_line(indent: int) -> Rendered {
+    Rendered { text: "\n${repeat(" ", indent)}", col: indent }
+}
+
+/// A group already inside a FLAT ancestor stays flat — everything an
+/// ancestor fit on one line fits trivially too. Otherwise it earns
+/// its own mode by fitting (or not) against what remains of THIS
+/// line, independent of whatever its parent decided.
+fn group_mode(inner: Doc, width: int, col: int, mode: Mode) -> Mode {
+    if mode == Mode.Flat { return Mode.Flat }
+    if flat_fits(inner, width - col) != null { Mode.Flat } else { Mode.Break }
+}
+
+fn render_seq(parts: List<Doc>, width: int, indent: int, col: int, mode: Mode) -> Rendered {
+    mut out: Text = builder()
+    mut c = col
+    for p in parts {
+        let r = render_at(p, width, indent, c, mode)
+        out.push(r.text)
+        c = r.col
+    }
+    Rendered { text: out.built(), col: c }
+}
+
+/// The column after emitting `s` at `col` — a line reset when `s`
+/// itself carries one, which happens when a leaf wraps an
+/// already-rendered string that a NESTED group broke on its own: the
+/// leaf is opaque to this renderer, so its last line is what the
+/// next sibling measures from.
+fn col_after(s: string, col: int) -> int {
+    if !s.contains("\n") { return col + s.length }
+    s.split("\n").last()!.length
+}
+
+/// The budget left after `d` renders FLAT, or absent when it cannot —
+/// a HARDLINE never fits flat, and running past zero never recovers.
+/// An embedded newline inside a TEXT leaf (the same opaque-leaf case
+/// `col_after` reads) counts as not fitting too: a child that already
+/// broke on its own is not flat, whatever this group hoped.
+fn flat_fits(d: Doc, budget: int) -> int? {
+    if budget < 0 { return null }
+    match d {
+        .Text(s) -> if s.contains("\n") { null } else { budget_after(budget, s.length) },
+        .Line -> budget_after(budget, 1),
+        .SoftLine -> budget,
+        .HardLine -> null,
+        .Seq(parts) -> flat_fits_all(parts, budget),
+        .Nest(_, inner) or .Group(inner) -> flat_fits(inner, budget),
+        .IfBreak(_, flat) -> flat_fits(flat, budget),
+    }
+}
+
+fn budget_after(budget: int, used: int) -> int? {
+    let left = budget - used
+    if left < 0 { null } else { left }
+}
+
+fn flat_fits_all(parts: List<Doc>, budget: int) -> int? {
+    mut b = budget
+    for p in parts {
+        let nb? = flat_fits(p, b) else { return null }
+        b = nb
+    }
+    b
+}
