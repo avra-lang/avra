@@ -143,6 +143,15 @@ gate — there is no amnesty left to hide in.
       writing method or hand a `mut` seat on, and the writes land in
       element order (probed 2026-09-22 on lane/fn-defaults, both
       engines; eight loops that cited it are comprehensions now).
+- loops.branched_push_loop  `push_loop`'s BRANCHED twin — a per-element `if`/`else` pushing
+      to the same accumulator either way is a conditional map. NO
+      REWRITE, deliberately (found while cleaning @std/grammar's
+      `bind_label`/`bind_label_all`, 2026-09-26): splicing the branch
+      straight into a comprehension reads WORSE than the loop the
+      moment either arm is more than a bare name — the sound fix
+      names that logic first (an `impl` method on the pushed value's
+      own type, `Binding.rebound` there), a judgement call no pattern
+      can make for you. Say-only, same shape as `duplicated_literal`.
 - style.hand_rolled_scan  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
       `int?`), as `core/modules.av` reads a key's cut.

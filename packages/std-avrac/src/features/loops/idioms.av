@@ -1,6 +1,6 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use features.{Code, Fix, rule}
+use features.{Code, Fix, rule, said}
 use @std.meta.{name}
 
 /// A `for` loop whose WHOLE body is one `push` is a MAP — a
@@ -24,6 +24,31 @@ use @std.meta.{name}
 export rule push_loop {
     // LICENSED loops.push_loop: the pattern's own text names the shape it detects
     quote { for ${x} in ${xs} { ${out}.push(${v}) } } if !v.text().contains(out.text()) -> name("${out.text()} = ${out.text()}.concat([${v.text()} for ${x} in ${xs.text()}])"),
+}
+
+/// `push_loop`'s BRANCHED twin: each arm of a per-element `if`/`else`
+/// pushes to the SAME accumulator, one shape or the other depending
+/// on a condition — `[if ${cond} { a } else { b } for x in xs]` builds
+/// the identical list.
+///
+/// NO REWRITE: the moment either arm is more than a bare name — a
+/// computed value, a `with` update — splicing it straight into the
+/// comprehension reads WORSE than the loop it replaces (both arms and
+/// the `with` crammed onto one line). The sound fix names that logic
+/// first, typically an `impl` method on the pushed value's own type
+/// (`b.rebound(label, v, acc)`, executor.av) — a judgement call this
+/// pattern's bound holes cannot make on their own.
+@keeps("for x in xs { if p(x) { out.push(x) } else { log(x) } }")
+export rule branched_push_loop {
+    quote {
+        for ${x} in ${xs} {
+            if ${cond} { ${out}.push(${a}) } else { ${out}.push(${b}) }
+        }
+    } if !cond.text().contains(out.text()) && !a.text().contains(out.text()) && !b.text().contains(out.text()) -> branched_push_loop_found(out, cond, x),
+}
+
+fn branched_push_loop_found(out: Code, cond: Code, x: string) -> Fix {
+    Fix.Say(said(out.loc(), "a per-element branch pushing to `${out.text()}` either way is a conditional map (`[if ${cond.text()} { … } else { … } for ${x} in …]`) — but name any real per-branch logic first, typically an `impl` method on the pushed value's own type; splicing it straight into the comprehension reads worse than this loop", "this accumulator", null))
 }
 
 /// `for j in 0..xs.length` that then reads `xs[j]` — that walk is
