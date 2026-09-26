@@ -30,6 +30,7 @@ use core.{
     rt_reusing_twin,
     rt_moving_twin,
     reversed,
+    flatten,
 }
 use compiler.lower.{Lowered}
 use compiler.soundness.{checked}
@@ -145,13 +146,15 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
 > {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
+    let last = last_reads(reg_types.length, ins)
     let life = Lives {
         types: types,
         reg_types: reg_types,
         ins: ins,
-        last: last_reads(reg_types.length, ins),
+        last: last,
         defs: def_sites(reg_types.length, ins),
         viewed: viewed_regs(types, reg_types, ins),
+        death: death_points(types, reg_types, ins, last),
     }
     for at, raw in ins {
         let i = owned_form(types, reg_types, ins, at, raw)
@@ -331,6 +334,13 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
                 out.push(i)
             },
         }
+        // A VALUE DIES WHERE IT IS LAST READ: a reference held to the
+        // scope's close keeps the box shared, and the next write to it
+        // copies the whole box.
+        for r in life.dead_here(open_scopes, at) {
+            out.push(Ins.Release(r))
+            disowns(open_scopes, r)
+        }
     }
     out
 }
@@ -443,6 +453,38 @@ fn closes(i: Ins) -> bool { i is .ScopeExit || i is .RegionEnd || i is .LoopEnd 
 
 fn turns(i: Ins) -> bool { i is .ArmEnd || i is .LoopCond }
 
+/// WHETHER THE STRETCH AFTER `from` AND BEFORE `to` RETURNS TO `from`'s
+/// OWN NESTING: every bracket opened in it closes in it, and none open at
+/// `from` closes or turns — so `to` runs once for each run of `from`.
+fn level_span(ins: List<Ins>, from: int, to: int) -> bool {
+    if from < 0 { return false }
+    mut depth = 0
+    for k in from + 1..to {
+        let i = ins[k]
+        if opens(i) {
+            depth = depth + 1
+        } else if closes(i) {
+            if depth == 0 { return false }
+            depth = depth - 1
+        } else if depth == 0 && turns(i) {
+            return false
+        }
+    }
+    depth == 0
+}
+
+/// Whether `i` reads `r`.
+fn touches(i: Ins, r: Reg) -> bool {
+    reads_of(i).any(same_reg(it, r))
+}
+
+/// WHETHER A LAST READ AT `i` MAY BE FOLLOWED BY THE RELEASE: not a
+/// bracket, whose reader stands in another region, not a step that gives
+/// the value upward, and not a count of its own.
+fn ends_life(i: Ins) -> bool {
+    !opens(i) && !closes(i) && !turns(i) && !gives_upward(i) && !(i is .Retain) && !(i is .Release)
+}
+
 /// The uses that give a value UPWARD — out of its scope, into a
 /// cell, or into an aggregate. A borrow that escapes must own.
 fn gives_upward(i: Ins) -> bool {
@@ -546,11 +588,14 @@ impl Scope {
     /// The strategy: what a scope owes at its exit. `kept` is a value
     /// that escapes the scope and is owned elsewhere.
     fn releases_for(kept: Reg?) -> List<Reg> {
-        match self.tier {
-            .Application -> kept_out(reversed(self.managed), kept),
-            .Systems or .Bare or .Hardware -> [],
-        }
+        if counts(self.tier) { kept_out(reversed(self.managed), kept) } else { [] }
     }
+}
+
+/// Whether a tier counts references — the one whose scopes release what
+/// they own.
+fn counts(tier: Level) -> bool {
+    match tier { .Application -> true, .Systems or .Bare or .Hardware -> false }
 }
 
 /// All but ONE entry for the escaping register: a scope may own the
@@ -731,9 +776,31 @@ enum Handover {
 }
 
 /// ONE BODY'S LIVES: where each register is defined and last read.
-type Lives = { types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, last: List<int>, defs: List<int>, viewed: List<bool> }
+type Lives = {
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    last: List<int>,
+    defs: List<int>,
+    viewed: List<bool>,
+    death: List<int>,
+}
 
 impl Lives {
+    /// The registers whose reference the innermost scope gives up right
+    /// after `at`: each dies there — it and every view riding it read for
+    /// the last time — at its own definition's nesting, so the release
+    /// runs exactly once for each run of the definition. A register owned
+    /// twice, or read last at a bracket or a step that gives it upward,
+    /// waits for its scope's close.
+    fn dead_here(open_scopes: Stack<Scope>, at: int) -> List<Reg> {
+        let top? = open_scopes.top() else { return [] }
+        if !counts(top.tier) || !ends_life(self.ins[at]) { return [] }
+        [r for r in top.managed if self.death[r.index] == at &&
+            owned_once(open_scopes, r) &&
+            level_span(self.ins, self.defs[r.index], at)]
+    }
+
     /// Whether the call at `at` hands its first seat over, and how.
     fn handover(open_scopes: Stack<Scope>, at: int) -> Handover {
         let r? = handed_seat(self.ins[at]) else { return Handover.Kept }
@@ -828,22 +895,10 @@ impl Lives {
     /// alone and returns to the load's own nesting — so `at` runs once for
     /// each run of the load, on its path.
     fn level_with(slot: Reg, d: int, at: int) -> bool {
-        mut depth = 0
-        mut k = d + 1
-        while k < at {
-            let i = self.ins[k]
-            if reads_of(i).any(same_reg(it, slot)) { return false }
-            if opens(i) {
-                depth = depth + 1
-            } else if closes(i) {
-                if depth == 0 { return false }
-                depth = depth - 1
-            } else if depth == 0 && turns(i) {
-                return false
-            }
-            k = k + 1
+        for k in d + 1..at {
+            if touches(self.ins[k], slot) { return false }
         }
-        depth == 0
+        level_span(self.ins, d, at)
     }
 
     /// Whether, after `at`, the cell is next touched by a store into it,
@@ -934,6 +989,31 @@ fn last_reads(count: int, ins: List<Ins>) -> List<int> {
     out
 }
 
+/// WHERE EACH REGISTER DIES: its last read, or the last read of a view
+/// riding its reference. A view is defined after what it rides, so a
+/// reverse walk has folded the view's own riders in before it. A view
+/// of ANY type rides: an enum's payload word is typed as a scalar and
+/// may still point into the box.
+fn death_points(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, last: List<int>) -> List<
+    int,
+> {
+    mut out = [t for t in last]
+    // LICENSED loops.index_walk: a REVERSE walk — a view's riders fold in before it does
+    mut j = ins.length - 1
+    while j >= 0 {
+        let i = ins[j]
+        let d: Reg? = view_of(i)
+        if d != null && !takes_twin(types, reg_types, ins, j, i) {
+            let dies = out[d!.index]
+            for r in reads_of(i) {
+                if dies > out[r.index] { out.set(r.index, dies) }
+            }
+        }
+        j = j - 1
+    }
+    out
+}
+
 /// THE INSTRUCTION DEFINING each register; -1 for a param.
 fn def_sites(count: int, ins: List<Ins>) -> List<int> {
     mut out = [-1 for j in 0..count]
@@ -948,6 +1028,13 @@ fn def_sites(count: int, ins: List<Ins>) -> List<int> {
 fn owned_top(open_scopes: Stack<Scope>, r: Reg) -> bool {
     let top? = open_scopes.top() else { return false }
     top.managed.any(same_reg(it, r))
+}
+
+/// Whether the open scopes hold exactly one reference to `r`.
+fn owned_once(open_scopes: Stack<Scope>, r: Reg) -> bool {
+    flatten([open_scopes.at(j).managed for j in 0..open_scopes.depth()])
+        .filter(same_reg(it, r))
+        .length == 1
 }
 
 /// The innermost scope GIVES UP one reference to `r`: it moved on.

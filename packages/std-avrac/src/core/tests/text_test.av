@@ -1,8 +1,37 @@
 // Edit distance and nearest-candidate: the numbers Axis 20.3's
 // confidence tiers hang from.
-use @std.avrac.core.{edit_distance, closest, quoted_text}
+use @std.avrac.core.{
+    edit_distance,
+    closest,
+    quoted_text,
+    tuple_before,
+    sorted_by,
+    sorted_texts,
+    text_before,
+}
 
 spec "core/text" {
+    given "ordering tuples of text" {
+        then "(\"a.b\", \"c\") and (\"a\", \"b.c\") are two keys, never one" {
+            tuple_before(["a", "b.c"], ["a.b", "c"]) && !tuple_before(["a.b", "c"], ["a", "b.c"])
+        }
+        then "a tie is before neither way" {
+            !tuple_before(["a", "b"], ["a", "b"])
+        }
+        then "a tuple sorts before its own extension" {
+            tuple_before(["a"], ["a", "b"]) && !tuple_before(["a", "b"], ["a"])
+        }
+    }
+    given "a stable sort" {
+        then "equals keep the order they came in" {
+            let pairs = [["b", "1"], ["a", "2"], ["b", "3"], ["a", "4"]]
+            let firsts = (x: List<string>, y: List<string>) -> text_before(x[0], y[0])
+            [p[1] for p in sorted_by(pairs, firsts)].join("") == "2413"
+        }
+        then "sorted_texts is byte order" {
+            sorted_texts(["b", "a", "c"]).join("") == "abc"
+        }
+    }
     given "edit distance" {
         then "identity is zero, single edits are one, the classic is three" {
             edit_distance("x", "x") == 0 &&
