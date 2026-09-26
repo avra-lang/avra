@@ -276,7 +276,7 @@ sweep:
 
 test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites
 	@for p in $(SUITES); do \
-	  ./avra test $$p || exit 1; \
+	  AVRA_SOUND_CHECK=1 ./avra test $$p || exit 1; \
 	done
 
 # THE OBJECT FOLLOWS THE SOURCE'S CONTENT, NOT ITS TIMESTAMP. make
