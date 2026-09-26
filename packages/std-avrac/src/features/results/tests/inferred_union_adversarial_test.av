@@ -1,0 +1,68 @@
+// The RED TEAM's permanent record for INFERRED ERROR UNIONS —
+// `Result<T, _>` (avra-8sb5.40.10.2). Every program here was written
+// to BREAK the feature, not to use it.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refusals, refused_with}
+
+spec "features/results: inferred error unions (adversarial)" {
+    given "a `_`-declared fn with no fail or `?` site" {
+        then "it refuses — `_` never mints a Result that can't fail" {
+            refused_with("fn f() -> Result<int, _> {\n    1\n}\nf()", "nothing here can fail")
+        }
+    }
+    given "a `_`-declared fn whose single fail site raises a plain type" {
+        then "the inferred answer is the PLAIN type, no union wrapper — an ordinary catch-all works" {
+            shown(
+                "enum A {\n    A\n}\nfn f() -> Result<int, _> {\n    fail A.A\n}\nf() catch e -> 9",
+            ) == "9"
+        }
+    }
+    given "a `_`-declared fn whose fail sites disagree" {
+        then "the inferred answer is a real union — a total catch by member recovers" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f(n: int) -> Result<int, _> {\n    if n == 0 {\n        fail A.A\n    }\n    fail B.B\n}\nf(0) catch {\n    e: A -> 1\n    e: B -> 2\n}",
+            ) == "1"
+        }
+        then "a selective catch over the inferred union still refuses the same way as an explicit one" {
+            refused_with(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f(n: int) -> Result<int, _> {\n    if n == 0 {\n        fail A.A\n    }\n    fail B.B\n}\nf(0) catch e: A -> -1",
+                "the rest propagate",
+            )
+        }
+    }
+    given "a `?` site whose value cannot be structurally named" {
+        then "it refuses, naming the site rather than silently omitting the type" {
+            refused_with(
+                "type E = { msg: string }\nfn f(xs: List<E>) -> Result<int, _> {\n    fail xs.first()!\n}",
+                "cannot structurally name",
+            )
+        }
+    }
+    given "a `?` chain into ANOTHER `_`-declared fn" {
+        then "the callee's inferred set flows in through the edge, with no `fail` of its own in the caller" {
+            shown(
+                "enum A {\n    A\n}\nfn g() -> Result<int, _> {\n    fail A.A\n}\nfn f() -> Result<int, _> {\n    g()?\n}\nf() catch e -> 5",
+            ) == "5"
+        }
+        then "mutual recursion between two `_`-declared fns settles both to the same union" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail A.A\n    }\n    g(n - 1)?\n}\nfn g(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail B.B\n    }\n    f(n - 1)?\n}\nf(2) catch {\n    e: A -> 1\n    e: B -> 2\n}",
+            ) == "1"
+        }
+    }
+    given "a `?` chain into an EXPLICITLY-unioned callee (Phase 1's form)" {
+        then "the explicit union is a direct contribution, not another edge" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn g() -> Result<int, A or B> {\n    fail A.A\n}\nfn f() -> Result<int, _> {\n    g()?\n}\nf() catch {\n    e: A -> 1\n    e: B -> 2\n}",
+            ) == "1"
+        }
+    }
+    given "`_` outside a Result's error side" {
+        then "the first argument stays an ordinary unresolved name" {
+            refused_with("fn f() -> Result<_, int> {\n    1\n}", "`_` names no type")
+        }
+        then "a bare `_` on a local stays an ordinary unresolved name" {
+            refused_with("fn f(xs: List<_>) -> int {\n    xs.length\n}", "`_` names no type")
+        }
+    }
+}

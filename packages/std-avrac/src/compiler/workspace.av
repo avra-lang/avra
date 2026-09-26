@@ -407,6 +407,9 @@ enum Family {
     /// named use of a declaration, folded from every file's own rows
     /// (compiler/references.av).
     References
+    /// a `Result<T, _>`'s inferred error set — the whole-program
+    /// fixpoint, one key for the entire program
+    Failures
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -443,6 +446,7 @@ fn ordinal(f: Family) -> int {
         .Expanded -> 17,
         .Plain -> 18,
         .References -> 19,
+        .Failures -> 20,
     }
 }
 
@@ -469,6 +473,7 @@ fn families() -> List<Family> {
         Family.Expanded,
         Family.Plain,
         Family.References,
+        Family.Failures,
     ]
     all
 }
@@ -606,6 +611,7 @@ fn built(
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
     ws.decls.arm_references(() -> ws.refs_ensured())
+    ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
         d: DeclId,
@@ -680,6 +686,10 @@ impl Workspace {
         let _ = self.references()
     }
 
+    fn failures_ensured() {
+        let _ = self.failures()
+    }
+
     fn marks_ensured(d: DeclId) {
         let _ = self.computed_marks(d)
     }
@@ -750,6 +760,7 @@ impl Workspace {
             .Expanded -> touch(self.expanded(file_at(arg))),
             .Plain -> touch(self.plain_parsed(file_at(arg))),
             .References -> touch(self.references()),
+            .Failures -> touch(self.failures()),
         }
         self.db.changed_at(key(f, arg))
     }
