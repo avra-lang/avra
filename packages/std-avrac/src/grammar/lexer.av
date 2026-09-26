@@ -520,6 +520,11 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
     // LENGTH, and leading breaks never push, so nothing corrects it
     // before the first continuation is decided.
     mut line_indent = 0
+    // The indent each open bracket was opened at: a line inside a brace
+    // is kept and moves `line_indent`, and closing the brace returns to
+    // the line the brace opened on — the line a following chain step
+    // continues.
+    mut opened_at: List<int> = []
     mut i = 0
     while i < raw.length {
         let t = raw[i]
@@ -533,6 +538,11 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
             }
             i = j
         } else {
+            if opens_bracket(t) { opened_at.push(line_indent) }
+            if closes_bracket(t) && !opened_at.is_empty() {
+                line_indent = opened_at.last()!
+                opened_at = opened_at.slice(0, opened_at.length - 1)
+            }
             open = opened(open, t)
             out.push(t)
             i = i + 1
@@ -562,11 +572,14 @@ fn separates(open: List<string>) -> bool {
 
 /// The bracket stack after a token: an opener pushes, a closer pops.
 fn opened(open: List<string>, t: Token) -> List<string> {
-    if t.kind != TokenKind.Op { return open }
-    if t.text == "(" || t.text == "[" || t.text == "{" { return open.concat([t.text]) }
-    if (t.text == ")" || t.text == "]" || t.text == "}") && !open.is_empty() { return open.slice(0, open.length - 1) }
+    if opens_bracket(t) { return open.concat([t.text]) }
+    if closes_bracket(t) && !open.is_empty() { return open.slice(0, open.length - 1) }
     open
 }
+
+fn opens_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == "(" || t.text == "[" || t.text == "{") }
+
+fn closes_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == ")" || t.text == "]" || t.text == "}") }
 
 /// A token after which the line continues — an operator that wants
 /// a right side, or the `or` between a pattern's alternatives.

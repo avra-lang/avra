@@ -24,20 +24,19 @@
 //! remembered under this compiler's print in the tree's store, so a
 //! warm re-run skips its parse and its print both — only a file that
 //! moved, or one this compiler has never seen, pays for either.
-use @std.cli.{CliResult, Runnable, command, flag, arg, option}
+use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{exists, write_text, is_dir, list_dir}
 use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total}
 use @std.avrac.compiler.store.{Store, Stored, store_at}
 use @std.avrac.core.{FileId, digest_of, joined, distinct}
 use @std.path.{dir_of, joined_path}
-use @std.text.{parse_int}
 use @std.time.{now_ns}
 
 type FmtCmd = {}
 
 impl Runnable for FmtCmd {
     fn run(args: CliResult) -> int {
-        if args.has_flag("check") { return checked(args) }
+        if args.has_flag("check") || args.has_flag("write") { return walked(args, args.has_flag("write")) }
         let path = path_arg(args)
         if !exists(path) {
             no_such_file(path)
@@ -49,9 +48,7 @@ impl Runnable for FmtCmd {
         // (length 0)", for every input.
         let ws = file_workspace(path)
         let f = ws.file_id(path)
-        let width = width_arg(args)
-        if args.has_flag("write") { return written(ws, f, path, width) }
-        let outcome = match formatted(ws, f, width) {
+        let outcome = match ws.formatted_source(f) {
             .Ok(text) -> {
                 println(text)
                 0
@@ -66,39 +63,7 @@ impl Runnable for FmtCmd {
     }
 }
 
-/// `ws.formatted_source(f)`, or `--width`'s own decision when the
-/// line asked for one.
-fn formatted(ws: Workspace, f: FileId, width: int?) -> Result<string, string> {
-    if width == null { ws.formatted_source(f) } else { ws.formatted_source_width(f, width!) }
-}
-
-/// `--width`'s value, parsed: absent for a bare `avra fmt` (the
-/// option's own default is ""), and for a value that does not read as
-/// a plain int — `parse_int`'s refusal is the line's own to speak,
-/// not this command's to duplicate.
-fn width_arg(args: CliResult) -> int? {
-    let raw = args.option("width")
-    if raw.is_empty() { return null }
-    parse_int(raw)
-}
-
-/// `--write`: the receipt-checked text, put on disk — or the reason
-/// it was refused, and the file left untouched either way until the
-/// receipt holds.
-fn written(ws: Workspace, f: FileId, path: string, width: int?) -> int {
-    match if width == null { ws.write_checked_source(f) } else { ws.write_checked_source_width(f, width!) } {
-        .Ok(text) -> match write_text(path, "${text}\n") {
-            .Ok(_) -> 0,
-            .Err(e) -> host_refused(e.describe().message),
-        },
-        .Err(report) -> {
-            println(report)
-            1
-        },
-    }
-}
-
-// ── --check: one process over a tree ──
+// ── --check / --write: one process over a tree ──
 
 /// A canonical file's marker: no derivation reads it, so no edges —
 /// the row exists or it does not.
@@ -109,9 +74,9 @@ fn no_edges() -> List<string> { [] }
 /// never mtime, which a checkout without one would falsely trust.
 fn canon_key(text: string) -> string { digest_of("fmt.canonical\n${text}") }
 
-/// examined, differing, refused, which paths differed, and every
-/// phase either side of the run timed — folded across every group
-/// `--check` walks.
+/// examined, differing (written, under `--write`), refused, which paths
+/// differed, and every phase either side of the run timed — folded
+/// across every group the walk visits.
 type Tally = { examined: int, differing: int, refused: int, diffs: List<string>, phases: List<Phase> }
 
 fn empty_tally() -> Tally { Tally { examined: 0, differing: 0, refused: 0, diffs: [], phases: [] } }
@@ -144,22 +109,32 @@ fn time_report(phases: List<Phase>) -> string {
 /// walked to, or a bare file argument gave outright.
 type Group = { root: string, explicit: List<string>? }
 
-fn checked(args: CliResult) -> int {
+/// `--check` reports what differs from canonical; `--write` puts the
+/// receipt-checked canonical text on disk. Both walk every file in ONE
+/// process, one workspace per package, and both remember a canonical
+/// file's bytes in the store so the next walk skips it.
+fn walked(args: CliResult, write: bool) -> int {
     let asked = [rooted(p) for p in args.args_of("file")]
-    let t = fold_groups(expanded_groups(asked))
+    let t = fold_groups(expanded_groups(asked), write)
     for p in t.diffs { println(p) }
-    println("fmt --check: ${t.examined} examined, ${t.differing} differing, ${t.refused} refused")
+    println(walk_summary(t, write))
     if timed(args) { eprintln(time_report(t.phases)) }
-    if t.differing > 0 { 1 } else { 0 }
+    if t.refused > 0 || !write && t.differing > 0 { 1 } else { 0 }
+}
+
+fn walk_summary(t: Tally, write: bool) -> string {
+    if write { "fmt --write: ${t.examined} examined, ${t.differing} written, ${t.refused} refused" } else { "fmt --check: ${t.examined} examined, ${t.differing} differing, ${t.refused} refused" }
 }
 
 fn expanded_groups(asked: List<string>) -> List<Group> {
-    dir_groups([p for p in asked if is_dir(p)]).concat(loose_groups([p for p in asked if !is_dir(p)]))
+    dir_groups([p for p in asked if is_dir(p)])
+        .concat(loose_groups([p for p in asked if !is_dir(p)]))
 }
 
 fn dir_groups(dirs: List<string>) -> List<Group> {
     if dirs.is_empty() { return [] }
-    [Group { root: r, explicit: null } for r in package_roots_under(dirs[0])].concat(dir_groups(dirs.slice(1, dirs.length)))
+    [Group { root: r, explicit: null } for r in package_roots_under(dirs[0])]
+        .concat(dir_groups(dirs.slice(1, dirs.length)))
 }
 
 /// Every `avra.toml`-rooted package under `dir` — `dir` itself when
@@ -167,10 +142,7 @@ fn dir_groups(dirs: List<string>) -> List<Group> {
 /// inside a package.
 fn package_roots_under(dir: string) -> List<string> {
     if exists(joined_path(dir, "avra.toml")) { return [dir] }
-    match list_dir(dir) {
-        .Ok(names) -> roots_from(dir, names),
-        .Err(_) -> [],
-    }
+    match list_dir(dir) { .Ok(names) -> roots_from(dir, names), .Err(_) -> [] }
 }
 
 fn roots_from(dir: string, names: List<string>) -> List<string> {
@@ -193,7 +165,7 @@ fn loose_groups(files: List<string>) -> List<Group> {
     [Group { root: r, explicit: by_root.get(r) } for r in roots]
 }
 
-fn fold_groups(groups: List<Group>) -> Tally {
+fn fold_groups(groups: List<Group>, write: bool) -> Tally {
     if groups.is_empty() { return empty_tally() }
     let g = groups[0]
     let ws = workspace_for(g.root)
@@ -201,13 +173,13 @@ fn fold_groups(groups: List<Group>) -> Tally {
     let store = store_at(build_cache_root(ws))
     let store_ns = now_ns() - t0
     let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
-    let group = check_files(store, ws, files)
+    let group = check_files(store, ws, files, write)
     // THE GROUP'S WORKSPACE PHASES ARE READ ONCE, after its files are
     // all checked — `ws.phases` accumulates for the whole workspace,
     // so reading it per file would fold the same early spans in again
     // with every later one.
     let all = group with { phases: group.phases.concat([Phase { name: "store", ns: store_ns }]).concat(ws.phases.get()) }
-    combined(all, fold_groups(groups.slice(1, groups.length)))
+    combined(all, fold_groups(groups.slice(1, groups.length), write))
 }
 
 fn workspace_for(root: string) -> Workspace {
@@ -218,10 +190,12 @@ enum Outcome { Canonical, Differs, Refused }
 
 type Checked1 = { outcome: Outcome, phases: List<Phase> }
 
-fn check_files(store: Store, ws: Workspace, files: List<string>) -> Tally {
+fn ended(outcome: Outcome, phases: List<Phase>) -> Checked1 { Checked1 { outcome: outcome, phases: phases } }
+
+fn check_files(store: Store, ws: Workspace, files: List<string>, write: bool) -> Tally {
     mut t = empty_tally()
     for path in files {
-        let c = checked_one(store, ws, path)
+        let c = checked_one(store, ws, path, write)
         t = Tally {
             examined: t.examined + 1,
             differing: t.differing + if c.outcome == Outcome.Differs { 1 } else { 0 },
@@ -238,7 +212,7 @@ fn check_files(store: Store, ws: Workspace, files: List<string>) -> Tally {
 /// next `--check` need not ask again. `source` and `digest` are timed
 /// here directly — `ast`, `sublang` and `print` ride the workspace's
 /// own clock (`ws.phases`, folded in once per group by the caller).
-fn checked_one(store: Store, ws: Workspace, path: string) -> Checked1 {
+fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checked1 {
     let t0 = now_ns()
     let f = ws.file_id(path)
     let src = ws.source(f)
@@ -246,8 +220,12 @@ fn checked_one(store: Store, ws: Workspace, path: string) -> Checked1 {
     let t1 = now_ns()
     let key = canon_key(src.text)
     let hit = store.get(Stored.Unit, key) != null
-    let base = [Phase { name: "source", ns: source_ns }, Phase { name: "digest", ns: now_ns() - t1 }]
-    if hit { return Checked1 { outcome: Outcome.Canonical, phases: base } }
+    let base = [
+        Phase { name: "source", ns: source_ns },
+        Phase { name: "digest", ns: now_ns() - t1 },
+    ]
+    if hit { return ended(Outcome.Canonical, base) }
+    if write { return written_one(store, ws, f, path, src.text, base) }
     match ws.formatted_source(f) {
         .Ok(text) -> {
             let t2 = now_ns()
@@ -256,21 +234,53 @@ fn checked_one(store: Store, ws: Workspace, path: string) -> Checked1 {
             if matches {
                 let t3 = now_ns()
                 let _ = store.keep(Stored.Unit, key, "1", no_edges())
-                Checked1 { outcome: Outcome.Canonical, phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]) }
+                Checked1 {
+                    outcome: Outcome.Canonical,
+                    phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]),
+                }
             } else {
                 Checked1 { outcome: Outcome.Differs, phases: base.concat([compare]) }
             }
         },
-        .Err(_) -> Checked1 { outcome: Outcome.Refused, phases: base },
+        .Err(_) -> ended(Outcome.Refused, base),
+    }
+}
+
+/// `--write`'s one file: the receipt-checked text, put on disk and
+/// remembered as canonical — or refused, and nothing on disk moves.
+fn written_one(
+    store: Store,
+    ws: Workspace,
+    f: FileId,
+    path: string,
+    before: string,
+    base: List<Phase>,
+) -> Checked1 {
+    match ws.write_checked_source(f) {
+        .Ok(text) -> {
+            let after = "${text}\n"
+            let _ = store.keep(Stored.Unit, canon_key(after), "1", no_edges())
+            if after == before { return ended(Outcome.Canonical, base) }
+            match write_text(path, after) {
+                .Ok(_) -> ended(Outcome.Differs, base),
+                .Err(e) -> {
+                    eprintln("avra: ${path}: ${e.describe().message}")
+                    ended(Outcome.Refused, base)
+                },
+            }
+        },
+        .Err(report) -> {
+            eprintln("${path}: ${report}")
+            ended(Outcome.Refused, base)
+        },
     }
 }
 
 export command fmt {
     description: "Print a file as canonical Avra"
     flags: [time]
-    flag write { description: "rewrite the file, refusing unless the receipt is lossless" }
+    flag write { description: "rewrite every file under a directory, or the files given, refusing any whose receipt is not lossless" }
     flag check { description: "one pass over every file under a directory, or the files given; reports what differs from canonical" }
-    option width { description: "wrap a group past this column instead of keeping the written form — call arguments, a parameter list, a chainable &&/||/+ run, a literal, `use`'s item list, a `match`'s arms" }
     arg file {
         description: "the source file, or (--check) files/directories to examine"
         required: true

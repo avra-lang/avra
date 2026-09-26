@@ -337,4 +337,27 @@ let one_when = when { _ -> 1 }
             kept("fn wrapped(t: int) -> int {\n    quote {\n        fn f() -> int { \${t} }\n        // a trailing remark\n    }\n}")
         }
     }
+    given "the width layout — a construct with no written form of its own decides against canonical_width" {
+
+        then "a call whose arguments overflow the line wraps one per line, from its own exact column" {
+            let source = "fn f() -> int {\n    some_function_call_name_that_is_fairly_long(argument_one, argument_two, argument_three, argument_four)\n}"
+            stable(source) && projected(source).contains("some_function_call_name_that_is_fairly_long(\n        argument_one,\n        argument_two,")
+        }
+        then "the running column measures a statement's own prefix, not just its indent — a short call overflows only because of a long binding name before it" {
+            let source = "fn f() -> int {\n    let this_is_a_rather_long_binding_name_for_testing_column = compute(alpha, beta, gamma, delta, epsilon, zeta_value)\n    0\n}"
+            stable(source) && projected(source).contains("compute(\n        alpha,\n        beta,")
+        }
+        then "a method chain that overflows the line breaks one link per line, leading its own dot" {
+            let source = "fn f() -> int {\n    builder_object.first_method_call(alpha).second_method_call(beta).third_method_call(gamma).answer()\n}"
+            stable(source) && projected(source).contains("builder_object\n        .first_method_call(alpha)\n        .second_method_call(beta)")
+        }
+        then "a short chain that fits stays flat" {
+            let source = "fn f() -> int {\n    builder_object.first_method_call(1).answer()\n}"
+            stable(source) && projected(source).contains("builder_object.first_method_call(1).answer()")
+        }
+        then "a type argument list that overflows the line wraps one type per line" {
+            let source = "fn f() -> int {\n    let holder: Map<string, List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>> = {}\n    0\n}"
+            stable(source) && projected(source).contains("Map<\n        string,\n        List<SomeVeryLongGenericTypeNameThatIsQuiteWideIndeedYesVeryWideOkThisTimeForSure>,\n    >")
+        }
+    }
 }
