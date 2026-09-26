@@ -40,17 +40,6 @@ export fn result_infers(ret: TypeRef) -> bool {
     ret.name == "Result" && ret.args.length == 2 && is_bare_underscore(ret.args[1])
 }
 
-/// Whether `d`'s OWN written signature is `Result<_, _>` — read off
-/// its declaring statement's raw node, never off a (possibly still
-/// computing, possibly not yet asked at all) `sig()`.
-fn declared_result_hole(decls: Decls, d: DeclId) -> bool {
-    let x = decls.decl(d)
-    match decls.store(d).stmt(x.stmt) {
-        .FnDecl(_, _, _, ret, _) -> result_infers(ret),
-        rest -> false,
-    }
-}
-
 /// One `_`-declared fn's own evidence: the error types its direct
 /// `fail`/`?` sites raise, and the OTHER `_`-declared fns whose own
 /// (still-settling) set flows in through a `?`.
@@ -187,7 +176,7 @@ impl FailSurvey {
     /// THE GUARD: a callee's own written shape decides before its
     /// `sig()` is ever asked.
     fn via_callee(d: DeclId) -> SiteType {
-        if declared_result_hole(self.dt.decls, d) { return SiteType.Edge(d) }
+        if self.dt.decls.declared_result_hole(d) { return SiteType.Edge(d) }
         self.wrap(self.dt.decls.sig(d)?.fn_sig()?.ret)
     }
 }
@@ -235,12 +224,6 @@ fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
     match store.expr(e) { .Propagate(v) -> [v], rest -> [] }
 }
 
-/// The declarations this fixpoint holds at all — every `_`-declared,
-/// not-held fn or method, found purely syntactically.
-fn inferring(decls: Decls, x: Decl) -> bool {
-    seated(x) && declared_result_hole(decls, x.id)
-}
-
 impl Workspace {
     /// The pass: every `_`-declared fn's inferred error union,
     /// settled once per program state. ONE whole-program key, never
@@ -250,7 +233,7 @@ impl Workspace {
         let k = key(Family.Failures, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
-        let fns = [x.id for x in self.decls.decls.get() if !self.is_held(x.file) && inferring(self.decls, x)]
+        let fns = [x.id for x in self.decls.decls.get() if !self.is_held(x.file) && self.decls.inferring(x)]
         self.decls.clear_inferred()
         let sums = [self.fail_summary(d) for d in fns]
         self.decls.settle_failures(fns, sums)
@@ -304,6 +287,24 @@ impl Workspace {
 }
 
 impl Decls {
+    /// Whether `d`'s OWN written signature is `Result<_, _>` — read off
+    /// its declaring statement's raw node, never off a (possibly still
+    /// computing, possibly not yet asked at all) `sig()`.
+    fn declared_result_hole(d: DeclId) -> bool {
+        let x = self.decl(d)
+        match self.store(d).stmt(x.stmt) {
+            .FnDecl(_, _, _, ret, _) -> result_infers(ret),
+            rest -> false,
+        }
+    }
+
+    /// Whether `x` is one of the declarations this fixpoint holds at
+    /// all — every `_`-declared, not-held fn or method, found purely
+    /// syntactically.
+    fn inferring(x: Decl) -> bool {
+        seated(x) && self.declared_result_hole(x.id)
+    }
+
     /// Kleene iteration over SETS: a fn's inferred error type is a
     /// member of its own direct raises, or of any callee's set it
     /// flows from — until no set grows. Same proof receivers.av's
