@@ -643,12 +643,14 @@ fn match_prim<T, N>(mut cx: MatchContext<T, N>, rule_name: string, member: Item,
                 // Eof is a position, not a token: match without consuming.
                 let step = if cx.lex.is_eof(t) { 0 } else { 1 }
                 matched<T, N>(cursor + step, bindings, captured_terminal<T, N>(t), cx.silence, null)
-            } else if is_end(term) && closes_body(cx.lex, t) {
-                // A statement ends where its body closes: the `}` is
-                // the body's to consume.
-                matched<T, N>(cursor, bindings, captured_terminal<T, N>(t), cx.silence, null)
             } else {
-                missed<T, N>(cx, cursor, bindings, cx.silence, cx.miss_story(cursor, rule_name, cx.kind_expects.get(term) ?? [expected_word(term)]))
+                if is_end(term) && closes_body(cx.lex, t) {
+                    // A statement ends where its body closes: the `}` is
+                    // the body's to consume.
+                    matched<T, N>(cursor, bindings, captured_terminal<T, N>(t), cx.silence, null)
+                } else {
+                    missed<T, N>(cx, cursor, bindings, cx.silence, cx.miss_story(cursor, rule_name, cx.kind_expects.get(term) ?? [expected_word(term)]))
+                }
             }
         },
         .Ref(target) -> {

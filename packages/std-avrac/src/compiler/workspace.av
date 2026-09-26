@@ -163,31 +163,31 @@ export type Workspace = {
     // fingerprinted and indexed once. A host that changes under a
     // running workspace (Era IV's live editing) invalidates these
     // with the revision; today no host does.
-    sources: Memo<SourceFile>,
-    manifests: Memo<Manifest>,
+    source_memo: Memo<DbRow>,
+    manifest_memo: Memo<DbRow>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
-    programs: Memo<Parsed>,
-    plain: Memo<Parsed>,
-    file_items: Memo<List<DeclId>>,
-    module_names: Memo<ModuleNames>,
-    visibles: Memo<Namespace>,
-    name_facts: Memo<NameFacts>,
+    parsed_memo: Memo<DbRow>,
+    plain_memo: Memo<DbRow>,
+    items_memo: Memo<DbRow>,
+    namespace_memo: Memo<DbRow>,
+    visible_memo: Memo<DbRow>,
+    resolved_memo: Memo<DbRow>,
     sig_voices: Table<Voices>,
-    decl_facts: Memo<TypeFacts>,
-    const_type_facts: Memo<TypeId>,
+    typed_memo: Memo<DbRow>,
+    const_typed_memo: Memo<DbRow>,
     method_clashes: Table<List<Clash>>,
     method_diags: Cell<List<MethodDiagIndex>>,
-    folds: Memo<TypeFacts>,
-    analyses: Memo<Analysis>,
+    folded_memo: Memo<DbRow>,
+    analysis_memo: Memo<DbRow>,
     asks: Cell<List<Wanted>>,
-    units: Memo<Unit>,
+    lowered_memo: Memo<DbRow>,
     lift_asks: Cell<List<LiftAsk>>,
-    lift_results: Memo<LiftResult>,
-    generated: Memo<List<DeclId>>,
+    lifted_memo: Memo<DbRow>,
+    expanded_memo: Memo<DbRow>,
     settle_asks: Cell<List<SettleAsk>>,
-    settlements: Memo<Settlement>,
+    settled_memo: Memo<DbRow>,
     /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
     records: Records,
     /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
@@ -339,6 +339,14 @@ enum Family {
     References
 }
 
+/// `Parsed`'s fingerprint over a `DbRow` value — the words a block
+/// import brings in are folded so a dependency's grammar appearing
+/// re-parses this file.
+fn parsed_fingerprint(s: DbRow) -> int {
+    let p = parsed_of(s)
+    fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))])
+}
+
 fn key(f: Family, arg: int) -> Key {
     Key { family: ordinal(f), arg: arg }
 }
@@ -461,29 +469,29 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         db: db,
         decls: language_decls(lang),
         store: Cell.new(no_store),
-        sources: new_memo<SourceFile>(db, ordinal(Family.Source)),
-        manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)),
+        source_memo: new_memo<DbRow>(db, ordinal(Family.Source)),
+        manifest_memo: new_memo<DbRow>(db, ordinal(Family.Manifest)),
         externs: new_table<ExternNames>(),
-        programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
-        plain: new_memo<Parsed>(db, ordinal(Family.Plain)),
-        file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
-        module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
-        visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
-        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)),
+        parsed_memo: new_memo<DbRow>(db, ordinal(Family.Parsed)),
+        plain_memo: new_memo<DbRow>(db, ordinal(Family.Plain)),
+        items_memo: new_memo<DbRow>(db, ordinal(Family.Items)),
+        namespace_memo: new_memo<DbRow>(db, ordinal(Family.Namespace)),
+        visible_memo: new_memo<DbRow>(db, ordinal(Family.Visible)),
+        resolved_memo: new_memo<DbRow>(db, ordinal(Family.Resolved)),
         sig_voices: new_table<Voices>(),
-        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)),
-        const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)),
+        typed_memo: new_memo<DbRow>(db, ordinal(Family.Typed)),
+        const_typed_memo: new_memo<DbRow>(db, ordinal(Family.ConstTyped)),
         method_clashes: new_table<List<Clash>>(),
         method_diags: Cell.new(no_method_diags),
-        folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
-        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)),
-        units: new_memo<Unit>(db, ordinal(Family.Lowered)),
+        folded_memo: new_memo<DbRow>(db, ordinal(Family.Folded)),
+        analysis_memo: new_memo<DbRow>(db, ordinal(Family.Analysis)),
+        lowered_memo: new_memo<DbRow>(db, ordinal(Family.Lowered)),
         asks: Cell.new(no_asks),
         lift_asks: Cell.new(no_lifts),
-        lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
-        generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
+        lifted_memo: new_memo<DbRow>(db, ordinal(Family.Lifted)),
+        expanded_memo: new_memo<DbRow>(db, ordinal(Family.Expanded)),
         settle_asks: Cell.new(no_settles),
-        settlements: new_memo<Settlement>(db, ordinal(Family.Settled)),
+        settled_memo: new_memo<DbRow>(db, ordinal(Family.Settled)),
         records: new_records(),
         keys: new_keys(),
         module_names_of: Cell.new(no_module_names_of),
@@ -529,7 +537,7 @@ impl Workspace {
     fn disarmed() {
         // An Analysis holds the program closure back to this workspace.
         // Evict its typed values and kernel cells as one operation.
-        self.analyses.evict()
+        self.analysis_memo.evict()
         self.db.disarm()
         self.decls.disarm()
         self.closed.set(true)
@@ -760,10 +768,11 @@ impl Workspace {
     /// An INPUT: the file's text, hashed; the revision moves only when
     /// the text did.
     fn source(f: FileId) -> SourceFile {
-        self.sources.input(f.index, () -> {
+        let staged = self.source_memo.input(f.index, () -> {
             let path = self.decls.file(f).path
-            new_source_file(path, self.host.read(path))
-        }, (src: SourceFile) -> fp_str(src.text))
+            DbRow.Source(new_source_file(path, self.host.read(path)))
+        }, (s: DbRow) -> fp_str(source_of(s).text))
+        source_of(staged)
     }
 
     /// The file parsed — pure in its text.
@@ -775,7 +784,7 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        self.programs.demand(f.index, () -> self.parsed_under_blocks(f), (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
+        parsed_of(self.parsed_memo.demand(f.index, () -> DbRow.Parsed(self.parsed_under_blocks(f)), parsed_fingerprint))
     }
 
     /// A file parsed under NO block words — its own words alone: the
@@ -792,7 +801,7 @@ impl Workspace {
     /// sharing the name would sum a span and its own subset into one
     /// double-counted total.
     fn plain_parsed(f: FileId) -> Parsed {
-        self.plain.demand(f.index, () -> self.clocked_parse(f), (p: Parsed) -> program_hash(p))
+        plain_of(self.plain_memo.demand(f.index, () -> DbRow.Plain(self.clocked_parse(f)), (s: DbRow) -> program_hash(plain_of(s))))
     }
 
     fn clocked_parse(f: FileId) -> Parsed {
@@ -851,7 +860,7 @@ impl Workspace {
     /// whole and would export nothing. Its plain parse answers only
     /// inside a cycle: two files importing each other's words.
     fn provider_parsed(f: FileId) -> Parsed {
-        if self.db.active(self.programs.query_key(f.index)) { return self.plain_parsed(f) }
+        if self.db.active(self.parsed_memo.query_key(f.index)) { return self.plain_parsed(f) }
         self.parsed(f)
     }
 
@@ -921,10 +930,10 @@ impl Workspace {
         // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
         // declarations were MINTED, and `file_items` is a memo over a paree it never had.
         if self.is_held(f) { return self.decls.held_items_of_file(f) }
-        match self.file_items.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.items_memo.start(f.index) { .Reuse(value) -> { return items_of(value) }, .Compute -> nothing() }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
-        self.file_items.finish(f.index, ids, fp(7, [self.item_print(d) for d in ids]))
+        items_of(self.items_memo.finish(f.index, DbRow.Items(ids), fp(7, [self.item_print(d) for d in ids])))
     }
 
     /// The declaration behind an id.
@@ -946,11 +955,11 @@ impl Workspace {
     /// module's names back — a re-entry is a SMALLER view (the binder
     /// alone, no signature work waits on it), never a trap.
     fn namespace(m: ModuleId) -> ModuleNames {
-        match self.module_names.start_recursive(m.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.namespace_memo.start_recursive(m.index) { .Reuse(value) -> { return namespace_of(value) }, .Compute -> nothing() }
         let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        self.module_names.finish(m.index, names, fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length]))
+        namespace_of(self.namespace_memo.finish(m.index, DbRow.Namespace(names), fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length])))
     }
 
     /// What a file's top level sees: its module's names, then its
@@ -960,7 +969,7 @@ impl Workspace {
     /// visible namespace back — a re-entry is a SMALLER view, never a
     /// trap.
     fn visible(f: FileId) -> Namespace {
-        match self.visibles.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.visible_memo.start_recursive(f.index) { .Reuse(value) -> { return visible_of(value) }, .Compute -> nothing() }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -971,7 +980,7 @@ impl Workspace {
         }
         let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, self.prelude_imports(f), (path: string) -> self.shown(path))
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
-        self.visibles.finish(f.index, out, self.db.revision())
+        visible_of(self.visible_memo.finish(f.index, DbRow.Visible(out), self.db.revision()))
     }
 
     /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
@@ -990,7 +999,7 @@ impl Workspace {
     /// in flight — the acyclic `start` answers a cycle with a defect,
     /// and one file's resolve may be demanded while another is served.
     fn resolved(f: FileId) -> NameFacts {
-        match self.name_facts.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.resolved_memo.start_recursive(f.index) { .Reuse(value) -> { return resolved_of(value) }, .Compute -> nothing() }
         touch(self.items(f))
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
@@ -1015,7 +1024,7 @@ impl Workspace {
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
         let out = resolved with { voices: Voices { list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()) } }
-        self.name_facts.finish(f.index, out, self.db.revision())
+        resolved_of(self.resolved_memo.finish(f.index, DbRow.Resolved(out), self.db.revision()))
     }
 
     /// A generated declaration's id by its NAME, or none — demanded
@@ -1176,11 +1185,11 @@ impl Workspace {
         // Annotation evaluation re-types the declaration after hiding
         // the active annotation, so this family also has a smaller
         // recursive view.
-        match self.decl_facts.start_recursive(d.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.typed_memo.start_recursive(d.index) { .Reuse(value) -> { return typed_of(value) }, .Compute -> nothing() }
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
-        self.decl_facts.finish(d.index, out, self.db.revision())
+        typed_of(self.typed_memo.finish(d.index, DbRow.Typed(out), self.db.revision()))
     }
 
     /// A file's bodies as one table: Main's facts first (its range
@@ -1190,7 +1199,7 @@ impl Workspace {
     fn folded(f: FileId) -> TypeFacts {
         // Annotation evaluation re-enters the file after the active
         // annotation has been hidden; that recursive view is smaller.
-        match self.folds.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.folded_memo.start_recursive(f.index) { .Reuse(value) -> { return folded_of(value) }, .Compute -> nothing() }
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
@@ -1201,7 +1210,7 @@ impl Workspace {
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
-        self.folds.finish(f.index, folded_facts, self.db.revision())
+        folded_of(self.folded_memo.finish(f.index, DbRow.Folded(folded_facts), self.db.revision()))
     }
 
     /// A file's bodies to type: Main, then every declaration owning a
