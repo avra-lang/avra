@@ -1,33 +1,46 @@
-//! THE DB — every heterogeneous thing the compiler can answer about a
-//! package, addressed by kind and name. An in-memory hit answers within
-//! this process at once; a durable hit is re-validated against the
-//! package's CURRENT state before it is trusted, so a stale answer is
-//! never returned; a miss is the caller's to derive and `insert`.
+//! THE DB — every heterogeneous durable thing the compiler can answer
+//! about a package, addressed by kind and name. An in-memory hit
+//! answers within this process at once; a durable hit is re-validated
+//! against the package's CURRENT state before it is trusted, so a
+//! stale answer is never returned; a miss is the caller's to derive
+//! and `insert`.
 //!
-//! PHASE 1 CARRIES ONE KIND, `Decl` — `avra docs <name>`'s own answer,
-//! not yet the general recorded-dependency design: its validity rests on
-//! two witnesses recorded at capture time, the package's FILE LISTING (so
-//! a name declared newly, anywhere, is caught) and the CONTENT of every
-//! file the answer read (so an edit to a file already read is caught). A
-//! later kind whose answer depends on RESOLVED types, not just parse
-//! facts, needs the wider recorded-dependency walk this narrows past —
-//! that is Phase 3's, not this one's.
-use core.{digest_of, joined, sorted_texts, flatten}
+//! NAMED `DbRow`/`DbKind`, NEVER `Row`/`Kind`: `compiler/record.av`
+//! and `compiler/voices.av` already declare their own, unrelated
+//! `Row` — `compiler/` is one module, so a same-named export here
+//! would silently shadow theirs rather than refuse to compile.
+//!
+//! DECL CARRIES THE ORIGINAL PHASE 1 WITNESS DESIGN: `avra docs
+//! <name>`'s answer validity rests on two witnesses recorded at
+//! capture time, the package's FILE LISTING and the CONTENT of every
+//! file the answer read — not yet the general recorded-dependency
+//! walk a RESOLVED-type answer would need.
+//!
+//! SIG AND WARN CARRY WHAT `record.av`/`derive.av`'s `checked()` ALREADY
+//! PRODUCE, VERBATIM: a module's record and a program's rendered
+//! warnings are already-serialized text by the time either reaches
+//! here, so their row is the text itself — no codec to write or
+//! derive, the wire format IS the value.
+use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape}
 use compiler.store.{Store, Stored, node_key}
 use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
 use @std.text.{parse_int}
 use @std.meta.{derive}
 
-export enum DbKind { Decl }
-
-impl DbKind {
-    fn tag() -> string { match self { .Decl -> "Decl" } }
-}
-
 /// A file an answer's validity rides on: its path, and its content's
 /// digest at the moment the answer was captured.
 export type FileWitness = { path: string, digest: string }
+
+fn encoded_filewitness(w: FileWitness) -> string {
+    joined([wire_escape(w.path), wire_escape(w.digest)], "\n")
+}
+
+fn decoded_filewitness(text: string) -> FileWitness? {
+    let lines = text.split("\n")
+    if lines.length < 2 { return null }
+    FileWitness { path: wire_unescape(lines[0]), digest: wire_unescape(lines[1]) }
+}
 
 /// `avra docs <name>`'s own answer for one package: the rendered text
 /// (a decl's doc and annotations, or the collision message when more
@@ -35,21 +48,75 @@ export type FileWitness = { path: string, digest: string }
 /// — the package's own root (`still_valid` has nothing else to re-walk
 /// from), its file LISTING at capture time, and every file the answer
 /// read.
+///
+/// EVERY FIELD IS ONE ESCAPED LINE, the list is a count line then that
+/// many escaped, doubly-escaped (its own encoding, then the line
+/// escape) items — `core/wire.av`'s primitives, so any field, not only
+/// a trailing one, may hold embedded newlines safely.
 export type DocFacts = {
     root: string,
-    answer: string,
     listing_digest: string,
+    answer: string,
     files: List<FileWitness>,
+}
+
+export fn encoded_docfacts(facts: DocFacts) -> string {
+    let header = [wire_escape(facts.root), wire_escape(facts.listing_digest), wire_escape(facts.answer), "${facts.files.length}"]
+    joined(header.concat([wire_escape(encoded_filewitness(w)) for w in facts.files]), "\n")
+}
+
+export fn decoded_docfacts(text: string) -> DocFacts? {
+    let lines = text.split("\n")
+    if lines.length < 4 { return null }
+    let count? = parse_int(lines[3]) else { return null }
+    if lines.length < 4 + count { return null }
+    let files_opt = [decoded_filewitness(wire_unescape(lines[4 + j])) for j in 0..count]
+    if files_opt.any(it == null) { return null }
+    DocFacts {
+        root: wire_unescape(lines[0]),
+        listing_digest: wire_unescape(lines[1]),
+        answer: wire_unescape(lines[2]),
+        files: [f! for f in files_opt],
+    }
+}
+
+export enum DbKind { Decl, Sig, Warn }
+
+impl DbKind {
+    fn tag() -> string {
+        match self {
+            .Decl -> "Decl",
+            .Sig -> "Sig",
+            .Warn -> "Warn",
+        }
+    }
 }
 
 @derive(Rows)
 export enum DbRow {
+    /// `avra docs <name>` — witness-validated, see `DocFacts`.
     Decl(name: string, facts: DocFacts)
+    /// A module's interface record (`record.av`) — already flat,
+    /// structurally-encoded text; validity is record.av's own
+    /// business (a moved-records retry), not this row's.
+    Sig(name: string, text: string)
+    /// A program's rendered warnings (`derive.av`'s `checked()`) —
+    /// already-rendered text, kept under the program's own key.
+    Warn(name: string, text: string)
 }
 
 impl DbRow {
-    fn kind() -> DbKind { match self { .Decl(_, _) -> DbKind.Decl } }
-    fn key() -> string { match self { .Decl(name, _) -> name } }
+    fn kind() -> DbKind {
+        match self {
+            .Decl(_, _) -> DbKind.Decl,
+            .Sig(_, _) -> DbKind.Sig,
+            .Warn(_, _) -> DbKind.Warn,
+        }
+    }
+
+    fn key() -> string {
+        match self { .Decl(name, _) or .Sig(name, _) or .Warn(name, _) -> name }
+    }
 }
 
 /// One process's rows, in memory. `once`: every caller in this process
@@ -95,11 +162,14 @@ impl Db {
 
 fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [kind.tag(), name]) }
 
-/// Whether a recalled row's witnesses still hold. One arm today; a kind
-/// with its own notion of freshness adds its own.
+/// Whether a recalled row's witnesses still hold. `Sig`/`Warn` carry
+/// their own validity in the caller's key (a module/program identity
+/// that changes when its inputs do) and hold unconditionally here;
+/// `Decl` alone has a witness pair to re-check.
 fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) && facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
+        .Sig(_, _) or .Warn(_, _) -> true,
     }
 }
 
@@ -129,32 +199,20 @@ export fn current_file_digest(path: string) -> string {
     digest_of(read_text(path) catch "")
 }
 
+/// `Decl` folds through `encoded_docfacts` (core/wire.av's escaping
+/// primitives); `Sig`/`Warn` are already text, so encoding them is
+/// identity — the wire format IS the value, not a second copy of it.
 fn encoded(row: DbRow) -> string {
-    match row { .Decl(_, facts) -> encoded_decl(facts) }
+    match row { .Decl(_, facts) -> encoded_docfacts(facts), .Sig(_, text) or .Warn(_, text) -> text }
 }
 
 fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
     match kind {
         .Decl -> {
-            let facts? = decoded_decl(text) else { return null }
+            let facts? = decoded_docfacts(text) else { return null }
             DbRow.Decl(name, facts)
         },
+        .Sig -> DbRow.Sig(name, text),
+        .Warn -> DbRow.Warn(name, text),
     }
-}
-
-fn encoded_decl(facts: DocFacts) -> string {
-    let header = [facts.root, facts.listing_digest, "${facts.files.length}"]
-    let file_lines = flatten([[w.path, w.digest] for w in facts.files])
-    joined(header.concat(file_lines).concat([facts.answer]), "\n")
-}
-
-fn decoded_decl(text: string) -> DocFacts? {
-    let lines = text.split("\n")
-    if lines.length < 3 { return null }
-    let count? = parse_int(lines[2]) else { return null }
-    let start = 3
-    let end = start + count * 2
-    if lines.length <= end { return null }
-    let files = [FileWitness { path: lines[start + j * 2], digest: lines[start + j * 2 + 1] } for j in 0..count]
-    DocFacts { root: lines[0], listing_digest: lines[1], files: files, answer: joined(lines.slice(end, lines.length), "\n") }
 }
