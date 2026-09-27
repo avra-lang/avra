@@ -1,0 +1,74 @@
+// Several `for` heads under attack: the want channel's heir
+// contamination (the one real bug this round found), malformed
+// surface, names against names, and cross-feature interaction with
+// `?` and `dyn`. The vertical story lives in comprehensions_test.av.
+use @std.avrac.testing.{shown, refused_with}
+
+fn show_decls() -> string {
+    "trait Show {\n    fn show() -> int\n}\ntype P = { x: int, y: int }\nimpl Show for P {\n    fn show() -> int { self.x * 10 + self.y }\n}\n"
+}
+
+fn halver() -> string {
+    "enum Oddness {\n    odd\n}\nfn half(n: int) -> Result<int, Oddness> {\n    if n % 2 == 0 { n / 2 } else { fail Oddness.odd }\n}\n"
+}
+
+spec "features/lists/comp_joins/adversarial" {
+    given "the expected-type channel" {
+        then "a dyn want on the whole list does not leak into a later head's own source" {
+            shown(
+                "${show_decls()}let boxes: List<dyn Show> = [P { x: a, y: b } for a in [1, 2] for b in [3, 4]]\nboxes.length * 100 + boxes[3].show()",
+            ) == "424"
+        }
+        then "nor into a later head's range bound" {
+            shown(
+                "${show_decls()}let boxes: List<dyn Show> = [P { x: i, y: hi } for i in 0..2 for hi in 0..(i + 3)]\nboxes.length",
+            ) == "7"
+        }
+        then "nor into a filter's condition" {
+            shown(
+                "${show_decls()}let boxes: List<dyn Show> = [P { x: a, y: 0 } for a in [1, 2, 3] if a % 2 == 1]\nboxes.length",
+            ) == "2"
+        }
+    }
+    given "malformed surface" {
+        then "a filter with no condition" {
+            refused_with("[a for a in [1, 2] if]", "expected")
+        }
+        then "a second head with no source" {
+            refused_with("[a for a in [1, 2] for b in]", "expected")
+        }
+        then "a bare comma where a second `for` belongs" {
+            refused_with("[a for a in [1, 2], for b in [3, 4]]", "expected")
+        }
+    }
+    given "names against names" {
+        then "a keyword as a later head's binder" {
+            refused_with("[a for a in [1, 2] for mut in [3, 4]]", "`mut` is a keyword")
+        }
+        then "the index and the element paired alike in a later head" {
+            refused_with(
+                "[x for a in [1, 2] for x, x in [3, 4]]",
+                "`x` names both the index and the element",
+            )
+        }
+        then "a filter reading a name its own head has not bound yet" {
+            refused_with(
+                "[c for a in [1, 2] if b > 0 for b in [3, 4] for c in [5, 6]]",
+                "`b` is not defined",
+            )
+        }
+        then "a later head shadows an earlier one, and the element reads the shadow" {
+            shown("[a for a in [1, 2] for a in [10, 20]][3]") == "20"
+        }
+        then "a later head's source reads the PRE-shadow value, even though its own head rebinds the same name" {
+            shown("[a + b for a in [1, 2] for b in [a, a + 1] for i, a in [10, 20]][3]") == "22"
+        }
+    }
+    given "crossed with `?` propagation" {
+        then "a filter and a second head both sit between a `?` and the fn it leaves" {
+            shown(
+                "${halver()}fn f(xs: List<int>, ys: List<int>) -> Result<List<int>, Oddness> {\n    [half(x)? + y for x in xs if x > 0 for y in ys]\n}\nmatch f([2, 3], [10]) {\n    .Ok(_) -> -1,\n    .Err(_) -> 9,\n}",
+            ) == "9"
+        }
+    }
+}

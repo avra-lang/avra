@@ -1,6 +1,6 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{Expr, ExprId, TypeId, Reg, CompClause, comp_clause_reach, flatten, some_list}
+use core.{Expr, ExprId, TypeId, Reg, CompClause, some_list}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Bound}
 use diagnostics.{refusal}
 
@@ -9,8 +9,13 @@ export type ListSemantics = {}
 impl NodeSemantics for ListSemantics {
     /// A literal's elements are kids; a comprehension's FIRST head's
     /// source and range bound are — they resolve outside every
-    /// binder — while its element and every other clause are heirs,
-    /// walked under the bindings they read. A `collect` owns its
+    /// binder. Its element is the one HEIR: `heirs` is also the
+    /// expected-type channel's propagation list (`plant_want` hands
+    /// every heir the parent's own want), and only the element wears
+    /// the comprehension's — a later clause's own source, range bound
+    /// or condition answers an unrelated type, so `resolve_comp`/
+    /// `comp_type`/`comp_reg` walk those by hand, under the scope
+    /// each opens, never through this list. A `collect` owns its
     /// body's walk, as a block owns its own.
     fn kids(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
@@ -23,7 +28,7 @@ impl NodeSemantics for ListSemantics {
 
     fn heirs(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
-        match e { .Comp(elem, clauses) -> [elem].concat(comp_heirs(clauses)), _ -> [] }
+        match e { .Comp(elem, _) -> [elem], _ -> [] }
     }
 
     fn resolve(mut cx: ResolveCx, e: ExprId) {
@@ -61,12 +66,6 @@ impl NodeSemantics for ListSemantics {
 fn comp_kids(clauses: List<CompClause>) -> List<ExprId> {
     let head? = clauses.first() else { return [] }
     match head { .Head(_, _, source, hi) -> [source].concat(some_list(hi)), .Filter(_) -> [] }
-}
-
-/// Every clause after the first — each reads bindings this node opens
-/// itself, so the generic walk leaves them alone.
-fn comp_heirs(clauses: List<CompClause>) -> List<ExprId> {
-    flatten([comp_clause_reach(c) for c in clauses.slice(1, clauses.length)])
 }
 
 /// Every clause, left to right: a head's own binders — `index, name`
