@@ -8,6 +8,7 @@
 use @std.avrac.compiler.{avra, new_workspace, build_cache_root, db_qualified}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
+use compiler.store.{store_at}
 use core.{module_path}
 use @std.io.{write_text, make_dirs}
 use @std.time.{now_ns}
@@ -94,6 +95,25 @@ spec "compiler/build — a durable row's key names the compiler that wrote it" {
         then "compiler_id is memoized — the same answer both times, no re-hash" {
             let a = print_workspace(real_binary("memo", "stable across two asks"))
             a.compiler_id() == a.compiler_id()
+        }
+    }
+    given "a record durably written by one compiler print, over the SAME real store" {
+        then "another print's record key misses it — the held/mint read answers absent, never a stranger's bytes" {
+            let store = store_at("${print_pkg_named("held-mint-a")}/.avra-cache")
+            let a = print_workspace(real_binary("held-mint-a-bin", "compiler generation one"))
+            let b = print_workspace(real_binary("held-mint-b-bin", "compiler generation two"))
+            let m = module_path(["app"])
+            a.db.insert_sig(store, a.record_key(m), "a record generation one wrote")
+            b.db.sig(store, b.record_key(m)) == null
+        }
+        then "the SAME compiler print still reads its own record back, over the SAME store" {
+            let store = store_at("${print_pkg_named("held-mint-same")}/.avra-cache")
+            let bin = real_binary("held-mint-same-bin", "one compiler, asked twice")
+            let a = print_workspace(bin)
+            let b = print_workspace(bin)
+            let m = module_path(["app"])
+            a.db.insert_sig(store, a.record_key(m), "the one true record")
+            b.db.sig(store, b.record_key(m)) == "the one true record"
         }
     }
 }
