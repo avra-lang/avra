@@ -25,17 +25,24 @@ export enum MemoStart<T> { Reuse(T), Compute }
 /// One input read with the fingerprint of the bytes that produced it.
 export type Loaded<T> = { value: T, fingerprint: int }
 
-export type Memo<T> = { db: Kernel, family: int, values: Table<T> }
+/// A family's dense value table over the Kernel: the shape a compile's
+/// 22 in-process query families and, later, a `Db`'s durable relations
+/// both are — ONE DEFINITION (COMPILER DB townhall §6.2).
+export type Relation<T> = { kernel: Kernel, family: int, values: Table<T> }
 
-export fn new_memo<T>(db: Kernel, family: int) -> Memo<T> {
-    Memo { db: db, family: family, values: new_table<T>() }
+/// `Memo<T>`'s old name, kept as the same type: nothing that already
+/// spells `Memo<T>` moves.
+export alias Memo<T> = Relation<T>
+
+export fn new_memo<T>(db: Kernel, family: int) -> Relation<T> {
+    Relation { kernel: db, family: family, values: new_table<T>() }
 }
 
-impl Memo {
+impl Relation {
     fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
 
     fn ask(arg: int) -> MemoAsk<T> {
-        let a = match self.db.ask(self.query_key(arg)) {
+        let a = match self.kernel.ask(self.query_key(arg)) {
             .Reuse -> match self.values.entry(arg) {
                 .Present(value) -> MemoAsk.Reuse(value),
                 .Missing -> missing_value(self.family, arg),
@@ -54,7 +61,7 @@ impl Memo {
             .Reuse(value) -> MemoStart.Reuse(value),
             .Cycle -> MemoStart.Reuse(self.cycle_value(arg)),
             .Compute -> {
-                self.db.begin(self.query_key(arg))
+                self.kernel.begin(self.query_key(arg))
                 MemoStart.Compute
             },
         }
@@ -67,11 +74,11 @@ impl Memo {
         match self.ask(arg) {
             .Reuse(value) -> MemoStart.Reuse(value),
             .Cycle -> {
-                self.db.begin(self.query_key(arg))
+                self.kernel.begin(self.query_key(arg))
                 MemoStart.Compute
             },
             .Compute -> {
-                self.db.begin(self.query_key(arg))
+                self.kernel.begin(self.query_key(arg))
                 MemoStart.Compute
             },
         }
@@ -81,21 +88,21 @@ impl Memo {
         self.settle(arg, value, fingerprint)
     }
 
-    fn begin(arg: int) { self.db.begin(self.query_key(arg)) }
+    fn begin(arg: int) { self.kernel.begin(self.query_key(arg)) }
 
     /// Whether the query at `arg` is in flight — asked by a query that
     /// would otherwise re-enter it from another family.
-    fn open(arg: int) -> bool { self.db.active(self.query_key(arg)) }
+    fn open(arg: int) -> bool { self.kernel.active(self.query_key(arg)) }
 
     /// Release this family's values and matching kernel cells
     /// together. Used to break retained closure cycles at shutdown.
     fn evict() {
         self.values.clear()
-        self.db.evict_family(self.family)
+        self.kernel.evict_family(self.family)
     }
 
     fn settle(arg: int, value: T, fingerprint: int) -> T {
-        self.db.settle(self.query_key(arg), fingerprint)
+        self.kernel.settle(self.query_key(arg), fingerprint)
         self.values.keep(arg, value)
         if traced() { qtrace("Q\tsettle\t${self.family}\t${arg}\t${fingerprint}\n") }
         value
@@ -106,14 +113,14 @@ impl Memo {
     fn input(arg: int, load: fn() -> T, fingerprint: fn(T) -> int) -> T {
         match self.values.entry(arg) {
             .Present(value) -> {
-                self.db.record_dep(self.query_key(arg))
+                self.kernel.record_dep(self.query_key(arg))
                 return value
             },
             .Missing -> {},
         }
         let value = load()
-        self.db.set_input(self.query_key(arg), fingerprint(value))
-        self.db.record_dep(self.query_key(arg))
+        self.kernel.set_input(self.query_key(arg), fingerprint(value))
+        self.kernel.record_dep(self.query_key(arg))
         self.values.keep(arg, value)
         value
     }
@@ -123,14 +130,14 @@ impl Memo {
     fn input_loaded(arg: int, load: fn() -> Loaded<T>) -> T {
         match self.values.entry(arg) {
             .Present(value) -> {
-                self.db.record_dep(self.query_key(arg))
+                self.kernel.record_dep(self.query_key(arg))
                 return value
             },
             .Missing -> {},
         }
         let loaded = load()
-        self.db.set_input(self.query_key(arg), loaded.fingerprint)
-        self.db.record_dep(self.query_key(arg))
+        self.kernel.set_input(self.query_key(arg), loaded.fingerprint)
+        self.kernel.record_dep(self.query_key(arg))
         self.values.keep(arg, loaded.value)
         loaded.value
     }
@@ -141,7 +148,7 @@ impl Memo {
             .Reuse(value) -> value,
             .Cycle -> self.cycle_value(arg),
             .Compute -> {
-                self.db.begin(self.query_key(arg))
+                self.kernel.begin(self.query_key(arg))
                 let value = compute()
                 self.settle(arg, value, fingerprint(value))
             },
