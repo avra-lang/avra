@@ -31,6 +31,10 @@ export enum Verdict {
 /// query compares against it instead of appending a duplicate dep.
 type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int, last_reader: int }
 
+/// One stamp a frame overwrote and must hand back to whoever it took
+/// it from — `record_dep`, `settle`.
+type Restore = { key: Key, previous: int }
+
 // A shared KernelState's cell list copies on write. Bound each copy to
 // one short row rather than a table that grows with the program.
 const cell_chunk: int = 256
@@ -52,15 +56,18 @@ type KernelState = {
     // against `reading.last()`, never against the key itself, so
     // recognizing "I already recorded this" costs one int compare.
     reading: List<int>,
-    // One membership set per open query, parallel to `pending`. A
-    // NESTED query reading the same cell overwrites its STAMP (one
-    // field, the last reader wins), so the outer query's next read
-    // sees a mismatch that is not "never read" — it is "read, then
-    // clobbered". The stamp answers that wrong on its own; this set,
-    // checked only on a mismatch, answers right in O(1) rather than a
-    // scan of `pending` (which would turn every GENUINELY new dep
-    // into an O(so-far) scan — quadratic over a query with many).
-    seen: List<Cell<Map<string, bool>>>,
+    // One RESTORE LIST per open query, parallel to `pending` — null
+    // until that frame's first STAMP OVERWRITE of a STILL-OPEN
+    // ancestor's cell (most frames never nest into one, so most stay
+    // null: no allocation at all on that path, only a bare slot in
+    // this outer list). A NESTED query reading the same cell
+    // overwrites its STAMP (one field, the last reader wins), so the
+    // outer query's next read sees a mismatch that is not "never
+    // read" — it is "read, then clobbered". `record_dep` saves the
+    // clobbered value here; `settle` writes it back, so the ancestor
+    // that resumes sees its own stamp again and its next read is the
+    // one-compare fast path, same as if nothing had nested at all.
+    restore: List<Cell<List<Restore>>?>,
     next_reader: int,
     hits: int,
     misses: int,
@@ -79,7 +86,7 @@ export fn new_kernel() -> Kernel {
         pending: [],
         open: [],
         reading: [],
-        seen: [],
+        restore: [],
         next_reader: 0,
         hits: 0,
         misses: 0,
@@ -207,9 +214,9 @@ impl Kernel {
     fn begin(key: Key) {
         mut s = self.snapshot()
         let none: List<Key> = []
-        let no_seen: Map<string, bool> = {}
+        let no_restore: Cell<List<Restore>>? = null
         s.pending.push(Cell.new(none))
-        s.seen.push(Cell.new(no_seen))
+        s.restore.push(no_restore)
         s.open.push(key)
         s.next_reader = s.next_reader + 1
         s.reading.push(s.next_reader)
@@ -219,9 +226,10 @@ impl Kernel {
     fn settle(key: Key, value_hash: int) {
         mut s = self.snapshot()
         let deps: List<Key> = s.pending.pop().get()
-        let _ = s.seen.pop()
+        let restored: Cell<List<Restore>>? = s.restore.pop()
         let _ = s.open.pop()
         let _ = s.reading.pop()
+        if restored != null { for r in restored!.get() { restore_one(s, r) } }
         let prior? = state_cell(s, key) else {
             write_cell(
                 s,
@@ -254,30 +262,50 @@ impl Kernel {
 
     /// One read's dependency, appended to the OPEN query's list — unless
     /// the LAST-READER STAMP on `key`'s own cell already names the
-    /// currently open query (the fast path: one int compare, no lookup
-    /// at all). A MISMATCH is not always "never read": a NESTED query
+    /// currently open query: the fast path, one int compare, no lookup
+    /// at all. A MISMATCH is not always "never read": a NESTED query
     /// reading the same cell overwrites the stamp with ITS OWN reader
     /// id, so the outer query's next read of that cell mismatches too,
-    /// though it already recorded the dep. `already_seen` tells the two
-    /// apart in O(1) — a scan of `pending` would too, but it would cost
-    /// every GENUINELY new dep a scan of everything recorded so far.
-    /// The list lives in a `Cell`, so the append (like the stamp write)
-    /// is in place and the state itself is never written: routing
-    /// either through the shared record would copy the whole thing per
-    /// read.
+    /// though it already recorded the dep. The two are told apart by
+    /// asking whether the STAMP BEING OVERWRITTEN belongs to a
+    /// STILL-OPEN frame (`reading.contains`, a scan of the open
+    /// stack — a handful of ints deep, never the program's dep count):
+    /// if so, that frame will read this cell again and must see its
+    /// own stamp restored, so the value is saved (`save_restore`,
+    /// lazily minting the frame's own restore list); if not — a
+    /// genuinely new dep, or a stamp some now-closed query left behind
+    /// — nothing will ever ask for it again, so nothing is saved. The
+    /// list lives in a `Cell`, so the append (like the stamp write) is
+    /// in place; only the rare save allocates anything at all.
     fn record_dep(key: Key) {
         mut s = self.snapshot()
         if s.pending.is_empty() { return }
         let reader = s.reading.last() ?? 0
         let cell? = state_cell(s, key) else {
-            if already_seen(s, key) { return }
             s.pending.last()!.push(key)
             return
         }
         if cell.last_reader == reader { return }
-        if already_seen(s, key) { return }
+        if s.reading.contains(cell.last_reader) { self.save_restore(s, key, cell.last_reader) }
         write_cell(s, key, cell with { last_reader: reader })
         s.pending.last()!.push(key)
+    }
+
+    /// Remembers a stamp `record_dep` is about to overwrite, so
+    /// `settle` can hand it back to the frame it belonged to. Lazily
+    /// mints this frame's own restore list on its first entry — the
+    /// common, no-nesting case never allocates one at all; every later
+    /// entry in the same frame just pushes onto the `Cell` already
+    /// there, in place.
+    fn save_restore(mut s: KernelState, key: Key, previous: int) {
+        let idx = s.restore.length - 1
+        let entry = Restore { key: key, previous: previous }
+        let frame? = s.restore[idx] else {
+            s.restore.set(idx, Cell.new([entry]))
+            self.replace(s)
+            return
+        }
+        frame.push(entry)
     }
 
     fn sweep() {
@@ -336,21 +364,13 @@ fn state_slot(s: KernelState, key: Key) -> int {
     key.arg * s.verifiers.length + key.family
 }
 
-/// Whether the CURRENTLY OPEN query already recorded `key` — checked
-/// only when the stamp mismatches, so this is the fallback path, not
-/// the fast one. A map lookup, never a scan: `pending`'s own list
-/// grows by one per distinct dep, and scanning it on every mismatch
-/// would make every new dep cost a scan of every earlier one. Answers
-/// false and marks `key` seen in the same call, so a caller that
-/// pushes on a false answer never marks twice.
-fn already_seen(s: KernelState, key: Key) -> bool {
-    let frame = s.seen.last()!
-    let slot = "${state_slot(s, key)}"
-    if frame.get().get(slot) != null { return true }
-    mut marked = frame.get()
-    marked.set(slot, true)
-    frame.set(marked)
-    false
+/// Hands one overwritten stamp back to the cell it came from. The cell
+/// is expected to still exist — nothing removes a `QueryCell` mid-query
+/// — but a defensive miss is a no-op rather than a defect: there is
+/// nothing left to restore into.
+fn restore_one(mut s: KernelState, r: Restore) {
+    let cell? = state_cell(s, r.key) else { return }
+    write_cell(s, r.key, cell with { last_reader: r.previous })
 }
 
 fn state_cell(s: KernelState, key: Key) -> QueryCell? {
