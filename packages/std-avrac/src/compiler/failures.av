@@ -29,6 +29,7 @@ use core.{
     TypeRef,
     Type,
     NodeStore,
+    Span,
     flatten,
     fp,
     fp_list,
@@ -267,96 +268,95 @@ fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
 /// M6 PREP: every `catch` expression in `[lo, hi)` — the same
 /// index-range sweep `propagate_sites` already uses, since a `catch`
 /// expression is addressed the same way (an `ExprId` in the decl's own
-/// range), no new arena assumption needed.
+/// range), no new arena assumption needed. Finds a catch AT ANY DEPTH,
+/// a nested catch included — this is a flat index-range scan, blind to
+/// AST shape, same as `fail_sites`/`propagate_sites`.
 fn catch_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
     [ExprId { index: i } for i in lo..hi if is_catch(store, ExprId { index: i })]
 }
 
 fn is_catch(store: NodeStore, e: ExprId) -> bool { store.expr(e) is .Catch }
 
-/// M6 PREP: a re-raise found DIRECTLY inside a catch arm — a `fail`
-/// statement, or a `?` in the arm's own tail or an ordinary statement.
-/// SHALLOW ONLY: a re-raise nested inside further control flow within
-/// the arm (an `if`, a `match`) is not found here — a documented gap,
-/// since finding it in general needs a full expression-tree walk this
-/// prep step does not build. The documented idiom (`catch e -> { fail
-/// e }`) is exactly the shape this covers.
-enum ArmSite { Fail(v: ExprId), Propagate(v: ExprId) }
+/// M6 PREP: one catch arm's OWN source span — the whole text a re-raise
+/// nested anywhere inside it (an `if`, a `match`, any depth) still falls
+/// within, byte for byte. Mirrors `decls_mint.av`'s `OwnerSpan`/
+/// `innermost` — the same "smallest span containing a site" answer a
+/// decl's own [lo, hi) is built from, aimed at an arm instead of a
+/// top-level declaration.
+type ArmOwner = { catch_at: ExprId, span: Span }
 
-fn arm_sites(store: NodeStore, arm: ExprId) -> List<ArmSite> {
-    match store.expr(arm) {
-        .Block(stmts, tail) -> {
-            let from_stmts = flatten([arm_stmt_site(store, s) for s in stmts])
-            from_stmts.concat(arm_tail_site(store, tail))
-        },
+fn arm_owners(store: NodeStore, catches: List<ExprId>) -> List<ArmOwner> {
+    flatten([catch_arm_owners(store, c) for c in catches])
+}
+
+fn catch_arm_owners(store: NodeStore, c: ExprId) -> List<ArmOwner> {
+    match store.expr(c) {
+        .Catch(_, _, _, values) -> flatten([some_list(arm_owner(store, c, arm)) for arm in values]),
         rest -> [],
     }
 }
 
-fn arm_tail_site(store: NodeStore, tail: ExprId?) -> List<ArmSite> {
-    let v? = tail else { return [] }
-    some_list(arm_expr_site(store, v))
+fn arm_owner(store: NodeStore, c: ExprId, arm: ExprId) -> ArmOwner? {
+    let sp? = store.expr_span(arm) else { return null }
+    ArmOwner { catch_at: c, span: sp }
 }
 
-fn arm_stmt_site(store: NodeStore, s: StmtId) -> List<ArmSite> {
-    match store.stmt(s) {
-        .Fail(v) -> [ArmSite.Fail(v)],
-        rest -> {
-            let v? = store.stmt_value(s) else { return [] }
-            some_list(arm_expr_site(store, v))
-        },
-    }
+/// The innermost catch whose arm's span contains `v`'s own span — null
+/// when `v` sits in none. A catch nested inside another's arm hands
+/// back the NEARER one, exactly as `decls_mint.av`'s `innermost` picks
+/// the smallest containing span among several candidates.
+fn innermost_catch(store: NodeStore, owners: List<ArmOwner>, v: ExprId) -> ExprId? {
+    let sp? = store.expr_span(v) else { return null }
+    let containing = [o for o in owners if o.span.lo <= sp.lo && sp.hi <= o.span.hi]
+    if containing.is_empty() { return null }
+    smallest_owner(containing).catch_at
 }
 
-fn arm_expr_site(store: NodeStore, e: ExprId) -> ArmSite? {
-    match store.expr(e) { .Propagate(v) -> ArmSite.Propagate(v), rest -> null }
+fn smallest_owner(owners: List<ArmOwner>) -> ArmOwner {
+    mut best = owners[0]
+    for o in owners { if o.span.hi - o.span.lo < best.span.hi - best.span.lo { best = o } }
+    best
 }
 
 /// M6 PREP: every `ErrorSite` one fn's body contains — the walk
 /// `fail_summary` already runs, reshaped as rows instead of a single
-/// folded `FailSummary`.
+/// folded `FailSummary`. `fail_sites`/`propagate_sites` already find a
+/// site at any nesting depth (they are index-range scans, blind to AST
+/// shape), so tagging each with `innermost_catch` is the whole of
+/// `within` — no separate arm walk, and so no double count either.
 fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: NodeStore, lo: int, hi: int) -> List<
     ErrorSite,
 > {
-    let catches = flatten(
-        [catch_error_sites(fs, decls, d, store, c) for c in catch_sites(store, lo, hi)],
-    )
-    // A site inside a catch arm's block is already counted above, `within`
-    // tagged — the whole-range scans below must not count it a second time
-    // untagged, which they would, since a re-raise's `fail`/`?` sits inside
-    // `d`'s own [lo, hi) range like any other statement.
-    let within_ids = [s.at for s in catches if s.within != null]
-    let fails = [fail_error_site(fs, d, v) for v in fail_sites(store, lo, hi) if !is_within(within_ids, v)]
+    let catches_at = catch_sites(store, lo, hi)
+    let owners = arm_owners(store, catches_at)
+    let fails = [fail_error_site(fs, d, v, innermost_catch(store, owners, v)) for v in fail_sites(store, lo, hi)]
     let props = flatten(
-        [some_list(propagate_error_site(fs, decls, d, v)) for v in propagate_sites(store, lo, hi) if !is_within(within_ids, v)],
+        [some_list(propagate_error_site(fs, decls, d, v, innermost_catch(store, owners, v))) for v in propagate_sites(store, lo, hi)],
     )
+    let catches = [catch_error_site(fs, decls, d, store, c, innermost_catch(store, owners, c)) for c in catches_at]
     fails.concat(props).concat(catches)
 }
 
-fn is_within(within_ids: List<ExprId>, v: ExprId) -> bool {
-    within_ids.any((w: ExprId) -> same_expr(w, v))
-}
-
-fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId) -> ErrorSite {
+fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId, within: ExprId?) -> ErrorSite {
     let c = fail_contribution(fs, v)
     ErrorSite {
         at: v,
         owner: d,
         how: SiteHow.Fail,
         callee: edge_callee(c),
-        within: null,
+        within: within,
         errors: some_list(direct_ty(c)),
     }
 }
 
-fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId) -> ErrorSite? {
+fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId, within: ExprId?) -> ErrorSite? {
     let c? = propagate_contribution(fs, decls, v) else { return null }
     ErrorSite {
         at: v,
         owner: d,
         how: SiteHow.Propagate,
         callee: edge_callee(c),
-        within: null,
+        within: within,
         errors: some_list(direct_ty(c)),
     }
 }
@@ -371,56 +371,27 @@ fn contribution_errors(c: Contribution?) -> List<TypeId> {
     some_list(direct_ty(k))
 }
 
-fn catch_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: NodeStore, c: ExprId) -> List<
-    ErrorSite,
-> {
+fn catch_error_site(
+    fs: FailSurvey,
+    decls: Decls,
+    d: DeclId,
+    store: NodeStore,
+    c: ExprId,
+    within: ExprId?,
+) -> ErrorSite {
     match store.expr(c) {
-        .Catch(subject, _, _, values) -> {
+        .Catch(subject, _, _, _) -> {
             let contribution = result_error_contribution(fs, decls, subject)
-            let row = ErrorSite {
+            ErrorSite {
                 at: c,
                 owner: d,
                 how: SiteHow.Catch,
                 callee: contribution_callee(contribution),
-                within: null,
+                within: within,
                 errors: contribution_errors(contribution),
             }
-            [row].concat(flatten([arm_error_sites(fs, decls, d, c, arm) for arm in values]))
         },
-        rest -> [],
-    }
-}
-
-fn arm_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, within: ExprId, arm: ExprId) -> List<
-    ErrorSite,
-> {
-    flatten([some_list(arm_site_row(fs, decls, d, within, s)) for s in arm_sites(fs.dt.store, arm)])
-}
-
-fn arm_site_row(fs: FailSurvey, decls: Decls, d: DeclId, within: ExprId, s: ArmSite) -> ErrorSite? {
-    match s {
-        .Fail(v) -> {
-            let c = fail_contribution(fs, v)
-            ErrorSite {
-                at: v,
-                owner: d,
-                how: SiteHow.Fail,
-                callee: edge_callee(c),
-                within: within,
-                errors: some_list(direct_ty(c)),
-            }
-        },
-        .Propagate(v) -> {
-            let c? = result_error_contribution(fs, decls, v) else { return null }
-            ErrorSite {
-                at: v,
-                owner: d,
-                how: SiteHow.Propagate,
-                callee: edge_callee(c),
-                within: within,
-                errors: some_list(direct_ty(c)),
-            }
-        },
+        rest -> ErrorSite { at: c, owner: d, how: SiteHow.Catch, callee: null, within: within, errors: [] },
     }
 }
 
