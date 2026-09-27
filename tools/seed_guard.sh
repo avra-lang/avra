@@ -1,10 +1,14 @@
 #!/bin/sh
-# THE COMMITTED SEED MUST NAME THE COMMITTED TREE. `make seed` records
-# the source set's hash beside the seed, and the fast path — a fresh
-# Sprite takes the seed whole, no build — is honest only while that hash
-# IS the tree's. A committed seed naming a different tree is the lie the
-# seed mechanism exists to prevent, and the fast path must never be
-# taken on it.
+# WHETHER THE COMMITTED SEED NAMES THE COMMITTED TREE. `make seed` records
+# the source set's hash beside the seed, and the Sprite fast path — the
+# seed taken whole, no build — is honest only while that hash IS the
+# tree's. `make sprite-check` compares the same hashes before taking it,
+# so a seed that LAGS the tree costs a fresh Sprite one build, never a
+# wrong compiler. What keeps the tree buildable is `seed-check`'s other
+# half, "the seed compiles HEAD", which stays a hard gate. So a lagging
+# seed is REPORTED here and refreshed on a cadence, not on every landing,
+# because a refresh per landing conflicts every other branch on the seed.
+# SEED_STRICT=1 restores the refusal, for a release.
 #
 # HEAD-VS-HEAD. When there is history, BOTH sides are read from HEAD, so
 # a dirty working tree never fires this: the guard asks one question,
@@ -32,12 +36,12 @@ else
 fi
 
 if [ "$want" != "$got" ]; then
-    echo "seed-guard: the committed seed names a DIFFERENT tree than $where"
+    echo "seed-guard: the committed seed LAGS $where — a fresh Sprite takes one build, not the fast path"
     echo "seed-guard:   tree $want"
     echo "seed-guard:   seed $got"
-    echo "seed-guard: a committed seed that is not this tree makes the fast path a lie"
-    echo "seed-guard: run \`make seed\` on a CLEAN tree, commit bootstrap/seed.ll"
-    echo "seed-guard: and bootstrap/seed.sources together, and re-gate"
-    exit 1
+    echo "seed-guard: \`make seed\` on a CLEAN tree restores the fast path (commit bootstrap/seed.ll"
+    echo "seed-guard: and bootstrap/seed.sources together); whether the seed still COMPILES HEAD is checked next"
+    if [ "${SEED_STRICT:-0}" = "1" ]; then exit 1; fi
+    exit 0
 fi
 echo "seed-guard: the seed IS $where ($want)"

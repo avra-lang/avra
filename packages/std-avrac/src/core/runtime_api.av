@@ -1092,6 +1092,72 @@ export once fn rt_sigs() -> List<RtSig> {
             reach: Reach.World,
             inert: true,
         },
+        // MEMORY-MAPPED FILES (runtime/avra_runtime.c): a read-only view
+        // of a file, handed back as an unmanaged handle — a raw `ptr`,
+        // never one of our boxes, since nothing here is refcounted.
+        // Unhosted and undeclared: nothing calls these yet.
+        //
+        // `avra_mmap_open` answers null for a missing, unreadable or
+        // non-regular path (the empty-value law: an empty FILE maps to
+        // a valid zero-length handle, never absent) and World, since a
+        // pack file is mutable process state, not a const's source.
+        RtSig {
+            name: "avra_mmap_open",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            boxes: [Box.Text],
+        },
+        // The mapping's byte length — a struct field, no crossing.
+        RtSig {
+            name: "avra_mmap_len",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        // The bytes from lo up to hi, copied into an owned Bytes box —
+        // never a pointer into the mapping itself (the header law).
+        RtSig {
+            name: "avra_mmap_slice",
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            answer: Box.Bytes,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        // Eight bytes at i, as one big-endian word — a dense field
+        // read with no box minted, `avra_str_word_at`'s reader over a
+        // mapping instead of a text header.
+        RtSig {
+            name: "avra_mmap_word_at",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        // Unmaps and frees the handle. World: an observable release of
+        // OS resources, the same reason `avra_puts` is even though it
+        // takes no text either.
+        RtSig {
+            name: "avra_mmap_close",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+        },
         // THE SCHEDULER (runtime/avra_fiber.c): tasks on fibers, switched
         // only where a task waits. A task's body is a closure box that
         // answers one managed box. Process state, so World: no

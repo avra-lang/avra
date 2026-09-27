@@ -1,0 +1,25 @@
+use @std.meta.{Type, Directive, Decls}
+
+/// Accessors whose seats wear the provider's own generic around the
+/// annotated type: `Rows<${t}>`, `List<${t}>`, `${t}?` and
+/// `Map<string, ${t}>`, each resolved where this template was written.
+export trait Stored {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: accessors(t) }]
+    }
+}
+
+fn accessors(t: Type) -> Decls {
+    let f = t.fields[0].name
+    quote {
+        impl ${t} {
+            static fn store(xs: List<${t}>) -> Rows<${t}> { Rows { held: xs } }
+            static fn by_a(rows: Rows<${t}>, v: string) -> ${t}? { rows.held.find((r) -> r.${f} == v) }
+            static fn keyed(rows: Rows<${t}>) -> Map<string, ${t}> {
+                mut m: Map<string, ${t}> = {}
+                for r in rows.held { m.set(r.${f}, r) }
+                m
+            }
+        }
+    }
+}

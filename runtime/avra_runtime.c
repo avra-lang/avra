@@ -2301,6 +2301,105 @@ int64_t avra_bytes_ieq_at(const char* b, int64_t lo, int64_t hi, const char* nee
     return 1;
 }
 
+// ── Memory-mapped files ──────────────────────────────────────────
+// A READ-ONLY VIEW OF A FILE, HANDED TO AVRA AS AN UNMANAGED HANDLE —
+// a small malloc'd record (base address, byte length), answered as a
+// raw `ptr` rather than one of our headered boxes, because nothing
+// here is reference-counted: `avra_rc_release` must never touch it.
+// Closing it is the caller's own act, as closing any other native
+// handle is.
+//
+// THE EMPTY CASE IS THE FIRST CASE: a zero-byte file maps to a valid
+// handle whose length is zero (`mmap` itself refuses a zero-length
+// request, so that call is skipped for it) — only a missing,
+// unreadable or non-regular path answers ABSENT, as the null pointer.
+// A path carrying a NUL is neither: `open` would resolve a PREFIX of
+// it and touch a different file than the one named, so it is REFUSED
+// (the two-hats law), checked by comparing the header's length
+// against `strlen` — the same fact `avra_str_crossing` reads, a scan
+// skipped for a pointer with no header, which by definition has no
+// interior NUL to find.
+//
+// A read never answers a pointer INTO the mapping: `avra_mmap_slice`
+// copies its range into an owned, headered Bytes box, and
+// `avra_mmap_word_at` reads eight bytes as one big-endian word —
+// `avra_str_word_at`'s reader, over a mapping's own bytes instead of
+// a text header. Bounds are the mapping's own recorded length, never
+// the mapped file's CURRENT size, so a file that changes size after
+// opening cannot move where this trap fires.
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+typedef struct {
+    const char* base;  // NULL only when len == 0
+    int64_t len;
+} AvraMmap;
+
+static AvraMmap* mmap_handle(void* h) {
+    if (h == NULL) avra_trap("a memory-mapped file's handle is null");
+    return (AvraMmap*)h;
+}
+
+// A read-only mapping of `path`, or null for a missing, unreadable or
+// non-regular file (a directory included — it is not a file this
+// door can map). Absent is the null pointer; nothing else answers it.
+void* avra_mmap_open(const char* path) {
+    Header* ph = hdr((void*)path);
+    if (ph != NULL && strlen(path) != (size_t)ph->len) avra_trap("a mapped path holds an embedded NUL");
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
+    const char* base = NULL;
+    if (st.st_size > 0) {
+        void* m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (m == MAP_FAILED) { close(fd); return NULL; }
+        base = (const char*)m;
+    }
+    close(fd);  // the mapping outlives the descriptor that made it
+    AvraMmap* out = (AvraMmap*)malloc(sizeof(AvraMmap));
+    if (out == NULL) avra_trap("out of memory mapping a file");
+    out->base = base;
+    out->len = (int64_t)st.st_size;
+    return out;
+}
+
+// The mapping's byte length.
+int64_t avra_mmap_len(void* h) {
+    return mmap_handle(h)->len;
+}
+
+// The bytes from lo up to hi, copied into an owned Bytes box —
+// `avra_bytes_slice`'s bound and its trap, over a mapping instead of
+// an already-boxed value.
+const char* avra_mmap_slice(void* h, int64_t lo, int64_t hi) {
+    AvraMmap* m = mmap_handle(h);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > m->len, 0)) trap_slice(lo, hi, m->len);
+    if (hi == lo) return bytes_box(0);
+    return bytes_owned(m->base + lo, (size_t)(hi - lo));
+}
+
+// Eight bytes at `i`, as one big-endian word.
+int64_t avra_mmap_word_at(void* h, int64_t i) {
+    AvraMmap* m = mmap_handle(h);
+    if (i < 0 || i + 8 > m->len) avra_trap_bounds(i < 0 ? i : m->len, m->len);
+    uint64_t w = 0;
+    for (int j = 0; j < 8; j++) w = (w << 8) | (unsigned char)m->base[i + j];
+    return (int64_t)w;
+}
+
+// Unmaps and frees the handle. Using `h`, or closing it, again after
+// this call is the caller's own defect — the same contract any other
+// native handle carries.
+void avra_mmap_close(void* h) {
+    AvraMmap* m = mmap_handle(h);
+    if (m->base != NULL) munmap((void*)m->base, (size_t)m->len);
+    free(m);
+}
+
 // ── Descriptors ──────────────────────────────────────────────────
 // THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
 // own C opens files and sockets and answers descriptors; what flows

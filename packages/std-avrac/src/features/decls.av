@@ -274,6 +274,11 @@ export type Decls = {
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: Cell<fn(FileId) -> void>,
+    /// A PACKAGE-SCOPED COLLECT GATHERS THE WHOLE PACKAGE: the hook the
+    /// workspace arms, admitting every file of the package a file stands
+    /// in — once per package, `scoped` records which.
+    ensure_package: Cell<fn(FileId) -> void>,
+    scoped: Cell<Map<string, bool>>,
     /// TWO LAYERS SHARED — see `module_files`.
     decl_ids: Cell<List<Cell<SideTable<DeclId?>>>>,
     /// TWO LAYERS SHARED — see `module_files`.
@@ -402,6 +407,11 @@ fn no_failures_ensure() {}
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
+/// Whether a scope gathers from every file of the owner's package.
+fn admits_package(scope: CollectScope) -> bool {
+    match scope { .Package -> true, .Self or .Closure or .UnknownScope(_) -> false }
+}
+
 // LICENSED fns.dead_parameter: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 
@@ -464,6 +474,8 @@ export fn new_decls() -> Decls {
         stores: Cell.new(no_stores),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
+        ensure_package: Cell.new(no_store),
+        scoped: map_cell(),
         decl_ids: Cell.new(no_decl_ids),
         file_decls: Cell.new(no_file_decls),
         generations: Cell.new(no_generations),
@@ -545,6 +557,7 @@ export fn kind_word(k: DeclKind) -> string {
         .Case -> "case",
         .Const -> "const",
         .Collect -> "collect",
+        .CollectEnum -> "collect_enum",
         .Builtin -> "builtin",
     }
 }
@@ -592,6 +605,8 @@ impl Decls {
             )
     }
 
+    /// A generated node's own name resolves at `origin` — the file
+    /// whose template wrote it, as an ordinary copied node's does.
     fn note_origins(
         f: FileId,
         exprs: List<ExprId>,
@@ -599,27 +614,59 @@ impl Decls {
         pats: List<PatId>,
         origin: FileId,
     ) {
+        self.mark_origin(f, exprs, stmts, pats, Origin.Written(origin))
+    }
+
+    /// A HOLED node's own name resolves HERE, but its span still
+    /// indexes `origin`'s text (`Rebuilder` never rewrites a holed
+    /// node's span) — the two questions `note_origins` answers alike
+    /// answered differently, so an error about it is homed at the
+    /// template without also resolving its name there.
+    fn note_spanned(
+        f: FileId,
+        exprs: List<ExprId>,
+        stmts: List<StmtId>,
+        pats: List<PatId>,
+        origin: FileId,
+    ) {
+        self.mark_origin(f, exprs, stmts, pats, Origin.Spanned(origin))
+    }
+
+    fn mark_origin(
+        f: FileId,
+        exprs: List<ExprId>,
+        stmts: List<StmtId>,
+        pats: List<PatId>,
+        mark: Origin,
+    ) {
         let known = self.origins.get()[f.index]
-        let wrote = Origin.Written(origin)
         for e in exprs {
             while known.exprs.get().length <= e.index { known.exprs.push(Origin.Here) }
-            known.exprs.set_at(e.index, wrote)
+            known.exprs.set_at(e.index, mark)
         }
         for s in stmts {
             while known.stmts.get().length <= s.index { known.stmts.push(Origin.Here) }
-            known.stmts.set_at(s.index, wrote)
+            known.stmts.set_at(s.index, mark)
         }
         for p in pats {
             while known.pats.get().length <= p.index { known.pats.push(Origin.Here) }
-            known.pats.set_at(p.index, wrote)
+            known.pats.set_at(p.index, mark)
         }
     }
 
-    /// The file a generated node was WRITTEN in, when it is another
-    /// than the node's own.
+    /// The file a generated node's own NAME resolves in, when it is
+    /// another than the node's own — null for a written node and for
+    /// a holed one alike, both resolving here.
     fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].exprs.get(), e.index) }
     fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].stmts.get(), s.index) }
     fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].pats.get(), p.index) }
+
+    /// The file whose TEXT a generated node's span indexes, when it
+    /// is another than this one — non-null for a written OR a holed
+    /// node alike, both keeping the template's own offset.
+    fn spanned_expr_of(f: FileId, e: ExprId) -> FileId? { self.origins.get()[f.index].spanned_at(self.origins.get()[f.index].exprs.get(), e.index) }
+    fn spanned_stmt_of(f: FileId, s: StmtId) -> FileId? { self.origins.get()[f.index].spanned_at(self.origins.get()[f.index].stmts.get(), s.index) }
+    fn spanned_pat_of(f: FileId, p: PatId) -> FileId? { self.origins.get()[f.index].spanned_at(self.origins.get()[f.index].pats.get(), p.index) }
 
     /// What a file's expansion refused, kept for its resolve to speak.
     /// IDEMPOTENT, BECAUSE THE EXPANSION RUNS TWICE BY DESIGN.
@@ -665,6 +712,19 @@ impl Decls {
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
+
+    /// A declaration's module fully qualified, as `use` spells it from
+    /// outside the package: a root module gains the root's own name.
+    fn qualified_module(d: DeclId) -> string {
+        let m = self.module_of(d)
+        if !package_of_module(m).is_empty() { return m }
+        let root = self.root_name.get()
+        when {
+            m.is_empty() -> root
+            root.is_empty() -> m
+            _ -> "${root}.${m}"
+        }
+    }
     /// A declaration's package — its module's, by `package_named`.
     fn package_of(d: DeclId) -> string { self.package_named(self.module_of(d)) }
 
@@ -687,9 +747,7 @@ impl Decls {
 
     /// Every declaration of `k` admitted so far — a fixture proving
     /// one (`FileInfo.test`) is not the program's own. Admission is
-    /// the caller's: a closure-scoped `collect` forces its own
-    /// package's files in first (`Workspace.collect_admit`,
-    /// `gathered`'s hook).
+    /// the caller's.
     fn decls_of_kind(k: DeclKind) -> List<Decl> {
         [d for d in self.decls.get() if d.kind == k && !self.file(d.file).test]
     }
@@ -928,6 +986,7 @@ impl Decls {
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
+        self.ensure_package.set(no_store)
         self.ensure_failures.set(no_failures_ensure)
         self.lifter.set(no_lifter)
     }
@@ -946,27 +1005,39 @@ impl Decls {
     /// workspace will run — or a library, read at run time only.
     fn is_program() -> bool { (self.ensure_entry.get())() }
 
-    /// Every declaration `word` names WITHIN `scope` — a member is
-    /// found the way any declaration is, by import reachability
-    /// (docs/2026_09_22_COLLECTIONS.md §5: contributions merge
-    /// exactly where imports merge). Read through the collect index,
-    /// so a second ask over the same word rescans nothing new; the
-    /// SCOPE FILTERS what is already reached, it never widens it —
-    /// `closure` answers everything the program links, `package`
-    /// narrows to the owner's own package, `self` to the owner's own
-    /// file. Filtered through `collectible`, never `decls_of_word`:
+    /// Every declaration `word` names WITHIN `scope`. `package` admits
+    /// every file of the owner's package first, so a member in a file
+    /// nothing imports is gathered all the same; `closure` gathers what
+    /// imports reach (docs/2026_09_22_COLLECTIONS.md §5: contributions
+    /// merge exactly where imports merge); `self` the owner's own file.
+    /// Read through the collect index, so a second ask over the same
+    /// word rescans nothing new. Filtered through `collectible`, never `decls_of_word`:
     /// that door excludes EVERY test-tree declaration, unconditionally,
     /// which would hide a program test's own `collect` from its own
     /// sibling declarations — the one caller that must see them.
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
+        self.admit_scope(scope, owner)
         [d for d in [self.decl(id) for id in self.indexed(word)] if self.collectible(d, scope, owner)]
     }
 
     /// `gathered`'s mark twin: every declaration wearing `@name`,
     /// filtered to `scope` the same way.
     fn gathered_by_mark(name: string, scope: CollectScope, owner: FileId) -> List<Decl> {
+        self.admit_scope(scope, owner)
         [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if self.collectible(d, scope, owner)]
     }
+
+    /// The files `scope` gathers from, admitted: a package's every file,
+    /// once per package. The rest gather what is already admitted.
+    fn admit_scope(scope: CollectScope, owner: FileId) {
+        let p = self.package_of_file(owner)
+        if !admits_package(scope) || self.scoped.get().get(p) != null { return }
+        self.scoped.put(p, true)
+        (self.ensure_package.get())(owner)
+    }
+
+    /// The workspace arms the package hook once.
+    fn arm_package(ensure: fn(FileId) -> void) { self.ensure_package.set(ensure) }
 
     /// Whether `owner`'s collect may gather `d`: `in_scope`'s law,
     /// and — for a declaration a package's own test tree holds — ONLY
@@ -1502,7 +1573,7 @@ impl Decls {
 
     fn is_trait(d: DeclId) -> bool { self.decl(d).kind is .Trait }
 
-    fn is_enum(d: DeclId) -> bool { self.decl(d).kind is .Enum }
+    fn is_enum(d: DeclId) -> bool { self.decl(d).kind is .Enum || self.decl(d).kind is .CollectEnum }
 
     fn is_named(d: DeclId) -> bool { self.decl(d).kind is .Named }
 
@@ -1638,7 +1709,7 @@ impl Decls {
     fn type_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Record or .Named or .Alias or .Enum or .Builtin or .Trait -> x.name,
+            .Record or .Named or .Alias or .Enum or .Builtin or .Trait or .CollectEnum -> x.name,
             .Fn or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
         }
     }
@@ -1650,7 +1721,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> null,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum -> null,
         }
     }
 
@@ -1733,7 +1804,7 @@ impl Decls {
             .Method -> "${x.owner}.${x.name}",
             .Default -> "${x.owner}.${x.name}\$default",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
-            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect -> x.name,
+            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect or .CollectEnum -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }
