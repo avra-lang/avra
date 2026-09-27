@@ -471,6 +471,19 @@ spec "collect's own laws" {
                 ),
             ) == "build init 0 1"
         }
+        then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
+            answered(
+                provided(
+                    "type Holder = { c: Command }\n" +
+                        "fn label(h: Holder) -> string { match h.c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "label(Holder { c: Command.build })",
+                    ui(),
+                ),
+            ) == "build"
+        }
         then "adding a member the match does not handle refuses — a new member breaks every match, on purpose" {
             refused_in(
                 provided(
@@ -497,7 +510,13 @@ spec "collect's own laws" {
                 "`Command` declares `run` more than once",
             )
         }
-        then "a member in another file of the SAME package still joins — package scope, no import needed" {
+        // NOT a claim that `package` scope needs no import on real disk —
+        // it does (a file nothing reaches is tree-shaken out, law 7); this
+        // harness's `memory_host` admits every given module regardless,
+        // so what this proves is narrower: once two modules ARE part of
+        // the program, `in package` gathers across the module boundary
+        // with no `use` between them, which `in self` could not.
+        then "a member in another module, already part of the program, joins under `in package` with no `use` between the two" {
             answered(
                 provided(
                     "collect enum Command = @tag in package by it.name\n" +
