@@ -85,7 +85,16 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{new_kernel, Key, Memo, new_memo}
+use query.{
+    new_kernel,
+    Key,
+    Memo,
+    new_memo,
+    Fixpoint,
+    new_fixpoint,
+    FixpointRefusal,
+    spoken as fixpoint_spoken,
+}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -301,6 +310,15 @@ export type Workspace = {
     closed: Cell<bool>,
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
+    /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
+    /// appended by `fail_summary` (failures.av) — the plain table
+    /// `@relation` will replace once M5 lands; the accessors built on
+    /// it (`raised_by`, `error_sites_by_callee`, `error_sites_within`)
+    /// keep their names across that swap.
+    error_sites: Cell<List<ErrorSite>>,
+    /// M6 PREP: the whole-program raised-error fixpoint, over
+    /// `error_sites` — `raised_by`'s own table.
+    raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -420,6 +438,10 @@ enum Family {
     /// a held declaration's sig — its module's stored record, one key
     /// per module, asked fresh every time `sig()` reads a held decl
     HeldSig
+    /// M6 PREP: `Fixpoint<List<TypeId>>`'s own dense per-member space
+    /// for the whole-program raised-error fixpoint — one key per
+    /// `_`-declared fn, touched only from inside its own `solve`.
+    Raised
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -458,6 +480,7 @@ fn ordinal(f: Family) -> int {
         .References -> 19,
         .Failures -> 20,
         .HeldSig -> 21,
+        .Raised -> 22,
     }
 }
 
@@ -486,6 +509,7 @@ fn families() -> List<Family> {
         Family.References,
         Family.Failures,
         Family.HeldSig,
+        Family.Raised,
     ]
     all
 }
@@ -616,6 +640,8 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
+        error_sites: list_cell(),
+        raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -780,6 +806,7 @@ impl Workspace {
             .References -> touch(self.references()),
             .Failures -> touch(self.failures()),
             .HeldSig -> touch(self.held_sig(module_at(arg))),
+            .Raised -> touch(self.raised_by(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }

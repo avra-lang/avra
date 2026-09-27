@@ -1,0 +1,88 @@
+// M6 PREP (avra-8sb5.57.9): `error_sites`, `raised_by` and `chain` over
+// a small real program — a concrete-typed fn that fails, and a
+// `_`-declared fn that catches it and re-raises.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace, ErrorSite}
+use compiler.host.{memory_host}
+use core.{DeclId}
+
+fn sites_workspace(main: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+fn decl_named(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.decls.get() if x.name == name][0]
+}
+
+fn source() -> string {
+    "fn a() -> Result<int, string> {\n" +
+        "    fail \"boom\"\n" +
+        "}\n" +
+        "fn other() -> Result<int, string> {\n" +
+        "    fail \"oops\"\n" +
+        "}\n" +
+        "fn b() -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        other()?\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n"
+}
+
+spec "compiler/failures — error_sites, raised_by and chain over a catch+re-raise" {
+    then "the program analyzes clean, and every site's owner is a real fn" {
+        let ws = sites_workspace(source())
+        let a = ws.analyze_file("/w/src/main.av")
+        let b = decl_named(ws, "b")
+        let _ = ws.raised_by(b)
+        a.clean() && !ws.error_sites.get().is_empty()
+    }
+    then "invariant: a site `within` a catch shares that catch's own owner" {
+        let ws = sites_workspace(source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let b = decl_named(ws, "b")
+        let _ = ws.raised_by(b)
+        let sites = ws.error_sites.get()
+        let catches = [s for s in sites if s.how is .Catch]
+        catches
+            .all(
+                (c: ErrorSite) -> ws
+                    .error_sites_within(c.at)
+                    .all((s: ErrorSite) -> s.owner.index == c.owner.index),
+            )
+    }
+    then "invariant: one owner per `at` — no two rows share a site" {
+        let ws = sites_workspace(source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let b = decl_named(ws, "b")
+        let _ = ws.raised_by(b)
+        let sites = ws.error_sites.get()
+        sites.all((s: ErrorSite) -> [t for t in sites if t.at.index == s.at.index].length == 1)
+    }
+    then "raised_by(b) includes the re-raised string error" {
+        let ws = sites_workspace(source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let b = decl_named(ws, "b")
+        !ws.raised_by(b).is_empty()
+    }
+    then "chain from the catch reaches the re-raise, and from there the re-raise has no further caller" {
+        let ws = sites_workspace(source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let b = decl_named(ws, "b")
+        let _ = ws.raised_by(b)
+        let catches = [s for s in ws.error_sites.get() if s.how is .Catch]
+        let c = catches[0]
+        let tree = ws.chain(c, [])
+        tree.next.length == 1 && tree.next[0].next.length == 0
+    }
+}
