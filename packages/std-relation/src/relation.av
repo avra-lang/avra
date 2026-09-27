@@ -49,7 +49,7 @@ export trait RelationRow {
     }
 
     /// The field marks this derive reads.
-    static fn marks(t: Type) -> List<string> { ["key", "unique", "index"] }
+    static fn marks(t: Type) -> List<string> { relation_marks }
 }
 
 /// `@relation` — the generated row members and the shape's contract,
@@ -63,7 +63,8 @@ export fn relation(t: Type) -> Declared {
 export fn relation_problems(t: Type) -> List<Diagnostic> {
     if !t.variants.is_empty() { return [not_a_record(t)] }
     let collisions = [name_collision(t, f) for f in content(t) if generated_members.contains(f.name)]
-    collisions.concat([kind_problem(t, f) for f in content(t) if !carried(f.kind)])
+    let marks = [mark_problem(t, f) for f in t.fields if !marks_ok(f)]
+    collisions.concat(marks).concat([kind_problem(t, f) for f in content(t) if !carried(f.kind)])
 }
 
 /// The shape's own fingerprint: every field's name, spelling and marks,
@@ -93,6 +94,29 @@ fn carried(k: Kind) -> bool {
         .List(elem) -> carried(elem),
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
+}
+
+/// The field marks of the vocabulary.
+const relation_marks: List<string> = ["key", "unique", "index"]
+
+/// Whether a field's marks are the vocabulary's, each worn once.
+fn marks_ok(f: Field) -> bool {
+    let names = [m.name for m in f.marks]
+    names.all(known_mark) && repeated(names).is_empty()
+}
+
+fn known_mark(name: string) -> bool { relation_marks.contains(name) }
+
+/// Each name that appears again after its first place.
+fn repeated(names: List<string>) -> List<string> {
+    [n for i, n in names if names.index_of(n) != i]
+}
+
+/// A field's first unknown mark, else its first repeated one.
+fn mark_problem(t: Type, f: Field) -> Diagnostic {
+    let names = [m.name for m in f.marks]
+    let unknown? = names.find((n: string) -> !known_mark(n)) else { return duplicate_mark(t, f, repeated(names).first() ?? "") }
+    unknown_mark(t, f, unknown)
 }
 
 /// The member names the derive writes onto the row's type.
@@ -224,6 +248,24 @@ fn fn_field(t: Type, f: Field) -> Diagnostic {
         f.at ?? t.at,
         "a relation's row is data, and `${t.name}.${f.name}` is a fn — a stored fn has no stable encoding, and one capturing the store is a cycle",
         "store the data the fn would compute, or compute it in a query",
+    )
+}
+
+fn unknown_mark(t: Type, f: Field, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "unknown_mark",
+        f.at ?? t.at,
+        "`@${mark}` on `${t.name}.${f.name}` is not a relation mark — the marks are `@key`, `@unique` and `@index`",
+        "spell the mark as one of them, or drop it",
+    )
+}
+
+fn duplicate_mark(t: Type, f: Field, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "duplicate_mark",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` wears `@${mark}` twice",
+        "write the mark once",
     )
 }
 
