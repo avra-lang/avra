@@ -261,11 +261,18 @@ export type Workspace = {
     folded_memo: Memo<DbRow>,
     analysis_memo: Memo<DbRow>,
     asks: Cell<List<Wanted>>,
+    /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
+    /// than scanning the whole table on every ask.
+    asks_index: Cell<Map<string, int>>,
     lowered_memo: Memo<DbRow>,
     lift_asks: Cell<List<LiftAsk>>,
+    /// `lift_asks`' own name -> index (`lifted`'s interning).
+    lift_asks_index: Cell<Map<string, int>>,
     lifted_memo: Memo<DbRow>,
     expanded_memo: Memo<DbRow>,
     settle_asks: Cell<List<SettleAsk>>,
+    /// `settle_asks`' own name -> index (`settle_id`'s interning).
+    settle_asks_index: Cell<Map<string, int>>,
     settled_memo: Memo<DbRow>,
     /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
     records: Records,
@@ -546,8 +553,11 @@ fn built(
 ) -> Workspace {
     let kernel = new_kernel()
     let no_asks: List<Wanted> = []
+    let no_asks_index: Map<string, int> = {}
     let no_lifts: List<LiftAsk> = []
+    let no_lift_index: Map<string, int> = {}
     let no_settles: List<SettleAsk> = []
+    let no_settle_index: Map<string, int> = {}
     let no_method_diags: List<MethodDiagIndex> = []
     let no_module_names_of: Map<string, string> = {}
     let no_files_of: Map<string, List<string>> = {}
@@ -583,10 +593,13 @@ fn built(
         analysis_memo: new_memo<DbRow>(kernel, ordinal(Family.Analysis)),
         lowered_memo: new_memo<DbRow>(kernel, ordinal(Family.Lowered)),
         asks: Cell.new(no_asks),
+        asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
+        lift_asks_index: Cell.new(no_lift_index),
         lifted_memo: new_memo<DbRow>(kernel, ordinal(Family.Lifted)),
         expanded_memo: new_memo<DbRow>(kernel, ordinal(Family.Expanded)),
         settle_asks: Cell.new(no_settles),
+        settle_asks_index: Cell.new(no_settle_index),
         settled_memo: new_memo<DbRow>(kernel, ordinal(Family.Settled)),
         records: new_records(),
         keys: new_keys(),

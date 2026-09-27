@@ -24,7 +24,7 @@
 //! carries the OLD rows and refuses the new package while compiling
 //! it, so those land in two commits — one that stops this door
 //! refusing, one that moves the shape and restores it.
-use core.{TypeId, DeclId, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
+use core.{TypeId, DeclId, DeclKind, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
 use @std.errors.{Loc}
 use @std.meta.{
     Param as MetaParam,
@@ -676,5 +676,18 @@ impl Decls {
     /// boundary's ONE spelling, read by typing and by the crossing.
     fn takes_a_decl(ty: TypeId) -> bool {
         match self.meta_seat(ty) { .Fn or .Type or .Named or .Trait -> true, .Other -> false }
+    }
+
+    /// Whether a meta seat takes THIS kind of declaration: `Fn` a fn,
+    /// `Type` a record or an enum, `Trait` a trait, `Named` any. Typing
+    /// refuses a mismatch and the crossing never builds one.
+    fn seat_takes(ty: TypeId, kind: DeclKind) -> bool {
+        match self.meta_seat(ty) {
+            .Named -> true,
+            .Fn -> kind is .Fn,
+            .Type -> kind is .Record || kind is .Enum,
+            .Trait -> kind is .Trait,
+            .Other -> false,
+        }
     }
 }

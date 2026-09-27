@@ -42,6 +42,22 @@ use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Unit, lower_unit}
 use compiler.memory.{memory}
 
+/// An interned table's answer for one name: already there, or freshly
+/// minted at `next` (the table's own current length) — registered in
+/// `index` here, so the caller's own miss branch need only push the
+/// item its list holds. The shared shape `spec_id`, `settle_id` and
+/// `lifted` each close over: a name -> index `Map` beside a `List`,
+/// looked up in O(1) rather than scanned.
+enum Interned { Found(int), Fresh(int) }
+
+fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned {
+    let known? = index.get().get(name) else {
+        index.put(name, next)
+        return Interned.Fresh(next)
+    }
+    Interned.Found(known)
+}
+
 impl Workspace {
     /// The method-table clashes spoken in a file. Build the index once:
     /// scanning every type for every file made this a whole-program
@@ -130,14 +146,16 @@ impl Workspace {
     /// A unit's identity: its symbol, interned in place in the ONE unit
     /// table. The table is a Cell the capture shares, so minting is a
     /// read of the receiver — the write a capture would hide is gone,
-    /// and with it the warning that spoke about it.
+    /// and with it the warning that spoke about it. `asks_index` names
+    /// the index by `w.name` — O(1), never a scan of the whole table.
     fn spec_id(w: Wanted) -> int {
-        let held = self.asks.get()
-        let known = [i for i, x in held if x.name == w.name]
-        if !known.is_empty() { return known[0] }
-        let id = held.length
-        self.asks.push(w)
-        id
+        match interned(self.asks_index, w.name, self.asks.get().length) {
+            .Found(id) -> id,
+            .Fresh(id) -> {
+                self.asks.push(w)
+                id
+            },
+        }
     }
 
     /// The program's extern fns by symbol, remembered for ONE SIZE of the
@@ -255,14 +273,17 @@ impl Workspace {
         l
     }
 
+    /// `settle_asks_index` names the index by its own settle symbol —
+    /// O(1), never a scan of the whole table.
     fn settle_id(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> int {
         let name = self.settle_symbol(f, root, seats)
-        let held = self.settle_asks.get()
-        let known = [i for i, a in held if a.name == name]
-        if !known.is_empty() { return known[0] }
-        let id = held.length
-        self.settle_asks.push(SettleAsk { file: f, root: root, name: name, seats: seats })
-        id
+        match interned(self.settle_asks_index, name, self.settle_asks.get().length) {
+            .Found(id) -> id,
+            .Fresh(id) -> {
+                self.settle_asks.push(SettleAsk { file: f, root: root, name: name, seats: seats })
+                id
+            },
+        }
     }
 
     /// A settlement's key: the const's statement or the expression,
@@ -383,14 +404,16 @@ impl Workspace {
         Unsettled,
     > {
         let name = "lift\$${f.index}\$${call.index}\$${d.index}"
-        let held = self.lift_asks.get()
-        let known = [i for i, a in held if a.name == name]
-        if !known.is_empty() {
-            self.lift_asks.set_at(known[0], lift_ask(name, d, f, s, args))
-            return self.lifted_at(known[0])
+        let id = match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
+            .Found(id) -> {
+                self.lift_asks.set_at(id, lift_ask(name, d, f, s, args))
+                id
+            },
+            .Fresh(id) -> {
+                self.lift_asks.push(lift_ask(name, d, f, s, args))
+                id
+            },
         }
-        let id = held.length
-        self.lift_asks.push(lift_ask(name, d, f, s, args))
         self.lifted_at(id)
     }
 
@@ -435,8 +458,13 @@ impl Workspace {
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
         if shape.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
+        // typing speaks a wrong argument count and a receiver its seat
+        // refuses; the lift runs only over what those laws accept
+        if args.length != shape.params.length - 1 { return .Err(Unsettled.Spoken) }
         mut heap = new_meta_heap()
-        mut vals: List<MetaVal> = [self.crossed_decl(f, s, shape.params.first()!, heap)]
+        let receiver = self.crossed_decl(f, s, shape.params.first()!, heap)
+        if receiver is .Absent { return .Err(Unsettled.Spoken) }
+        mut vals: List<MetaVal> = [receiver]
         for j, e in args {
             match self.crossed_arg(f, e, shape.params[j + 1], heap) {
                 .Ok(v) -> vals.push(v),
