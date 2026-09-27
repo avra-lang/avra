@@ -314,6 +314,40 @@ test_slot_stale_reclaim() {
     fi
 }
 
+# ══ THE CACHE SWEEP RUNS TWICE, AND THE SECOND RUN IS A CLEAN NO-OP ═══
+# land.sh moves every .avra-cache aside BEFORE the build (a compiler
+# print collision, avra-8sb5.57.24/.25) AND AGAIN between the test
+# suites and the keepers (avra test and avra check sharing a record
+# key, the same bug's other face). The second call must find nothing
+# left to move — the first already swept everything — and must not
+# treat an already-clean tree as a failure.
+test_caches_aside_twice() {
+    tree="$scratch/caches-twice"
+    rm -rf "$tree"
+    mkdir -p "$tree/packages/a/.avra-cache/rows" "$tree/packages/b/.avra-cache/rows"
+
+    if ! branch=x sh "$land" --call move_caches_aside "$tree" > "$scratch/caches-1.out" 2>&1; then
+        bad "caches-twice: the first sweep failed"
+    fi
+    left="$(find "$tree" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
+    if [ -z "$(printf '%s' "$left" | tr -d '[:space:]')" ]; then
+        ok "caches-twice: the first sweep moves every .avra-cache aside"
+    else
+        bad "caches-twice: a .avra-cache survived the first sweep: $left"
+    fi
+
+    if branch=x sh "$land" --call move_caches_aside "$tree" > "$scratch/caches-2.out" 2>&1; then
+        ok "caches-twice: a second sweep over an already-clean tree still exits clean"
+    else
+        bad "caches-twice: a second sweep over a clean tree failed"
+    fi
+    if grep -q "no .avra-cache" "$scratch/caches-2.out" 2>/dev/null; then
+        ok "caches-twice: the second sweep says there was nothing left to move"
+    else
+        bad "caches-twice: the second sweep did not say the tree was already clean"
+    fi
+}
+
 # ══ THE SEED COMMIT: MOVED IS COMMITTED, UNCHANGED IS A NO-OP ═══════
 test_commit_seed_if_moved() {
     d="$(git_repo seed-commit)"
@@ -395,6 +429,7 @@ test_merge_real_conflict
 test_affected_packages
 test_slot_limit
 test_slot_stale_reclaim
+test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
 

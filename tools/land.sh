@@ -360,6 +360,13 @@ run_pipeline() {
         return 1
     fi
 
+    # A SECOND sweep, between the test suites and the keepers: `avra
+    # test` (test files included) and `avra check` (without them)
+    # share a record key, so a check run after a test in the same
+    # tree traps — "index N is out of bounds" (avra-8sb5.57.24) — drop
+    # this once test and check records are keyed apart.
+    light "caches-aside-2$suffix" move_caches_aside "$branch_wt"
+
     heavy "idioms$suffix" sh -c "cd '$branch_wt' && make idioms"
     heavy "fmt-lossless$suffix" sh -c "cd '$branch_wt' && make fmt-lossless"
     heavy "cache-attacks$suffix" sh -c "cd '$branch_wt' && make cache-attacks"
