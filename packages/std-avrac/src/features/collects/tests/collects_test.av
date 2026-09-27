@@ -82,6 +82,35 @@ fn cross_package(import_orphan: bool) -> string? {
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
+/// A DEPENDENCY's own `collect in package`, its one member in a module
+/// nothing ever imports. `package` means every file of the package —
+/// as it does for the root, whose files are all analyzed — never the
+/// files something else happened to reach.
+fn package_scope_in_dependency() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+            "/w/src/main.av": "use @y.d.{count}\ncount()",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+            "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+            "/w/vendor/d/src/d.av": "use @x.c.{widget}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in package as Entry { name: it.name } by it.name\nexport fn count() -> int { xs.length }\n",
+            "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport widget orphaned { n -> null }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/c/avra.toml",
+        "/w/vendor/c/src/c.av",
+        "/w/vendor/d/avra.toml",
+        "/w/vendor/d/src/d.av",
+        "/w/vendor/d/src/orphan/orphan.av",
+    ]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
 /// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
 /// (§4.4): `@acme/parts` is always reached (`app` imports its
 /// `Widget`) and carries both an exported `Widget` and a PRIVATE
@@ -297,6 +326,9 @@ spec "collect's own laws" {
         }
         then "importing that module's own name collects its instance" {
             cross_package(true) == "1"
+        }
+        then "a dependency's `in package` collect gathers a module nothing imports" {
+            package_scope_in_dependency() == "1"
         }
     }
     given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
