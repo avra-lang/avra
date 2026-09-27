@@ -74,7 +74,7 @@ spec "language" {
             lang.check(new_source_file("app.av", "let a = 1\nlet = 3")) == expected &&
                 lang.check(new_source_file("<source>", "let a = 1")) == ""
         }
-        then "a layout fact read before a `mut` seat moves it is a named compiler defect, not a silently wrong mask (R11c, avra-8sb5.34.21)" {
+        then "a `mut` seat sealing a value enum's flat-record payload is found before the enum's layout is read, and the program checks clean (R11c, avra-8sb5.34.21)" {
             let lang = avra()
             let src = """type Small = { index: int }
 enum Tagged {
@@ -89,6 +89,26 @@ fn reads_tag(x: Tagged) -> int {
 }
 fn seal(mut s: Small) {
     s.index = 1
+}"""
+            lang.check(new_source_file("app.av", src)) == ""
+        }
+        then "L1's guard still stands where R11c's seal-finder does not look: an impl's mutating RECEIVER, not a `.Fn`'s own `mut` parameter — a layout fact read before that seal moves it is still a named compiler defect, never a silently wrong mask (avra-8sb5.34.30.1)" {
+            let lang = avra()
+            let src = """type Small = { index: int }
+enum Tagged {
+    A(Small)
+    B
+}
+fn reads_tag(x: Tagged) -> int {
+    match x {
+        .A(s) -> s.index,
+        .B -> 0,
+    }
+}
+impl Small {
+    mut fn bump() {
+        self.index = self.index + 1
+    }
 }"""
             lang.check(new_source_file("app.av", src)) == "error[language.defect]: `Small`'s flatness was read before a `mut` seat sealed it"
         }
