@@ -374,7 +374,7 @@ export fn phase_total(phases: List<Phase>, name: string) -> int {
 /// THE FAMILIES — the compiler's query vocabulary, in pipeline
 /// order. Keys by FileId (`Source` … `Resolved`, `Folded`,
 /// `Analysis`), ModuleId (`Namespace`), DeclId (`Sig`, `Methods`,
-/// `Typed`), unit (`Lowered`) or annotation call (`Lifted`). `ordinal` is the kernel's number
+/// `Typed`), unit (`Lowered`, `LiftLowered`) or annotation call (`Lifted`). `ordinal` is the kernel's number
 /// for each; `refetched` re-asks any of them — both exhaustive, so
 /// a new family cannot ship half-registered.
 enum Family {
@@ -396,6 +396,12 @@ enum Family {
     Manifest
     Receivers
     Expanded
+    /// A compile-time run's own units — a lift, an argument crossing,
+    /// a const's settlement — keyed the same way as `Lowered` but in
+    /// a SEPARATE space: the two never share a cache row, so a
+    /// symbol reached by both a comptime run and the real program
+    /// never has one context's answer stand in for the other's.
+    LiftLowered
     /// a file parsed under NO sublanguage words — what the block
     /// pre-scan reads of a provider, depending on its source alone
     Plain
@@ -452,6 +458,7 @@ fn ordinal(f: Family) -> int {
         .Failures -> 20,
         .HeldSig -> 21,
         .Raised -> 22,
+        .LiftLowered -> 23,
     }
 }
 
@@ -482,6 +489,7 @@ fn family_word(f: Family) -> string {
         .Failures -> "Failures",
         .HeldSig -> "HeldSig",
         .Raised -> "Raised",
+        .LiftLowered -> "LiftLowered",
     }
 }
 
@@ -524,6 +532,7 @@ fn family_at(i: int) -> Family {
         20 -> Family.Failures,
         21 -> Family.HeldSig,
         22 -> Family.Raised,
+        23 -> Family.LiftLowered,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
@@ -537,7 +546,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`
 /// and to `ordinal`; nothing below can notice the day only this
 /// number moves alone, or only stays still alone.
-const family_count: int = 23
+const family_count: int = 24
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -855,6 +864,7 @@ impl Workspace {
             .Analysis -> touch(self.analysis(file_at(arg))),
             .Settled -> touch(self.settled_at(arg)),
             .Lowered -> touch(self.lowered(arg)),
+            .LiftLowered -> touch(self.lift_lowered(arg)),
             .Lifted -> touch(self.lifted_at(arg)),
             .Manifest -> touch(self.manifest(arg)),
             .Receivers -> touch(self.receivers()),

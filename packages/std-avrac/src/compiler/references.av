@@ -54,6 +54,20 @@ impl Workspace {
     /// relation.
     fn references() -> int {
         if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
+        // THE RELATION SETTLES AFTER TYPING. Asked while a file is
+        // still typing, or while a compile-time run is lowering, its
+        // walk would read `folded`'s smaller recursive view for that
+        // file and settle the whole program's rows on an incomplete
+        // one — permanently, since a settled answer is never redone.
+        // `computed_consumed` no longer reaches here from a lift; a
+        // caller that still does is the defect this names.
+        if self.db.family_active(ordinal(Family.Typed)) ||
+            self.db.family_active(ordinal(Family.Folded)) ||
+            self.comptime_active() {
+            avra_trap(
+                "defect: the references relation settles after typing, and something asked for it while a file was still typing",
+            )
+        }
         let k = key(Family.References, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
