@@ -1,6 +1,7 @@
 //! The resolver's walk: the statement/expression arms of `impl
 //! ResolveCx`. The entry and the frame helpers live in resolve.av.
 use core.{StmtId, ExprId, FileId, Param, closest, some_list, DeclId, Binding, found_at, same_file}
+use core.{DeclKind}
 use core.{SeatMark}
 use diagnostics.{Diag, error_at, pointed, refusal}
 use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, remedy_for, nothing, Bound}
@@ -248,7 +249,14 @@ impl ResolveCx {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
-        // THE TWO-TIER SECOND LOOK, `use_call`'s twin: a struct
+        // A GENERATED TYPE, `use_call`'s generated-fn twin. Filtered to
+        // a type kind: a generated impl wears its target's name.
+        let gen: DeclId? = self.generated_named(name, origin)
+        if gen != null && self.is_type_kind(self.view.decls.decl(gen!).kind) {
+            self.bind_use(e, Binding.Decl(gen!))
+            return
+        }
+        // THE THIRD LOOK, `use_call`'s twin: a struct
         // literal a template CONSTRUCTS names the type it builds —
         // the file the code lands in, never the template's own, when
         // that file's own namespace does not know the name either.
@@ -285,6 +293,14 @@ impl ResolveCx {
                         names.type_suggestions(),
                     ),
             )
+    }
+
+    /// Whether a kind binds in the type namespace.
+    fn is_type_kind(kind: DeclKind) -> bool {
+        match kind {
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> true,
+            .Fn or .Const or .Collect or .Syntax or .Method or .Default or .Impl or .Main or .Case -> false,
+        }
     }
 
     /// This file's own type namespace, tried only when the read wears

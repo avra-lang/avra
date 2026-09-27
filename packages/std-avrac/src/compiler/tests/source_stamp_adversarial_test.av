@@ -1,0 +1,98 @@
+// avra-8sb5.57.19's cause: `Workspace.text_digest` (build.av) trusted a
+// durable size/time/inode "stamp" match to skip re-reading a SOURCE
+// file — the same shape `compiler_print`'s roll cache used for the
+// compiler's own binary (avra-8sb5.57.25). Attacked the same way: a
+// host whose `stamp` never moves, so the only question left is whether
+// the digest still reads the bytes. It did not, confirmed failing
+// against the pre-fix code; the durable stamp cache is gone now, so
+// every digest is read fresh and this suite proves that law directly.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{Host}
+use @std.io.{exists, read_text, write_text, list_dir, is_dir, make_dirs}
+use @std.path.{dir_of}
+use @std.time.{now_ns}
+
+/// A stamp that never changes, whatever the file — the same attack
+/// `compiler_print_adversarial_test.av` runs on the compiler's own
+/// print, aimed here at a source file's digest instead.
+fn fixed_stamp(_p: string) -> int? { 424242 }
+
+fn write_file_safe(p: string, t: string) -> string? {
+    let _ = make_dirs(dir_of(p))
+    match write_text(p, t) { .Ok(_) -> null, .Err(e) -> e.describe().message }
+}
+
+fn no_read_ahead(_files: int) {}
+
+/// A REAL disk host — `build_cache_root`'s store lives under `Store`,
+/// which reads and writes real files regardless of what host a
+/// `Workspace` was built with, so a memory host cannot stand in here
+/// the way it does for pure `Host.write`-backed state.
+fn real_disk_host() -> Host {
+    Host {
+        exists: (p: string) -> exists(p),
+        read: (p: string) -> read_text(p) catch "",
+        write: (p: string, t: string) -> write_file_safe(p, t),
+        list: (dir: string) -> list_dir(dir) catch [],
+        is_dir: (dir: string) -> is_dir(dir),
+        stamp: fixed_stamp,
+        reads_ahead: no_read_ahead,
+        cwd: "",
+    }
+}
+
+/// A scratch tree nothing has ever written to: nanosecond-unique, and
+/// under /tmp so `tree_root`'s walk finds no `avra.toml`/`.git` above
+/// it and stops at this exact directory — never a real package root.
+fn srcstamp_root(name: string) -> string {
+    let root = "/tmp/avra-srcstamp-test/${name}-${now_ns()}"
+    let _ = make_dirs(root)
+    root
+}
+
+fn srcstamp_workspace(root: string) -> Workspace {
+    new_workspace(real_disk_host(), root, avra())
+}
+
+spec "compiler/build — text_digest's durable stamp cache, attacked with a stamp that never moves" {
+    given "a source file edited between two workspaces, under an unmoving stamp" {
+        then "the digest still disagrees — an edit is never read as unchanged" {
+            let root = srcstamp_root("edit")
+            let path = "${root}/src/main.av"
+            let _ = write_file_safe(path, "fn a() { 1 }")
+            let ws1 = srcstamp_workspace(root)
+            let d1 = ws1.text_digest(path)
+            let _ = write_file_safe(path, "fn a() { 2, totally different body }")
+            let ws2 = srcstamp_workspace(root)
+            let d2 = ws2.text_digest(path)
+            d1 != d2
+        }
+        then "three successive edits at the same stamp are pairwise distinct" {
+            let root = srcstamp_root("edit3")
+            let path = "${root}/src/main.av"
+            let _ = write_file_safe(path, "v1")
+            let ws1 = srcstamp_workspace(root)
+            let d1 = ws1.text_digest(path)
+            let _ = write_file_safe(path, "v2, different")
+            let ws2 = srcstamp_workspace(root)
+            let d2 = ws2.text_digest(path)
+            let _ = write_file_safe(path, "v3, different again")
+            let ws3 = srcstamp_workspace(root)
+            let d3 = ws3.text_digest(path)
+            d1 != d2 && d2 != d3 && d1 != d3
+        }
+    }
+    given "an UNEDITED file, read twice under the same unmoving stamp" {
+        then "the digest still agrees — the cache is not being defeated wholesale" {
+            let root = srcstamp_root("stable")
+            let path = "${root}/src/main.av"
+            let _ = write_file_safe(path, "fn a() { 1 }")
+            let ws1 = srcstamp_workspace(root)
+            let d1 = ws1.text_digest(path)
+            let ws2 = srcstamp_workspace(root)
+            let d2 = ws2.text_digest(path)
+            d1 == d2
+        }
+    }
+}

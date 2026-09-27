@@ -45,6 +45,7 @@ use features.{
     declared_decl,
 }
 use compiler.{result_infers}
+use compiler.lower.{ordered_collect_members}
 use query.{traced}
 use @std.errors.{Loc}
 
@@ -110,6 +111,30 @@ impl TypeCx {
         let sig = EnumSig {
             names: [v.name.of for v in variants],
             payloads: [self.payload_types(s, v) for v in variants],
+        }
+        self.declare(s, DeclSig.Enum(sig))
+    }
+
+    /// A collect enum's table: every gathered member, in `by` order,
+    /// one payload-free variant each, named by the member's own
+    /// declaration name — `declare_enum_sig`'s twin, computed rather
+    /// than written. Duplicate names are left in the table as found;
+    /// `check_collect_enum` (features/collects/check.av) is where
+    /// that refuses, the same split `declare_enum_sig`/`check_enum_decl`
+    /// already keep.
+    fn declare_collect_enum(s: StmtId) {
+        let p? = self.view.store.collect_enum_parts(s) else { return }
+        let members = ordered_collect_members(
+            self.view.decls,
+            p.kind,
+            p.scope,
+            p.order,
+            self.view.file,
+        )
+        let no_payload: List<TypeId> = []
+        let sig = EnumSig {
+            names: [m.name for m in members],
+            payloads: [no_payload for m in members],
         }
         self.declare(s, DeclSig.Enum(sig))
     }
@@ -905,6 +930,7 @@ impl TypeCx {
             .Default -> self.declare_default(x),
             .Impl -> self.declare_impl_block(x.stmt),
             .Case -> self.declare_case(x),
+            .CollectEnum -> self.declare_collect_enum(x.stmt),
             // Const/Collect have no separate signature phase (typing settles
             // them directly); a builtin was signed at admission, from its row
             .Const or .Collect or .Trait or .Syntax or .Main or .Builtin -> nothing(),

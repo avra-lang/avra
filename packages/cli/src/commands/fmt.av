@@ -67,8 +67,10 @@ impl Runnable for FmtCmd {
 
 /// This compiler's answer, remembered against the file's OWN bytes —
 /// never the path, which a rename would falsely invalidate, and
-/// never mtime, which a checkout without one would falsely trust.
-fn canon_key(text: string) -> string { digest_of("fmt.canonical\n${text}") }
+/// never mtime, which a checkout without one would falsely trust —
+/// and against the compiler's OWN print, since "canonical" is this
+/// formatter's verdict and a later formatter's rules may disagree.
+fn canon_key(ws: Workspace, text: string) -> string { digest_of("fmt.canonical\n${ws.compiler_id()}\n${text}") }
 
 /// examined, differing (written, under `--write`), refused, which paths
 /// differed, and every phase either side of the run timed — folded
@@ -214,7 +216,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
     let src = ws.source(f)
     let source_ns = now_ns() - t0
     let t1 = now_ns()
-    let key = canon_key(src.text)
+    let key = canon_key(ws, src.text)
     let hit = ws.db.canon(store, key) != null
     let base = [
         Phase { name: "source", ns: source_ns },
@@ -255,7 +257,7 @@ fn written_one(
     match ws.write_checked_source(f) {
         .Ok(text) -> {
             let after = "${text}\n"
-            ws.db.insert_canon(store, canon_key(after), "")
+            ws.db.insert_canon(store, canon_key(ws, after), "")
             if after == before { return ended(Outcome.Canonical, base) }
             match write_text(path, after) {
                 .Ok(_) -> ended(Outcome.Differs, base),
