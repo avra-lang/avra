@@ -200,7 +200,7 @@ export fn own_name_at(store: NodeStore, at: At) -> string? {
             .Call(callee, _, _) -> callee.of,
             .MethodCall(_, name, _) or .Prop(_, name) -> name.of,
             // LICENSED compiler.one_body_arms: `name` is `Scoped` here, `Plain` above — an `or` arm cannot bind one name at two types
-            .Comp(_, _, name, _, _, _) -> name.of,
+            .Comp(_, clauses) -> comp_own_name(clauses),
             .StructLit(name, _, _) -> name.of,
             // a lambda's OWN name-bearing field is its ONE param's —
             // absent for zero, and the shallow fold's own length
@@ -246,6 +246,23 @@ fn first_param_name(params: List<Param>) -> string? {
 fn blanked_param_name(params: List<Param>) -> List<Param> {
     let p? = params.first() else { return params }
     [p with { name: Scoped("") }].concat(params.slice(1, params.length))
+}
+
+/// A comprehension's own name-bearing field: its FIRST head's binder
+/// — the one every later clause and the element read.
+fn comp_own_name(clauses: List<CompClause>) -> string? {
+    let head? = clauses.first() else { return null }
+    match head { .Head(_, name, _, _) -> name.of, .Filter(_) -> null }
+}
+
+/// `clauses` with its first head's name blanked — `comp_own_name`'s
+/// read is what this blanks.
+fn comp_blanked(clauses: List<CompClause>) -> List<CompClause> {
+    let head? = clauses.first() else { return clauses }
+    match head {
+        .Head(index, _, source, hi) -> [CompClause.Head(index, Scoped(""), source, hi)].concat(clauses.slice(1, clauses.length)),
+        .Filter(_) -> clauses,
+    }
 }
 
 /// A `Shape.TypedNode`'s own arity fold — the SAME fold a subject is
@@ -313,7 +330,7 @@ fn folded_expr(e: Expr, blank_name: bool, blank_type: bool, blank_run: bool) -> 
         .MethodCall(subject, name, args) -> Expr
             .MethodCall(subject, if blank_name { Plain("") } else { name }, if blank_run { [] } else { args }),
         .Prop(subject, name) -> Expr.Prop(subject, if blank_name { Plain("") } else { name }),
-        .Comp(elem, index, name, source, hi, cond) -> Expr.Comp(elem, index, if blank_name { Scoped("") } else { name }, source, hi, cond),
+        .Comp(elem, clauses) -> Expr.Comp(elem, if blank_name { comp_blanked(clauses) } else { clauses }),
         // BOTH lists blanked, never `fields` alone: a run among a
         // struct literal's fields spans `At.Field` kids, and each
         // one's own name rides `fields` — blind to its count, the
@@ -363,6 +380,30 @@ fn shallow_arms(arms: List<Arm>) -> int {
 /// its guard when it has one, then its value.
 fn kids_arms(arms: List<Arm>) -> List<At> {
     flatten([kids_of_arm(a) for a in arms])
+}
+
+/// A comprehension clause run's ARITY: each clause's own kind and,
+/// for a head, whether it names an index and a range — every id it
+/// carries is a CHILD, matched through `kids`, never folded here.
+fn shallow_comp_clauses(clauses: List<CompClause>) -> int {
+    fp_list([shallow_comp_clause(c) for c in clauses])
+}
+
+fn shallow_comp_clause(c: CompClause) -> int {
+    match c {
+        .Head(index, name, _, hi) -> fp(305, [fp_str(index?.of ?? ""), fp_str(name.of), flagged(hi != null)]),
+        .Filter(_) -> fp(306, []),
+    }
+}
+
+/// A comprehension clause run's children, in payload order: a head's
+/// source and range bound (when written), a filter's condition.
+fn kids_comp_clauses(clauses: List<CompClause>) -> List<At> {
+    flatten([kids_of_comp_clause(c) for c in clauses])
+}
+
+fn kids_of_comp_clause(c: CompClause) -> List<At> {
+    [At.Expr(k) for k in comp_clause_reach(c)]
 }
 
 fn kids_of_arm(a: Arm) -> List<At> {
