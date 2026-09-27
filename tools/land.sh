@@ -11,14 +11,17 @@
 #
 # `--dry-run` runs every step but the final fast-forward.
 #
-# THE LOCK covers LANDING alone, never an ordinary build — a directory
-# under /tmp, holder pid/branch/time inside, reclaimed the moment its
-# pid is dead, waited on with a message otherwise, so two landings
-# never interleave a merge, a rebuild and a fast-forward. `slot.sh` is
-# the OTHER limiter, machine-wide and finer: every heavy command this
-# script runs (a build, a test, `make idioms`) takes a slot first, so
-# a landing shares the machine with whatever else is building, rather
-# than owning it.
+# THE LOCK covers LANDING alone, never an ordinary build — a FIFO
+# TICKET QUEUE under /tmp, so contenders land in ARRIVAL order rather
+# than in whatever order a bare `mkdir` race happens to wake. Each
+# ticket carries its own holder's pid; one whose pid has died — a
+# crashed holder, or a waiter killed before its turn — is reclaimed by
+# whoever next scans past it, so a dead contender never blocks the
+# ones behind it. Two landings never interleave a merge, a rebuild
+# and a fast-forward. `slot.sh` is the OTHER limiter, machine-wide and
+# finer: every heavy command this script runs (a build, a test, `make
+# idioms`) takes a slot first, so a landing shares the machine with
+# whatever else is building, rather than owning it.
 #
 # EVERY HEAVY COMMAND'S LOG IS CAPPED (tools/capped.sh) so a runaway
 # does not fill the disk — the law `make avra`'s own 43 GB log paid
@@ -120,36 +123,89 @@ light() {
     echo "land: $name OK"
 }
 
-# ── THE LANDING LOCK ─────────────────────────────────────────────────
+# ── THE LANDING LOCK — A FIFO TICKET QUEUE ───────────────────────────
+# Landers are served in ARRIVAL order, not in whatever order the kernel
+# happens to wake a `mkdir` race in. Each contender takes a ticket
+# directory named by a number nobody has claimed yet (`mkdir` is the
+# atomic test, so two contenders racing the same number can never both
+# win it), writes its own pid inside, then waits until its own ticket
+# is the LOWEST one whose pid is still a live process. A ticket whose
+# pid has died — the holder crashed, or a waiter was killed before its
+# turn — is reclaimed by whoever next scans past it, so a dead
+# contender never blocks the ones behind it, however long ago it died.
 lock_dir="${AVRA_LAND_LOCK:-/tmp/avra-land.lock}"
-lock_held=0
+ticket=""
 
-acquire_lock() {
-    printed_wait=0
-    while :; do
-        if mkdir "$lock_dir" 2>/dev/null; then
-            {
-                echo "pid=$$"
-                echo "branch=$branch"
-                echo "time=$(date)"
-            } > "$lock_dir/info"
-            lock_held=1
-            return 0
+# The queue's own directory, made once.
+tickets_dir() { echo "$lock_dir/tickets"; }
+
+# Every ticket number waiting or holding, ascending, with a dead one's
+# directory removed on the way past it — so a caller scanning for the
+# lowest LIVE ticket cleans the queue as a side effect of asking.
+live_tickets() {
+    d="$(tickets_dir)"
+    for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
+        pid="$(cat "$d/$t/pid" 2>/dev/null)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$t"
+        elif [ -n "$pid" ]; then
+            echo "land: reclaiming a dead ticket ($t, pid $pid is not running)" >&2
+            rm -rf "$d/$t" 2>/dev/null
         fi
-        holder_pid="$(sed -n 's/^pid=//p' "$lock_dir/info" 2>/dev/null)"
-        if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then
-            echo "land: reclaiming a stale landing lock (pid $holder_pid is dead)"
-            rm -rf "$lock_dir"
-            continue
-        fi
-        if [ "$printed_wait" -eq 0 ]; then
-            echo "land: another landing holds the lock — waiting ($(tr '\n' ' ' < "$lock_dir/info" 2>/dev/null))"
-            printed_wait=1
-        fi
-        sleep 2
     done
 }
-release_lock() { [ "$lock_held" -eq 1 ] && rm -rf "$lock_dir" 2>/dev/null; }
+
+acquire_lock() {
+    d="$(tickets_dir)"
+    mkdir -p "$d" 2>/dev/null
+    n=1
+    while :; do
+        highest="$(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)"
+        [ -n "$highest" ] && [ "$highest" -ge "$n" ] && n=$((highest + 1))
+        if mkdir "$d/$n" 2>/dev/null; then
+            ticket="$n"
+            break
+        fi
+        n=$((n + 1))
+    done
+    {
+        echo "pid=$$"
+        echo "branch=$branch"
+        echo "time=$(date)"
+    } > "$d/$ticket/info"
+    echo "$$" > "$d/$ticket/pid"
+
+    printed_wait=0
+    while :; do
+        lowest="$(live_tickets | head -1)"
+        [ "$lowest" = "$ticket" ] && return 0
+        if [ "$printed_wait" -eq 0 ]; then
+            echo "land: ticket $ticket taken — waiting behind ticket $lowest"
+            printed_wait=1
+        fi
+        sleep 1
+    done
+}
+release_lock() { [ -n "$ticket" ] && rm -rf "$(tickets_dir)/$ticket" 2>/dev/null; }
+
+# ACQUIRE, HOLD UNTIL A SIGNAL FILE APPEARS (OR A TIMEOUT), RELEASE —
+# one process that stays alive for the whole hold, the shape a real
+# landing's lock hold has and a bare `--call acquire_lock` does not
+# (that process exits the instant it acquires, which is nobody
+# holding anything). Reachable only through `--call`; land_test.sh's
+# FIFO fixture is the one caller.
+hold_lock_for() {
+    signal="$1"
+    acquire_lock
+    echo "acquired ticket $ticket"
+    i=0
+    while [ ! -f "$signal" ] && [ "$i" -lt 300 ]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
+    release_lock
+    echo "released ticket $ticket"
+}
 
 # ── WORKTREE DISCOVERY ───────────────────────────────────────────────
 # Neither worktree is assumed to be the one land.sh runs from — a
@@ -192,6 +248,9 @@ merge_main_in() {
 }
 
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
+# A cache entry is not yet keyed by the compiler that wrote it, so a
+# newer compiler can decode an older one's (avra-8sb5.57.24/.25) —
+# drop this step once every entry carries the compiler print.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"

@@ -60,52 +60,82 @@ commit_all() {
     git -C "$repo" commit -q -m "$msg"
 }
 
-# ══ THE LANDING LOCK ══════════════════════════════════════════════════
-# ONE fixture, both halves: a genuinely LIVE holder makes a second
-# taker wait, and the moment that holder dies, the very same lock is
-# stale and the next taker reclaims it rather than waiting forever.
-test_lock() {
-    lockdir="$scratch/lock-test"
-    rm -rf "$lockdir"
-    sleep 30 &
-    holder_pid=$!
-    mkdir -p "$lockdir"
-    { echo "pid=$holder_pid"; echo "branch=holder"; echo "time=$(date)"; } > "$lockdir/info"
-
-    ( AVRA_LAND_LOCK="$lockdir" branch=contender sh "$land" --call acquire_lock ) \
-        > "$scratch/lock-contender.out" 2>&1 &
-    contender_pid=$!
-
-    sleep 1
-    if kill -0 "$contender_pid" 2>/dev/null; then
-        ok "lock: a contender waits behind a genuinely live holder"
-    else
-        bad "lock: a contender did not wait behind a live holder"
-    fi
-    if grep -q "waiting" "$scratch/lock-contender.out" 2>/dev/null; then
-        ok "lock: the waiting contender says so"
-    else
-        bad "lock: the waiting contender printed no wait message"
-    fi
-
-    kill -9 "$holder_pid" 2>/dev/null
-    wait "$holder_pid" 2>/dev/null
-
+# ══ THE LANDING LOCK: A FIFO TICKET QUEUE ═══════════════════════════
+# Three contenders, A then B then C, each acquired through
+# `hold_lock_for` (--call's composable acquire-hold-release, driven
+# by a signal file this fixture touches when it wants a holder to let
+# go). PLAIN FIFO: A acquires first, B and C wait behind it in
+# arrival order. THE STRESS CASE: B is killed WHILE WAITING (its
+# ticket outlives it, pid now dead) — C must not wait for a B that
+# will never come; the moment A releases, C's turn comes next.
+wait_for_line() {
+    # wait_for_line <file> <pattern> <tries>
     i=0
-    while [ "$i" -lt 40 ] && kill -0 "$contender_pid" 2>/dev/null; do
-        sleep 0.25
+    while [ "$i" -lt "$3" ]; do
+        grep -q "$2" "$1" 2>/dev/null && return 0
+        sleep 0.1
         i=$((i + 1))
     done
-    if kill -0 "$contender_pid" 2>/dev/null; then
-        bad "lock: a contender never reclaimed a lock whose holder died"
-        kill -9 "$contender_pid" 2>/dev/null
+    return 1
+}
+
+test_lock_fifo() {
+    lockdir="$scratch/lock-fifo"
+    rm -rf "$lockdir"
+    sig_a="$scratch/sig-a"
+    sig_c="$scratch/sig-c"
+    rm -f "$sig_a" "$sig_c"
+
+    ( AVRA_LAND_LOCK="$lockdir" branch=A sh "$land" --call hold_lock_for "$sig_a" ) \
+        > "$scratch/lock-a.out" 2>&1 &
+    a_pid=$!
+    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 50; then
+        bad "lock-fifo: A (first arrival) never acquired ticket 1"
     else
-        wait "$contender_pid" 2>/dev/null
-        if grep -q "reclaiming a stale" "$scratch/lock-contender.out" 2>/dev/null; then
-            ok "lock: a contender reclaims the lock once its holder is dead"
-        else
-            bad "lock: the contender proceeded without saying it reclaimed"
-        fi
+        ok "lock-fifo: A, arriving first, acquires ticket 1 immediately"
+    fi
+
+    ( AVRA_LAND_LOCK="$lockdir" branch=B sh "$land" --call hold_lock_for "$scratch/sig-b-never" ) \
+        > "$scratch/lock-b.out" 2>&1 &
+    b_pid=$!
+    if wait_for_line "$scratch/lock-b.out" "^acquired" 10; then
+        bad "lock-fifo: B acquired while A still holds the lock"
+    else
+        ok "lock-fifo: B waits behind A, as arrival order demands"
+    fi
+
+    # B dies WHILE WAITING — its ticket (2) is now nobody's.
+    kill -9 "$b_pid" 2>/dev/null
+    wait "$b_pid" 2>/dev/null
+
+    ( AVRA_LAND_LOCK="$lockdir" branch=C sh "$land" --call hold_lock_for "$sig_c" ) \
+        > "$scratch/lock-c.out" 2>&1 &
+    c_pid=$!
+    if wait_for_line "$scratch/lock-c.out" "^acquired" 10; then
+        bad "lock-fifo: C acquired before A released — order violated"
+    else
+        ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
+    fi
+
+    touch "$sig_a"
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 50; then
+        bad "lock-fifo: C never acquired ticket 3 after A released"
+    else
+        ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
+    fi
+    if grep -q "reclaiming a dead ticket" "$scratch/lock-c.out" 2>/dev/null; then
+        ok "lock-fifo: B's dead ticket is named as reclaimed"
+    else
+        bad "lock-fifo: nothing said B's dead ticket was reclaimed"
+    fi
+
+    touch "$sig_c"
+    wait "$c_pid" 2>/dev/null
+    wait "$a_pid" 2>/dev/null
+    if [ -d "$lockdir/tickets" ] && [ -n "$(ls "$lockdir/tickets" 2>/dev/null)" ]; then
+        bad "lock-fifo: a ticket was left behind after every holder released"
+    else
+        ok "lock-fifo: no ticket outlives its holder's release"
     fi
     rm -rf "$lockdir"
 }
@@ -359,7 +389,7 @@ test_try_ff() {
 }
 
 echo "=== land tooling fixtures ==="
-test_lock
+test_lock_fifo
 test_merge_seed_conflict
 test_merge_real_conflict
 test_affected_packages
