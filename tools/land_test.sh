@@ -275,43 +275,29 @@ test_affected_packages() {
     fi
 }
 
-# ══ run_checks: std-avrac, cli AND idioms RUN CONCURRENTLY ═══════════
-# A throwaway tree with a STUB `build/avra` and a STUB `Makefile`
-# (each just sleeps, so the fixture measures scheduling, never a real
-# build) — std-avrac, cli and a third, unnamed package are all
-# touched, so all three heavy jobs plus idioms are asked for.
-#
-# THE SIGNAL IS A TIMESTAMPED OVERLAP, NEVER A WALL-CLOCK THRESHOLD: a
-# shared machine's own load (another session's real build, this
-# machine has several) inflates absolute timing for reasons that have
-# nothing to do with run_checks, and a fixed "must finish under Ns"
-# bound is exactly the kind of check that flakes for the wrong reason.
-# Each stub instead appends its own "start <pkg> <epoch>" /
-# "end <pkg> <epoch>" line to a shared timeline file; the test asks
-# whether idioms STARTED before std-avrac (or cli) ENDED — true only
-# under genuine concurrency, whatever the machine's speed.
-test_run_checks_parallel() {
-    d="$(git_repo checks-parallel)"
+# ══ run_checks: std-avrac, cli AND idioms RUN ONE AT A TIME ═════════
+# SEQUENTIAL is the LAW here, not an optimization not yet made: two
+# avra processes compiling into one .avra-cache AT ONCE corrupt it
+# (avra-8sb5.57.41 — tried as a concurrent batch, both suites failed
+# to link with undefined av_ symbols). This fixture pins the opposite
+# property a concurrent version would have broken: std-avrac (or
+# cli), whichever runs first, must FULLY FINISH before idioms starts
+# — never an overlap, whatever the machine's speed. A throwaway tree
+# with a STUB `build/avra` and `Makefile` (each just sleeps and logs
+# a timestamped start/end line) makes this observable without a real
+# build.
+test_run_checks_sequential() {
+    d="$(git_repo checks-sequential)"
     write_pkg "$d" "std-avrac" "avrac"
     write_pkg "$d" "cli" ""
     write_pkg "$d" "other" ""
     mkdir -p "$d/build"
-    timeline="$scratch/checks-parallel-timeline"
-    # cli sleeps noticeably LONGER than std-avrac: both start at once
-    # (two free slots), so std-avrac frees its slot first and idioms
-    # (queued third) grabs it and runs WHILE cli is still going — a
-    # window wide enough that 1-second timestamp resolution cannot
-    # round it away. Equal durations left this flaky: the two often
-    # finished in the same rounded second, so idioms starting a beat
-    # after "both" looked identical to starting a beat after neither.
+    timeline="$scratch/checks-sequential-timeline"
     cat > "$d/build/avra" <<STUB
 #!/bin/sh
 pkg="\$(basename "\$2")"
 echo "start \$pkg \$(date +%s)" >> "$timeline"
-case "\$pkg" in
-    cli) sleep 3 ;;
-    *) sleep 1 ;;
-esac
+sleep 1
 echo "end \$pkg \$(date +%s)" >> "$timeline"
 if [ "\$pkg" = "\${FAIL_PKG:-}" ]; then
     echo "FAILED \$pkg"
@@ -329,35 +315,43 @@ STUB
     done
     commit_all "$d" "touch all three"
 
-    # An ISOLATED slots directory: the machine-wide default is shared
-    # with whatever else is really building right now.
-    slots="$scratch/checks-parallel-slots"
+    slots="$scratch/checks-sequential-slots"
     rm -rf "$slots"
     rm -f "$timeline"
 
     if AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
-        > "$scratch/checks-parallel.out" 2>&1; then
-        idioms_start="$(awk '$1=="start" && $2=="idioms" {print $3}' "$timeline")"
-        other_end="$(awk '$1=="end" && ($2=="std-avrac" || $2=="cli") {print $3}' "$timeline" | sort -n | tail -1)"
-        if [ -n "$idioms_start" ] && [ -n "$other_end" ] && [ "$idioms_start" -le "$other_end" ]; then
-            ok "run_checks: idioms started before std-avrac/cli finished — genuinely concurrent"
+        > "$scratch/checks-sequential.out" 2>&1; then
+        # Every "end" must precede the NEXT line's "start" — a total
+        # order, not just idioms-after-the-rest: nothing may overlap.
+        overlap=0
+        prev_end=""
+        while read -r kind pkg ts; do
+            case "$kind" in
+                start)
+                    if [ -n "$prev_end" ] && [ "$ts" -lt "$prev_end" ]; then overlap=1; fi
+                    ;;
+                end) prev_end="$ts" ;;
+            esac
+        done < "$timeline"
+        if [ "$overlap" -eq 0 ]; then
+            ok "run_checks: std-avrac/cli and idioms never overlap — strictly sequential"
         else
-            bad "run_checks: idioms started ($idioms_start) only after std-avrac/cli finished ($other_end) — looks serialized"
+            bad "run_checks: two steps overlapped — this must stay sequential (avra-8sb5.57.41)"
             cat "$timeline"
         fi
     else
         bad "run_checks: the all-passing case failed"
-        cat "$scratch/checks-parallel.out"
+        cat "$scratch/checks-sequential.out"
     fi
 
-    # Now make cli fail — the batch must fail closed and NAME cli.
+    # Now make cli fail — the run must fail closed and NAME cli.
     if FAIL_PKG=cli AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
-        > "$scratch/checks-parallel-fail.out" 2>&1; then
-        bad "run_checks: a failing package's test did not fail the batch"
+        > "$scratch/checks-sequential-fail.out" 2>&1; then
+        bad "run_checks: a failing package's test did not fail the run"
     else
-        ok "run_checks: a failing package's test fails the whole batch"
+        ok "run_checks: a failing package's test fails the whole run"
     fi
-    if grep -q "FAILED at 'test-cli" "$scratch/checks-parallel-fail.out" 2>/dev/null; then
+    if grep -q "FAILED at 'test-cli" "$scratch/checks-sequential-fail.out" 2>/dev/null; then
         ok "run_checks: the failure report names test-cli specifically"
     else
         bad "run_checks: the failure was not attributed to test-cli by name"
@@ -626,7 +620,7 @@ test_lock_fifo
 test_merge_seed_conflict
 test_merge_real_conflict
 test_affected_packages
-test_run_checks_parallel
+test_run_checks_sequential
 test_slot_limit
 test_slot_stale_reclaim
 test_caches_aside_twice

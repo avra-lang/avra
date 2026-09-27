@@ -122,40 +122,19 @@ heavy() {
     return "$st"
 }
 
-# `heavy`'s BACKGROUND half: starts the same capped, slotted command
-# but does not wait — called directly (never through a `$( … )`
-# capture, which would fork a subshell and re-parent the job the
-# instant that subshell exits, so a later `wait` on it would not be
-# this shell's own child any more). Sets the global `bg_pid`; the
-# caller reads it before starting the next background job.
-heavy_bg() {
-    name="$1"
-    shift
-    log="$(log_of "$name")"
-    echo "land: $name (background) …" >&2
-    sh "$tools_dir/capped.sh" "$log" 2000000 sh "$tools_dir/slot.sh" 2 "$@" &
-    bg_pid=$!
-}
-
-# `wait_heavy <name> <pid>` — the other half of `heavy_bg`: blocks for
-# that one job, reports and returns its real status the same way
-# `heavy` does for a foreground one. `st=$?` reads `wait`'s status on
-# the line right after it, never through an `if wait …; then … fi` —
-# witnessed answering 0 for a genuinely failed job when read that way
-# from inside a function.
-wait_heavy() {
-    name="$1"
-    pid="$2"
-    log="$(log_of "$name")"
-    wait "$pid"
-    st=$?
-    if [ "$st" -eq 0 ]; then
-        echo "land: $name OK" >&2
-        return 0
-    fi
-    fail_report "$name" "$st" "$log"
-    return "$st"
-}
+# THE BACKGROUND HALF (heavy_bg/wait_heavy) LIVED HERE ONCE, for
+# running several heavy steps at once — removed with the concurrent
+# checks that used it (avra-8sb5.57.41: two avra processes writing
+# one .avra-cache at once corrupt it). Kept as a note, not code, for
+# whoever parallelizes checks once concurrent writers are safe: a
+# BACKGROUNDED job must be started as a direct statement, never
+# through a `$( … )` capture (that forks a subshell and re-parents the
+# job the instant the subshell exits, so a later `wait` on it would
+# not be this shell's own child any more) — and reading its exit
+# status needs `st=$?` on the line RIGHT AFTER `wait`, never through
+# `if wait "$pid"; then … fi` (witnessed answering 0 for a genuinely
+# failed job when read that way from inside a function; `heavy`'s own
+# shape above was changed for the same reason).
 
 # A LIGHT STEP: quick git/file plumbing with its own control flow — no
 # loop, no unbounded output, so no cap and no slot. `body` is a shell
@@ -240,6 +219,21 @@ acquire_lock() {
     done
 }
 release_lock() { [ -n "$ticket" ] && rm -rf "$(tickets_dir)/$ticket" 2>/dev/null; }
+
+# A TRAP ON A SIGNAL RESUMES AFTER THE HANDLER, IT DOES NOT EXIT — a
+# `trap release_lock INT TERM` alone frees the ticket on Ctrl-C or a
+# kill, then the script carries straight on from wherever it was
+# interrupted (witnessed: a killed `--dry-run` had its ticket cleaned
+# up correctly and kept running anyway). INT/TERM need their own
+# handler that exits afterward, at the conventional 128+signal code.
+release_lock_and_exit() {
+    sig="$1"
+    release_lock
+    case "$sig" in
+        INT) exit 130 ;;
+        *) exit 143 ;;
+    esac
+}
 
 # ACQUIRE, HOLD UNTIL A SIGNAL FILE APPEARS (OR A TIMEOUT), RELEASE —
 # one process that stays alive for the whole hold, the shape a real
@@ -371,17 +365,12 @@ build_generation() {
 }
 
 # ── AFFECTED-PACKAGE TESTS ─────────────────────────────────────────────
-# THE AFFECTED PACKAGES' TESTS, TOGETHER WITH `make idioms` —
-# CONCURRENT, since a package's test run and idioms' own whole-tree
-# check are both READS of the same built tree, and reading needs no
-# exclusion from another read. std-avrac's and cli's own suites join
-# idioms in that first concurrent batch by name (the two heaviest,
-# and the compiler's own two homes); every OTHER affected package's
-# suite follows the same shape but is not named ahead of time, so it
-# runs after — still through `heavy`, still slotted, just not
-# started in the same breath as the named three. Every background job
-# still counts against tools/slot.sh's own machine-wide limit, so
-# "concurrent" here means "not serialized by land.sh", not "unbounded".
+# THE AFFECTED PACKAGES' TESTS, TOGETHER WITH `make idioms` — ALL
+# SEQUENTIAL: two avra processes compiling into one .avra-cache AT
+# ONCE corrupt it (avra-8sb5.57.41 — tried as a concurrent batch here
+# first, and both suites failed to link with undefined av_ symbols).
+# Parallelize once concurrent writers into one store are safe; until
+# then every affected package's suite runs one at a time, then idioms.
 run_checks() {
     wt="$1"
     base_sha="$2"
@@ -389,34 +378,11 @@ run_checks() {
     suffix="$4"
     affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt")"
 
-    named_pids=""
-    named_names=""
-    other=""
-    for pkg in $affected; do
-        case "$pkg" in
-            std-avrac|cli)
-                heavy_bg "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
-                named_pids="$named_pids $bg_pid"
-                named_names="$named_names test-$pkg$suffix"
-                ;;
-            *) other="$other $pkg" ;;
-        esac
-    done
-    heavy_bg "idioms$suffix" sh -c "cd '$wt' && make idioms"
-    named_pids="$named_pids $bg_pid"
-    named_names="$named_names idioms$suffix"
-
     fails=0
-    set -- $named_names
-    for pid in $named_pids; do
-        job="$1"
-        shift
-        wait_heavy "$job" "$pid" || fails=1
-    done
-
-    for pkg in $other; do
+    for pkg in $affected; do
         heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg" || fails=1
     done
+    heavy "idioms$suffix" sh -c "cd '$wt' && make idioms" || fails=1
 
     [ "$fails" -eq 0 ]
 }
@@ -622,7 +588,9 @@ main_batch() {
     branches="$*"
     branch="batch($*)"
 
-    trap release_lock EXIT INT TERM
+    trap release_lock EXIT
+    trap 'release_lock_and_exit INT' INT
+    trap 'release_lock_and_exit TERM' TERM
     acquire_lock
 
     main_wt="$(worktree_for_branch main)"
@@ -690,7 +658,9 @@ main() {
     fi
     branch="${1:-}"
 
-    trap release_lock EXIT INT TERM
+    trap release_lock EXIT
+    trap 'release_lock_and_exit INT' INT
+    trap 'release_lock_and_exit TERM' TERM
     acquire_lock
 
     main_wt="$(worktree_for_branch main)"
