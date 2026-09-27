@@ -4,7 +4,7 @@
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite}
 use compiler.host.{memory_host}
-use core.{DeclId}
+use core.{DeclId, same_decl, same_expr}
 
 fn sites_workspace(main: string) -> Workspace {
     new_workspace(
@@ -58,7 +58,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
             .all(
                 (c: ErrorSite) -> ws
                     .error_sites_within(c.at)
-                    .all((s: ErrorSite) -> s.owner.index == c.owner.index),
+                    .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
             )
     }
     then "invariant: one owner per `at` — no two rows share a site" {
@@ -67,7 +67,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
         let sites = ws.error_sites.get()
-        sites.all((s: ErrorSite) -> [t for t in sites if t.at.index == s.at.index].length == 1)
+        sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
     then "raised_by(b) includes the re-raised string error" {
         let ws = sites_workspace(source())
@@ -84,5 +84,115 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let c = catches[0]
         let tree = ws.chain(c, [])
         tree.next.length == 1 && tree.next[0].next.length == 0
+    }
+}
+
+// A re-raise nested inside further control flow within the arm — an
+// `if`, a `match` — and a catch whose own arm holds another catch.
+// `within` is source-span containment (`innermost_catch`), never a
+// direct-statement scan, so a site at any depth inside the arm is
+// found the same way a shallow one is.
+fn nested_source() -> string {
+    "fn a() -> Result<int, string> {\n" +
+        "    fail \"boom\"\n" +
+        "}\n" +
+        "fn other() -> Result<int, string> {\n" +
+        "    fail \"oops\"\n" +
+        "}\n" +
+        "fn via_if(n: int) -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        if n > 0 {\n" +
+        "            other()?\n" +
+        "        } else {\n" +
+        "            0\n" +
+        "        }\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n" +
+        "fn via_match(n: int) -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        match n {\n" +
+        "            0 -> other()?,\n" +
+        "            rest -> 5,\n" +
+        "        }\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n" +
+        "fn via_nested_catch() -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        other() catch e2 -> {\n" +
+        "            e2.length\n" +
+        "        }\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n"
+}
+
+fn outer_catch_of(ws: Workspace, owner: DeclId) -> ErrorSite {
+    [s for s in ws.error_sites.get() if s.how is .Catch && same_decl(s.owner, owner) && s.within == null][0]
+}
+
+spec "compiler/failures — a re-raise nested inside further control flow within the arm" {
+    then "a re-raise inside an `if` inside the arm is found, `within` the catch" {
+        let ws = sites_workspace(nested_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "via_if")
+        let _ = ws.raised_by(f)
+        let c = outer_catch_of(ws, f)
+        let inside = ws.error_sites_within(c.at)
+        inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
+    }
+    then "a re-raise inside a `match` inside the arm is found, `within` the catch" {
+        let ws = sites_workspace(nested_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "via_match")
+        let _ = ws.raised_by(f)
+        let c = outer_catch_of(ws, f)
+        let inside = ws.error_sites_within(c.at)
+        inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
+    }
+    then "a catch nested in a catch's arm is `within` the outer catch, and chain descends into it" {
+        let ws = sites_workspace(nested_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "via_nested_catch")
+        let _ = ws.raised_by(f)
+        let outer = outer_catch_of(ws, f)
+        let inside = ws.error_sites_within(outer.at)
+        let tree = ws.chain(outer, [])
+        inside.length == 1 &&
+            inside[0].how is .Catch &&
+            tree.next.length == 1 &&
+            tree.next[0].site.how is .Catch &&
+            tree.next[0].next.length == 0
+    }
+    then "every site's `within` (nested or not) still shares that catch's own owner" {
+        let ws = sites_workspace(nested_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let vf = decl_named(ws, "via_if")
+        let vm = decl_named(ws, "via_match")
+        let vn = decl_named(ws, "via_nested_catch")
+        let _ = ws.raised_by(vf)
+        let _ = ws.raised_by(vm)
+        let _ = ws.raised_by(vn)
+        let sites = ws.error_sites.get()
+        let catches = [s for s in sites if s.how is .Catch]
+        catches
+            .all(
+                (c: ErrorSite) -> ws
+                    .error_sites_within(c.at)
+                    .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
+            )
+    }
+    then "one owner per `at` still holds across every nested shape" {
+        let ws = sites_workspace(nested_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let vf = decl_named(ws, "via_if")
+        let vm = decl_named(ws, "via_match")
+        let vn = decl_named(ws, "via_nested_catch")
+        let _ = ws.raised_by(vf)
+        let _ = ws.raised_by(vm)
+        let _ = ws.raised_by(vn)
+        let sites = ws.error_sites.get()
+        sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
 }
