@@ -61,6 +61,7 @@ export fn relation(t: Type) -> Declared {
 /// Every way a declaration breaks the relation law, each spoken at the
 /// field or type that breaks it.
 export fn relation_problems(t: Type) -> List<Diagnostic> {
+    if t.module.is_empty() { return [no_module(t)] }
     if !t.variants.is_empty() { return [not_a_record(t)] }
     let collisions = [name_collision(t, f) for f in content(t) if generated_members.contains(f.name)]
     let marks = [mark_problem(t, f) for f in t.fields if !marks_ok(f)]
@@ -71,7 +72,7 @@ export fn relation_problems(t: Type) -> List<Diagnostic> {
 /// its own name — two modules may each declare a same-named relation,
 /// and neither shares the other's seed or record.
 export fn stable_name(t: Type) -> string {
-    if t.module.is_empty() { t.name } else { "${t.module}.${t.name}" }
+    "${t.module}.${t.name}"
 }
 
 /// The shape's own fingerprint: every field's name, spelling and marks,
@@ -230,6 +231,15 @@ fn write_each(k: Kind) -> Code {
 }
 
 // ── Voices ──
+
+fn no_module(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "no_module",
+        t.at,
+        "a relation is named by its declaring module, and the compiler handed `${t.name}` none — it predates qualified relation names",
+        "build this package with a compiler that writes a declaration's module",
+    )
+}
 
 fn not_a_record(t: Type) -> Diagnostic {
     refuse_as_at(
