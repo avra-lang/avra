@@ -47,8 +47,7 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     let key = record_key(ws, m)
     let known = ws.records.record_texts.get().get(key)
     if known != null { return known! }
-    mut cache = ws.db
-    let text = cache.sig(store, key) ?? ""
+    let text = ws.db.sig(store, key) ?? ""
     ws.records.record_texts.put(key, text)
     if text != "" { ws.records.record_lines.put(key, text.split("\n")) }
     text
@@ -497,13 +496,12 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
 // LICENSED compiler.free_state_verb: THE RECORD STEP — a workspace, a store and a module list in, the records written.
 export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>) {
     mut seen_moved = false
-    mut cache = ws.db
     for m in modules {
         let prior = record_cached(ws, store, m)
         let made = ws.record_of(store, m)
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
-            cache.insert_sig(store, record_key(ws, m), made)
+            ws.db.insert_sig(store, record_key(ws, m), made)
             record_known(ws, m, made)
             if seen_part(made) != seen_part(prior) { seen_moved = true }
         }

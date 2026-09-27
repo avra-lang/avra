@@ -51,7 +51,17 @@
 //! warnings are already-serialized text by the time either reaches
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
-use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape, DeclId, TypeId}
+use core.{
+    digest_of,
+    joined,
+    sorted_texts,
+    flatten,
+    wire_escape,
+    wire_unescape,
+    DeclId,
+    TypeId,
+    map_cell,
+}
 use query.{Kernel, Key, Verdict as KernelVerdict, new_kernel}
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest}
@@ -475,10 +485,13 @@ fn lifted_of(r: DbRow) -> LiftResult {
 /// One `Workspace`'s rows, in memory, plus the `Kernel` handle every
 /// dense family's `Memo<DbRow>` was built over — held, not merged, so
 /// `Workspace.db` reads as one type while `query/` still exports the
-/// only `Kernel` there is.
-export type Db = { kernel: Kernel, rows: Map<string, DbRow> }
+/// only `Kernel` there is. `rows` is a `Cell`, an IDENTITY: `Db` is a
+/// struct a caller may hold in a fresh local, but every copy still
+/// writes the same table, so no caller reads a fork of the cache it
+/// just inserted into.
+export type Db = { kernel: Kernel, rows: Cell<Map<string, DbRow>> }
 
-export fn new_db(kernel: Kernel) -> Db { Db { kernel: kernel, rows: {} } }
+export fn new_db(kernel: Kernel) -> Db { Db { kernel: kernel, rows: map_cell() } }
 
 /// A `Db` for a caller with no `Workspace` to read one from — the
 /// docs fast path (`avra docs <name>`) answers from the durable store
@@ -499,17 +512,17 @@ impl Db {
     /// nothing.
     fn get(store: Store, kind: DbKind, name: string) -> DbRow? {
         let k = index_key(kind, name)
-        let hit: DbRow? = self.rows.get(k)
+        let hit: DbRow? = self.rows.get().get(k)
         if hit != null { return hit }
         let found? = self.recalled(store, kind, name) else { return null }
-        self.rows.set(k, found)
+        self.rows.put(k, found)
         found
     }
 
     /// A row, remembered for the rest of this process AND for every
     /// process after it.
     fn insert(store: Store, row: DbRow) {
-        self.rows.set(index_key(row.kind(), row.key()), row)
+        self.rows.put(index_key(row.kind(), row.key()), row)
         let _ = store.keep(Stored.Rows, durable_key(row.kind(), row.key()), encoded(row), [])
     }
 
