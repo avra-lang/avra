@@ -159,25 +159,27 @@ fn unnamed_print() -> string {
     "unnamed-${now_ns()}-${n}"
 }
 
-/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, kept on the
-/// tree's ROLL beside the binary's stamp, so an unmoved compiler is not read to
-/// be named. The roll lists the stores kept, newest last.
+/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, hashed FRESH
+/// every ask. A STAMP-KEYED SHORTCUT STOOD HERE ONCE, trusting a size/time/inode
+/// match to skip the hash — the `compiler_id()` memoization already pays that
+/// hash at most once a workspace, and the shortcut bought a few milliseconds
+/// against a law it could not keep: a rebuilt binary at the SAME path can land
+/// on a stamp the roll already holds (an adversarial host proves it outright,
+/// and the field's own "index N is out of bounds" traps are what a live
+/// two-generation rebuild produces when this exact door lies). A stamp match
+/// is a claim about the bytes, never the bytes; only the digest is. The roll
+/// still lists the stores kept, newest last, so `rolled`'s sweep still knows
+/// what to keep.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its compiler's print out.
 fn compiler_print(ws: Workspace) -> string {
     let at? = ws.host.compiler else { return unnamed_print() }
     let roll = joined_path(stores_dir(ws), "compilers")
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
-    // a binary that just moved has no stamp: it is read, and its line matches no later ask
-    let stamp: int? = ws.host.stamp(at)
-    let mark = if stamp == null { "" } else { "${stamp!}" }
-    let known: string? = if stamp == null { null } else { lines.find(it.ends_with("\t${at}\t${mark}")) }
-    if known != null && lines.last() == known { return print_of(known!) }
-    let found: string? = if known != null { print_of(known!) } else { digest_of_binary(at) }
-    let print? = found else { return unnamed_print() }
+    let print? = digest_of_binary(at) else { return unnamed_print() }
     rolled(
         ws,
         roll,
-        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}\t${mark}"]),
+        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}"]),
     )
     print
 }

@@ -23,6 +23,11 @@ fn adv_binary(name: string, bytes: string) -> string {
     path
 }
 
+/// A stamp that never changes, whatever the file — attacks the roll's
+/// own cache-hit shortcut directly: does it ever trust a stamp match
+/// without checking whether the BYTES it names actually still agree?
+fn same_stamp_always(_p: string) -> int? { 999999 }
+
 fn adv_workspace(binary: string?) -> Workspace {
     new_workspace(
         memory_host(
@@ -93,6 +98,45 @@ spec "compiler/build — compiler_id under degenerate and hostile inputs" {
             // file stand in for `anew()`'s fresh Keys: both must still
             // agree, since nothing about the compiler changed between them
             build_cache_root(first) == build_cache_root(second)
+        }
+    }
+    given "the roll's own stamp-based shortcut, attacked directly — a stamp that never changes" {
+        then "two DIFFERENT binary contents at the SAME path still disagree, even though the stamp never moves" {
+            let dir = adv_pkg_named("stamp-collision")
+            let path = "${dir}/binary"
+            let _ = write_text(path, "generation one")
+            let host = memory_host(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "fn a() { 1 }\n",
+                },
+                ["/w/avra.toml", "/w/src/main.av"],
+            ) with { compiler: path, stamp: same_stamp_always }
+            // the SAME host (its roll file lives in its own in-memory table)
+            // asked twice — a rebuild that lands at the same stamp must not
+            // let the second ask reuse the first's cached print
+            let a = new_workspace(host, "/w", avra()).compiler_id()
+            let _ = write_text(path, "generation two, a longer and very different body")
+            let b = new_workspace(host, "/w", avra()).compiler_id()
+            a != b
+        }
+        then "three rebuilds in a row at the same stamp are pairwise distinct, not just each new one from its predecessor" {
+            let dir = adv_pkg_named("stamp-collision-3")
+            let path = "${dir}/binary"
+            let _ = write_text(path, "v1")
+            let host = memory_host(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "fn a() { 1 }\n",
+                },
+                ["/w/avra.toml", "/w/src/main.av"],
+            ) with { compiler: path, stamp: same_stamp_always }
+            let a = new_workspace(host, "/w", avra()).compiler_id()
+            let _ = write_text(path, "v2, different")
+            let b = new_workspace(host, "/w", avra()).compiler_id()
+            let _ = write_text(path, "v3, different again")
+            let c = new_workspace(host, "/w", avra()).compiler_id()
+            a != b && b != c && a != c
         }
     }
 }
