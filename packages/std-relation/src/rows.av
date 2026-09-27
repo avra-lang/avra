@@ -1,0 +1,172 @@
+//! ROWS — a relation's rows in memory: a dense id per row, an index per
+//! marked field, and every bucket's hash kept current on each write.
+//!
+//! An IDENTITY: every table is a `Cell`, so every holder writes the one
+//! store and no seat needs `mut`. A read answers the dense BUCKET id it
+//! touched, so the store's owner records that dependency itself; a store
+//! never holds a hook reaching back to its owner, which would be a cycle.
+//!
+//! Ids never move: a removed row leaves a tombstone its id keeps, and no
+//! bucket lists one. Compacting ids is the durable write's business,
+//! where ids are free to move anyway.
+//!
+//! A bucket's hash is the wrapping sum of its rows' FINISHED stable
+//! hashes, updated on every file and unfile — order-free, a duplicate
+//! counting twice, and no swap between rows' fields able to cancel.
+
+/// Where a row files under one index: its text, or a dense slot (a
+/// bool's tag, a typed id's index).
+export enum IndexKey {
+    Text(value: string)
+    Slot(value: int)
+}
+
+/// One bucket's member ids and the sum of their finished hashes.
+type Bucket = { members: Cell<List<int>>, hash: Cell<int> }
+
+/// One index: each text and each slot maps to its bucket's id, and the
+/// index knows every bucket it opened.
+type Index = { texts: Cell<Map<string, int>>, slots: Cell<List<int>>, opened: Cell<List<int>> }
+
+export type Rows<R> = {
+    rows: Cell<List<R?>>,
+    hashes: Cell<List<int>>,
+    filed: Cell<List<List<IndexKey>>>,
+    set: Cell<int>,
+    live: Cell<int>,
+    indexes: List<Index>,
+    buckets: Cell<List<Bucket>>,
+}
+
+/// An empty store with `index_count` indexes, numbered in the order the
+/// relation marks them.
+export fn rows<R>(index_count: int) -> Rows<R> {
+    let rs: Cell<List<R?>> = Cell.new([])
+    let hashes: Cell<List<int>> = Cell.new([])
+    let filed: Cell<List<List<IndexKey>>> = Cell.new([])
+    let buckets: Cell<List<Bucket>> = Cell.new([])
+    Rows { rows: rs, hashes: hashes, filed: filed, set: Cell.new(0), live: Cell.new(0), indexes: [empty_index() for i in 0..index_count], buckets: buckets }
+}
+
+fn empty_index() -> Index {
+    let texts: Cell<Map<string, int>> = Cell.new({})
+    let slots: Cell<List<int>> = Cell.new([])
+    let opened: Cell<List<int>> = Cell.new([])
+    Index { texts: texts, slots: slots, opened: opened }
+}
+
+impl Rows<R> {
+    /// The id the next new row takes.
+    fn next_id() -> int { self.rows.get().length }
+
+    /// How many rows are live.
+    fn count() -> int { self.live.get() }
+
+    /// The relation's set hash: the sum over every live row.
+    fn set_hash() -> int { self.set.get() }
+
+    fn row(id: int) -> R? {
+        if id < 0 || id >= self.rows.get().length { return null }
+        self.rows.get()[id]
+    }
+
+    /// The bucket a key files under in one index, or -1 when nothing
+    /// ever filed there.
+    fn bucket_of(index: int, key: IndexKey) -> int {
+        let ix = self.indexes[index]
+        match key {
+            .Text(v) -> ix.texts.get().get(v) ?? -1,
+            .Slot(n) -> if n >= 0 && n < ix.slots.get().length { ix.slots.get()[n] } else { -1 },
+        }
+    }
+
+    /// Every live row filed in a bucket, in filing order; none for -1.
+    fn members(bucket: int) -> List<R> {
+        if bucket < 0 { return [] }
+        [self.rows.get()[id]! for id in self.buckets.get()[bucket].members.get()]
+    }
+
+    /// The first row's id in a bucket — a key's one row.
+    fn first_id(bucket: int) -> int? {
+        if bucket < 0 { return null }
+        self.buckets.get()[bucket].members.get().first()
+    }
+
+    fn bucket_hash(bucket: int) -> int {
+        if bucket < 0 { return 0 }
+        self.buckets.get()[bucket].hash.get()
+    }
+
+    /// A row filed under `id` — appended when `id` is the next one,
+    /// replacing whatever stood there otherwise. `hash` is the row's
+    /// finished stable hash; `keys` its key in each index, in order.
+    fn put(id: int, row: R, hash: int, keys: List<IndexKey>) {
+        if id < self.next_id() {
+            self.unfile(id)
+            self.rows.set_at(id, row)
+            self.hashes.set_at(id, hash)
+            self.filed.set_at(id, keys)
+        } else {
+            self.rows.push(row)
+            self.hashes.push(hash)
+            self.filed.push(keys)
+        }
+        self.live.set(self.live.get() + 1)
+        self.set.set(self.set.get() + hash)
+        for i, k in keys { self.file(i, k, id, hash) }
+    }
+
+    /// The row at `id` gone, its id kept as a tombstone.
+    fn remove(id: int) {
+        if self.row(id) == null { return }
+        self.unfile(id)
+        self.rows.set_at(id, null)
+        self.filed.set_at(id, [])
+    }
+
+    /// Every bucket of one index holding more than one row — a `@unique`
+    /// index's violations, read over the final set.
+    fn crowded(index: int) -> List<int> {
+        [b for b in self.indexes[index].opened.get() if self.buckets.get()[b].members.get().length > 1]
+    }
+
+    /// The live row at `id` taken out of every bucket and the set.
+    fn unfile(id: int) {
+        if self.row(id) == null { return }
+        let hash = self.hashes.get()[id]
+        for i, k in self.filed.get()[id] {
+            let b = self.bucket_of(i, k)
+            let bucket = self.buckets.get()[b]
+            bucket.members.set([m for m in bucket.members.get() if m != id])
+            bucket.hash.set(bucket.hash.get() - hash)
+        }
+        self.live.set(self.live.get() - 1)
+        self.set.set(self.set.get() - hash)
+    }
+
+    fn file(index: int, key: IndexKey, id: int, hash: int) {
+        let b = self.opened_bucket(index, key)
+        let bucket = self.buckets.get()[b]
+        bucket.members.push(id)
+        bucket.hash.set(bucket.hash.get() + hash)
+    }
+
+    /// The bucket a key files under, opened when it is the first.
+    fn opened_bucket(index: int, key: IndexKey) -> int {
+        let found = self.bucket_of(index, key)
+        if found >= 0 { return found }
+        let b = self.buckets.get().length
+        let members: Cell<List<int>> = Cell.new([])
+        self.buckets.push(Bucket { members: members, hash: Cell.new(0) })
+        let ix = self.indexes[index]
+        ix.opened.push(b)
+        match key {
+            .Text(v) -> ix.texts.put(v, b),
+            .Slot(n) -> {
+                while ix.slots.get().length <= n { ix.slots.push(-1) }
+                ix.slots.set_at(n, b)
+            },
+        }
+        b
+    }
+}

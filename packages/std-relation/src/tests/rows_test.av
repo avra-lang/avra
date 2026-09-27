@@ -1,0 +1,162 @@
+// A relation's rows in memory, over a hand-filed row type: dense ids,
+// buckets per index kept current on every write, and hashes whose sums
+// no swap or duplicate can fool.
+use @std.relation.rows.{Rows, rows, IndexKey}
+use @std.relation.stable.{stable_hasher}
+
+type P = { id: int, a: string, b: int, on: bool }
+
+fn hash_of(p: P) -> int {
+    stable_hasher(7).text(p.a).int(p.b).bool(p.on).finish()
+}
+
+/// Index 0 files by `a` (text), index 1 by `on` (a slot).
+fn keys_of(p: P) -> List<IndexKey> {
+    [IndexKey.Text(p.a), IndexKey.Slot(if p.on { 1 } else { 0 })]
+}
+
+fn fresh() -> Rows<P> {
+    rows<P>(2)
+}
+
+/// A row filed under the next id, as a store's own `insert` does.
+fn added(rs: Rows<P>, p: P) -> int {
+    let id = rs.next_id()
+    rs.put(id, p with { id: id }, hash_of(p), keys_of(p))
+    id
+}
+
+fn by_a(rs: Rows<P>, v: string) -> string {
+    joined([p.b for p in rs.members(rs.bucket_of(0, IndexKey.Text(v)))])
+}
+
+fn set_of(ps: List<P>) -> int {
+    let rs = fresh()
+    for p in ps { let _ = added(rs, p) }
+    rs.set_hash()
+}
+
+fn p(a: string, b: int) -> P {
+    P { id: 0, a: a, b: b, on: false }
+}
+
+fn joined(ns: List<int>) -> string {
+    ["${n}" for n in ns].join(",")
+}
+
+spec "std/relation — rows" {
+    given "the hash sums, written first" {
+        then "rows whose fields swap between them are a different set" {
+            set_of([p("a", 1), p("b", 2)]) != set_of([p("a", 2), p("b", 1)])
+        }
+        then "a duplicated row counts twice" {
+            set_of([p("a", 1), p("a", 1)]) != set_of([p("a", 1)])
+        }
+        then "insertion order does not move the set hash" {
+            set_of([p("a", 1), p("b", 2)]) == set_of([p("b", 2), p("a", 1)])
+        }
+        then "the empty relation's set hash is zero" {
+            fresh().set_hash() == 0
+        }
+    }
+    given "filing and reading" {
+        then "a row reads back by its id" {
+            let rs = fresh()
+            let id = added(rs, p("a", 1))
+            (rs.row(id)?.b ?? -1) == 1 && id == 0
+        }
+        then "a text bucket answers every row filed under it, in insertion order" {
+            let rs = fresh()
+            let _ = added(rs, p("a", 1))
+            let _ = added(rs, p("b", 2))
+            let _ = added(rs, p("a", 3))
+            by_a(rs, "a") == "1,3" && by_a(rs, "b") == "2"
+        }
+        then "a slot bucket files a bool by its tag" {
+            let rs = fresh()
+            let _ = added(rs, P { id: 0, a: "x", b: 1, on: true })
+            let _ = added(rs, P { id: 0, a: "y", b: 2, on: false })
+            rs.members(rs.bucket_of(1, IndexKey.Slot(1))).length == 1
+        }
+        then "a key nothing filed answers no bucket and no rows" {
+            let rs = fresh()
+            rs.bucket_of(0, IndexKey.Text("nope")) == -1 && rs.members(-1).is_empty()
+        }
+        then "bucket ids are dense across every index" {
+            let rs = fresh()
+            let _ = added(rs, p("a", 1))
+            joined([rs.bucket_of(0, IndexKey.Text("a")), rs.bucket_of(1, IndexKey.Slot(0))]) == "0,1"
+        }
+    }
+    given "a row replaced under its id" {
+        then "its id stays, and it moves from the old bucket to the new" {
+            let rs = fresh()
+            let id = added(rs, p("a", 1))
+            let moved = p("b", 1) with { id: id }
+            rs.put(id, moved, hash_of(moved), keys_of(moved))
+            by_a(rs, "a") == "" && by_a(rs, "b") == "1" && rs.count() == 1
+        }
+        then "the old bucket's hash returns to what it held before the row" {
+            let rs = fresh()
+            let _ = added(rs, p("a", 9))
+            let before = rs.bucket_hash(rs.bucket_of(0, IndexKey.Text("a")))
+            let id = added(rs, p("a", 1))
+            let moved = p("b", 1) with { id: id }
+            rs.put(id, moved, hash_of(moved), keys_of(moved))
+            rs.bucket_hash(rs.bucket_of(0, IndexKey.Text("a"))) == before
+        }
+        then "an unchanged replacement moves no bucket and no hash" {
+            let rs = fresh()
+            let id = added(rs, p("a", 1))
+            let set = rs.set_hash()
+            let bucket = rs.bucket_of(0, IndexKey.Text("a"))
+            let same = p("a", 1) with { id: id }
+            rs.put(id, same, hash_of(same), keys_of(same))
+            rs.set_hash() == set && rs.bucket_of(0, IndexKey.Text("a")) == bucket && by_a(rs, "a") == "1"
+        }
+    }
+    given "a row removed" {
+        then "its id is never reused, and the set hash forgets it" {
+            let rs = fresh()
+            let empty = rs.set_hash()
+            let id = added(rs, p("a", 1))
+            rs.remove(id)
+            let next = added(rs, p("b", 2))
+            rs.row(id) == null && next == 1 && rs.count() == 1 && by_a(rs, "a") == "" && rs.set_hash() != empty
+        }
+        then "removing every row returns the set hash to zero" {
+            let rs = fresh()
+            let id = added(rs, p("a", 1))
+            rs.remove(id)
+            rs.set_hash() == 0
+        }
+        then "removing an id twice changes nothing the second time" {
+            let rs = fresh()
+            let id = added(rs, p("a", 1))
+            let _ = added(rs, p("b", 2))
+            rs.remove(id)
+            let set = rs.set_hash()
+            rs.remove(id)
+            rs.set_hash() == set && rs.count() == 1
+        }
+    }
+    given "a constraint over one index" {
+        then "a bucket holding two rows is crowded" {
+            let rs = fresh()
+            let _ = added(rs, p("a", 1))
+            let _ = added(rs, p("a", 2))
+            let _ = added(rs, p("b", 3))
+            joined(rs.crowded(0)) == "${rs.bucket_of(0, IndexKey.Text("a"))}"
+        }
+        then "a swap that ends one row per bucket is not crowded" {
+            let rs = fresh()
+            let x = added(rs, p("a", 1))
+            let y = added(rs, p("b", 2))
+            let to_b = p("b", 1) with { id: x }
+            rs.put(x, to_b, hash_of(to_b), keys_of(to_b))
+            let to_a = p("a", 2) with { id: y }
+            rs.put(y, to_a, hash_of(to_a), keys_of(to_a))
+            rs.crowded(0).is_empty()
+        }
+    }
+}
