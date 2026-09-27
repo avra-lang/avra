@@ -10,8 +10,9 @@ use diagnostics.{DiagCode}
 
 export fn collects() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name           | build
-        "collect_decl" | build_collect_decl
+        name                | build
+        "collect_decl"      | build_collect_decl
+        "collect_enum_decl" | build_collect_enum_decl
     }
     let codes = table<DiagCode> {
         kind                   | summary
@@ -25,6 +26,7 @@ export fn collects() -> LanguageFeature {
         "collect.path"         | "a collect's `it` path is not in its kind's vocabulary"
         "collect.closure_fold" | "a library folds a closure collection at compile time"
         "collect.self_read"    | "a member reads its own collection while compiling"
+        "collect_enum.variant" | "two collected members would name the same variant"
     }
     LanguageFeature collects {
         gram: grammar {
@@ -32,6 +34,9 @@ export fn collects() -> LanguageFeature {
                 "{" BREAK? ( fn:NAME ":" iw:NAME ( "." fp:NAME )? ( "," BREAK? fn:NAME ":" iw:NAME ( "." fp:NAME )? )* ","? BREAK? )? "}"
                 ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* ","? )?
                 END -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bk)
+            stmt = "collect" "enum" n:NAME "=" ( k:PKG | k:NAME ) "in" sc:NAME
+                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* ","? )?
+                END -> collect_enum_decl(n, k, sc, bw, biw, bk)
         }
         builders: rows
         diags: codes

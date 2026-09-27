@@ -85,7 +85,7 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{new_kernel, Key, Relation}
+use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -110,10 +110,12 @@ type ExternNames = { decls: int, names: List<string> }
 
 /// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
 /// file's object key and text digest (record.av's key derivations), the
-/// tree's stamps and where this compiler's store stands (build.av). Cleared
-/// piecemeal by `keep_interfaces`: `object_keys` every record write, the rest
-/// only when a record's SEEN part (its interface or imports) moved.
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, stamped: Cell<Map<string, string>>, stamps_at: Cell<int>, store_root: Cell<string> }
+/// tree's stamps, where this compiler's store stands and this compiler's
+/// own print (build.av — `compiler_id` is never cleared: the running
+/// binary cannot move mid-process). Cleared piecemeal by
+/// `keep_interfaces`: `object_keys` every record write, the rest only
+/// when a record's SEEN part (its interface or imports) moved.
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, stamped: Cell<Map<string, string>>, stamps_at: Cell<int>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -129,6 +131,7 @@ fn new_keys() -> Keys {
         stamped: Cell.new(no_stamps),
         stamps_at: Cell.new(0),
         store_root: Cell.new(""),
+        compiler_id: Cell.new(""),
     }
 }
 
@@ -281,6 +284,15 @@ export type Workspace = {
     closed: Cell<bool>,
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
+    /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
+    /// appended by `fail_summary` (failures.av) — the plain table
+    /// `@relation` will replace once M5 lands; the accessors built on
+    /// it (`raised_by`, `error_sites_by_callee`, `error_sites_within`)
+    /// keep their names across that swap.
+    error_sites: Cell<List<ErrorSite>>,
+    /// M6 PREP: the whole-program raised-error fixpoint, over
+    /// `error_sites` — `raised_by`'s own table.
+    raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -400,6 +412,10 @@ enum Family {
     /// a held declaration's sig — its module's stored record, one key
     /// per module, asked fresh every time `sig()` reads a held decl
     HeldSig
+    /// M6 PREP: `Fixpoint<List<TypeId>>`'s own dense per-member space
+    /// for the whole-program raised-error fixpoint — one key per
+    /// `_`-declared fn, touched only from inside its own `solve`.
+    Raised
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -438,6 +454,7 @@ fn ordinal(f: Family) -> int {
         .References -> 19,
         .Failures -> 20,
         .HeldSig -> 21,
+        .Raised -> 22,
     }
 }
 
@@ -479,6 +496,7 @@ fn family_at(i: int) -> Family {
         19 -> Family.References,
         20 -> Family.Failures,
         21 -> Family.HeldSig,
+        22 -> Family.Raised,
         other -> {
             avra_trap("defect: no Family at ordinal ${other} — family_at and ordinal must list the same set")
             Family.Source
@@ -490,7 +508,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`
 /// and to `ordinal`; nothing below can notice the day only this
 /// number moves alone, or only stays still alone.
-const family_count: int = 22
+const family_count: int = 23
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -607,6 +625,8 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
+        error_sites: list_cell(),
+        raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
     // position `i` is `family_at(i)`, so a mismatch here means the two
@@ -782,6 +802,7 @@ impl Workspace {
             .References -> touch(self.references()),
             .Failures -> touch(self.failures()),
             .HeldSig -> touch(self.held_sig(module_at(arg))),
+            .Raised -> touch(self.raised_by(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1541,7 +1562,12 @@ impl Decls {
             .Method if x.parent != null && self.decl(x.parent!).kind is .Trait -> 1,
             .Fn -> 2,
             .Method or .Impl -> 3,
-            .Trait or .Syntax or .Default or .Main or .Case or .Const or .Collect -> 4,
+            // `CollectEnum` sits with `Collect`, never with the other
+            // type kinds: unlike an ordinary `enum`'s self-contained
+            // variants, its variant TABLE reads other declarations —
+            // ranked first, it would ask before the program it reads
+            // has minted them.
+            .Trait or .Syntax or .Default or .Main or .Case or .Const or .Collect or .CollectEnum -> 4,
         }
     }
 }
