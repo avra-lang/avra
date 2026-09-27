@@ -68,6 +68,48 @@ fn dyn_ticked() -> int {
     d.count()
 }
 
+// red-team (avra-qt94): a bounded generic's dispatch reaches a
+// writing member the same way a dyn contract's does — a fresh, and
+// so possibly settled, instance handed to a non-`mut` type parameter.
+fn poke_bounded<T: Ticker>(t: T) { t.tick() }
+
+// red-team: a generic impl's own receiver, over the type's Vars.
+type Box<T> = { v: T }
+
+impl Box<T> {
+    mut fn set(x: T) { self.v = x }
+}
+
+fn fresh_box() -> Box<int> { Box { v: 0 } }
+fn poke_box(b: Box<int>) { b.set(9) }
+
+// red-team: a list ELEMENT reached by index, not by field.
+fn fresh_ws() -> List<W> { [fresh()] }
+fn poke_indexed(xs: List<W>) { xs[0].add(3) }
+
+// red-team: an Option unwrap chain reaching the settled receiver.
+fn fresh_opt() -> W? { fresh() }
+fn poke_opt(o: W?) { o!.add(1) }
+
+// red-team: a trait DEFAULT method, writing through `self` by calling
+// an abstract member the impl supplies — reached on a concrete
+// (declared-dispatch) non-`mut` receiver, never a `dyn` one.
+trait Steps {
+    mut fn bump() { self.step() }
+    mut fn step()
+    fn seen() -> int
+}
+
+type CD = { n: int }
+
+impl Steps for CD {
+    fn step() { self.n = self.n + 1 }
+    fn seen() -> int { self.n }
+}
+
+fn fresh_cd() -> CD { CD { n: 0 } }
+fn poke_default(c: CD) { c.bump() }
+
 plain(fresh())
 let basic = fresh()
 
@@ -80,4 +122,19 @@ let nested = fresh_outer()
 touch(fresh_holder())
 let holder = fresh_holder()
 
-"basic ${basic.out.length} via ${via.out.length} nested ${nested.inner.n} list ${holder.items[0].tag} mut-local ${mut_local_control()} dyn ${dyn_ticked()}"
+poke_bounded(fresh_counter())
+let bounded = fresh_counter()
+
+poke_box(fresh_box())
+let boxed = fresh_box()
+
+poke_indexed(fresh_ws())
+let indexed = fresh_ws()
+
+poke_opt(fresh_opt())
+let opt = fresh_opt()
+
+poke_default(fresh_cd())
+let cd = fresh_cd()
+
+"basic ${basic.out.length} via ${via.out.length} nested ${nested.inner.n} list ${holder.items[0].tag} mut-local ${mut_local_control()} dyn ${dyn_ticked()} bounded ${bounded.n} box ${boxed.v} indexed ${indexed[0].out.length} opt ${opt!.out.length} default ${cd.n}"
