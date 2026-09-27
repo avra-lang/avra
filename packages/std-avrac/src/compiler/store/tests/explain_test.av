@@ -1,0 +1,109 @@
+// `avra explain`'s own logic (compiler/store/explain.av): a witness
+// tree over a pack alone, and the pack's own shape — built directly
+// against `Pack` via `pack_at`/`put`/`commit`, never through the CLI.
+use @std.io.{make_dirs, exists, remove}
+use compiler.store.{Pack, Entry, Edge, pack_at, witnessed, real_entries, summarized, Held}
+
+fn explain_dir(name: string) -> string { "/tmp/avra-explain-test/${name}" }
+
+fn explain_fresh(name: string) -> string {
+    let _ = make_dirs(explain_dir(name))
+    let path = "${explain_dir(name)}/pack.bin"
+    if exists(path) { let _ = remove(path) }
+    path
+}
+
+fn witness_entry(name: string, hash: int, edges: List<Edge>) -> Entry {
+    Entry { name: name, fingerprint: 0, hash: hash, edges: edges, payload: "p".bytes() }
+}
+
+fn witness_edge(name: string, hash: int) -> Edge { Edge { name: name, hash: hash } }
+
+spec "compiler/store/explain — the witness tree" {
+    given "an edge whose target's stored hash still matches" {
+        then "it holds" {
+            let p = pack_at(explain_fresh("holds"), "cid")
+            p.put(witness_entry("b", 10, []))
+            witnessed(p, "b", 10, ["a"]).held == Held.Matches
+        }
+    }
+    given "an edge whose target's stored hash has moved on" {
+        then "it is stale, and names both hashes" {
+            let p = pack_at(explain_fresh("stale"), "cid")
+            p.put(witness_entry("b", 20, []))
+            let w = witnessed(p, "b", 10, ["a"])
+            w.held == Held.Stale && w.stored_hash == 20 && w.expected_hash == 10
+        }
+    }
+    given "an edge naming nothing this pack ever `put`" {
+        then "it is external, not a failure" {
+            let p = pack_at(explain_fresh("external"), "cid")
+            witnessed(p, "ghost", 5, ["a"]).held == Held.External
+        }
+    }
+    given "an edge re-entering a name already on the path" {
+        then "a cycle is named, never looped forever" {
+            let p = pack_at(explain_fresh("cycle"), "cid")
+            p.put(witness_entry("a", 1, [witness_edge("b", 2)]))
+            p.put(witness_entry("b", 2, [witness_edge("a", 1)]))
+            let w = witnessed(p, "b", 2, ["a"])
+            w.held == Held.Matches && w.children.length == 1 && w.children[0].held == Held.Cycle
+        }
+    }
+    given "an entry with real, held and stale dependencies together" {
+        then "the tree carries every child, each judged on its own" {
+            let p = pack_at(explain_fresh("mixed"), "cid")
+            p.put(witness_entry("held", 1, []))
+            p.put(witness_entry("stale", 99, []))
+            p
+                .put(
+                    witness_entry(
+                        "root",
+                        0,
+                        [
+                            witness_edge("held", 1),
+                            witness_edge("stale", 2),
+                            witness_edge("ghost", 3),
+                        ],
+                    ),
+                )
+            let root? = p.get("root") else { return false }
+            let kids = [witnessed(p, e.name, e.hash, ["root"]) for e in root.edges]
+            kids[0].held == Held.Matches &&
+                kids[1].held == Held.Stale &&
+                kids[2].held == Held.External
+        }
+    }
+}
+
+spec "compiler/store/explain — the pack's own shape" {
+    given "a pack holding two entries, one of them naming a third name only as an edge" {
+        then "real_entries counts only what was `put`, never an edge-only name" {
+            let p = pack_at(explain_fresh("real-entries"), "cid")
+            p.put(witness_entry("a", 1, [witness_edge("never-put", 9)]))
+            p.put(witness_entry("b", 2, []))
+            real_entries(p).length == 2
+        }
+        then "summarized reports the same count, plus the referenced-only name" {
+            let p = pack_at(explain_fresh("summary-counts"), "cid")
+            p.put(witness_entry("a", 1, [witness_edge("never-put", 9)]))
+            p.put(witness_entry("b", 2, []))
+            let s = summarized(p)
+            s.entries == 2 && s.referenced_only == 1
+        }
+    }
+    given "a pack before and after its first commit" {
+        then "nothing is on disk until commit answers true" {
+            let p = pack_at(explain_fresh("uncommitted"), "cid")
+            p.put(witness_entry("a", 1, []))
+            summarized(p).disk_bytes == 0
+        }
+        then "committing writes real bytes, and a fresh pack is no bigger than what is on disk" {
+            let p = pack_at(explain_fresh("committed"), "cid")
+            p.put(witness_entry("a", 1, []))
+            let ok = p.commit()
+            let s = summarized(p)
+            ok && s.disk_bytes > 0 && s.live_bytes <= s.disk_bytes
+        }
+    }
+}

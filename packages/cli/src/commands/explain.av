@@ -1,0 +1,130 @@
+//! `avra explain db [<package>]` / `avra explain why <name>` — the
+//! compiler's own durable pack, made visible: `compiler/store/explain.av`
+//! holds the logic, this file is CLI wiring and text formatting alone.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.avrac.compiler.{build_cache_root}
+use @std.avrac.compiler.store.{Pack, pack_at, witnessed, summarized, WitnessNode, Held}
+use @std.avrac.core.{flatten}
+use @std.path.{joined_path}
+
+type ExplainCmd = {}
+
+impl Runnable for ExplainCmd {
+    fn run(args: CliResult) -> int {
+        let mode = args.arg("mode")
+        when {
+            mode == "db" -> explained_db(args.arg("target"))
+            mode == "why" -> explained_why(args.arg("target"))
+            _ -> {
+                eprintln("avra: `explain` takes `db` or `why`, not `${mode}`")
+                1
+            }
+        }
+    }
+}
+
+fn pack_root(target: string) -> string {
+    if target == "" { here() } else { rooted(target) }
+}
+
+fn pack_for(root: string) -> Pack {
+    let ws = root_workspace(root)
+    pack_at(joined_path(build_cache_root(ws), "pack.bin"), ws.compiler_id())
+}
+
+// ── `avra explain db` ──
+
+fn explained_db(target: string) -> int {
+    let s = summarized(pack_for(pack_root(target)))
+    println(
+        "db: ${s.entries} ${entry_word(s.entries)}, ${s.payload_bytes} payload byte${plural(s.payload_bytes)}",
+    )
+    if s.disk_bytes == 0 {
+        println("db: no pack file yet — nothing committed for this package")
+    } else {
+        println(
+            "db: ${s.disk_bytes} byte${plural(s.disk_bytes)} on disk, ${garbage_word(s.disk_bytes, s.live_bytes)}",
+        )
+    }
+    if s.referenced_only > 0 {
+        println(
+            "db: ${s.referenced_only} further name${plural(s.referenced_only)} referenced as a dependency, not stored here (external — a file, env var or manifest)",
+        )
+    }
+    0
+}
+
+fn plural(n: int) -> string { if n == 1 { "" } else { "s" } }
+
+fn entry_word(n: int) -> string { if n == 1 { "entry" } else { "entries" } }
+
+fn garbage_word(disk: int, live: int) -> string {
+    if disk <= live { "${live} live, no garbage" } else { "${live} live, ${disk - live} garbage bytes, compacts on next commit past half" }
+}
+
+// ── `avra explain why` ──
+
+fn explained_why(name: string) -> int {
+    if name == "" {
+        eprintln("avra: `explain why` needs an entry name")
+        return 1
+    }
+    let pack = pack_for(here())
+    let entry? = pack.get(name) else {
+        eprintln("avra: no entry named `${name}` in this package's pack")
+        return 1
+    }
+    println("why: ${name}")
+    println(
+        "why:   fingerprint ${entry.fingerprint}, hash ${entry.hash}, ${entry.payload.length} payload byte${plural(entry.payload.length)}",
+    )
+    if entry.edges.is_empty() {
+        println("why:   no recorded dependencies — an input, or a query that read nothing else")
+        return 0
+    }
+    for line in flatten(
+        [witness_lines(witnessed(pack, e.name, e.hash, [name]), 1) for e in entry.edges],
+    ) {
+        println(line)
+    }
+    0
+}
+
+fn witness_lines(node: WitnessNode, depth: int) -> List<string> {
+    [indented(depth, node)].concat(flatten([witness_lines(c, depth + 1) for c in node.children]))
+}
+
+fn indent(depth: int) -> string { ["  " for _k in 0..depth].join("") }
+
+fn indented(depth: int, node: WitnessNode) -> string {
+    "why: ${indent(depth)}${held_word(node.held)} ${node.name}${hash_detail(node)}"
+}
+
+fn hash_detail(node: WitnessNode) -> string {
+    match node.held {
+        .Matches -> " (${node.stored_hash})",
+        .Stale -> " (stored ${node.stored_hash}, expected ${node.expected_hash} — recomputes)",
+        .External or .Cycle -> "",
+    }
+}
+
+fn held_word(h: Held) -> string {
+    match h {
+        .Matches -> "held",
+        .Stale -> "FAILED",
+        .External -> "external, unchecked —",
+        .Cycle -> "CYCLE at",
+    }
+}
+
+export command explain {
+    description: "The compiler's own durable pack, made visible: `db` for its size and shape, `why <name>` for one entry's witness tree"
+    arg mode {
+        description: "`db` or `why`"
+        required: true
+    }
+    arg target {
+        description: "for `db`, a package path (the current one when absent); for `why`, the entry's name"
+    }
+    run: ExplainCmd {}
+}
