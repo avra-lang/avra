@@ -12,6 +12,7 @@ use core.{
     ExprId,
     StmtId,
     DeclId,
+    DeclKind,
     TypeId,
     TypeRegistry,
     Binding,
@@ -755,12 +756,20 @@ fn builtin_method_writes(methods: List<MethodRow>, sh: Type, name: string) -> bo
 }
 
 /// The seat a param list's OWN written index rides on: 1 past the
-/// receiver's inside a method, 0 for a free fn — `Binding.Param`'s
-/// own currency, which starts written parameters at seat 1 only in
-/// a method (core/nodes.av's own doc on `Binding`).
+/// receiver's inside a method that takes one, 0 for a `static fn` and
+/// a free fn — `Binding.Param`'s own currency, the resolver's
+/// `seat_base` (core/nodes.av's own doc on `Binding`).
 fn seat_base_of(view: FileView, owner: StmtId) -> int {
     let d? = view.decls.decl_of(view.file, owner) else { return 0 }
-    if view.decls.decl(d).kind is .Method { 1 } else { 0 }
+    if takes_receiver(view.decls.decl(d).kind) && !view.decls.is_static_of(d) { 1 } else { 0 }
+}
+
+/// Whether a declaration of this kind is written with a receiver seat.
+fn takes_receiver(kind: DeclKind) -> bool {
+    match kind {
+        .Method -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> false,
+    }
 }
 
 /// A binding resolved through every CAPTURE it rides — nesting
