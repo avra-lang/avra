@@ -1,0 +1,292 @@
+#!/bin/sh
+# FIXTURES FOR THE LAND TOOLING ITSELF — never the real repo, never a
+# real worktree: every git repo here is thrown together fresh under a
+# scratch directory and discarded. `sh tools/land_test.sh` runs every
+# fixture and prints a PASS/FAIL summary; a non-zero exit is a real
+# failure.
+#
+# A SELF-TEST MUST NOT BE REACHABLE FROM LAND.SH ITSELF: this file is
+# never called BY land.sh or its own steps — land.sh's `--call <fn>`
+# seam is what these fixtures drive it through, one function per call,
+# never the other direction.
+set -u
+
+here="$(cd "$(dirname "$0")" && pwd)"
+land="$here/land.sh"
+slot="$here/slot.sh"
+affected="$here/affected_packages.sh"
+
+scratch="/tmp/avra-land-test-$$"
+mkdir -p "$scratch"
+cleanup() { rm -rf "$scratch"; }
+trap cleanup EXIT INT TERM
+
+total=0
+failed=0
+
+ok() {
+    total=$((total + 1))
+    echo "ok    $1"
+}
+bad() {
+    total=$((total + 1))
+    failed=$((failed + 1))
+    echo "FAIL  $1"
+}
+
+# A throwaway git repo, initialized and committed once, so a fixture's
+# own edits land on a real ref a merge can target.
+git_repo() {
+    d="$scratch/$1"
+    mkdir -p "$d"
+    git -C "$d" init -q
+    # The default branch name is a matter of the machine's git config
+    # (`init.defaultBranch`) — pin it here so "main" always exists,
+    # whatever this machine defaults to.
+    git -C "$d" symbolic-ref HEAD refs/heads/main
+    git -C "$d" config user.email test@example.com
+    git -C "$d" config user.name "land test"
+    echo "$d"
+}
+commit_all() {
+    d="$1"
+    msg="$2"
+    git -C "$d" add -A
+    git -C "$d" commit -q -m "$msg"
+}
+
+# ══ THE LANDING LOCK ══════════════════════════════════════════════════
+# ONE fixture, both halves: a genuinely LIVE holder makes a second
+# taker wait, and the moment that holder dies, the very same lock is
+# stale and the next taker reclaims it rather than waiting forever.
+test_lock() {
+    lockdir="$scratch/lock-test"
+    rm -rf "$lockdir"
+    sleep 30 &
+    holder_pid=$!
+    mkdir -p "$lockdir"
+    { echo "pid=$holder_pid"; echo "branch=holder"; echo "time=$(date)"; } > "$lockdir/info"
+
+    ( AVRA_LAND_LOCK="$lockdir" branch=contender sh "$land" --call acquire_lock ) \
+        > "$scratch/lock-contender.out" 2>&1 &
+    contender_pid=$!
+
+    sleep 1
+    if kill -0 "$contender_pid" 2>/dev/null; then
+        ok "lock: a contender waits behind a genuinely live holder"
+    else
+        bad "lock: a contender did not wait behind a live holder"
+    fi
+    if grep -q "waiting" "$scratch/lock-contender.out" 2>/dev/null; then
+        ok "lock: the waiting contender says so"
+    else
+        bad "lock: the waiting contender printed no wait message"
+    fi
+
+    kill -9 "$holder_pid" 2>/dev/null
+    wait "$holder_pid" 2>/dev/null
+
+    i=0
+    while [ "$i" -lt 40 ] && kill -0 "$contender_pid" 2>/dev/null; do
+        sleep 0.25
+        i=$((i + 1))
+    done
+    if kill -0 "$contender_pid" 2>/dev/null; then
+        bad "lock: a contender never reclaimed a lock whose holder died"
+        kill -9 "$contender_pid" 2>/dev/null
+    else
+        wait "$contender_pid" 2>/dev/null
+        if grep -q "reclaiming a stale" "$scratch/lock-contender.out" 2>/dev/null; then
+            ok "lock: a contender reclaims the lock once its holder is dead"
+        else
+            bad "lock: the contender proceeded without saying it reclaimed"
+        fi
+    fi
+    rm -rf "$lockdir"
+}
+
+# ══ THE MERGE: A SEED-ONLY CONFLICT RESOLVES, ANY OTHER ABORTS ═══════
+test_merge_seed_conflict() {
+    d="$(git_repo merge-seed)"
+    mkdir -p "$d/bootstrap"
+    printf 'seed A\n' > "$d/bootstrap/seed.ll"
+    printf 'digest A\n' > "$d/bootstrap/seed.sources"
+    printf 'fn a\n' > "$d/other.txt"
+    commit_all "$d" "base"
+
+    git -C "$d" checkout -q -b lane
+    printf 'seed LANE\n' > "$d/bootstrap/seed.ll"
+    commit_all "$d" "lane re-emits the seed"
+
+    git -C "$d" checkout -q main
+    printf 'seed MAIN\n' > "$d/bootstrap/seed.ll"
+    commit_all "$d" "main re-emits the seed too"
+
+    git -C "$d" checkout -q lane
+    if branch=lane sh "$land" --call merge_main_in "$d" > "$scratch/merge-seed.out" 2>&1; then
+        ok "merge: a conflict confined to the seed resolves"
+    else
+        bad "merge: a seed-only conflict was not auto-resolved"
+        cat "$scratch/merge-seed.out"
+    fi
+    if [ "$(cat "$d/bootstrap/seed.ll")" = "seed MAIN" ]; then
+        ok "merge: the resolved seed is main's own words"
+    else
+        bad "merge: the resolved seed is not main's — $(cat "$d/bootstrap/seed.ll" 2>/dev/null)"
+    fi
+    if git -C "$d" status --porcelain | grep -q .; then
+        bad "merge: the tree is not clean after a resolved seed conflict"
+    else
+        ok "merge: the tree is clean after a resolved seed conflict"
+    fi
+}
+
+test_merge_real_conflict() {
+    d="$(git_repo merge-real)"
+    printf 'fn a\n' > "$d/real.txt"
+    commit_all "$d" "base"
+
+    git -C "$d" checkout -q -b lane
+    printf 'lane change\n' > "$d/real.txt"
+    commit_all "$d" "lane edits real.txt"
+
+    git -C "$d" checkout -q main
+    printf 'main change\n' > "$d/real.txt"
+    commit_all "$d" "main edits real.txt too"
+
+    git -C "$d" checkout -q lane
+    before_sha="$(git -C "$d" rev-parse HEAD)"
+    if branch=lane sh "$land" --call merge_main_in "$d" > "$scratch/merge-real.out" 2>&1; then
+        bad "merge: a real conflict was silently resolved (should abort)"
+    else
+        ok "merge: a real conflict refuses"
+    fi
+    if grep -q "real.txt" "$scratch/merge-real.out"; then
+        ok "merge: the refusal names the conflicting file"
+    else
+        bad "merge: the refusal did not name real.txt"
+    fi
+    after_sha="$(git -C "$d" rev-parse HEAD)"
+    if [ "$before_sha" = "$after_sha" ] && ! git -C "$d" status --porcelain | grep -q .; then
+        ok "merge: the tree is back to clean after an aborted real conflict"
+    else
+        bad "merge: the tree was left mid-merge after an aborted conflict"
+    fi
+}
+
+# ══ AFFECTED-PACKAGE COMPUTATION ══════════════════════════════════════
+write_pkg() {
+    root="$1"
+    name="$2"
+    std_name="$3"   # empty for a package with no @std/ name (like "cli")
+    mkdir -p "$root/packages/$name/src"
+    if [ -n "$std_name" ]; then
+        printf '[package]\nname = "@std/%s"\nversion = "0.1.0"\n' "$std_name" > "$root/packages/$name/avra.toml"
+    else
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$name" > "$root/packages/$name/avra.toml"
+    fi
+    printf 'export fn seed_%s() -> int { 0 }\n' "$name" > "$root/packages/$name/src/lib.av"
+}
+
+test_affected_packages() {
+    d="$(git_repo affected)"
+    write_pkg "$d" "std-leaf" "leaf"
+    write_pkg "$d" "std-mid" "mid"
+    printf 'use @std.leaf.{seed_std-leaf}\n' > "$d/packages/std-mid/src/lib.av"
+    write_pkg "$d" "cli" ""
+    printf 'use @std.mid.{x}\n' > "$d/packages/cli/src/lib.av"
+    mkdir -p "$d/packages/std-avrac/src" "$d/runtime"
+    printf '[package]\nname = "@std/avrac"\nversion = "0.1.0"\n' > "$d/packages/std-avrac/avra.toml"
+    printf 'export fn c() -> int { 0 }\n' > "$d/packages/std-avrac/src/lib.av"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+
+    # Only the leaf moves: the affected set is the leaf, its direct
+    # dependent std-mid, AND cli — a THREE-deep chain (cli uses
+    # std-mid, std-mid uses std-leaf), so the closure must not stop
+    # after one round of reverse-lookup.
+    printf 'export fn seed_std-leaf() -> int { 1 }\n' > "$d/packages/std-leaf/src/lib.av"
+    commit_all "$d" "leaf edit"
+    got="$(sh "$affected" "$base_sha" HEAD "$d" | sort | tr '\n' ' ')"
+    want="cli std-leaf std-mid "
+    if [ "$got" = "$want" ]; then
+        ok "affected: a leaf's edit closes over a three-deep dependency chain"
+    else
+        bad "affected: wanted [$want] got [$got]"
+    fi
+
+    # A compiler-path change (packages/std-avrac) means test everything.
+    git -C "$d" checkout -q -b compiler-change "$base_sha"
+    printf 'export fn c() -> int { 1 }\n' > "$d/packages/std-avrac/src/lib.av"
+    commit_all "$d" "compiler edit"
+    got="$(sh "$affected" "$base_sha" HEAD "$d" | sort | tr '\n' ' ')"
+    want="$(cd "$d" && for p in packages/*/; do basename "$p"; done | sort | tr '\n' ' ')"
+    if [ "$got" = "$want" ]; then
+        ok "affected: a packages/std-avrac edit tests every package"
+    else
+        bad "affected: a compiler edit did not test every package — got [$got]"
+    fi
+
+    # A file outside any package (e.g. docs/) touches nothing.
+    git -C "$d" checkout -q -b nothing "$base_sha"
+    mkdir -p "$d/docs"
+    printf 'x\n' > "$d/docs/note.md"
+    commit_all "$d" "a doc, nothing else"
+    got="$(sh "$affected" "$base_sha" HEAD "$d" | tr -d '[:space:]')"
+    if [ -z "$got" ]; then
+        ok "affected: a doc-only change tests nothing"
+    else
+        bad "affected: a doc-only change wrongly named [$got]"
+    fi
+}
+
+# ══ SLOT.SH: THE LIMIT, AND STALE-SLOT CLEANUP ════════════════════════
+test_slot_limit() {
+    dir="$scratch/slots-limit"
+    rm -rf "$dir"
+    for i in 1 2 3; do
+        ( AVRA_SLOTS_DIR="$dir" sh "$slot" 2 sh -c "echo start; sleep 1.5; echo end" \
+            > "$scratch/slot-out-$i.txt" 2>&1 ) &
+    done
+    wait
+    waited=0
+    for i in 1 2 3; do
+        grep -q "busy" "$scratch/slot-out-$i.txt" 2>/dev/null && waited=$((waited + 1))
+        grep -q "^start$" "$scratch/slot-out-$i.txt" 2>/dev/null || bad "slot: contender $i never ran"
+    done
+    if [ "$waited" -eq 1 ]; then
+        ok "slot: with 2 slots and 3 contenders, exactly one waits"
+    else
+        bad "slot: expected exactly 1 waiting contender, saw $waited"
+    fi
+}
+
+test_slot_stale_reclaim() {
+    dir="$scratch/slots-stale"
+    rm -rf "$dir"
+    mkdir -p "$dir/slot-0"
+    echo 999999 > "$dir/slot-0/pid"   # almost certainly no such process
+    start="$(date +%s)"
+    if AVRA_SLOTS_DIR="$dir" sh "$slot" 1 echo "reclaimed" > "$scratch/slot-stale.out" 2>&1; then
+        elapsed=$(($(date +%s) - start))
+        if [ "$elapsed" -le 2 ]; then
+            ok "slot: a stale slot (dead pid) is reclaimed immediately, not waited out"
+        else
+            bad "slot: a stale slot took ${elapsed}s to reclaim — looks waited, not reclaimed"
+        fi
+    else
+        bad "slot: a stale slot was never reclaimed at all"
+    fi
+}
+
+echo "=== land tooling fixtures ==="
+test_lock
+test_merge_seed_conflict
+test_merge_real_conflict
+test_affected_packages
+test_slot_limit
+test_slot_stale_reclaim
+
+echo
+echo "land_test: $total checks, $failed failed"
+[ "$failed" -eq 0 ]
