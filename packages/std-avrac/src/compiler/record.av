@@ -32,11 +32,19 @@ use features.{DeclSig, DeclFacts, AnnotationFact}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
 
-/// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
-/// the entry file and its neighbours — and an empty name has no shard to live in and no key
-/// to be asked for, so it is spelled here rather than special-cased at every reader.
-fn record_key(ws: Workspace, m: ModulePath) -> string {
-    node_key(Stored.Sig, [ws.root, m.text()])
+impl Workspace {
+    /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
+    /// the entry file and its neighbours — and an empty name has no shard to live in and no key
+    /// to be asked for, so it is spelled here rather than special-cased at every reader.
+    /// THE PRODUCING COMPILER JOINS THE KEY: the record's own FORMAT — which facts a
+    /// declaration carries, how a shape spells its payload — is this compiler's law, so a
+    /// newer or older compiler reading a stranger's record is reading a stranger's format.
+    /// `build_cache_root`'s store root already stands under `compiler_id()`; this is the
+    /// same identity folded into the key itself, so the row stays correctly addressed even
+    /// where a store is ever shared across generations.
+    fn record_key(m: ModulePath) -> string {
+        node_key(Stored.Sig, [self.compiler_id(), self.root, m.text()])
+    }
 }
 
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
@@ -44,7 +52,7 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
 /// module with no record is asked ONCE rather than at every consumer.
 // LICENSED compiler.free_state_verb: a Workspace method here trips the compiler's declaration-order defect (F2010).
 fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
-    let key = record_key(ws, m)
+    let key = ws.record_key(m)
     let known = ws.records.record_texts.get().get(key)
     if known != null { return known! }
     mut cache = ws.db
@@ -62,7 +70,7 @@ type Placed = { file: List<string>, lo: int, hi: int }
 /// A record's files, each placed — memoized for the build.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_places(ws: Workspace, store: Store, m: ModulePath) -> Map<string, Placed> {
-    let key = record_key(ws, m)
+    let key = ws.record_key(m)
     let known: Map<string, Placed>? = ws.records.record_places.get().get(key)
     if known != null { return known! }
     let made = places_of(record_fields(ws, store, m))
@@ -91,7 +99,7 @@ fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
 /// THE RECORD AS LINES — cached, so every phase that needs them gets a pre-split list.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_lines(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
-    let key = record_key(ws, m)
+    let key = ws.record_key(m)
     let cached = ws.records.record_lines.get().get(key)
     if cached != null { return cached! }
     let text = record_cached(ws, store, m)
@@ -103,7 +111,7 @@ fn record_lines(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
 /// get pre-parsed fields without a per-declaration tab split.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_fields(ws: Workspace, store: Store, m: ModulePath) -> List<List<string>> {
-    let key = record_key(ws, m)
+    let key = ws.record_key(m)
     let cached = ws.records.record_fields.get().get(key)
     if cached != null { return cached! }
     let fields = [read_fields(line) for line in record_lines(ws, store, m)]
@@ -222,7 +230,7 @@ impl Row {
 /// A record as this build now knows it: its words, its lines and their fields.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_known(ws: Workspace, m: ModulePath, text: string) {
-    let key = record_key(ws, m)
+    let key = ws.record_key(m)
     let lines = text.split("\n")
     ws.records.record_texts.put(key, text)
     ws.records.record_lines.put(key, lines)
@@ -503,7 +511,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let made = ws.record_of(store, m)
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
-            cache.insert_sig(store, record_key(ws, m), made)
+            cache.insert_sig(store, ws.record_key(m), made)
             record_known(ws, m, made)
             if seen_part(made) != seen_part(prior) { seen_moved = true }
         }
@@ -532,7 +540,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    let key = record_key(ws, m)
+    let key = ws.record_key(m)
     if ws.records.loaded_records.get().get(key) != null { return }
     ws.records.loaded_records.put(key, true)
     let text = record_cached(ws, store, m)
