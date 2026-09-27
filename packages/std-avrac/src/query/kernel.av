@@ -26,7 +26,10 @@ export enum Verdict {
     Cycle
 }
 
-type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+/// `last_reader` is the STAMP: the id of the query that most recently
+/// recorded a dependency on this cell. A repeat read by that same
+/// query compares against it instead of appending a duplicate dep.
+type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int, last_reader: int }
 
 // A shared KernelState's cell list copies on write. Bound each copy to
 // one short row rather than a table that grows with the program.
@@ -44,6 +47,12 @@ type KernelState = {
     // box, so `push` on it appends in place.
     pending: List<Cell<List<Key>>>,
     open: List<Key>,
+    // The open queries' own ids, parallel to `pending`/`open` — a
+    // repeat read's LAST-READER STAMP (on `QueryCell`) is compared
+    // against `reading.last()`, never against the key itself, so
+    // recognizing "I already recorded this" costs one int compare.
+    reading: List<int>,
+    next_reader: int,
     hits: int,
     misses: int,
 }
@@ -60,6 +69,8 @@ export fn new_kernel() -> Kernel {
         verifiers: [],
         pending: [],
         open: [],
+        reading: [],
+        next_reader: 0,
         hits: 0,
         misses: 0,
     }
@@ -97,27 +108,43 @@ impl Kernel {
 
     fn set_input(key: Key, value_hash: int) {
         mut s = self.snapshot()
-        let prior: QueryCell? = state_cell(s, key)
-        if prior != null && prior!.value_hash == value_hash {
+        let prior? = state_cell(s, key) else {
+            let rev = state_revision(s)
             write_cell(
                 s,
                 key,
                 QueryCell {
                     deps: [],
-                    changed_at: prior!.changed_at,
-                    verified_at: state_revision(s),
+                    changed_at: rev,
+                    verified_at: rev,
                     value_hash: value_hash,
+                    last_reader: 0,
                 },
             )
             self.replace(s)
             return
         }
-        if prior != null { s.rev = state_revision(s) + 1 }
+        if prior.value_hash == value_hash {
+            write_cell(
+                s,
+                key,
+                prior with { deps: [], verified_at: state_revision(s), value_hash: value_hash },
+            )
+            self.replace(s)
+            return
+        }
+        s.rev = state_revision(s) + 1
         let rev = state_revision(s)
         write_cell(
             s,
             key,
-            QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash },
+            QueryCell {
+                deps: [],
+                changed_at: rev,
+                verified_at: rev,
+                value_hash: value_hash,
+                last_reader: prior.last_reader,
+            },
         )
         self.replace(s)
     }
@@ -172,6 +199,8 @@ impl Kernel {
         let none: List<Key> = []
         s.pending.push(Cell.new(none))
         s.open.push(key)
+        s.next_reader = s.next_reader + 1
+        s.reading.push(s.next_reader)
         self.replace(s)
     }
 
@@ -179,8 +208,23 @@ impl Kernel {
         mut s = self.snapshot()
         let deps: List<Key> = s.pending.pop().get()
         let _ = s.open.pop()
-        let prior: QueryCell? = state_cell(s, key)
-        let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { state_revision(s) }
+        let _ = s.reading.pop()
+        let prior? = state_cell(s, key) else {
+            write_cell(
+                s,
+                key,
+                QueryCell {
+                    deps: deps,
+                    changed_at: state_revision(s),
+                    verified_at: state_revision(s),
+                    value_hash: value_hash,
+                    last_reader: 0,
+                },
+            )
+            self.replace(s)
+            return
+        }
+        let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
         write_cell(
             s,
             key,
@@ -189,18 +233,29 @@ impl Kernel {
                 changed_at: changed,
                 verified_at: state_revision(s),
                 value_hash: value_hash,
+                last_reader: prior.last_reader,
             },
         )
         self.replace(s)
     }
 
-    /// One read's dependency, appended to the OPEN query's list. The list
-    /// lives in a `Cell`, so the append is in place and the state is not
-    /// written at all: routing it through the shared record copied the
-    /// whole list per read.
+    /// One read's dependency, appended to the OPEN query's list — unless
+    /// the LAST-READER STAMP on `key`'s own cell already names the
+    /// currently open query, in which case this is a repeat read within
+    /// the same query and nothing is appended. The list lives in a
+    /// `Cell`, so the append (like the stamp write) is in place and the
+    /// state itself is never written: routing either through the shared
+    /// record would copy the whole thing per read.
     fn record_dep(key: Key) {
-        let s = self.snapshot()
+        mut s = self.snapshot()
         if s.pending.is_empty() { return }
+        let reader = s.reading.last() ?? 0
+        let cell? = state_cell(s, key) else {
+            s.pending.last()!.push(key)
+            return
+        }
+        if cell.last_reader == reader { return }
+        write_cell(s, key, cell with { last_reader: reader })
         s.pending.last()!.push(key)
     }
 
