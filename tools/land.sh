@@ -95,11 +95,55 @@ heavy() {
     shift
     log="$(log_of "$name")"
     echo "land: $name …"
-    if sh "$tools_dir/capped.sh" "$log" 2000000 sh "$tools_dir/slot.sh" 2 "$@"; then
+    # `st=$?` reads IMMEDIATELY after the command, never after an
+    # `if …; then … fi` wrapped around it — inside a FUNCTION, `wait`
+    # in particular loses that status by the time `fi` is reached
+    # (confirmed: `if wait "$pid"; then …; fi; st=$?` answered 0 for a
+    # job that had actually failed, called from a function, gone once
+    # `st=$?` moved to read `wait`'s own line directly); the same safe
+    # shape is used here too rather than trust that a plain command
+    # in the condition is exempt.
+    sh "$tools_dir/capped.sh" "$log" 2000000 sh "$tools_dir/slot.sh" 2 "$@"
+    st=$?
+    if [ "$st" -eq 0 ]; then
         echo "land: $name OK"
         return 0
     fi
+    fail_report "$name" "$st" "$log"
+    return "$st"
+}
+
+# `heavy`'s BACKGROUND half: starts the same capped, slotted command
+# but does not wait — called directly (never through a `$( … )`
+# capture, which would fork a subshell and re-parent the job the
+# instant that subshell exits, so a later `wait` on it would not be
+# this shell's own child any more). Sets the global `bg_pid`; the
+# caller reads it before starting the next background job.
+heavy_bg() {
+    name="$1"
+    shift
+    log="$(log_of "$name")"
+    echo "land: $name (background) …"
+    sh "$tools_dir/capped.sh" "$log" 2000000 sh "$tools_dir/slot.sh" 2 "$@" &
+    bg_pid=$!
+}
+
+# `wait_heavy <name> <pid>` — the other half of `heavy_bg`: blocks for
+# that one job, reports and returns its real status the same way
+# `heavy` does for a foreground one. `st=$?` reads `wait`'s status on
+# the line right after it, never through an `if wait …; then … fi` —
+# witnessed answering 0 for a genuinely failed job when read that way
+# from inside a function.
+wait_heavy() {
+    name="$1"
+    pid="$2"
+    log="$(log_of "$name")"
+    wait "$pid"
     st=$?
+    if [ "$st" -eq 0 ]; then
+        echo "land: $name OK"
+        return 0
+    fi
     fail_report "$name" "$st" "$log"
     return "$st"
 }
@@ -248,9 +292,15 @@ merge_main_in() {
 }
 
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
-# A cache entry is not yet keyed by the compiler that wrote it, so a
-# newer compiler can decode an older one's (avra-8sb5.57.24/.25) —
-# drop this step once every entry carries the compiler print.
+# avra-8sb5.57.25 (compiler print folded into every durable key) is
+# CLOSED, on main — a newer compiler no longer decodes an older one's
+# row. avra-8sb5.57.24 is NOT: the same trap still reproduces WITHIN
+# one compiler's own store (avra test and avra check share a record
+# key over a different analysis view — test files in or out — so a
+# check after a test in the same tree can still index past a row's
+# end). This sweep, before the build, stays until .24 itself closes;
+# the SECOND sweep below (between the suites and the keepers) is the
+# other half of guarding against .24 specifically.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
@@ -306,21 +356,53 @@ build_generation() {
 }
 
 # ── AFFECTED-PACKAGE TESTS ─────────────────────────────────────────────
-run_affected_tests() {
+# THE AFFECTED PACKAGES' TESTS, TOGETHER WITH `make idioms` —
+# CONCURRENT, since a package's test run and idioms' own whole-tree
+# check are both READS of the same built tree, and reading needs no
+# exclusion from another read. std-avrac's and cli's own suites join
+# idioms in that first concurrent batch by name (the two heaviest,
+# and the compiler's own two homes); every OTHER affected package's
+# suite follows the same shape but is not named ahead of time, so it
+# runs after — still through `heavy`, still slotted, just not
+# started in the same breath as the named three. Every background job
+# still counts against tools/slot.sh's own machine-wide limit, so
+# "concurrent" here means "not serialized by land.sh", not "unbounded".
+run_checks() {
     wt="$1"
     base_sha="$2"
     head_sha="$3"
+    suffix="$4"
     affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt")"
-    if [ -z "$(printf '%s' "$affected" | tr -d '[:space:]')" ]; then
-        echo "land: no package affected — nothing to test"
-        return 0
-    fi
-    fails=0
+
+    named_pids=""
+    named_names=""
+    other=""
     for pkg in $affected; do
-        if ! heavy "test-$pkg" sh -c "cd '$wt' && build/avra test packages/$pkg"; then
-            fails=1
-        fi
+        case "$pkg" in
+            std-avrac|cli)
+                heavy_bg "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
+                named_pids="$named_pids $bg_pid"
+                named_names="$named_names test-$pkg$suffix"
+                ;;
+            *) other="$other $pkg" ;;
+        esac
     done
+    heavy_bg "idioms$suffix" sh -c "cd '$wt' && make idioms"
+    named_pids="$named_pids $bg_pid"
+    named_names="$named_names idioms$suffix"
+
+    fails=0
+    set -- $named_names
+    for pid in $named_pids; do
+        job="$1"
+        shift
+        wait_heavy "$job" "$pid" || fails=1
+    done
+
+    for pkg in $other; do
+        heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg" || fails=1
+    done
+
     [ "$fails" -eq 0 ]
 }
 
@@ -355,26 +437,58 @@ run_pipeline() {
         fi
     fi
 
-    if ! run_affected_tests "$branch_wt" "$old_main_sha" "$new_branch_sha"; then
-        echo "land: an affected package's tests failed" >&2
+    # A SECOND sweep, before the checks: `avra test` (test files
+    # included) and `avra check` (without them) share a record key
+    # over a different analysis view, so a check run after a test in
+    # the same tree traps — "index N is out of bounds"
+    # (avra-8sb5.57.24, still open — .25's compiler-print key closed a
+    # DIFFERENT hole and did not reach this one). This used to sit
+    # between the test suites and `make idioms` when they ran in that
+    # order; now that idioms and the suites run CONCURRENTLY (below),
+    # "between" them is not a place any more — sweeping once here,
+    # right before the whole batch, gives every one of them a clean
+    # cache to start from, the same protection under the new shape.
+    # Drop this sweep once test and check records are keyed apart;
+    # drop the FIRST sweep too at that point, since .24 is the only
+    # reason either one still runs (see that step's own comment).
+    light "caches-aside-2$suffix" move_caches_aside "$branch_wt"
+
+    if ! run_checks "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix"; then
+        echo "land: a check failed (an affected package's tests, or idioms)" >&2
         return 1
     fi
 
-    # A SECOND sweep, between the test suites and the keepers: `avra
-    # test` (test files included) and `avra check` (without them)
-    # share a record key, so a check run after a test in the same
-    # tree traps — "index N is out of bounds" (avra-8sb5.57.24) — drop
-    # this once test and check records are keyed apart.
-    light "caches-aside-2$suffix" move_caches_aside "$branch_wt"
-
-    heavy "idioms$suffix" sh -c "cd '$branch_wt' && make idioms"
     heavy "fmt-lossless$suffix" sh -c "cd '$branch_wt' && make fmt-lossless"
     heavy "cache-attacks$suffix" sh -c "cd '$branch_wt' && make cache-attacks"
 
-    heavy "seed-emit$suffix" sh -c "cd '$branch_wt' && make seed"
-    light "seed-commit$suffix" commit_seed_if_moved "$branch_wt" "$branch"
+    seed_policy "$branch_wt" "$suffix"
+}
 
-    heavy "seed-check$suffix" sh -c "cd '$branch_wt' && make seed-check"
+# ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
+# `tools/seed_guard.sh` now REPORTS a lagging seed rather than
+# refusing it (SEED_STRICT=1 restores the refusal) — "the seed
+# compiles HEAD" stays the hard gate, which `make seed-check` alone
+# still tests. Re-emitting on EVERY landing paid for a whole-package
+# `avra emit` whether or not the seed had actually moved; checking
+# first and emitting only when the check fails pays that cost only
+# when it is owed. The FIRST check's own failure is not reported as a
+# land failure — it is the ordinary signal to refresh — so it runs
+# quietly, capped and slotted like any heavy step, but through its own
+# name; only a check that STILL fails after a fresh emit is fatal.
+seed_policy() {
+    wt="$1"
+    suffix="$2"
+    log1="$(log_of "seed-check$suffix")"
+    echo "land: seed-check (first pass) …"
+    if sh "$tools_dir/capped.sh" "$log1" 2000000 sh "$tools_dir/slot.sh" 2 sh -c "cd '$wt' && make seed-check"; then
+        echo "land: seed-check passed on the first try — seed already matches HEAD, no emit"
+        return 0
+    fi
+    echo "land: seed-check failed on the first try — the seed lags HEAD; re-emitting"
+    heavy "seed-emit$suffix" sh -c "cd '$wt' && make seed"
+    light "seed-commit$suffix" commit_seed_if_moved "$wt" "$branch"
+    heavy "seed-check-2$suffix" sh -c "cd '$wt' && make seed-check"
+    echo "land: seed-check passed after a fresh emit"
 }
 
 try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }

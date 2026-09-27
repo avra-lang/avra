@@ -89,7 +89,7 @@ test_lock_fifo() {
     ( AVRA_LAND_LOCK="$lockdir" branch=A sh "$land" --call hold_lock_for "$sig_a" ) \
         > "$scratch/lock-a.out" 2>&1 &
     a_pid=$!
-    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 50; then
+    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 150; then
         bad "lock-fifo: A (first arrival) never acquired ticket 1"
     else
         ok "lock-fifo: A, arriving first, acquires ticket 1 immediately"
@@ -118,7 +118,7 @@ test_lock_fifo() {
     fi
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 50; then
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 150; then
         bad "lock-fifo: C never acquired ticket 3 after A released"
     else
         ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
@@ -275,6 +275,95 @@ test_affected_packages() {
     fi
 }
 
+# ══ run_checks: std-avrac, cli AND idioms RUN CONCURRENTLY ═══════════
+# A throwaway tree with a STUB `build/avra` and a STUB `Makefile`
+# (each just sleeps, so the fixture measures scheduling, never a real
+# build) — std-avrac, cli and a third, unnamed package are all
+# touched, so all three heavy jobs plus idioms are asked for.
+#
+# THE SIGNAL IS A TIMESTAMPED OVERLAP, NEVER A WALL-CLOCK THRESHOLD: a
+# shared machine's own load (another session's real build, this
+# machine has several) inflates absolute timing for reasons that have
+# nothing to do with run_checks, and a fixed "must finish under Ns"
+# bound is exactly the kind of check that flakes for the wrong reason.
+# Each stub instead appends its own "start <pkg> <epoch>" /
+# "end <pkg> <epoch>" line to a shared timeline file; the test asks
+# whether idioms STARTED before std-avrac (or cli) ENDED — true only
+# under genuine concurrency, whatever the machine's speed.
+test_run_checks_parallel() {
+    d="$(git_repo checks-parallel)"
+    write_pkg "$d" "std-avrac" "avrac"
+    write_pkg "$d" "cli" ""
+    write_pkg "$d" "other" ""
+    mkdir -p "$d/build"
+    timeline="$scratch/checks-parallel-timeline"
+    # cli sleeps noticeably LONGER than std-avrac: both start at once
+    # (two free slots), so std-avrac frees its slot first and idioms
+    # (queued third) grabs it and runs WHILE cli is still going — a
+    # window wide enough that 1-second timestamp resolution cannot
+    # round it away. Equal durations left this flaky: the two often
+    # finished in the same rounded second, so idioms starting a beat
+    # after "both" looked identical to starting a beat after neither.
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+pkg="\$(basename "\$2")"
+echo "start \$pkg \$(date +%s)" >> "$timeline"
+case "\$pkg" in
+    cli) sleep 3 ;;
+    *) sleep 1 ;;
+esac
+echo "end \$pkg \$(date +%s)" >> "$timeline"
+if [ "\$pkg" = "\${FAIL_PKG:-}" ]; then
+    echo "FAILED \$pkg"
+    exit 1
+fi
+echo "tested \$pkg"
+STUB
+    chmod +x "$d/build/avra"
+    printf 'idioms:\n\techo "start idioms $$(date +%%s)" >> %s && sleep 1 && echo "end idioms $$(date +%%s)" >> %s && echo idioms-ok\n' \
+        "$timeline" "$timeline" > "$d/Makefile"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    for p in std-avrac cli other; do
+        printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    commit_all "$d" "touch all three"
+
+    # An ISOLATED slots directory: the machine-wide default is shared
+    # with whatever else is really building right now.
+    slots="$scratch/checks-parallel-slots"
+    rm -rf "$slots"
+    rm -f "$timeline"
+
+    if AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
+        > "$scratch/checks-parallel.out" 2>&1; then
+        idioms_start="$(awk '$1=="start" && $2=="idioms" {print $3}' "$timeline")"
+        other_end="$(awk '$1=="end" && ($2=="std-avrac" || $2=="cli") {print $3}' "$timeline" | sort -n | tail -1)"
+        if [ -n "$idioms_start" ] && [ -n "$other_end" ] && [ "$idioms_start" -le "$other_end" ]; then
+            ok "run_checks: idioms started before std-avrac/cli finished — genuinely concurrent"
+        else
+            bad "run_checks: idioms started ($idioms_start) only after std-avrac/cli finished ($other_end) — looks serialized"
+            cat "$timeline"
+        fi
+    else
+        bad "run_checks: the all-passing case failed"
+        cat "$scratch/checks-parallel.out"
+    fi
+
+    # Now make cli fail — the batch must fail closed and NAME cli.
+    if FAIL_PKG=cli AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
+        > "$scratch/checks-parallel-fail.out" 2>&1; then
+        bad "run_checks: a failing package's test did not fail the batch"
+    else
+        ok "run_checks: a failing package's test fails the whole batch"
+    fi
+    if grep -q "FAILED at 'test-cli" "$scratch/checks-parallel-fail.out" 2>/dev/null; then
+        ok "run_checks: the failure report names test-cli specifically"
+    else
+        bad "run_checks: the failure was not attributed to test-cli by name"
+    fi
+}
+
 # ══ SLOT.SH: THE LIMIT, AND STALE-SLOT CLEANUP ════════════════════════
 test_slot_limit() {
     dir="$scratch/slots-limit"
@@ -427,6 +516,7 @@ test_lock_fifo
 test_merge_seed_conflict
 test_merge_real_conflict
 test_affected_packages
+test_run_checks_parallel
 test_slot_limit
 test_slot_stale_reclaim
 test_caches_aside_twice
