@@ -19,6 +19,7 @@ use core.{
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
+use @std.time.{now_ns}
 use compiler.backend.{
     emit_object,
     objects_made,
@@ -98,6 +99,20 @@ export type CaseHome = { call: CaseCall, path: string }
 /// the linker the host found.
 export type Toolchain = { opt: string, runtime: string, linker: string }
 
+impl Workspace {
+    /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
+    /// every durable key this build folds it into (a module's record, a
+    /// canonical-format row, a lex-level scan) pays the roll's cost once,
+    /// not once per row. `build_cache_root` is the one caller that turns it
+    /// into a directory; every other durable key folds it in directly, so a
+    /// row's key still says which compiler wrote it even if its STORE were
+    /// ever shared across generations.
+    fn compiler_id() -> string {
+        if self.keys.compiler_id.get() == "" { self.keys.compiler_id.set(compiler_print(self)) }
+        self.keys.compiler_id.get()
+    }
+}
+
 /// WHERE A TREE'S ARTIFACTS LIVE — one place for the whole checkout, so a
 /// dependency's artifacts serve every package that reaches it, and it dies with
 /// the worktree. A STORE IS ONE COMPILER'S: every row is the work of the
@@ -106,7 +121,7 @@ export type Toolchain = { opt: string, runtime: string, linker: string }
 /// compiles every body with it.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its store's directory out.
 export fn build_cache_root(ws: Workspace) -> string {
-    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(joined_path(stores_dir(ws), compiler_print(ws))) }
+    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(joined_path(stores_dir(ws), ws.compiler_id())) }
     ws.keys.store_root.get()
 }
 
@@ -117,28 +132,54 @@ fn stores_dir(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache
 /// How many compilers' stores a tree keeps — the newest.
 const STORES_KEPT: int = 4
 
-/// The store of a host that names no compiler: a test's, in memory.
-const UNNAMED_STORE: string = "shared"
+/// A leftover directory an older build once named this way — kept out of
+/// the sweep so an upgrade does not delete it out from under a reader
+/// mid-run; nothing writes here any more (see `unnamed_print`).
+const LEGACY_UNNAMED_STORE: string = "shared"
 
-/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, kept on the
-/// tree's ROLL beside the binary's stamp, so an unmoved compiler is not read to
-/// be named. The roll lists the stores kept, newest last.
+/// A SERIAL FOR THIS PROCESS ALONE — `now_ns()`'s own clock cannot be
+/// trusted to tell two calls apart (a wall clock's resolution is not a
+/// promise), so an unnamed print is never the timestamp alone.
+once fn unnamed_serial() -> Cell<int> { Cell.new(0) }
+
+/// THE PRINT OF A COMPILER THIS PROCESS CANNOT IDENTIFY — a host with no
+/// binary to name (a test's, in memory) or one whose binary this process
+/// could not read back. NEVER A SHARED CONSTANT: two such runs are two
+/// different compilers for all this door knows, so trusting one's rows
+/// for the other is exactly the hazard this file exists to refuse — a
+/// nonce this process mints once (`compiler_id`'s memoization) and never
+/// rolls, so it is never mistaken for a real compiler's print and never
+/// read back by a later process either. THE SERIAL, NOT THE CLOCK, IS
+/// WHAT MAKES TWO ASKS IN ONE PROCESS DISAGREE: two workspaces built
+/// back to back can land in the same tick of a coarse wall clock.
+fn unnamed_print() -> string {
+    let serial = unnamed_serial()
+    let n = serial.get() + 1
+    serial.set(n)
+    "unnamed-${now_ns()}-${n}"
+}
+
+/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, hashed FRESH
+/// every ask. A STAMP-KEYED SHORTCUT STOOD HERE ONCE, trusting a size/time/inode
+/// match to skip the hash — the `compiler_id()` memoization already pays that
+/// hash at most once a workspace, and the shortcut bought a few milliseconds
+/// against a law it could not keep: a rebuilt binary at the SAME path can land
+/// on a stamp the roll already holds (an adversarial host proves it outright,
+/// and the field's own "index N is out of bounds" traps are what a live
+/// two-generation rebuild produces when this exact door lies). A stamp match
+/// is a claim about the bytes, never the bytes; only the digest is. The roll
+/// still lists the stores kept, newest last, so `rolled`'s sweep still knows
+/// what to keep.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its compiler's print out.
 fn compiler_print(ws: Workspace) -> string {
-    let at? = ws.host.compiler else { return UNNAMED_STORE }
+    let at? = ws.host.compiler else { return unnamed_print() }
     let roll = joined_path(stores_dir(ws), "compilers")
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
-    // a binary that just moved has no stamp: it is read, and its line matches no later ask
-    let stamp: int? = ws.host.stamp(at)
-    let mark = if stamp == null { "" } else { "${stamp!}" }
-    let known: string? = if stamp == null { null } else { lines.find(it.ends_with("\t${at}\t${mark}")) }
-    if known != null && lines.last() == known { return print_of(known!) }
-    let print = if known != null { print_of(known!) } else { digest_of_binary(at) }
-    if print == UNNAMED_STORE { return print }
+    let print? = digest_of_binary(at) else { return unnamed_print() }
     rolled(
         ws,
         roll,
-        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}\t${mark}"]),
+        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}"]),
     )
     print
 }
@@ -146,11 +187,11 @@ fn compiler_print(ws: Workspace) -> string {
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
 
-/// A binary's bytes as one digest — unnamed when it cannot be read.
-fn digest_of_binary(at: string) -> string {
+/// A binary's bytes as one digest — null when it cannot be read back.
+fn digest_of_binary(at: string) -> string? {
     match read_bytes(at) {
         .Ok(bytes) -> digest_key(digest_bytes(new_digest(), bytes)),
-        .Err(_) -> UNNAMED_STORE,
+        .Err(_) -> null,
     }
 }
 
@@ -161,7 +202,7 @@ fn rolled(ws: Workspace, roll: string, lines: List<string>) {
     let kept = lines
         .slice(if lines.length > STORES_KEPT { lines.length - STORES_KEPT } else { 0 }, lines.length)
     let _ = ws.host.write(roll, joined(kept, "\n"))
-    let named = [print_of(line) for line in kept].concat(["compilers", UNNAMED_STORE])
+    let named = [print_of(line) for line in kept].concat(["compilers", LEGACY_UNNAMED_STORE])
     for name in ws.host.list(stores_dir(ws)) {
         if !named.contains(name) { let _ = avra_spawn_status("rm", ["-rf", joined_path(stores_dir(ws), name)]) }
     }
@@ -260,12 +301,23 @@ impl Workspace {
 
     /// THE PROGRAM'S KEY — every input's path, length and digest, under what
     /// names the program: a whitespace-only edit moves it. `beside` are inputs
-    /// that are not sources.
+    /// that are not sources. THIS COMPILER'S OWN PRINT JOINS FIRST: a kept
+    /// binary is this generation's object code and a kept `Warn` row is this
+    /// generation's diagnostic wording, so both are keyed by the compiler
+    /// that made them, not only by the store root they happen to sit under.
     fn program_key(named: string, beside: List<string>) -> string {
         let named_inputs = self.build_inputs(named).concat(beside)
         let inputs = joined([self.input_line(f) for f in named_inputs], "\n")
         self.keep_stamps(named_inputs)
-        digest_key(digest_text(digest_text(new_digest(), relative_path(self.root, named)), inputs))
+        digest_key(
+            digest_text(
+                digest_text(
+                    digest_text(new_digest(), self.compiler_id()),
+                    relative_path(self.root, named),
+                ),
+                inputs,
+            ),
+        )
     }
 
     fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }

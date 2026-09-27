@@ -85,7 +85,16 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{new_kernel, Key, Memo, new_memo}
+use query.{
+    new_kernel,
+    Key,
+    Memo,
+    new_memo,
+    Fixpoint,
+    new_fixpoint,
+    FixpointRefusal,
+    spoken as fixpoint_spoken,
+}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -110,10 +119,12 @@ type ExternNames = { decls: int, names: List<string> }
 
 /// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
 /// file's object key and text digest (record.av's key derivations), the
-/// tree's stamps and where this compiler's store stands (build.av). Cleared
-/// piecemeal by `keep_interfaces`: `object_keys` every record write, the rest
-/// only when a record's SEEN part (its interface or imports) moved.
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, stamped: Cell<Map<string, string>>, stamps_at: Cell<int>, store_root: Cell<string> }
+/// tree's stamps, where this compiler's store stands and this compiler's
+/// own print (build.av — `compiler_id` is never cleared: the running
+/// binary cannot move mid-process). Cleared piecemeal by
+/// `keep_interfaces`: `object_keys` every record write, the rest only
+/// when a record's SEEN part (its interface or imports) moved.
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, stamped: Cell<Map<string, string>>, stamps_at: Cell<int>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -129,6 +140,7 @@ fn new_keys() -> Keys {
         stamped: Cell.new(no_stamps),
         stamps_at: Cell.new(0),
         store_root: Cell.new(""),
+        compiler_id: Cell.new(""),
     }
 }
 
@@ -261,11 +273,18 @@ export type Workspace = {
     folded_memo: Memo<DbRow>,
     analysis_memo: Memo<DbRow>,
     asks: Cell<List<Wanted>>,
+    /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
+    /// than scanning the whole table on every ask.
+    asks_index: Cell<Map<string, int>>,
     lowered_memo: Memo<DbRow>,
     lift_asks: Cell<List<LiftAsk>>,
+    /// `lift_asks`' own name -> index (`lifted`'s interning).
+    lift_asks_index: Cell<Map<string, int>>,
     lifted_memo: Memo<DbRow>,
     expanded_memo: Memo<DbRow>,
     settle_asks: Cell<List<SettleAsk>>,
+    /// `settle_asks`' own name -> index (`settle_id`'s interning).
+    settle_asks_index: Cell<Map<string, int>>,
     settled_memo: Memo<DbRow>,
     /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
     records: Records,
@@ -294,6 +313,15 @@ export type Workspace = {
     closed: Cell<bool>,
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
+    /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
+    /// appended by `fail_summary` (failures.av) — the plain table
+    /// `@relation` will replace once M5 lands; the accessors built on
+    /// it (`raised_by`, `error_sites_by_callee`, `error_sites_within`)
+    /// keep their names across that swap.
+    error_sites: Cell<List<ErrorSite>>,
+    /// M6 PREP: the whole-program raised-error fixpoint, over
+    /// `error_sites` — `raised_by`'s own table.
+    raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -410,6 +438,13 @@ enum Family {
     /// a `Result<T, _>`'s inferred error set — the whole-program
     /// fixpoint, one key for the entire program
     Failures
+    /// a held declaration's sig — its module's stored record, one key
+    /// per module, asked fresh every time `sig()` reads a held decl
+    HeldSig
+    /// M6 PREP: `Fixpoint<List<TypeId>>`'s own dense per-member space
+    /// for the whole-program raised-error fixpoint — one key per
+    /// `_`-declared fn, touched only from inside its own `solve`.
+    Raised
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -447,6 +482,8 @@ fn ordinal(f: Family) -> int {
         .Plain -> 18,
         .References -> 19,
         .Failures -> 20,
+        .HeldSig -> 21,
+        .Raised -> 22,
     }
 }
 
@@ -474,6 +511,8 @@ fn families() -> List<Family> {
         Family.Plain,
         Family.References,
         Family.Failures,
+        Family.HeldSig,
+        Family.Raised,
     ]
     all
 }
@@ -541,8 +580,11 @@ fn built(
 ) -> Workspace {
     let kernel = new_kernel()
     let no_asks: List<Wanted> = []
+    let no_asks_index: Map<string, int> = {}
     let no_lifts: List<LiftAsk> = []
+    let no_lift_index: Map<string, int> = {}
     let no_settles: List<SettleAsk> = []
+    let no_settle_index: Map<string, int> = {}
     let no_method_diags: List<MethodDiagIndex> = []
     let no_module_names_of: Map<string, string> = {}
     let no_files_of: Map<string, List<string>> = {}
@@ -578,10 +620,13 @@ fn built(
         analysis_memo: new_memo<DbRow>(kernel, ordinal(Family.Analysis)),
         lowered_memo: new_memo<DbRow>(kernel, ordinal(Family.Lowered)),
         asks: Cell.new(no_asks),
+        asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
+        lift_asks_index: Cell.new(no_lift_index),
         lifted_memo: new_memo<DbRow>(kernel, ordinal(Family.Lifted)),
         expanded_memo: new_memo<DbRow>(kernel, ordinal(Family.Expanded)),
         settle_asks: Cell.new(no_settles),
+        settle_asks_index: Cell.new(no_settle_index),
         settled_memo: new_memo<DbRow>(kernel, ordinal(Family.Settled)),
         records: new_records(),
         keys: new_keys(),
@@ -598,6 +643,8 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
+        error_sites: list_cell(),
+        raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -761,6 +808,8 @@ impl Workspace {
             .Plain -> touch(self.plain_parsed(file_at(arg))),
             .References -> touch(self.references()),
             .Failures -> touch(self.failures()),
+            .HeldSig -> touch(self.held_sig(module_at(arg))),
+            .Raised -> touch(self.raised_by(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1257,7 +1306,10 @@ impl Workspace {
     fn sig(d: DeclId) -> DeclSig? {
         let k = key(Family.Sig, d.index)
         let x = self.decls.decl(d)
-        if self.is_held(x.file) { return self.decls.sigs.get()[d.index] }
+        if self.is_held(x.file) {
+            self.held_sig_dep(x.file)
+            return self.decls.sigs.get()[d.index]
+        }
         // the language's own declarations were signed at admission
         if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
             return self.decls.sigs.get()[d.index]
@@ -1269,6 +1321,31 @@ impl Workspace {
         let out: DeclSig? = self.decls.sigs.get()[d.index]
         self.db.settle(k, sig_hash(out))
         out
+    }
+
+    /// A held declaration's sig came from its module's stored record —
+    /// a read `sig()` was about to make silently, with no dependency
+    /// for whichever query asked. Recorded once per module per
+    /// revision, against the module's CURRENT record text, so a caller
+    /// asking this compile's own Kernel sees an edge to it, not
+    /// nothing (§2.5, limit 1).
+    fn held_sig_dep(f: FileId) {
+        let _ = self.held_sig(self.decls.file(f).module_id)
+    }
+
+    /// The verified read: asks the Kernel, reading the module's record
+    /// only on a real miss. `refetched`'s own re-derivation for this
+    /// family, so a re-ask through the Kernel's verifier matches a
+    /// direct one exactly.
+    fn held_sig(mid: ModuleId) -> string {
+        let name = self.decls.module_name(mid)
+        let store? = self.store.get() else { return name }
+        let hk = key(Family.HeldSig, mid.index)
+        if !(self.db.ask(hk) is .Compute) { return name }
+        self.db.begin(hk)
+        let text = record_cached(self, store, module_path(segments_of(name)))
+        self.db.settle(hk, fp_str(text))
+        name
     }
 
     /// A type's method table, filled from its own members and every

@@ -36,9 +36,11 @@ fn sampled_use() -> string {
 /// The fixtures the REAL `@std/meta` deliberately has not: a `Decl`
 /// LOOKALIKE (the real package refuses that name — a collision would
 /// arm a counterfeit), a trait whose `derive` makes a twin, one that
-/// declares none, and an annotation taking a list.
+/// declares none, an annotation taking a list, and two twins that
+/// name a seat no written binding can take: its OWN annotated fn, and
+/// an unrelated one already in the file.
 fn meta_probes() -> string {
-    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"frozen\", \"widened\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }\n"
+    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"frozen\", \"widened\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\nexport fn other_twin(f: Fn) -> List<Directive> { [Directive { twin: \"already\", name: f.name, at: f.at }] }\n"
 }
 
 /// A source through the printer — the parse read back, so a mark's
@@ -149,6 +151,25 @@ spec "features/annotations — the compile-time call's laws" {
             )
         }
     }
+    given "a declaring annotation the laws refuse never runs" {
+        then "one argument too many is one refusal — the lift does not read past its seats" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "@traced(\"a\", \"b\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+                ),
+                "takes 1 after the declaration, this writes 2",
+                1,
+            )
+        }
+        then "a receiver its seat refuses is one refusal — nothing is generated over it" {
+            refused_n(
+                packaged(directive_use() + "@traced(\"a\")\ntype P = { x: int }\n1"),
+                "takes `Fn`, and this is a type",
+                1,
+            )
+        }
+    }
     given "the remaining seats and answer" {
         then "written arguments fill every remaining seat" {
             refused(
@@ -239,6 +260,26 @@ spec "features/annotations — the compile-time call's laws" {
             refused_n(
                 packaged(sampled_use() + "@sampled([1, 2])\nfn answer() -> int { 1 }\nanswer()"),
                 "generates declarations, so its arguments come from the source alone",
+                1,
+            )
+        }
+        then "a twin naming the annotated fn's OWN name is refused, not silently doubled" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{same_twin}\n@same_twin\nfn raised_by(n: int) -> int { n }\nraised_by(1)",
+                ),
+                "`@same_twin` generates `raised_by`, which this file already declares",
+                1,
+            )
+        }
+        then "a twin naming ANY OTHER written binding is refused the same way" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{other_twin}\nfn already() -> int { 0 }\n@other_twin\nfn raised_by(n: int) -> int { n }\nraised_by(1) + already()",
+                ),
+                "`@other_twin` generates `already`, which this file already declares",
                 1,
             )
         }

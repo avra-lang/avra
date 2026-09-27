@@ -129,13 +129,27 @@ impl Workspace {
         DeclId,
     > {
         let ann = self.decls.decl(w.ann).name
-        let source? = directive.source else { return self.twinned(f, w, directive, ann) }
+        let source? = directive.source else { return self.twinned(f, w, directive, ann, vis) }
         self.admit_code(f, source.node, ann, w.at, vis)
     }
 
     /// The fn a directive asks for beside the original, when it asks.
-    fn twinned(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
+    /// A TWIN NAMES A SEAT NO WRITTEN BINDING TAKES: one already does
+    /// (the annotated fn's own name, most often — `twin: f.name` asks
+    /// for itself) silently drops the WRITTEN one at every caller (the
+    /// two-tier lookup always prefers it), so the annotation's own
+    /// contract is refused here rather than left to mint a second,
+    /// unreachable declaration nobody can call.
+    fn twinned(f: FileId, w: DeclareWork, directive: Directive, ann: string, vis: Namespace) -> List<
+        DeclId,
+    > {
         if directive.twin.is_empty() { return [] }
+        if vis.names(directive.twin) {
+            self
+                .decls
+                .speak_expansion(f, [generated_taken(ann, directive.twin, loc_at(self.decls.file(f).path, w.at))])
+            return []
+        }
         [
             self
                 .decls
@@ -557,6 +571,7 @@ impl Workspace {
     /// decl's own file supplies the parse it reads.
     fn crossed_decl_of(d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
+        if !self.decls.seat_takes(want, x.kind) { return MetaVal.Absent }
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
@@ -580,6 +595,7 @@ impl Workspace {
                     at: at,
                     doc: self.decl_doc_text(d),
                     annotations: self.decl_annotations(v, d),
+                    module: self.decls.qualified_module(d),
                 },
                 heap,
             ),
