@@ -219,3 +219,60 @@ spec "compiler/references — a written type names a declaration too" {
         }
     }
 }
+
+spec "compiler/references — an annotation's own name is a use too (avra-8sb5.25.70)" {
+    given "an import named only as a Declares annotation over a FN" {
+        then "unused_imports() is empty" {
+            let text = "use lib.{mark}\n@mark\nfn f() -> int { 0 }\nf()\n"
+            unused_of(
+                {
+                    "/w/src/main.av": text,
+                    "/w/src/lib.av": "use @std.meta.{Fn}\nexport fn mark(f: Fn) { }\n",
+                },
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
+                .is_empty()
+        }
+    }
+    given "an import named only as a Declares annotation over a TYPE" {
+        then "unused_imports() is empty" {
+            let text = "use lib.{mark}\n@mark\ntype T = { x: int }\n0\n"
+            unused_of(
+                {
+                    "/w/src/main.av": text,
+                    "/w/src/lib.av": "use @std.meta.{Type}\nexport fn mark(t: Type) { }\n",
+                },
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
+                .is_empty()
+        }
+    }
+    given "an import named only as a FIELD MARK" {
+        then "unused_imports() is empty — the mark's word reads through it" {
+            let text = "use lib.{index}\ntype Decl = { @index name: string }\n0\n"
+            unused_of(
+                {"/w/src/main.av": text, "/w/src/lib.av": "export fn index() { }\n"},
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
+                .is_empty()
+        }
+        then "a variant's mark reads through the same door" {
+            let text = "use lib.{index}\nenum E {\n    @index A(x: int)\n}\n0\n"
+            unused_of(
+                {"/w/src/main.av": text, "/w/src/lib.av": "export fn index() { }\n"},
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
+                .is_empty()
+        }
+    }
+    given "a mark matching no fn at all — marks stay free names" {
+        then "unused_imports() still names the import — a mark is a heuristic, never a blanket exemption" {
+            let text = "use lib.{other}\ntype Decl = { @index name: string }\n0\n"
+            let dead = unused_of(
+                {"/w/src/main.av": text, "/w/src/lib.av": "export fn other() { }\n"},
+                ["/w/src/main.av", "/w/src/lib.av"],
+            )
+            dead.length == 1 && dead.first() == "other"
+        }
+    }
+}
