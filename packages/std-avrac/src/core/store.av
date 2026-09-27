@@ -457,7 +457,7 @@ impl NodeStore {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -482,7 +482,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .Error -> null,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .Error -> null,
         }
     }
 
@@ -962,7 +962,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -1117,6 +1117,27 @@ impl NodeStore {
             [fp_str(v.name.of), fp_list(self.param_fps(v.payloads)), fp_list(mark_fps(v.marks))],
         ) for v in variants]
     }
+
+    /// A comprehension clause list's fingerprint parts — ONE VALUE
+    /// PER CLAUSE.
+    fn comp_clause_fps(clauses: List<CompClause>) -> List<int> {
+        [self.comp_clause_fp(c) for c in clauses]
+    }
+
+    fn comp_clause_fp(c: CompClause) -> int {
+        match c {
+            .Head(index, name, source, hi) -> fp(
+                151,
+                [
+                    fp_str(index?.of ?? ""),
+                    fp_str(name.of),
+                    self.expr_fingerprint(source),
+                    self.opt_fp(hi),
+                ],
+            ),
+            .Filter(cond) -> fp(152, [self.expr_fingerprint(cond)]),
+        }
+    }
 }
 
 // ── Exact equality, the store-bound half ───────────────────────────
@@ -1156,6 +1177,25 @@ impl NodeStore {
 
     fn exact_arms(a: List<Arm>, b: List<Arm>) -> bool {
         a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_arm(a[k], b[k]))
+    }
+
+    /// A clause's own equality — `comp_clause_fp`'s exact twin.
+    fn exact_comp_clause(a: CompClause, b: CompClause) -> bool {
+        match a {
+            .Head(ai, an, asrc, ahi) -> match b {
+                .Head(bi, bn, bsrc, bhi) -> ai?.of == bi?.of &&
+                    an.of == bn.of &&
+                    self.exact_expr(self.expr(asrc), self.expr(bsrc)) &&
+                    self.exact_opt_expr(ahi, bhi),
+                rest -> false,
+            },
+            .Filter(ac) -> match b { .Filter(bc) -> self.exact_expr(self.expr(ac), self.expr(bc)), rest -> false },
+        }
+    }
+
+    fn exact_comp_clauses(a: List<CompClause>, b: List<CompClause>) -> bool {
+        a.length == b.length &&
+            [i for i in 0..a.length].all((k) -> self.exact_comp_clause(a[k], b[k]))
     }
 
     /// A seat's own equality — `param_fps`'s exact twin.

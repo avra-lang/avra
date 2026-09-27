@@ -522,6 +522,16 @@ fn match_seq<T, N>(
             return ended<T, N>(cx, r.status, cursor, bindings, diagnostics, farthest)
         } else if !anchored {
             return missed<T, N>(cx, entry, entry_bindings, diagnostics, farthest)
+        } else if !diagnostics.is_empty() {
+            // a part already spoke: what fails after it is its consequence
+            if member.expect == null && s.recover == null { return broke<T, N>(cx, cursor, bindings, diagnostics, farthest) }
+            return matched<T, N>(
+                sync_past<T, N>(cx, s.recover?.sync_to ?? "END", entry, cursor),
+                bindings,
+                cx.absent,
+                diagnostics,
+                farthest,
+            )
         } else if member.expect != null {
             // Committed territory: this failure is real — a hole.
             diagnostics
@@ -536,6 +546,8 @@ fn match_seq<T, N>(
                 )
             if member.label != null { bindings = bind_label<T, N>(bindings, member.label!, cx.absent, acc) }
             vals.push(cx.absent)
+            // what is left of a statement that did not end is its own
+            if member.prim.answers_to("END") { cursor = sync_to_end<T, N>(cx, entry, cursor) }
         } else {
             diagnostics.push(committed_failure<T, N>(cx, rule_name, member, r, cursor))
             if s.recover == null { return broke<T, N>(cx, cursor, bindings, diagnostics, farthest) }
@@ -550,6 +562,8 @@ fn match_seq<T, N>(
     let branch = consumed_loc<T>(cx.lex, cx.tokens, entry, cursor)
     match built<T, N>(cx, s, bindings, vals, branch) {
         .Ok(v) -> matched<T, N>(cursor, bindings, v, diagnostics, farthest),
+        // a branch that already spoke has said why — the build it spoils says nothing new
+        .Err(_) if !diagnostics.is_empty() -> matched<T, N>(cursor, bindings, cx.absent, diagnostics, farthest),
         .Err(m) -> {
             diagnostics
                 .push(

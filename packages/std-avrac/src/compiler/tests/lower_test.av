@@ -1,12 +1,14 @@
 // The IR half of compilation: lowering is pure and SSA (an ident IS
 // its definition's register), scopes are structure, and the memory
-// pass releases a scope's managed values at its exit — Application
-// strategy, reverse binding order.
+// pass releases each managed value where it dies — at its last read, or
+// at its scope's exit, in reverse binding order.
 use @std.avrac.core.{
     Ins,
     RtSig,
     Reg,
     TypeId,
+    dst_of,
+    reads_of,
     same_reg,
     distinct,
     lent_args,
@@ -171,7 +173,7 @@ spec "compiler/lower" {
         }
     }
     given "strings under the Application strategy" {
-        then "each managed binding releases once, at scope exit" {
+        then "each managed binding releases once" {
             let l = ir_of("let a = \"x\" + \"1\"\nlet b = \"y\" + \"2\"\nb")
             count_releases(l) == 2
         }
@@ -309,8 +311,8 @@ spec "compiler/lower" {
   r12 = call avra_array_get(r10, r11)
   r13 = call avra_int_text(r12)
   call avra_puts(r13)
-  call avra_cell_release(r4)
   release r13
+  call avra_cell_release(r4)
 }
 ret 0"""
             render_ir(
@@ -594,6 +596,63 @@ spec "a managed read is a borrow" {
             )
         }
     }
+}
+
+spec "a value dies at its last read" {
+    given "a hold taken across a call on `self`, and a write to the same field after it" {
+        then "the hold is released before the write, so the write lands in place" {
+            let open = ir_of(held_then_written()).fns.find(it.name.ends_with("M.open"))
+            open != null && released_before_write(open!.ins)
+        }
+    }
+    given "a payload read out of an enum, used after the enum's own last read" {
+        then "no value read out of a register is read after that register's release" {
+            !view_read_after_release(all_ins(ir_of(payload_read())))
+        }
+    }
+}
+
+fn held_then_written() -> string {
+    "type M = { cells: List<List<int>> }\nimpl M {\n    fn cloned(v: List<int>) -> List<int> { v.concat([]) }\n    mut fn open(id: int) {\n        let fresh = self.cloned(self.cells[id])\n        self.cells.set(id, fresh)\n    }\n}\nmut m = M { cells: [[1]] }\nm.open(0)\nm.cells.length"
+}
+
+fn payload_read() -> string {
+    "enum K {\n    A(w: string)\n    B\n}\ntype S = { k: K, n: int }\nfn made(s: string) -> K { K.A(s + \"!\") }\nlet s = S { k: made(\"x\"), n: 1 }\ns.n"
+}
+
+/// The owned read the hold is taken by is released before the first
+/// write that opens the same box.
+fn released_before_write(ins: List<Ins>) -> bool {
+    let got? = [j for j in 0..ins.length].find((j: int) -> is_owned_get(ins[j])) else { return false }
+    let held? = dst_of(ins[got]) else { return false }
+    let freed? = [j for j in 0..ins.length].find((j: int) -> releases(ins[j], held)) else { return false }
+    let written? = [j for j in 0..ins.length].find((j: int) -> opens_slot(ins[j])) else { return false }
+    freed < written
+}
+
+fn opens_slot(i: Ins) -> bool {
+    match i { .CallRt(_, callee, _) -> callee == "avra_slot_unique", _ -> false }
+}
+
+/// Whether some value read out of a register is read after the
+/// register's release.
+fn view_read_after_release(ins: List<Ins>) -> bool {
+    [j for j in 0..ins.length].any((j: int) -> outlives_its_source(ins, j))
+}
+
+fn outlives_its_source(ins: List<Ins>, at: int) -> bool {
+    let freed? = released_reg(ins[at]) else { return false }
+    let views = flatten([some_list(extracted_from(ins[j], freed)) for j in 0..at])
+    [k for k in at + 1..ins.length]
+        .any((k: int) -> reads_of(ins[k]).any((r: Reg) -> views.any(same_reg(it, r))))
+}
+
+fn released_reg(i: Ins) -> Reg? {
+    match i { .Release(r) -> r, _ -> null }
+}
+
+fn extracted_from(i: Ins, src: Reg) -> Reg? {
+    match i { .Extract(d, s, _) -> if same_reg(s, src) { d } else { null }, _ -> null }
 }
 
 spec "a mut cell's type" {

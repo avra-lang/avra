@@ -357,7 +357,22 @@ impl Decls {
     }
 
     fn adopt_facts(d: DeclId, f: DeclFacts) {
-        if d.index < self.faces.get().length { self.faces.set_at(d.index, f) }
+        if d.index < self.faces.get().length { self.face(d, f) }
+    }
+
+    /// A declaration's facts land, and the seal index follows them: the
+    /// facts they replace leave their buckets first, so a held declaration
+    /// captured from a partial store and then corrected from its record
+    /// ends in exactly the buckets its record names.
+    fn face(d: DeclId, f: DeclFacts) {
+        let old = self.faces.get()[d.index]
+        for name in old?.mut_seats ?? [] {
+            self
+                .mut_seat_index
+                .put(name, [x for x in self.mut_seat_sealers(name) if x.index != d.index])
+        }
+        for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
+        self.faces.set_at(d.index, f)
     }
 
     /// Whether a declaration's body has no receiver — the fact eight sites used to read
@@ -498,14 +513,14 @@ impl Decls {
         // comes from its record instead of a store it does not have.
         if f.index < self.stores.get().length {
             let st: NodeStore? = self.stores.get()[f.index]
-            if st != null { self.faces.set_at(id.index, capture_facts(st!, d)) }
+            if st != null { self.face(id, capture_facts(st!, d)) }
         }
         // A DECLARATION'S NOMINAL NAME IS INTERNED AT MINT — not at typing. A held file's
         // sigs are rebuilt from a record before anything is typed, and a field naming a
         // PARSED module's type needs that name in the registry by then. One place registers
         // every declared name, so a spelling resolves regardless of typing order.
         if kind is .Record || kind is .Named || kind is .Trait { let _ = self.types.intern(Type.Struct(id, name)) }
-        if kind is .Enum { let _ = self.types.intern(Type.Enum(id, name)) }
+        if kind is .Enum || kind is .CollectEnum { let _ = self.types.intern(Type.Enum(id, name)) }
         if parent != null {
             self.children.get()[parent!.index].push(id)
         }

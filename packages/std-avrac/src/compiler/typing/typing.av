@@ -36,7 +36,6 @@ use features.{
     type_row,
     Decl,
     new_type_facts,
-    type_named,
     TypeFacts,
     NameFacts,
     FileView,
@@ -117,7 +116,7 @@ impl TypeCx {
             .Method -> self.method_body(x),
             .Default -> self.default_body(x),
             .Case -> self.case_body(x),
-            .Record or .Named or .Alias or .Enum or .Const or .Syntax or .Collect -> self.type_stmts([x.stmt]),
+            .Record or .Named or .Alias or .Enum or .Const or .Syntax or .Collect or .CollectEnum -> self.type_stmts([x.stmt]),
             // a trait's members type as methods; the trait holds its
             // `derive` to the contract where it is written
             .Trait -> derive_contract(self, x.stmt),
@@ -153,7 +152,7 @@ impl TypeCx {
         match self.view.decls.decl(x.parent!).kind {
             .Record -> fits_default(self, root, x.name, want),
             .Fn or .Method -> fits_seat_default(self, root, x.name, want),
-            .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> nothing(),
+            .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum -> nothing(),
         }
     }
 
@@ -634,7 +633,7 @@ impl TypeCx {
     /// A declared generic's arity by NAME, for the applied-type path —
     /// null when the name is not a generic declaration.
     fn declared_arity(name: string) -> int? {
-        let decl? = type_named(self.names, name) else { return null }
+        let decl? = self.type_decl_named(name) else { return null }
         let arity = self.view.decls.tparams(decl).length
         if arity == 0 { return null }
         arity

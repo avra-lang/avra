@@ -9,6 +9,7 @@ use @std.avrac.core.{
     Stmt,
     Pat,
     Arm,
+    CompClause,
     BinOp,
     Param,
     TypeRef,
@@ -84,16 +85,17 @@ spec "core/nodes" {
             mut s = new_node_store()
             let x = s.alloc_expr(Expr.Ident("x"))
             let xs = s.alloc_expr(Expr.Ident("xs"))
-            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null))
-            let guarded = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, x))
+            let plain = s.alloc_expr(Expr.Comp(x, [CompClause.Head(null, "x", xs, null)]))
+            let guarded = s
+                .alloc_expr(Expr.Comp(x, [CompClause.Head(null, "x", xs, null), CompClause.Filter(x)]))
             s.expr_fingerprint(plain) != s.expr_fingerprint(guarded)
         }
         then "an absent RANGE END is not its source either" {
             mut s = new_node_store()
             let x = s.alloc_expr(Expr.Ident("x"))
             let xs = s.alloc_expr(Expr.Ident("xs"))
-            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null))
-            let ranged = s.alloc_expr(Expr.Comp(x, "", "x", xs, xs, null))
+            let plain = s.alloc_expr(Expr.Comp(x, [CompClause.Head(null, "x", xs, null)]))
+            let ranged = s.alloc_expr(Expr.Comp(x, [CompClause.Head(null, "x", xs, xs)]))
             s.expr_fingerprint(plain) != s.expr_fingerprint(ranged)
         }
         then "the LINK is part of identity: `a?.b` and `a.b` differ" {

@@ -166,9 +166,16 @@ fn remember(store: Store, key: string, paths: List<string>) {
     if paths.any((path) -> !known.contains(path)) { let _ = store.keep(Stored.Unit, key, joined(distinct(known.concat(paths)), "\n"), []) }
 }
 
-/// What `check` says of a clean program: its warnings, and whether they were kept
-/// from a check of these exact inputs.
-export type Checked = { warnings: string, reused: bool, timed: string }
+/// What `check` says of a clean program: its warnings, its stale
+/// `// LICENSED` citations (compiler/licenses.av — a cache hit reads
+/// these back too, never rescanning), and whether they were kept from
+/// a check of these exact inputs — plus the PROGRAM this answer was
+/// derived from, when one was: a cache hit costs a hash and builds
+/// none, so a caller wanting more than the rendered answer (the
+/// baseline ratchet's own rule listing) falls back to building its
+/// own rather than forcing every `check` to pay for a Program it does
+/// not otherwise need.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "" }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -178,13 +185,28 @@ impl Workspace {
         if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
         let store = store_at(build_cache_root(self))
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
-        mut cache = self.db
-        let kept: string? = cache.warn(store, self.program_key(under.named, under.beside))
-        if kept != null { return Checked { warnings: kept!, reused: true, timed: "" } }
+        let key0 = self.program_key(under.named, under.beside)
+        let kept: string? = self.db.warn(store, key0)
+        if kept != null {
+            return Checked {
+                warnings: kept!,
+                reused: true,
+                timed: "",
+                licenses: self.db.licenses(store, key0) ?? "",
+            }
+        }
         let d = self.derived(entry, Want.Diagnostics)?
         let key = d.program.ws.kept_key(under)
-        cache.insert_warn(store, key, d.warnings)
-        Checked { warnings: d.warnings, reused: false, timed: d.timed([]) }
+        let licenses = stale_license_lines(d.program)
+        self.db.insert_warn(store, key, d.warnings)
+        self.db.insert_licenses(store, key, licenses)
+        Checked {
+            warnings: d.warnings,
+            reused: false,
+            timed: d.timed([]),
+            program: d.program,
+            licenses: licenses,
+        }
     }
 
     /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —

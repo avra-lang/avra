@@ -2390,3 +2390,151 @@ already-`Lowered`-wrapped unit — belongs in `@std/avrac/testing`
 itself, next to `ir_of`: every future pass that wants to test its own
 malformed-input handling (a checker, a keeper, a second verifier)
 will hand-roll the same four lines otherwise.
+
+## §34 As built — R11c, flat-record payloads join value enums
+
+**The retry.** avra-8sb5.34.21's first attempt (Layout agent, lane/
+layout) built a WHOLE-PACKAGE pre-pass that forced every `.Fn`/
+`.Impl` declaration's `sig()` up front, found a real use-after-free
+in the wiring, and reverted. L1 (§32) landed in between: any read of
+a layout fact now freezes it, and a later seal that would move a
+frozen fact is refused as a compiler defect instead of silently
+applied. That turned this retry's whole risk profile around — a
+missed seal is now LOUD, never a wrong `counted_mask` — but the
+first attempt's own design (force everything, root-package-only)
+turned out to be the wrong shape anyway: measured on `check
+packages/cli`, forcing every `.Fn`/`.Impl` early cost 8.7x the
+instructions of an unmodified build. Isolating the two independent
+changes (the pre-pass, and widening `payload_word`) each alone
+reproduced the same blowup, which was the first sign the REAL cause
+was neither — see "The false lead" below.
+
+**D34. The fix is lazy and named, not a pre-pass.** `Decls.
+declared_first(t)` is already `TypeRegistry`'s `declare_hook` (L1's
+own upcall, armed once at `new_decls()`) — the ONE place core's
+`note()` reaches back into features on the FIRST ask of any layout
+fact, from anywhere: `payload_word`, `side_word`'s `.Struct` arm,
+`judge_result`, a `@derive`'s comptime settlement, all of them.
+Extending it once pays every caller. Before asking `sig(r)` for the
+type's own declaration, it now asks `mut_seat_sealers(name)` — every
+`.Fn` decl whose PARSED parameter list (`store.fn_parts`, no `sig`
+involved) names `name` under `mut` — and forces `sig()` on each. The
+index (`Decls.mut_seat_index`, a `Map<string, List<DeclId>>`) is
+built once, lazily, from the parse alone: a NAME match, not a type
+match, so two distinct types sharing a name may over-trigger (an
+extra `sig()` on an unrelated fn, harmless) and a miss costs nothing
+new either — L1 still refuses a race this index fails to find rather
+than silently widening it. This is why the retry's own risk is
+bounded: the mechanism DEGRADES to L1's loud refusal, never back to
+R11c's original silent-wrong-mask bug.
+
+**D35. `payload_word` drops its blanket exclusion.** The removed
+guard was two lines: `if shape_of(t) is .Struct && is_flat(t) {
+return null }`, unconditional, for ANY flat struct. Deleting it
+changes nothing else — `machine_type` already sees straight through
+a narrow flat record to its one field's shape (an `Int` payload
+answers 0, a `Str` answers 1, exactly as if the id had never been
+wrapped), and `travels_wide` already excludes a WIDE flat record (a
+value record of 2+ fields) on its own, since a value-enum payload
+must be exactly one word. The two-line guard was excluding the ONE
+case — a narrow flat record — that the rest of the match already
+handles correctly once its seal status is settled. Named types
+(`type Id = int`) share `Struct`'s shape and were caught by the same
+guard for no reason: they can never seal at all (`unflatten`'s
+`stands_for != null` guard is a no-op for them), so removing the
+guard also fixes their case for free.
+
+**The false lead.** The 8.7x instruction blowup on `check packages/
+cli` reproduced with EITHER change alone, which read as proof both
+were implicated. It was neither: `build/avra.pre` (this worktree's
+saved pre-slice binary) could CHECK the current tree fine but could
+not BUILD it — `avra_type_named` failing `type.host_seat` on a
+tree whose seed had moved past it — so it was never a valid "before"
+for this comparison. A binary FRESH-BOOTSTRAPPED from the SAME
+unmodified HEAD, with NO changes of mine at all, reproduced the
+identical 604B-instruction, 45-second `check packages/cli` — the
+number was main's, unrelated to this slice, discovered only because
+the wrong baseline made every one of my changes look guilty in turn.
+CLAUDE.md's own law names this exactly: "A CHANGE THE COMPILER MUST
+THEN READ REACHES THE PRODUCT ON THE SECOND BUILD" — `avra.pre` was
+one generation short of self-hosting the tree it was being asked to
+answer for. Rebuilding from the fresh, valid baseline, the real
+delta is 604,919,745,329 vs 605,089,095,481 instructions on `check
+packages/cli` — R11c is measurably FREE at package-check scale,
+because std-avrac's and cli's own checked surface does not happen to
+construct many value-enum-eligible payloads on that path.
+
+**The real win is per-construction, not per-check.** A payload-heavy
+micro-benchmark — `enum Node { A(Id), B(string) }` over `type Id =
+{index: int}`, never sealed, 2,000,000 constructions each pattern-
+matched back to an `int` — measures 500.4M instructions retired
+before this slice and 12.1M after: **41.4x**. `avra ir` confirms the
+shape: `make`'s body drops from `avra_array_sized(2)` + two pushes
+(a heap box per call) to `pack r0` / `pack r2, r1` / `retain r3` — a
+value-enum construction in registers, no allocation at all. The gap
+between "free at package-check scale" and "41x at the construction
+site" is the same gap D28 (§20) always implied: the win is real
+exactly where a payload-carrying enum is constructed or matched in a
+hot loop, and invisible where it is not.
+
+**Proof.** `build/avra test packages/std-avrac`: clean, the new
+program test (`features/enums/tests/value_enums_flat`) among them —
+empty case first (`maybe(-1)`, absence before presence), a record
+declared after the enum that reads it, the record's own file
+separate from its sealing fn, a Cell/List/Map/const seat, a `?`-
+propagated Result, eval == native == expected. `build/avra test
+packages/cli`: 85/85. `make cache-attacks`: 65 builds through one
+store, 27 under a hold, 0 failed. `python3`-era `tools/idioms.py` is
+gone from this tree; `make idioms`: no new violations, 22 packages.
+`make cited`: 212 names, 44 paths resolve, clean. `build/avra fmt`:
+identical on all three touched files. Fixed point: two separate
+three-in-a-row byte-identical `make avra` runs (the second after
+fixing a self-inflicted regression — an old exclusion line that crept
+back into `payload_word` mid-session and silently undid D35 for
+several rounds of measurement, caught by `avra ir` showing no
+representation change where one was expected — CLAUDE.md's own
+"MEASURE WHAT A THING DOES BEFORE EXPLAINING WHY TWO DIFFER" one
+register over: the explanation for the missing win was reasoned
+about before the IR was read).
+
+**Red team.** Native, `AVRA_RC_GUARD=1 AVRA_MEM_STATS=1`, small
+programs, 0 MB peak in every category (only static string bytes
+live at exit): the sealed case (a free `fn bump(mut i: Id)` in the
+SAME file, in ANOTHER file, and via an impl's mutating RECEIVER) in
+a List/Map/Cell/const seat and a `?`-propagated Result; the never-
+sealed case in a 2M-iteration loop; aliasing through `with` (a copy
+carries its own payload word, the original's is untouched);
+recursion to depth 50; an early `return` inside recursion;
+`defer`/`errdefer` around a failing `Result`; a `dyn Show` crossing.
+eval == native on every one. `L1's own negative witness needed
+updating`: its exact repro (a free `mut` fn sealing a same-file
+enum's flat payload) is what D34 fixes, so `compiler/tests/
+language_test.av`'s case now asserts the program checks CLEAN; a
+second case, using an impl's mutating receiver instead of a `.Fn`'s
+own parameter (D34's index only covers `.Fn`), keeps L1's guard
+itself genuinely exercised — verified failing (the loud defect
+fires) before D34, and still fires after.
+
+**Not covered, on record.** `mut_seat_sealers` indexes `.Fn` alone.
+A METHOD's OWN `mut` parameter (not its receiver) never seals its
+type via ANY existing path — `declare_method`/`annotated_params`
+never calls `keep_boxed` the way `declare_sig` does for a top-level
+fn — found red-teaming this slice, independent of it: `fn bump(mut
+i: Id)` as a method (not the receiver) traps the compiler itself
+("an assignment to a non-place survived a clean analysis") on
+UNMODIFIED main, with no value enum in sight. Filed as a follow-up
+rather than folded in here, since fixing it is a `declare_method`
+change with its own red-team surface, not a `payload_word` one.
+
+What I wanted from the language while doing this: `payload_word`'s
+comment already names a SECOND, unsolved trap in the same family —
+a value-enum payload of `bool` or `float` breaks the compiler's own
+settlement of `MetaVal`, cause not yet found. Two independent authors
+now have hit "a payload representation change breaks const/comptime
+settlement somewhere" and backed off rather than chase it inside a
+feature slice. A dedicated instrument — something that answers
+"which enums does widening THIS payload kind touch, and are any of
+them read by a comptime settlement root" — would turn a doctrine
+warning that says "don't, we don't know why" into one that says
+exactly which types are load-bearing and why, the next time someone
+is tempted to delete the two lines that fence them off.

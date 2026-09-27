@@ -1,0 +1,91 @@
+// The red team's survivors, one `given` per attack class. Every case
+// here failed, or was silent, before its fix.
+use @std.relation.{relation_problems}
+use tests.twins_a.{a_name, a_hash}
+use tests.twins_b.{b_name, b_hash}
+use @std.relation.stable.{reader}
+use @std.meta.{Type, Field, Kind, Mark}
+
+fn marked_field(name: string, marks: List<string>) -> Field {
+    Field {
+        name: name,
+        ty: "int",
+        at: null,
+        kind: Kind.Int,
+        marks: [Mark { name: m, args: [], at: null } for m in marks],
+    }
+}
+
+fn one_row(fields: List<Field>) -> Type {
+    Type {
+        name: "R",
+        fields: fields,
+        variants: [],
+        at: null,
+        doc: null,
+        annotations: [],
+        module: "m",
+    }
+}
+
+fn refusals(t: Type) -> string {
+    [d.kind ?? "?" for d in relation_problems(t)].join(",")
+}
+
+/// What the reader answers for an int encoded as `octets`.
+fn int_read(octets: List<int>) -> string {
+    match reader(octets.bytes()!).int() { .Ok(v) -> "${v}", .Err(f) -> f.word() }
+}
+
+spec "std/relation — adversarial" {
+    given "malformed records" {
+        then "a tenth varint byte carrying bits past 64 is overlong, never a wrapped value" {
+            int_read([255, 255, 255, 255, 255, 255, 255, 255, 255, 127]) == "overlong"
+        }
+        then "a varint padded with a zero continuation is overlong — one value has one encoding" {
+            int_read([128, 0]) == "overlong"
+        }
+        then "the widest canonical varint still reads" {
+            int_read([255, 255, 255, 255, 255, 255, 255, 255, 255, 1]) == "-9223372036854775808"
+        }
+        then "a lone zero is zero" {
+            int_read([0]) == "0"
+        }
+    }
+    given "names against names: the marks" {
+        then "a misspelled mark is refused rather than ignored" {
+            refusals(one_row([marked_field("a", ["indx"])])) == "unknown_mark"
+        }
+        then "a mark written twice on one field is refused" {
+            refusals(one_row([marked_field("a", ["key", "key"])])) == "duplicate_mark"
+        }
+        then "a key that is also an index is accepted — marks stack" {
+            refusals(one_row([marked_field("a", ["key", "index"])])) == ""
+        }
+        then "a key that is also unique is accepted" {
+            refusals(one_row([marked_field("a", ["key", "unique"])])) == ""
+        }
+        then "`@unique` with `@index` is refused — one row or every row, never both" {
+            refusals(one_row([marked_field("a", ["key", "unique", "index"])])) == "answer_clash"
+        }
+        then "a doubled mark speaks alone — no lookup law judges the field" {
+            refusals(one_row([marked_field("a", ["unique", "index", "unique"])])) == "duplicate_mark"
+        }
+        then "a mark on the store's `id` is judged like any other" {
+            refusals(one_row([marked_field("id", ["indx"])])) == "unknown_mark"
+        }
+    }
+}
+
+spec "std/relation — the stable name" {
+    given "two modules each declaring a relation named `Row`" {
+        then "each is named by its own module" {
+            a_name() != b_name() &&
+                a_name().ends_with("twins_a.Row") &&
+                b_name().ends_with("twins_b.Row")
+        }
+        then "the same values hash apart, each seeded by its own name" {
+            a_hash() != b_hash()
+        }
+    }
+}
