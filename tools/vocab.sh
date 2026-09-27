@@ -77,7 +77,9 @@ SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	unworded	spelled	t
 SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	answer_form	spelled	which of them survives a non-word answer
 Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	spelled	how it crosses into the evaluator
 Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with
-RtHost	packages/std-avrac/src/compiler/backend/interp.av	rt_dispatch	spelled	the arm that evaluates a row"
+RtHost	packages/std-avrac/src/compiler/backend/interp.av	rt_dispatch	spelled	the arm that evaluates a row
+Origin	packages/std-avrac/src/features/worklist.av	at	spelled	which file a node's own name resolves in
+Origin	packages/std-avrac/src/features/worklist.av	spanned_at	spelled	which file's text a node's span indexes"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
