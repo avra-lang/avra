@@ -81,7 +81,7 @@ impl Emit {
             .SwitchStart(sel, cases) -> self.switch_start(sel, cases),
             .ArmEnd(gives) -> self.arm_end(gives),
             .RegionEnd(dst, gives) -> self.region_end(dst, gives),
-            .Alloca(dst) -> self.define(avra_llvm_build_alloca(self.b, self.reg_type(dst), "slot")),
+            .Alloca(dst) -> self.allocated(dst),
             .Load(dst, slot) -> self
                 .define(avra_llvm_build_load(self.b, self.reg_type(dst), self.vals[slot.index], "ld")),
             .Store(slot, src) -> self.stored(slot, src),
@@ -320,6 +320,18 @@ impl Emit {
         }
         let _ = avra_llvm_build_store(self.b, self.absent_valued(slot), self.vals[slot.index])
         true
+    }
+
+    /// A FRESH CELL HOLDS NOTHING, as the evaluator's does: the memory
+    /// pass settles a cell before its first store, so a value enum's
+    /// cell starts at the absent tag — never stack garbage its settle
+    /// would release by tag. A pointer's cell starts null at the
+    /// alloca itself.
+    fn allocated(dst: Reg) {
+        self.define(avra_llvm_build_alloca(self.b, self.reg_type(dst), "slot"))
+        if self.types.valued_carrier(self.tys[dst.index]) {
+            let _ = avra_llvm_build_store(self.b, self.absent_valued(dst), self.vals[dst.index])
+        }
     }
 
     /// The absent tag and no word, as a cell of `slot`'s type holds them.
