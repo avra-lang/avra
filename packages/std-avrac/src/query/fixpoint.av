@@ -16,6 +16,12 @@
 //! later growth from that point on, and one that stops reading
 //! something stops being woken by it. `record_dep`/`ask`/`settle`
 //! carry no new cost for this: nothing here changes them.
+//!
+//! A MISDECLARED LATTICE IS THE CALLER'S ERROR, NEVER THE COMPILER'S
+//! DEFECT: `solve` answers `Result<int, FixpointRefusal>` rather than
+//! trapping, so a bad join or an unbounded height is a value a caller
+//! (eventually `@query(fixpoint)`'s own generated wrapper) can turn
+//! into a diagnostic at the declaration it came from.
 use core.{Table, new_table}
 
 export type Fixpoint<T> = {
@@ -25,19 +31,39 @@ export type Fixpoint<T> = {
     join: fn(T, T) -> T,
     fp: fn(T) -> int,
     values: Table<T>,
+    turn_cap: int,
 }
+
+/// Past this many re-runs of one member, the body is a defect (a
+/// non-monotone join, or a lattice with no finite height). Members,
+/// not rounds: each queue pop counts toward its own member's cap
+/// alone. `with { turn_cap: … }` lowers it — a suite proving the cap
+/// fires needs it small, not 10000 real turns.
+const default_turn_cap: int = 10000
 
 export fn new_fixpoint<T>(db: Kernel, family: int, bottom: T, join: fn(T, T) -> T, fp: fn(T) -> int) -> Fixpoint<
     T,
 > {
-    Fixpoint { db: db, family: family, bottom: bottom, join: join, fp: fp, values: new_table<T>() }
+    Fixpoint {
+        db: db,
+        family: family,
+        bottom: bottom,
+        join: join,
+        fp: fp,
+        values: new_table<T>(),
+        turn_cap: default_turn_cap,
+    }
 }
 
-/// A turn cap that SPEAKS: past this many re-runs of one member, the
-/// body is a defect (non-monotone, or a lattice with no finite
-/// height) — never a silent stop. Members, not rounds: each queue pop
-/// counts toward its own member's cap alone.
-const fixpoint_turn_cap: int = 10000
+/// Why `solve` refused a group, named by the law it found broken — the
+/// words a caller reports ARE the law (`spoken`, below), never a
+/// paraphrase.
+export enum FixpointRefusal {
+    NotIdempotent(family: int)
+    NotCommutative(family: int)
+    Identity(family: int)
+    TurnCap(family: int, arg: int, cap: int)
+}
 
 impl Fixpoint {
     fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
@@ -57,7 +83,7 @@ impl Fixpoint {
     /// GREW (its hash moved) — never merely whether it ran. `arg`'s
     /// own FIRST non-bottom answer is checked against the identity law
     /// before it is kept — the one hash-visible law a meet cannot pass.
-    fn step(arg: int, compute: fn(int) -> T) -> bool {
+    fn step(arg: int, compute: fn(int) -> T) -> Result<bool, FixpointRefusal> {
         let key = self.query_key(arg)
         self.db.begin(key)
         let current = self.value_at(arg)
@@ -71,15 +97,13 @@ impl Fixpoint {
         if before == bottom_fp &&
             self.fp(computed) != bottom_fp &&
             !self.keeps_what_its_given(computed) {
-            avra_trap(
-                "defect: @query(fixpoint) family ${self.family}'s join must keep what it's given — join(bottom, x) must be x",
-            )
+            return .Err(FixpointRefusal.Identity(self.family))
         }
         let joined = self.join(current, computed)
         let hash = self.fp(joined)
         self.values.keep(arg, joined)
         self.db.settle(key, hash)
-        hash != before
+        .Ok(hash != before)
     }
 
     /// The one law a hash CAN test directly that idempotence and
@@ -117,55 +141,78 @@ impl Fixpoint {
         self.index(arg, reverse)
     }
 
-    /// A join that cannot absorb its own first answer, or that
-    /// disagrees with itself by argument order, is not a join — refused
-    /// before any member's kernel cell is touched, so a bad body traps
-    /// loudly instead of oscillating for `fixpoint_turn_cap` rounds
-    /// first. Idempotence and commutativity alone cannot tell a real
-    /// join from a MEET (intersection passes both), which is what
-    /// `keeps_what_its_given` closes, checked separately in `step` at
-    /// each member's own first non-bottom answer.
-    fn refuse_unless_a_join(seed: T) {
+    /// The two algebraic laws a hash can check on ONE sample before any
+    /// member's kernel cell is touched. Idempotence and commutativity
+    /// alone cannot tell a real join from a MEET (intersection passes
+    /// both), which `keeps_what_its_given` closes instead, checked
+    /// separately in `step` at each member's own first non-bottom
+    /// answer.
+    fn refused_join(seed: T) -> FixpointRefusal? {
         let mixed = self.join(self.bottom, seed)
         let idempotent = self.join(mixed, mixed)
-        if self.fp(idempotent) != self.fp(mixed) {
-            avra_trap(
-                "defect: @query(fixpoint) family ${self.family}'s join is not idempotent — join(v, v) must equal v",
-            )
-        }
+        if self.fp(idempotent) != self.fp(mixed) { return FixpointRefusal.NotIdempotent(self.family) }
         let ab = self.join(self.bottom, mixed)
         let ba = self.join(mixed, self.bottom)
-        if self.fp(ab) != self.fp(ba) {
-            avra_trap(
-                "defect: @query(fixpoint) family ${self.family}'s join is not commutative — join(a, b) must equal join(b, a)",
-            )
-        }
+        if self.fp(ab) != self.fp(ba) { return FixpointRefusal.NotCommutative(self.family) }
+        null
     }
 
     /// Solve the fixpoint over `members`, each answered by `compute`.
-    fn solve(members: List<int>, compute: fn(int) -> T) {
-        if !members.is_empty() { self.refuse_unless_a_join(compute(members[0])) }
-        for m in members { let _ = self.step(m, compute) }
+    /// Answers the number of steps run, or the law the group broke.
+    fn solve(members: List<int>, compute: fn(int) -> T) -> Result<int, FixpointRefusal> {
+        if !members.is_empty() {
+            let refusal = self.refused_join(compute(members[0]))
+            if refusal != null { return .Err(refusal!) }
+        }
+        for m in members { let _ = self.step(m, compute)? }
         let reverse: Table<List<int>> = new_table<List<int>>()
         for m in members { self.index(m, reverse) }
         mut queue: List<int> = members
         let turns: Table<int> = new_table<int>()
+        mut steps = members.length
         while !queue.is_empty() {
             let m = queue[0]
             queue = [queue[i] for i in 1..queue.length]
             let count = (turns.at(m) ?? 0) + 1
-            if count > fixpoint_turn_cap {
-                avra_trap(
-                    "defect: @query(fixpoint) family ${self.family} member ${m} exceeded ${fixpoint_turn_cap} turns — a non-monotone body, or a lattice with no finite height",
-                )
-            }
+            if count > self.turn_cap { return .Err(FixpointRefusal.TurnCap(self.family, m, self.turn_cap)) }
             turns.keep(m, count)
-            if self.step(m, compute) {
+            steps = steps + 1
+            if self.step(m, compute)? {
                 self.reindex(m, reverse)
                 for r in reverse.at(m) ?? [] {
                     if !queue.contains(r) { queue = queue.concat([r]) }
                 }
             }
         }
+        .Ok(steps)
     }
+}
+
+// ── Voices ──
+
+/// The law a refusal names, in the caller's own words — never a
+/// paraphrase of the enum tag.
+export fn spoken(r: FixpointRefusal) -> string {
+    match r {
+        .NotIdempotent(f) -> not_idempotent_voice(f),
+        .NotCommutative(f) -> not_commutative_voice(f),
+        .Identity(f) -> identity_voice(f),
+        .TurnCap(f, arg, cap) -> turn_cap_voice(f, arg, cap),
+    }
+}
+
+fn not_idempotent_voice(family: int) -> string {
+    "family ${family}'s join is not idempotent — join(v, v) must equal v"
+}
+
+fn not_commutative_voice(family: int) -> string {
+    "family ${family}'s join is not commutative — join(a, b) must equal join(b, a)"
+}
+
+fn identity_voice(family: int) -> string {
+    "family ${family}'s join must keep what it's given — join(bottom, x) must be x"
+}
+
+fn turn_cap_voice(family: int, arg: int, cap: int) -> string {
+    "family ${family} member ${arg} exceeded ${cap} turns — a non-monotone body, or a lattice with no finite height"
 }
