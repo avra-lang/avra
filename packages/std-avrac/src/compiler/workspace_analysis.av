@@ -435,8 +435,13 @@ impl Workspace {
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
         if shape.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
+        // typing speaks a wrong argument count and a receiver its seat
+        // refuses; the lift runs only over what those laws accept
+        if args.length != shape.params.length - 1 { return .Err(Unsettled.Spoken) }
         mut heap = new_meta_heap()
-        mut vals: List<MetaVal> = [self.crossed_decl(f, s, shape.params.first()!, heap)]
+        let receiver = self.crossed_decl(f, s, shape.params.first()!, heap)
+        if receiver is .Absent { return .Err(Unsettled.Spoken) }
+        mut vals: List<MetaVal> = [receiver]
         for j, e in args {
             match self.crossed_arg(f, e, shape.params[j + 1], heap) {
                 .Ok(v) -> vals.push(v),
