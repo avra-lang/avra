@@ -261,6 +261,21 @@ export type Plain = string
 /// target. A template's hole in one is filled by a written TYPE.
 export type Nominal = string
 
+/// One clause of a comprehension's head, in written order: a `for`
+/// loop over a list or a range, naming its position when written as
+/// `index, name`; or an `if` filter guarding every clause after it.
+/// Several heads nest (the left outermost); a filter may sit between
+/// them or after the last.
+export enum CompClause {
+    Head(index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?)
+    Filter(cond: ExprId)
+}
+
+/// The expressions one clause holds.
+export fn comp_clause_reach(c: CompClause) -> List<ExprId> {
+    match c { .Head(_, _, source, hi) -> [source].concat(some_list(hi)), .Filter(cond) -> [cond] }
+}
+
 /// EVERY NODE VARIANT A GRAMMAR RULE MAY NAME, read off the
 /// declarations by `@derive(Grammar)`. It stands HERE because a
 /// derive's output is FILE-LOCAL — not even a sibling file in this
@@ -297,10 +312,11 @@ export enum Expr {
     /// The first aggregate — homogeneous scalar elements.
     ListLit(elems: List<ExprId>)
     /// `[elem for name in source if cond]` — a list built by walking
-    /// another, or counting `source..hi` when `hi` is present;
-    /// `index` names the position when written as `index, name`,
-    /// null otherwise. The binders hold for `elem` and `cond` alone.
-    Comp(elem: ExprId, index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?, cond: ExprId?)
+    /// another, or counting `source..hi` when `hi` is present, one or
+    /// more `for` heads deep (each later head reads every earlier
+    /// one's binder), with an `if` filter after any head. `clauses`
+    /// is the written order; the first is always a head.
+    Comp(elem: ExprId, clauses: List<CompClause>)
     /// `{ "k": v, … }` — keys and values in written order.
     MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
@@ -422,10 +438,7 @@ export fn is_literal(e: Expr) -> bool {
 /// answer the seat's fn type gives — typed again under that want when
 /// it was typed before the seat was known.
 export fn hears_want(e: Expr) -> bool {
-    match e {
-        .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .Lambda(_, _) -> true,
-        _ -> false,
-    }
+    match e { .ListLit(_) or .Comp(_, _) or .Collect(_) or .Lambda(_, _) -> true, _ -> false }
 }
 
 /// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
@@ -441,7 +454,7 @@ export fn hears_want(e: Expr) -> bool {
 export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) -> true,
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) -> true,
         .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }

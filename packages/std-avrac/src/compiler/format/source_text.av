@@ -14,6 +14,7 @@ use core.{
     Expr,
     Stmt,
     Arm,
+    CompClause,
     BinOp,
     Param,
     Plain,
@@ -1139,7 +1140,7 @@ impl SourceText {
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
-            .Comp(elem, index, name, source, hi, cond) -> self.comprehension(elem, index?.of, name.of, source, hi, cond, parent, depth),
+            .Comp(elem, clauses) -> self.comprehension(elem, clauses, parent, depth),
             .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth, c), atom_tier, parent),
             .Index(subject, index) -> {
                 let s = self.expression(subject, postfix_tier, depth, c)
@@ -1625,21 +1626,23 @@ impl SourceText {
         }
     }
 
-    mut fn comprehension(
-        elem: ExprId,
-        index: string?,
-        name: string,
-        source: ExprId,
-        hi: ExprId?,
-        cond: ExprId?,
-        parent: int,
-        depth: int,
-    ) -> string {
-        let binds = if index == null { source_name(name) } else { "${source_name(index!)}, ${source_name(name)}" }
+    mut fn comprehension(elem: ExprId, clauses: List<CompClause>, parent: int, depth: int) -> string {
         let element = self.expression(elem, loosest_tier, depth)
-        let range = if hi == null { self.expression(source, loosest_tier, depth) } else { "${self.expression(source, loosest_tier, depth)}..${self.expression(hi!, loosest_tier, depth)}" }
-        let guard = if cond == null { "" } else { " if ${self.expression(cond!, loosest_tier, depth)}" }
-        grouped("[${element} for ${binds} in ${range}${guard}]", atom_tier, parent)
+        let clause_text = joined([self.comp_clause_text(c, depth) for c in clauses], " ")
+        grouped("[${element} ${clause_text}]", atom_tier, parent)
+    }
+
+    /// One clause, as written: a head's binds and range, or a filter's
+    /// condition.
+    mut fn comp_clause_text(c: CompClause, depth: int) -> string {
+        match c {
+            .Head(index, name, source, hi) -> {
+                let binds = self.loop_binds(index?.of, name.of)
+                let range = if hi == null { self.expression(source, loosest_tier, depth) } else { "${self.expression(source, loosest_tier, depth)}..${self.expression(hi!, loosest_tier, depth)}" }
+                "for ${binds} in ${range}"
+            },
+            .Filter(cond) -> "if ${self.expression(cond, loosest_tier, depth)}",
+        }
     }
 
     /// `quote { … }` — the runs as written, the holes re-spelled.
