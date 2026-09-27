@@ -57,6 +57,16 @@ export type Rebuilder = {
     made_from: List<ExprId>,
     made_stmts: List<StmtId>,
     made_pats: List<PatId>,
+    // HOLED nodes: their own binder or read resolves where the code
+    // lands (never wearing the template's origin, `made_exprs`'s own
+    // rule), but their SPAN is still the template's own offset — a
+    // node minted here is never rewritten to point at the splice
+    // site. `note_spanned` marks these separately from `made_exprs`
+    // so an error about one is homed at the template without also
+    // resolving its name there.
+    holed_exprs: List<ExprId>,
+    holed_stmts: List<StmtId>,
+    holed_pats: List<PatId>,
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
@@ -84,6 +94,9 @@ export fn classifier(store: NodeStore, runs: List<bool>) -> Rebuilder {
         made_from: [],
         made_stmts: [],
         made_pats: [],
+        holed_exprs: [],
+        holed_stmts: [],
+        holed_pats: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -111,6 +124,9 @@ export fn copier(
         made_from: [],
         made_stmts: [],
         made_pats: [],
+        holed_exprs: [],
+        holed_stmts: [],
+        holed_pats: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -240,7 +256,7 @@ impl Rebuilder {
         let holed = self.holed.pop()
         if !self.copying { return p }
         let id = self.dst.alloc_pat(rebuilt, self.src.pat_span(p))
-        if !holed { self.made_pats.push(id) }
+        if holed { self.holed_pats.push(id) } else { self.made_pats.push(id) }
         id
     }
 
@@ -380,6 +396,9 @@ impl Rebuilder {
                 self.made_from = self.made_from.concat(sub.made_from)
                 self.made_stmts = self.made_stmts.concat(sub.made_stmts)
                 self.made_pats = self.made_pats.concat(sub.made_pats)
+                self.holed_exprs = self.holed_exprs.concat(sub.holed_exprs)
+                self.holed_stmts = self.holed_stmts.concat(sub.holed_stmts)
+                self.holed_pats = self.holed_pats.concat(sub.holed_pats)
                 copied
             },
             .Expanded(expansion) -> BodyView.Expanded(self.expr(expansion)),
@@ -415,7 +434,9 @@ impl Rebuilder {
             if b.word == "quote" { self.dst.mark_quote_at(id) }
             if b.word != "quote" && b.word != "text" { self.dst.mark_sublang(id, self.src.body_start(e)) }
         }
-        if !holed {
+        if holed {
+            self.holed_exprs.push(id)
+        } else {
             self.made_exprs.push(id)
             self.made_from.push(e)
         }
@@ -437,7 +458,7 @@ impl Rebuilder {
         let docs: List<string>? = self.src.doc_comment(s)
         if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }
         for a in annotations { self.dst.annotate(id, a) }
-        if !holed { self.made_stmts.push(id) }
+        if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
         id
     }
 

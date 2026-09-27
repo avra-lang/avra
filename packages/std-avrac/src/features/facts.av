@@ -49,7 +49,7 @@ impl FileView {
             .decls
             .homed(
                 self.file,
-                self.origin_of(e),
+                self.spanned_of(e),
                 self.decls.generation_of(self.file, e),
                 self.store.expr_span(e),
             )
@@ -60,7 +60,7 @@ impl FileView {
             .decls
             .homed(
                 self.file,
-                self.origin_of_pat(p),
+                self.spanned_of_pat(p),
                 self.decls.generation_of_pat(self.file, p),
                 self.store.pat_span(p),
             )
@@ -71,20 +71,32 @@ impl FileView {
             .decls
             .homed(
                 self.file,
-                self.origin_of_stmt(s),
+                self.spanned_of_stmt(s),
                 self.decls.generation_of_stmt(self.file, s),
                 self.store.stmt_span(s),
             )
     }
 
-    /// The file a generated node was WRITTEN in, when it is another
-    /// than this one — a template's own node. Null for a written node
-    /// and for one whose name came through a hole: both resolve here.
+    /// The file a generated node's own NAME resolves in, when it is
+    /// another than this one — a template's own node. Null for a
+    /// written node and for one whose name came through a hole: both
+    /// resolve here. NEVER for span-homing — `spanned_of` answers
+    /// that, since a holed node's span still indexes its template.
     fn origin_of(e: ExprId) -> FileId? { self.decls.origin_of_expr(self.file, e) }
 
     fn origin_of_stmt(s: StmtId) -> FileId? { self.decls.origin_of_stmt(self.file, s) }
 
     fn origin_of_pat(p: PatId) -> FileId? { self.decls.origin_of_pat(self.file, p) }
+
+    /// The file whose TEXT a generated node's span indexes — a
+    /// written node's template, and a HOLED node's too: its name may
+    /// resolve here, but `Rebuilder` never rewrites its span, so its
+    /// offset is still the template's.
+    fn spanned_of(e: ExprId) -> FileId? { self.decls.spanned_expr_of(self.file, e) }
+
+    fn spanned_of_stmt(s: StmtId) -> FileId? { self.decls.spanned_stmt_of(self.file, s) }
+
+    fn spanned_of_pat(p: PatId) -> FileId? { self.decls.spanned_pat_of(self.file, p) }
 
     /// The module this file belongs to.
     fn module() -> string { self.decls.module_name(self.decls.file(self.file).module_id) }
