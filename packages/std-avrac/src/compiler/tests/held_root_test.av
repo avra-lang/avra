@@ -1,0 +1,83 @@
+// A MINTED DECLARATION MINTS NO BODY AND NO STORE (record.av's `held_stubs`
+// doc), so its root names an expr no arena a hold builds ever holds. `row.root`
+// rode straight into an `ExprId` with no upper bound — `parent_at` and
+// `ordinal` are checked against the file's own id list at their read sites,
+// `root` was not — so a foreign or stale record naming a root past whatever
+// this run built would index an arena short of it: exactly the "index N is
+// out of bounds" shape a decode of anyone else's row can hand back. A minted
+// declaration's root is always absent now, whatever the record says.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace, facts_block}
+use compiler.host.{memory_host}
+use features.{DeclFacts}
+
+fn held_root_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() { 1 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+fn no_facts() -> DeclFacts {
+    DeclFacts {
+        external: false,
+        stat: false,
+        is_grammar: false,
+        is_component: false,
+        span: null,
+        tparams: [],
+        bounds: [],
+        seats: [],
+        host: [],
+        annotated: false,
+        of: "",
+    }
+}
+
+/// A minimal DECODABLE record line — an `opaque`/`main` declaration, which
+/// carries no payload, with `root` the one column a case sets.
+fn opaque_line(path: string, root: string) -> List<string> {
+    [
+        "opaque",
+        path,
+        "0",
+        "0",
+        "1",
+        "main",
+        "main",
+        "",
+        "-1",
+        "0",
+        root,
+        "0",
+        facts_block(no_facts()),
+    ]
+}
+
+spec "compiler/interface — a minted declaration's root" {
+    given "a record line naming no root, `-1`" {
+        then "the minted declaration's root is absent" {
+            let ws = held_root_workspace()
+            let path = "/w/src/main.av"
+            let f = ws.file_id(path)
+            let id? = ws.minted(f, path, opaque_line(path, "-1")) else { return false }
+            ws.decls.decl(id).root == null
+        }
+    }
+    given "a record line naming a root far past anything this hold built" {
+        then "the minted declaration's root is still absent, never a dangling index" {
+            let ws = held_root_workspace()
+            let path = "/w/src/main.av"
+            let f = ws.file_id(path)
+            let id? = ws.minted(f, path, opaque_line(path, "99999")) else { return false }
+            ws.decls.decl(id).root == null
+        }
+    }
+}
