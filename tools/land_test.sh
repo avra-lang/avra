@@ -478,6 +478,116 @@ test_commit_seed_if_moved() {
     fi
 }
 
+# ══ BATCH MODE: THREE BRANCHES, ONE HAS A FAILING TEST ═══════════════
+# A full stub toolchain (build/avra, Makefile) so main_batch's real
+# pipeline — merge, build, run_checks, fmt-lossless, cache-attacks,
+# seed_policy — runs against a throwaway repo, never the real one.
+# Branch b's own package always fails its "test"; a and c always
+# pass. The batch must land a+c, name b as the culprit, and exit
+# non-zero (a batch that excludes anything did not fully succeed).
+test_batch_mode() {
+    d="$(git_repo batch)"
+    for p in a b c; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/bootstrap"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+# build_generation copies packages/cli/src/main OVER build/avra after
+# a successful "build" — the "new" compiler it thinks it produced —
+# so the build case must leave a COPY OF THIS WHOLE STUB there, self-
+# replicating, or every later "test" invocation runs a dumb placeholder
+# with no test/culprit logic at all (found exactly this way: every
+# package's test silently reported OK because build/avra had been
+# overwritten with a one-line "echo built" stand-in).
+case "$1" in
+    build)
+        mkdir -p packages/cli/src
+        cp "$0" packages/cli/src/main
+        chmod +x packages/cli/src/main
+        exit 0
+        ;;
+    test)
+        pkg="$(basename "$2")"
+        if [ "$pkg" = "${CULPRIT_PKG:-}" ]; then
+            echo "FAILED $pkg"
+            exit 1
+        fi
+        echo "tested $pkg"
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "$d/build/avra"
+    cat > "$d/Makefile" <<'MK'
+build/libavra_runtime.a:
+	@touch build/libavra_runtime.a
+idioms:
+	@echo idioms-ok
+fmt-lossless:
+	@echo fmt-ok
+cache-attacks:
+	@echo cache-attacks-ok
+seed:
+	@echo seed-src > bootstrap/seed.ll
+	@echo seed-src > bootstrap/seed.sources
+seed-check:
+	@test -f bootstrap/seed.ll && echo seed-check-ok
+MK
+    printf 'seed-src\n' > "$d/bootstrap/seed.ll"
+    printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    commit_all "$d" "base"
+
+    for p in a b c; do
+        git -C "$d" checkout -q -b "$p" main
+        printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
+        commit_all "$d" "$p's own change"
+    done
+    git -C "$d" checkout -q main
+
+    lockdir="$scratch/batch-lock"
+    batchwt="$scratch/batch-integration-wt"
+    slots="$scratch/batch-slots"
+    rm -rf "$lockdir" "$batchwt" "$slots"
+
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" \
+        CULPRIT_PKG=b branch=x sh "$land" --call main_batch 0 a b c ) \
+        > "$scratch/batch.out" 2>&1 || st=$?
+
+    if [ "$st" -ne 0 ]; then
+        ok "batch: exits non-zero when a culprit was excluded"
+    else
+        bad "batch: exited 0 despite excluding a culprit"
+    fi
+    if grep -q "CULPRIT: b" "$scratch/batch.out"; then
+        ok "batch: names b as the culprit"
+    else
+        bad "batch: did not name b as the culprit"
+        cat "$scratch/batch.out"
+    fi
+    if grep -qE "green subset: (a c|c a)" "$scratch/batch.out"; then
+        ok "batch: the green subset is exactly a and c"
+    else
+        bad "batch: the green subset was not reported as a and c"
+        cat "$scratch/batch.out"
+    fi
+    if grep -q "^LANDED" "$scratch/batch.out"; then
+        ok "batch: still lands the green subset despite the culprit"
+    else
+        bad "batch: did not land anything"
+    fi
+    main_head_a="$(git -C "$d" show main:packages/a/src/lib.av 2>/dev/null)"
+    main_head_b="$(git -C "$d" show main:packages/b/src/lib.av 2>/dev/null)"
+    if printf '%s' "$main_head_a" | grep -q "int { 1 }" && ! printf '%s' "$main_head_b" | grep -q "int { 1 }"; then
+        ok "batch: main carries a's change but not b's"
+    else
+        bad "batch: main's content after landing does not match a-in, b-out"
+    fi
+}
+
 # ══ THE FAST-FORWARD: CLEAN WHEN LINEAR, REFUSED WHEN MAIN ALSO MOVED ═
 test_try_ff() {
     d="$(git_repo ff)"
@@ -522,6 +632,7 @@ test_slot_stale_reclaim
 test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
+test_batch_mode
 
 echo
 echo "land_test: $total checks, $failed failed"
