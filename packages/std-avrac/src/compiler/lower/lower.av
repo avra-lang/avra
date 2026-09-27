@@ -68,7 +68,7 @@ use features.{
     MetaVal,
     new_meta_heap,
 }
-use features.collects.{generic_words}
+use features.collects.{generic_words, gathered_members}
 use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
@@ -907,31 +907,12 @@ export fn ordered_collect_members(
     order: List<Plain>,
     owner: FileId,
 ) -> List<Decl> {
-    let found = collect_members(decls, kind, scope, owner)
+    let found = gathered_members(decls, kind, scope, owner)
     let keyed = [SortedMember { key: collect_sort_key(decls, order, d), decl: d } for d in found]
     [m.decl for m in sorted_by(keyed, member_before)]
 }
 
 fn member_before(x: SortedMember, y: SortedMember) -> bool { tuple_before(x.key, y.key) }
-
-/// The kind's own gathering door — A REGISTRY, exhaustive over
-/// `CollectKind`: the next kind (fn, case) answers here, never a
-/// string compare. Every component's instances read the SAME index,
-/// by the SAME word (`Decls.collect_word`), filtered to `scope` by
-/// `Decls.gathered`; an `.Annotated` kind's declarations read the
-/// mark twin (`Decls.gathered_by_mark`), same filter, keyed on every
-/// `@name` a declaration wears rather than a component's one word.
-/// `UnknownKind` was already refused at `check_collect` — it
-/// gathers nothing, honestly.
-export fn collect_members(decls: Decls, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<
-    Decl,
-> {
-    match kind {
-        .Component(w) -> decls.gathered(w, scope, owner),
-        .Annotated(w) -> decls.gathered_by_mark(w, scope, owner),
-        .UnknownKind(_) -> [],
-    }
-}
 
 export fn collect_sort_key(decls: Decls, order: List<Plain>, d: Decl) -> List<string> {
     [collect_field_text(decls, d, [k]) for k in order]
