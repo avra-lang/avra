@@ -468,20 +468,16 @@ LLVMValueRef avra_llvm_build_alloca(LLVMBuilderRef b, LLVMTypeRef ty, const char
         LLVMPositionBuilderAtEnd(entry_builder, entry);
     }
     LLVMValueRef alloca = LLVMBuildAlloca(entry_builder, ty, name);
-    // Zero-init every pointer-typed local at creation (zm77 + merge
-    // follow-up). The declaration-site store may sit in a loop or
-    // conditional block that never executes at runtime; any later read
-    // of the slot (scope-exit RC cleanup, a binding consumed on a path
-    // that skipped its init) would otherwise see stack garbage — which
-    // surfaced as phantom releases freeing live AST nodes and as
-    // garbage pointers stored into AST fields (layout-sensitive
-    // "unmatched tag" crashes). The store lands immediately after the
-    // alloca at the top of the entry block, provably before every
-    // value store on every path. Definite-initialization analysis
-    // (rcsf.5) is the long-term replacement for this blanket guard.
-    if (LLVMGetTypeKind(ty) == LLVMPointerTypeKind) {
-        LLVMBuildStore(entry_builder, LLVMConstNull(ty), alloca);
-    }
+    // Zero-init EVERY local at creation, whatever its type: a fresh
+    // cell holds nothing, and the memory pass settles a cell before
+    // its first store (the release of what it "held"). A pointer, a
+    // tagged pair whose payload is a pointer, a word — each zero is
+    // its type's absence. The declaration-site store may sit in a loop
+    // or a branch, so any earlier read would otherwise see stack
+    // garbage: a stale pointer from a slot LLVM reused, released as if
+    // the cell owned it. The store lands right after the alloca at the
+    // top of the entry block, before every value store on every path.
+    LLVMBuildStore(entry_builder, LLVMConstNull(ty), alloca);
     LLVMDisposeBuilder(entry_builder);
     return alloca;
 }
