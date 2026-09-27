@@ -1,0 +1,103 @@
+// `Fixpoint<T>` over two lattices: reachability (sets of nodes, `List<bool>`,
+// join = element-wise OR) and a small SCC where one member starts reading
+// another only partway through the solve (PERF's round-4 case). Both prove
+// the worklist actually propagates growth, not merely that a seed pass runs.
+use @std.avrac.query.{new_kernel, new_fixpoint}
+use core.{fp_str, joined}
+
+fn bit_vec(n: int, on: int) -> List<bool> { [i == on for i in 0..n] }
+
+fn or_vec(a: List<bool>, b: List<bool>) -> List<bool> { [a[i] || b[i] for i in 0..a.length] }
+
+fn vec_fp(v: List<bool>) -> int { fp_str(joined([if b { "1" } else { "0" } for b in v], "")) }
+
+/// A 4-node graph: a cycle 0 -> 1 -> 2 -> 0, plus a sink 2 -> 3.
+fn reach_edges(n: int) -> List<int> {
+    match n { 0 -> [1], 1 -> [2], 2 -> [0, 3], rest -> [] }
+}
+
+fn reach_compute(fx: fn(int) -> List<bool>, arg: int) -> List<bool> {
+    mut acc = bit_vec(4, arg)
+    for e in reach_edges(arg) { acc = or_vec(acc, fx(e)) }
+    acc
+}
+
+spec "query/fixpoint — reachability" {
+    then "every node reaches exactly what the graph says, including through the cycle" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<bool>>(db, family, [false, false, false, false], or_vec, vec_fp)
+        fp.solve([0, 1, 2, 3], (arg: int) -> reach_compute((e: int) -> fp.value_at(e), arg))
+        vec_fp(fp.value_at(0)) == vec_fp([true, true, true, true]) &&
+            vec_fp(fp.value_at(1)) == vec_fp([true, true, true, true]) &&
+            vec_fp(fp.value_at(2)) == vec_fp([true, true, true, true]) &&
+            vec_fp(fp.value_at(3)) == vec_fp([false, false, false, true])
+    }
+}
+
+/// A -> constant [1]. C -> [2] plus whatever D contributes; D is a
+/// constant [99] one member "behind" C in solve order, so C's own value
+/// only reaches its final form after a re-run. B reads A first; only
+/// once A shows up does B start reading C at all — the read C sees on
+/// B's first look is C's SEED value, not yet grown by D. B must still
+/// end up with C's fully-grown value once the worklist wakes it.
+fn scc_compute(fx: fn(int) -> List<int>, arg: int) -> List<int> {
+    match arg {
+        0 -> [1],
+        1 -> {
+            let a = fx(0)
+            if a.contains(1) { fx(2) } else { [] }
+        },
+        2 -> [2].concat(fx(3)),
+        rest -> [99],
+    }
+}
+
+fn int_set_join(a: List<int>, b: List<int>) -> List<int> { a.concat([x for x in b if !a.contains(x)]) }
+
+fn int_set_fp(v: List<int>) -> int { fp_str(joined([sig_of(x) for x in v], ",")) }
+
+fn sig_of(x: int) -> string { "${x}" }
+
+spec "query/fixpoint — a reader that starts mid-solve" {
+    then "B, which only starts reading C once A appears, still sees C's later growth" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+        // B (1) is seeded BEFORE A (0), so its first look at A is bottom
+        // and it does not read C at all on that pass.
+        fp.solve([1, 0, 2, 3], (arg: int) -> scc_compute((e: int) -> fp.value_at(e), arg))
+        int_set_fp(fp.value_at(1)) == int_set_fp([2, 99])
+    }
+}
+
+spec "query/fixpoint — edges" {
+    given "no members at all" {
+        then "solve is a no-op, not a defect" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+            fp.solve([], (arg: int) -> [1])
+            int_set_fp(fp.value_at(0)) == int_set_fp([])
+        }
+    }
+    given "one member that reads only itself" {
+        then "it converges to its own fixpoint without looping forever" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+            // Contributes its own current length back to itself each
+            // turn, capped by a fixed ceiling once inside it — a
+            // genuinely self-referential, single-member group.
+            fp
+                .solve(
+                    [0],
+                    (arg: int) -> {
+                        let mine = fp.value_at(0)
+                        if mine.length < 3 { [mine.length] } else { [] }
+                    },
+                )
+            int_set_fp(fp.value_at(0)) == int_set_fp([0, 1, 2])
+        }
+    }
+}

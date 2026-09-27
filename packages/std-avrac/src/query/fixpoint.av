@@ -1,0 +1,155 @@
+//! A GROWING-SET FIXPOINT over a group of mutually-dependent members —
+//! one dense family, semi-naive: every member runs once, then only a
+//! member that read something whose answer grew runs again, until
+//! nothing does. `failures.av`'s header names why the kernel's own
+//! `Cycle`/`start_recursive` isn't this: those answer ONE re-entrant
+//! call with a snapshot, once; this re-visits every member of a group
+//! repeatedly until a genuine fixpoint, over a caller-DECLARED join.
+//! `Fixpoint<T>` wraps a `Kernel` exactly as `Memo<T>` does — the
+//! kernel holds hash bookkeeping alone, this holds the typed lattice
+//! values, the join, and the worklist.
+//!
+//! REVERSE EDGES ARE SCOPED TO THE GROUP, NEVER GLOBAL: built from
+//! each member's own forward deps (already recorded by `settle`, read
+//! back via `Kernel.cell`), and refreshed on every re-run — a member
+//! that starts reading a new one mid-solve is found by that one's
+//! later growth from that point on, and one that stops reading
+//! something stops being woken by it. `record_dep`/`ask`/`settle`
+//! carry no new cost for this: nothing here changes them.
+use core.{Table, new_table}
+
+export type Fixpoint<T> = {
+    db: Kernel,
+    family: int,
+    bottom: T,
+    join: fn(T, T) -> T,
+    fp: fn(T) -> int,
+    values: Table<T>,
+}
+
+export fn new_fixpoint<T>(db: Kernel, family: int, bottom: T, join: fn(T, T) -> T, fp: fn(T) -> int) -> Fixpoint<
+    T,
+> {
+    Fixpoint { db: db, family: family, bottom: bottom, join: join, fp: fp, values: new_table<T>() }
+}
+
+/// A turn cap that SPEAKS: past this many re-runs of one member, the
+/// body is a defect (non-monotone, or a lattice with no finite
+/// height) — never a silent stop. Members, not rounds: each queue pop
+/// counts toward its own member's cap alone.
+const fixpoint_turn_cap: int = 10000
+
+impl Fixpoint {
+    fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
+
+    /// The current best-known answer — `bottom` before anything settles.
+    /// Records a dependency on `arg`, so a `compute` body reading a
+    /// FELLOW MEMBER through this (rather than through `self.db.ask`
+    /// directly) is still found by `index`/`reindex` afterward — the
+    /// read that makes the worklist propagate at all.
+    fn value_at(arg: int) -> T {
+        self.db.record_dep(self.query_key(arg))
+        self.values.at(arg) ?? self.bottom
+    }
+
+    /// One member's own re-run: `compute(arg)` answers fresh, joined
+    /// onto what is already known. Answers whether the joined value
+    /// GREW (its hash moved) — never merely whether it ran.
+    fn step(arg: int, compute: fn(int) -> T) -> bool {
+        let key = self.query_key(arg)
+        self.db.begin(key)
+        let before = self.fp(self.value_at(arg))
+        let joined = self.join(self.value_at(arg), compute(arg))
+        let hash = self.fp(joined)
+        self.values.keep(arg, joined)
+        self.db.settle(key, hash)
+        hash != before
+    }
+
+    /// This member's own just-recorded forward deps, read straight off
+    /// the kernel cell `settle` just wrote — never re-derived by hand.
+    fn deps_of(arg: int) -> List<Key> { self.db.cell(self.query_key(arg))?.deps ?? [] }
+
+    /// This member's forward deps filed as a reader under each dep's
+    /// own arg — only the deps THIS family owns; a read of something
+    /// outside the group cannot re-trigger anyone in it.
+    fn index(arg: int, reverse: Table<List<int>>) {
+        for d in self.deps_of(arg) {
+            if d.family == self.family {
+                let readers = reverse.at(d.arg) ?? []
+                if !readers.contains(arg) { reverse.keep(d.arg, readers.concat([arg])) }
+            }
+        }
+    }
+
+    /// `arg`'s edges into `reverse`, replaced by its FRESH deps. Its
+    /// old edges are not at hand (only the new list is), so every
+    /// bucket is swept once — bounded by the GROUP's own size, never
+    /// the whole program's.
+    fn reindex(arg: int, reverse: Table<List<int>>) {
+        for d_arg in 0..reverse.span() {
+            let readers = reverse.at(d_arg) ?? []
+            if readers.contains(arg) { reverse.keep(d_arg, [r for r in readers if r != arg]) }
+        }
+        self.index(arg, reverse)
+    }
+
+    /// A join that cannot absorb its own first answer, or that
+    /// disagrees with itself by argument order, is not a join — refused
+    /// before any member's kernel cell is touched, so a bad body traps
+    /// loudly instead of oscillating for `fixpoint_turn_cap` rounds
+    /// first. Not a full monotonicity proof (the kernel sees hashes,
+    /// never `T`'s structure) — the two laws a hash CAN witness. A MEET
+    /// PASSES BOTH: intersection is idempotent (`a ∩ a = a`) and
+    /// commutative (`a ∩ b = b ∩ a`), so this check cannot tell a
+    /// caller's join from its dual — only that whatever it is, it
+    /// agrees with itself. A meet used here does not oscillate either:
+    /// it shrinks toward a fixed answer just as reliably as a real join
+    /// grows toward one, so `fixpoint_turn_cap` does not catch it. A
+    /// meet in this seat is a silently WRONG, too-small answer that
+    /// nothing here can detect — the caller's own choice of `T` and
+    /// `join` is the only guard.
+    fn refuse_unless_a_join(seed: T) {
+        let mixed = self.join(self.bottom, seed)
+        let idempotent = self.join(mixed, mixed)
+        if self.fp(idempotent) != self.fp(mixed) {
+            avra_trap(
+                "defect: @query(fixpoint) family ${self.family}'s join is not idempotent — join(v, v) must equal v",
+            )
+        }
+        let ab = self.join(self.bottom, mixed)
+        let ba = self.join(mixed, self.bottom)
+        if self.fp(ab) != self.fp(ba) {
+            avra_trap(
+                "defect: @query(fixpoint) family ${self.family}'s join is not commutative — join(a, b) must equal join(b, a)",
+            )
+        }
+    }
+
+    /// Solve the fixpoint over `members`, each answered by `compute`.
+    fn solve(members: List<int>, compute: fn(int) -> T) {
+        if !members.is_empty() { self.refuse_unless_a_join(compute(members[0])) }
+        for m in members { let _ = self.step(m, compute) }
+        let reverse: Table<List<int>> = new_table<List<int>>()
+        for m in members { self.index(m, reverse) }
+        mut queue: List<int> = members
+        let turns: Table<int> = new_table<int>()
+        while !queue.is_empty() {
+            let m = queue[0]
+            queue = [queue[i] for i in 1..queue.length]
+            let count = (turns.at(m) ?? 0) + 1
+            if count > fixpoint_turn_cap {
+                avra_trap(
+                    "defect: @query(fixpoint) family ${self.family} member ${m} exceeded ${fixpoint_turn_cap} turns — a non-monotone body, or a lattice with no finite height",
+                )
+            }
+            turns.keep(m, count)
+            if self.step(m, compute) {
+                self.reindex(m, reverse)
+                for r in reverse.at(m) ?? [] {
+                    if !queue.contains(r) { queue = queue.concat([r]) }
+                }
+            }
+        }
+    }
+}
