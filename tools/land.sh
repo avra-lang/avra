@@ -309,15 +309,13 @@ merge_ref_in() {
 merge_main_in() { merge_ref_in "$1" "refs/heads/main"; }
 
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
-# avra-8sb5.57.25 (compiler print folded into every durable key) is
-# CLOSED, on main — a newer compiler no longer decodes an older one's
-# row. avra-8sb5.57.24 is NOT: the same trap still reproduces WITHIN
-# one compiler's own store (avra test and avra check share a record
-# key over a different analysis view — test files in or out — so a
-# check after a test in the same tree can still index past a row's
-# end). This sweep, before the build, stays until .24 itself closes;
-# the SECOND sweep below (between the suites and the keepers) is the
-# other half of guarding against .24 specifically.
+# avra-8sb5.57.25 (compiler print folded into every durable key) and
+# avra-8sb5.57.24 (a held module's record decoder now enforces its own
+# fingerprint, so a test-then-check sequence in one tree no longer
+# indexes a stale shape) are BOTH closed, on main — nothing in the
+# pipeline forces a cache sweep any more. Kept as a callable utility
+# (land_test.sh's own fixture still exercises it, and it is a
+# reasonable manual escape hatch), just not wired into a landing.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
@@ -439,8 +437,6 @@ run_pipeline() {
     esac
     echo "land: compiler changed in this landing: $compiler_changed" >&2
 
-    light "caches-aside$suffix" move_caches_aside "$branch_wt"
-
     # A SUBSHELL each: `build_generation`'s own `cd "$wt"` must not
     # leak into the steps after it.
     if ! ( build_generation "$branch_wt" "1$suffix" ); then
@@ -453,22 +449,6 @@ run_pipeline() {
             return 1
         fi
     fi
-
-    # A SECOND sweep, before the checks: `avra test` (test files
-    # included) and `avra check` (without them) share a record key
-    # over a different analysis view, so a check run after a test in
-    # the same tree traps — "index N is out of bounds"
-    # (avra-8sb5.57.24, still open — .25's compiler-print key closed a
-    # DIFFERENT hole and did not reach this one). This used to sit
-    # between the test suites and `make idioms` when they ran in that
-    # order; now that idioms and the suites run CONCURRENTLY (below),
-    # "between" them is not a place any more — sweeping once here,
-    # right before the whole batch, gives every one of them a clean
-    # cache to start from, the same protection under the new shape.
-    # Drop this sweep once test and check records are keyed apart;
-    # drop the FIRST sweep too at that point, since .24 is the only
-    # reason either one still runs (see that step's own comment).
-    light "caches-aside-2$suffix" move_caches_aside "$branch_wt"
 
     if ! run_checks "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix"; then
         echo "land: a check failed (an affected package's tests, or idioms)" >&2
@@ -567,12 +547,10 @@ try_integration() {
         *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
     esac
 
-    if ! light "batch-caches-$label" move_caches_aside "$batch_wt"; then return 1; fi
     if ! ( build_generation "$batch_wt" "batch-1-$label" ); then return 1; fi
     if [ "$compiler_changed" -eq 1 ]; then
         if ! ( build_generation "$batch_wt" "batch-2-$label" ); then return 1; fi
     fi
-    if ! light "batch-caches-2-$label" move_caches_aside "$batch_wt"; then return 1; fi
     if ! run_checks "$batch_wt" "$old_main_sha" "$new_sha" "-batch-$label"; then return 1; fi
     if ! heavy "batch-fmt-lossless-$label" sh -c "cd '$batch_wt' && make fmt-lossless"; then return 1; fi
     if ! heavy "batch-cache-attacks-$label" sh -c "cd '$batch_wt' && make cache-attacks"; then return 1; fi

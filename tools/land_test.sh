@@ -403,13 +403,13 @@ test_slot_stale_reclaim() {
     fi
 }
 
-# ══ THE CACHE SWEEP RUNS TWICE, AND THE SECOND RUN IS A CLEAN NO-OP ═══
-# land.sh moves every .avra-cache aside BEFORE the build (a compiler
-# print collision, avra-8sb5.57.24/.25) AND AGAIN between the test
-# suites and the keepers (avra test and avra check sharing a record
-# key, the same bug's other face). The second call must find nothing
-# left to move — the first already swept everything — and must not
-# treat an already-clean tree as a failure.
+# ══ THE CACHE SWEEP IS SAFE TO RUN TWICE IN A ROW ═════════════════════
+# move_caches_aside is no longer wired into a landing (avra-8sb5.57.24
+# and .25, the two bugs it existed to guard against, are both closed
+# on main) but stays a callable utility — this pins the property that
+# made it safe to call more than once when it WAS in the pipeline: a
+# second call over an already-clean tree finds nothing left to move
+# and says so, rather than treating that as a failure.
 test_caches_aside_twice() {
     tree="$scratch/caches-twice"
     rm -rf "$tree"
