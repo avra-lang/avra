@@ -36,23 +36,28 @@ bad() {
 
 # A throwaway git repo, initialized and committed once, so a fixture's
 # own edits land on a real ref a merge can target.
+# NEITHER PARAMETER IS NAMED `d`: every call site below binds its own
+# repo path to `d`, and POSIX sh has no per-function scope — a helper
+# that also called its own local `d` would silently overwrite the
+# caller's, exactly the trap that once made this file's own ff test
+# commit "main moved independently" into the wrong worktree.
 git_repo() {
-    d="$scratch/$1"
-    mkdir -p "$d"
-    git -C "$d" init -q
+    repo="$scratch/$1"
+    mkdir -p "$repo"
+    git -C "$repo" init -q
     # The default branch name is a matter of the machine's git config
     # (`init.defaultBranch`) — pin it here so "main" always exists,
     # whatever this machine defaults to.
-    git -C "$d" symbolic-ref HEAD refs/heads/main
-    git -C "$d" config user.email test@example.com
-    git -C "$d" config user.name "land test"
-    echo "$d"
+    git -C "$repo" symbolic-ref HEAD refs/heads/main
+    git -C "$repo" config user.email test@example.com
+    git -C "$repo" config user.name "land test"
+    echo "$repo"
 }
 commit_all() {
-    d="$1"
+    repo="$1"
     msg="$2"
-    git -C "$d" add -A
-    git -C "$d" commit -q -m "$msg"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m "$msg"
 }
 
 # ══ THE LANDING LOCK ══════════════════════════════════════════════════
@@ -279,6 +284,80 @@ test_slot_stale_reclaim() {
     fi
 }
 
+# ══ THE SEED COMMIT: MOVED IS COMMITTED, UNCHANGED IS A NO-OP ═══════
+test_commit_seed_if_moved() {
+    d="$(git_repo seed-commit)"
+    mkdir -p "$d/bootstrap"
+    printf 'seed A\n' > "$d/bootstrap/seed.ll"
+    printf 'digest A\n' > "$d/bootstrap/seed.sources"
+    commit_all "$d" "base"
+    before_sha="$(git -C "$d" rev-parse HEAD)"
+
+    # Unchanged: no commit.
+    if branch=x sh "$land" --call commit_seed_if_moved "$d" "x" > "$scratch/seed-noop.out" 2>&1; then
+        after_sha="$(git -C "$d" rev-parse HEAD)"
+        if [ "$before_sha" = "$after_sha" ]; then
+            ok "seed-commit: an unchanged seed commits nothing"
+        else
+            bad "seed-commit: an unchanged seed still made a commit"
+        fi
+    else
+        bad "seed-commit: the unchanged case returned non-zero"
+    fi
+
+    # Moved: exactly one commit, naming the branch.
+    printf 'seed B\n' > "$d/bootstrap/seed.ll"
+    if branch=x sh "$land" --call commit_seed_if_moved "$d" "my-branch" > "$scratch/seed-moved.out" 2>&1; then
+        after_sha="$(git -C "$d" rev-parse HEAD)"
+        if [ "$before_sha" != "$after_sha" ] && ! git -C "$d" status --porcelain | grep -q .; then
+            ok "seed-commit: a moved seed is committed, tree clean after"
+        else
+            bad "seed-commit: a moved seed left the tree dirty or uncommitted"
+        fi
+        if git -C "$d" log -1 --format=%s | grep -q "my-branch"; then
+            ok "seed-commit: the commit message names the landing branch"
+        else
+            bad "seed-commit: the commit message did not name the branch"
+        fi
+    else
+        bad "seed-commit: committing a moved seed returned non-zero"
+        cat "$scratch/seed-moved.out"
+    fi
+}
+
+# ══ THE FAST-FORWARD: CLEAN WHEN LINEAR, REFUSED WHEN MAIN ALSO MOVED ═
+test_try_ff() {
+    d="$(git_repo ff)"
+    printf 'a\n' > "$d/f.txt"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+
+    branch_wt_dir="$scratch/ff-branch-wt"
+    git -C "$d" worktree add -q -b feature "$branch_wt_dir" main > /dev/null 2>&1
+    printf 'b\n' >> "$branch_wt_dir/f.txt"
+    commit_all "$branch_wt_dir" "feature work"
+
+    if ( main_wt="$d" branch=feature sh "$land" --call try_ff ) > "$scratch/ff-clean.out" 2>&1; then
+        ok "ff: a linear branch fast-forwards main cleanly"
+    else
+        bad "ff: a linear, uncontested branch failed to fast-forward"
+        cat "$scratch/ff-clean.out"
+    fi
+
+    # Now main ALSO moves, independently — the branch no longer fast-forwards.
+    printf 'c\n' >> "$d/f.txt"
+    commit_all "$d" "main moved independently"
+    git -C "$branch_wt_dir" checkout -q -B feature2 "$base_sha"
+    printf 'd\n' >> "$branch_wt_dir/f.txt"
+    commit_all "$branch_wt_dir" "a second feature, from the OLD base"
+    if ( main_wt="$d" branch=feature2 sh "$land" --call try_ff ) > "$scratch/ff-race.out" 2>&1; then
+        bad "ff: a branch behind main's NEW tip fast-forwarded anyway"
+    else
+        ok "ff: a branch behind main's new tip correctly refuses to fast-forward"
+    fi
+    git -C "$d" worktree remove -f "$branch_wt_dir" > /dev/null 2>&1
+}
+
 echo "=== land tooling fixtures ==="
 test_lock
 test_merge_seed_conflict
@@ -286,6 +365,8 @@ test_merge_real_conflict
 test_affected_packages
 test_slot_limit
 test_slot_stale_reclaim
+test_commit_seed_if_moved
+test_try_ff
 
 echo
 echo "land_test: $total checks, $failed failed"
