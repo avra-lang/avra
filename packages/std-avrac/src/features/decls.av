@@ -665,6 +665,19 @@ impl Decls {
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
+
+    /// A declaration's module fully qualified, as `use` spells it from
+    /// outside the package: a root module gains the root's own name.
+    fn qualified_module(d: DeclId) -> string {
+        let m = self.module_of(d)
+        if !package_of_module(m).is_empty() { return m }
+        let root = self.root_name.get()
+        when {
+            m.is_empty() -> root
+            root.is_empty() -> m
+            _ -> "${root}.${m}"
+        }
+    }
     /// A declaration's package — its module's, by `package_named`.
     fn package_of(d: DeclId) -> string { self.package_named(self.module_of(d)) }
 
