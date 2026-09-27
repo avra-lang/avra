@@ -24,7 +24,7 @@
 //! carries the OLD rows and refuses the new package while compiling
 //! it, so those land in two commits — one that stops this door
 //! refusing, one that moves the shape and restores it.
-use core.{TypeId, DeclId, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
+use core.{TypeId, DeclId, DeclKind, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
 use @std.errors.{Loc}
 use @std.meta.{
     Param as MetaParam,
@@ -82,7 +82,7 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Type",
-            fields: ["name", "fields", "variants", "at", "doc", "annotations"],
+            fields: ["name", "fields", "variants", "at", "doc", "annotations", "module"],
         },
         MetaShape {
             pkg: "@std.meta",
@@ -385,6 +385,7 @@ export fn meta_of_type(x: MetaType, mut heap: MetaHeap) -> MetaVal {
             meta_of_loc(x.at, heap),
             meta_of_opt_text(x.doc),
             meta_of_annotations(x.annotations, heap),
+            MetaVal.Text(x.module),
         ],
         heap,
     )
@@ -659,6 +660,29 @@ fn meta_of_opt_text(x: string?) -> MetaVal {
 /// first parameter may take, and everything else.
 export enum MetaSeat { Fn, Type, Named, Trait, Other }
 
+/// Whether a declaration of this kind fills a `Type` meta seat — every
+/// kind spelled, so a new one decides here rather than falling through.
+fn fills_type_seat(kind: DeclKind) -> bool {
+    match kind {
+        .Record or .Enum or .CollectEnum -> true,
+        .Builtin or .Fn or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+    }
+}
+
+fn fills_fn_seat(kind: DeclKind) -> bool {
+    match kind {
+        .Fn -> true,
+        .Builtin or .Record or .Enum or .CollectEnum or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+    }
+}
+
+fn fills_trait_seat(kind: DeclKind) -> bool {
+    match kind {
+        .Trait -> true,
+        .Builtin or .Fn or .Record or .Enum or .CollectEnum or .Named or .Alias or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+    }
+}
+
 impl Decls {
     /// The seat a type names. The DeclId is the identity; the package
     /// and export name locate it without accepting a user record of
@@ -675,5 +699,18 @@ impl Decls {
     /// boundary's ONE spelling, read by typing and by the crossing.
     fn takes_a_decl(ty: TypeId) -> bool {
         match self.meta_seat(ty) { .Fn or .Type or .Named or .Trait -> true, .Other -> false }
+    }
+
+    /// Whether a meta seat takes THIS kind of declaration: `Fn` a fn,
+    /// `Type` a record or an enum, `Trait` a trait, `Named` any. Typing
+    /// refuses a mismatch and the crossing never builds one.
+    fn seat_takes(ty: TypeId, kind: DeclKind) -> bool {
+        match self.meta_seat(ty) {
+            .Named -> true,
+            .Fn -> fills_fn_seat(kind),
+            .Type -> fills_type_seat(kind),
+            .Trait -> fills_trait_seat(kind),
+            .Other -> false,
+        }
     }
 }

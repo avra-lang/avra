@@ -8,6 +8,7 @@
 //! Fns and types are namespaces apart, as the language keeps them.
 use core.{DeclId, FileId, DeclKind, same_decl, same_file, text_before, inserted, qtrace}
 use diagnostics.{Diag, refusal, Voices, no_voices}
+use query.{traced}
 use @std.errors.{Loc}
 
 /// A file's namespace: the bindings, the names in declaration order
@@ -135,13 +136,13 @@ impl Decls {
             let name = if i.renamed.is_empty() { x.name } else { i.renamed }
             let mine: DeclId? = match x.kind {
                 .Fn or .Const or .Collect -> fns.get(name),
-                .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> types.get(name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> types.get(name),
                 .Syntax -> syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             let shared: DeclId? = match x.kind {
                 .Fn or .Const or .Collect -> module.base.fns.get(name),
-                .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> module.base.types.get(name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> module.base.types.get(name),
                 .Syntax -> module.base.syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
@@ -152,7 +153,7 @@ impl Decls {
                         fns.set(name, i.decl)
                         fn_names.push(name)
                     },
-                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> {
+                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> {
                         types.set(name, i.decl)
                         type_names.push(name)
                     },
@@ -169,7 +170,7 @@ impl Decls {
             let x = self.decl(i.decl)
             let prior: DeclId? = match x.kind {
                 .Fn or .Const or .Collect -> fns.get(x.name) ?? module.base.fns.get(x.name),
-                .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> types.get(x.name) ?? module.base.types.get(x.name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> types.get(x.name) ?? module.base.types.get(x.name),
                 .Syntax -> syntaxes.get(x.name) ?? module.base.syntaxes.get(x.name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
@@ -179,7 +180,7 @@ impl Decls {
                         fns.set(x.name, i.decl)
                         fn_names.push(x.name)
                     },
-                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> {
+                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> {
                         types.set(x.name, i.decl)
                         type_names.push(x.name)
                     },
@@ -230,7 +231,7 @@ impl Binder {
     /// LATER declaration, filed under its file.
     fn declare(d: DeclId) {
         let x = self.decls.decl(d)
-        qtrace("Q\tdeclare\t${x.name}\t${self.decls.file(x.file).path}\n")
+        if traced() { qtrace("Q\tdeclare\t${x.name}\t${self.decls.file(x.file).path}\n") }
         let prior: DeclId? = self.held(x.kind, x.name)
         if prior == null {
             self.bind(x.kind, x.name, d)
@@ -290,7 +291,7 @@ impl Binder {
         let as_type: DeclId? = self.names.types.get(name)
         match kind {
             .Fn or .Const or .Collect -> as_fn,
-            .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> as_type,
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> as_type,
             .Syntax -> self.names.syntaxes.get(name),
             .Method or .Default or .Impl or .Main or .Case -> null,
         }
@@ -299,7 +300,7 @@ impl Binder {
     fn bind(kind: DeclKind, name: string, d: DeclId) {
         match kind {
             .Fn or .Const or .Collect -> self.bind_fn(name, d),
-            .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> self.bind_type(name, d),
             .Syntax -> self.bind_syntax(name, d),
             .Method or .Default or .Impl or .Main or .Case -> not_bound(),
         }
@@ -392,7 +393,7 @@ fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
             "redefined here",
             "rename one of them",
         ),
-        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin -> refusal(
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin or .CollectEnum -> refusal(
             "resolve.duplicate_type",
             at,
             "`${name}` is declared more than once",

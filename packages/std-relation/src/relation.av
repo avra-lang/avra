@@ -61,17 +61,25 @@ export fn relation(t: Type) -> Declared {
 /// Every way a declaration breaks the relation law, each spoken at the
 /// field or type that breaks it.
 export fn relation_problems(t: Type) -> List<Diagnostic> {
+    if t.module.is_empty() { return [no_module(t)] }
     if !t.variants.is_empty() { return [not_a_record(t)] }
     let collisions = [name_collision(t, f) for f in content(t) if generated_members.contains(f.name)]
     let marks = [mark_problem(t, f) for f in t.fields if !marks_ok(f)]
     collisions.concat(marks).concat([kind_problem(t, f) for f in content(t) if !carried(f.kind)])
 }
 
+/// A relation's STABLE NAME: its declaring module fully qualified, then
+/// its own name — two modules may each declare a same-named relation,
+/// and neither shares the other's seed or record.
+export fn stable_name(t: Type) -> string {
+    "${t.module}.${t.name}"
+}
+
 /// The shape's own fingerprint: every field's name, spelling and marks,
 /// in declared order. A stored row whose shape differs is recomputed,
 /// never decoded.
 export fn shape_hash(t: Type) -> int {
-    mut h = stable_hasher(text_hash(t.name)).count(t.fields.length)
+    mut h = stable_hasher(text_hash(stable_name(t))).count(t.fields.length)
     for f in t.fields {
         h = h.text(f.name).text(f.ty).count(f.marks.length)
         for m in f.marks { h = h.text(m.name) }
@@ -137,7 +145,7 @@ fn generated(t: Type) -> Decls {
     if !shape_ok(t) { return quote { impl ${t} { } } }
     quote {
         impl ${t} {
-            static fn relation_name() -> string { ${literal(t.name)} }
+            static fn relation_name() -> string { ${literal(stable_name(t))} }
 
             static fn shape_hash() -> int { ${shape_hash(t)} }
 
@@ -152,7 +160,7 @@ fn generated(t: Type) -> Decls {
 }
 
 fn hash_chain(t: Type) -> Code {
-    mut acc: Code = quote { stable_hasher(${text_hash(t.name)}) }
+    mut acc: Code = quote { stable_hasher(${text_hash(stable_name(t))}) }
     for f in content(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind) }
     acc
 }
@@ -223,6 +231,15 @@ fn write_each(k: Kind) -> Code {
 }
 
 // ── Voices ──
+
+fn no_module(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "no_module",
+        t.at,
+        "a relation is named by its declaring module, and the compiler handed `${t.name}` none — it predates qualified relation names",
+        "build this package with a compiler that writes a declaration's module",
+    )
+}
 
 fn not_a_record(t: Type) -> Diagnostic {
     refuse_as_at(

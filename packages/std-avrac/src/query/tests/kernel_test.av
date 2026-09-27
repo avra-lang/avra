@@ -174,6 +174,87 @@ spec "query/db" {
             t.db.changed_at(Key { family: t.double_family, arg: 9999 }) == t.db.revision()
         }
     }
+    given "the last-reader stamp" {
+        then "repeat reads of one key within one query record one dep, not N" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.set_input(key, 1)
+            let outer = Key { family: fam, arg: 1 }
+            db.begin(outer)
+            for i in 0..50 { db.record_dep(key) }
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 1
+        }
+        then "reads of two different keys record two deps, never merged" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let a = Key { family: fam, arg: 0 }
+            let b = Key { family: fam, arg: 1 }
+            db.set_input(a, 1)
+            db.set_input(b, 2)
+            let outer = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_dep(a)
+            db.record_dep(b)
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 2
+        }
+        then "a later query's read of the same key is its own dep, never skipped as an earlier reader's" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.set_input(key, 1)
+            let first = Key { family: fam, arg: 1 }
+            db.begin(first)
+            db.record_dep(key)
+            db.settle(first, 1)
+            let second = Key { family: fam, arg: 2 }
+            db.begin(second)
+            db.record_dep(key)
+            db.settle(second, 1)
+            db.cell(first)!.deps.length == 1 && db.cell(second)!.deps.length == 1
+        }
+        then "a nested query's read of a shared key does not cost the outer query a second dep" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let shared = Key { family: fam, arg: 0 }
+            db.set_input(shared, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.begin(nested)
+            db.record_dep(shared)
+            db.settle(nested, 1)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 1
+        }
+        then "two nested levels both reading the shared key unwind their restores in order" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let shared = Key { family: fam, arg: 0 }
+            db.set_input(shared, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            let deeper = Key { family: fam, arg: 3 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.begin(nested)
+            db.record_dep(shared)
+            db.begin(deeper)
+            db.record_dep(shared)
+            db.settle(deeper, 1)
+            db.record_dep(shared)
+            db.settle(nested, 1)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 1 &&
+                db.cell(nested)!.deps.length == 1 &&
+                db.cell(deeper)!.deps.length == 1
+        }
+    }
 }
 
 spec "query/memo" {

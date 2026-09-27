@@ -21,6 +21,15 @@
 //! type resolves under typing (`declare.av`'s `named_type`/
 //! `trait_decl_named` both bottom out at `names.type_decl`). A name
 //! bound as the STATEMENT's OWN type parameter names no declaration.
+//!
+//! AN ANNOTATION'S CALLEE IS AN ORDINARY EXPRESSION (`@name(args)` is
+//! the call `name(...)`), so `expr_refs`'s blanket walk already sees
+//! it — a decl and a type position alike. A FIELD MARK is not: it is
+//! a free-standing WORD the compiler judges no reader over (marks
+//! stay free names everywhere else), so `mark_refs` is the one place
+//! that treats a mark's word as a POSSIBLE use — a fn visible under
+//! that name reads through it, and a mark matching nothing answers
+//! no row, exactly as an unclaimed mark answers no reader elsewhere.
 use core.{
     DeclId,
     FileId,
@@ -31,6 +40,7 @@ use core.{
     Nominal,
     TypeRef,
     UseParts,
+    Mark,
     touch,
     fp,
     fp_list,
@@ -80,7 +90,13 @@ impl Workspace {
             [self.impl_refs(f, names, d) for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Impl],
         )
         let type_rows = flatten([self.type_use_refs(f, names, store, s) for s in store.stmt_ids()])
-        expr_rows.concat(write_rows).concat(impl_rows).concat(type_rows).concat(self.import_refs(f))
+        let mark_rows = flatten([self.mark_refs(f, names, store, s) for s in store.stmt_ids()])
+        expr_rows
+            .concat(write_rows)
+            .concat(impl_rows)
+            .concat(type_rows)
+            .concat(mark_rows)
+            .concat(self.import_refs(f))
     }
 
     /// An `impl … for` block's own TRAIT, and an impl's own TARGET
@@ -192,6 +208,20 @@ impl Workspace {
         flatten(
             [[Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.TypeUse } for d in type_use_decls(names, tparams, t)] for t in store.type_roots(s)],
         )
+    }
+
+    /// Every mark this statement's members carry, read where a fn
+    /// answers to that word — the statement is the site, a mark
+    /// having no expression id either. A mark is a free name: most
+    /// match no fn at all and answer no row, exactly as a mark
+    /// nothing claims still parses.
+    fn mark_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+        flatten([some_list(self.mark_ref(f, names, s, m)) for m in store.marks_written(s)])
+    }
+
+    fn mark_ref(f: FileId, names: NameFacts, s: StmtId, m: Mark) -> Ref? {
+        let d? = names.names.fn_decl(m.name) else { return null }
+        Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.Read }
     }
 
     /// Every `use` line's own imports, one row per item — the site is

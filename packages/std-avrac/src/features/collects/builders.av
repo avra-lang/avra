@@ -63,6 +63,33 @@ fn bad_by(
     .Err("a collect's order is declared with `by` — found `${bad.text}`")
 }
 
+/// `collect enum Name = kind in scope by …` — `build_collect_decl`'s
+/// twin with no declared type and no projection.
+fn build_collect_enum_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let k = b.token(1)?
+    let sc = b.token(2)?
+    let bws = b.tokens(3)?
+    let biws = b.tokens(4)?
+    let bks = b.tokens(5)?
+    let bad_it? = biws.find(not_word("it")) else { return bad_enum_by(b, bws, n, k, sc, bks) }
+    .Err("a collect enum's order reads its declaration through `it` — found `${bad_it.text}`")
+}
+
+fn bad_enum_by(b: Builder, bws: List<Token>, n: Token, k: Token, sc: Token, bks: List<Token>) -> Result<
+    LangNode,
+    string,
+> {
+    let bad? = bws.find(not_word("by")) else {
+        return b
+            .make_stmt(
+                Stmt
+                    .CollectEnum(Scoped(n.text), kind_of(b, k), scope_of(sc), [Plain(bk.text) for bk in bks]),
+            )
+    }
+    .Err("a collect enum's order is declared with `by` — found `${bad.text}`")
+}
+
 fn not_word(word: string) -> fn(Token) -> bool {
     (t: Token) -> t.text != word
 }

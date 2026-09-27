@@ -1,6 +1,8 @@
 // The red team's survivors, one `given` per attack class. Every case
 // here failed, or was silent, before its fix.
 use @std.relation.{relation_problems}
+use tests.twins_a.{a_name, a_hash}
+use tests.twins_b.{b_name, b_hash}
 use @std.relation.stable.{reader}
 use @std.meta.{Type, Field, Kind, Mark}
 
@@ -15,7 +17,15 @@ fn marked_field(name: string, marks: List<string>) -> Field {
 }
 
 fn one_row(fields: List<Field>) -> Type {
-    Type { name: "R", fields: fields, variants: [], at: null, doc: null, annotations: [] }
+    Type {
+        name: "R",
+        fields: fields,
+        variants: [],
+        at: null,
+        doc: null,
+        annotations: [],
+        module: "m",
+    }
 }
 
 fn refusals(t: Type) -> string {
@@ -54,6 +64,19 @@ spec "std/relation — adversarial" {
         }
         then "a mark on the store's `id` is judged like any other" {
             refusals(one_row([marked_field("id", ["indx"])])) == "unknown_mark"
+        }
+    }
+}
+
+spec "std/relation — the stable name" {
+    given "two modules each declaring a relation named `Row`" {
+        then "each is named by its own module" {
+            a_name() != b_name() &&
+                a_name().ends_with("twins_a.Row") &&
+                b_name().ends_with("twins_b.Row")
+        }
+        then "the same values hash apart, each seeded by its own name" {
+            a_hash() != b_hash()
         }
     }
 }

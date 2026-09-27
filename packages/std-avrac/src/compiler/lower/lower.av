@@ -68,7 +68,7 @@ use features.{
     MetaVal,
     new_meta_heap,
 }
-use features.collects.{generic_words}
+use features.collects.{generic_words, gathered_members}
 use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
@@ -842,10 +842,8 @@ fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
 /// A collect's body: every declaration of `p.kind`, in `p.scope`,
 /// projected by `p.proj` and ordered by `p.order` — SYNTHESISED, no
 /// AST, `wrapped_body`'s shape, keyed on the one declaration
-/// `is_collect_decl` names. `Workspace.admit_collect_scopes` forces
-/// every collect's own scope admitted before any body lowers;
-/// `Decls.gathered` re-asks the same door lazily, from `x.file`, for
-/// any this misses.
+/// `is_collect_decl` names. The scope's files were admitted when the
+/// collect was typed (`Decls.gathered`).
 fn lower_collect(
     a: Analysis,
     x: Decl,
@@ -887,7 +885,7 @@ fn lower_collect(
 /// must not depend on — each packed into the projected type's slots.
 fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, owner: FileId) -> Reg {
     let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
-    let regs = [collect_entry_reg(lo, a, entry_ty, p, d) for d in ordered_collect_members(a, p, owner)]
+    let regs = [collect_entry_reg(lo, a, entry_ty, p, d) for d in ordered_collect_members(a.view.decls, p.kind, p.scope, p.order, owner)]
     let size = lo.box_size(regs.length)
     lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
@@ -896,33 +894,26 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
 /// two different keys never read as one and a tie keeps both members.
 type SortedMember = { key: List<string>, decl: Decl }
 
-fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<Decl> {
-    let found = collect_members(a, p.kind, p.scope, owner)
-    let keyed = [SortedMember { key: collect_sort_key(a, p, d), decl: d } for d in found]
+/// Every matching declaration, in `by` order — shared by both collect
+/// flavors (a value's rows, an enum's variants); only `Decls` is
+/// needed, never a whole `Analysis`, since ordering is a fact of the
+/// declaration table alone.
+export fn ordered_collect_members(
+    decls: Decls,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+    owner: FileId,
+) -> List<Decl> {
+    let found = gathered_members(decls, kind, scope, owner)
+    let keyed = [SortedMember { key: collect_sort_key(decls, order, d), decl: d } for d in found]
     [m.decl for m in sorted_by(keyed, member_before)]
 }
 
 fn member_before(x: SortedMember, y: SortedMember) -> bool { tuple_before(x.key, y.key) }
 
-/// The kind's own gathering door — A REGISTRY, exhaustive over
-/// `CollectKind`: the next kind (fn, case) answers here, never a
-/// string compare. Every component's instances read the SAME index,
-/// by the SAME word (`Decls.collect_word`), filtered to `scope` by
-/// `Decls.gathered`; an `.Annotated` kind's declarations read the
-/// mark twin (`Decls.gathered_by_mark`), same filter, keyed on every
-/// `@name` a declaration wears rather than a component's one word.
-/// `UnknownKind` was already refused at `check_collect` — it
-/// gathers nothing, honestly.
-fn collect_members(a: Analysis, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
-    match kind {
-        .Component(w) -> a.view.decls.gathered(w, scope, owner),
-        .Annotated(w) -> a.view.decls.gathered_by_mark(w, scope, owner),
-        .UnknownKind(_) -> [],
-    }
-}
-
-fn collect_sort_key(a: Analysis, p: CollectParts, d: Decl) -> List<string> {
-    [collect_field_text(a, d, [k]) for k in p.order]
+export fn collect_sort_key(decls: Decls, order: List<Plain>, d: Decl) -> List<string> {
+    [collect_field_text(decls, d, [k]) for k in order]
 }
 
 /// One entry: its fields read by NAME off the projected type's own
@@ -971,7 +962,7 @@ fn collect_field_reg(
         path,
         kind,
         d,
-    ) ?? lo.const_str(collect_field_text(a, d, path))
+    ) ?? lo.const_str(collect_field_text(a.view.decls, d, path))
 }
 
 /// A declaration crossed WHOLE as the meta value `want` names — the
@@ -1096,14 +1087,14 @@ fn component_field_reg(
 /// file's `//!` is not any single one's doc to inherit — an
 /// UNDOCUMENTED entry answers "", not the file header every sibling
 /// would then share.
-fn collect_field_text(a: Analysis, d: Decl, path: List<Plain>) -> string {
+export fn collect_field_text(decls: Decls, d: Decl, path: List<Plain>) -> string {
     if path.length != 1 { return "" }
     let word = path[0].of
     if word == "name" { return d.name }
-    if word == "module" { return a.view.decls.short_module_of(d.id) }
-    if word == "file" { return a.view.decls.file(d.file).path }
-    if word == "doc" { return joined(doc_first_paragraph(a.view.decls.doc_of(d.id) ?? []), " ") }
-    if is_root_kind_path(path) { return "${component_root_kind(a.view.decls, d)}" }
+    if word == "module" { return decls.short_module_of(d.id) }
+    if word == "file" { return decls.file(d.file).path }
+    if word == "doc" { return joined(doc_first_paragraph(decls.doc_of(d.id) ?? []), " ") }
+    if is_root_kind_path(path) { return "${component_root_kind(decls, d)}" }
     ""
 }
 

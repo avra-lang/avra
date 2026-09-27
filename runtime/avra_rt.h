@@ -165,6 +165,11 @@ extern const char avra_rt_held_avra_bytes_eq_at __asm__(AVRA_RT_LABEL(avra_bytes
 extern const char avra_rt_held_avra_bytes_ieq_at __asm__(AVRA_RT_LABEL(avra_bytes_ieq_at));
 extern const char avra_rt_held_avra_bytes_gathered __asm__(AVRA_RT_LABEL(avra_bytes_gathered));
 extern const char avra_rt_held_avra_bytes_adopted __asm__(AVRA_RT_LABEL(avra_bytes_adopted));
+extern const char avra_rt_held_avra_mmap_open __asm__(AVRA_RT_LABEL(avra_mmap_open));
+extern const char avra_rt_held_avra_mmap_len __asm__(AVRA_RT_LABEL(avra_mmap_len));
+extern const char avra_rt_held_avra_mmap_slice __asm__(AVRA_RT_LABEL(avra_mmap_slice));
+extern const char avra_rt_held_avra_mmap_word_at __asm__(AVRA_RT_LABEL(avra_mmap_word_at));
+extern const char avra_rt_held_avra_mmap_close __asm__(AVRA_RT_LABEL(avra_mmap_close));
 extern const char avra_rt_held_avra_task_spawn __asm__(AVRA_RT_LABEL(avra_task_spawn));
 extern const char avra_rt_held_avra_task_settle __asm__(AVRA_RT_LABEL(avra_task_settle));
 extern const char avra_rt_held_avra_tasks_push __asm__(AVRA_RT_LABEL(avra_tasks_push));
@@ -310,6 +315,11 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_bytes_ieq_at,
     &avra_rt_held_avra_bytes_gathered,
     &avra_rt_held_avra_bytes_adopted,
+    &avra_rt_held_avra_mmap_open,
+    &avra_rt_held_avra_mmap_len,
+    &avra_rt_held_avra_mmap_slice,
+    &avra_rt_held_avra_mmap_word_at,
+    &avra_rt_held_avra_mmap_close,
     &avra_rt_held_avra_task_spawn,
     &avra_rt_held_avra_task_settle,
     &avra_rt_held_avra_tasks_push,
@@ -559,6 +569,16 @@ _Static_assert(__builtin_classify_type(avra_bytes_gathered(AVRA_RT_PTR)) == AVRA
     "avra_bytes_gathered: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_bytes_adopted(AVRA_RT_PTR, AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_bytes_adopted: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_mmap_open(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_mmap_open: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_mmap_len(AVRA_RT_PTR)), int64_t),
+    "avra_mmap_len: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_mmap_slice(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_mmap_slice: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_mmap_word_at(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_mmap_word_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_mmap_close(AVRA_RT_PTR)), void),
+    "avra_mmap_close: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_task_spawn(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_task_spawn: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_settle(AVRA_RT_PTR)), void),

@@ -536,6 +536,7 @@ impl SourceText {
                     self.collect_decl(exported, name.of, ty, kind, scope, proj, order),
                 ),
             ],
+            .CollectEnum(name, kind, scope, order) -> [source_line(depth, self.collect_enum_decl(exported, name.of, kind, scope, order))],
             .Error -> [source_line(depth, "__error")],
         }
     }
@@ -1049,6 +1050,19 @@ impl SourceText {
         let fields = joined([self.collect_field(f.field.of, f.path) for f in proj.fields], ", ")
         let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
         "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
+    }
+
+    /// `collect enum Name = kind in scope by …` — `collect_decl`'s
+    /// twin with no declared type and no projection.
+    fn collect_enum_decl(
+        exported: string,
+        name: string,
+        kind: CollectKind,
+        scope: CollectScope,
+        order: List<Plain>,
+    ) -> string {
+        let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
+        "${exported}collect enum ${source_name(name)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
     }
 
     /// One case's `then` line, standing alone (its group is empty).

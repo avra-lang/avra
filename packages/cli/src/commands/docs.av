@@ -73,14 +73,16 @@ fn shown_witness(kind: string) {
 /// after this one.
 fn explained_decl(name: string, json: bool) -> int {
     let root = here()
-    let store = store_at(build_cache_root(root_workspace(root)))
+    let ws = root_workspace(root)
+    let store = store_at(build_cache_root(ws))
+    let compiler = ws.compiler_id()
     mut d = fresh_db()
-    let cached? = d.decl(store, db_qualified(root, name)) else { return derived_decl(d, store, root, name, json) }
+    let cached? = d.decl(store, db_qualified(root, compiler, name)) else { return derived_decl(d, store, root, compiler, name, json) }
     print_decl(name, cached.answer, json)
     0
 }
 
-fn derived_decl(mut d: Db, store: Store, root: string, name: string, json: bool) -> int {
+fn derived_decl(mut d: Db, store: Store, root: string, compiler: string, name: string, json: bool) -> int {
     let p? = clean_program() else { return 1 }
     let found? = p.explain_doc(name) else {
         eprintln(
@@ -91,7 +93,7 @@ fn derived_decl(mut d: Db, store: Store, root: string, name: string, json: bool)
     d
         .insert_decl(
             store,
-            db_qualified(root, name),
+            db_qualified(root, compiler, name),
             DocFacts {
                 root: root,
                 answer: found.text,
