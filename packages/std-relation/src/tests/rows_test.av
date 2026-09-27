@@ -63,7 +63,7 @@ spec "std/relation — rows" {
         then "a row reads back by its id" {
             let rs = fresh()
             let id = added(rs, p("a", 1))
-            (rs.row(id)?.b ?? -1) == 1 && id == 0
+            rs.row(id)?.b ?? -1 == 1 && id == 0
         }
         then "a text bucket answers every row filed under it, in insertion order" {
             let rs = fresh()
@@ -112,7 +112,29 @@ spec "std/relation — rows" {
             let bucket = rs.bucket_of(0, IndexKey.Text("a"))
             let same = p("a", 1) with { id: id }
             rs.put(id, same, hash_of(same), keys_of(same))
-            rs.set_hash() == set && rs.bucket_of(0, IndexKey.Text("a")) == bucket && by_a(rs, "a") == "1"
+            rs.set_hash() == set &&
+                rs.bucket_of(0, IndexKey.Text("a")) == bucket &&
+                by_a(rs, "a") == "1"
+        }
+    }
+    given "a bucket of two rows, the first row re-filed" {
+        then "an unchanged re-put keeps the bucket's order and its first row" {
+            let rs = fresh()
+            let first = added(rs, p("a", 1))
+            let _ = added(rs, p("a", 2))
+            let same = p("a", 1) with { id: first }
+            rs.put(first, same, hash_of(same), keys_of(same))
+            by_a(rs, "a") == "1,2" && rs.first_id(rs.bucket_of(0, IndexKey.Text("a"))) == first
+        }
+        then "a row moved away and back answers in id order, as before" {
+            let rs = fresh()
+            let first = added(rs, p("a", 1))
+            let _ = added(rs, p("a", 2))
+            let away = p("b", 1) with { id: first }
+            rs.put(first, away, hash_of(away), keys_of(away))
+            let back = p("a", 1) with { id: first }
+            rs.put(first, back, hash_of(back), keys_of(back))
+            by_a(rs, "a") == "1,2" && rs.first_id(rs.bucket_of(0, IndexKey.Text("a"))) == first
         }
     }
     given "a row removed" {
@@ -122,7 +144,11 @@ spec "std/relation — rows" {
             let id = added(rs, p("a", 1))
             rs.remove(id)
             let next = added(rs, p("b", 2))
-            rs.row(id) == null && next == 1 && rs.count() == 1 && by_a(rs, "a") == "" && rs.set_hash() != empty
+            rs.row(id) == null &&
+                next == 1 &&
+                rs.count() == 1 &&
+                by_a(rs, "a") == "" &&
+                rs.set_hash() != empty
         }
         then "removing every row returns the set hash to zero" {
             let rs = fresh()

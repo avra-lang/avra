@@ -21,7 +21,30 @@ export enum IndexKey {
     Slot(value: int)
 }
 
-/// One bucket's member ids and the sum of their finished hashes.
+/// A string files under its own text.
+export fn text_key(v: string) -> IndexKey { IndexKey.Text(v) }
+
+/// A bool files under its tag's slot.
+export fn bool_key(v: bool) -> IndexKey { IndexKey.Slot(if v { 1 } else { 0 }) }
+
+/// A plain int files under its decimal text — an arbitrary int is no
+/// dense slot.
+export fn int_key(v: int) -> IndexKey { IndexKey.Text("${v}") }
+
+/// Whether two rows file under the same key in every index.
+fn same_keys(a: List<IndexKey>, b: List<IndexKey>) -> bool {
+    a.length == b.length && [same_key(k, b[i]) for i, k in a].all(it)
+}
+
+fn same_key(a: IndexKey, b: IndexKey) -> bool {
+    match a {
+        .Text(x) -> match b { .Text(y) -> x == y, .Slot(_) -> false },
+        .Slot(n) -> match b { .Slot(m) -> n == m, .Text(_) -> false },
+    }
+}
+
+/// One bucket's member ids, in id order — a function of the set, never
+/// of the order rows were written — and the sum of their finished hashes.
 type Bucket = { members: Cell<List<int>>, hash: Cell<int> }
 
 /// One index: each text and each slot maps to its bucket's id, and the
@@ -45,7 +68,15 @@ export fn rows<R>(index_count: int) -> Rows<R> {
     let hashes: Cell<List<int>> = Cell.new([])
     let filed: Cell<List<List<IndexKey>>> = Cell.new([])
     let buckets: Cell<List<Bucket>> = Cell.new([])
-    Rows { rows: rs, hashes: hashes, filed: filed, set: Cell.new(0), live: Cell.new(0), indexes: [empty_index() for i in 0..index_count], buckets: buckets }
+    Rows {
+        rows: rs,
+        hashes: hashes,
+        filed: filed,
+        set: Cell.new(0),
+        live: Cell.new(0),
+        indexes: [empty_index() for i in 0..index_count],
+        buckets: buckets,
+    }
 }
 
 fn empty_index() -> Index {
@@ -99,9 +130,17 @@ impl Rows<R> {
 
     /// A row filed under `id` — appended when `id` is the next one,
     /// replacing whatever stood there otherwise. `hash` is the row's
-    /// finished stable hash; `keys` its key in each index, in order.
+    /// finished stable hash; `keys` its key in each index, in order. A
+    /// replacement with the same hash and keys files nothing: the row
+    /// is stored and every bucket stays exactly as it was.
     fn put(id: int, row: R, hash: int, keys: List<IndexKey>) {
         if id < self.next_id() {
+            if self.row(id) != null &&
+                self.hashes.get()[id] == hash &&
+                same_keys(self.filed.get()[id], keys) {
+                self.rows.set_at(id, row)
+                return
+            }
             self.unfile(id)
             self.rows.set_at(id, row)
             self.hashes.set_at(id, hash)
@@ -147,7 +186,14 @@ impl Rows<R> {
     fn file(index: int, key: IndexKey, id: int, hash: int) {
         let b = self.opened_bucket(index, key)
         let bucket = self.buckets.get()[b]
-        bucket.members.push(id)
+        let held = bucket.members.get()
+        if held.last() ?? -1 < id {
+            bucket.members.push(id)
+        } else {
+            bucket
+                .members
+                .set([m for m in held if m < id].concat([id]).concat([m for m in held if m > id]))
+        }
         bucket.hash.set(bucket.hash.get() + hash)
     }
 
