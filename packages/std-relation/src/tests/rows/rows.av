@@ -5,6 +5,7 @@
 // a relation of only key fields is a relation
 use @std.relation.{relation}
 use @std.relation.stable.{reader}
+use @std.relation.rows.{Rows}
 
 @relation
 type Call = { id: int, @index caller: string, @index callee: string, line: int }
@@ -13,10 +14,13 @@ type Call = { id: int, @index caller: string, @index callee: string, line: int }
 type Tagged = { @key name: string, tags: List<string>, note: string?, deep: List<int?>? }
 
 @relation
-type Member = { @key a: string, @key b: string }
+type Member = { @key a: string, @unique b: string }
 
 @relation
-type Pair = { @key a: string, @key b: string }
+type Pair = { @key a: string, @index b: string }
+
+@relation
+type Flag = { id: int, @unique name: string, @index on: bool, @index rank: int }
 
 /// The first two fields a Call's record holds, read back.
 fn call_head(c: Call) -> string {
@@ -43,4 +47,25 @@ let checks = [
     Call.shape_hash() != Tagged.shape_hash(),
     Call.relation_name().ends_with(".Call"),
 ]
-"${Call.relation_name()} ${[if ok { "y" } else { "n" } for ok in checks].join("")} ${call_head(c)} ${c.encoded().length} ${same_but_id.encoded().length} ${full.encoded().length} ${plain.encoded().length} ${emptied.encoded().length}"
+
+fn stored() -> string {
+    let fs = Flag.store()
+    let x = Flag.insert(fs, Flag { id: 0, name: "x", on: true, rank: 1 })
+    let y = Flag.insert(fs, Flag { id: 0, name: "y", on: true, rank: 2 })
+    let _ = Flag.insert(fs, Flag { id: 0, name: "z", on: false, rank: 1 })
+    let on = [f.name for f in Flag.by_on(fs, true)].join(",")
+    let one = [f.name for f in Flag.by_rank(fs, 1)].join(",")
+    let found = Flag.by_name(fs, "y")?.rank ?? -1
+    let none = Flag.by_name(fs, "nope") == null
+    "${x.id}${y.id} ${on} ${one} ${found} ${none}"
+}
+
+fn keyed() -> string {
+    let ts = Tagged.store()
+    let a = Tagged.insert(ts, Tagged { name: "n", tags: ["a"], note: null, deep: null })
+    let b = Tagged.insert(ts, Tagged { name: "n", tags: ["b"], note: null, deep: null })
+    let c = Tagged.insert(ts, Tagged { name: "m", tags: [], note: null, deep: null })
+    "${ts.count()} ${(Tagged.by_name(ts, "n")?.tags ?? []).join(",")} ${a.tags.length}${b.tags.length}${c.tags.length}"
+}
+
+"${Call.relation_name()} ${[if ok { "y" } else { "n" } for ok in checks].join("")} ${call_head(c)} ${c.encoded().length} ${same_but_id.encoded().length} ${full.encoded().length} ${plain.encoded().length} ${emptied.encoded().length} | ${stored()} | ${keyed()}"
