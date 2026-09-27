@@ -118,11 +118,13 @@ type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag
 type ExternNames = { decls: int, names: List<string> }
 
 /// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
-/// file's object key and text digest (record.av's key derivations), and
-/// where this compiler's store stands (build.av). Cleared piecemeal by
-/// `keep_interfaces`: `object_keys` every record write, the rest only when
-/// a record's SEEN part (its interface or imports) moved.
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string> }
+/// file's object key and text digest (record.av's key derivations), where
+/// this compiler's store stands and this compiler's own print (build.av —
+/// `compiler_id` is never cleared: the running binary cannot move
+/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys`
+/// every record write, the rest only when a record's SEEN part (its
+/// interface or imports) moved.
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -135,6 +137,7 @@ fn new_keys() -> Keys {
         object_keys: Cell.new(no_object),
         text_digests: Cell.new(no_digests),
         store_root: Cell.new(""),
+        compiler_id: Cell.new(""),
     }
 }
 
@@ -1555,7 +1558,12 @@ impl Decls {
             .Method if x.parent != null && self.decl(x.parent!).kind is .Trait -> 1,
             .Fn -> 2,
             .Method or .Impl -> 3,
-            .Trait or .Syntax or .Default or .Main or .Case or .Const or .Collect -> 4,
+            // `CollectEnum` sits with `Collect`, never with the other
+            // type kinds: unlike an ordinary `enum`'s self-contained
+            // variants, its variant TABLE reads other declarations —
+            // ranked first, it would ask before the program it reads
+            // has minted them.
+            .Trait or .Syntax or .Default or .Main or .Case or .Const or .Collect or .CollectEnum -> 4,
         }
     }
 }

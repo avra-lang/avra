@@ -6,7 +6,15 @@
 //! answers `UnknownKind` for any word at all; these run through
 //! `provided()` instead, the one door that gives a scratch program a
 //! real component to name.
-use @std.avrac.testing.{refused_in, shown, provided, answered, vendored_meta, vendored_meta_paths}
+use @std.avrac.testing.{
+    refused_in,
+    shown,
+    provided,
+    answered,
+    vendored_meta,
+    vendored_meta_paths,
+    Module,
+}
 use @std.avrac.compiler.{Program, new_workspace, avra}
 use @std.avrac.compiler.host.{memory_host}
 
@@ -427,6 +435,100 @@ spec "collect's own laws" {
         }
         then "an ordinary `by` still names an identifier, unreserved by the new grammar" {
             shown("fn f(by: int) -> int { by + 1 }\nf(2)") == "3"
+        }
+    }
+    given "collect enum (docs/2026_09_22_COLLECTIONS.md's step 4)" {
+        // The kind/scope/order laws are `collect`'s own — `check_collect_enum`
+        // (features/collects/check.av) calls the same `checked_kind`/
+        // `checked_scope`/`order_required` a value collect does.
+        then "an unknown declaration kind refuses" {
+            refused_in(
+                built("collect enum X = spell in closure by it.name\n1"),
+                "is not a declaration kind",
+            )
+        }
+        then "an unknown scope refuses" {
+            refused_in(
+                built("collect enum X = widget in everywhere by it.name\n1"),
+                "is not a collect scope",
+            )
+        }
+        then "no `by` refuses — order is declared, same as a value collect" {
+            refused_in(
+                built("collect enum X = widget in closure\n1"),
+                "a collection declares its order",
+            )
+        }
+        then "every gathered member is one payload-free variant, named by its own declaration name, in `by` order" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        "\"\${describe(Command.build)} \${describe(Command.init)} \${Command.build.ordinal} \${Command.init.ordinal}\"",
+                    ui(),
+                ),
+            ) == "build init 0 1"
+        }
+        then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
+            answered(
+                provided(
+                    "type Holder = { c: Command }\n" +
+                        "fn label(h: Holder) -> string { match h.c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "label(Holder { c: Command.build })",
+                    ui(),
+                ),
+            ) == "build"
+        }
+        then "adding a member the match does not handle refuses — a new member breaks every match, on purpose" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n@tag(\"z\")\nfn clean() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        "describe(Command.build)",
+                    ui(),
+                ),
+                "must handle",
+            )
+        }
+        then "two members that would name the same variant refuse, naming the collect and the variant" {
+            refused_in(
+                provided(
+                    tag_decl() + "collect enum Command = @tag in package by it.name\n1",
+                    ui(),
+                    modules: [
+                        Module { name: "a", text: tag_decl() + "@tag(\"one\")\nfn run() {}\n" },
+                        Module { name: "b", text: tag_decl() + "@tag(\"two\")\nfn run() {}\n" },
+                    ],
+                ),
+                "`Command` declares `run` more than once",
+            )
+        }
+        // NOT a claim that `package` scope needs no import on real disk —
+        // it does (a file nothing reaches is tree-shaken out, law 7); this
+        // harness's `memory_host` admits every given module regardless,
+        // so what this proves is narrower: once two modules ARE part of
+        // the program, `in package` gathers across the module boundary
+        // with no `use` between them, which `in self` could not.
+        then "a member in another module, already part of the program, joins under `in package` with no `use` between the two" {
+            answered(
+                provided(
+                    "collect enum Command = @tag in package by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .other -> \"other\" } }\n" +
+                        "describe(Command.build) + \" \" + describe(Command.other)",
+                    ui(),
+                    modules: [
+                        Module { name: "a", text: tag_decl() + "@tag(\"x\")\nfn build() {}\n" },
+                        Module { name: "b", text: tag_decl() + "@tag(\"y\")\nfn other() {}\n" },
+                    ],
+                ),
+            ) == "build other"
         }
     }
 }

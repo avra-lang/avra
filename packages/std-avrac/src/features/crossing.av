@@ -660,6 +660,15 @@ fn meta_of_opt_text(x: string?) -> MetaVal {
 /// first parameter may take, and everything else.
 export enum MetaSeat { Fn, Type, Named, Trait, Other }
 
+/// Whether a declaration of this kind fills a `Type` meta seat — every
+/// kind spelled, so a new one decides here rather than falling through.
+fn fills_type_seat(kind: DeclKind) -> bool {
+    match kind {
+        .Record or .Enum or .CollectEnum -> true,
+        .Builtin or .Fn or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+    }
+}
+
 impl Decls {
     /// The seat a type names. The DeclId is the identity; the package
     /// and export name locate it without accepting a user record of
@@ -685,7 +694,7 @@ impl Decls {
         match self.meta_seat(ty) {
             .Named -> true,
             .Fn -> kind is .Fn,
-            .Type -> kind is .Record || kind is .Enum,
+            .Type -> fills_type_seat(kind),
             .Trait -> kind is .Trait,
             .Other -> false,
         }
