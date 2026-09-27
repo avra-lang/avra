@@ -54,17 +54,40 @@ impl Fixpoint {
 
     /// One member's own re-run: `compute(arg)` answers fresh, joined
     /// onto what is already known. Answers whether the joined value
-    /// GREW (its hash moved) — never merely whether it ran.
+    /// GREW (its hash moved) — never merely whether it ran. `arg`'s
+    /// own FIRST non-bottom answer is checked against the identity law
+    /// before it is kept — the one hash-visible law a meet cannot pass.
     fn step(arg: int, compute: fn(int) -> T) -> bool {
         let key = self.query_key(arg)
         self.db.begin(key)
-        let before = self.fp(self.value_at(arg))
-        let joined = self.join(self.value_at(arg), compute(arg))
+        let current = self.value_at(arg)
+        let before = self.fp(current)
+        let computed = compute(arg)
+        let bottom_fp = self.fp(self.bottom)
+        // Checked on the RAW contribution, before joining: a meet from
+        // bottom answers bottom again (`∅ ∩ x = ∅`), so gating this on
+        // whether the JOINED value grew would never fire for exactly
+        // the case it exists to catch.
+        if before == bottom_fp &&
+            self.fp(computed) != bottom_fp &&
+            !self.keeps_what_its_given(computed) {
+            avra_trap(
+                "defect: @query(fixpoint) family ${self.family}'s join must keep what it's given — join(bottom, x) must be x",
+            )
+        }
+        let joined = self.join(current, computed)
         let hash = self.fp(joined)
         self.values.keep(arg, joined)
         self.db.settle(key, hash)
         hash != before
     }
+
+    /// The one law a hash CAN test directly that idempotence and
+    /// commutativity cannot: a real join keeps what it is given.
+    /// `join(bottom, x)` failing to equal `x` is exactly a MEET's
+    /// signature — `bottom ∩ x = bottom` the moment `x` is not itself
+    /// bottom — so this is the check that finally closes that gap.
+    fn keeps_what_its_given(x: T) -> bool { self.fp(self.join(self.bottom, x)) == self.fp(x) }
 
     /// This member's own just-recorded forward deps, read straight off
     /// the kernel cell `settle` just wrote — never re-derived by hand.
@@ -98,17 +121,10 @@ impl Fixpoint {
     /// disagrees with itself by argument order, is not a join — refused
     /// before any member's kernel cell is touched, so a bad body traps
     /// loudly instead of oscillating for `fixpoint_turn_cap` rounds
-    /// first. Not a full monotonicity proof (the kernel sees hashes,
-    /// never `T`'s structure) — the two laws a hash CAN witness. A MEET
-    /// PASSES BOTH: intersection is idempotent (`a ∩ a = a`) and
-    /// commutative (`a ∩ b = b ∩ a`), so this check cannot tell a
-    /// caller's join from its dual — only that whatever it is, it
-    /// agrees with itself. A meet used here does not oscillate either:
-    /// it shrinks toward a fixed answer just as reliably as a real join
-    /// grows toward one, so `fixpoint_turn_cap` does not catch it. A
-    /// meet in this seat is a silently WRONG, too-small answer that
-    /// nothing here can detect — the caller's own choice of `T` and
-    /// `join` is the only guard.
+    /// first. Idempotence and commutativity alone cannot tell a real
+    /// join from a MEET (intersection passes both), which is what
+    /// `keeps_what_its_given` closes, checked separately in `step` at
+    /// each member's own first non-bottom answer.
     fn refuse_unless_a_join(seed: T) {
         let mixed = self.join(self.bottom, seed)
         let idempotent = self.join(mixed, mixed)

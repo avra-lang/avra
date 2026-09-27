@@ -71,6 +71,23 @@ spec "query/fixpoint — a reader that starts mid-solve" {
     }
 }
 
+fn int_set_meet(a: List<int>, b: List<int>) -> List<int> { [x for x in a if b.contains(x)] }
+
+spec "query/fixpoint — the identity law a meet cannot pass" {
+    then "a real join keeps a non-bottom answer whole" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+        fp.keeps_what_its_given([1, 2, 3])
+    }
+    then "a meet does not — bottom absorbs everything it is joined with" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<int>>(db, family, [], int_set_meet, int_set_fp)
+        !fp.keeps_what_its_given([1, 2, 3])
+    }
+}
+
 spec "query/fixpoint — edges" {
     given "no members at all" {
         then "solve is a no-op, not a defect" {
