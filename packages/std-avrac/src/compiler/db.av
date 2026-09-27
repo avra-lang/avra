@@ -51,7 +51,17 @@
 //! warnings are already-serialized text by the time either reaches
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
-use core.{digest_of, joined, sorted_texts, flatten, wire_escape, wire_unescape, DeclId, TypeId}
+use core.{
+    digest_of,
+    joined,
+    sorted_texts,
+    flatten,
+    wire_escape,
+    wire_unescape,
+    DeclId,
+    TypeId,
+    map_cell,
+}
 use query.{Kernel, Key, Verdict as KernelVerdict, new_kernel}
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest}
@@ -147,6 +157,7 @@ export enum DbKind {
     Warn
     Scan
     Canon
+    Licenses
 }
 
 impl DbKind {
@@ -173,6 +184,7 @@ impl DbKind {
             .Warn -> "Warn",
             .Scan -> "Scan",
             .Canon -> "Canon",
+            .Licenses -> "Licenses",
         }
     }
 }
@@ -263,6 +275,11 @@ export enum DbRow {
     /// A file's bytes known to be canonical `avra fmt` output, under
     /// their own digest — present or absent, the text is unused.
     Canon(name: string, text: string)
+    /// A program's stale `// LICENSED <id>` citations (`compiler/
+    /// licenses.av`), one `file\tline\tid` per line — kept under the
+    /// SAME key as its `Warn` row, so a repeat `avra check` reads both
+    /// without building a second Program to re-scan for them.
+    Licenses(name: string, text: string)
 }
 
 impl DbRow {
@@ -289,6 +306,7 @@ impl DbRow {
             .Warn(_, _) -> DbKind.Warn,
             .Scan(_, _) -> DbKind.Scan,
             .Canon(_, _) -> DbKind.Canon,
+            .Licenses(_, _) -> DbKind.Licenses,
         }
     }
 
@@ -297,7 +315,7 @@ impl DbRow {
     /// addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) -> name,
+            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) or .Licenses(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -475,10 +493,13 @@ fn lifted_of(r: DbRow) -> LiftResult {
 /// One `Workspace`'s rows, in memory, plus the `Kernel` handle every
 /// dense family's `Memo<DbRow>` was built over — held, not merged, so
 /// `Workspace.db` reads as one type while `query/` still exports the
-/// only `Kernel` there is.
-export type Db = { kernel: Kernel, rows: Map<string, DbRow> }
+/// only `Kernel` there is. `rows` is a `Cell`, an IDENTITY: `Db` is a
+/// struct a caller may hold in a fresh local, but every copy still
+/// writes the same table, so no caller reads a fork of the cache it
+/// just inserted into.
+export type Db = { kernel: Kernel, rows: Cell<Map<string, DbRow>> }
 
-export fn new_db(kernel: Kernel) -> Db { Db { kernel: kernel, rows: {} } }
+export fn new_db(kernel: Kernel) -> Db { Db { kernel: kernel, rows: map_cell() } }
 
 /// A `Db` for a caller with no `Workspace` to read one from — the
 /// docs fast path (`avra docs <name>`) answers from the durable store
@@ -502,17 +523,17 @@ impl Db {
     /// nothing.
     fn get(store: Store, kind: DbKind, name: string) -> DbRow? {
         let k = index_key(kind, name)
-        let hit: DbRow? = self.rows.get(k)
+        let hit: DbRow? = self.rows.get().get(k)
         if hit != null { return hit }
         let found? = self.recalled(store, kind, name) else { return null }
-        self.rows.set(k, found)
+        self.rows.put(k, found)
         found
     }
 
     /// A row, remembered for the rest of this process AND for every
     /// process after it.
     fn insert(store: Store, row: DbRow) {
-        self.rows.set(index_key(row.kind(), row.key()), row)
+        self.rows.put(index_key(row.kind(), row.key()), row)
         let _ = store.keep(Stored.Rows, durable_key(row.kind(), row.key()), encoded(row), [])
     }
 
@@ -559,7 +580,7 @@ fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) &&
             facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
-        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) -> true,
+        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) or .Licenses(_, _) -> true,
         rest -> {
             avra_trap("defect: still_valid asked of a non-durable DbRow")
             false
@@ -601,7 +622,7 @@ export fn current_file_digest(path: string) -> string {
 fn encoded(row: DbRow) -> string {
     match row {
         .Decl(_, facts) -> encoded_docfacts(facts),
-        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) -> text,
+        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) or .Licenses(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -619,6 +640,7 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         .Warn -> DbRow.Warn(name, text),
         .Scan -> DbRow.Scan(name, text),
         .Canon -> DbRow.Canon(name, text),
+        .Licenses -> DbRow.Licenses(name, text),
         rest -> {
             avra_trap("defect: decoded asked of a non-durable DbKind")
             null
