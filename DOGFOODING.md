@@ -1432,6 +1432,37 @@ voice belongs to the feature whose code registers it. UNRATCHETED:
 the shape is a placement, not a greppable token; the review round
 reads for it.
 
+## A hole's `$` needs escaping ONCE, matching every other escape
+
+A fixture that embeds another file's SOURCE as an Avra string
+literal (a vendored template, a derive's fixture) writes a hole's
+`${...}` the same way it writes `\n` or `\"` — ONE backslash. `\$` is
+a real escape yielding a literal `$`; `\\$` yields a literal
+BACKSLASH followed by `$`, which the INNER file's own lexer then
+reads as a stray character before an ordinary `${...}` (or, in a
+`quote` body specifically, breaks the hole's own tokenization) —
+and the failure reads as an unrelated name-resolution defect ("no
+fn X is defined") rather than an escaping mistake, because the
+generated text still LOOKS like a hole to a human skimming it.
+Diffing the string's DECODED bytes (a tiny probe program printing
+`"a\$b"`, or `python3 -c "print(repr(...))"` on the raw file) settles
+it in one step; guessing from the source text does not, since both
+one and two backslashes render identically at a glance.
+
+## A parked file survives a merge by CONTENT, never by BRANCH
+
+Restoring a file wholesale from a parking branch or a backed-up copy
+— after a merge that ALSO touched that same file — overwrites the
+merge's own changes with whatever the parking branch happened to
+hold, silently: no conflict marker fires, because git never sees the
+two changes as one operation. This is the record-literal-merge law's
+sibling one level up: `--theirs` taken whole loses a field the other
+side added; a parked file taken whole loses whatever the merge
+added, over the FULL FILE instead of one field list. Diff the
+restored content against the merged HEAD before trusting it, on
+every restore, not only when a conflict marker would have warned —
+the merge's own diff already names the ground truth to check against.
+
 ## Proven but awaiting their first honest use
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.
