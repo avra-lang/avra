@@ -465,6 +465,16 @@ impl TypeRegistry {
     /// ask — the crossing and comptime machinery reach every type
     /// this way, `Reg`'s Fingerprint derive among them
     /// (avra-8sb5.34.21).
+    /// AND THE HOOK CAN BE ASKED BEFORE IT CAN ANSWER: a HELD file's
+    /// `sig()` reads whatever the sigs table already holds, with no
+    /// declare of its own (`Workspace.sig`'s held branch) — so a hook
+    /// run before `mint_module`'s fill pass reaches this very
+    /// declaration returns having settled NOTHING, and marking the
+    /// read anyway would refuse the real settle that fill pass owes
+    /// moments later ("declared a second time" for a value that was
+    /// never once declared). `.Settled` alone is spared: it is the
+    /// one fact whose hook is a full declare, so "the hook ran and
+    /// still answered unsettled" means "not yet", never "never".
     fn note(id: TypeId, fact: LayoutFact) {
         if self.was_read(id, fact) { return }
         (self.declare_hook.get())(id)
@@ -472,7 +482,7 @@ impl TypeRegistry {
         match fact {
             .Flat -> self.reps.set_at(id.index, r with { read_flat: true }),
             .Valued -> self.reps.set_at(id.index, r with { read_valued: true }),
-            .Settled -> self.reps.set_at(id.index, r with { read_settled: true }),
+            .Settled -> { if r.settled { self.reps.set_at(id.index, r with { read_settled: true }) } },
             .Named -> self.reps.set_at(id.index, r with { read_named: true }),
         }
     }
