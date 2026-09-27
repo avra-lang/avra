@@ -1,7 +1,7 @@
 //! A list lowers as the runtime aggregate: one `avra_array_new`,
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
-use core.{ExprId, Reg, TypeId}
+use core.{ExprId, Reg, TypeId, CompClause}
 use features.{LowerCx}
 
 fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
@@ -10,35 +10,49 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     cx.grown_box(cx.shape_at(e), size, regs)
 }
 
-/// THE COMPREHENSION LOWERED: a fresh box, then the walks' loop —
-/// over the source list, or counting the range — each turn binds
-/// the element (and its index) for the element expression and the
-/// filter, and pushes the element when the filter holds.
-fn comp_reg(
-    mut cx: LowerCx,
-    e: ExprId,
-    elem: ExprId,
-    index: string?,
-    source: ExprId,
-    hi: ExprId?,
-    cond: ExprId?,
-) -> Reg {
+/// THE COMPREHENSION LOWERED: a fresh box, then one nested walk per
+/// `for` head — over its source list, or counting its range — each
+/// turn opened inside the one before it, straight from the emission
+/// vocabulary's loop verbs; a filter wraps the rest in a void region
+/// guarded by its condition. The innermost turn pushes the element
+/// straight into the box — no intermediate list per outer element.
+fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> Reg {
     let size = cx.box_size(0)
     let dst = cx.grown_box(cx.shape_at(e), size, [])
-    let w = if hi == null { cx.opened(source, elem_type(cx, source)) } else { cx.counted(source, hi!) }
-    cx.turn_open(w)
-    let here = cx.turn_index(w)
-    let v = if hi == null { cx.turn_elem(w, here) } else { here }
-    let regs = if index == null { [v] } else { [here, v] }
-    cx.bind_patterns(elem, regs)
-    if cond != null {
-        cx.bind_patterns(cond!, regs)
-        cx.void_region(cx.reg_of(cond!)) { cx -> cx.push_slot(dst, cx.reg_of(elem)) }
-    } else {
-        cx.push_slot(dst, cx.reg_of(elem))
-    }
-    cx.turn_close(w)
+    lower_clauses(cx, dst, elem, clauses, 0, [])
     dst
+}
+
+/// One clause at a time: a head binds its source under every earlier
+/// head's registers first (which covers its range bound too, the same
+/// anchor), opens its turn and recurses under it before closing; a
+/// filter binds its condition the same way and guards the recursion in
+/// a void region. Past the last clause, the element binds every
+/// head's registers and is pushed.
+fn lower_clauses(mut cx: LowerCx, dst: Reg, elem: ExprId, clauses: List<CompClause>, at: int, regs: List<Reg>) {
+    if at >= clauses.length {
+        cx.bind_patterns(elem, regs)
+        cx.push_slot(dst, cx.reg_of(elem))
+        return
+    }
+    match clauses[at] {
+        .Head(index, _, source, hi) -> {
+            // Keyed by the SOURCE alone — the one anchor resolve bound
+            // this clause's names to, range bound included.
+            cx.bind_patterns(source, regs)
+            let w = if hi == null { cx.opened(source, elem_type(cx, source)) } else { cx.counted(source, hi!) }
+            cx.turn_open(w)
+            let here = cx.turn_index(w)
+            let v = if hi == null { cx.turn_elem(w, here) } else { here }
+            let next_regs = if index == null { regs.concat([v]) } else { regs.concat([here, v]) }
+            lower_clauses(cx, dst, elem, clauses, at + 1, next_regs)
+            cx.turn_close(w)
+        },
+        .Filter(cond) -> {
+            cx.bind_patterns(cond, regs)
+            cx.void_region(cx.reg_of(cond)) { cx -> lower_clauses(cx, dst, elem, clauses, at + 1, regs) }
+        },
+    }
 }
 
 /// A `collect`: an empty list, grown by each kept value as its

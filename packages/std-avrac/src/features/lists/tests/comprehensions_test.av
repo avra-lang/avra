@@ -104,4 +104,30 @@ spec "features/lists (comprehensions)" {
             ) == "2"
         }
     }
+    given "several `for` heads" {
+        then "a second head nests inside the first" {
+            shown("[a + b for a in [1, 2] for b in [10, 20]][2]") == "12"
+        }
+        then "a third head nests inside the second" {
+            shown("[a + b + c for a in [1] for b in [10] for c in [100, 200]][1]") == "311"
+        }
+        then "a filter may sit between two heads" {
+            shown("[a + b for a in [1, 2, 3] if a % 2 == 1 for b in [10, 20]].length") == "4"
+        }
+        then "a later head reads an earlier one's binder" {
+            shown("[c for a in [[1, 2], [3]] for c in a][2]") == "3"
+        }
+        then "a paired head and a range head mix" {
+            shown("[i * 100 + b for i, a in [5, 6] for b in 0..a][5]") == "100"
+        }
+        then "an empty inner list contributes nothing" {
+            shown("let none: List<int> = []\n[b for a in [1, 2] for b in none].length") == "0"
+        }
+        then "a later head's binder shadows an earlier one of the same name" {
+            shown("[a for a in [1, 2] for a in [10, 20]][3]") == "20"
+        }
+        then "each head's own binder still dies with the comprehension" {
+            refused_with("[a + b for a in [1] for b in [1]]\nb", "`b` is not defined")
+        }
+    }
 }
