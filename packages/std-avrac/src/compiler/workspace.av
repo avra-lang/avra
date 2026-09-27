@@ -441,33 +441,60 @@ fn ordinal(f: Family) -> int {
     }
 }
 
+/// `ordinal`'s own inverse, a MIRROR of it (same order, same numbers)
+/// so the two are one glance apart rather than one a hand-list forty
+/// lines away. `families()` derives its list from this, never from an
+/// independent literal: a REORDERED or DUPLICATED entry here fails
+/// the registration loop's own `!= ordinal(f)` check the moment it
+/// walks past it (`built`, below), the same check that already caught
+/// those two mistakes before this fix. What this canNOT catch: a
+/// variant added to `Family` and given an arm in `ordinal` (forced —
+/// `ordinal` is exhaustive over `Family`) but never given one here —
+/// nothing today enumerates `Family`'s own variant set to notice a gap
+/// that both hand matches share; that needs `collect enum` (N3,
+/// ROADMAP sugar backlog), not yet built. Until then, `family_count`
+/// below is the one number that must move with every new arm in BOTH
+/// this match and `ordinal`'s.
+fn family_at(i: int) -> Family {
+    match i {
+        0 -> Family.Source,
+        1 -> Family.Parsed,
+        2 -> Family.Items,
+        3 -> Family.Namespace,
+        4 -> Family.Visible,
+        5 -> Family.Resolved,
+        6 -> Family.Sig,
+        7 -> Family.Methods,
+        8 -> Family.Typed,
+        9 -> Family.ConstTyped,
+        10 -> Family.Folded,
+        11 -> Family.Analysis,
+        12 -> Family.Settled,
+        13 -> Family.Lowered,
+        14 -> Family.Lifted,
+        15 -> Family.Manifest,
+        16 -> Family.Receivers,
+        17 -> Family.Expanded,
+        18 -> Family.Plain,
+        19 -> Family.References,
+        20 -> Family.Failures,
+        21 -> Family.HeldSig,
+        other -> {
+            avra_trap("defect: no Family at ordinal ${other} — family_at and ordinal must list the same set")
+            Family.Source
+        },
+    }
+}
+
+/// How many ordinals `family_at` answers — the domain `families()`
+/// walks. Bump it in the SAME edit that adds an arm to `family_at`
+/// and to `ordinal`; nothing below can notice the day only this
+/// number moves alone, or only stays still alone.
+const family_count: int = 22
+
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
-    let all: List<Family> = [
-        Family.Source,
-        Family.Parsed,
-        Family.Items,
-        Family.Namespace,
-        Family.Visible,
-        Family.Resolved,
-        Family.Sig,
-        Family.Methods,
-        Family.Typed,
-        Family.ConstTyped,
-        Family.Folded,
-        Family.Analysis,
-        Family.Settled,
-        Family.Lowered,
-        Family.Lifted,
-        Family.Manifest,
-        Family.Receivers,
-        Family.Expanded,
-        Family.Plain,
-        Family.References,
-        Family.Failures,
-        Family.HeldSig,
-    ]
-    all
+    [family_at(i) for i in 0..family_count]
 }
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
@@ -581,6 +608,11 @@ fn built(
         clock: clock,
         phases: list_cell(),
     }
+    // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
+    // position `i` is `family_at(i)`, so a mismatch here means the two
+    // matches disagree about which family owns that ordinal — a
+    // transposed pair or a wrong number in either one, not only a
+    // registration-order bug.
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
     }

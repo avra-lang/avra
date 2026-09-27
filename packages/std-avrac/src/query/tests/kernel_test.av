@@ -215,6 +215,22 @@ spec "query/db" {
             db.settle(second, 1)
             db.cell(first)!.deps.length == 1 && db.cell(second)!.deps.length == 1
         }
+        then "a nested query's read of a shared key does not cost the outer query a second dep" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let shared = Key { family: fam, arg: 0 }
+            db.set_input(shared, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.begin(nested)
+            db.record_dep(shared)
+            db.settle(nested, 1)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 1
+        }
     }
 }
 
