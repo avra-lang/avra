@@ -110,6 +110,15 @@ fn headed() -> Grammar {
         .built!
 }
 
+/// `let n = v` ending at END, each keyword a hole when missing, built
+/// by `builder`.
+fn holes(builder: string) -> Grammar {
+    parse_grammar(
+        "prog = ( s:stmt | BREAK )* EOF -> prog(s)\nstmt = \"let\" n:NAME \"=\" v:NAME END @expect(\"=\", \"expected `=`\") @expect(\"END\", \"expected the end\") -> ${builder}(n, v)\n",
+    )
+        .built!
+}
+
 spec "grammar/executor" {
     given "the head law: a trailer never matches inside a head" {
         then "a call takes its trailing block outside a head" {
@@ -595,6 +604,26 @@ spec "grammar/executor" {
             )
                 .built!
             result_str(run_src(g, "{\nx -> y\n}")) == "(arm x y)"
+        }
+    }
+    given "a hole is a statement's whole story" {
+        then "a hole at END skips the rest of its line" {
+            let o = run_src(holes("st"), "let a = b junk\nlet c = d\n")
+            result_str(o) == "(prog [(st a b) (st c d)])" &&
+                o.diagnostics.length == 1 &&
+                o.diagnostics[0].message == "expected the end"
+        }
+        then "a builder refusing over a hole adds no second word" {
+            let o = run_src(holes("boom"), "let a b\n")
+            result_str(o) == "(prog [_])" &&
+                o.diagnostics.length == 1 &&
+                o.diagnostics[0].message == "expected `=`"
+        }
+        then "a second hole ends the statement quietly" {
+            let o = run_src(holes("st"), "let a b junk more\nlet c = d\n")
+            result_str(o) == "(prog [_ (st c d)])" &&
+                o.diagnostics.length == 1 &&
+                o.diagnostics[0].message == "expected `=`"
         }
     }
     given "the memo's edges — one table of rules by cursors" {

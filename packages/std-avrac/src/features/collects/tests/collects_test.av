@@ -82,6 +82,35 @@ fn cross_package(import_orphan: bool) -> string? {
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
+/// A DEPENDENCY's own `collect in package`, its one member in a module
+/// nothing ever imports. `package` means every file of the package —
+/// as it does for the root, whose files are all analyzed — never the
+/// files something else happened to reach.
+fn package_scope_in_dependency() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+            "/w/src/main.av": "use @y.d.{count}\ncount()",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+            "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+            "/w/vendor/d/src/d.av": "use @x.c.{widget}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in package as Entry { name: it.name } by it.name\nexport fn count() -> int { xs.length }\n",
+            "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport widget orphaned { n -> null }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/c/avra.toml",
+        "/w/vendor/c/src/c.av",
+        "/w/vendor/d/avra.toml",
+        "/w/vendor/d/src/d.av",
+        "/w/vendor/d/src/orphan/orphan.av",
+    ]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
 /// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
 /// (§4.4): `@acme/parts` is always reached (`app` imports its
 /// `Widget`) and carries both an exported `Widget` and a PRIVATE
@@ -297,6 +326,9 @@ spec "collect's own laws" {
         }
         then "importing that module's own name collects its instance" {
             cross_package(true) == "1"
+        }
+        then "a dependency's `in package` collect gathers a module nothing imports" {
+            package_scope_in_dependency() == "1"
         }
     }
     given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
@@ -529,6 +561,99 @@ spec "collect's own laws" {
                     ],
                 ),
             ) == "build other"
+        }
+    }
+    given "a malformed declaration names the missing part" {
+        then "a missing `=` names the `=`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `=` after a collect's type",
+            )
+        }
+        then "a missing `in` names the scope" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `in` and a scope",
+            )
+        }
+        then "a missing `as` names the projection" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `as` and the projected type",
+            )
+        }
+        then "a missing `{` names the projection's fields" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry name: it.name } by it.name\n1",
+                ),
+                "expected `{` to open the projection",
+            )
+        }
+        then "a field without its `:` names the `:`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name it.name } by it.name\n1",
+                ),
+                "expected `:` after a projection field's name",
+            )
+        }
+        then "a missing `}` names the `}`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name by it.name\n1",
+                ),
+                "expected `}` to close the projection",
+            )
+        }
+        then "a stray word inside the projection speaks once" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name extra } by it.name\n1",
+                ),
+                "expected `}` to close the projection",
+            )
+        }
+        then "a word after the order names the line's end" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name extra\n1",
+                ),
+                "expected the line to end after the collect",
+            )
+        }
+        then "a nameless `collect enum` names the name" {
+            refused_in(
+                built("collect enum = widget in closure by it.name\n1"),
+                "expected the collected enum's name",
+            )
+        }
+        then "a `collect enum` missing `=` names it" {
+            refused_in(
+                built("collect enum K widget in closure by it.name\n1"),
+                "expected `=` after the collected enum's name",
+            )
+        }
+        then "a `collect enum` missing `in` names the scope" {
+            refused_in(
+                built("collect enum K = widget closure by it.name\n1"),
+                "expected `in` and a scope",
+            )
+        }
+        then "a word after a `collect enum`'s order names the line's end" {
+            refused_in(
+                built("collect enum K = widget in closure by it.name extra\n1"),
+                "expected the line to end after the collect",
+            )
+        }
+        then "a `collect { … }` expression still parses as one" {
+            !refused_in(built("fn f() -> List<int> { collect { 1 } }\nf().length"), "expected")
         }
     }
 }

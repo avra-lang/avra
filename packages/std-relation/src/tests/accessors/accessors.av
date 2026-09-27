@@ -1,0 +1,120 @@
+// A relation's store accessors, written by hand exactly as `@relation`
+// generates them: `store`, `index_keys`, `insert` in each of its four
+// shapes, `by_key` answering a key's row, and `by_<field>` answering
+// one row or every row.
+use @std.relation.{relation}
+use @std.relation.rows.{Rows, IndexKey, rows, text_key, int_key, bool_key}
+
+/// Ided, keyless: every insert is a new row.
+@relation
+type Flag = { id: int, @unique name: string, @index on: bool, @index rank: int }
+
+impl Flag {
+    static fn store() -> Rows<Flag> { rows<Flag>(3) }
+
+    fn index_keys() -> List<IndexKey> { [text_key(self.name)].concat([bool_key(self.on)]).concat([int_key(self.rank)]) }
+
+    static fn insert(rs: Rows<Flag>, r: Flag) -> Flag {
+        let stored = r with { id: rs.next_id() }
+        rs.put(stored.id, stored, stored.stable_hash(), stored.index_keys())
+        stored
+    }
+
+    static fn by_name(rs: Rows<Flag>, v: string) -> Flag? { rs.row(rs.first_id(rs.bucket_of(0, text_key(v))) ?? -1) }
+
+    static fn by_on(rs: Rows<Flag>, v: bool) -> List<Flag> { rs.members(rs.bucket_of(1, bool_key(v))) }
+
+    static fn by_rank(rs: Rows<Flag>, v: int) -> List<Flag> { rs.members(rs.bucket_of(2, int_key(v))) }
+}
+
+/// Idless, keyless.
+@relation
+type Note = { @index tag: string, text: string }
+
+impl Note {
+    static fn store() -> Rows<Note> { rows<Note>(1) }
+
+    fn index_keys() -> List<IndexKey> { [text_key(self.tag)] }
+
+    static fn insert(rs: Rows<Note>, r: Note) -> Note {
+        rs.put(rs.next_id(), r, r.stable_hash(), r.index_keys())
+        r
+    }
+
+    static fn by_tag(rs: Rows<Note>, v: string) -> List<Note> { rs.members(rs.bucket_of(0, text_key(v))) }
+}
+
+/// Ided and keyed: an insert under a known key replaces that row, id kept.
+@relation
+type Account = { id: int, @index team: string, @key handle: string }
+
+impl Account {
+    static fn store() -> Rows<Account> { rows<Account>(2) }
+
+    fn index_keys() -> List<IndexKey> { [text_key(self.team)].concat([text_key(self.handle)]) }
+
+    static fn insert(rs: Rows<Account>, r: Account) -> Account {
+        let keys = r.index_keys()
+        let stored = r with { id: rs.first_id(rs.bucket_of(1, keys[1])) ?? rs.next_id() }
+        rs.put(stored.id, stored, stored.stable_hash(), keys)
+        stored
+    }
+
+    static fn by_team(rs: Rows<Account>, v: string) -> List<Account> { rs.members(rs.bucket_of(0, text_key(v))) }
+
+    static fn by_key(rs: Rows<Account>, v: string) -> Account? { rs.row(rs.first_id(rs.bucket_of(1, text_key(v))) ?? -1) }
+}
+
+/// Idless and keyed.
+@relation
+type Tagged = { @key name: string, tags: List<string> }
+
+impl Tagged {
+    static fn store() -> Rows<Tagged> { rows<Tagged>(1) }
+
+    fn index_keys() -> List<IndexKey> { [text_key(self.name)] }
+
+    static fn insert(rs: Rows<Tagged>, r: Tagged) -> Tagged {
+        let keys = r.index_keys()
+        rs.put(rs.first_id(rs.bucket_of(0, keys[0])) ?? rs.next_id(), r, r.stable_hash(), keys)
+        r
+    }
+
+    static fn by_name(rs: Rows<Tagged>, v: string) -> Tagged? { rs.row(rs.first_id(rs.bucket_of(0, text_key(v))) ?? -1) }
+}
+
+fn names(fs: List<Flag>) -> string { [f.name for f in fs].join(",") }
+
+fn flags() -> string {
+    let fs = Flag.store()
+    let x = Flag.insert(fs, Flag { id: 0, name: "x", on: true, rank: 1 })
+    let y = Flag.insert(fs, Flag { id: 0, name: "y", on: true, rank: 2 })
+    let _ = Flag.insert(fs, Flag { id: 0, name: "z", on: false, rank: 1 })
+    let found = Flag.by_name(fs, "y")?.rank ?? -1
+    "${x.id}${y.id} ${names(Flag.by_on(fs, true))} ${names(Flag.by_rank(fs, 1))} ${found} ${Flag.by_name(fs, "nope") == null}"
+}
+
+fn notes() -> string {
+    let ns = Note.store()
+    let _ = Note.insert(ns, Note { tag: "a", text: "one" })
+    let _ = Note.insert(ns, Note { tag: "a", text: "one" })
+    "${ns.count()} ${Note.by_tag(ns, "a").length}"
+}
+
+fn accounts() -> string {
+    let accs = Account.store()
+    let a = Account.insert(accs, Account { id: 0, team: "red", handle: "ann" })
+    let b = Account.insert(accs, Account { id: 0, team: "red", handle: "bo" })
+    let moved = Account.insert(accs, Account { id: 9, team: "blue", handle: "ann" })
+    let team = Account.by_key(accs, "ann")?.team ?? "-"
+    "${a.id}${b.id}${moved.id} ${accs.count()} ${team} ${Account.by_team(accs, "red").length}"
+}
+
+fn tagged() -> string {
+    let ts = Tagged.store()
+    let _ = Tagged.insert(ts, Tagged { name: "n", tags: ["a"] })
+    let _ = Tagged.insert(ts, Tagged { name: "n", tags: ["b", "c"] })
+    "${ts.count()} ${(Tagged.by_name(ts, "n")?.tags ?? []).join(",")}"
+}
+
+"${flags()} | ${notes()} | ${accounts()} | ${tagged()}"
