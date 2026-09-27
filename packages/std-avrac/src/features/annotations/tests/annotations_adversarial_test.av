@@ -36,11 +36,13 @@ fn sampled_use() -> string {
 /// The fixtures the REAL `@std/meta` deliberately has not: a `Decl`
 /// LOOKALIKE (the real package refuses that name — a collision would
 /// arm a counterfeit), a trait whose `derive` makes a twin, one that
-/// declares none, an annotation taking a list, and two twins that
+/// declares none, an annotation taking a list, two twins that
 /// name a seat no written binding can take: its OWN annotated fn, and
-/// an unrelated one already in the file.
+/// an unrelated one already in the file — and a trait whose `derive`
+/// generates a TYPE (a key record) alongside a fn, for the door a
+/// struct literal reads a generated declaration through.
 fn meta_probes() -> string {
-    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"frozen\", \"widened\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\nexport fn other_twin(f: Fn) -> List<Directive> { [Directive { twin: \"already\", name: f.name, at: f.at }] }\n"
+    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"frozen\", \"widened\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\nexport fn other_twin(f: Fn) -> List<Directive> { [Directive { twin: \"already\", name: f.name, at: f.at }] }\nexport trait Keyed {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n            type DeclKey = { module: string, x: int }\n            fn decl_probe() -> int { 41 }\n        } }]\n    }\n}\n"
 }
 
 /// A source through the printer — the parse read back, so a mark's
@@ -282,6 +284,12 @@ spec "features/annotations — the compile-time call's laws" {
                 "`@other_twin` generates `already`, which this file already declares",
                 1,
             )
+        }
+        then "a derive's generated TYPE resolves from a struct literal, not just a generated fn from a call" {
+            let p = packaged(
+                "use @std.meta.{derive, Keyed}\n@derive(Keyed)\ntype T = { a: int }\nDeclKey { module: \"m\", x: 1 }.x + decl_probe()",
+            )
+            match p.run() { .Ok(out) -> out == "42", .Err(_) -> false }
         }
     }
     given "validation" {
