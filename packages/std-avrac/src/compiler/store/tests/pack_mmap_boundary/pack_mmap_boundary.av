@@ -1,0 +1,26 @@
+// proves: eval == native across THE PACK's mmap-based whole-file
+// read, at every length that changes which path `slurped` takes —
+// 0 (empty), 1..7 (the @std/io fallback, `avra_mmap_word_at` cannot
+// reach these), 8 (the first full aligned word), and 9 (one aligned
+// word plus a short, overlapping tail read). Each length is a file
+// of exactly that many arbitrary bytes: never a real pack, so every
+// one must answer absent, and never a trap.
+use @std.io.{make_dirs, write_bytes}
+use compiler.store.{pack_at}
+
+fn dir() -> string { "/tmp/avra-pack-mmap-boundary" }
+
+fn junk(n: int) -> Bytes {
+    mut out: List<int> = []
+    for i in 0..n { out.push((i * 41 + 7) % 256) }
+    out.bytes()!
+}
+
+fn absent_at(len: int) -> string {
+    let path = "${dir()}/n${len}.bin"
+    let _ = write_bytes(path, junk(len))
+    "${len}:${pack_at(path, "cid").get("x") == null}"
+}
+
+let _ = make_dirs(dir())
+[absent_at(l) for l in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 17]].join(" ")
