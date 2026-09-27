@@ -6,9 +6,10 @@
 // `folded`, and a changed one is refused as stale, whether the change
 // is the file's own or a callee's signature in another file.
 use @std.avrac.compiler.{avra, new_workspace}
-use compiler.{Workspace, WitnessedOutcome, WitnessedCheck}
+use compiler.{Workspace, WitnessedOutcome, WitnessedCheck, stable_file_name, name_parts}
 use compiler.host.{memory_host}
 use compiler.store.{pack_at}
+use query.{Key}
 use @std.io.{make_dirs, exists, remove}
 
 fn dir(name: string) -> string { "/tmp/avra-witness-test/${name}" }
@@ -112,6 +113,21 @@ spec "compiler/witness" {
             let a = checked(second, "/w/src/a.av")
             let b = checked(second, "/w/src/b.av")
             !a.reused() && !b.reused() && !b.value().clean
+        }
+    }
+    given "a file path carrying the codec's own punctuation — a backslash and a raw newline" {
+        then "its Parsed key name round-trips through name_parts to the exact family word and the exact inner encoding" {
+            let weird_path = "/w/src/weird\\name\nwith-a-newline.av"
+            let files: Map<string, string> = {weird_path: "export fn z() -> int {\n    9\n}\n"}
+            let ws = new_workspace(memory_host(files, [weird_path]), "/w", avra())
+            let f = ws.file_id(weird_path)
+            // `Family.Parsed`'s own ordinal (workspace.av's `ordinal`) —
+            // `query.Key` is the one shape this test can build without
+            // reaching a `compiler`-private enum from another module.
+            let k = Key { family: 1, arg: f.index }
+            let name = ws.decls.stable_key_name(k)
+            let parts? = name_parts(name) else { return false }
+            parts.family == "Parsed" && parts.arg == stable_file_name(weird_path)
         }
     }
 }
