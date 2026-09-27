@@ -1,0 +1,46 @@
+//! Stale `// LICENSED <id>` citations (CLAUDE.md's exemption law) —
+//! the dotted id right after that word must still name a rule `avra
+//! rules` lists. `Workspace.checked()` finds them once, from the
+//! Program it already built, and caches the answer (compiler/db.av's
+//! `Licenses` row) under the same key as its warnings — never
+//! `here()`-relative: a cached line is read back by a check that may
+//! run from a different directory than the one that minted it, so
+//! the CLI layer (`avra check`) renders the final message, this file
+//! only finds and encodes the citation.
+use core.{Remark, flatten, joined}
+
+/// Every stale citation across `p`'s files, one `file\tline\tid` per
+/// line, joined — "" for a clean program.
+export fn stale_license_lines(p: Program) -> string {
+    let known = [rule_id(r) for r in rules]
+    joined(flatten([file_stale_lines(a, known) for a in p.files]), "\n")
+}
+
+fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
+    flatten([remark_line(a, r, known) for r in a.view.store.remarks.get()])
+}
+
+fn remark_line(a: Analysis, r: Remark, known: List<string>) -> List<string> {
+    let id? = claimed(r) else { return [] }
+    if known.contains(id) { return [] }
+    let line = a.view.source.linecol(r.at).line
+    ["${a.view.source.file}\t${line}\t${id}"]
+}
+
+/// The id a remark's own text claims, or absence — a bare `// LICENSED
+/// — reason` (no id: a doctrine exemption, never a rule's) claims
+/// nothing, and neither does a comment that merely mentions the word.
+fn claimed(r: Remark) -> string? {
+    match r.trivia { .Comment(text) -> claimed_in(text), .Blank -> null }
+}
+
+fn claimed_in(text: string) -> string? {
+    if !text.contains("LICENSED") { return null }
+    let rest = text.substring(text.index_of("LICENSED") + "LICENSED".length, text.length).trim()
+    if rest == "" || rest.starts_with("—") || rest.starts_with("-") { return null }
+    let colon = rest.index_of(":")
+    if colon < 0 { return null }
+    let id = rest.substring(0, colon).trim()
+    if id == "" { return null }
+    id
+}
