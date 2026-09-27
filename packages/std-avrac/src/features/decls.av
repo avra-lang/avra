@@ -178,6 +178,10 @@ export type DeclFacts = {
     /// EVERY `@name(args)` THE DECLARATION WEARS, in written order — the general
     /// table `annotated` above only flags the presence of.
     annotations: List<AnnotationFact> = [],
+    /// THE TYPE NAMES ITS `mut` PARAMETERS WRITE — the seals a `.Fn` puts on a
+    /// type's layout, read from the parse at admission and from the record for a
+    /// held file, so the seal index never reaches into a store the hold skipped.
+    mut_seats: List<string> = [],
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -219,7 +223,13 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
         doc: if readable { store.doc_comment(x.stmt) } else { null },
         annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
+        mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
     }
+}
+
+/// The type names a fn's own `mut` parameters write, from its parse.
+fn mut_seat_names(store: NodeStore, s: StmtId) -> List<string> {
+    [pp.ty!.name for pp in store.fn_parts(s)?.params ?? [] if pp.promises.mutable && pp.ty != null]
 }
 
 /// The facts a declaration minted with no store wears: a synthetic or builtin body has no
@@ -377,9 +387,10 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> void>,
-    /// `mut_seat_sealers`'s memo — a name to the `.Fn` decls whose
-    /// PARSED signature seals it, built once from the parse alone.
-    mut_seat_cache: Cell<Map<string, List<DeclId>>?>,
+    /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
+    /// write it, kept by `face` as every declaration's facts land, so it covers
+    /// a module minted after the first ask as well as one parsed before it.
+    mut_seat_index: Cell<Map<string, List<DeclId>>>,
     // an inferred `Result<T, _>`'s growing error set, dense by DeclId
     // — the error-unions Phase 2 fixpoint's own table, settled by the
     // armed hook on first ask
@@ -461,7 +472,6 @@ export fn new_decls() -> Decls {
     let no_impls_by_name: Map<string, List<DeclId>> = {}
     let no_refs_by_file: List<List<Ref>> = []
     let no_refs_by_decl: List<List<Ref>> = []
-    let no_mut_seat_cache: Map<string, List<DeclId>>? = null
     let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
@@ -518,7 +528,7 @@ export fn new_decls() -> Decls {
         refs_by_decl: Cell.new(no_refs_by_decl),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
-        mut_seat_cache: Cell.new(no_mut_seat_cache),
+        mut_seat_index: map_cell(),
     }
     // the registry cannot reach a declaration on its own — a struct or
     // enum's layout answers the blank default until this runs
@@ -1198,40 +1208,13 @@ impl Decls {
         }
     }
 
-    /// Every `.Fn` decl whose PARSED signature seals `name` — a `mut`
-    /// parameter written under exactly that type name. A NAME match,
+    /// Every `.Fn` decl whose `mut` parameters seal `name` — a NAME match,
     /// never a type match: two distinct types sharing one name may
-    /// over-trigger (an extra `sig()` on an unrelated fn, harmless),
-    /// and a miss costs nothing new either, since L1 still refuses a
-    /// race this index fails to find rather than silently widening
-    /// it. Reading `self.mut_seat_index()` on every ask is the cost
-    /// of building it ONCE, lazily, the first time any type's layout
-    /// is asked for — never a whole-package pass paid up front.
+    /// over-trigger (an extra `sig()` on an unrelated fn, harmless). A miss
+    /// is L1's refusal ("read before a `mut` seat sealed it"), so the index
+    /// covers every declaration whose facts have landed, held ones included.
     fn mut_seat_sealers(name: string) -> List<DeclId> {
-        self.mut_seat_index().get(name) ?? []
-    }
-
-    /// The index itself, built once from the parse alone (no `sig`
-    /// asked to build it — that is exactly the ask this index exists
-    /// to avoid racing).
-    fn mut_seat_index() -> Map<string, List<DeclId>> {
-        let built: Map<string, List<DeclId>>? = self.mut_seat_cache.get()
-        if built != null { return built! }
-        mut idx: Map<string, List<DeclId>> = {}
-        for x in [x for x in self.decls.get() if x.kind is .Fn] {
-            for name in self.mut_param_names(x) { idx.set(name, (idx.get(name) ?? []).concat([x.id])) }
-        }
-        self.mut_seat_cache.set(idx)
-        idx
-    }
-
-    /// The written type names a `.Fn` decl's OWN mut parameters
-    /// name, read from its parse — never its sig, which is the ask
-    /// this whole index exists to avoid forcing early.
-    fn mut_param_names(x: Decl) -> List<string> {
-        let fp: FnParts? = self.store(x.id).fn_parts(x.stmt)
-        if fp == null { return [] }
-        [pp.ty!.name for pp in fp!.params if pp.promises.mutable && pp.ty != null]
+        self.mut_seat_index.get().get(name) ?? []
     }
 
     /// A payload's word, asked of its own declaration first so the

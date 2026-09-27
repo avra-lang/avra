@@ -62,6 +62,9 @@ export type NodeStore = {
     pats: Cell<List<Pat>>,
     pat_spans: Cell<List<Span?>>,
     pat_fingerprints: Cell<List<int>>,
+    // a seat's span, by ParamId — the store's only fact about a
+    // Param, which otherwise never touches an arena
+    param_spans: Cell<List<Span?>>,
     // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
     trailing: Cell<List<bool>>,
     // a call written as a TYPE LITERAL (`v.type(T)`), and a NAME
@@ -130,6 +133,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         pats: list_cell(),
         pat_spans: list_cell(),
         pat_fingerprints: list_cell(),
+        param_spans: list_cell(),
         trailing: list_cell(),
         type_lits: list_cell(),
         holes: list_cell(),
@@ -457,7 +461,7 @@ impl NodeStore {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -579,6 +583,21 @@ impl NodeStore {
     fn pat(id: PatId) -> Pat { self.pats.get()[id.index] }
     fn pat_span(id: PatId) -> Span? { self.pat_spans.get()[id.index] }
     fn pat_fingerprint(id: PatId) -> int { self.pat_fingerprints.get()[id.index] }
+
+    /// The one seat-allocation seam: a fresh `ParamId` for its span
+    /// alone — a `Param` never lives in an arena, so this is the
+    /// STORE's only fact about it.
+    fn alloc_param_id(span: Span?) -> ParamId {
+        self.param_spans.push(span)
+        ParamId { index: self.param_spans.get().length - 1 }
+    }
+
+    /// The span at a seat's id — absent for the pronoun's reserved
+    /// sentinel, whose index a real mint never reaches.
+    fn param_id_span(id: ParamId) -> Span? {
+        let spans = self.param_spans.get()
+        if id.index >= 0 && id.index < spans.length { spans[id.index] } else { null }
+    }
 
     /// The names a pattern binds, in pre-order — the arm's bind
     /// order, which every pass keys by index.
@@ -962,7 +981,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -1117,6 +1136,27 @@ impl NodeStore {
             [fp_str(v.name.of), fp_list(self.param_fps(v.payloads)), fp_list(mark_fps(v.marks))],
         ) for v in variants]
     }
+
+    /// A comprehension clause list's fingerprint parts — ONE VALUE
+    /// PER CLAUSE.
+    fn comp_clause_fps(clauses: List<CompClause>) -> List<int> {
+        [self.comp_clause_fp(c) for c in clauses]
+    }
+
+    fn comp_clause_fp(c: CompClause) -> int {
+        match c {
+            .Head(index, name, source, hi) -> fp(
+                151,
+                [
+                    fp_str(index?.of ?? ""),
+                    fp_str(name.of),
+                    self.expr_fingerprint(source),
+                    self.opt_fp(hi),
+                ],
+            ),
+            .Filter(cond) -> fp(152, [self.expr_fingerprint(cond)]),
+        }
+    }
 }
 
 // ── Exact equality, the store-bound half ───────────────────────────
@@ -1156,6 +1196,25 @@ impl NodeStore {
 
     fn exact_arms(a: List<Arm>, b: List<Arm>) -> bool {
         a.length == b.length && [i for i in 0..a.length].all((k) -> self.exact_arm(a[k], b[k]))
+    }
+
+    /// A clause's own equality — `comp_clause_fp`'s exact twin.
+    fn exact_comp_clause(a: CompClause, b: CompClause) -> bool {
+        match a {
+            .Head(ai, an, asrc, ahi) -> match b {
+                .Head(bi, bn, bsrc, bhi) -> ai?.of == bi?.of &&
+                    an.of == bn.of &&
+                    self.exact_expr(self.expr(asrc), self.expr(bsrc)) &&
+                    self.exact_opt_expr(ahi, bhi),
+                rest -> false,
+            },
+            .Filter(ac) -> match b { .Filter(bc) -> self.exact_expr(self.expr(ac), self.expr(bc)), rest -> false },
+        }
+    }
+
+    fn exact_comp_clauses(a: List<CompClause>, b: List<CompClause>) -> bool {
+        a.length == b.length &&
+            [i for i in 0..a.length].all((k) -> self.exact_comp_clause(a[k], b[k]))
     }
 
     /// A seat's own equality — `param_fps`'s exact twin.

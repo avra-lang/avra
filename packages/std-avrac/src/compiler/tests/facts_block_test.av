@@ -19,6 +19,7 @@ fn sample() -> DeclFacts {
         bounds: [""],
         seats: ["a", "b"],
         host: ["int", "int"],
+        mut_seats: ["Cx", "Table"],
         annotated: true,
         of: "",
         doc: ["a line with a\ttab", "a line; with a ~tilde and a :colon and a |pipe"],
@@ -91,6 +92,32 @@ spec "a declaration's facts survive their record" {
             let a = sample()
             let b = sample() with { doc: ["a different line"] }
             a.fingerprint() != b.fingerprint()
+        }
+    }
+    given "a fn's mut seats" {
+        then "they round-trip in order" {
+            (facts_unblocked(facts_block(sample()))?.mut_seats ?? []).join(",") == "Cx,Table"
+        }
+        then "none round-trips as an empty list" {
+            (facts_unblocked(facts_block(sample() with { mut_seats: [] }))?.mut_seats ?? ["x"])
+                .is_empty()
+        }
+        then "a change to them moves the fingerprint" {
+            sample().fingerprint() != (sample() with { mut_seats: ["Cx"] }).fingerprint()
+        }
+    }
+    given "a record whose written fingerprint disagrees with its fields" {
+        then "the decoder refuses it" {
+            let block = facts_block(sample())
+            block.contains(";2~2:Cx~5:Table;") &&
+                facts_unblocked(block.replace(";2~2:Cx~5:Table;", ";1~2:Cx;")) == null
+        }
+    }
+    given "a record from a writer that predates the mut seats" {
+        then "a head one field short is refused, never read with a default" {
+            let block = facts_block(sample())
+            block.contains(";2~2:Cx~5:Table;") &&
+                facts_unblocked(block.replace(";2~2:Cx~5:Table;", ";")) == null
         }
     }
     given "only an annotation's argument text changes" {

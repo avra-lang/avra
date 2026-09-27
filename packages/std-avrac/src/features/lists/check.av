@@ -2,7 +2,7 @@
 //! ride a slot (the SAME law every aggregate slot obeys — R0's
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
-use core.{ExprId, Type, TypeId, flatten, some_list}
+use core.{ExprId, Type, TypeId, CompClause, flatten, some_list}
 use features.{TypeCx, this_is, slot_worthy}
 use diagnostics.{refusal}
 
@@ -147,23 +147,16 @@ fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
         )
 }
 
-/// THE COMPREHENSION LAW: the head is the `for` statement's. Over a
+/// THE COMPREHENSION LAW: each head is the `for` statement's. Over a
 /// list, the name wears its element type and the index an int;
 /// over a range `lo..hi`, both bounds are ints, the name counts,
-/// and there is no index. The filter is a bool; the answer is a
-/// list of the element expression's type.
-fn comp_type(
-    mut cx: TypeCx,
-    e: ExprId,
-    elem: ExprId,
-    index: string?,
-    source: ExprId,
-    hi: ExprId?,
-    cond: ExprId?,
-) -> TypeId {
-    let tys = if hi == null { walked_types(cx, index, source) } else { counted_types(cx, index, source, hi!) }
+/// and there is no index. A later head's own source and range bound
+/// type under every earlier head's binders; a filter's condition is a
+/// bool, typed the same way. The answer is a list of the element
+/// expression's type, typed under every head's binders at once.
+fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> TypeId {
+    let tys = type_clauses(cx, clauses)
     cx.bind_types(elem, tys)
-    if cond != null { filter_checks(cx, cond!, tys) }
     // THE ELEMENT HEARS THE LIST'S WANT: under `List<E>` the element
     // reads `E` — a free Var pins, a value boxes — and the list wears
     // `E`, the element's lift recorded like a literal's
@@ -175,6 +168,30 @@ fn comp_type(
         w? -> heard_elem(cx, elem, ety, w)
         null -> collected(cx, elem, ety)
     }
+}
+
+/// Every clause's own binder types, accumulated in written order — a
+/// later head's `walked_types`/`counted_types` call types its own
+/// source/range bound under everything bound so far (`bind_types`
+/// already stands from the clause before it), and a filter types its
+/// condition the same way, adding no binder of its own.
+fn type_clauses(mut cx: TypeCx, clauses: List<CompClause>) -> List<TypeId> {
+    mut tys: List<TypeId> = []
+    for c in clauses {
+        match c {
+            .Head(index, _, source, hi) -> {
+                // A clause's own binders are keyed by its SOURCE alone — the
+                // one anchor `resolve_clauses`' `arm_scope` binds them to,
+                // whether an earlier name is read from the source or the
+                // range bound beside it.
+                cx.bind_types(source, tys)
+                let added = if hi == null { walked_types(cx, index?.of, source) } else { counted_types(cx, index?.of, source, hi!) }
+                tys = tys.concat(added)
+            },
+            .Filter(cond) -> filter_checks(cx, cond, tys),
+        }
+    }
+    tys
 }
 
 /// The list wears the wanted element once the element is accepted by
