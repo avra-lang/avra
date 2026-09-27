@@ -614,7 +614,7 @@ export const pronoun_param: Param = Param {
     ty: null,
     default: null,
     promises: plain_mark,
-    span: null,
+    id: pronoun_param_id,
 }
 
 /// A MARK IS DATA; AN ANNOTATION IS A CALL. `@word` or
@@ -641,8 +641,10 @@ export type Mark = { name: string, args: List<string>, span: Span? = null }
 /// enum variant's payload — with the DEFAULT a field may declare,
 /// the PROMISES it makes its callee (`mut`, `const`) and the MARKS
 /// written before it. An ABSENT type IS a unit enum variant, so one
-/// shape covers both and no arm has to ask which kind it is.
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, span: Span? = null, marks: List<Mark> = [] }
+/// shape covers both and no arm has to ask which kind it is. Its
+/// span lives off the value, in the store's span table, keyed by
+/// `id` — never a field here to keep in sync across a rebuild.
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, id: ParamId, marks: List<Mark> = [] }
 
 /// A member's marks as they were written, with a trailing space —
 /// "" when it carries none, so a printer needs no branch.
@@ -655,6 +657,25 @@ fn mark_spelled(m: Mark) -> string {
     if m.args.is_empty() { return "@${m.name}" }
     "@${m.name}(${joined(m.args, ", ")})"
 }
+
+/// A seat's identity in the store's span table — a fn's param, a
+/// lambda's, a struct's field, an enum variant's payload. Minted
+/// once per construction (never carried unchanged through a
+/// rebuild), so a splice's own copy gets its own slot rather than
+/// sharing the template's.
+export type ParamId = { index: int }
+
+/// Seat identity — two ids name one seat when their indexes agree.
+export fn same_param_id(a: ParamId, b: ParamId) -> bool {
+    // LICENSED structs.index_compared: seat identity — ids compare by index
+    a.index == b.index
+}
+
+/// The compiler-synthesized `it` seat's own id — reserved (never
+/// minted by `alloc_param_id`, whose indexes start at 0), so
+/// `is_pronoun` asks an identity question instead of reading absence
+/// off a field that any real seat could also lack.
+export const pronoun_param_id: ParamId = ParamId { index: -1 }
 
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }

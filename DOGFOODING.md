@@ -1239,6 +1239,28 @@ CAPTURE reference and defects at assembly ("uncaptured label").
 corrupt through generic/mono flows (subset note). Struct ids ride
 every boundary safely and stay nominally distinct.
 
+## A value type earns identity through ONE minted id, not a new arena
+
+A value that flows by-value everywhere (`Param`: embedded inline in
+six different node payloads, read by dozens of passes) does not need
+a full arena — `List<Param>` fields, its readers, and the four
+derive-macro generators that fold/compare it all stay untouched — to
+give it a real, side-table-keyed fact. Replace the inline fact
+(`span: Span?`) with a minted id field (`id: ParamId`) and grow ONLY
+the store's span table (`param_spans: Cell<List<Span?>>`,
+`alloc_param_id`/`param_id_span` beside `alloc_pat`/`pat_span`) — the
+value's OTHER fields, and every consumer of them, never change. The
+mint happens at every CONSTRUCTION site (a builder threads the store
+through, or gains one), and a REBUILD (quote/macro expansion) mints
+its own fresh id rather than carrying the source's unchanged — an id
+names a slot in ONE store's table, and `src`/`dst` in a splice are not
+the same store, so an unminted copy would read a foreign index the
+day the two tables diverge in length. A synthetic constant with no
+store to mint from (`pronoun_param`) takes a reserved sentinel index
+(`ParamId { index: -1 }`, matching `no_stmt`'s reserved slot 0) — an
+identity question (`same_param_id`), never an absence check
+(`span == null`) that any real value could also satisfy by accident.
+
 ## Match guards
 
 ```avra

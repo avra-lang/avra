@@ -38,6 +38,8 @@ use core.{
     same_expr,
     some_list,
     doc_line_text,
+    same_param_id,
+    pronoun_param_id,
 }
 use features.{chained_binder}
 use features.expr_spine.{words, applieds}
@@ -915,7 +917,7 @@ impl SourceText {
         let opened = "${sig}${if head.is_empty() { "" } else { self.params_wrapped(head, depth, col_after(sig, depth * 4)) }}"
         let lines = flatten(
             [self
-                .trivia_before(start_of(f.span), depth + 1)
+                .trivia_before(start_of(self.store.param_id_span(f.id)), depth + 1)
                 .concat([source_line(depth + 1, self.param(f, depth + 1))]) for f in fields],
         )
         let body = lines
@@ -982,7 +984,7 @@ impl SourceText {
         }
         let body = flatten(
             [self
-                .trivia_before(start_of(f.span), depth + 1)
+                .trivia_before(start_of(self.store.param_id_span(f.id)), depth + 1)
                 .concat([source_line(depth + 1, "${self.param(f, depth + 1)},")]) for f in fields],
         )
             .concat(self.trivia_before(end, depth + 1))
@@ -2110,11 +2112,12 @@ impl SourceText {
 }
 
 /// Whether `params` is the compiler-synthesized pronoun seat: one
-/// unnamed parameter with no span, minted where the source read `it`
-/// with no `(it) ->` of its own (core/nodes.av's `pronoun_param`).
+/// unnamed parameter wearing the reserved sentinel id, minted where
+/// the source read `it` with no `(it) ->` of its own
+/// (core/nodes.av's `pronoun_param`).
 fn is_pronoun(params: List<Param>) -> bool {
     if params.length != 1 { return false }
-    params[0].span == null
+    same_param_id(params[0].id, pronoun_param_id)
 }
 
 fn source_line(depth: int, text: string) -> string {
