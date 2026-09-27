@@ -215,8 +215,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
     let source_ns = now_ns() - t0
     let t1 = now_ns()
     let key = canon_key(src.text)
-    mut rows = ws.db
-    let hit = rows.canon(store, key) != null
+    let hit = ws.db.canon(store, key) != null
     let base = [
         Phase { name: "source", ns: source_ns },
         Phase { name: "digest", ns: now_ns() - t1 },
@@ -230,7 +229,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
             let compare = Phase { name: "compare", ns: now_ns() - t2 }
             if matches {
                 let t3 = now_ns()
-                rows.insert_canon(store, key, "")
+                ws.db.insert_canon(store, key, "")
                 Checked1 {
                     outcome: Outcome.Canonical,
                     phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]),
@@ -256,8 +255,7 @@ fn written_one(
     match ws.write_checked_source(f) {
         .Ok(text) -> {
             let after = "${text}\n"
-            mut rows = ws.db
-            rows.insert_canon(store, canon_key(after), "")
+            ws.db.insert_canon(store, canon_key(after), "")
             if after == before { return ended(Outcome.Canonical, base) }
             match write_text(path, after) {
                 .Ok(_) -> ended(Outcome.Differs, base),
