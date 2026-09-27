@@ -1,0 +1,73 @@
+// A held declaration's sig comes from its module's stored record —
+// `Workspace.sig`'s early return for a held file used to answer with no
+// Kernel dependency at all. `held_sig` closes that: asked with no store,
+// it no-ops; asked with one, it settles once and reuses after, and a
+// query already open when it runs ends up depending on it.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.query.{Key}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use compiler.store.{store_at}
+use @std.io.{make_dirs, list_dir, remove}
+use @std.path.{joined_path}
+
+fn heldsig_pkg_named(name: string) -> string {
+    let root = "/tmp/avra-heldsig-test/${name}"
+    let src = "${root}/src"
+    let _ = make_dirs(src)
+    for f in list_dir(src) catch [] { let _ = remove(joined_path(src, f)) }
+    root
+}
+
+fn held_sig_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            { "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": "fn a() { 1 }\n" },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// `Family.HeldSig`'s ordinal (workspace.av's `ordinal()`) — `Family` is
+/// compiler-private, so a test outside the module names the number
+/// directly; a drift is caught loudly by `built()`'s own registration
+/// check, which every test that builds a `Workspace` already runs.
+fn held_sig_key(arg: int) -> Key { Key { family: 21, arg: arg } }
+
+/// `Family.Failures`' ordinal — any already-registered, real family
+/// stands in for "a query already open", the ordinary case a held read
+/// happens inside.
+fn an_open_query() -> Key { Key { family: 20, arg: 0 } }
+
+spec "compiler/workspace — a held decl's sig records a dependency" {
+    given "no store is set" {
+        then "held_sig no-ops and still answers the module's own name" {
+            let ws = held_sig_workspace()
+            let mid = ws.decls.module_id("test.module")
+            ws.held_sig(mid) == "test.module"
+        }
+    }
+    given "a store is set, no record for the module exists yet" {
+        then "the first ask settles the key; the second reuses it" {
+            let ws = held_sig_workspace()
+            ws.store.set(store_at("${heldsig_pkg_named("reuse")}/.avra-cache"))
+            let mid = ws.decls.module_id("test.module")
+            let _ = ws.held_sig(mid)
+            ws.db.ask(held_sig_key(mid.index)) is .Reuse
+        }
+        then "a query already open when held_sig runs picks it up as active" {
+            let ws = held_sig_workspace()
+            ws.store.set(store_at("${heldsig_pkg_named("dep")}/.avra-cache"))
+            let mid = ws.decls.module_id("test.module")
+            let outer = an_open_query()
+            if ws.db.ask(outer) is .Compute {
+                ws.db.begin(outer)
+                let _ = ws.held_sig(mid)
+                ws.db.settle(outer, 0)
+            }
+            ws.db.active(held_sig_key(mid.index))
+        }
+    }
+}

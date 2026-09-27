@@ -24,6 +24,7 @@ use core.{
     TypeRegistry,
     new_type_registry,
     Param,
+    FnParts,
     module_symbol,
     filled,
     flatten,
@@ -46,7 +47,7 @@ use core.{
     At,
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
-use core.{Fingerprint, fp, list_cell, map_cell, same_type, Table, new_table}
+use core.{Fingerprint, fp, list_cell, map_cell, same_type, touch, Table, new_table}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -371,6 +372,9 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> void>,
+    /// `mut_seat_sealers`'s memo — a name to the `.Fn` decls whose
+    /// PARSED signature seals it, built once from the parse alone.
+    mut_seat_cache: Cell<Map<string, List<DeclId>>?>,
     // an inferred `Result<T, _>`'s growing error set, dense by DeclId
     // — the error-unions Phase 2 fixpoint's own table, settled by the
     // armed hook on first ask
@@ -447,6 +451,7 @@ export fn new_decls() -> Decls {
     let no_impls_by_name: Map<string, List<DeclId>> = {}
     let no_refs_by_file: List<List<Ref>> = []
     let no_refs_by_decl: List<List<Ref>> = []
+    let no_mut_seat_cache: Map<string, List<DeclId>>? = null
     let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
@@ -501,6 +506,7 @@ export fn new_decls() -> Decls {
         refs_by_decl: Cell.new(no_refs_by_decl),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
+        mut_seat_cache: Cell.new(no_mut_seat_cache),
     }
     // the registry cannot reach a declaration on its own — a struct or
     // enum's layout answers the blank default until this runs
@@ -1104,17 +1110,67 @@ impl Decls {
     /// machinery — `materialized`'s whole family, deep in const and
     /// `@derive` settlement — reads layout facts on exactly the types
     /// demand order has not forced.
+    /// AND EVERY SEAL THAT WILL EVER LAND MUST LAND FIRST TOO (R11c,
+    /// avra-8sb5.34.21): a flat record's payload word depends on
+    /// whether a `mut` seat elsewhere still boxes it, and a seal
+    /// discovered after this ask is refused rather than applied
+    /// (L1, avra-8sb5.34.30.1) — so a `.Fn` whose PARSED signature
+    /// names this type under `mut` is forced here too, before either
+    /// declaration's flatness is read.
     fn declared_first(t: TypeId) {
         match self.types.shape_of(t) {
-            .Struct(r, _) or .Enum(r, _) -> { let _ = self.sig(r) },
+            .Struct(r, _) or .Enum(r, _) -> {
+                for sealer in self.mut_seat_sealers(self.decl(r).name) { touch(self.sig(sealer)) }
+                let _ = self.sig(r)
+            },
             rest -> nothing_asked(),
         }
     }
 
+    /// Every `.Fn` decl whose PARSED signature seals `name` — a `mut`
+    /// parameter written under exactly that type name. A NAME match,
+    /// never a type match: two distinct types sharing one name may
+    /// over-trigger (an extra `sig()` on an unrelated fn, harmless),
+    /// and a miss costs nothing new either, since L1 still refuses a
+    /// race this index fails to find rather than silently widening
+    /// it. Reading `self.mut_seat_index()` on every ask is the cost
+    /// of building it ONCE, lazily, the first time any type's layout
+    /// is asked for — never a whole-package pass paid up front.
+    fn mut_seat_sealers(name: string) -> List<DeclId> {
+        self.mut_seat_index().get(name) ?? []
+    }
+
+    /// The index itself, built once from the parse alone (no `sig`
+    /// asked to build it — that is exactly the ask this index exists
+    /// to avoid racing).
+    fn mut_seat_index() -> Map<string, List<DeclId>> {
+        let built: Map<string, List<DeclId>>? = self.mut_seat_cache.get()
+        if built != null { return built! }
+        mut idx: Map<string, List<DeclId>> = {}
+        for x in [x for x in self.decls.get() if x.kind is .Fn] {
+            for name in self.mut_param_names(x) { idx.set(name, (idx.get(name) ?? []).concat([x.id])) }
+        }
+        self.mut_seat_cache.set(idx)
+        idx
+    }
+
+    /// The written type names a `.Fn` decl's OWN mut parameters
+    /// name, read from its parse — never its sig, which is the ask
+    /// this whole index exists to avoid forcing early.
+    fn mut_param_names(x: Decl) -> List<string> {
+        let fp: FnParts? = self.store(x.id).fn_parts(x.stmt)
+        if fp == null { return [] }
+        [pp.ty!.name for pp in fp!.params if pp.promises.mutable && pp.ty != null]
+    }
+
     /// A payload's word, asked of its own declaration first so the
-    /// answer never depends on which was declared first: 0 an int or
-    /// a word enum, 1 a pointer that is counted, absent for anything
-    /// else — a float, a bool, a raw pointer, a pair, a flat record, and
+    /// answer never depends on which was declared first: 0 an int, a
+    /// word enum, or a flat record over one of those (`machine_type`
+    /// sees straight through it — R11c, avra-8sb5.34.21, once every
+    /// seal that will ever land has already landed: `declared_first`
+    /// forces `mut_seat_sealers` before either flatness is read),
+    /// 1 a pointer that is counted, absent for anything else — a
+    /// float, a bool, a raw pointer, a pair, a wide value record, and
     /// an enum that carries anything. A bool or a float payload stays
     /// OUT here on purpose, unlike `side_word`'s Result side (R15a): a
     /// value-enum PAYLOAD of either broke the compiler's own
@@ -1123,8 +1179,6 @@ impl Decls {
     /// cause found first.
     fn payload_word(d: DeclId, t: TypeId) -> int? {
         self.declared_first(t)
-        // a FLAT record is a word a `mut` seat may still box — out
-        if self.types.shape_of(t) is .Struct && self.types.is_flat(t) { return null }
         let m = self.types.machine_type(t)
         match self.types.shape_of(m) {
             .Int -> 0,
