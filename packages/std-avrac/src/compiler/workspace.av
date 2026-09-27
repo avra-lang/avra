@@ -458,6 +458,36 @@ fn ordinal(f: Family) -> int {
     }
 }
 
+/// `ordinal`'s other sibling: the variant's own word, for a voice that
+/// must name it — a reader recognizes `Family.Raised`, never `22`.
+fn family_word(f: Family) -> string {
+    match f {
+        .Source -> "Source",
+        .Parsed -> "Parsed",
+        .Items -> "Items",
+        .Namespace -> "Namespace",
+        .Visible -> "Visible",
+        .Resolved -> "Resolved",
+        .Sig -> "Sig",
+        .Methods -> "Methods",
+        .Typed -> "Typed",
+        .ConstTyped -> "ConstTyped",
+        .Folded -> "Folded",
+        .Analysis -> "Analysis",
+        .Settled -> "Settled",
+        .Lowered -> "Lowered",
+        .Lifted -> "Lifted",
+        .Manifest -> "Manifest",
+        .Receivers -> "Receivers",
+        .Expanded -> "Expanded",
+        .Plain -> "Plain",
+        .References -> "References",
+        .Failures -> "Failures",
+        .HeldSig -> "HeldSig",
+        .Raised -> "Raised",
+    }
+}
+
 /// `ordinal`'s own inverse, a MIRROR of it (same order, same numbers)
 /// so the two are one glance apart rather than one a hand-list forty
 /// lines away. `families()` derives its list from this, never from an
@@ -516,6 +546,26 @@ const family_count: int = 23
 fn families() -> List<Family> {
     [family_at(i) for i in 0..family_count]
 }
+
+// ── Voices ──
+
+/// THE LAW: every registered family has a slot in `Db.families`,
+/// addressed by `ordinal`. A `Family` whose ordinal reaches past
+/// `family_count` has no slot — `family_at` (and `family_count`) were
+/// not extended the day the variant was added to `Family` and to
+/// `ordinal`. States the fix, not just the symptom, because a bare
+/// index trap would say "217 is out of bounds" and send the reader
+/// looking at `Db.families` instead of here.
+fn family_gap_voice(fam: Family, i: int) -> string {
+    "defect: Family.${family_word(fam)} has ordinal ${i} but family_count is ${family_count} — add it to family_at and family_count (compiler/workspace.av)"
+}
+
+/// TEST-ONLY DOOR: every real `Family` today has a legitimate ordinal,
+/// so nothing in ordinary use can trip `relation`'s guard — this pins
+/// the exact words it would speak if one ever didn't, without
+/// exporting `Family` itself. The 99 is fabricated; `Family.Raised`'s
+/// real ordinal is 22.
+export fn family_gap_probe() -> string { family_gap_voice(Family.Raised, 99) }
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
     timed_workspace(host, root, lang, () -> 0)
@@ -665,8 +715,15 @@ impl Workspace {
     /// A dense family's own value table, read off `Db.families` by
     /// ordinal — one list index, never a name and never a scan. Every
     /// call site that once held its own `Memo<DbRow>` field reaches its
-    /// family's table through this one door instead.
-    fn relation(fam: Family) -> Relation<DbRow> { self.db.relation(ordinal(fam)) }
+    /// family's table through this one door instead. Guarded, not a
+    /// bare index into `Db.families`: a gap between `ordinal` and
+    /// `family_at` (see `family_gap_voice`) must name the variant it
+    /// forgot, not report a number nobody can place.
+    fn relation(fam: Family) -> Relation<DbRow> {
+        let i = ordinal(fam)
+        if i >= family_count { avra_trap(family_gap_voice(fam, i)) }
+        self.db.relation(i)
+    }
 
     /// A ONE-SHOT WORKSPACE ENDS ITS OWN CYCLE: the families and the
     /// table's hooks capture `ws`, so `ws` could never die — 1674 spec
