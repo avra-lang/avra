@@ -4,8 +4,8 @@
 //! path is in the kind's vocabulary. Nothing here walks a value —
 //! a collect carries none; its body is synthesised at lowering
 //! (compiler/lower/lower.av) from these same recorded parts.
-use core.{StmtId, TypeId, CollectKind, CollectScope, Projection, Plain, joined}
-use features.{TypeCx, nothing}
+use core.{StmtId, TypeId, FileId, CollectKind, CollectScope, Projection, Plain, joined}
+use features.{TypeCx, Decl, Decls, nothing, duplicate_names}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
@@ -27,6 +27,39 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
     if entry_ty == null { return cx.emit(not_a_list(cx.stmt_loc(s), p.name)) }
     checked_projection(cx, s, p.proj, p.kind, entry_ty!)
     for k in p.order { if !known_path(p.kind, [k]) { cx.emit(unknown_path(cx.stmt_loc(s), [k])) } }
+}
+
+/// `check_collect`'s twin over `collect enum` — no declared type, no
+/// projection: the members ARE the variants, so the one extra law is
+/// theirs — two members naming the same variant.
+export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
+    let p? = cx.view.store.collect_enum_parts(s) else { return }
+    checked_kind(cx, s, p.kind)
+    checked_scope(cx, s, p.scope)
+    if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
+    for k in p.order { if !known_path(p.kind, [k]) { cx.emit(unknown_path(cx.stmt_loc(s), [k])) } }
+    let members = gathered_members(cx.view.decls, p.kind, p.scope, cx.view.file)
+    for d in duplicate_names(
+        "collect_enum.variant",
+        p.name,
+        [m.name for m in members],
+        cx.stmt_loc(s),
+    ) {
+        cx.emit(d)
+    }
+}
+
+/// `collect_members`'s features-layer twin
+/// (compiler/lower/lower.av) — membership alone, no `by` order: a
+/// duplicate-variant check reads names, never a sequence.
+fn gathered_members(decls: Decls, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<
+    Decl,
+> {
+    match kind {
+        .Component(w) -> decls.gathered(w, scope, owner),
+        .Annotated(w) -> decls.gathered_by_mark(w, scope, owner),
+        .UnknownKind(_) -> [],
+    }
 }
 
 /// A REGISTRY match over `CollectKind` — the next kind (fn, case)
