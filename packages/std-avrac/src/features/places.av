@@ -123,10 +123,13 @@ impl LowerCx {
                     // a cell opens unique — copy-on-write
                     return self.cell_unique(self.shape_at(s), cell!)
                 }
-                // a method's receiver: `self` is the box itself — shared
-                // by design, so no uniqueness is asked of it
-                self.def_reg(s) ?? self
-                    .lower_defect(s, "a mutation rooted outside a mut cell survived resolve")
+                // a method's receiver, a borrowed parameter: no cell
+                // stands behind it to hold a clone, so it is written
+                // in place — which it may only be once it is not the
+                // binary's own data
+                let reg? = self.def_reg(s) else { return self
+                        .lower_defect(s, "a mutation rooted outside a mut cell survived resolve") }
+                self.box_thawed(self.shape_at(s), reg)
             },
             .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),
             .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),

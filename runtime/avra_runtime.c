@@ -1493,6 +1493,25 @@ void* avra_cell_thawed(void* slot) {
     return avra_cell_unique(slot);
 }
 
+// The same law with no cell to hold the answer — a method's receiver,
+// a borrowed parameter: nothing here ever stores back into wherever
+// `p` came from, so a write through it is safe only once `p` itself
+// is not the binary's own data. Immortal answers a fresh clone,
+// already counted; anything else answers `p` retained. OWNED either
+// way, so the memory pass releases what it gets back exactly once.
+void* avra_box_thawed(void* p) {
+    Header* h = hdr(p);
+    if (h != NULL && IS_IMMORTAL(h->kind)) {
+        g_clone_site = __builtin_return_address(0);
+        void* c = box_clone(p);
+        alias_log_clone(g_clone_site, c);
+        g_clone_site = NULL;
+        return c;
+    }
+    avra_rc_retain(p);
+    return p;
+}
+
 // A value enum's TAGGED BOX: its tag, then its word — owned, and
 // counted, when bit `tag` of `counted` says the variant carries a
 // pointer. The shape a boxed enum has, so every reader reads it alike.
