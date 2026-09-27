@@ -119,6 +119,15 @@ fn holes(builder: string) -> Grammar {
         .built!
 }
 
+/// A statement of one `let n in`, its `in` a hole — the statement
+/// recovering at END, as the language's own floor does.
+fn nested_hole() -> Grammar {
+    parse_grammar(
+        "prog = ( s:stmt | BREAK )* EOF -> prog(s)\nstmt = v:grp END @recover(sync_to: \"END\") -> st(v)\ngrp = \"let\" n:NAME \"in\" @expect(\"in\", \"expected `in`\") -> grp(n)\n",
+    )
+        .built!
+}
+
 spec "grammar/executor" {
     given "the head law: a trailer never matches inside a head" {
         then "a call takes its trailing block outside a head" {
@@ -618,6 +627,12 @@ spec "grammar/executor" {
             result_str(o) == "(prog [_])" &&
                 o.diagnostics.length == 1 &&
                 o.diagnostics[0].message == "expected `=`"
+        }
+        then "a statement whose part already spoke syncs quietly" {
+            let o = run_src(nested_hole(), "let a b\nlet c in\n")
+            result_str(o) == "(prog [_ (st (grp c))])" &&
+                o.diagnostics.length == 1 &&
+                o.diagnostics[0].message == "expected `in`"
         }
         then "a second hole ends the statement quietly" {
             let o = run_src(holes("st"), "let a b junk more\nlet c = d\n")
