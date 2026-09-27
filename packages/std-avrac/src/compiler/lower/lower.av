@@ -93,6 +93,19 @@ export type Body = {
     /// computation at most one. A GROWTH: every other construction
     /// site answers false.
     memoized: bool = false,
+    /// The declared fn's own seat marks, `mut`/`const`/`isolated`
+    /// written and `consumed` inferred (R3) — what the memory pass
+    /// reads to seed a consuming param scope-owned at entry, and what
+    /// a DIRECT, by-name caller reads to decide retain-or-hand-over
+    /// at a `.Call`. This body's OWN currency, never a fn VALUE's
+    /// type (`Decls.seat_mark` never merges `consumed` in — features/
+    /// checks.av's `fn_fits` says why): a `.CallPtr` through a value
+    /// or a `dyn` dispatch reads the plain marks a fn value carries
+    /// and treats every seat as borrowed. A GROWTH: a synthetic body
+    /// (a lambda, a wrapper) declares no seat a caller could mark, so
+    /// its default is the empty list every plain seat already reads
+    /// as.
+    marks: List<SeatMark> = [],
 }
 
 /// An instantiation `want`, demanded by a body `by` declares.
@@ -698,6 +711,11 @@ fn lower_fn(
     )
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
     let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
+    // R3's `consumed` rides only the BODY's own marks, read directly
+    // (features/decls.av's `seat_mark` never merges it) — never
+    // `seat_marks` above, which stays the currency a fn VALUE's TYPE
+    // carries.
+    let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross))
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.mint_ty(pt) }
@@ -718,6 +736,7 @@ fn lower_fn(
             file: a.view.file,
             weak: sub != null,
             memoized: memoized,
+            marks: body_marks,
         },
         voices: lo.out.voices,
         jobs: lo.jobs,
