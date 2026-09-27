@@ -8,7 +8,7 @@
 //! before the member it marks, so a variant NAME and a payload TYPE
 //! are both anchors — a window set short of the payloads reads a
 //! variant's last payload's mark as the NEXT variant's.
-use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
+use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped, NodeStore}
 use features.{
     LangNode,
     Builder,
@@ -50,7 +50,7 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
             .push(
                 Variant {
                     name: Plain(v.text),
-                    payloads: payloads_between(names, tys, w, v.span.lo, upto),
+                    payloads: payloads_between(b.store, names, tys, w, v.span.lo, upto),
                     span: v.span,
                     marks: w.at(v.span.lo),
                 },
@@ -62,15 +62,20 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
 /// One variant's payloads: the types inside its window, each named
 /// by the field name written just before it, or "" when positional,
 /// and each carrying the marks written in front of it.
-fn payloads_between(names: List<Token>, tys: List<TypeRef>, w: MarkWindows, after: int, before: int) -> List<
-    Param,
-> {
+fn payloads_between(
+    store: NodeStore,
+    names: List<Token>,
+    tys: List<TypeRef>,
+    w: MarkWindows,
+    after: int,
+    before: int,
+) -> List<Param> {
     [Param {
         name: Scoped(name_before(names, t, after)),
         ty: t,
         default: null,
         promises: plain_mark,
-        span: t.span,
+        id: store.alloc_param_id(t.span),
         marks: w.at(type_lo(t)),
     } for t in tys if ref_within(t, after, before)]
 }
