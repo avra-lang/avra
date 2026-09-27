@@ -20,7 +20,7 @@
 //! `@std/io`'s `read_bytes` for the tail under eight bytes it cannot
 //! reach.
 use @std.io.{read_bytes, write_bytes}
-use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher}
+use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
 // ── The header ──
 
@@ -91,13 +91,14 @@ fn encoded_entry(name_id: int, fingerprint: int, hash: int, edges: List<EdgeId>,
     w.int(name_id)
     w.int(fingerprint)
     w.int(hash)
-    w.count(edges.length)
-    for e in edges {
-        w.int(e.name_id)
-        w.int(e.hash)
-    }
+    written_list(w, edges, written_edge)
     w.octets(payload)
     w.bytes()
+}
+
+fn written_edge(w: Writer, e: EdgeId) {
+    w.int(e.name_id)
+    w.int(e.hash)
 }
 
 /// Just the name id — the only field the initial scan needs, to file
@@ -275,6 +276,8 @@ fn slurped(path: string, h: ptr, len: int) -> Bytes {
         return match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
     }
     mut out: List<int> = []
+    // LICENSED loops.index_walk: a stride of eight, `StableHasher.octets`'s own —
+    // no element walk answers "the next aligned word".
     mut at = 0
     while at + 8 <= len {
         let w = avra_mmap_word_at(h, at)
@@ -299,11 +302,7 @@ fn loaded(path: string, compiler_id: string) -> Loaded {
 
 fn reverse_index(names_by_id: List<string>) -> Map<string, int> {
     mut out: Map<string, int> = {}
-    mut i = 0
-    while i < names_by_id.length {
-        out.set(names_by_id[i], i)
-        i = i + 1
-    }
+    for i, name in names_by_id.enumerate() { out.set(name, i) }
     out
 }
 
