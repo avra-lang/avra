@@ -23,8 +23,11 @@ every input the build reads.
   **one** build, ~4 min. The product is verified before it is trusted.
 
 `make sprite-check` says which path this tree takes. `make seed`
-refreshes `seed.ll` and `seed.sources`, restoring the fast path; the
-tree's convention already refreshes the seed on merges.
+refreshes `seed.ll` and `seed.sources`, restoring the fast path. The seed
+is refreshed on a CADENCE, and whenever it can no longer compile HEAD —
+not on every landing, since a refresh per landing conflicts every other
+branch on the seed. Between refreshes a fresh Sprite takes the one-build
+path.
 
 ## Agent sessions (herdr)
 
