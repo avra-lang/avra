@@ -689,6 +689,7 @@ fn built(
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
+    ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
@@ -752,6 +753,17 @@ impl Workspace {
                     self.store.get()!,
                     module_path(segments_of(self.module_of(self.decls.file(f).path))),
                 )
+        }
+    }
+
+    /// Every source file of the package `f` stands in admitted — its
+    /// tests aside, a held file minted rather than parsed.
+    fn package_admitted(f: FileId) {
+        let path = self.decls.file(f).path
+        let pkg? = self.packages().find((k) -> path.starts_with("${k.src}/")) else { return }
+        for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p)] {
+            let g = self.file_id(p)
+            if self.is_held(g) { self.file_ensured(g) } else { let _ = self.items(g) }
         }
     }
 
