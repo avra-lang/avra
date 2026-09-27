@@ -1,0 +1,138 @@
+// `@relation`'s contract over hand-built declarations: which shapes it
+// refuses, in which words, and what its shape fingerprint moves with.
+use @std.relation.{relation_problems, shape_hash}
+use @std.meta.{Type, Field, Kind, Mark, Variant}
+
+fn field(name: string, ty: string, kind: Kind) -> Field {
+    Field { name: name, ty: ty, at: null, kind: kind }
+}
+
+fn marked(f: Field, mark: string) -> Field {
+    f with { marks: f.marks.concat([Mark { name: mark, args: [], at: null }]) }
+}
+
+fn row(name: string, fields: List<Field>) -> Type {
+    Type { name: name, fields: fields, variants: [], at: null, doc: null, annotations: [] }
+}
+
+fn kinds(t: Type) -> string {
+    [d.kind ?? "?" for d in relation_problems(t)].join(",")
+}
+
+fn base() -> Type {
+    row("R", [field("a", "int", Kind.Int), field("b", "string", Kind.Str)])
+}
+
+fn fn_kind() -> Kind {
+    Kind.Fn([], Kind.Int)
+}
+
+spec "std/relation — the law" {
+    given "a row of carried kinds" {
+        then "scalars, lists and nullables of them, nested, are all carried" {
+            kinds(
+                row(
+                    "Ok",
+                    [
+                        field("a", "int", Kind.Int),
+                        field("b", "bool", Kind.Bool),
+                        field("c", "string", Kind.Str),
+                        field("d", "List<int?>?", Kind.Opt(Kind.List(Kind.Opt(Kind.Int)))),
+                    ],
+                ),
+            ) == ""
+        }
+        then "the store's `id` is never judged — it never enters a row's content" {
+            kinds(
+                row(
+                    "Ided",
+                    [field("id", "CallId", Kind.Named("CallId", [])), field("n", "int", Kind.Int)],
+                ),
+            ) == ""
+        }
+        then "a relation of only marked fields — a membership set — is a relation" {
+            kinds(
+                row(
+                    "Member",
+                    [
+                        marked(field("a", "string", Kind.Str), "key"),
+                        marked(field("b", "string", Kind.Str), "key"),
+                    ],
+                ),
+            ) == ""
+        }
+        then "a relation with no fields at all is a relation" {
+            kinds(row("Empty", [])) == ""
+        }
+    }
+    given "the refusals" {
+        then "an enum is not a record" {
+            let t = Type {
+                name: "E",
+                fields: [],
+                variants: [Variant { name: "A", payload: [], at: null }],
+                at: null,
+                doc: null,
+                annotations: [],
+            }
+            kinds(t) == "not_a_record"
+        }
+        then "a kind with no stable encoding is refused, named" {
+            kinds(
+                row(
+                    "R",
+                    [
+                        field("f", "float", Kind.Float),
+                        field("m", "Map<string, int>", Kind.Map(Kind.Str, Kind.Int)),
+                    ],
+                ),
+            ) == "kind_not_carried,kind_not_carried"
+        }
+        then "a kind hidden inside a list or a nullable is refused too" {
+            kinds(row("R", [field("xs", "List<float>?", Kind.Opt(Kind.List(Kind.Float)))])) == "kind_not_carried"
+        }
+        then "a fn field is refused for its own reason" {
+            kinds(row("R", [field("f", "fn() -> int", fn_kind())])) == "fn_field"
+        }
+        then "a field wearing a generated member's name is refused" {
+            kinds(row("R", [field("stable_hash", "int", Kind.Int)])) == "name_collision"
+        }
+        then "every refusal is spoken, not only the first" {
+            kinds(
+                row(
+                    "R",
+                    [field("encoded", "float", Kind.Float), field("g", "fn() -> int", fn_kind())],
+                ),
+            ) == "name_collision,kind_not_carried,fn_field"
+        }
+        then "a refusal names the type and the field" {
+            relation_problems(row("Call", [field("weight", "float", Kind.Float)]))[0]
+                .message
+                .contains("`Call.weight` is `float`")
+        }
+    }
+    given "the shape fingerprint" {
+        then "it is the same for the same shape" {
+            shape_hash(base()) == shape_hash(row("R", [field("a", "int", Kind.Int), field("b", "string", Kind.Str)]))
+        }
+        then "reordering fields moves it" {
+            shape_hash(base()) != shape_hash(row("R", [field("b", "string", Kind.Str), field("a", "int", Kind.Int)]))
+        }
+        then "a mark moves it" {
+            shape_hash(base()) != shape_hash(
+                row(
+                    "R",
+                    [marked(field("a", "int", Kind.Int), "key"), field("b", "string", Kind.Str)],
+                ),
+            )
+        }
+        then "a field's spelling moves it" {
+            shape_hash(base()) != shape_hash(
+                row("R", [field("a", "int?", Kind.Opt(Kind.Int)), field("b", "string", Kind.Str)]),
+            )
+        }
+        then "the relation's name moves it" {
+            shape_hash(base()) != shape_hash(row("S", [field("a", "int", Kind.Int), field("b", "string", Kind.Str)]))
+        }
+    }
+}
