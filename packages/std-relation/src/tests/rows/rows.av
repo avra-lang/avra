@@ -1,0 +1,46 @@
+// proves: `@relation` gives a row its stable hash and codec — the store's
+// `id` never enters either, swapping values between fields moves the
+// hash, two relations holding the same values never share one, nested
+// lists and nullables encode with their counts and presence flags, and
+// a relation of only key fields is a relation
+use @std.relation.{relation}
+use @std.relation.stable.{reader}
+
+@relation
+type Call = { id: int, @index caller: string, @index callee: string, line: int }
+
+@relation
+type Tagged = { @key name: string, tags: List<string>, note: string?, deep: List<int?>? }
+
+@relation
+type Member = { @key a: string, @key b: string }
+
+@relation
+type Pair = { @key a: string, @key b: string }
+
+/// The first two fields a Call's record holds, read back.
+fn call_head(c: Call) -> string {
+    let r = reader(c.encoded())
+    let caller = r.text()
+    let callee = r.text()
+    match caller {
+        .Ok(a) -> match callee { .Ok(b) -> "${a}->${b}", .Err(f) -> f.word() },
+        .Err(f) -> f.word(),
+    }
+}
+
+let c = Call { id: 1, caller: "f", callee: "g", line: 3 }
+let same_but_id = Call { id: 99, caller: "f", callee: "g", line: 3 }
+let swapped = Call { id: 1, caller: "g", callee: "f", line: 3 }
+let full = Tagged { name: "n", tags: ["a", "b"], note: "x", deep: [1, null] }
+let plain = Tagged { name: "n", tags: [], note: null, deep: null }
+let emptied = Tagged { name: "n", tags: [], note: "", deep: [] }
+let checks = [
+    c.stable_hash() == same_but_id.stable_hash(),
+    c.stable_hash() != swapped.stable_hash(),
+    Member { a: "x", b: "y" }.stable_hash() != Pair { a: "x", b: "y" }.stable_hash(),
+    plain.stable_hash() != emptied.stable_hash(),
+    Call.shape_hash() != Tagged.shape_hash(),
+    Call.relation_name().ends_with(".Call"),
+]
+"${Call.relation_name()} ${[if ok { "y" } else { "n" } for ok in checks].join("")} ${call_head(c)} ${c.encoded().length} ${same_but_id.encoded().length} ${full.encoded().length} ${plain.encoded().length} ${emptied.encoded().length}"
