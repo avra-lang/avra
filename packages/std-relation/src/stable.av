@@ -84,17 +84,34 @@ fn word_at(b: Bytes, at: int) -> int {
     w
 }
 
+/// A `?` layer folded in: its presence, then the value when there is one.
+export fn hashed_opt<T>(h: StableHasher, v: T?, each: fn(StableHasher, T) -> StableHasher) -> StableHasher {
+    match v {
+        x? -> each(h.present(true), x)
+        null -> h.present(false)
+    }
+}
+
+/// A list folded in: its count, then every element in order.
+export fn hashed_list<T>(h: StableHasher, xs: List<T>, each: fn(StableHasher, T) -> StableHasher) -> StableHasher {
+    mut acc = h.count(xs.length)
+    for x in xs { acc = each(acc, x) }
+    acc
+}
+
 fn flag(v: bool) -> int {
     if v { 1 } else { 0 }
 }
 
 // ── The codec ──
 
-/// A record under construction, as octets.
-export type Writer = { out: List<int> }
+/// A record under construction, as octets. An IDENTITY: every holder
+/// of a writer writes the one record, so no seat needs `mut`.
+export type Writer = { out: Cell<List<int>> }
 
 export fn writer() -> Writer {
-    Writer { out: [] }
+    let out: Cell<List<int>> = Cell.new([])
+    Writer { out: out }
 }
 
 impl Writer {
@@ -126,7 +143,24 @@ impl Writer {
         for i in 0..b.length { self.byte(b.at(i)) }
     }
 
-    fn bytes() -> Bytes { self.out.bytes()! }
+    fn bytes() -> Bytes { self.out.get().bytes()! }
+}
+
+/// A `?` layer written: its presence, then the value when there is one.
+export fn written_opt<T>(w: Writer, v: T?, each: fn(Writer, T) -> void) {
+    match v {
+        x? -> {
+            w.present(true)
+            each(w, x)
+        }
+        null -> w.present(false)
+    }
+}
+
+/// A list written: its count, then every element in order.
+export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
+    w.count(xs.length)
+    for x in xs { each(w, x) }
 }
 
 /// Why a record does not decode. A record that does not decode is
@@ -149,19 +183,20 @@ impl CodecFault {
     }
 }
 
-/// A record being read: its octets and the position reached.
-export type Reader = { b: Bytes, at: int }
+/// A record being read: its octets and the position reached. An
+/// IDENTITY, as a writer is: every holder reads on from one position.
+export type Reader = { b: Bytes, at: Cell<int> }
 
 export fn reader(b: Bytes) -> Reader {
-    Reader { b: b, at: 0 }
+    Reader { b: b, at: Cell.new(0) }
 }
 
 impl Reader {
     fn byte() -> Result<int, CodecFault> {
-        if self.at >= self.b.length { fail CodecFault.Truncated }
-        let v = self.b.at(self.at)
-        self.at = self.at + 1
-        v
+        let at = self.at.get()
+        if at >= self.b.length { fail CodecFault.Truncated }
+        self.at.set(at + 1)
+        self.b.at(at)
     }
 
     fn varint() -> Result<int, CodecFault> {
@@ -188,15 +223,15 @@ impl Reader {
     /// A count, never past what is left to read.
     fn count() -> Result<int, CodecFault> {
         let n = self.varint()?
-        if n < 0 || n > self.b.length - self.at { fail CodecFault.Truncated }
+        if n < 0 || n > self.b.length - self.at.get() { fail CodecFault.Truncated }
         n
     }
 
     fn octets() -> Result<Bytes, CodecFault> {
         let n = self.count()?
-        let part = self.b.slice(self.at, self.at + n)
-        self.at = self.at + n
-        part
+        let at = self.at.get()
+        self.at.set(at + n)
+        self.b.slice(at, at + n)
     }
 
     fn text() -> Result<string, CodecFault> {
@@ -205,5 +240,5 @@ impl Reader {
     }
 
     /// Whether every octet has been read.
-    fn done() -> bool { self.at == self.b.length }
+    fn done() -> bool { self.at.get() == self.b.length }
 }

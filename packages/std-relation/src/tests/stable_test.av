@@ -1,7 +1,7 @@
 // Stable encodings: a hash and a byte codec that answer from content
 // alone. The pairs that a flat or linear encoding would collide are
 // written first, each as its own case.
-use @std.avrac.query.{mix, stable_hasher, text_hash, set_hash, writer, reader, CodecFault}
+use @std.relation.stable.{mix, stable_hasher, text_hash, set_hash, writer, reader, CodecFault}
 use @std.text.{from_codepoint}
 
 /// Two fields hashed in order under one seed.
@@ -15,48 +15,53 @@ fn row_hash(a: int, b: int) -> int {
 
 /// A value written then read back, through one encoding.
 fn int_round_trips(v: int) -> bool {
-    mut w = writer()
+    let w = writer()
     w.int(v)
-    match reader(w.bytes()).int() { .Ok(back) -> back == v, .Err(_) -> false }
+    let r = reader(w.bytes())
+    match r.int() { .Ok(back) -> back == v, .Err(_) -> false }
 }
 
 fn text_round_trips(s: string) -> bool {
-    mut w = writer()
+    let w = writer()
     w.text(s)
-    match reader(w.bytes()).text() { .Ok(back) -> back == s, .Err(_) -> false }
+    let r = reader(w.bytes())
+    match r.text() { .Ok(back) -> back == s, .Err(_) -> false }
 }
 
 /// How many octets one count, or one int, takes.
 fn count_length(n: int) -> int {
-    mut w = writer()
+    let w = writer()
     w.count(n)
     w.bytes().length
 }
 
 fn int_length(v: int) -> int {
-    mut w = writer()
+    let w = writer()
     w.int(v)
     w.bytes().length
 }
 
 fn fault_of(b: Bytes) -> string {
-    match reader(b).text() { .Ok(_) -> "none", .Err(f) -> f.word() }
+    let r = reader(b)
+    match r.text() { .Ok(_) -> "none", .Err(f) -> f.word() }
 }
 
 fn int_fault_of(b: Bytes) -> string {
-    match reader(b).int() { .Ok(_) -> "none", .Err(f) -> f.word() }
+    let r = reader(b)
+    match r.int() { .Ok(_) -> "none", .Err(f) -> f.word() }
 }
 
 fn bool_fault_of(b: Bytes) -> string {
-    match reader(b).bool() { .Ok(_) -> "none", .Err(f) -> f.word() }
+    let r = reader(b)
+    match r.bool() { .Ok(_) -> "none", .Err(f) -> f.word() }
 }
 
 /// The two texts a reader answers in turn, and whether it then stands at the end.
 fn read_in_order(first: string, second: string) -> bool {
-    mut w = writer()
+    let w = writer()
     w.text(first)
     w.text(second)
-    mut r = reader(w.bytes())
+    let r = reader(w.bytes())
     let a = r.text()
     let b = r.text()
     same_text(a, first) && same_text(b, second) && r.done()

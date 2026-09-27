@@ -1,0 +1,237 @@
+//! `@std/relation` — a record type IS a relation's row. `@relation`
+//! reads a declaration's fields and answers what makes its rows durable:
+//! a hash and a codec over every field's STABLE encoding, and the
+//! declaration's own contract, in one `Declared` value.
+//!
+//!     use @std.relation.{relation}
+//!
+//!     @relation
+//!     type Call = { id: CallId, @index caller: string, @index callee: string, line: int }
+//!
+//! THE VOCABULARY, shared with `@std/db`'s `@model`: a field named `id`
+//! is minted by the store and IS the typed id, so it never enters a hash
+//! or a record; `@key` fields together are the row's stable name;
+//! `@unique` is a constraint; `@index` is a lookup that answers a list.
+//!
+//! Stands ALONE with `@std/meta` and its own package: the file that
+//! types this derive must not also carry code the annotated file's
+//! names could shadow. The templates' own names (`stable_hasher`,
+//! `Writer`) resolve here.
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Directive,
+    Diagnostic,
+    Declared,
+    Code,
+    Stmts,
+    Decls,
+    literal,
+    name,
+    refuse_as_at,
+}
+use stable.{
+    stable_hasher,
+    text_hash,
+    hashed_opt,
+    hashed_list,
+    written_opt,
+    written_list,
+    writer,
+    StableHasher,
+    Writer,
+}
+
+export trait RelationRow {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: generated(t) }]
+    }
+
+    /// The field marks this derive reads.
+    static fn marks(t: Type) -> List<string> { ["key", "unique", "index"] }
+}
+
+/// `@relation` — the generated row members and the shape's contract,
+/// from one reading of the declaration.
+export fn relation(t: Type) -> Declared {
+    Declared { made: RelationRow.derive(t), problems: relation_problems(t) }
+}
+
+/// Every way a declaration breaks the relation law, each spoken at the
+/// field or type that breaks it.
+export fn relation_problems(t: Type) -> List<Diagnostic> {
+    if !t.variants.is_empty() { return [not_a_record(t)] }
+    let collisions = [name_collision(t, f) for f in content(t) if generated_members.contains(f.name)]
+    collisions.concat([kind_problem(t, f) for f in content(t) if !carried(f.kind)])
+}
+
+/// The shape's own fingerprint: every field's name, spelling and marks,
+/// in declared order. A stored row whose shape differs is recomputed,
+/// never decoded.
+export fn shape_hash(t: Type) -> int {
+    mut h = stable_hasher(text_hash(t.name)).count(t.fields.length)
+    for f in t.fields {
+        h = h.text(f.name).text(f.ty).count(f.marks.length)
+        for m in f.marks { h = h.text(m.name) }
+    }
+    h.finish()
+}
+
+// ── The law ──
+
+/// Why a field's kind has no stable encoding — a fn for its own reason.
+fn kind_problem(t: Type, f: Field) -> Diagnostic {
+    match f.kind { .Fn(_, _) -> fn_field(t, f), rest -> kind_not_carried(t, f) }
+}
+
+/// Whether a field kind has a stable encoding.
+fn carried(k: Kind) -> bool {
+    match k {
+        .Int or .Bool or .Str -> true,
+        .Opt(inner) -> carried(inner),
+        .List(elem) -> carried(elem),
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// The member names the derive writes onto the row's type.
+const generated_members: List<string> = ["relation_name", "shape_hash", "stable_hash", "encoded"]
+
+// ── The generated members ──
+
+/// The fields a row's content is made of — all but the store's `id`.
+fn content(t: Type) -> List<Field> {
+    [f for f in t.fields if f.name != "id"]
+}
+
+fn shape_ok(t: Type) -> bool {
+    relation_problems(t).is_empty()
+}
+
+fn generated(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    quote {
+        impl ${t} {
+            static fn relation_name() -> string { ${literal(t.name)} }
+
+            static fn shape_hash() -> int { ${shape_hash(t)} }
+
+            /// Every content field's stable encoding, in declared order,
+            /// seeded by the relation's name so two relations holding the
+            /// same values never share a hash.
+            fn stable_hash() -> int { ${hash_chain(t)}.finish() }
+
+            ${[encoded_member(t)]}
+        }
+    }
+}
+
+fn hash_chain(t: Type) -> Code {
+    mut acc: Code = quote { stable_hasher(${text_hash(t.name)}) }
+    for f in content(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind) }
+    acc
+}
+
+/// `acc` with one value folded in. A `?` layer folds its presence
+/// first and a list its count, so the arity is fixed per kind; a nested
+/// value folds through a lambda that captures nothing.
+fn hashed(acc: Code, e: Code, k: Kind) -> Code {
+    match k {
+        .Int -> quote { ${acc}.int(${e}) },
+        .Bool -> quote { ${acc}.bool(${e}) },
+        .Str -> quote { ${acc}.text(${e}) },
+        .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner)}) },
+        .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem)}) },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// The lambda that folds one value of kind `k`. Its parameters are the
+/// template's own names, so each nested lambda has its own.
+fn hash_each(k: Kind) -> Code {
+    match k {
+        .Int -> quote { (h: StableHasher, v: int) -> h.int(v) },
+        .Bool -> quote { (h: StableHasher, v: bool) -> h.bool(v) },
+        .Str -> quote { (h: StableHasher, v: string) -> h.text(v) },
+        .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner)}) },
+        .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem)}) },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// The row's content as a record: every field in declared order, in
+/// the hash's own arity.
+fn encoded_member(t: Type) -> Decls {
+    if content(t).is_empty() { return quote { fn encoded() -> Bytes { writer().bytes() } } }
+    let w = "w"
+    quote {
+        fn encoded() -> Bytes {
+            let ${w} = writer()
+            ${[written(name(w), quote { self.${f.name} }, f.kind) for f in content(t)]}
+            ${name(w)}.bytes()
+        }
+    }
+}
+
+/// One value written through `w`, in the hash's own order and arity.
+fn written(w: Code, e: Code, k: Kind) -> Code {
+    match k {
+        .Int -> quote { ${w}.int(${e}) },
+        .Bool -> quote { ${w}.bool(${e}) },
+        .Str -> quote { ${w}.text(${e}) },
+        .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner)}) },
+        .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem)}) },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// The lambda that writes one value of kind `k`, `hash_each`'s twin.
+fn write_each(k: Kind) -> Code {
+    match k {
+        .Int -> quote { (w: Writer, v: int) -> w.int(v) },
+        .Bool -> quote { (w: Writer, v: bool) -> w.bool(v) },
+        .Str -> quote { (w: Writer, v: string) -> w.text(v) },
+        .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner)}) },
+        .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem)}) },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+// ── Voices ──
+
+fn not_a_record(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "not_a_record",
+        t.at,
+        "a relation's rows are records — `${t.name}` is an enum",
+        "declare the row as a record: `type ${t.name} = { … }`",
+    )
+}
+
+fn kind_not_carried(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "kind_not_carried",
+        f.at ?? t.at,
+        "a relation's fields carry a stable encoding — int, bool, string, and lists and nullables of them — and `${t.name}.${f.name}` is `${f.ty}`",
+        "store what identifies the value as one of those kinds",
+    )
+}
+
+fn fn_field(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "fn_field",
+        f.at ?? t.at,
+        "a relation's row is data, and `${t.name}.${f.name}` is a fn — a stored fn has no stable encoding, and one capturing the store is a cycle",
+        "store the data the fn would compute, or compute it in a query",
+    )
+}
+
+fn name_collision(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "name_collision",
+        f.at ?? t.at,
+        "`@relation` gives `${t.name}` a member named `${f.name}`, and the field wears that name",
+        "rename the field",
+    )
+}
