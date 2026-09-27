@@ -1,0 +1,451 @@
+//! THE PACK — one durable file per package, holding every row `Db`
+//! keeps for it.
+//!
+//! A NAME TABLE (every stable name interned once, densely, in the
+//! order it first appears) sits ahead of an APPEND-ONLY log of
+//! entries. A commit marker closes a batch; a reader trusts nothing
+//! past the last one it can verify, so a crash mid-write leaves the
+//! prior committed state exactly as it was — never a partial entry.
+//!
+//! THE FILE, in order:
+//!   header: magic, format version, the producing compiler's id
+//!   frames: NameDef | Entry | Commit, each tag + a checksummed,
+//!           length-prefixed body
+//!
+//! A pack from another compiler, or another format version, is never
+//! read — it answers as empty, and the next write starts a fresh log
+//! over it. `avra_mmap_slice` cannot cross to Avra as `Bytes` (its row
+//! carries no evaluator arm to build the box), so the whole file is
+//! read through `avra_mmap_word_at`'s eight-byte stride instead, with
+//! `@std/io`'s `read_bytes` for the tail under eight bytes it cannot
+//! reach.
+use @std.io.{read_bytes, write_bytes}
+use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher}
+
+// ── The header ──
+
+fn magic() -> string { "AVRAPACK" }
+
+fn format_version() -> int { 1 }
+
+fn header_bytes(compiler_id: string) -> Bytes {
+    let w = writer()
+    w.text(magic())
+    w.int(format_version())
+    w.text(compiler_id)
+    w.bytes()
+}
+
+// ── Frames: a tag, a checksummed length-prefixed body ──
+
+fn name_tag() -> int { 0 }
+
+fn entry_tag() -> int { 1 }
+
+fn commit_tag() -> int { 2 }
+
+/// Every frame's checksum is seeded the same way, over its tag and its
+/// body — never the raw varint/text codec's own faults, which answer
+/// why a FIELD does not decode, not why a FRAME is untrustworthy.
+fn frame_checksum(tag: int, body: Bytes) -> int {
+    stable_hasher(5289665).int(tag).octets(body).finish()
+}
+
+fn write_frame(w: Writer, tag: int, body: Bytes) {
+    w.byte(tag)
+    w.octets(body)
+    w.int(frame_checksum(tag, body))
+}
+
+enum RawFrame { NameDef(string), Entry(Bytes), Commit }
+
+fn ok<T>(r: Result<T, CodecFault>) -> T? {
+    match r { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// One frame, or nothing when the bytes ahead cannot be trusted — a
+/// short read, a bad checksum, or a tag from a later format. The
+/// caller stops there; nothing after an untrustworthy frame is read.
+fn read_frame(r: Reader) -> RawFrame? {
+    let tag? = ok(r.byte()) else { return null }
+    let body? = ok(r.octets()) else { return null }
+    let sum? = ok(r.int()) else { return null }
+    if sum != frame_checksum(tag, body) { return null }
+    if tag == name_tag() {
+        let name? = body.text() else { return null }
+        return RawFrame.NameDef(name)
+    }
+    if tag == entry_tag() { return RawFrame.Entry(body) }
+    if tag == commit_tag() { return RawFrame.Commit }
+    null
+}
+
+// ── An entry's body: name id, fingerprint, value hash, edges, payload ──
+
+type EdgeId = { name_id: int, hash: int }
+
+type DecodedBody = { fingerprint: int, hash: int, edges: List<EdgeId>, payload: Bytes }
+
+fn encoded_entry(name_id: int, fingerprint: int, hash: int, edges: List<EdgeId>, payload: Bytes) -> Bytes {
+    let w = writer()
+    w.int(name_id)
+    w.int(fingerprint)
+    w.int(hash)
+    w.count(edges.length)
+    for e in edges {
+        w.int(e.name_id)
+        w.int(e.hash)
+    }
+    w.octets(payload)
+    w.bytes()
+}
+
+/// Just the name id — the only field the initial scan needs, to file
+/// the frame under its name. The rest decodes on `get`.
+fn decoded_name_id(body: Bytes) -> int? {
+    ok(reader(body).int())
+}
+
+fn read_edge(r: Reader) -> Result<EdgeId, CodecFault> {
+    let name_id = r.int()?
+    let hash = r.int()?
+    EdgeId { name_id: name_id, hash: hash }
+}
+
+fn read_edges(r: Reader) -> Result<List<EdgeId>, CodecFault> {
+    let n = r.count()?
+    [read_edge(r)? for _k in 0..n]
+}
+
+/// The body past its name id — decoded lazily, once for the frame's
+/// life, the first time a caller asks for this name.
+fn decoded_rest(r: Reader) -> DecodedBody? {
+    ok(decoded_rest_result(r))
+}
+
+fn decoded_rest_result(r: Reader) -> Result<DecodedBody, CodecFault> {
+    let fingerprint = r.int()?
+    let hash = r.int()?
+    let edges = read_edges(r)?
+    let payload = r.octets()?
+    DecodedBody { fingerprint: fingerprint, hash: hash, edges: edges, payload: payload }
+}
+
+// ── What a caller reads and writes ──
+
+export type Edge = { name: string, hash: int }
+
+export type Entry = { name: string, fingerprint: int, hash: int, edges: List<Edge>, payload: Bytes }
+
+/// The newest state for one name: already turned into an `Entry`
+/// (freshly `put`, or read once already), or still the frame's raw
+/// body — untouched since the scan that found it.
+enum Slot { Loaded(Entry), OnDisk(Bytes) }
+
+fn resolved(name: string, names_by_id: List<string>, d: DecodedBody) -> Entry {
+    Entry {
+        name: name,
+        fingerprint: d.fingerprint,
+        hash: d.hash,
+        edges: [Edge { name: names_by_id[e.name_id], hash: e.hash } for e in d.edges],
+        payload: d.payload,
+    }
+}
+
+// ── Loading: mmap the file, walk its frames, keep only what committed ──
+
+type StagedEntry = { name: string, body: Bytes }
+
+/// The scan's running answer, folded one frame at a time. Frames since
+/// the last `Commit` are staged, separately from what a reader may
+/// already trust, so a transaction that never closes leaves no trace.
+type ScanState = {
+    by_id: List<string>,
+    slots: Map<string, Slot>,
+    stage_by_id: List<string>,
+    stage_entries: List<StagedEntry>,
+    committed_len: int,
+    broken: bool,
+}
+
+fn empty_scan(committed_len: int) -> ScanState {
+    let no_by_id: List<string> = []
+    let no_slots: Map<string, Slot> = {}
+    let no_stage: List<StagedEntry> = []
+    ScanState {
+        by_id: no_by_id,
+        slots: no_slots,
+        stage_by_id: no_by_id,
+        stage_entries: no_stage,
+        committed_len: committed_len,
+        broken: false,
+    }
+}
+
+/// The name a staged or already-committed id answers to — committed
+/// ids first, then this transaction's own, in the order they arrived.
+fn name_for(s: ScanState, id: int) -> string? {
+    if id < s.by_id.length { return s.by_id[id] }
+    let j = id - s.by_id.length
+    if j >= 0 && j < s.stage_by_id.length { return s.stage_by_id[j] }
+    null
+}
+
+fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
+    match frame {
+        .NameDef(name) -> s with { stage_by_id: s.stage_by_id.concat([name]) },
+        .Entry(body) -> staged_entry(s, body),
+        .Commit -> committed(s, pos_after),
+    }
+}
+
+fn staged_entry(s: ScanState, body: Bytes) -> ScanState {
+    let id? = decoded_name_id(body) else { return s with { broken: true } }
+    let name? = name_for(s, id) else { return s with { broken: true } }
+    s with { stage_entries: s.stage_entries.concat([StagedEntry { name: name, body: body }]) }
+}
+
+fn committed(s: ScanState, pos_after: int) -> ScanState {
+    mut slots = s.slots
+    for se in s.stage_entries { slots.set(se.name, Slot.OnDisk(se.body)) }
+    let no_stage: List<StagedEntry> = []
+    ScanState {
+        by_id: s.by_id.concat(s.stage_by_id),
+        slots: slots,
+        stage_by_id: [],
+        stage_entries: no_stage,
+        committed_len: pos_after,
+        broken: false,
+    }
+}
+
+type Loaded = { raw: Bytes, by_id: List<string>, slots: Map<string, Slot> }
+
+fn empty_loaded() -> Loaded {
+    let no_bytes = "".bytes()
+    let no_by_id: List<string> = []
+    let no_slots: Map<string, Slot> = {}
+    Loaded { raw: no_bytes, by_id: no_by_id, slots: no_slots }
+}
+
+/// Every frame from `r`'s current position, folded into the state the
+/// last valid `Commit` left behind. `raw` is trimmed to that same
+/// point — a torn tail is bytes this pack no longer carries at all.
+fn walked(r: Reader, raw: Bytes) -> Loaded {
+    mut s = empty_scan(r.at.get())
+    mut going = true
+    while going && !r.done() {
+        match read_frame(r) {
+            f? -> {
+                s = applied(s, f, r.at.get())
+                going = !s.broken
+            }
+            null -> { going = false }
+        }
+    }
+    Loaded { raw: raw.slice(0, s.committed_len), by_id: s.by_id, slots: s.slots }
+}
+
+fn scanned(compiler_id: string, raw: Bytes) -> Loaded {
+    let r = reader(raw)
+    let seen_magic? = ok(r.text()) else { return empty_loaded() }
+    if seen_magic != magic() { return empty_loaded() }
+    let version? = ok(r.int()) else { return empty_loaded() }
+    if version != format_version() { return empty_loaded() }
+    let id? = ok(r.text()) else { return empty_loaded() }
+    if id != compiler_id { return empty_loaded() }
+    walked(r, raw)
+}
+
+extern fn avra_mmap_open(path: string) -> ptr?
+extern fn avra_mmap_len(h: ptr) -> int
+extern fn avra_mmap_word_at(h: ptr, i: int) -> int
+extern fn avra_mmap_close(h: ptr)
+
+fn byte_of(w: int, j: int) -> int {
+    (w >> 8 * (7 - j)) & 255
+}
+
+/// The mapped file's whole content. `avra_mmap_word_at` has no
+/// single-byte form and traps under eight bytes from its end, so a
+/// file that short reads through `@std/io` instead — mmap's stride
+/// buys nothing there, and a pack's header alone is longer.
+fn slurped(path: string, h: ptr, len: int) -> Bytes {
+    if len < 8 {
+        return match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+    }
+    mut out: List<int> = []
+    mut at = 0
+    while at + 8 <= len {
+        let w = avra_mmap_word_at(h, at)
+        for j in 0..8 { out.push(byte_of(w, j)) }
+        at = at + 8
+    }
+    if at < len {
+        let w = avra_mmap_word_at(h, len - 8)
+        let short = len - at
+        for j in 0..short { out.push(byte_of(w, 8 - short + j)) }
+    }
+    out.bytes()!
+}
+
+fn loaded(path: string, compiler_id: string) -> Loaded {
+    let h? = avra_mmap_open(path) else { return empty_loaded() }
+    let len = avra_mmap_len(h)
+    let raw = slurped(path, h, len)
+    avra_mmap_close(h)
+    scanned(compiler_id, raw)
+}
+
+fn reverse_index(names_by_id: List<string>) -> Map<string, int> {
+    mut out: Map<string, int> = {}
+    mut i = 0
+    while i < names_by_id.length {
+        out.set(names_by_id[i], i)
+        i = i + 1
+    }
+    out
+}
+
+// ── The pack itself ──
+
+export type Pack = {
+    path: string,
+    compiler_id: string,
+    raw: Cell<Bytes>,
+    names: Cell<Map<string, int>>,
+    by_id: Cell<List<string>>,
+    slots: Cell<Map<string, Slot>>,
+    pending: Writer,
+}
+
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — the path and this
+// compiler's id in, the pack out, exactly `store_at`'s shape.
+export fn pack_at(path: string, compiler_id: string) -> Pack {
+    let l = loaded(path, compiler_id)
+    Pack {
+        path: path,
+        compiler_id: compiler_id,
+        raw: Cell.new(l.raw),
+        names: Cell.new(reverse_index(l.by_id)),
+        by_id: Cell.new(l.by_id),
+        slots: Cell.new(l.slots),
+        pending: writer(),
+    }
+}
+
+impl Pack {
+    /// `name`'s dense id — already assigned, or minted here and staged
+    /// as a `NameDef` frame this pack has not yet committed.
+    fn interned(name: string) -> int {
+        let known? = self.names.get().get(name) else {
+            let id = self.by_id.get().length
+            self.by_id.push(name)
+            self.names.put(name, id)
+            write_frame(self.pending, name_tag(), name.bytes())
+            return id
+        }
+        known
+    }
+
+    /// Stage an entry: visible to `get` at once, durable once `commit`
+    /// answers `true`.
+    fn put(entry: Entry) {
+        let name_id = self.interned(entry.name)
+        let edges = [EdgeId { name_id: self.interned(e.name), hash: e.hash } for e in entry.edges]
+        let body = encoded_entry(name_id, entry.fingerprint, entry.hash, edges, entry.payload)
+        write_frame(self.pending, entry_tag(), body)
+        self.slots.put(entry.name, Slot.Loaded(entry))
+    }
+
+    /// The newest entry for `name` — this session's own `put`, or the
+    /// pack's own committed state, decoded once and kept.
+    fn get(name: string) -> Entry? {
+        let slot? = self.slots.get().get(name) else { return null }
+        match slot { .Loaded(e) -> e, .OnDisk(body) -> self.materialized(name, body) }
+    }
+
+    fn materialized(name: string, body: Bytes) -> Entry? {
+        let r = reader(body)
+        let _ = r.int()
+        let rest? = decoded_rest(r) else { return null }
+        let entry = resolved(name, self.by_id.get(), rest)
+        self.slots.put(name, Slot.Loaded(entry))
+        entry
+    }
+
+    /// Everything staged since the last commit, durable in one write —
+    /// a rewrite-and-rename, never a partial file. Compacts past it
+    /// when about half the pack is dead weight.
+    fn commit() -> bool {
+        let batch = self.pending.bytes()
+        if batch.length == 0 { return true }
+        let base = self.based()
+        let whole = base.concat(batch).concat(commit_frame())
+        if !self.written(whole) { return false }
+        self.pending.out.set([])
+        if self.garbage_heavy() { return self.compact() }
+        true
+    }
+
+    /// What to build this write on: the trusted bytes already on disk,
+    /// or a fresh header when there are none — no prior file, or one
+    /// this compiler could not read at all.
+    fn based() -> Bytes {
+        if self.raw.get().length > 0 { return self.raw.get() }
+        header_bytes(self.compiler_id)
+    }
+
+    fn written(bytes: Bytes) -> bool {
+        match write_bytes(self.path, bytes) {
+            .Ok(_) -> {
+                self.raw.set(bytes)
+                true
+            },
+            .Err(_) -> false,
+        }
+    }
+
+    fn garbage_heavy() -> bool {
+        self.raw.get().length > self.fresh_bytes().length * 2
+    }
+
+    /// Rewritten as just the live names and their newest entries, then
+    /// renamed over the old file — the same atomic write `commit` uses.
+    fn compact() -> bool { self.written(self.fresh_bytes()) }
+
+    fn fresh_bytes() -> Bytes {
+        let w = writer()
+        let header = header_bytes(self.compiler_id)
+        for i in 0..header.length { w.byte(header.at(i)) }
+        for name in self.by_id.get() { write_frame(w, name_tag(), name.bytes()) }
+        let live = [name for name in self.by_id.get() if self.slots.get().get(name) != null]
+        for name in live {
+            write_frame(w, entry_tag(), self.entry_body(name, self.slots.get().get(name)!))
+        }
+        write_frame(w, commit_tag(), "".bytes())
+        w.bytes()
+    }
+
+    /// The on-disk shape for `name`'s current slot — the same bytes
+    /// verbatim for one never re-read, freshly encoded for one this
+    /// session decoded or wrote.
+    fn entry_body(name: string, slot: Slot) -> Bytes {
+        match slot {
+            .OnDisk(body) -> body,
+            .Loaded(entry) -> encoded_entry(
+                self.names.get().get(name)!,
+                entry.fingerprint,
+                entry.hash,
+                [EdgeId { name_id: self.names.get().get(e.name)!, hash: e.hash } for e in entry.edges],
+                entry.payload,
+            ),
+        }
+    }
+}
+
+fn commit_frame() -> Bytes {
+    let w = writer()
+    write_frame(w, commit_tag(), "".bytes())
+    w.bytes()
+}
