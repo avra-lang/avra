@@ -26,10 +26,17 @@ export enum Verdict {
     Cycle
 }
 
-/// `last_reader` is the STAMP: the id of the query that most recently
-/// recorded a dependency on this cell. A repeat read by that same
-/// query compares against it instead of appending a duplicate dep.
-type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int, last_reader: int }
+/// A cached query's bookkeeping: the deps it discovered, the
+/// revisions it last CHANGED and was last VERIFIED, and its answer's
+/// hash. The last-reader stamp `record_dep` dedupes against lives
+/// apart, in `KernelState.stamps` — a repeat read never touches this.
+type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+
+/// A fresh cell for an input: no deps, changed and verified as of
+/// `rev` alike (it was just set, so this revision is both).
+fn input_cell(rev: int, value_hash: int) -> QueryCell {
+    QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash }
+}
 
 /// One stamp a frame overwrote and must hand back to whoever it took
 /// it from — `record_dep`, `settle`.
@@ -44,6 +51,11 @@ type KernelState = {
     /// ONE SLOT, SHARED — see `features/decls.av`'s member tables: a write must
     /// not copy the block.
     cells: List<Cell<List<QueryCell?>>>,
+    // The last-reader stamps, chunked and addressed exactly as `cells`
+    // is (same `state_slot`) but held apart from it: a stamp is a bare
+    // int, so reading one never retains a `QueryCell` or its `deps`
+    // list, and a repeat read touches nothing but this array.
+    stamps: List<Cell<List<int>>>,
     verifiers: List<fn(int) -> int>,
     // One dependency list per open query, EACH IN ITS OWN CELL. A shared
     // `List` reaches a copy at every append, so a list routed through the
@@ -52,7 +64,7 @@ type KernelState = {
     pending: List<Cell<List<Key>>>,
     open: List<Key>,
     // The open queries' own ids, parallel to `pending`/`open` — a
-    // repeat read's LAST-READER STAMP (on `QueryCell`) is compared
+    // repeat read's LAST-READER STAMP (in `stamps`) is compared
     // against `reading.last()`, never against the key itself, so
     // recognizing "I already recorded this" costs one int compare.
     reading: List<int>,
@@ -82,6 +94,7 @@ export fn new_kernel() -> Kernel {
     let state = KernelState {
         rev: 1,
         cells: [],
+        stamps: [],
         verifiers: [],
         pending: [],
         open: [],
@@ -126,18 +139,7 @@ impl Kernel {
     fn set_input(key: Key, value_hash: int) {
         mut s = self.snapshot()
         let prior? = state_cell(s, key) else {
-            let rev = state_revision(s)
-            write_cell(
-                s,
-                key,
-                QueryCell {
-                    deps: [],
-                    changed_at: rev,
-                    verified_at: rev,
-                    value_hash: value_hash,
-                    last_reader: 0,
-                },
-            )
+            write_cell(s, key, input_cell(state_revision(s), value_hash))
             self.replace(s)
             return
         }
@@ -151,18 +153,7 @@ impl Kernel {
             return
         }
         s.rev = state_revision(s) + 1
-        let rev = state_revision(s)
-        write_cell(
-            s,
-            key,
-            QueryCell {
-                deps: [],
-                changed_at: rev,
-                verified_at: rev,
-                value_hash: value_hash,
-                last_reader: prior.last_reader,
-            },
-        )
+        write_cell(s, key, input_cell(state_revision(s), value_hash))
         self.replace(s)
     }
 
@@ -239,7 +230,6 @@ impl Kernel {
                     changed_at: state_revision(s),
                     verified_at: state_revision(s),
                     value_hash: value_hash,
-                    last_reader: 0,
                 },
             )
             self.replace(s)
@@ -254,41 +244,39 @@ impl Kernel {
                 changed_at: changed,
                 verified_at: state_revision(s),
                 value_hash: value_hash,
-                last_reader: prior.last_reader,
             },
         )
         self.replace(s)
     }
 
     /// One read's dependency, appended to the OPEN query's list — unless
-    /// the LAST-READER STAMP on `key`'s own cell already names the
-    /// currently open query: the fast path, one int compare, no lookup
-    /// at all. A MISMATCH is not always "never read": a NESTED query
-    /// reading the same cell overwrites the stamp with ITS OWN reader
-    /// id, so the outer query's next read of that cell mismatches too,
-    /// though it already recorded the dep. The two are told apart by
-    /// asking whether the STAMP BEING OVERWRITTEN belongs to a
-    /// STILL-OPEN frame (`reading.contains`, a scan of the open
-    /// stack — a handful of ints deep, never the program's dep count):
-    /// if so, that frame will read this cell again and must see its
-    /// own stamp restored, so the value is saved (`save_restore`,
-    /// lazily minting the frame's own restore list); if not — a
-    /// genuinely new dep, or a stamp some now-closed query left behind
-    /// — nothing will ever ask for it again, so nothing is saved. The
-    /// list lives in a `Cell`, so the append (like the stamp write) is
-    /// in place; only the rare save allocates anything at all.
+    /// `key`'s LAST-READER STAMP already names the currently open
+    /// query: the fast path, one flat-array read and one int compare,
+    /// touching neither the cell table nor a `QueryCell`'s `deps` list.
+    /// A MISMATCH is not always "never read": a NESTED query reading
+    /// the same key overwrites the stamp with ITS OWN reader id, so the
+    /// outer query's next read of that key mismatches too, though it
+    /// already recorded the dep. The two are told apart by asking
+    /// whether the STAMP BEING OVERWRITTEN belongs to a STILL-OPEN
+    /// frame (`reading.contains`, a scan of the open stack — a handful
+    /// of ints deep, never the program's dep count): if so, that frame
+    /// will read this key again and must see its own stamp restored,
+    /// so the value is saved (`save_restore`, lazily minting the
+    /// frame's own restore list); if not — a genuinely new dep, or a
+    /// stamp some now-closed query left behind — nothing will ever ask
+    /// for it again, so nothing is saved. The dep list lives in a
+    /// `Cell`, so the append (like the stamp write) is in place; only
+    /// the rare save allocates anything at all.
     fn record_dep(key: Key) {
         mut s = self.snapshot()
         if s.pending.is_empty() { return }
         let reader = s.reading.last() ?? 0
-        let cell? = state_cell(s, key) else {
-            s.pending.last()!.push(key)
-            return
-        }
-        if cell.last_reader == reader { return }
-        if s.reading.contains(cell.last_reader) { self.save_restore(s, key, cell.last_reader) }
-        write_cell(s, key, cell with { last_reader: reader })
+        let stamp = state_stamp(s, key)
+        if stamp == reader { return }
+        if s.reading.contains(stamp) { self.save_restore(s, key, stamp) }
+        write_stamp(s, key, reader)
         s.pending.last()!.push(key)
+        self.replace(s)
     }
 
     /// Remembers a stamp `record_dep` is about to overwrite, so
@@ -359,18 +347,22 @@ impl Kernel {
 
 fn state_revision(s: KernelState) -> int { s.rev }
 
+// A bound check by length compare, not by indexing `verifiers`: that
+// index would answer a `fn` value nobody wants, and retaining one to
+// discard it is the one cost this slot math must never carry — it
+// runs on every dep read, hit or miss.
 fn state_slot(s: KernelState, key: Key) -> int {
-    let _ = s.verifiers[key.family]
+    if key.family < 0 || key.family >= s.verifiers.length {
+        avra_trap("defect: key names family ${key.family}, no such family is registered")
+    }
     key.arg * s.verifiers.length + key.family
 }
 
-/// Hands one overwritten stamp back to the cell it came from. The cell
-/// is expected to still exist — nothing removes a `QueryCell` mid-query
-/// — but a defensive miss is a no-op rather than a defect: there is
-/// nothing left to restore into.
+/// Hands one overwritten stamp back to the key it came from. Stamps
+/// grow lazily to hold any key, so there is no missing-slot case to
+/// guard against, unlike a `QueryCell`.
 fn restore_one(mut s: KernelState, r: Restore) {
-    let cell? = state_cell(s, r.key) else { return }
-    write_cell(s, r.key, cell with { last_reader: r.previous })
+    write_stamp(s, r.key, r.previous)
 }
 
 fn state_cell(s: KernelState, key: Key) -> QueryCell? {
@@ -393,6 +385,30 @@ fn write_cell(mut s: KernelState, key: Key, cell: QueryCell) {
     }
     while s.cells[block].get().length <= offset { s.cells[block].push(null) }
     s.cells[block].set_at(offset, cell)
+}
+
+/// The stamp at `key`'s slot, or 0 (never assigned — no reader id is
+/// ever minted as 0) when its block or row has not grown that far.
+fn state_stamp(s: KernelState, key: Key) -> int {
+    let at = state_slot(s, key)
+    let block = at / cell_chunk
+    let offset = at % cell_chunk
+    if block >= s.stamps.length { return 0 }
+    let row = s.stamps[block].get()
+    if offset >= row.length { return 0 }
+    row[offset]
+}
+
+fn write_stamp(mut s: KernelState, key: Key, stamp: int) {
+    let at = state_slot(s, key)
+    let block = at / cell_chunk
+    let offset = at % cell_chunk
+    while s.stamps.length <= block {
+        let no_row: List<int> = []
+        s.stamps.push(Cell.new(no_row))
+    }
+    while s.stamps[block].get().length <= offset { s.stamps[block].push(0) }
+    s.stamps[block].set_at(offset, stamp)
 }
 
 extern fn avra_trap(message: string)
