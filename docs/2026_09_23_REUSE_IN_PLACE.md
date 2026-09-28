@@ -2538,3 +2538,251 @@ them read by a comptime settlement root" — would turn a doctrine
 warning that says "don't, we don't know why" into one that says
 exactly which types are load-bearing and why, the next time someone
 is tempted to delete the two lines that fence them off.
+## §34 As built — R3, consuming (owned) params, INFERRED not written
+
+**The design pivoted before a line landed.** §31 sketched a written
+`owned` seat mark, parsed like `mut`. The owner's actual call (avra-
+8sb5.34.4): no keyword — the compiler INFERS a param consumed from
+what the body does with it, the same shape `receivers.av` already
+uses to infer a WRITING receiver. `owned` itself turned out to be
+RESERVED for a future feature (`error[resolve.reserved]`, found by
+the first bootstrap), so the field, the accessor and every local
+carrying the concept are spelled `consumed` throughout — `SeatMark {
+mutable, settled, unshared, consumed }` (core/types.av), `@derive
+(Fingerprint)` added (a new field a `Body.marks` list now carries),
+`consumed_mark` beside `mut_mark`/`settled_mark`/`isolated_mark`.
+`mark_word`'s own encoding grew a SECOND character per seat rather
+than an optional trailing one — a variable-width element spliced with
+no separator moves its own boundary (CLAUDE.md's "a flat
+concatenation... has a boundary that moves"), so every seat spends
+exactly two (`mark_letter` + `o`/`_`) instead of one.
+
+**The evidence (`compiler/consumes.av`, a NEW pass, structurally
+beside `receivers.av` but with no fixpoint — see below why it needs
+none).** A param seat is inferred consumed when a BARE occurrence of
+it (never a field read, never through a lambda capture — `.Param(i)`
+exactly) sits in one of four positions: the subject of a `with`
+(`p with { … }`) or of a method call (`p.concat(xs)`) — the same
+shape a reusing row's first seat already takes, R1's own `handed_seat`
+— a value in a fresh list or struct literal's own fields — the shape
+a pushing row's owned twin already takes, `pushes_managed` — or the
+value of an EXPLICIT `return p`. Excluded, and why each is: the
+method's own receiver (seat 0 — "owned self" is next door's
+question); `mut`/`const`/`isolated` seats (already a different,
+incompatible contract); a scalar seat (`is_managed` false — nothing
+there is ever retained, so owning one buys nothing); a method under
+an IMPL-FOR-TRAIT block (`under_trait_impl`) and ANY declaration ever
+referenced as a bare VALUE anywhere in the program (`taken_as_value`,
+reading `Decls.refs_of(d)` for a `.Read`-kind `Ref`) — both close the
+SAME hole from two directions (see the architecture finding below);
+and — the one entry worth its own paragraph — the IMPLICIT tail
+through a body with actual statements.
+
+**Why "returns it" only covers an EXPLICIT `return`, never the
+trailing expression.** `Ins.FnExit` (an early exit) asks EVERY open
+scope whether it owns the answer (`owned_open`), so a param seeded
+owned at the SEATS bracket and returned via `return p` anywhere costs
+NOTHING — `owned_open` finds it regardless of nesting. The IMPLICIT
+tail is a different shape: a body with statements wraps its own
+BLOCK in a scope nested ONE LEVEL inside the seats bracket (the
+`stmts.is_empty()` fast path is the only escape from this), and
+`moved_out`'s check at that inner scope's OWN exit is `owned_top` —
+the INNERMOST scope only. A param seeded in the outer (seats) scope
+is never innermost there, so `moved_out` mints a defensive Retain on
+the way out regardless of R3, and the outer scope — ALREADY owning
+the seed this pass would have planted — then releases the now-spare
+second entry (`kept_out`'s "all but one"): one instruction WORSE than
+leaving the seat borrowed, for a body with even one statement before
+its tail. Traced by hand against `memory.av`'s own `moved_out`/
+`kept_out`, not measured — the arithmetic is exact regardless of
+scale, and every witness fn below that returns a bare param uses an
+explicit `return` on that path for exactly this reason.
+
+**The architecture finding — `consumed` may not enter TYPE IDENTITY,
+and the reason is a whole-program pass's OWN timing, not a fn_fits
+rule.** The first landing merged `consumed` into `Decls.seat_mark`,
+the ONE currency `marks_of` hands every fn VALUE's `Type.Fn` — mirror-
+ing how `mut` already rides it — and added `fn_fits`'s obvious
+asymmetry line (a consuming value into a plain seat refuses). `make
+bootstrap` then rebuilt clean (the SEED predates the rule, so it
+never enforces it) — and the FIRST subsequent `make avra`, using
+THAT generation's binary — which DOES enforce it — refused the
+compiler's OWN source at ~90 sites, every one the SAME shape:
+`BuilderRow { …, build: build_expr_str_lit }` and its siblings across
+every grammar feature's `mod.av`, where the FIELD's written type is
+`fn(mut Builder) -> …` and the ASSIGNED fn's own body happens to
+consume its `Builder` seat. Excluding every such declaration via
+`taken_as_value` (a `.Read` reference ANYWHERE disqualifies it)
+looked like the fix and built clean — `make bootstrap` again, `make
+avra` again — and refused the SAME ~90 sites AGAIN, unchanged. The
+reason: `references()` (the pass `refs_of` reads) is a WHOLE-PROGRAM
+pass that settles from the FULLY RESOLVED program, and `fn_fits` is
+asked WHILE TYPING the very struct-literal site that WOULD be the
+disqualifying reference — the exclusion depends on a fact that has
+not been computed yet, at exactly the site that needs it. `taken_as_
+value` is not wrong; it is asked from the wrong PLACE. The fix pulled
+`consumed` back OUT of `seat_mark` (reverted to declared marks alone
+— `mut`/`const`/`isolated`, exactly as before) and off `fn_fits`
+entirely; `Body.marks` (compiler/lower/lower.av's `lower_fn`) now
+reads `consumed_seat` DIRECTLY, at LOWERING — which runs after every
+file's resolve has settled, so `taken_as_value`'s answer is finally
+the right one asked at the right time. The consequence, spelled
+where `callee_marks` (memory.av) resolves a seat's marks: a DIRECT,
+by-name `.Call` reads `Body.marks` (the one place `consumed` lives)
+and gets R3's benefit; a `.CallPtr` — a fn VALUE, a `dyn` dispatch —
+reads the register's own TYPE, which never carries `consumed`, and
+treats every seat as plain. Sound by construction (the type a value
+carries can never disagree with what its callee's body expects,
+because the callee's body's OWN fact is not reachable through the
+type at all) but this is exactly the adapter the full design (§31)
+called for and this cut does not build — `dyn`/fn-value/generic
+dispatch simply never sees the optimization. `under_trait_impl`
+(still present) belongs to this same gap: `sigs_agree` (typing/
+impls.av) checks an impl's signature against its trait by TYPES
+alone, never marks, so nothing else stands between a trait method
+whose CONCRETE override infers consumed and a `dyn` call reaching it
+through the trait's own (never-inferred) abstract signature — the
+one path `taken_as_value`'s `.Read`-reference test cannot see, since
+a `dyn` coercion's own vtable entry is built from declaration facts,
+never a bare name reference in the source.
+
+**Callee side (memory.av): no new mechanism, one seed.** A consuming
+seat's ONLY job is to be scope-owned from the moment the seats
+bracket opens (`consuming_seats` names the registers, seeded via the
+SAME `takes()` every other definition uses, at `at == 0` — `seats_
+enter` is always `ins[0]`) — `Lives.handover`'s existing reuse
+(`with`, a reusing method) and `FnExit`/`ScopeExit`'s existing
+release-what-the-scope-owns logic apply to it exactly as they do to
+any other locally-owned value, because nothing in either asks WHERE a
+register's ownership came from. R1's own reusing-twin selection (§4)
+fires for a consumed param exactly as it does for a local, confirmed
+in the IR (`avra_array_slice_reusing` on a param register, not the
+allocating `avra_array_slice`) the moment the caller hands a dying
+argument over.
+
+**Caller side (memory.av's `.Call`/`.CallPtr` arm): the ONE genuinely
+new decision, one seat law generalized.** Per OWNED-marked argument
+(read via `callee_marks`, a name→marks map built once from `l.fns`
+for `.Call`, the register's own Arrow for `.CallPtr` — always plain
+there, per the finding above): `Lives.moves` (already R1's own
+question for `.Store`, generalized from "the innermost scope owns it
+and it dies here" with no new code) answers whether THIS argument
+dies at THIS call; a dying, scope-owned argument is handed over
+(`disowns`, no Retain, no post-call Release — the reference moves,
+uncounted); anything else earns the callee its OWN Retain first,
+exactly the shape `.Store` already uses for a value that does not
+move. Independent of the pre-existing `lent` view-protection
+computation on the SAME argument list, which a scope-owned or
+standing argument is excluded from either way — the two mechanisms
+answer different questions and were never observed to double-count
+in the red team below.
+
+**L2's own third instance of §33's finding.** `AVRA_SOUND_CHECK=1`
+over `packages/cli` refused ~15 UNRELATED compiler functions
+(`compiler.checks_delete`, `compiler.swallowed_break`,
+`compiler.Workspace.record_line`, `features.formats.hole_of`, among
+others) with "reads r_N after it was released" the moment the caller-
+side Retain above started firing for real. §33 already narrowed
+`birth_retain`'s deferral once (Load/Pack, R1's own false positive);
+this is the SAME mechanism's THIRD case, not a new bug in it: a
+Retain that happens to immediately follow ANY owning definition
+defers that definition's OWN birth credit to itself, but the shape
+§33 fixed for is "the definition mints NOTHING on its own — the
+Retain IS its only reference" (a Load outliving its cell, a Pack's
+identity alias), while a `.Call`/`.CallPtr` answer, or an owning
+`.CallRt`, mints its OWN reference INDEPENDENTLY — a Retain landing
+right after one (exactly R3's shape: retaining a just-defined
+argument before handing it to a consuming seat that does not die
+there) is a SECOND, unrelated reference, and deferring to it drops
+the first one a real later read then finds already gone. Reproduced
+in three steps, smallest first: `trimmed`'s own loop-carrying shape
+alone (clean — Handover simply never fires, since a body with
+statements is never innermost at its OWN consuming site, see above)
+told nothing; the SAME `trimmed` called with an argument the CALLER
+still needs afterward (`swallowed`, retaining before the call since
+the argument does not die there) reproduced it in five lines. Fixed
+by `defers_to_retain` (soundness.av): the deferral now checks the
+defining instruction's OWN SHAPE (`.Load`/`.Pack`, matching §33's
+own two cases exactly) before granting it, at both sites `retained_
+next` used to gate alone (`walk`'s birth-crediting, `birth_retain`'s
+read exemption). `packages/cli` refused zero after.
+
+**Numbers — honest, not dramatic.** Instructions retired, `/usr/bin/
+time -l`, three rounds, `.avra-cache` cleared before each, a 2M-turn
+loop calling `fn bumped(p: P) -> P { p with { n: p.n + 1 } }` where
+`P` carries one managed field (a one- or two-scalar-field `P` is a
+VALUE — a tuple of registers, never boxed — and R3 has nothing to
+seed on a value nobody counts): R3 seeding disabled (a source-level
+toggle, `&& false` on the one seeding line, rebuilt through `make
+bootstrap` since the toggle touches a rule the standing binary
+already enforces) averaged 878.8M; R3 enabled averaged 878.4M — a
+DIFFERENCE UNDER THE NOISE FLOOR (~0.05%, the same variance between
+repeated runs of the IDENTICAL binary). A WIDER record (eight int
+fields plus the one managed field) showed no difference either
+(1271.1M vs 1271.5M). This matches CLAUDE.md's own "ALLOCATION HERE
+IS CHEAP" finding rather than contradicting it: the size-class free
+lists make a small allocation's cost close to a uniqueness check's,
+so R3's win for a SINGLE, small consuming record is real (confirmed
+by the IR — `avra_array_slice_reusing` fires, `avra_array_slice`
+does not) but not a measurable one at this scale. R1's own measured
+wins (§4–§5) are on larger payloads; nothing here contradicts that,
+and nothing here claims more than the mechanism firing correctly.
+
+**Red team, native under `AVRA_RC_GUARD=1`/`AVRA_MEM_STATS=1`, eval
+== native for every case, all in the permanent test below unless
+noted:** the core witness in a 2M-turn loop (`bumped`, reuses in
+place from the second turn on — confirmed via IR, not asserted); the
+empty case (`untouched`, the consuming site never reached); a NON-
+dying argument (`twice`, the caller reads `p` again after handing it
+to `bumped` — the fresh copy answers 4, the caller's own untouched
+copy still answers 3); a FIELD VIEW at a consuming seat (`from_pair`,
+`pr.a` — an Extract-derived register, never scope-owned, so always
+retained fresh, never handed over — `pr.a.n` unchanged after);
+RECURSION (`countdown`, each frame consumes its own `p`); an early
+`return` beside a consuming branch in the SAME fn (`given_or_bumped`);
+a `defer` reading the param's OWN field AFTER the tail consumes it
+whole (`logged` — the deferred read sees the ORIGINAL value, 1, not
+the mutated 2, because `defer`'s own body lowers INLINE at the frame's
+close, which is textually AFTER the consuming call — the ordinary
+`last_reads` computation already protects it, no R3-specific code
+needed); the SAME VALUE handed to TWO consuming seats in ONE call
+(`combined(v, v)`, scratch-only, not permanent — `v` is read twice at
+one instruction, so `dies_here` correctly answers false for EITHER
+occurrence — `Lives.dies_at`'s own pre-existing "exactly one read at
+this instruction" clause, mirrored in L2 as `dies_here` specifically
+because `last_read` alone cannot see a second read riding beside the
+first in the SAME instruction — combined answers 111, `v` answers 5,
+unchanged); a fn value through the exclusion (`r3_fnvalue.av`,
+scratch-only — assigning a consuming-eligible fn to a plain `fn(P) ->
+P` seat compiles and runs correctly BECAUSE `taken_as_value` already
+excluded it from inference the moment the assignment exists, so there
+is no mismatch left to adapt for — confirms the exclusion is what
+protects this path, not a fn_fits refusal, which no longer fires at
+all for `consumed`).
+
+**Proof.** Fixed point: three successive `make avra`, `.avra-cache`
+cleared before EVERY comparison (an oscillating pair of binary sizes
+from a stale cache read was chased for real before this was cleared
+consistently — CLAUDE.md's own "A check HIT ON .avra-cache EXAMINES
+NOTHING," reproduced and then eliminated, not merely cited). Critical
+checks, all with `AVRA_SOUND_CHECK=1`: `packages/std-avrac` 164/164
+program tests, 175/175 spec cases, zero soundness defects, zero type
+errors; `packages/cli` zero soundness defects, zero type errors.
+`make idioms`: no new violations, 22 packages checked. `make cited`:
+clean. `build/avra fmt`: identical on every touched file (one
+redundant paren pair the formatter wanted dropped, `standing_regs`'s
+own boolean — fixed).
+
+What I wanted from the language while designing AND building this:
+the SeatMark growth is, once again, a fourth independent boolean
+threaded through the SAME construction sites `unshared` grew through
+before it — `zip_marks`, `plain_mark`, `no_marks`, every literal in
+`mark_of_word`'s and `mark_word`'s own tables — and `mark_word`'s
+letter table grew a SECOND CHARACTER this time specifically because
+the THIRD time this shape landed, the splice-boundary law
+(CLAUDE.md's own, cited above) finally got read before writing it,
+not after. A declared-marks record that folded its own field LIST
+into its interner-key encoding, rather than a hand-kept letter table
+recoded by hand at every growth, would have made "did every site
+learn about the new field" a compiler-enforced question instead of a
+review one — §31 asked for exactly this and it is still the ask.

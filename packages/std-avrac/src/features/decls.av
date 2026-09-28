@@ -376,6 +376,12 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> void>,
+    // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
+    // through `ensure_consumed`, the same shape as `marks` (null =
+    // unasked). No fixpoint: unlike `written_seats`, a seat's
+    // evidence is local to its own body alone.
+    consumed: Cell<List<List<bool>?>>,
+    ensure_consumed: Cell<fn(DeclId) -> void>,
     /// THE REFERENCES RELATION — every file's own rows, dense by
     /// FileId, replaced whole when `references.av`'s pass re-settles
     /// that file; and the SAME rows, dense by the DeclId they name,
@@ -469,6 +475,7 @@ export fn new_decls() -> Decls {
     let no_methods: List<Cell<List<DeclId>>> = []
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
+    let empty_consumed: List<List<bool>?> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
     let no_refs_by_file: List<List<Ref>> = []
     let no_refs_by_decl: List<List<Ref>> = []
@@ -523,6 +530,8 @@ export fn new_decls() -> Decls {
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
+        consumed: Cell.new(empty_consumed),
+        ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
         refs_by_file: Cell.new(no_refs_by_file),
         refs_by_decl: Cell.new(no_refs_by_decl),
@@ -993,6 +1002,7 @@ impl Decls {
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_ensure)
+        self.ensure_consumed.set(no_ensure)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
@@ -1332,7 +1342,27 @@ impl Decls {
         out
     }
 
+    /// Seat `i`'s DECLARED mark — `mut`, `const`, `isolated`, exactly
+    /// as written. `consumed` (R3) is asked separately
+    /// (`consumed_seat`) and NEVER merged in here: this is the
+    /// currency `marks_of` hands a fn VALUE's type, and `consumed`
+    /// depends on the whole-program references pass, which runs
+    /// AFTER the very sites that read a fn's type (a struct field's
+    /// value, `fn_fits`) are typed — merging it in here would bake a
+    /// too-early answer into an interned TYPE that never gets
+    /// re-asked. `Body.marks` (compiler/lower/lower.av) is where the
+    /// two currencies actually meet, read together at lowering, once
+    /// the fn's OWN body — never its callers' types — is what needs
+    /// the answer.
     fn seat_mark(d: DeclId, i: int) -> SeatMark {
+        self.declared_mark(d, i)
+    }
+
+    /// Seat `i`'s DECLARED mark ALONE — the same answer `seat_mark`
+    /// gives now; kept as its own name for the consumes pass's own
+    /// read (`eligible_seat`), which must never ask through a name
+    /// that could grow a merge again.
+    fn declared_mark(d: DeclId, i: int) -> SeatMark {
         (self.ensure.get())(d)
         mark_at(self.seat_marks.get()[d.index], i)
     }
@@ -1446,6 +1476,26 @@ impl Decls {
     /// The workspace arms the receivers hook once.
     fn arm_writes(ensure: fn(DeclId) -> void) {
         self.ensure_writes.set(ensure)
+    }
+
+    /// The consumes pass's own record — one seat's evidence, once
+    /// computed.
+    fn record_consumed(d: DeclId, bits: List<bool>) {
+        self.consumed.set_at(d.index, bits)
+    }
+
+    /// Whether the body infers seat `i` CONSUMED — asking runs the
+    /// pass; a held (precompiled) declaration answers false, since
+    /// nothing here re-infers from a body it never stored.
+    fn consumed_seat(d: DeclId, i: int) -> bool {
+        if self.consumed.get()[d.index] == null { (self.ensure_consumed.get())(d) }
+        let row: List<bool>? = self.consumed.get()[d.index]
+        row != null && i < row!.length && row![i]
+    }
+
+    /// The workspace arms the consumes hook once.
+    fn arm_consumed(ensure: fn(DeclId) -> void) {
+        self.ensure_consumed.set(ensure)
     }
 
     /// Every named USE of `d`, of any kind, across the program —

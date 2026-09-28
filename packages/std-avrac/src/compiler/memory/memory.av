@@ -16,6 +16,8 @@ use core.{
     Level,
     TypeId,
     TypeRegistry,
+    SeatMark,
+    consumed_mark,
     Stack,
     new_stack,
     owned_dst,
@@ -32,7 +34,7 @@ use core.{
     reversed,
     flatten,
 }
-use compiler.lower.{Lowered}
+use compiler.lower.{Lowered, Body}
 use compiler.soundness.{checked}
 use @std.io.{env}
 
@@ -40,8 +42,13 @@ use @std.io.{env}
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
 
 export fn memory(l: Lowered) -> Lowered {
-    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length) } for b in l.fns]
-    let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0) }
+    // A `.Call`'s callee is a SYMBOL, never a DeclId — mono may give
+    // two instantiations of one source fn the same inferred marks
+    // under different concrete seats, so the lookup is by the name
+    // every `Ins.Call` already carries, built once for the program.
+    let by_name = marks_by_name(l.fns)
+    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length, b.marks, by_name) } for b in l.fns]
+    let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0, l.entry.marks, by_name) }
     let out = l with { fns: fns, entry: entry }
     if !sound_checked() { return out }
     // L2: an independent proof over this pass's OWN output — never a
@@ -96,22 +103,59 @@ fn flat_managed(types: TypeRegistry, ty: TypeId) -> bool {
 }
 
 /// One body's memory instructions: its params are registers 0..`seats`, and
-/// every scope's exit names what escapes it.
-fn body_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seats: int) -> List<Ins> {
+/// every scope's exit names what escapes it. A CONSUMING seat (R3) is the one
+/// exception to "a param stands": its whole point is to be scope-owned from
+/// entry, so `consuming_seats` seeds it into the entry scope the moment the first
+/// bracket opens, and every caller of THIS body reads `marks` by name to
+/// decide whether to hand its dying argument over or retain first.
+fn body_ins(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    seats: int,
+    marks: List<SeatMark>,
+    by_name: Map<string, List<SeatMark>>,
+) -> List<Ins> {
     let immortal = immortal_regs(reg_types.length, ins)
-    [i for i in memory_ins(types, reg_types, ins, standing_regs(immortal, ins, seats)) if !retains_immortal(i, immortal)]
+    [i for i in memory_ins(
+        types,
+        reg_types,
+        ins,
+        standing_regs(immortal, ins, seats, marks),
+        consuming_seats(seats, marks),
+        by_name,
+    ) if !retains_immortal(i, immortal)]
 }
 
 /// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
 /// param (the caller's caller keeps it for this whole body), the binary's own
 /// data, and a cell's load — a cell never leaves its body, so no callee changes
-/// it. What is left is a VIEW into a box, which a callee may empty.
-fn standing_regs(immortal: List<bool>, ins: List<Ins>, seats: int) -> List<bool> {
-    mut out = [immortal[j] || j < seats for j in 0..immortal.length]
+/// it. What is left is a VIEW into a box, which a callee may empty. A CONSUMING
+/// param (R3) stands for nothing: the caller already handed this body its own
+/// reference, seeded owned instead (`consuming_seats`) — never both.
+fn standing_regs(immortal: List<bool>, ins: List<Ins>, seats: int, marks: List<SeatMark>) -> List<
+    bool,
+> {
+    mut out = [immortal[j] || j < seats && !consumed_mark(marks, j) for j in 0..immortal.length]
     for i in ins {
         let d: Reg? = loaded_dst(i)
         if d != null { out.set(d!.index, true) }
     }
+    out
+}
+
+/// The param registers a consuming seat mark names — what the entry
+/// scope seeds owned the moment it opens.
+fn consuming_seats(seats: int, marks: List<SeatMark>) -> List<Reg> {
+    [Reg { index: j } for j in 0..seats if consumed_mark(marks, j)]
+}
+
+/// Every body's own marks, by its SYMBOL — a name a caller never
+/// declared (a runtime row, an unresolved `.CallPtr` target) simply
+/// answers no marks, which every seat there already reads as plain.
+fn marks_by_name(fns: List<Body>) -> Map<string, List<SeatMark>> {
+    mut out: Map<string, List<SeatMark>> = {}
+    for b in fns { out.set(b.name, b.marks) }
     out
 }
 
@@ -140,10 +184,21 @@ fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
 }
 
 /// The memory instructions as every scope's strategy places them — the pass's
-/// one dispatch over the instruction set.
-fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, standing: List<bool>) -> List<
-    Ins,
-> {
+/// one dispatch over the instruction set. `consuming` is R3's own seed: the
+/// registers a consuming param seat names, planted into the OUTERMOST scope —
+/// the seats bracket every body opens first (`lower_fn`'s `seats_enter`, always
+/// `ins[0]`) — the instant it opens, so `Lives.handover`'s existing reuse and
+/// `FnExit`/`ScopeExit`'s existing release-what-the-scope-owns logic apply to
+/// it exactly as they do to any other locally-owned value: this pass adds no
+/// new rule for WHAT happens to a consuming param, only for WHERE it starts.
+fn memory_ins(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    standing: List<bool>,
+    consuming: List<Reg>,
+    by_name: Map<string, List<SeatMark>>,
+) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
     let last = last_reads(reg_types.length, ins)
@@ -162,6 +217,8 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             .ScopeEnter(tier) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(Scope { tier: tier, managed: [], cells: [] })
+                // `seats_enter` is always `ins[0]`: this IS the seats bracket.
+                if at == 0 { for r in consuming { takes(open_scopes, r) } }
                 out.push(i)
             },
             // A scope YIELDS like a branch: released never here,
@@ -212,6 +269,19 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // A VIEW does not — the callee may empty the box it looks into —
             // so it is held across the call. The indirect call wears the
             // same convention.
+            //
+            // A CONSUMING SEAT (R3) IS THE ONE EXCEPTION: that seat's own
+            // callee will scope-own the argument from its own entry (this
+            // same pass, seeded above), so THIS call is the transfer, not a
+            // loan — the SAME `dies_at`/`owned_top` question R1 already asks
+            // of a `CallRt`'s first seat (`Lives.moves`, the `.Store` arm
+            // below), generalized to any owned-seat argument here: a dying,
+            // scope-owned argument is handed over with no retain at all
+            // (`disowns`, so this scope's own exit never releases it a
+            // second time); anything else earns the callee its OWN
+            // reference, exactly as `.Store` mints one for a value that does
+            // not move. Independent of `lent` above, which exists for VIEWS
+            // a standing/scope-owned argument is excluded from either way.
             .Call(_, _, _) or .CallPtr(_, _, _) -> {
                 let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) &&
                     !standing[ar.index] &&
@@ -219,6 +289,12 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
                     root_handed(life, i, ar)]
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for r in lent { out.push(Ins.Retain(r)) }
+                let marks: List<SeatMark> = callee_marks(types, reg_types, by_name, i)
+                for j, ar in lent_args(i) {
+                    if consumed_mark(marks, j) && is_managed(types, reg_types[ar.index]) {
+                        if life.moves(open_scopes, ar, at) { disowns(open_scopes, ar) } else { out.push(Ins.Retain(ar)) }
+                    }
+                }
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
@@ -932,6 +1008,28 @@ impl Lives {
         same_reg(s, slot) &&
             !same_reg(d, r) &&
             (self.last[d.index] >= at || self.views(d, at).any(self.last[it.index] >= at))
+    }
+}
+
+/// A `.Call`/`.CallPtr`'s OWN callee's seat marks (R3): a DIRECT call
+/// reads them by the SYMBOL every body carries (`Body.marks`), the
+/// one currency `consumed` actually rides. An INDIRECT one reads the
+/// register's own TYPE instead, which NEVER carries `consumed`
+/// (`Decls.seat_mark` never merges it into a fn value's Arrow —
+/// features/checks.av's `fn_fits` says why) — so a `.CallPtr`
+/// answers plain for every seat, unconditionally, until an adapter
+/// closes that gap. Either way, an absent name (a runtime row, an
+/// unresolved target) answers plain too.
+fn callee_marks(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    by_name: Map<string, List<SeatMark>>,
+    i: Ins,
+) -> List<SeatMark> {
+    match i {
+        .Call(_, callee, _) -> by_name.get(callee) ?? [],
+        .CallPtr(_, f, _) -> types.arrow_parts(reg_types[f.index])?.marks ?? [],
+        rest -> [],
     }
 }
 

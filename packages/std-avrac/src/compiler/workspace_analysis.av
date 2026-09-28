@@ -207,17 +207,39 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit {
-        match self.relation(Family.Lowered).start_recursive(id) {
+    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
+
+    /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
+    /// never `Lowered`'s. The two share `id`'s space (interned by
+    /// symbol name, `spec_id`), so a symbol a lift also reaches would
+    /// collide on one cache row and let whichever context asked
+    /// first decide the other's answer. Separating the family keeps
+    /// a comptime run's units — every seat borrowed, see
+    /// `comptime_active` — from ever standing in for the real
+    /// program's.
+    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id) }
+
+    /// The shared memo shape `lowered` and `lift_lowered` differ only
+    /// by family: start recursive, reuse a settled answer, or lower
+    /// the ask and settle it.
+    fn lowered_in(fam: Family, id: int) -> Unit {
+        match self.relation(fam).start_recursive(id) {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
         lowered_of(
             self
-                .relation(Family.Lowered)
+                .relation(fam)
                 .finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()),
         )
     }
+
+    /// Whether a compile-time run — a lift, an argument crossing, a
+    /// const's settlement — is currently lowering bodies. Its units
+    /// infer no consuming seat (every argument stays borrowed) and
+    /// must never ask the references relation: a file that run reads
+    /// may still be typing.
+    fn comptime_active() -> bool { !self.hold.settling.get().is_empty() }
 
     /// The store, attached by a build; null outside one.
     fn attach_store(s: Store) { self.store.set(s) }
@@ -269,10 +291,11 @@ impl Workspace {
     /// An isolated compile-time run needs the body of every function it
     /// reaches, including one whose machine-code object is held. Parse and
     /// lower that source on demand; ordinary program lowering still reuses
-    /// the held object through `lowered` above.
+    /// the held object through `lowered` above. Every unit this asks for
+    /// is the RUN's own, remembered under `lift_lowered`, never `lowered`.
     fn lowered_for_eval(id: int) -> Unit {
         let w = self.asks.get()[id]
-        if w.decl == null || !self.is_held(w.file) { return self.lowered(id) }
+        if w.decl == null || !self.is_held(w.file) { return self.lift_lowered(id) }
         self.lower_requested(w)
     }
 
