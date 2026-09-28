@@ -482,11 +482,12 @@ build_generation() {
 # rename); a job's own slot is freed by a STATUS FILE, never `kill -0`
 # on its pid — a finished-but-unwaited child is still a live pid to
 # `kill -0` (a zombie), so polling pids would never see a slot free.
-# Whether a landing reaches the compiler: its C, or any package the cli
-# (the compiler's root) imports, however deep — the closure
-# affected_packages.sh already computes names packages/cli exactly then.
+# Whether a landing reaches the compiler: its C, its seed, or any
+# package the cli (the compiler's root) imports, however deep — the
+# closure affected_packages.sh already computes names packages/cli
+# exactly then.
 compiler_reached() {
-    case "$4" in *"runtime/"*) return 0 ;; esac
+    case "$4" in *"runtime/"*|*"bootstrap/"*) return 0 ;; esac
     reached="$(sh "$tools_dir/affected_packages.sh" "$2" "$3" "$1" 2>/dev/null)" || return 0
     printf '%s\n' "$reached" | grep -qxE '(packages/)?cli'
 }
