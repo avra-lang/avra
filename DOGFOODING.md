@@ -677,6 +677,22 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       ask of every such decoder whether its encoder can emit an empty
       tail. Not ratcheted: no grep tells a decoder from any other split.
 
+- compiler.publish_by_rename (unratcheted) A PATH OTHER PROCESSES READ IS
+      PUBLISHED, NEVER WRITTEN. A linker unlinks and re-creates its output,
+      and a placed row is written at mode 0644, so writing a shared path in
+      place shows a reader — a peer building the same package, the suite's
+      own re-exec — the file missing, half-written or not yet executable:
+      a package's suite binary was seen non-executable in 5 of 6 warm
+      rounds, the window between the place and the mode set after it.
+      `staged_beside` names a path no other process names, the file is
+      finished THERE (linked, placed, mode set), and `published` renames
+      it on in one step. THE SMELL: a verb that writes a path and then
+      adjusts it — a mode, a stamp, a second write. THE IDIOM: adjust the
+      staged file, then rename. A guard that samples the path proves it:
+      tools/witness_parallel_build.sh reads mode and size in one `stat`
+      while runs repeat, and a poller that read nothing is no witness.
+      Not ratcheted: no grep tells a path others read from one nobody does.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
