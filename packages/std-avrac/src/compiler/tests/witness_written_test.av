@@ -1,0 +1,46 @@
+// A caller's verdict is a function of whether its callee, in ANOTHER file, writes through
+// its receiver: the receivers pass reads that callee's body, so an edit to the body that
+// changes only whether it writes must move the caller's witness. `a` calls `bump` on a
+// binding that is not `mut`; the writing `bump` earns a warning there and the reading one
+// does not.
+use compiler.{Workspace}
+
+fn writer_body() -> string {
+    "export type Box = { v: int }\nimpl Box {\n    fn bump() {\n        self.v = self.v + 1\n    }\n}\n"
+}
+
+fn reader_body() -> string {
+    "export type Box = { v: int }\nimpl Box {\n    fn bump() {\n        let _ = self.v\n    }\n}\n"
+}
+
+fn written_files(callee: string) -> Map<string, string> {
+    {
+        "/w/src/a.av": "export fn g() -> int {\n    let b = Box { v: 1 }\n    b.bump()\n    b.v\n}\n",
+        "/w/src/b.av": callee,
+    }
+}
+
+fn written_names() -> List<string> { ["/w/src/a.av", "/w/src/b.av"] }
+
+/// `a`'s verdict text over `callee`, in a pack of its own.
+fn report_over(callee: string, tag: string) -> string {
+    let ws = a_process_over(
+        written_files(callee),
+        written_names(),
+        fresh_pack_path("written_${tag}"),
+    )
+    checked(ws, "/w/src/a.av").value().report
+}
+
+spec "compiler/witness — a callee body that changes only whether it writes" {
+    then "fixture: the two callee bodies give the caller different verdicts" {
+        report_over(writer_body(), "fixture_writer") != report_over(reader_body(), "fixture_reader")
+    }
+    then "the caller's witness is refused as stale in a second process" {
+        let path = fresh_pack_path("written_edit")
+        let first = a_process_over(written_files(writer_body()), written_names(), path)
+        let _ = checked(first, "/w/src/a.av")
+        let second = a_process_over(written_files(reader_body()), written_names(), path)
+        !checked(second, "/w/src/a.av").reused()
+    }
+}
