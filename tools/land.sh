@@ -386,17 +386,32 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 }
 
 # ── ONE BUILD GENERATION ──────────────────────────────────────────────
+# A failure of the landing machinery itself, never a branch's verdict:
+# recorded so a batch reports it instead of bisecting it into culprits.
+tool_failed() {
+    echo "$1" > "$scratch/tool-failure"
+    echo "land: TOOL FAILURE — $1" >&2
+}
+
 build_generation() {
     wt="$1"
     n="$2"
     cd "$wt"
+    if [ ! -x build/avra ]; then
+        tool_failed "no standing compiler at $wt/build/avra"
+        return 1
+    fi
     cp build/avra "build/avra.pre.$n" 2>/dev/null || true
     if ! heavy "build-$n-runtime" make build/libavra_runtime.a; then
         [ -f "build/avra.pre.$n" ] && cp "build/avra.pre.$n" build/avra
         return 1
     fi
-    if ! heavy "build-$n-compile" build/avra build packages/cli; then
+    st=0
+    heavy "build-$n-compile" build/avra build packages/cli || st=$?
+    if [ "$st" -ne 0 ]; then
         [ -f "build/avra.pre.$n" ] && cp "build/avra.pre.$n" build/avra
+        # 126/127: the compiler could not be run at all.
+        if [ "$st" -eq 126 ] || [ "$st" -eq 127 ]; then tool_failed "the compiler at $wt/build/avra could not run (exit $st)"; fi
         return 1
     fi
     cp packages/cli/src/main build/avra
@@ -541,6 +556,23 @@ reset_batch_wt() {
     fi
     git -C "$batch_wt" reset -q --hard main
     git -C "$batch_wt" clean -q -fd
+    seed_compiler "$batch_wt"
+}
+
+# A fresh tree has no build/: it gets the newest standing compiler and
+# its built objects, from the landing branch's own tree or main's.
+seed_compiler() {
+    from=""
+    for w in "${branch_wt:-}" "$main_wt"; do
+        [ -n "$w" ] && [ -x "$w/build/avra" ] || continue
+        if [ -z "$from" ] || [ "$w/build/avra" -nt "$from/build/avra" ]; then from="$w"; fi
+    done
+    [ -n "$from" ] || return 0
+    mkdir -p "$1/build"
+    for f in "$from"/build/avra "$from"/build/*.o "$from"/build/*.a "$from"/build/*.dylib "$from"/build/*.d "$from"/build/*.sha; do
+        [ -f "$f" ] && cp -p "$f" "$1/build/"
+    done
+    return 0
 }
 
 # ONE ATTEMPT: reset to main, merge every given branch in order, then
@@ -589,10 +621,13 @@ bisect_land() {
     set -- $*
     n=$#
     label="bisect-$n-$(echo "$*" |  tr ' /' '__'| cut -c1-40)"
+    [ -f "$scratch/tool-failure" ] && return 1
     if try_integration "$label" "$@"; then
         echo "$@"
         return 0
     fi
+    # The machinery failed, so no branch is judged.
+    [ -f "$scratch/tool-failure" ] && return 1
     if [ "$n" -eq 1 ]; then
         echo "CULPRIT: $1" >&2
         return 1
@@ -654,6 +689,12 @@ batch_core() {
     good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
     culprits="$(grep -h '^CULPRIT: ' "$(log_of batch-bisect-stderr)" 2>/dev/null | sed 's/^CULPRIT: //' | tr '\n' ' ')"
     cat "$(log_of batch-bisect-stderr)" >&2
+    if [ -f "$scratch/tool-failure" ]; then
+        good=""
+        culprits=""
+        batch_note="land: TOOL FAILURE, no branch judged — $(cat "$scratch/tool-failure")"
+        return 0
+    fi
 
     if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
         batch_note="land: every branch in the batch failed — nothing to land"
