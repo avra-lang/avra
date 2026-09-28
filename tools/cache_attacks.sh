@@ -157,6 +157,8 @@ S "final no-op a" a
 # A GENERIC REACHED WITH NO SUBSTITUTION IS STILL AN INSTANTIATION, and the caller's.
 # `st` holds @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
 # `stores<R>` with R pinned by nothing but the answer, from a home `st` never lowered.
+# The held generic's stub and that roaming instance share one NAME, declared once:
+# signatures that disagreed would be an "invalid redefinition" at emit, not at link.
 mkdir -p $R/st/src $R/rel/src
 printf '[package]\nname = "rt-st"\nversion = "0.1.0"\n' > $R/st/avra.toml
 printf '[package]\nname = "rt-rel"\nversion = "0.1.0"\n' > $R/rel/avra.toml
