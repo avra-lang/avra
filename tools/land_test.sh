@@ -561,6 +561,8 @@ seed-check:
 MK
     printf 'seed-src\n' > "$d/bootstrap/seed.ll"
     printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    # build/ is untracked, as in the real tree: a fresh worktree has no compiler.
+    printf 'build/\n' > "$d/.gitignore"
     commit_all "$d" "base"
 
     for p in a b c; do
@@ -782,6 +784,21 @@ test_auto_batch_holder_stopped() {
     fi
 }
 
+test_batch_tool_failure() {
+    d="$(batch_repo batch-tool)"
+    mv "$d/build/avra" "$scratch/batch-tool-avra-aside"
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/batch-tool-lock" AVRA_LAND_BATCH_WT="$scratch/batch-tool-wt" \
+        AVRA_SLOTS_DIR="$scratch/batch-tool-slots" branch=x sh "$land" --call main_batch 0 a b ) \
+        > "$scratch/batch-tool.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ] && grep -q "TOOL FAILURE" "$scratch/batch-tool.out" && ! grep -q "CULPRIT" "$scratch/batch-tool.out"; then
+        ok "batch: a missing compiler is a tool failure, and no branch is blamed"
+    else
+        bad "batch: a missing compiler was not reported as a tool failure ($st)"
+        cat "$scratch/batch-tool.out"
+    fi
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
@@ -794,6 +811,7 @@ test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
+test_batch_tool_failure
 test_heavy_status
 test_auto_batch
 test_auto_batch_holder_stopped
