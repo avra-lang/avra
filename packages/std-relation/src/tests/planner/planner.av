@@ -4,10 +4,18 @@
 // the same rows, the recorded reads showing which it did, in both engines
 use @std.relation.{relation}
 use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.meta.{dense}
 
 enum Shade { Red, Green }
 
 type Code = string
+
+@dense
+type Node = { index: int }
+
+/// A dense id's column: `@local`, looked up by `==` on the id.
+@relation
+type Edge = { @local @index callee: Node, n: int }
 
 /// A named type's column: carried as its shape, looked up by its name.
 @relation
@@ -125,6 +133,19 @@ fn coded() -> string {
     "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
 }
 
+fn edges() -> string {
+    let db = logged()
+    let _ = Edge.insert(db, callee: Node { index: 1 }, n: 1)
+    let _ = Edge.insert(db, callee: Node { index: 2 }, n: 2)
+    let _ = Edge.insert(db, callee: Node { index: 1 }, n: 3)
+    let rows = Edge.all(db)
+    let d = Node { index: 1 }
+    let m = reads().get().length
+    let hits = [c.n for c in Edge.all(db) if c.callee == d]
+    let scan = [c.n for c in rows if c.callee == d]
+    "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
+}
+
 fn empty_calls() -> string {
     let db = logged()
     let before = picks().get()
@@ -132,4 +153,4 @@ fn empty_calls() -> string {
     "${none.length} ${picks().get() - before}"
 }
 
-"${cases()} | ${empty_calls()} | ${coded()}"
+"${cases()} | ${empty_calls()} | ${coded()} | ${edges()}"

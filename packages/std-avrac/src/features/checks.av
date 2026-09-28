@@ -867,11 +867,24 @@ impl TypeCx {
         self.view.types.intern(answers)
     }
 
-    /// The by-value law over a TYPE: the scalars and text, and an enum
-    /// whose variants carry nothing — it compares by variant.
+    /// The by-value law over a TYPE: the scalars and text, an enum whose
+    /// variants carry nothing — it compares by variant — and a record of
+    /// ONE field, which compares by that field. The one place equality is
+    /// decided: `==`, a list's scans and a literal pattern all ask here.
     fn compares_by_value(ty: TypeId) -> bool {
-        let inner? = self.view.types.carried(ty) else { return comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty) }
+        let inner? = self.view.types.carried(ty) else {
+            return comparable(self.view.types.shape_of(ty)) ||
+                self.unit_enum(ty) ||
+                self.one_field(ty)
+        }
         self.compares_by_value(inner)
+    }
+
+    /// A record of exactly one field that compares by value — read from
+    /// its declaration, never from the layout registry mid-flight.
+    fn one_field(ty: TypeId) -> bool {
+        let sig? = self.fields_of(ty) else { return false }
+        sig.types.length == 1 && self.compares_by_value(sig.types[0])
     }
 
     /// An enum every variant of which carries nothing — a tag alone.
