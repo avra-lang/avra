@@ -1177,6 +1177,7 @@ impl TypeCx {
         if self.mut_place(subject) { return self.copy_laws(e, subject, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
         if root == null {
+            self.plain_thaw_law(subject)
             return self
                 .emit(
                     warning(
@@ -1188,9 +1189,10 @@ impl TypeCx {
                     ),
                 )
         }
-        let n = self.root_word(root!)
+        let r = root!
+        let n = self.root_word(r)
         if n == chained_binder { return self.chain_writes(e, name) }
-        if self.captured(root!) {
+        if self.captured(r) {
             return self
                 .emit(
                     warning(
@@ -1202,6 +1204,8 @@ impl TypeCx {
                     ),
                 )
         }
+        self.boxed_law(r)
+        if self.bare_let_stmt(r) == null { self.plain_thaw_law(subject) }
         self
             .emit(
                 warning(
@@ -1212,6 +1216,28 @@ impl TypeCx {
                     "declare it `mut ${n} = …`",
                 ),
             )
+    }
+
+    /// A plain `let`'s own declaring statement, marked when it is a
+    /// writing method's non-`mut` receiver: lowering boxes its seed
+    /// into a cell, thawed, the same way a `mut` local's is.
+    fn boxed_law(root: ExprId) {
+        let s? = self.bare_let_stmt(root) else { return }
+        if self.view.types.rides_pointer(self.type_at(root)) { self.facts.mark_boxed_local(s) }
+    }
+
+    /// A writing method's receiver with no cell behind it (a bare
+    /// value or a parameter), marked for a thaw at the call.
+    fn plain_thaw_law(subject: ExprId) {
+        self.facts.mark_plain_thaw(subject)
+    }
+
+    /// A plain (non-`mut`) `let` local's own declaring statement —
+    /// null for `self`, a parameter, or any other place. The
+    /// `bare_mut_stmt` twin, over `.Let` instead of `.MutLet`.
+    fn bare_let_stmt(e: ExprId) -> StmtId? {
+        let b? = self.names.binding(e) else { return null }
+        match b { .Def(s) -> if self.view.store.stmt(s) is .Let { s } else { null }, _ -> null }
     }
 
     /// A root's word for a voice: its name, or `self` for the receiver

@@ -116,10 +116,11 @@ test_lock_fifo() {
     else
         ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
     fi
-    # A deep queue: each waiter's scan answers one value and writes into
-    # no pipe, so its log stays a few lines however long it waits.
+    # A deep queue, with SIGPIPE ignored as a harness's children inherit
+    # it: a waiter's scan writes into no pipe, so its log stays a few
+    # lines however long it waits.
     for w in d e f; do
-        ( AVRA_LAND_LOCK="$lockdir" branch=$w sh "$land" --call hold_lock_for "$scratch/sig-$w-never" ) \
+        ( trap '' PIPE; export AVRA_LAND_LOCK="$lockdir" branch=$w; exec sh "$land" --call hold_lock_for "$scratch/sig-$w-never" ) \
             > "$scratch/lock-$w.out" 2>&1 &
         eval "${w}_pid=\$!"
     done
