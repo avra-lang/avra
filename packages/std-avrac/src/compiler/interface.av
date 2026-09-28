@@ -418,9 +418,12 @@ impl Workspace {
 
 impl Workspace {
 
-    /// A NESTED declaration joins no namespace, so no symbol names it.
+    /// What a held file's OBJECT answers to, as a caller's module must name it: a
+    /// fn by its signature, a declared instance's unit by the type it builds. A
+    /// NESTED declaration joins no namespace, so no symbol names it.
     fn stub_of(d: Decl) -> Body? {
         if d.nested { return null }
+        if self.decls.is_instance(d.id) { return self.instance_stub(d) }
         let s? = self.sig(d.id) else { return null }
         match s {
             .Fn(sig) -> Body {
@@ -433,6 +436,22 @@ impl Workspace {
                 file: d.file,
             },
             rest -> null,
+        }
+    }
+
+    /// A declared instance's unit, under the name a reader asks for it by and the
+    /// type its const recorded: the held file's object holds the body, and a body
+    /// that reads the instance calls it.
+    fn instance_stub(d: Decl) -> Body? {
+        let built? = self.decls.type_of_const(d.file, d.stmt) else { return null }
+        Body {
+            name: self.decls.instance_unit(d.id).name,
+            params: [],
+            ret: built,
+            gives: null,
+            ins: [],
+            reg_types: [],
+            file: d.file,
         }
     }
 }
