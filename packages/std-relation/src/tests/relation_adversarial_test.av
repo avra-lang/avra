@@ -122,6 +122,17 @@ spec "std/relation — adversarial" {
             shaped([kinded("id", "NodeId", Kind.Named("NodeId", []), [])]) == "" &&
                 shaped([kinded("id", "Point", Kind.Named("Point", []), [])]) == "id_not_int"
         }
+        then "`@index` takes `ordered` and `grain`; any other argument, or one on another mark, is refused" {
+            shaped([kinded("f", "int", Kind.Int, ["index"]) with { marks: [Mark { name: "index", args: ["ordered", "grain"], at: null }] }]) == "" &&
+                shaped([kinded("f", "int", Kind.Int, []) with { marks: [Mark { name: "index", args: ["sorted"], at: null }] }]) == "mark_args" &&
+                shaped([kinded("f", "int", Kind.Int, []) with { marks: [Mark { name: "key", args: ["ordered"], at: null }] }]) == "mark_args"
+        }
+        then "a second `@index(grain)` is refused — `get` records through one bucket" {
+            shaped([
+                kinded("f", "int", Kind.Int, []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
+                kinded("g", "int", Kind.Int, []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
+            ]) == "grain_twice"
+        }
         then "`@key` with `@local` is refused — a key is the stable name" {
             shaped([kinded("n", "int", Kind.Int, ["key", "local"])]) == "key_local"
         }
