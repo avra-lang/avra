@@ -90,7 +90,7 @@ use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
-use compiler.store.{Store}
+use compiler.store.{Store, Pack}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
@@ -245,6 +245,11 @@ export type Workspace = {
     /// held unit can contribute them without a body; outside a build there is none and
     /// lowering runs whole, as before.
     store: Cell<Store?>,
+    /// THE PACKAGE'S DURABLE WITNESS PACK, when a caller opened one
+    /// (`Workspace.attach_pack`, compiler/witness.av). Absent by
+    /// default, exactly as `store` is: nothing durable is asked for
+    /// unless something asks.
+    pack: Cell<Pack?>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -646,6 +651,7 @@ fn built(
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
     let no_store: Store? = null
+    let no_pack: Pack? = null
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -656,6 +662,7 @@ fn built(
         db: new_db(kernel),
         decls: language_decls(lang),
         store: Cell.new(no_store),
+        pack: Cell.new(no_pack),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
@@ -1317,10 +1324,7 @@ impl Workspace {
         // namespace asks the file's generated declarations, which
         // materialize on demand through `expanded`; a template's own
         // name asks the namespace of the file that wrote the quote.
-        let elsewhere = Elsewhere {
-            generated: (name: string) -> self.generated_named(f, name),
-            written_in: (origin: FileId) -> self.visible(origin),
-        }
+        let elsewhere = self.elsewhere_of(f)
         // A generated body's statement stands in the arena, never in
         // the parse tree — resolve it after the written bodies.
         let generated = [self.decls.decl(d).stmt for d in made]
@@ -1349,6 +1353,15 @@ impl Workspace {
         let made = self.expanded(f)
         let found: DeclId? = made.find((d: DeclId) -> self.decls.decl(d).name == name)
         found
+    }
+
+    /// The two looks past `f`'s written namespace: its generated
+    /// declarations, and the namespace of the file that wrote a node.
+    fn elsewhere_of(f: FileId) -> Elsewhere {
+        Elsewhere {
+            generated: (name: string) -> self.generated_named(f, name),
+            written_in: (origin: FileId) -> self.visible(origin),
+        }
     }
 
     /// Whether the file has ANY Declares annotation — the parse-level
@@ -1541,7 +1554,7 @@ impl Workspace {
             self.lang.keywords,
             view,
             names,
-            (origin: FileId) -> self.visible(origin),
+            self.elsewhere_of(x.file),
             x.lo,
             x.hi,
         )
