@@ -9,17 +9,38 @@
 //! stored answer only when every one still matches — red-green, down to
 //! `Parsed`'s and `Sig`'s own inputs, never a name it cannot resolve.
 //!
-//! `Parsed`, `Sig`, `Manifest` and `Methods` are the families this file
-//! can re-validate — the shapes `Family.Analysis` actually depends on:
-//! the file's own parse, a cross-file callee's signature
-//! (`sig_diagnostics`, `folded`'s type-checking), the package's own
-//! `avra.toml` (every file's namespace resolution reads it), and a
-//! type's method table (`method_diagnostics` scans every type
-//! declaration, builtins included, for every file). A dep in any other
-//! family answers unresolvable, which is a MISMATCH, never "nothing to
-//! check" — the safe direction, never a wrongly-trusted reuse. Widening
-//! it to the rest of the 23 is the next slice's work, family by family.
-use core.{DeclId, FileId, ModuleId, joined, wire_escape, wire_unescape, fp_str, flatten}
+//! `Parsed`, `Namespace`, `Sig`, `Manifest` and `Methods` are the
+//! families this file can re-validate — the shapes `Family.Analysis`
+//! actually depends on: the file's own parse, a module's names and file
+//! list, a cross-file callee's signature (`sig_diagnostics`, `folded`'s
+//! type-checking), the package's own `avra.toml` (every file's
+//! namespace resolution reads it), and a type's method table
+//! (`method_diagnostics` scans every type declaration, builtins
+//! included, for every file). A dep in any other family answers
+//! unresolvable, which is a MISMATCH, never "nothing to check" — the
+//! safe direction, never a wrongly-trusted reuse. Widening it to the
+//! rest of the 23 is the next slice's work, family by family.
+//!
+//! TWO LAWS an edge's hash keeps. A `Parsed` edge covers the source TEXT
+//! as well as the parse's structure, because a report renders positions
+//! and source lines the structure does not carry. A `Namespace` edge
+//! covers the module's file list and bound names, because a witness
+//! records what was read and an ADDED file is a read that returned
+//! nothing. A dep whose subject is gone — a file the host no longer has,
+//! a package ordinal past the packages — answers unresolvable.
+use core.{
+    DeclId,
+    FileId,
+    ModuleId,
+    joined,
+    wire_escape,
+    wire_unescape,
+    fp_str,
+    fp_list,
+    flatten,
+    module_path,
+    sorted_texts,
+}
 use query.{Key}
 use features.{Decls, Decl}
 use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
@@ -50,9 +71,17 @@ fn stable_line(kind: string, parts: List<string>) -> string {
 type StableId = { kind: string, parts: List<string> }
 
 fn parsed_stable(s: string) -> StableId {
-    let lines = s.split("\n")
+    let lines = stable_fields(s)
     let kind = lines.first() ?? ""
     StableId { kind: kind, parts: [wire_unescape(lines[i]) for i in 1..lines.length] }
+}
+
+/// A `stable_line`'s fields, an empty last one included: `split` drops a
+/// trailing empty segment, so a name ending in an empty field (the root
+/// module's) would read back one field short.
+fn stable_fields(s: string) -> List<string> {
+    let lines = s.split("\n")
+    if s.ends_with("\n") { lines.concat([""]) } else { lines }
 }
 
 /// `stable_key_name`'s inverse: the family's own word, and the arg it
@@ -181,6 +210,29 @@ fn family_from_word(w: string) -> Family? {
     }
 }
 
+// ── How a dependency reads into a witness's edges ──
+
+/// `Itself`: the family's own hash is the edge and nothing below it
+/// is read. `ItselfAndBelow`: the same, and what it read besides.
+/// `Below`: a relay point, whose own deps stand in for it (kept as
+/// itself only when it read nothing).
+enum Reading { Itself, ItselfAndBelow, Below }
+
+/// A REGISTRY over every family, spelled by arm, so a new family cannot
+/// be read into a witness without someone deciding how.
+fn reading_of(fam: Family) -> Reading {
+    match fam {
+        .Parsed or .Sig -> Reading.Itself,
+        .Namespace -> Reading.ItselfAndBelow,
+        .Source or .Items or .Visible or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
+    }
+}
+
+/// One bound name as a module's digest sees it: owner, name, exported.
+fn bound_word(x: Decl) -> string {
+    if x.exported { "${x.owner}.${x.name}!" } else { "${x.owner}.${x.name}" }
+}
+
 // ── The row this file makes durable: one file's rendered check ──
 
 /// What `Family.Analysis` is worth keeping across a process: whether
@@ -240,10 +292,13 @@ impl Workspace {
     /// the ordinary pipeline runs (`self.analysis(f)`) and the fresh
     /// answer is committed with its witness before it is handed back.
     fn witnessed_check(f: FileId) -> WitnessedOutcome {
-        let name = self.decls.stable_key_name(key(Family.Analysis, f.index))
+        let name = self.witness_name(f)
         let reused? = self.reused_check(name) else { return WitnessedOutcome.Recomputed(self.settled_check(f, name)) }
         WitnessedOutcome.Reused(reused)
     }
+
+    /// The stable name a file's checked answer is kept under.
+    fn witness_name(f: FileId) -> string { self.decls.stable_key_name(key(Family.Analysis, f.index)) }
 
     fn reused_check(name: string) -> WitnessedCheck? {
         let pack? = self.pack.get() else { return null }
@@ -269,6 +324,7 @@ impl Workspace {
         let inner = parsed_stable(parts.arg)
         match fam {
             .Parsed -> self.current_parsed_hash(inner),
+            .Namespace -> self.current_namespace_hash(inner),
             .Sig -> self.current_sig_hash(inner),
             .Manifest -> self.current_manifest_hash(inner),
             .Methods -> self.current_methods_hash(inner),
@@ -276,11 +332,63 @@ impl Workspace {
         }
     }
 
+    /// A file the host no longer has is unresolvable: probing it must not
+    /// mint a file, whose empty parse would answer the hash an emptied
+    /// file answers.
     fn current_parsed_hash(inner: StableId) -> int? {
         if inner.kind != "file" || inner.parts.length < 1 { return null }
-        let f = self.file_id(inner.parts[0])
+        if !self.host.exists(inner.parts[0]) { return null }
+        self.parsed_edge_hash(self.file_id(inner.parts[0]))
+    }
+
+    /// What a `Parsed` edge holds: the parse's structural hash beside the
+    /// digest of the text it read.
+    fn parsed_edge_hash(f: FileId) -> int? {
         let _ = self.parsed(f)
-        self.db.value_hash_of(key(Family.Parsed, f.index))
+        let structure? = self.db.value_hash_of(key(Family.Parsed, f.index)) else { return null }
+        let text? = self.db.value_hash_of(key(Family.Source, f.index)) else { return null }
+        fp_list([structure, text])
+    }
+
+    fn current_namespace_hash(inner: StableId) -> int? {
+        if inner.kind != "module" || inner.parts.length < 1 { return null }
+        let m = self.decls.module_id(inner.parts[0])
+        if self.module_paths(m).is_empty() { return null }
+        self.namespace_digest(m)
+    }
+
+    /// The module's files, in the host's own listing.
+    fn module_paths(m: ModuleId) -> List<string> {
+        self.module_files(module_path(segments_of(self.decls.module_name(m))))
+    }
+
+    /// A module's file list, its bound names and its clash count, by
+    /// content — `namespace`'s own hash folds dense decl ids, which
+    /// number differently in the next process.
+    fn namespace_digest(m: ModuleId) -> int {
+        let names = self.namespace(m)
+        fp_list(
+            [
+                fp_str(joined(sorted_texts(self.module_paths(m)), "\n")),
+                fp_str(
+                    joined(
+                        sorted_texts([bound_word(self.decls.decl(d)) for d in names.bound]),
+                        "\n",
+                    ),
+                ),
+                names.clashes.length,
+            ],
+        )
+    }
+
+    /// An edge's hash as it stands now: `edge_current_hash` answers a
+    /// stored name with the same reading.
+    fn edge_hash_of(k: Key) -> int {
+        match family_at(k.family) {
+            .Parsed -> self.parsed_edge_hash(FileId { index: k.arg }) ?? 0,
+            .Namespace -> self.namespace_digest(ModuleId { index: k.arg }),
+            rest -> self.db.value_hash_of(k) ?? 0,
+        }
     }
 
     fn current_sig_hash(inner: StableId) -> int? {
@@ -294,6 +402,7 @@ impl Workspace {
     fn current_manifest_hash(inner: StableId) -> int? {
         if inner.kind != "pkg" || inner.parts.length < 1 { return null }
         let i? = parse_int(inner.parts[0]) else { return null }
+        if i < 0 || i >= self.packages().length { return null }
         let _ = self.manifest(i)
         self.db.value_hash_of(key(Family.Manifest, i))
     }
@@ -317,27 +426,30 @@ impl Workspace {
         let visited: Cell<Map<string, bool>> = Cell.new(empty)
         visited.put(depkey_string(root), true)
         let leaves = flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(root)])
-        [Edge { name: self.decls.stable_key_name(k), hash: self.db.value_hash_of(k) ?? 0 } for k in leaves]
+        [Edge { name: self.decls.stable_key_name(k), hash: self.edge_hash_of(k) } for k in leaves]
     }
 
-    /// One dependency, expanded to `Parsed`/`Sig` — the two families
-    /// with real substructure to walk through. `Resolved`/`Folded`/…
-    /// are structural relay points, not answers a witness names, so
-    /// their OWN deps are walked through instead. A genuine dead end
-    /// (no further deps, and not one of the two) is kept AS ITSELF:
-    /// `Manifest` and `Methods` reach here this way (both INPUTS or
-    /// leaves with nothing recorded under them), and `edge_current_hash`
-    /// knows how to revalidate those too — an opaque edge for anything
-    /// it does not is the fallback, never a dependency silently dropped.
+    /// One dependency, read into edges by its family's `Reading`. A
+    /// relay point (`Resolved`, `Folded`, …) is not an answer a witness
+    /// names, so its OWN deps are walked through instead. A genuine dead
+    /// end (no further deps) is kept AS ITSELF: `Manifest` and `Methods`
+    /// reach here this way (both INPUTS or leaves with nothing recorded
+    /// under them), and `edge_current_hash` knows how to revalidate those
+    /// too — an opaque edge for anything it does not is the fallback,
+    /// never a dependency silently dropped.
     fn leaf_keys(k: Key, visited: Cell<Map<string, bool>>) -> List<Key> {
         let vk = depkey_string(k)
         if visited.get().get(vk) != null { return [] }
         visited.put(vk, true)
-        let fam = family_at(k.family)
-        if fam is .Parsed || fam is .Sig { return [k] }
-        let children = self.db.deps_of(k)
-        if children.is_empty() { return [k] }
-        flatten([self.leaf_keys(d, visited) for d in children])
+        match reading_of(family_at(k.family)) {
+            .Itself -> [k],
+            .ItselfAndBelow -> [k].concat(self.leaves_below(k, visited)),
+            .Below -> if self.db.deps_of(k).is_empty() { [k] } else { self.leaves_below(k, visited) },
+        }
+    }
+
+    fn leaves_below(k: Key, visited: Cell<Map<string, bool>>) -> List<Key> {
+        flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(k)])
     }
 
     fn settled_check(f: FileId, name: string) -> WitnessedCheck {
