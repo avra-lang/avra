@@ -14,13 +14,15 @@ type CheckCmd = {}
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
         let path? = argued_path(args) else { return 2 }
-        match checked_at(path) {
+        let base = match checked_at(path) {
             .Ok(c) -> said(args, path, c),
             .Err(report) -> {
                 println(report)
                 1
             },
         }
+        if base != 0 || !args.has_flag("verify_held") { return base }
+        verify_held_said(path)
     }
 }
 
@@ -132,7 +134,7 @@ export option baseline {
 
 export command check {
     description: "Report everything wrong with a source file or a package root"
-    flags: [time, baseline_accept]
+    flags: [time, baseline_accept, verify_held]
     options: [baseline]
     args: [file]
     run: CheckCmd {}
