@@ -1,6 +1,7 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
 use core.{
+    wire_fields,
     joined,
     flatten,
     distinct,
@@ -187,7 +188,7 @@ impl Workspace {
 
     /// A type as a record wrote it: a wire, or the error type — a record writes nothing else.
     fn interface_type(name: string) -> TypeId {
-        let words = name.substring(1, name.length).split("~")
+        let words = wire_fields(name.substring(1, name.length), "~")
         let decoded? = (if name.starts_with("^") { self.decls.read_type_wire(words, 0) } else { null }) else { return self.decls.types.intern(Type.Error) }
         if decoded.next == words.length { decoded.id } else { self.decls.types.intern(Type.Error) }
     }
@@ -509,6 +510,7 @@ impl Decls {
             "e" -> Type.EmptyList,
             "h" -> Type.EmptyMap,
             "x" -> Type.Error,
+            "T" -> Type.Tasks,
             _ -> null,
         }
         if scalar != null { return WireType { id: self.types.intern(scalar!), next: at + 1 } }
@@ -536,11 +538,12 @@ impl Decls {
             }
             return WireType { id: self.types.intern(Type.App(d, x.name, args)), next: cursor }
         }
-        if tag == "L" || tag == "C" || tag == "O" {
+        if tag == "L" || tag == "C" || tag == "O" || tag == "K" {
             let child? = self.read_type_wire(words, at + 1) else { return null }
             let raw = when {
                 tag == "L" -> Type.List(child.id)
                 tag == "C" -> Type.Cell(child.id)
+                tag == "K" -> Type.Task(child.id)
                 _ -> Type.Opt(child.id)
             }
             return WireType { id: self.types.intern(raw), next: child.next }

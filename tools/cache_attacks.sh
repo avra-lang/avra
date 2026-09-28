@@ -317,6 +317,103 @@ for app in a b c; do
     rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  check [$app] speaks otherwise under the hold"; }
 done
+
+# `--verify-held` OVER A WARM `a`: every held declaration this build just kept
+# decodes back to what a fresh reading of the same file produces, and a run
+# that compared nothing is a failure, never a clean pass.
+steps=$((steps+1)); ./avra check $R/a >/dev/null 2>&1
+vh=$(./avra check $R/a --verify-held 2>&1 | grep -v '^watch:')
+case "$vh" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over a compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over a -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over a: $(printf '%s' "$vh" | tail -5 | tr '\n' ' ')" ;;
+esac
+
+# A CALLER'S CONST FOLLOWS ITS CALLEE'S BODY EVEN WHEN THE CALLER'S OWN FILE IS
+# HELD, NEVER THE ENTRY: `hcl/src/lib.av` declares `const M` and is a library
+# file, so it is never forced fresh by the entry law — `a`'s own held consts
+# above (TWICE, FAR) all live in the entry and never exercise this. Editing
+# only `seed()`'s body, in a sibling file `lib.av` never touches, must still
+# move `M`: `avra run` holds nothing, so a native/eval split here means a
+# stale held object, not a mistyped fixture (avra-8sb5.57.85).
+mkdir -p $R/hcl/src $R/hc/src
+printf '[package]\nname = "@rt/hcl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-hcl"\npath = "src/lib.av"\n' > $R/hcl/avra.toml
+printf 'export fn seed() -> int { 41 }\n' > $R/hcl/src/seed.av
+printf 'export const M: int = seed()\n' > $R/hcl/src/lib.av
+printf '[package]\nname = "rt-hc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/hcl" = { path = "../hcl" }\n' > $R/hc/avra.toml
+printf 'use @rt.hcl.{M}\nprintln("hc ${M}")\n' > $R/hc/src/main.av
+S "cold hc: a const in a non-entry file settles from a callee" hc
+got=$($R/hc/src/main 2>&1)
+[ "$got" = "hc 41" ] || { fails=$((fails+1)); echo "FAIL  cold hc printed '$got', wanted 'hc 41'"; }
+ed $R/hcl/src/seed.av "{ 41 }" "{ 42 }"
+S "hc: the callee's body moves, the held caller's const must follow" hc
+got=$($R/hc/src/main 2>&1)
+[ "$got" = "hc 42" ] || { fails=$((fails+1)); echo "FAIL  warm hc printed '$got', wanted 'hc 42' — a held const did not follow its callee's body"; }
+vh_hc=$(./avra check $R/hc --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_hc" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over hc compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over hc -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
+esac
+
+# `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
+# Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
+# — a held file with no OTHER declaration worth diffing would pass this suite
+# clean while the one fact an impl carries went unchecked. `vtlib/src/lib.av` is
+# held both times (never the entry); the impl lands in it exactly once, so the
+# SAME run's before/after declaration count proves it joined what was compared,
+# never just an absolute total that a run examining nothing could still print.
+mkdir -p $R/vtlib/src $R/vt/src
+cat > $R/vtlib/avra.toml <<'TOML'
+[package]
+name = "@rt/vtlib"
+version = "0.1.0"
+
+[lib]
+name = "rt-vtlib"
+path = "src/lib.av"
+TOML
+printf '[package]\nname = "rt-vt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/vtlib" = { path = "../vtlib" }\n' > $R/vt/avra.toml
+cat > $R/vtlib/src/lib.av <<'AV'
+export trait Shape { fn area() -> int }
+export type Sq = { s: int }
+AV
+printf 'use @rt.vtlib.{Sq}\nprintln("vt ${Sq { s: 3 }.s}")\n' > $R/vt/src/main.av
+S "cold vt: a trait/type pair, no impl yet" vt
+vh_vt0=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+n_vt0=$(printf '%s' "$vh_vt0" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
+steps=$((steps+1))
+case "$vh_vt0" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl) compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (no impl) -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl): $(printf '%s' "$vh_vt0" | tail -5 | tr '\n' ' ')" ;;
+esac
+ed $R/vtlib/src/lib.av 'export type Sq = { s: int }' 'export type Sq = { s: int }
+impl Shape for Sq { fn area() -> int { self.s * self.s } }'
+ed $R/vt/src/main.av 'use @rt.vtlib.{Sq}
+println("vt ${Sq { s: 3 }.s}")' 'use @rt.vtlib.{Shape, Sq}
+let sh: dyn Shape = Sq { s: 3 }
+println("vt ${sh.area()}")'
+S "vt: the impl lands in the same held file — a held impl is now present" vt
+vh_vt1=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+n_vt1=$(printf '%s' "$vh_vt1" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
+steps=$((steps+1))
+case "$vh_vt1" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl) compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (with impl) -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl): $(printf '%s' "$vh_vt1" | tail -5 | tr '\n' ' ')" ;;
+esac
+# THE DELTA IS THE PROOF: +2 is the impl block's own declaration and its one
+# method, measured (avra-8sb5.57.86) against this exact fixture shape — a run
+# that walked the file but skipped the impl (a kind filter dropping it, say)
+# would still pass every case above while this alone catches it.
+steps=$((steps+1))
+if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
+    fails=$((fails+1))
+    echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
+fi
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

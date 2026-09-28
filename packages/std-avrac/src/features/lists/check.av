@@ -2,9 +2,10 @@
 //! ride a slot (the SAME law every aggregate slot obeys — R0's
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
-use core.{ExprId, Type, TypeId, CompClause, flatten, some_list}
+use core.{ExprId, Type, TypeId, CompClause, flatten, some_list, same_type}
 use features.{TypeCx, this_is, slot_worthy}
-use diagnostics.{refusal}
+use diagnostics.{refusal, Diag}
+use @std.errors.{Loc}
 
 fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     if elems.is_empty() { return cx.view.types.intern(Type.EmptyList) }
@@ -156,6 +157,7 @@ fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
 /// expression's type, typed under every head's binders at once.
 fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> TypeId {
     let tys = type_clauses(cx, clauses)
+    plan_laws(cx, clauses)
     cx.bind_types(elem, tys)
     // THE ELEMENT HEARS THE LIST'S WANT: under `List<E>` the element
     // reads `E` — a free Var pins, a value boxes — and the list wears
@@ -168,6 +170,42 @@ fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>)
         w? -> heard_elem(cx, elem, ety, w)
         null -> collected(cx, elem, ety)
     }
+}
+
+/// THE PLANNER'S LAWS over a comprehension scanning a relation whole: a
+/// lookup it narrows to must file by the field's own type, and with no
+/// lookup to narrow to, no filter may hand a row to a call — nothing
+/// narrows the set it would run over.
+fn plan_laws(mut cx: TypeCx, clauses: List<CompClause>) {
+    let scan? = relation_scan(cx.view, cx.names, clauses) else { return }
+    let plans = comp_plans(cx.view, cx.names, clauses, scan)
+    let plan? = plans
+        .find((p: Plan) -> !could_be_null(cx.view.types.seen_shape(cx.type_at(p.value)))) else {
+        let rest? = residual(cx.view, cx.names, clauses) else { return }
+        return cx.emit(unnarrowed(cx.loc_of(rest), cx.view.decls.decl(scan.relation).name))
+    }
+    if !lookup_fits(cx, scan, plan) {
+        cx
+            .emit(
+                plan_mismatch(
+                    cx.loc_of(plan.value),
+                    cx.view.decls.decl(plan.lookup).name,
+                    plan.field,
+                ),
+            )
+    }
+}
+
+/// Whether a lookup's value seat wears the field's type — its element's,
+/// for a list field.
+fn lookup_fits(cx: TypeCx, scan: Scan, plan: Plan) -> bool {
+    let fields? = cx.fields_of(cx.view.decls.self_type_of(scan.relation)) else { return false }
+    let at = fields.names.index_of(plan.field)
+    if at < 0 { return false }
+    let ty = fields.types[at]
+    let filed = cx.view.types.element(ty) ?? ty
+    let seats = cx.view.decls.sig(plan.lookup)?.fn_sig()?.params ?? []
+    seats.length == 2 && same_type(seats[1], filed)
 }
 
 /// Every clause's own binder types, accumulated in written order — a
@@ -269,4 +307,24 @@ fn range_has_no_index(mut cx: TypeCx, lo: ExprId) -> TypeId {
                 "write `for i in lo..hi`",
             ),
         )
+}
+
+fn unnarrowed(at: Loc?, relation: string) -> Diag {
+    refusal(
+        "type.plan_residual",
+        at,
+        "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
+        "called on every row",
+        "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
+    )
+}
+
+fn plan_mismatch(at: Loc?, lookup: string, field: string) -> Diag {
+    refusal(
+        "type.plans_mismatch",
+        at,
+        "`${lookup}` is `@plans(${field})`, and its value seat does not wear `${field}`'s type — a lookup files by the field's own type",
+        "planned here",
+        "fix the lookup's seat, or drop the `@plans` mark",
+    )
 }

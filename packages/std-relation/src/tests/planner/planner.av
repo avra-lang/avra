@@ -1,0 +1,156 @@
+// proves: a comprehension over a relation's rows narrows to a declared
+// `@plans` lookup when a filter compares a row field to an invariant
+// value — and scans otherwise — each answer equal to a plain scan over
+// the same rows, the recorded reads showing which it did, in both engines
+use @std.relation.{relation}
+use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.meta.{dense}
+
+enum Shade { Red, Green }
+
+type Code = string
+
+@dense
+type Node = { index: int }
+
+/// A dense id's column: `@local`, looked up by `==` on the id.
+@relation
+type Edge = { @local @index callee: Node, n: int }
+
+/// A named type's column: carried as its shape, looked up by its name.
+@relation
+type Coded = { @index code: Code, n: int }
+
+@relation
+type Item = { @index tag: string, @index shade: Shade, @index labels: List<string>, n: int, note: string? }
+
+once fn reads() -> Cell<List<int>> { Cell.new([]) }
+
+once fn picks() -> Cell<int> { Cell.new(0) }
+
+once fn families() -> Cell<int> { Cell.new(0) }
+
+const WANT: string = "a"
+
+type Box = { tag: string }
+
+fn next_family() -> int {
+    let f = families().get()
+    families().set(f + 1)
+    f
+}
+
+fn read(cell: int) -> int {
+    let r = reads()
+    r.push(cell)
+    0
+}
+
+fn none() {}
+
+fn heard(_w: string) {}
+
+/// A Db that logs every cell read — 0 the whole relation, `b + 1` a bucket.
+fn logged() -> Db {
+    hooked_db(
+        Hooks {
+            family: (_v: fn(int) -> int) -> next_family(),
+            record: (_f: int, cell: int) -> read(cell),
+            revision: () -> -1,
+            reader: (_t: int) -> "",
+            refused: heard,
+            opened: (_f: int, _c: int) -> -1,
+            settled: (_f: int, _c: int) -> none(),
+        },
+    )
+}
+
+fn pick() -> string {
+    let p = picks()
+    p.set(p.get() + 1)
+    "a"
+}
+
+fn ns(xs: List<Item>) -> string { ["${i.n}" for i in xs].join(",") }
+
+/// Whether the reads since `from` touched a bucket and never the whole set.
+fn narrowed(from: int) -> string {
+    let seen = reads().get().slice(from, reads().get().length)
+    if seen.any(it == 0) { "scan" } else { "lookup" }
+}
+
+fn filled() -> Db {
+    let db = logged()
+    let _ = Item.insert(db, tag: "a", shade: Shade.Red, labels: ["x", "y"], n: 1, note: null)
+    let _ = Item.insert(db, tag: "b", shade: Shade.Green, labels: ["y"], n: 2, note: "k")
+    let _ = Item.insert(db, tag: "a", shade: Shade.Green, labels: [], n: 3, note: null)
+    db
+}
+
+fn cases() -> string {
+    let db = filled()
+    let rows = Item.all(db)
+    let want = "a"
+    let maybe: string? = "a"
+    let box = Box { tag: "a" }
+    let m1 = reads().get().length
+    let by_text = [i for i in Item.all(db) if i.tag == "a"]
+    let c1 = "${narrowed(m1)} ${ns(by_text) == ns([i for i in rows if i.tag == "a"])}"
+    let m2 = reads().get().length
+    let by_enum = [i for i in Item.all(db) if i.shade == Shade.Green]
+    let c2 = "${narrowed(m2)} ${ns(by_enum) == ns([i for i in rows if i.shade == Shade.Green])}"
+    let m3 = reads().get().length
+    let by_label = [i for i in Item.all(db) if i.labels.contains("y")]
+    let c3 = "${narrowed(m3)} ${ns(by_label) == ns([i for i in rows if i.labels.contains("y")])}"
+    let m4 = reads().get().length
+    let by_names = [i.n for i in Item.all(db) if want == i.tag && i.n > 1].length +
+        [i for i in Item.all(db) if i.tag == WANT].length +
+        [i for i in Item.all(db) if i.tag == box.tag].length
+    let c4 = "${narrowed(m4)} ${by_names}"
+    let m5 = reads().get().length
+    let by_maybe = [i for i in Item.all(db) if i.tag == maybe]
+    let c5 = "${narrowed(m5)} ${ns(by_maybe) == ns([i for i in rows if i.tag == maybe])}"
+    let m6 = reads().get().length
+    let before = picks().get()
+    let by_call = [i for i in Item.all(db) if i.tag == pick()]
+    let c6 = "${narrowed(m6)} ${picks().get() - before} ${ns(by_call) == ns([i for i in rows if i.tag == "a"])}"
+    let m7 = reads().get().length
+    let by_unindexed = [i for i in Item.all(db) if i.n == 2]
+    let c7 = "${narrowed(m7)} ${ns(by_unindexed)}"
+    "${c1} | ${c2} | ${c3} | ${c4} | ${c5} | ${c6} | ${c7}"
+}
+
+fn coded() -> string {
+    let db = logged()
+    let _ = Coded.insert(db, code: Code("a"), n: 1)
+    let _ = Coded.insert(db, code: Code("b"), n: 2)
+    let _ = Coded.insert(db, code: Code("a"), n: 3)
+    let rows = Coded.all(db)
+    let want = Code("a")
+    let m = reads().get().length
+    let hits = [c.n for c in Coded.all(db) if c.code == want]
+    let scan = [c.n for c in rows if c.code == want]
+    "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
+}
+
+fn edges() -> string {
+    let db = logged()
+    let _ = Edge.insert(db, callee: Node { index: 1 }, n: 1)
+    let _ = Edge.insert(db, callee: Node { index: 2 }, n: 2)
+    let _ = Edge.insert(db, callee: Node { index: 1 }, n: 3)
+    let rows = Edge.all(db)
+    let d = Node { index: 1 }
+    let m = reads().get().length
+    let hits = [c.n for c in Edge.all(db) if c.callee == d]
+    let scan = [c.n for c in rows if c.callee == d]
+    "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
+}
+
+fn empty_calls() -> string {
+    let db = logged()
+    let before = picks().get()
+    let none = [i for i in Item.all(db) if i.tag == pick()]
+    "${none.length} ${picks().get() - before}"
+}
+
+"${cases()} | ${empty_calls()} | ${coded()} | ${edges()}"

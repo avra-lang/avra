@@ -27,17 +27,35 @@ spec "features/structs (adversarial)" {
         // refused with an internal defect while the backend quietly
         // answered `false` for two IDENTICAL records — an engine
         // divergence and a silently wrong native answer.
-        then "equality refuses, and says to compare a field" {
-            let a = analyze_source("${p1_bound()}let b = P { x: 1 }\na == b")
+        then "a record of two fields refuses equality, and says to compare a field" {
+            let a = analyze_source(
+                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\na == b",
+            )
             a.diagnostics.length == 1 &&
-                a.report().contains("`==` compares scalars for now") &&
+                a
+                    .report()
+                    .contains(
+                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                    ) &&
                 a.report().contains("compare a field instead")
         }
-        then "inequality refuses the same way" {
-            refusals("${p1_bound()}a != a") == 1
+        then "inequality over two fields refuses the same way" {
+            refusals("type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\na != a") == 1
         }
-        then "a record compared to an int refuses" {
-            refusals("${p1_bound()}a == 1") == 1
+        then "a record of ONE field compares by it" {
+            shown("${p1_bound()}let b = P { x: 1 }\nlet c = P { x: 2 }\n\"\${a == b} \${a != c}\"") == "true true"
+        }
+        then "a record of one field whose field does not compare refuses" {
+            refusals("type L = { xs: List<int> }\nL { xs: [1] } == L { xs: [1] }") == 1
+        }
+        then "two different one-field types are two types" {
+            refused_with(
+                "type A = { n: int }\ntype B = { n: int }\nA { n: 1 } == B { n: 1 }",
+                "`==` compares matching types, found `A` and `B`",
+            )
+        }
+        then "a one-field record against its own field's scalar is two types" {
+            refused_with("${p1_bound()}a == 1", "`==` compares matching types, found `P` and `int`")
         }
         then "arithmetic on a record refuses" {
             refused_with("${p1_bound()}a + 1", "`+` needs `int` operands, found `P`")
