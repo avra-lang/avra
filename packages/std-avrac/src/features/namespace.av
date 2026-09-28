@@ -22,14 +22,6 @@ use core.{
 use diagnostics.{Diag, refusal, Voices, no_voices}
 use query.{traced}
 use @std.errors.{Loc}
-use @std.io.{env}
-
-// BISECTION (d) (avra-8sb5.57.55): an independent off-switch for
-// NameRead recording, so `keep`'s time can be measured with it
-// removed. Deleted before this ticket lands.
-once fn name_reads_flag() -> string? { env("AVRA_SKIP_NAME_READS") }
-
-fn skip_name_reads() -> bool { name_reads_flag() != null }
 
 /// A file's namespace: the bindings, the names in declaration order
 /// (for suggestions), and the diagnostics building it earned.
@@ -123,7 +115,7 @@ impl Namespace {
 
     /// Keeps one ask for a durable witness, a name once.
     fn noted(kind: NameKind, name: string, answer: DeclId?) {
-        if !self.reads.on || skip_name_reads() { return }
+        if !self.reads.on { return }
         let key = "${name_kind_word(kind)}\n${name}"
         if self.already_asked(key) { return }
         self.reads.asked.put(key, true)

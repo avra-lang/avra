@@ -57,6 +57,14 @@ fn write_frame(w: Writer, tag: int, body: Bytes) {
     w.int(frame_checksum(tag, body))
 }
 
+/// The exact on-disk size of a frame carrying `body` — tag, length
+/// prefix and checksum included, the same bytes `write_frame` emits.
+fn framed_len(tag: int, body: Bytes) -> int {
+    let w = writer()
+    write_frame(w, tag, body)
+    w.bytes().length
+}
+
 enum RawFrame { NameDef(string), Entry(Bytes), Commit }
 
 fn ok<T>(r: Result<T, CodecFault>) -> T? {
@@ -320,6 +328,18 @@ export type Pack = {
     disk_len: Cell<int>,
     observed_len: Cell<int>,
     ready: Cell<bool>,
+    // `dead_bytes` starts at 0 for a pack loaded from a PRIOR process —
+    // this session only counts weight ITS OWN overwrites age, so a pack
+    // already half garbage from an earlier session waits for this one to
+    // age its own share before compacting. A heuristic delay, not a
+    // correctness gap: compaction is housekeeping, never owed to a reader.
+    dead_bytes: Cell<int>,
+    // Whether a commit marker already stands on disk — from a prior
+    // process, or from an earlier `commit` this session. A commit
+    // marker is superseded by the next one after it (only the LAST
+    // matters once a newer exists), so `commit` ages the standing
+    // marker into `dead_bytes` before adding its own.
+    has_marker: Cell<bool>,
     names: Cell<Map<string, int>>,
     by_id: Cell<List<string>>,
     slots: Cell<Map<string, Slot>>,
@@ -337,6 +357,8 @@ export fn pack_at(path: string, compiler_id: string) -> Pack {
         path: path,
         compiler_id: compiler_id,
         disk_len: Cell.new(l.raw.length),
+        dead_bytes: Cell.new(0),
+        has_marker: Cell.new(l.raw.length > header_bytes(compiler_id).length),
         observed_len: Cell.new(l.disk_len),
         ready: Cell.new(false),
         names: Cell.new(reverse_index(l.by_id)),
@@ -377,11 +399,22 @@ impl Pack {
     /// Stage an entry: visible to `get` at once, durable once `commit`
     /// answers `true`.
     fn put(entry: Entry) {
+        let old = self.slot_at(entry.name)
         let name_id = self.interned(entry.name)
         let edges = [EdgeId { name_id: self.interned(e.name), hash: e.hash } for e in entry.edges]
         let body = encoded_entry(name_id, entry.fingerprint, entry.hash, edges, entry.payload)
         write_frame(self.pending, entry_tag(), body)
         self.slots.put(entry.name, Slot.Loaded(entry))
+        // An OVERWRITE ages the OLD frame into dead weight — its own
+        // ON-DISK size (tag, checksum and all, matching what `disk_len`
+        // counts), never the new one's, so a shrinking entry (a long
+        // payload replaced by a short one) is not read as light. One
+        // entry's worth of work, so `garbage_heavy` still answers in
+        // O(1) without re-walking the whole pack.
+        if old != null {
+            let dead = framed_len(entry_tag(), self.entry_body(entry.name, old!))
+            self.dead_bytes.set(self.dead_bytes.get() + dead)
+        }
     }
 
     /// `name`'s slot, if any — its own fn for the same reason
@@ -432,6 +465,12 @@ impl Pack {
         let batch = self.pending.bytes()
         if batch.length == 0 { return true }
         if !self.ensure_ready() { return false }
+        // The marker already on disk (a prior process's, or an earlier
+        // commit this session's) is superseded the moment this one
+        // lands — only the newest matters once it exists, so it ages
+        // into dead weight here, before this commit's own marker joins it.
+        if self.has_marker.get() { self.dead_bytes.set(self.dead_bytes.get() + commit_frame().length) }
+        self.has_marker.set(true)
         let framed = batch.concat(commit_frame())
         if !self.appended(framed) { return false }
         self.pending.out.set([])
@@ -482,15 +521,20 @@ impl Pack {
         match write_bytes(self.path, bytes) {
             .Ok(_) -> {
                 self.disk_len.set(bytes.length)
+                self.dead_bytes.set(0)
                 true
             },
             .Err(_) -> false,
         }
     }
 
-    fn garbage_heavy() -> bool {
-        self.disk_len.get() > self.fresh_bytes().length * 2
-    }
+    /// O(1) — `dead_bytes` is aged incrementally by `put`, never
+    /// answered by rebuilding `fresh_bytes` to compare two lengths:
+    /// that rebuild is exactly what made a per-file `commit` quadratic
+    /// before `commit` itself appended instead of rewriting, and a
+    /// cheap `append` gains nothing if the heaviness CHECK still walks
+    /// the whole pack on every call.
+    fn garbage_heavy() -> bool { self.dead_bytes.get() * 2 > self.disk_len.get() }
 
     /// Rewritten as just the live names and their newest entries, then
     /// renamed over the old file — a whole-file replace, unlike

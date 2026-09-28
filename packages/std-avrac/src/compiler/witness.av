@@ -68,30 +68,6 @@ use @std.relation.stable.{
     written_list,
 }
 use @std.text.{parse_int}
-use @std.io.{env}
-
-// ── TEMPORARY bisection switches (avra-8sb5.57.55) — each an
-// independent env-gated off-switch for one mechanism, so `keep`'s
-// time can be measured with each removed in turn. Deleted before
-// this ticket lands.
-once fn lookup_flag() -> string? { env("AVRA_SKIP_WITNESS_LOOKUP") }
-
-fn skip_witness_lookup() -> bool { lookup_flag() != null }
-
-once fn edges_flag() -> string? { env("AVRA_SKIP_WITNESS_EDGES") }
-
-fn skip_witness_edges() -> bool { edges_flag() != null }
-
-once fn commit_flag() -> string? { env("AVRA_SKIP_WITNESS_COMMIT") }
-
-fn skip_witness_commit() -> bool { commit_flag() != null }
-
-/// The whole process's `leaf_keys` visit count — one shared `Cell`,
-/// so every file's walk adds to the same total, compared at the end
-/// against the distinct-key count `avra explain db` already answers.
-once fn visit_counter() -> Cell<int> { Cell.new(0) }
-
-export fn leaf_visit_total() -> int { visit_counter().get() }
 
 // ── Stable names: a dense id means nothing in the next process ──
 
@@ -767,7 +743,6 @@ impl Workspace {
     /// too — an opaque edge for anything it does not is the fallback,
     /// never a dependency silently dropped.
     fn leaf_keys(k: Key, walk: Walk) -> List<Key> {
-        visit_counter().set(visit_counter().get() + 1)
         let vk = walk.walked(k)
         if walk.already_visited(vk) { return [] }
         walk.visited.put(vk, true)
@@ -847,25 +822,12 @@ impl Workspace {
     /// directly on `Analysis`'s (`Kernel.record_dep`'s nesting law) —
     /// translated to (stable name, current value hash) edges and
     /// STAGED beside the row's answer (`Pack.put`), visible to `get`
-    /// at once. NEVER committed here: `Pack.commit`'s own
-    /// `garbage_heavy` check rebuilds the whole compacted byte form
-    /// (`fresh_bytes`, one map lookup per live name) to answer a
-    /// length comparison, unconditionally, on every call — paying
-    /// that per FILE turns a 724-file check from ~46s into minutes
-    /// (measured; census attached to the finding). The caller commits
-    /// ONCE for the whole pass (derive.av's `all_said`); §4 decision
-    /// 7's guarantee still holds, at the coarser grain of the batch
-    /// rather than the file — a trap loses whatever this pass staged
-    /// and nothing already committed, never a witness with no row or
-    /// a row with no witness.
+    /// at once. The caller (derive.av's `says`) commits right after —
+    /// `Pack.commit` APPENDS the stage (store/pack.av), so this no
+    /// longer costs a whole-pack rewrite per file the way it once did.
     fn record_witness(f: FileId, name: string, out: WitnessedCheck) {
         let pack? = self.pack.get() else { return }
-        // BISECTION (b): compute the edges regardless (to price the
-        // walk itself), but an empty list stands in for them when
-        // switched off.
-        let computed = self.expanded_edges(key(Family.Analysis, f.index))
-        let edges = if skip_witness_edges() { [] } else { computed }
-        if skip_witness_commit() { return }
+        let edges = self.expanded_edges(key(Family.Analysis, f.index))
         pack
             .put(
                 PackEntry {
