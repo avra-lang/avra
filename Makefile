@@ -173,7 +173,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
-        check run ir emit build-native native-check avra suites install sprite sprite-check
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -227,9 +227,15 @@ recover: $(COMPILER_OBJS)
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
+# Bootstrap hands out GEN-2. A change to lowering or memory reaches a
+# compiler's own body only when a compiler already carrying it compiles
+# that body, so the seed's gen-1 rebuilds once more.
 bootstrap: recover
-	@echo "bootstrap: rebuilding build/avra from source"
+	@echo "bootstrap: gen-1, the source compiled by the seed"
 	@$(MAKE) -s avra
+	@echo "bootstrap: gen-2, the source compiled by gen-1"
+	@$(MAKE) -s avra
+	@echo "bootstrap: build/avra is gen-2"
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
@@ -513,6 +519,15 @@ vocab:
 fingerprints:
 	@python3 tools/fingerprints.py
 
+# THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
+# compiler/codecs.av's registry runs every pair over its exemplars,
+# decode(encode(x)) compared to x field by field; tools/codecs.py
+# refuses any encoder/decoder-shaped pair in the tree the registry
+# does not name.
+codecs:
+	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
+	@python3 tools/codecs.py
+
 # THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
 # `rt_sigs()` and included last by the runtime, so a body that answers
 # a width its row does not name is a C compiler error at the line that
@@ -643,7 +658,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
+gate: seed-check stems vocab fingerprints codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true

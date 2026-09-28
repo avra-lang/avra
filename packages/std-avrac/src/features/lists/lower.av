@@ -17,6 +17,8 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
 /// guarded by its condition. The innermost turn pushes the element
 /// straight into the box — no intermediate list per outer element.
 fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> Reg {
+    let plan: Plan? = narrowing(cx, clauses)
+    if plan != null { narrowed(cx, clauses, plan!) }
     let size = cx.box_size(0)
     let dst = cx.grown_box(cx.shape_at(e), size, [])
     lower_clauses(cx, dst, elem, clauses, 0, [])
@@ -61,6 +63,30 @@ fn lower_clauses(
                 .void_region(cx.reg_of(cond)) { cx -> lower_clauses(cx, dst, elem, clauses, at + 1, regs) }
         },
     }
+}
+
+/// The lookup a comprehension over a relation narrows to, when one
+/// answers a conjunct whose value cannot be null.
+fn narrowing(cx: LowerCx, clauses: List<CompClause>) -> Plan? {
+    let scan? = relation_scan(cx.view, cx.names, clauses) else { return null }
+    comp_plans(cx.view, cx.names, clauses, scan)
+        .find((p: Plan) -> !could_be_null(cx.view.types.seen_shape(cx.type_at(p.value))))
+}
+
+/// The first head's source answered by the lookup: its register seeded
+/// with `lookup(db, value)` — the operands first — so the walk opens
+/// over the narrowed rows and the whole set is never read.
+fn narrowed(mut cx: LowerCx, clauses: List<CompClause>, plan: Plan) {
+    let source = head_source_of(clauses[0])
+    let db = cx.reg_of(plan.db)
+    let value = cx.reg_of(plan.value)
+    let rows = cx
+        .call_decl_at(source, cx.method_symbol(plan.lookup, source, cx.type_at(source)), [db, value])
+    cx.body.set_reg(source, rows)
+}
+
+fn head_source_of(c: CompClause) -> ExprId {
+    match c { .Head(_, _, source, _) -> source, .Filter(cond) -> cond }
 }
 
 /// A `collect`: an empty list, grown by each kept value as its
