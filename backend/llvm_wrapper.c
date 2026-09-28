@@ -682,9 +682,9 @@ LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
 
 // A `once fn`'s OWN SLOT: one raw pointer word, null-initialized,
 // private to this module — UNHEADERED, unlike every other global
-// here, because nothing walks it as a box; it holds the ADDRESS
-// `OnceRead`/`OnceCommit` load and store through. Idempotent by
-// name, so a fn's read and its own commit answer the SAME global.
+// here, because nothing walks it as a box; it holds the ADDRESS an
+// `once_slot` row's call is answered from directly. Idempotent by
+// name, so a symbol's read and its own commit answer the SAME global.
 LLVMValueRef avra_llvm_once_slot(LLVMModuleRef m, const char* name) {
     LLVMValueRef g = LLVMGetNamedGlobal(m, name);
     if (g) { return g; }

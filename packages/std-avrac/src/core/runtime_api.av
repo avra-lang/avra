@@ -459,18 +459,24 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.List],
         },
         // THE ONCE CACHE: a `once fn`'s answer, asked by the fn's own
-        // symbol. The get ANSWERS OWNED (the cache keeps its own
-        // reference forever); the set KEEPS what it is handed and so
-        // takes its OWN reference, as every keeping row does — it
-        // does not consume the caller's.
+        // symbol. The get ANSWERS the cache's OWN reference — kept
+        // forever, so `owns_result: false`: nothing the native
+        // backend ever produces from this row needs a release, and
+        // `once_slot` is why — it reads a per-symbol global instead
+        // of calling in (llvm_emit.av's `once_slot_value`), so the
+        // real C body's own retain never runs on that path either.
+        // The set KEEPS what it is handed and so takes its OWN
+        // reference, as every keeping row does — it does not consume
+        // the caller's.
         RtSig {
             name: "avra_once_get",
             ret: RtKind.Ptr,
             params: [RtKind.Ptr],
-            owns_result: true,
+            owns_result: false,
             has_owned_twin: false,
             host: RtHost.OnceGet,
             inert: true,
+            once_slot: true,
         },
         RtSig {
             name: "avra_once_set",
@@ -481,23 +487,7 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.OnceSet,
             keeps: [true, true],
             inert: true,
-        },
-        // A COMPILED `once fn`'s OWN SLOT, committed: settles the
-        // keyed table exactly as `avra_once_set` always has (the
-        // credit and the immortal flip happen there, unchanged), then
-        // fills this fn's own process-lifetime global with whichever
-        // value won — so every later `OnceRead` of it is a load, no
-        // call. Reached only from the backend's `OnceCommit` arm,
-        // never through `Ins.CallRt` — the interpreter's once cache is
-        // its own `self.onces`, so this row hosts nothing.
-        RtSig {
-            name: "avra_once_slot_commit",
-            ret: RtKind.Void,
-            params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
-            owns_result: false,
-            has_owned_twin: false,
-            host: RtHost.Unhosted,
-            inert: true,
+            once_slot: true,
         },
         RtSig {
             name: "avra_str_join",

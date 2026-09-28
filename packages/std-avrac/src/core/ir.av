@@ -94,21 +94,6 @@ export enum Ins {
     /// that aims at a pointer register, and it is a name, never a
     /// number.
     StaticAddr(@dst dst: Reg, sym: string)
-    /// A `once fn`'s own persistent slot, READ: the pointer it
-    /// holds, null until the first successful `OnceCommit` for this
-    /// symbol, thereafter the immortal answer, forever. One load
-    /// against a global this symbol alone names — no call, and the
-    /// memory pass owes it no retain (the same immortal-register rule
-    /// `StaticAddr` reads by, memory.av's `immortal_dst`): the only
-    /// value this ever answers non-null is one `OnceCommit` already
-    /// made immortal.
-    OnceRead(@dst dst: Reg, sym: string)
-    /// The slot's first write, settled exactly as the runtime's keyed
-    /// table always has been — a later commit for the same symbol is
-    /// a no-op, and every `OnceRead` after this one answers whichever
-    /// value won. `value` is BORROWED, as a runtime row's seats are:
-    /// the commit takes its own reference.
-    OnceCommit(sym: string, value: Reg)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
     // one flat list, never labels or jumps. Each branch of a region
@@ -213,8 +198,6 @@ impl Ins {
             .Extract(dst, src, at) -> derived([fp_str("Ins"), 9, dst.fingerprint(), src.fingerprint(), at]),
             .FnAddr(dst, sym) -> derived([fp_str("Ins"), 10, dst.fingerprint(), fp_str(sym)]),
             .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
-            .OnceRead(dst, sym) -> derived([fp_str("Ins"), 31, dst.fingerprint(), fp_str(sym)]),
-            .OnceCommit(sym, value) -> derived([fp_str("Ins"), 32, fp_str(sym), value.fingerprint()]),
             .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
             .ScopeExit(gives) -> derived(
                 [
@@ -282,8 +265,6 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .Extract(dst, src, at) -> Ins.Extract(m(dst), m(src), at),
         .FnAddr(dst, sym) -> Ins.FnAddr(m(dst), sym),
         .StaticAddr(dst, sym) -> Ins.StaticAddr(m(dst), sym),
-        .OnceRead(dst, sym) -> Ins.OnceRead(m(dst), sym),
-        .OnceCommit(sym, value) -> Ins.OnceCommit(sym, m(value)),
         .ScopeEnter(tier) -> Ins.ScopeEnter(tier),
         .ScopeExit(gives) -> Ins.ScopeExit(remapped_opt(gives, m)),
         .IfStart(cond) -> Ins.IfStart(m(cond)),
@@ -635,8 +616,6 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         },
         .FnAddr(d1, s1) -> match b { .FnAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
-        .OnceRead(d1, s1) -> match b { .OnceRead(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
-        .OnceCommit(s1, v1) -> match b { .OnceCommit(s2, v2) -> s1 == s2 && same_reg(v1, v2), rest -> false },
         .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
         .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
         .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
@@ -878,7 +857,14 @@ export enum RtHost {
 /// evaluation may.
 export enum Reach { Pure, Embed, Lookup, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false }
+/// `once_slot` marks a row the BACKEND answers from a per-symbol
+/// global instead of a call — never a new instruction: the shape it
+/// rides is the same `Ins.CallRt`/`CallRtVoid` every other row does,
+/// and which slot is the ordinary first argument's own compile-time
+/// text (llvm_emit.av's `once_slot_value`). Only a row whose C body
+/// is safe to skip on the read side, and whose caller keeps the
+/// answer immortal once written, may set it.
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, once_slot: bool = false }
 
 /// WHICH BOX a `Ptr` seat takes — and, in `answer`, which box a `Ptr`
 /// ANSWER hands back. A pointer says only that a header
