@@ -129,4 +129,43 @@ spec "features/lists — the comprehension planner" {
             ) == "0"
         }
     }
+    given "a join's adversarial shapes" {
+        then "a call handed the outer row after the inner head is refused" {
+            refused_in(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag && ok(r)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "a third head narrows by the second's row" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag for t in Row.all(3) if t.tag == s.tag].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+        then "an indexed outer head's row is read at its own place" {
+            answered(
+                provided(
+                    row_use() +
+                        "[i for i, r in Row.all(1) for s in Row.all(2) if s.tag == r.tag].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+        then "a row a lambda captures is handed to the call taking the lambda" {
+            refused_in(
+                provided(
+                    row_use() + "[r for r in Row.all(1) if [1].any((x: int) -> x == r.n)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+    }
 }

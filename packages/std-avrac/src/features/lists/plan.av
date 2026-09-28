@@ -152,7 +152,20 @@ fn row_field(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) 
 
 fn is_row(names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
     let b? = names.binding(e) else { return false }
-    match b { .Pattern(arm, at) -> same_expr(arm, cond) && at == j, rest -> false }
+    binds_row(names, cond, b, j)
+}
+
+/// Whether a binding is the row at place `j`, through every lambda that
+/// captured it.
+fn binds_row(names: NameFacts, cond: ExprId, b: Binding, j: int) -> bool {
+    match b {
+        .Pattern(arm, at) -> same_expr(arm, cond) && at == j,
+        .Capture(lam, index) -> {
+            let cap? = names.capture(lam) else { return false }
+            binds_row(names, cond, cap.sources[index], j)
+        },
+        .Param(_) or .Receiver or .Def(_) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> false,
+    }
 }
 
 /// A value the lookup may compute ONCE per scan: a literal, a local, a
@@ -207,10 +220,10 @@ export fn could_be_null(shape: Type) -> bool {
     match shape { .Opt(_) or .Null -> true, rest -> false }
 }
 
-/// The first call, in a filter of the scanned head's region, handed its
-/// row — what no index can answer, so a scan of the whole set would run
-/// it per row with nothing narrowing it first. Children come first, so
-/// the call named is the innermost.
+/// The first call, in any filter after the scanned head, handed its row —
+/// what no index can answer, so a scan of the whole set would run it per
+/// row with nothing narrowing it first. Children come first, so the call
+/// named is the innermost.
 export fn residual(
     d: Dispatch,
     view: FileView,
@@ -218,7 +231,7 @@ export fn residual(
     clauses: List<CompClause>,
     scan: Scan,
 ) -> ExprId? {
-    [k for cond in region_filters(clauses, scan.head) for k in post_order(d, view.store, cond) if hands_row(d, view, names, cond, k, scan.place)]
+    [k for c in clauses.slice(scan.head + 1, clauses.length) for cond in filter_cond(c) for k in post_order(d, view.store, cond) if hands_row(d, view, names, cond, k, scan.place)]
         .first()
 }
 
@@ -233,7 +246,16 @@ fn hands_row(d: Dispatch, view: FileView, names: NameFacts, cond: ExprId, k: Exp
     }
 }
 
-/// Whether the row at place `j` appears anywhere in an expression.
+/// Whether the row at place `j` appears anywhere in an expression — a
+/// lambda's body is not walked, so a lambda mentions the row when it
+/// captures it.
 fn mentions_row(d: Dispatch, view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
-    post_order(d, view.store, e).any((k: ExprId) -> is_row(names, cond, k, j))
+    post_order(d, view.store, e)
+        .any((k: ExprId) -> is_row(names, cond, k, j) || captures_row(names, cond, k, j))
+}
+
+/// Whether a lambda captures the row at place `j`.
+fn captures_row(names: NameFacts, cond: ExprId, lam: ExprId, j: int) -> bool {
+    let cap? = names.capture(lam) else { return false }
+    cap.sources.any((b: Binding) -> binds_row(names, cond, b, j))
 }
