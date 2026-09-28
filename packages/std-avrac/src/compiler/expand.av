@@ -159,6 +159,10 @@ impl Workspace {
             self.decls.speak_expansion(f, [wrap_bodiless(ann, w.original, at)])
             return []
         }
+        if !wraps_free(orig.kind) {
+            self.decls.speak_expansion(f, [wrap_method(ann, w.original, at)])
+            return []
+        }
         let source? = directive.source else {
             self.decls.speak_expansion(f, [wrap_missing(ann, w.original, at)])
             return []
@@ -931,4 +935,14 @@ fn same_param(a: Param, b: Param) -> bool {
 fn param_ty_spelling(p: Param) -> string {
     let ty? = p.ty else { return "" }
     spelled(ty)
+}
+
+/// Whether WRAP reaches a declaration of this kind: a free fn's
+/// callers reach the wrapper; a method's call dispatch is not yet
+/// taught the repoint.
+fn wraps_free(kind: DeclKind) -> bool {
+    match kind {
+        .Fn -> true,
+        .Method or .Const or .Collect or .CollectEnum or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin -> false,
+    }
 }
