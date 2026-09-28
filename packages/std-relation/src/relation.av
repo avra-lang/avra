@@ -26,6 +26,8 @@
 //! names could shadow. The templates' own names (`stable_hasher`,
 //! `Writer`) resolve here.
 use @std.meta.{
+    plans,
+    plans_all,
     type_named,
     Type,
     Field,
@@ -472,7 +474,10 @@ fn prior_member(t: Type) -> Decls {
 
 /// `all`: every live row under a Db, in id order.
 fn all_member(t: Type) -> Decls {
-    quote { static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all_in(db) } }
+    quote {
+        @plans_all
+        static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all_in(db) }
+    }
 }
 
 /// The row's key in each index, in the store's index order.
@@ -649,6 +654,7 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
             }
         } else {
             quote {
+                @plans(${literal(f.name)})
                 static fn ${n}(db: Db, v: string) -> List<${t}> {
                     let rs = ${name(t.name)}.rows_in(db)
                     rs.members(rs.read_text(db, ${i}, v))
@@ -664,6 +670,7 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
             }
         } else {
             quote {
+                @plans(${literal(f.name)})
                 static fn ${n}(db: Db, v: ${k.spelled()}) -> List<${t}> {
                     let rs = ${name(t.name)}.rows_in(db)
                     rs.members(rs.read_key(db, ${i}, ${key_of(quote { v }, k)}))
