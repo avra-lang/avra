@@ -1,8 +1,19 @@
 // `avra explain`'s own logic (compiler/store/explain.av): a witness
-// tree over a pack alone, and the pack's own shape — built directly
-// against `Pack` via `pack_at`/`put`/`commit`, never through the CLI.
+// tree over a pack plus a caller-supplied live check, and the pack's own
+// shape grouped by a caller-supplied family — built directly against
+// `Pack` via `pack_at`/`put`/`commit`, never through the CLI.
 use @std.io.{make_dirs, exists, remove}
-use compiler.store.{Pack, Entry, Edge, pack_at, witnessed, real_entries, summarized, Held}
+use compiler.store.{
+    Pack,
+    Entry,
+    Edge,
+    pack_at,
+    witnessed,
+    real_entries,
+    summarized,
+    Held,
+    FamilyCount,
+}
 
 fn explain_dir(name: string) -> string { "/tmp/avra-explain-test/${name}" }
 
@@ -19,26 +30,51 @@ fn witness_entry(name: string, hash: int, edges: List<Edge>) -> Entry {
 
 fn witness_edge(name: string, hash: int) -> Edge { Edge { name: name, hash: hash } }
 
+/// No live check answers for anything: every verdict comes from the pack.
+fn no_live(_name: string) -> int? { null }
+
+/// Two names re-derive live: one still at 10, one moved to 99.
+fn stub_live(name: string) -> int? {
+    when {
+        name == "live-held" -> 10
+        name == "live-moved" -> 99
+        _ -> null
+    }
+}
+
+/// A name's family is its text before the first dot, when it has one.
+fn stub_family(name: string) -> string? {
+    when {
+        name.starts_with("alpha.") -> "alpha"
+        name.starts_with("beta.") -> "beta"
+        _ -> null
+    }
+}
+
+fn entries_of(families: List<FamilyCount>, family: string) -> int {
+    [f.entries for f in families if f.family == family].first() ?? 0
+}
+
 spec "compiler/store/explain — the witness tree" {
     given "an edge whose target's stored hash still matches" {
         then "it holds" {
             let p = pack_at(explain_fresh("holds"), "cid")
             p.put(witness_entry("b", 10, []))
-            witnessed(p, "b", 10, ["a"]).held == Held.Matches
+            witnessed(p, "b", 10, ["a"], no_live).held == Held.Matches
         }
     }
     given "an edge whose target's stored hash has moved on" {
         then "it is stale, and names both hashes" {
             let p = pack_at(explain_fresh("stale"), "cid")
             p.put(witness_entry("b", 20, []))
-            let w = witnessed(p, "b", 10, ["a"])
-            w.held == Held.Stale && w.stored_hash == 20 && w.expected_hash == 10
+            let w = witnessed(p, "b", 10, ["a"], no_live)
+            w.held == Held.Stale && w.found_hash == 20 && w.recorded_hash == 10
         }
     }
-    given "an edge naming nothing this pack ever `put`" {
+    given "an edge naming nothing the pack stores and nothing can re-derive" {
         then "it is external, not a failure" {
             let p = pack_at(explain_fresh("external"), "cid")
-            witnessed(p, "ghost", 5, ["a"]).held == Held.External
+            witnessed(p, "ghost", 5, ["a"], no_live).held == Held.External
         }
     }
     given "an edge re-entering a name already on the path" {
@@ -46,7 +82,7 @@ spec "compiler/store/explain — the witness tree" {
             let p = pack_at(explain_fresh("cycle"), "cid")
             p.put(witness_entry("a", 1, [witness_edge("b", 2)]))
             p.put(witness_entry("b", 2, [witness_edge("a", 1)]))
-            let w = witnessed(p, "b", 2, ["a"])
+            let w = witnessed(p, "b", 2, ["a"], no_live)
             w.held == Held.Matches && w.children.length == 1 && w.children[0].held == Held.Cycle
         }
     }
@@ -68,10 +104,27 @@ spec "compiler/store/explain — the witness tree" {
                     ),
                 )
             let root? = p.get("root") else { return false }
-            let kids = [witnessed(p, e.name, e.hash, ["root"]) for e in root.edges]
+            let kids = [witnessed(p, e.name, e.hash, ["root"], no_live) for e in root.edges]
             kids[0].held == Held.Matches &&
                 kids[1].held == Held.Stale &&
                 kids[2].held == Held.External
+        }
+    }
+    given "an edge a live check can re-derive" {
+        then "a live hash equal to the recorded one holds, and is the hash found" {
+            let p = pack_at(explain_fresh("live-holds"), "cid")
+            let w = witnessed(p, "live-held", 10, ["root"], stub_live)
+            w.held == Held.Matches && w.found_hash == 10 && w.children.length == 0
+        }
+        then "a live hash that moved is stale, naming the recorded and the live hash" {
+            let p = pack_at(explain_fresh("live-moves"), "cid")
+            let w = witnessed(p, "live-moved", 10, ["root"], stub_live)
+            w.held == Held.Stale && w.recorded_hash == 10 && w.found_hash == 99
+        }
+        then "the live answer decides over a stored entry that disagrees" {
+            let p = pack_at(explain_fresh("live-wins"), "cid")
+            p.put(witness_entry("live-held", 555, []))
+            witnessed(p, "live-held", 10, ["root"], stub_live).held == Held.Matches
         }
     }
 }
@@ -88,7 +141,7 @@ spec "compiler/store/explain — the pack's own shape" {
             let p = pack_at(explain_fresh("summary-counts"), "cid")
             p.put(witness_entry("a", 1, [witness_edge("never-put", 9)]))
             p.put(witness_entry("b", 2, []))
-            let s = summarized(p)
+            let s = summarized(p, stub_family)
             s.entries == 2 && s.referenced_only == 1
         }
     }
@@ -96,14 +149,60 @@ spec "compiler/store/explain — the pack's own shape" {
         then "nothing is on disk until commit answers true" {
             let p = pack_at(explain_fresh("uncommitted"), "cid")
             p.put(witness_entry("a", 1, []))
-            summarized(p).disk_bytes == 0
+            summarized(p, stub_family).disk_bytes == 0
         }
         then "committing writes real bytes, and a fresh pack is no bigger than what is on disk" {
             let p = pack_at(explain_fresh("committed"), "cid")
             p.put(witness_entry("a", 1, []))
             let ok = p.commit()
-            let s = summarized(p)
+            let s = summarized(p, stub_family)
             ok && s.disk_bytes > 0 && s.live_bytes <= s.disk_bytes
+        }
+    }
+    given "entries and referenced-only names spread over two families and some no family claims" {
+        then "each family counts its own entries, in the order the pack first met them" {
+            let p = pack_at(explain_fresh("by-family"), "cid")
+            p
+                .put(
+                    witness_entry(
+                        "alpha.x",
+                        1,
+                        [witness_edge("beta.dep", 5), witness_edge("loose-dep", 6)],
+                    ),
+                )
+            p.put(witness_entry("alpha.y", 2, []))
+            p.put(witness_entry("beta.z", 3, []))
+            p.put(witness_entry("loose", 4, []))
+            let s = summarized(p, stub_family)
+            [f.family for f in s.families].join(",") == "alpha,beta,(other)" &&
+                entries_of(s.families, "alpha") == 2 &&
+                entries_of(s.families, "beta") == 1 &&
+                entries_of(s.families, "(other)") == 1
+        }
+        then "the payload bytes are summed per family, not shared out" {
+            let p = pack_at(explain_fresh("by-family-bytes"), "cid")
+            p.put(witness_entry("alpha.x", 1, []))
+            p.put(witness_entry("alpha.y", 2, []))
+            p.put(witness_entry("beta.z", 3, []))
+            let s = summarized(p, stub_family)
+            ["${f.payload_bytes}" for f in s.families].join(",") == "2,1"
+        }
+        then "names only ever referenced are grouped by family too" {
+            let p = pack_at(explain_fresh("referenced-by-family"), "cid")
+            p
+                .put(
+                    witness_entry(
+                        "alpha.x",
+                        1,
+                        [
+                            witness_edge("beta.dep", 5),
+                            witness_edge("beta.dep2", 6),
+                            witness_edge("loose-dep", 7),
+                        ],
+                    ),
+                )
+            let s = summarized(p, stub_family)
+            ["${r.family}=${r.names}" for r in s.referenced].join(",") == "beta=2,(other)=1"
         }
     }
 }
