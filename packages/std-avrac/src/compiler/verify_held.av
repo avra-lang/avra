@@ -137,7 +137,7 @@ fn identity_mismatches(path: string, wd: Decl, fd: Decl) -> List<HeldMismatch> {
 /// THE SIGNATURE, THE SEAT MARKS, THE LAYOUT — everything a `sig()` ask
 /// unlocks. A `const` never fills through `sig()` (its type rides
 /// `type_of_const` instead — `record_line`'s own writer guards it the same
-/// way), so it is asked apart and nothing here reads seats or layout for it.
+/// way), and an impl's own answer is its target, so each is asked apart.
 fn sig_mismatches(
     path: string,
     warm_ws: Workspace,
@@ -147,20 +147,31 @@ fn sig_mismatches(
     fd: Decl,
     fid: DeclId,
 ) -> List<HeldMismatch> {
-    if wd.kind is .Const {
-        warm_ws.fill_ensured(wid)
-        return const_type_mismatches(path, warm_ws, wd, fresh_ws, fd)
+    match wd.kind {
+        .Const -> {
+            warm_ws.fill_ensured(wid)
+            const_type_mismatches(path, warm_ws, wd, fresh_ws, fd)
+        },
+        .Impl -> target_mismatches(path, warm_ws, wd, wid, fresh_ws, fid),
+        .Record -> signed_mismatches(path, warm_ws, wd, wid, fresh_ws, fid)
+            .concat(flat_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid)),
+        .Builtin or .Fn or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Main or .Case or .Collect or .CollectEnum -> signed_mismatches(path, warm_ws, wd, wid, fresh_ws, fid),
     }
-    if wd.kind is .Impl {
-        return target_mismatches(path, warm_ws, wd, wid, fresh_ws, fid)
-    }
+}
+
+/// A declaration's `sig()` and its seat marks, each side asked in its own workspace.
+fn signed_mismatches(
+    path: string,
+    warm_ws: Workspace,
+    wd: Decl,
+    wid: DeclId,
+    fresh_ws: Workspace,
+    fid: DeclId,
+) -> List<HeldMismatch> {
     let wsig = warm_ws.sig(wid)
     let fsig = fresh_ws.sig(fid)
     some_list(maybe_mismatch(path, wd.name, "sig", warm_ws.sig_str(wsig), fresh_ws.sig_str(fsig)))
         .concat(seat_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid))
-        .concat(
-            if wd.kind is .Record { flat_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid) } else { [] },
-        )
 }
 
 fn const_type_mismatches(path: string, warm_ws: Workspace, wd: Decl, fresh_ws: Workspace, fd: Decl) -> List<
