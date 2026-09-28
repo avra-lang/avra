@@ -152,20 +152,23 @@ ticket=""
 # The queue's own directory, made once.
 tickets_dir() { echo "$lock_dir/tickets"; }
 
-# Every ticket number waiting or holding, ascending, with a dead one's
-# directory removed on the way past it — so a caller scanning for the
-# lowest LIVE ticket cleans the queue as a side effect of asking.
-live_tickets() {
+# The lowest ticket still waiting or holding, every dead ticket removed
+# on the way past, so asking cleans the queue. It answers one value and
+# pipes nothing: a caller reading only the first of a listed queue would
+# leave the rest writing into a closed pipe.
+lowest_live_ticket() {
     d="$(tickets_dir)"
+    lowest=""
     for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
         pid="$(cat "$d/$t/pid" 2>/dev/null)"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "$t"
+            [ -z "$lowest" ] && lowest="$t"
         elif [ -n "$pid" ]; then
             echo "land: reclaiming a dead ticket ($t, pid $pid is not running)" >&2
             rm -rf "$d/$t" 2>/dev/null
         fi
     done
+    echo "$lowest"
 }
 
 acquire_lock() {
@@ -190,7 +193,7 @@ acquire_lock() {
 
     printed_wait=0
     while :; do
-        lowest="$(live_tickets | head -1)"
+        lowest="$(lowest_live_ticket)"
         [ "$lowest" = "$ticket" ] && return 0
         if [ "$printed_wait" -eq 0 ]; then
             echo "land: ticket $ticket taken — waiting behind ticket $lowest" >&2
