@@ -482,6 +482,15 @@ build_generation() {
 # rename); a job's own slot is freed by a STATUS FILE, never `kill -0`
 # on its pid — a finished-but-unwaited child is still a live pid to
 # `kill -0` (a zombie), so polling pids would never see a slot free.
+# Whether a landing reaches the compiler: its C, or any package the cli
+# (the compiler's root) imports, however deep — the closure
+# affected_packages.sh already computes names packages/cli exactly then.
+compiler_reached() {
+    case "$4" in *"runtime/"*) return 0 ;; esac
+    reached="$(sh "$tools_dir/affected_packages.sh" "$2" "$3" "$1" 2>/dev/null)" || return 0
+    printf '%s\n' "$reached" | grep -qxE '(packages/)?cli'
+}
+
 job_pool_reset() {
     : > "$scratch/jobs.list"
     rm -rf "$scratch/jobs"
@@ -614,9 +623,7 @@ run_pipeline() {
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
     compiler_changed=0
-    case "$diff_files" in
-        *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
-    esac
+    if compiler_reached "$branch_wt" "$old_main_sha" "$new_branch_sha" "$diff_files"; then compiler_changed=1; fi
     echo "land: compiler changed in this landing: $compiler_changed" >&2
 
     # A SUBSHELL each: `build_generation`'s own `cd "$wt"` must not
@@ -774,9 +781,7 @@ try_integration() {
     new_sha="$(git -C "$batch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$batch_wt" diff --name-only "$old_main_sha...$new_sha")"
     compiler_changed=0
-    case "$diff_files" in
-        *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
-    esac
+    if compiler_reached "$batch_wt" "$old_main_sha" "$new_sha" "$diff_files"; then compiler_changed=1; fi
 
     if ! ( build_generation "$batch_wt" "batch-1-$label" ); then return 1; fi
     if [ "$compiler_changed" -eq 1 ]; then
