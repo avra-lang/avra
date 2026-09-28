@@ -1,0 +1,16 @@
+// The dependency audit is compiled in only while an audit is being run: a compiler that
+// carries it pays for it on every declaration read, and `tools/dep_audit.sh` restores the
+// switch on every exit it can catch. A tree stranded with the switch on fails here.
+use features.{audit_build}
+use @std.io.{env}
+
+fn auditing_now() -> bool {
+    let path? = env("AVRA_DEP_AUDIT") else { return false }
+    !path.is_empty()
+}
+
+spec "compiler/audit — the audit is compiled in only for an audit run" {
+    then "a compiler built with the audit is being run for one" {
+        !audit_build || auditing_now()
+    }
+}
