@@ -143,6 +143,18 @@ mut bt = tick()
 bump(bt)
 println("b ${bt.n} '
 ed $R/b/src/main.av "use @rt.lib.{two, pick}" "use @rt.lib.{two, pick, Tick, tick}"; S "a seal arrives from a file that does not declare the record" b
+# A HELD CALLEE'S CONSUMED SEAT (R3): wrapped(s) packs s into a fresh list it
+# answers — the callee never retains it itself, so the CALLER must hand s
+# over already retained. (.66 hole 3: a held callee's record never carried
+# `consumed`, so a fresh caller reading it back defaulted every seat plain,
+# skipped the retain, and s's second use read what the callee's own,
+# never-happened release should have kept alive.)
+printf 'export fn wrapped(s: string) -> List<string> { [s] }\n' >> $R/lib/src/leaf.av
+ed $R/b/src/main.av "use @rt.lib.{two, pick, Tick, tick}" "use @rt.lib.{two, pick, Tick, tick, wrapped}"
+ed $R/b/src/main.av 'println("b ${bt.n} ${two()} ${pick("x", "y", true)}")' 'let s = "s-${bt.n}"
+let w = wrapped(s)
+println("b ${bt.n} ${two()} ${pick("x", "y", true)} ${s} ${w[0]}")'
+S "a held callee's consumed seat: the caller retains s before wrapped(s) takes it" b
 ed $R/a/src/main.av 'println("a ' 'println("a. ';                   S "a, whose objects read it flat" a
 printf 'export fn extra() -> int { 40 }\n' > $R/lib/src/extra.av
 ed $R/lib/src/lib.av "one(1) +" "one(1) + extra() +";          S "file added" a
@@ -169,7 +181,7 @@ use @std.relation.db.{new_db}
 @relation
 type Todo = { id: int, @index owner: string }
 let db = new_db()
-let _ = Todo.insert(db, Todo { id: 0, owner: "a" })
+let _ = Todo.insert(db, owner: "a")
 println("rel ${Todo.all(db).length}")
 AV
 S "a program holds @std/relation, reaching only stable.av" st

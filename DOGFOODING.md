@@ -1518,6 +1518,23 @@ restored content against the merged HEAD before trusting it, on
 every restore, not only when a conflict marker would have warned —
 the merge's own diff already names the ground truth to check against.
 
+## A fixture stands where the real thing stands, or it tests the stand-in
+
+A keeper's fixture builds a small stand-in tree, and every place the
+stand-in differs from the real tree is a place the keeper is not
+tested. land.sh's batch fixtures passed 44/44 while every real batch
+failed: the stub repo COMMITTED its fake `build/avra`, so each fresh
+worktree carried a compiler, where the real tree ignores `build/` and
+a fresh worktree has none. The same fixtures had no idioms baseline,
+no warm cache, no `@fixes` rules and no symlinked `/tmp` path — four
+more differences, and a real batch failed on each of them in turn.
+The stand-in is written to make the fixture run, so it quietly
+supplies whatever the code under test forgot to. Give the stand-in the
+real tree's absences (an ignored `build/`, an empty cache, a physical
+path), and before trusting a keeper built on stubs, run it once
+through the real thing — one real branch through the real pipeline
+is the receipt a green fixture cannot be.
+
 ## Proven but awaiting their first honest use
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.

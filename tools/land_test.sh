@@ -545,6 +545,8 @@ STUB
     cat > "$d/Makefile" <<'MK'
 build/libavra_runtime.a:
 	@touch build/libavra_runtime.a
+objects:
+	@touch build/libavra_runtime.a
 libs:
 	@echo libs-ok
 idioms:
