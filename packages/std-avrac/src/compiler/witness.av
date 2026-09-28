@@ -21,28 +21,46 @@
 //! safe direction, never a wrongly-trusted reuse. Widening it to the
 //! rest of the 23 is the next slice's work, family by family.
 //!
-//! TWO LAWS an edge's hash keeps. A `Parsed` edge covers the source TEXT
-//! as well as the parse's structure, because a report renders positions
-//! and source lines the structure does not carry. A `Namespace` edge
-//! covers the module's file list and bound names, because a witness
-//! records what was read and an ADDED file is a read that returned
-//! nothing. A dep whose subject is gone — a file the host no longer has,
-//! a package ordinal past the packages — answers unresolvable.
+//! THREE LAWS an edge's hash keeps. A `Parsed` edge is the parse's
+//! STRUCTURE, which is all a file that reads another's declarations
+//! reads of it: a comment or a reindent in a callee moves no caller. A
+//! file's TEXT is its own edge (`Source`), held for the file itself and
+//! for every file a frame of its report points into — a report renders
+//! its positions and source lines, which the structure does not carry.
+//! A `Namespace` edge covers the module's file list and bound names,
+//! because a witness records what was read and an ADDED file is a read
+//! that returned nothing. A dep whose subject is gone — a file the host
+//! no longer has, a package ordinal past the packages — answers
+//! unresolvable.
+//!
+//! A FILE'S NAMESPACE is read by NAME. `Visible(f)`, the witnessed file's
+//! or any file it reaches, stands for the names that namespace was asked,
+//! each with the declaration that answered it or the fact that none did
+//! (`NameRead`), the diagnostics the namespace itself spoke
+//! (`VisibleVoices`: import errors, clashes filed at the file), and — only
+//! when the name lists were read to suggest — the whole scope
+//! (`VisibleScope`). So an edit elsewhere in a module moves a witness only
+//! when it moves a name that was read. Everything else `Visible(f)` reads
+//! (the manifest, the file's own text) is read as anywhere.
 use core.{
     DeclId,
     FileId,
     ModuleId,
     joined,
+    list_cell,
+    map_cell,
     wire_escape,
     wire_unescape,
     fp_str,
     fp_list,
     flatten,
     module_path,
+    same_file,
     sorted_texts,
 }
 use query.{Key}
-use features.{Decls, Decl}
+use diagnostics.{Diag, located_files}
+use features.{Decls, Decl, NameKind, name_kind_word, name_kind_of, Namespace}
 use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
 use @std.relation.stable.{
     writer as stable_writer,
@@ -101,6 +119,10 @@ export fn name_parts(name: string) -> KeyName? {
 
 export fn stable_file_name(path: string) -> string { stable_line("file", [path]) }
 
+/// A key over one file, by the file's path: the ONE spelling of a file-keyed
+/// edge's name.
+fn file_key(word: string, path: string) -> string { stable_line("key", [word, stable_file_name(path)]) }
+
 export fn stable_module_name(name: string) -> string { stable_line("module", [name]) }
 
 /// A `Key`'s own dense identity, for a visited set during ONE
@@ -156,8 +178,10 @@ fn family_from_word(w: string) -> Family? { families().find((f: Family) -> famil
 /// `Itself`: the family's own hash is the edge and nothing below it
 /// is read. `ItselfAndBelow`: the same, and what it read besides.
 /// `Below`: a relay point, whose own deps stand in for it (kept as
-/// itself only when it read nothing).
-enum Reading { Itself, ItselfAndBelow, Below }
+/// itself only when it read nothing). `Replaced`: a file's `Visible`, whose
+/// module-content deps stand aside for the names it was asked. `Nothing`: a
+/// dep that stands aside there.
+enum Reading { Itself, ItselfAndBelow, Below, Replaced, Nothing }
 
 /// A REGISTRY over every family, spelled by arm, so a new family cannot
 /// be read into a witness without someone deciding how.
@@ -165,13 +189,89 @@ fn reading_of(fam: Family) -> Reading {
     match fam {
         .Parsed or .Sig or .MethodDiags -> Reading.Itself,
         .Namespace -> Reading.ItselfAndBelow,
-        .Source or .Items or .Visible or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
+        .Visible -> Reading.Replaced,
+        .Source or .Items or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
     }
 }
+
+/// Every name a namespace holds, by content: what an absent name depends on.
+fn scope_digest(ns: Namespace) -> int { fp_str(joined(sorted_texts(ns.scope_words()), "\n")) }
+
+/// How a family reads INSIDE a `Visible`: the module's text stands aside
+/// for the names asked of it, and the module's own file list is a relay to
+/// the manifest that shapes it; everything else reads as it does anywhere.
+fn reading_inside_visible(fam: Family) -> Reading {
+    match fam {
+        .Items or .Parsed -> Reading.Nothing,
+        .Namespace -> Reading.Below,
+        rest -> reading_of(fam),
+    }
+}
+
+/// The hash of a name that answered nothing.
+fn absent_hash() -> int { fp_str("absent") }
 
 /// One bound name as a module's digest sees it: owner, name, exported.
 fn bound_word(x: Decl) -> string {
     if x.exported { "${x.owner}.${x.name}!" } else { "${x.owner}.${x.name}" }
+}
+
+// ── Edges no kernel cell names ──
+
+/// What a file's own namespace says of itself. Named in the `key` shape, so
+/// `name_parts` reads them like any other edge.
+enum Asked { NameRead, VisibleVoices, VisibleScope }
+
+fn asked_word(a: Asked) -> string {
+    match a {
+        .NameRead -> "NameRead",
+        .VisibleVoices -> "VisibleVoices",
+        .VisibleScope -> "VisibleScope",
+    }
+}
+
+fn asked_from_word(w: string) -> Asked? {
+    [Asked.NameRead, Asked.VisibleVoices, Asked.VisibleScope].find((a: Asked) -> asked_word(a) == w)
+}
+
+fn asked_name(a: Asked, arg: string) -> string { stable_line("key", [asked_word(a), arg]) }
+
+/// One expansion's state: the keys it has walked (per context: a key met
+/// inside a `Visible` and outside one is read twice), the keys it has kept,
+/// the files whose namespaces it read by name, and whether it is inside one.
+type Walk = {
+    visited: Cell<Map<string, bool>>,
+    emitted: Cell<Map<string, bool>>,
+    named: Cell<List<FileId>>,
+    inside: Cell<bool>,
+}
+
+fn new_walk() -> Walk {
+    Walk { visited: map_cell(), emitted: map_cell(), named: list_cell(), inside: Cell.new(false) }
+}
+
+impl Walk {
+    /// How a family reads here: inside a `Visible` the module's names stand
+    /// aside.
+    fn reading(fam: Family) -> Reading {
+        if self.inside.get() { reading_inside_visible(fam) } else { reading_of(fam) }
+    }
+
+    /// The key once, then nothing: a leaf reached by two paths is one edge.
+    fn once(k: Key) -> List<Key> {
+        let vk = depkey_string(k)
+        if self.emitted.get().get(vk) != null { return [] }
+        self.emitted.put(vk, true)
+        [k]
+    }
+
+    /// The walk's key, told apart by whether it is inside a `Visible`.
+    fn walked(k: Key) -> string { "${depkey_string(k)}|${self.inside.get()}" }
+
+    /// Notes that `f`'s namespace is read by name.
+    fn name(f: FileId) {
+        if !self.named.get().any((n: FileId) -> same_file(n, f)) { self.named.push(f) }
+    }
 }
 
 // ── The row this file makes durable: one file's rendered check ──
@@ -234,10 +334,7 @@ impl Workspace {
         let fam = family_at(k.family)
         let word = family_word(fam)
         match fam {
-            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> stable_line(
-                "key",
-                [word, stable_file_name(self.decls.file(FileId { index: k.arg }).path)],
-            ),
+            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> file_key(word, self.decls.file(FileId { index: k.arg }).path),
             .Namespace or .HeldSig -> stable_line(
                 "key",
                 [word, stable_module_name(self.decls.module_name(ModuleId { index: k.arg }))],
@@ -310,10 +407,20 @@ impl Workspace {
     /// mismatch — the safe direction, never a wrongly-trusted reuse.
     fn edge_current_hash(name: string) -> int? {
         let parts? = name_parts(name) else { return null }
-        let fam? = family_from_word(parts.family) else { return null }
         let inner = parsed_stable(parts.arg)
+        let asked? = asked_from_word(parts.family) else { return self.family_current_hash(parts.family, inner) }
+        match asked {
+            .NameRead -> self.current_name_read_hash(inner),
+            .VisibleVoices -> self.current_visible_voices_hash(inner),
+            .VisibleScope -> self.current_visible_scope_hash(inner),
+        }
+    }
+
+    fn family_current_hash(word: string, inner: StableId) -> int? {
+        let fam? = family_from_word(word) else { return null }
         match fam {
             .Parsed -> self.current_parsed_hash(inner),
+            .Source -> self.current_source_hash(inner),
             .Namespace -> self.current_namespace_hash(inner),
             .MethodDiags -> self.current_method_diags_hash(inner),
             .Sig -> self.current_sig_hash(inner),
@@ -332,13 +439,117 @@ impl Workspace {
         self.parsed_edge_hash(self.file_id(inner.parts[0]))
     }
 
-    /// What a `Parsed` edge holds: the parse's structural hash beside the
-    /// digest of the text it read.
+    /// What a `Parsed` edge holds: the parse's structural hash.
     fn parsed_edge_hash(f: FileId) -> int? {
         let _ = self.parsed(f)
-        let structure? = self.db.value_hash_of(key(Family.Parsed, f.index)) else { return null }
-        let text? = self.db.value_hash_of(key(Family.Source, f.index)) else { return null }
-        fp_list([structure, text])
+        self.db.value_hash_of(key(Family.Parsed, f.index))
+    }
+
+    /// A file's text as it stands now, or null for a file the host lacks —
+    /// asking never mints one.
+    fn current_source_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        if !self.host.exists(inner.parts[0]) { return null }
+        self.source_hash_of(self.file_id(inner.parts[0]))
+    }
+
+    fn source_hash_of(f: FileId) -> int? {
+        let _ = self.parsed(f)
+        self.db.value_hash_of(key(Family.Source, f.index))
+    }
+
+    /// The text `f`'s answer reads: its own, and that of every other file
+    /// a frame of its diagnostics locates into — a rendering shows source
+    /// lines at those offsets. A file the host lacks holds no hash, so its
+    /// edge refuses.
+    fn text_edges(f: FileId, ds: List<Diag>) -> List<Edge> {
+        let own = self.decls.file(f).path
+        let named = flatten([located_files(d) for d in ds])
+        let paths = [own].concat([p for p in named if p != own])
+        [Edge { name: file_key(family_word(Family.Source), p), hash: self.text_hash_at(p) } for i, p in paths if paths.index_of(p) == i]
+    }
+
+    fn text_hash_at(path: string) -> int {
+        if !self.host.exists(path) { return 0 }
+        self.source_hash_of(self.file_id(path)) ?? 0
+    }
+
+    /// A file's own namespace as it stands now, or null for a file the
+    /// host lacks.
+    fn namespace_at_path(path: string) -> Namespace? {
+        if !self.host.exists(path) { return null }
+        self.visible(self.file_id(path))
+    }
+
+    /// A name read answers the stable name of the declaration a file's
+    /// namespace now gives it, or the hash of an absent name.
+    fn current_name_read_hash(inner: StableId) -> int? {
+        if inner.kind != "name" || inner.parts.length < 3 { return null }
+        let ns? = self.namespace_at_path(inner.parts[0]) else { return null }
+        let kind? = name_kind_of(inner.parts[1]) else { return null }
+        self.read_hash(self.asked_of(ns, kind, inner.parts[2]))
+    }
+
+    fn asked_of(ns: Namespace, kind: NameKind, name: string) -> DeclId? {
+        match kind {
+            .Fn -> ns.fn_decl(name),
+            .Type -> ns.type_decl(name),
+            .Syntax -> ns.syntax_decl(name),
+        }
+    }
+
+    fn answer_hash(d: DeclId) -> int { fp_str(self.decls.stable_decl_name(d)) }
+
+    /// What a read holds: the stable name of the declaration that answered,
+    /// or the hash of an absent name.
+    fn read_hash(answer: DeclId?) -> int {
+        let d? = answer else { return absent_hash() }
+        self.answer_hash(d)
+    }
+
+    fn current_visible_voices_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        let ns? = self.namespace_at_path(inner.parts[0]) else { return null }
+        diags_fingerprint(ns.voices.list)
+    }
+
+    fn current_visible_scope_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        let ns? = self.namespace_at_path(inner.parts[0]) else { return null }
+        scope_digest(ns)
+    }
+
+    /// What `f`'s own namespace was asked and said, as edges: the
+    /// diagnostics it spoke, the whole scope when anything went unanswered
+    /// or suggested, and each name it answered.
+    fn visible_edges(f: FileId) -> List<Edge> {
+        let ns = self.visible(f)
+        let path = self.decls.file(f).path
+        let voices = Edge {
+            name: asked_name(Asked.VisibleVoices, stable_file_name(path)),
+            hash: diags_fingerprint(ns.voices.list),
+        }
+        let scope = if ns.reads.suggested.get() {
+            [
+                Edge {
+                    name: asked_name(Asked.VisibleScope, stable_file_name(path)),
+                    hash: scope_digest(ns),
+                },
+            ]
+        } else {
+            []
+        }
+        [voices]
+            .concat(scope)
+            .concat(
+                [Edge {
+                    name: asked_name(
+                        Asked.NameRead,
+                        stable_line("name", [path, name_kind_word(r.kind), r.name]),
+                    ),
+                    hash: self.read_hash(r.answer),
+                } for r in ns.reads.found.get()],
+            )
     }
 
     /// A file's clash diagnostics as they stand now: asking is the query.
@@ -421,11 +632,11 @@ impl Workspace {
     /// `root`'s deps, expanded to the families this file can
     /// revalidate, as (stable name, current value hash) edges.
     fn expanded_edges(root: Key) -> List<Edge> {
-        let empty: Map<string, bool> = {}
-        let visited: Cell<Map<string, bool>> = Cell.new(empty)
-        visited.put(depkey_string(root), true)
-        let leaves = flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(root)])
+        let walk = new_walk()
+        walk.visited.put(walk.walked(root), true)
+        let leaves = flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(root)])
         [Edge { name: self.stable_key_name(k), hash: self.edge_hash_of(k) } for k in leaves]
+            .concat(flatten([self.visible_edges(f) for f in walk.named.get()]))
     }
 
     /// One dependency, read into edges by its family's `Reading`. A
@@ -436,19 +647,36 @@ impl Workspace {
     /// under them), and `edge_current_hash` knows how to revalidate those
     /// too — an opaque edge for anything it does not is the fallback,
     /// never a dependency silently dropped.
-    fn leaf_keys(k: Key, visited: Cell<Map<string, bool>>) -> List<Key> {
-        let vk = depkey_string(k)
-        if visited.get().get(vk) != null { return [] }
-        visited.put(vk, true)
-        match reading_of(family_at(k.family)) {
-            .Itself -> [k],
-            .ItselfAndBelow -> [k].concat(self.leaves_below(k, visited)),
-            .Below -> if self.db.deps_of(k).is_empty() { [k] } else { self.leaves_below(k, visited) },
+    fn leaf_keys(k: Key, walk: Walk) -> List<Key> {
+        let vk = walk.walked(k)
+        if walk.visited.get().get(vk) != null { return [] }
+        walk.visited.put(vk, true)
+        match walk.reading(family_at(k.family)) {
+            .Itself -> walk.once(k),
+            .ItselfAndBelow -> walk.once(k).concat(self.leaves_below(k, walk)),
+            .Below -> self.below_or_itself(k, walk),
+            .Replaced -> self.replaced_or_below(k, walk),
+            .Nothing -> [],
         }
     }
 
-    fn leaves_below(k: Key, visited: Cell<Map<string, bool>>) -> List<Key> {
-        flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(k)])
+    fn below_or_itself(k: Key, walk: Walk) -> List<Key> {
+        if self.db.deps_of(k).is_empty() { walk.once(k) } else { self.leaves_below(k, walk) }
+    }
+
+    /// A file's `Visible` stands aside for the names it was asked; what else
+    /// it read is walked as anywhere.
+    fn replaced_or_below(k: Key, walk: Walk) -> List<Key> {
+        walk.name(FileId { index: k.arg })
+        let was = walk.inside.get()
+        walk.inside.set(true)
+        let kept = self.leaves_below(k, walk)
+        walk.inside.set(was)
+        kept
+    }
+
+    fn leaves_below(k: Key, walk: Walk) -> List<Key> {
+        flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(k)])
     }
 
     fn settled_check(f: FileId, name: string) -> WitnessedCheck {
@@ -469,7 +697,9 @@ impl Workspace {
     /// witness or a witness with no row (§4 decision 7).
     fn record_witness(f: FileId, name: string, out: WitnessedCheck) {
         let pack? = self.pack.get() else { return }
-        let edges = self.expanded_edges(key(Family.Analysis, f.index))
+        let edges = self
+            .expanded_edges(key(Family.Analysis, f.index))
+            .concat(self.text_edges(f, self.analysis(f).diagnostics))
         pack
             .put(
                 PackEntry {
