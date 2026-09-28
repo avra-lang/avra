@@ -268,6 +268,12 @@ fn new_walk() -> Walk {
     Walk { visited: map_cell(), emitted: map_cell(), named: list_cell(), inside: Cell.new(false) }
 }
 
+/// One key's whole subtree, expanded once and shared by every file's
+/// walk: the leaves it flattens to, and the files whose `Visible` it
+/// reached (`Walk.name`'s own side effect, carried forward on a
+/// memo hit so a cached subtree still contributes its Visible edges).
+export type LeafSet = { leaves: List<Key>, named: List<FileId> }
+
 impl Walk {
     /// How a family reads here: inside a `Visible` the module's names stand
     /// aside.
@@ -549,10 +555,33 @@ impl Workspace {
         scope_digest(ns)
     }
 
+    /// `visible_edges`'s own body, memoized under the same stamp: every
+    /// witnessed file that imports `f`'s module rebuilt this same list
+    /// (one entry per name `f`'s namespace answered) from scratch.
+    fn visible_edges(f: FileId) -> List<Edge> {
+        let vk = "${f.index}"
+        let cached? = self.visible_memo(vk) else {
+            let built = self.built_visible_edges(f)
+            self.visible_remember(vk, built)
+            return built
+        }
+        cached
+    }
+
+    fn visible_memo(vk: string) -> List<Edge>? {
+        if self.leaf_memo_stale() { return null }
+        self.visible_memo_sets.get().get(vk)
+    }
+
+    fn visible_remember(vk: string, es: List<Edge>) {
+        self.ensure_memo_fresh()
+        self.visible_memo_sets.put(vk, es)
+    }
+
     /// What `f`'s own namespace was asked and said, as edges: the
     /// diagnostics it spoke, the whole scope when anything went unanswered
     /// or suggested, and each name it answered.
-    fn visible_edges(f: FileId) -> List<Edge> {
+    fn built_visible_edges(f: FileId) -> List<Edge> {
         let ns = self.visible(f)
         let path = self.decls.file(f).path
         let voices = Edge {
@@ -665,8 +694,33 @@ impl Workspace {
         let walk = new_walk()
         walk.visited.put(walk.walked(root), true)
         let leaves = flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(root)])
-        [Edge { name: self.stable_key_name(k), hash: self.edge_hash_of(k) } for k in leaves]
+        [self.memoized_edge(k) for k in leaves]
             .concat(flatten([self.visible_edges(f) for f in walk.named.get()]))
+    }
+
+    /// One leaf key's (name, hash) edge — memoized the same way
+    /// `leaves_below` memoizes the walk that finds the key, and for
+    /// the same reason: `stable_key_name` folds a sibling-index SCAN
+    /// per decl edge (`Decls.sibling_index`), so a leaf shared by
+    /// every file in the package paid that scan once per file.
+    fn memoized_edge(k: Key) -> Edge {
+        let dk = depkey_string(k)
+        let cached? = self.edge_memo(dk) else {
+            let e = Edge { name: self.stable_key_name(k), hash: self.edge_hash_of(k) }
+            self.edge_remember(dk, e)
+            return e
+        }
+        cached
+    }
+
+    fn edge_memo(dk: string) -> Edge? {
+        if self.leaf_memo_stale() { return null }
+        self.edge_memo_sets.get().get(dk)
+    }
+
+    fn edge_remember(dk: string, e: Edge) {
+        self.ensure_memo_fresh()
+        self.edge_memo_sets.put(dk, e)
     }
 
     /// One dependency, read into edges by its family's `Reading`. A
@@ -706,8 +760,60 @@ impl Workspace {
         kept
     }
 
+    /// `k`'s own deps, flattened to leaves — MEMOIZED for the whole
+    /// process (`Workspace.leaf_memo_sets`), keyed by `walk.walked(k)`
+    /// (k's identity AND whether this reading is inside a `Visible`,
+    /// the same key `Walk`'s own per-call dedup uses): a key's
+    /// subtree is a function of the Kernel's current deps and this
+    /// reading context alone, never of which FILE's walk asks for it,
+    /// so the first file to reach a shared dependency pays for every
+    /// later one too. `named` — the files a nested `Visible` reached
+    /// during this expansion — rides along on a hit, since skipping
+    /// the recursion would otherwise silently drop that side effect
+    /// (measured: 50523 leaf_keys visits over 653 distinct names on a
+    /// 17-file package, ~77x redundant).
     fn leaves_below(k: Key, walk: Walk) -> List<Key> {
-        flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(k)])
+        let vk = walk.walked(k)
+        let cached? = self.leaf_set_memo(vk) else {
+            let before = walk.named.get().length
+            let leaves = flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(k)])
+            let named = walk.named.get()
+            let gained = named.slice(before, named.length)
+            self.leaf_set_remember(vk, LeafSet { leaves: leaves, named: gained })
+            return leaves
+        }
+        for f in cached.named { walk.name(f) }
+        cached.leaves
+    }
+
+    /// Whether the memo still belongs to the Kernel's current revision.
+    fn leaf_memo_stale() -> bool { self.leaf_memo_revision.get() != self.db.revision() }
+
+    /// BOTH memos share one revision stamp, so they must be cleared
+    /// TOGETHER on staleness: reset through only one (the other left
+    /// standing) would answer a later read as fresh — the revision
+    /// alone matching — while it still held an earlier revision's
+    /// entries.
+    fn ensure_memo_fresh() {
+        if self.leaf_memo_stale() {
+            let no_sets: Map<string, LeafSet> = {}
+            let no_edges: Map<string, Edge> = {}
+            let no_visible: Map<string, List<Edge>> = {}
+            self.leaf_memo_sets.set(no_sets)
+            self.edge_memo_sets.set(no_edges)
+            self.visible_memo_sets.set(no_visible)
+            self.leaf_memo_revision.set(self.db.revision())
+        }
+    }
+
+    fn leaf_set_memo(vk: string) -> LeafSet? {
+        if self.leaf_memo_stale() { return null }
+        self.leaf_memo_sets.get().get(vk)
+    }
+
+    fn leaf_set_remember(vk: string, set: LeafSet) {
+        self.ensure_memo_fresh()
+        self.leaf_memo_sets.put(vk, set)
     }
 
     /// The file's whole checked answer: its own diagnostics plus its

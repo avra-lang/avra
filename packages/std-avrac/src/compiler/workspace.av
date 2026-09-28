@@ -89,7 +89,7 @@ use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
-use compiler.store.{Store, Pack}
+use compiler.store.{Store, Pack, Edge}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
@@ -247,6 +247,27 @@ export type Workspace = {
     /// A WITNESS, never recomputing — `Derived.witnessed`'s own count,
     /// the way `Hold`'s tables answer `Derived.held`.
     witness_hits: Cell<int>,
+    /// A WITNESS EDGE-WALK'S LEAF SET, PER KEY, MEMOIZED FOR THE WHOLE
+    /// PROCESS (compiler/witness.av's `leaves_below`/`LeafSet`) —
+    /// every file's own walk shares one graph, so computing a key's
+    /// leaves once and reusing them turns files x graph_size into
+    /// files + graph_size. Stamped with the Kernel's own revision so
+    /// a value from an earlier revision (a long-lived process
+    /// re-checking after an edit) is never reused past it.
+    leaf_memo_revision: Cell<int>,
+    leaf_memo_sets: Cell<Map<string, LeafSet>>,
+    /// A LEAF KEY'S OWN STABLE (name, hash) EDGE, memoized the same
+    /// way and under the same revision stamp: `stable_key_name` folds
+    /// a sibling-index SCAN (`Decls.sibling_index`) per decl edge, so
+    /// converting the same shared leaf's identity to its edge is its
+    /// own per-file cost even once the walk that FINDS the leaf is
+    /// memoized.
+    edge_memo_sets: Cell<Map<string, Edge>>,
+    /// A FILE'S `Visible` EDGES, memoized under the same stamp — every
+    /// witnessed file that imports the same module rebuilt its whole
+    /// NameRead edge list (one entry per name that module answered)
+    /// from scratch otherwise.
+    visible_memo_sets: Cell<Map<string, List<Edge>>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -667,6 +688,9 @@ fn built(
     let no_defects: List<Diag> = []
     let no_store: Store? = null
     let no_pack: Pack? = null
+    let no_leaf_sets: Map<string, LeafSet> = {}
+    let no_edges: Map<string, Edge> = {}
+    let no_visible: Map<string, List<Edge>> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -679,6 +703,10 @@ fn built(
         store: Cell.new(no_store),
         pack: Cell.new(no_pack),
         witness_hits: Cell.new(0),
+        leaf_memo_revision: Cell.new(-1),
+        leaf_memo_sets: Cell.new(no_leaf_sets),
+        edge_memo_sets: Cell.new(no_edges),
+        visible_memo_sets: Cell.new(no_visible),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
