@@ -311,18 +311,15 @@ export type Decls = {
     held_values: Cell<Map<string, Settled>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
-    /// THE DEPENDENCY AUDIT: off, one flag read per audited table read. On, the hook the
-    /// workspace arms hears each read that skipped the Kernel.
+    /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
+    /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
     audit_hook: Cell<fn(Bypassed) -> void>,
     /// A DECLARATION ROW'S READS RECORD AT ITS FILE'S GRAIN: reading a declaration of a
     /// file settled below records that file's `Items` cell (a held file's module
-    /// record) in the open query — once per query, by the Kernel's own stamp. `watching`
-    /// is the ONE flag the accessors read: set while either the audit or the recording
-    /// is on. `rows_state` is dense by FileId: 0 while the file's rows are being minted
-    /// (the minter's own reads record nothing), 1 settled, 2 held.
-    watching: Cell<bool>,
-    recording: Cell<bool>,
+    /// record) in the open query — once per query, by the Kernel's own stamp.
+    /// `rows_state` is dense by FileId: 0 while the file's rows are being minted (the
+    /// minter's own reads record nothing), 1 settled, 2 held.
     record_kernel: Cell<Kernel>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
@@ -516,8 +513,6 @@ export fn new_decls() -> Decls {
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
-        watching: Cell.new(false),
-        recording: Cell.new(false),
         record_kernel: Cell.new(new_kernel()),
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
@@ -622,15 +617,9 @@ impl Decls {
     /// A path's identity — minted at first mention.
     fn decl(d: DeclId) -> Decl {
         let x = self.decls.get()[d.index]
-        if self.watching.get() { self.watched(Bypassed.Decl(d), x.file) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+        self.rows_read(x.file)
         x
-    }
-
-    /// A read the audit or the recording wants told: the row's file records, then the
-    /// audit hears.
-    fn watched(r: Bypassed, f: FileId) {
-        if self.recording.get() { self.rows_read(f) }
-        if self.auditing.get() { self.audited(r) }
     }
 
     /// One audited read, told to the hook — which reads the tables itself, so the
@@ -645,7 +634,6 @@ impl Decls {
     fn arm_audit(hook: fn(Bypassed) -> void) {
         self.audit_hook.set(hook)
         self.auditing.set(true)
-        self.watching.set(true)
     }
 
     /// A read of a row of file `f` records what the row is a function of in the open
@@ -671,8 +659,6 @@ impl Decls {
         self.record_items.set(items)
         self.record_methods.set(methods)
         self.held_rows.set(held)
-        self.recording.set(true)
-        self.watching.set(true)
     }
 
     /// Where a file's rows stand: minting (0), settled (1), held (2).
@@ -1098,7 +1084,7 @@ impl Decls {
     /// `d` itself belongs to) and must not recurse back into it —
     /// null answers "not settled yet," never "not there is an error."
     fn sig_so_far(d: DeclId) -> DeclSig? {
-        if self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
         self.sigs.get()[d.index]
     }
 
@@ -1108,8 +1094,7 @@ impl Decls {
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
         self.auditing.set(false)
-        self.recording.set(false)
-        self.watching.set(false)
+        self.record_kernel.set(new_kernel())
         self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
@@ -1504,7 +1489,7 @@ impl Decls {
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
-        if self.auditing.get() { self.audited(Bypassed.Written(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Written(d)) }
         let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
@@ -1538,7 +1523,7 @@ impl Decls {
     /// A `_`-declared fn's growing error set, as the fixpoint found it
     /// so far — deduped by type identity, the pass's own read, hook-free.
     fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
-        if self.auditing.get() { self.audited(Bypassed.Errors(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
         self.inferred_errs.at(d.index) ?? []
     }
 
@@ -2039,7 +2024,11 @@ impl Decls {
     /// that is not making the table. Records the type's `Methods` cell in the open
     /// query, so a reader depends on the impls it dispatches through.
     fn methods_of(target: DeclId) -> List<DeclId> {
-        if self.watching.get() { self.methods_watched(target) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
+        self
+            .record_kernel
+            .get()
+            .record_dep(Key { family: self.record_methods.get(), arg: target.index })
         self.registered_methods(target)
     }
 
@@ -2048,17 +2037,6 @@ impl Decls {
     /// records nothing. The table's computation waits on the reader, so an edge to it
     /// would be a cycle.
     fn registered_methods(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
-
-    /// A read of a method table the audit or the recording wants told.
-    fn methods_watched(target: DeclId) {
-        if self.recording.get() {
-            self
-                .record_kernel
-                .get()
-                .record_dep(Key { family: self.record_methods.get(), arg: target.index })
-        }
-        if self.auditing.get() { self.audited(Bypassed.Methods(target)) }
-    }
 
     /// The workspace arms the method-table hook once.
     fn arm_methods(ensure: fn(DeclId) -> void) {
