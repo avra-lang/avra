@@ -27,7 +27,8 @@ Most projections don't. Ask first:
 
 ## The whole API
 
-Two annotations, four field marks. The derive writes the rest.
+Two annotations, three field marks and a field named `id`. The derive
+writes the rest.
 
 ```avra
 @relation
@@ -132,16 +133,27 @@ updated row kept its id and the count stayed three.
 
 **To update a row, key it.** Writing a known `@key` replaces that row.
 A keyless relation only appends: three identical inserts are three rows,
-and nothing removes or replaces one (avra-8sb5.57.4.13). Re-running a
-projection that inserts what it derives, against one Db, doubles its
-rows.
+and nothing removes or replaces one. Re-running a projection that
+inserts what it derives, against one Db, doubles its rows. `@key` may
+sit on several fields, which together are the key: `Todo.by_key(db,
+TodoKey { owner: o, title: t })`.
+
+**A `@unique` field guards its value.** An insert that repeats a value
+another row holds is not stored: a relation with a `@unique` field
+inserts as `Result<T, InsertRefused>`, a type named by `use
+@std.relation.refused.{InsertRefused}`. On the refusal,
+`e.describe().message` reads "`Account.email` is `@unique`, and row 0
+already holds `ann@x`". Re-writing a row under its own key is no repeat,
+and may change its `@unique` value: the old value's lookup then answers
+none. A relation with no `@unique` field inserts as plain `T`.
 
 **Where the rows live.** In a `Db` from `@std.relation.db.new_db()`, in
 memory, for as long as it lives. Each Db keeps its own rows. This is not
 the compiler's own `Workspace.db`: they are two different `Db` types
-today (avra-8sb5.57.4.7). `db.close()` lets every relation's rows go;
-do not write to a closed Db — it currently takes the write and answers
-again (avra-8sb5.57.4.12).
+today (avra-8sb5.57.4.7). `db.close()` lets every relation's rows go, and
+any later reach into that Db — insert, get, all, a lookup — traps,
+naming it: "relation rows reached through Db 0 after it closed — a closed
+Db's rows are gone; open a new Db".
 
 **Two plugins may share a relation name.** A relation's stable name is
 its module's full import path plus its name (`@example.a.Todo`,
@@ -149,34 +161,34 @@ its module's full import path plus its name (`@example.a.Todo`,
 
 ### What the derive refuses
 
-Each is spoken at the field, with a help. All were compiled to check:
+Each is spoken at the field, with a help, as `error[@std/relation:<kind>]`.
+All were compiled to check:
 
 | Declaration | Refusal |
 |---|---|
 | a field of `float`, a named type (`type OwnerId = int`), an enum, or a generic `T` | `kind_not_carried` — fields carry int, bool, string, and lists and nullables of them |
 | `id: CallId`, or any `id` that is not `int` | `id_not_int` |
 | a lookup mark on `string?`, or any kind but int, bool, string | `lookup_kind` |
-| two `@key` fields | `composite_key` |
 | `@unique @index` on one field | `answer_clash` |
-| a mark twice, or a mark outside the four | `duplicate_mark`, `unknown_mark` |
-| a field named like a generated member: `insert`, `get`, `all`, `by_key`, `encoded`, `stable_hash`, … | `name_collision` |
+| a mark twice, or a mark outside the three (`@key`, `@unique`, `@index`) | `duplicate_mark`, `unknown_mark` |
+| a field named like a generated member: `insert`, `get`, `all`, `encoded`, `stable_hash`, … | `name_collision` |
+| a field named `db`, the Db's seat on `insert` | `seat_collision` |
+| a `@unique` or `@index` field named `key`, beside `@key` fields | `lookup_collision` — the `@key` fields' lookup is `by_key` |
 
 Store what a refused kind stands for as one that is carried — a float as
 an int in a fixed unit, an enum as its name.
 
 ### What misleads today
 
-Found by using the accessors as a plugin author would; each is a ticket
-for the derive's owner:
+Found by using the accessors as a plugin author would:
 
-- `@unique` does not refuse a duplicate. A second row with the same
-  value is inserted and `by_f` answers the first (avra-8sb5.57.4.10).
-- A field named `key` with a lookup mark, beside a `@key` field,
-  crashes the compiler instead of refusing (avra-8sb5.57.4.9). Rename it.
-- An `id` written in an insert literal is discarded: the Db mints it
-  (avra-8sb5.57.4.11). Write `id: 0`.
-- The relation module's header example uses `id: CallId`, which the
-  derive refuses; use `id: int` (avra-8sb5.57.4.14).
+- `insert` takes the row's fields as seats and no `id`; writing one is
+  refused at the call, in the typer's words: "`Todo.insert` has no seat
+  named `id`", help "its seats are `db`, `title`, `done`".
+- There is no remove verb, and asking for one is answered as if it were
+  an enum's: `Todo.remove(db, id)` is `type.unknown_prop`, "`Todo` is a
+  record, not an enum". Key the row to update it (see "To update a row,
+  key it"); removal arrives with `@query`.
 
 Two names to avoid, from the language and not the derive: `Task` is a
 built-in type, and `level` is reserved.
@@ -188,8 +200,8 @@ built-in type, and `level` is reserved.
 | a memoized, dependency-tracked, persisted query (`@query`) | not built — your query is a plain fn | avra-8sb5.57.4.6 |
 | a fixpoint over a plugin relation | the Kernel's fixpoint mode landed; a plugin cannot spell it until `@query` exists | avra-8sb5.57.13.1, .57.4.6 |
 | a plugin's rows in the durable pack | not built — rows are memory for the life of the Db | avra-8sb5.57.6 (M3) |
-| typed-id, enum or float fields, as the compiler's own relations use | refused today | avra-8sb5.57.4.5, .57.4.14 |
-| a query that owns its rows and replaces them on rerun | not expressible — no remove verb, no `@query` | avra-8sb5.57.4.13, .57.4.6 |
+| typed-id, enum or float fields, as the design doc's own relations use (§6.3, §6.7) | refused today, by name, at the field | — |
+| a query that owns its rows and replaces them on rerun | not expressible — no remove verb, no `@query` | avra-8sb5.57.4.6 |
 | a plugin's relations in the compiler's own Db | two `Db` types today | avra-8sb5.57.4.7 |
 
 ## What you get for free, and what you still write
