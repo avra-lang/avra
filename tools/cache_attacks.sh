@@ -317,6 +317,17 @@ for app in a b c; do
     rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  check [$app] speaks otherwise under the hold"; }
 done
+
+# `--verify-held` OVER A WARM `a`: every held declaration this build just kept
+# decodes back to what a fresh reading of the same file produces — the
+# instrument avra-8sb5.57.69 exists to run, held to its own zero-mismatch claim.
+steps=$((steps+1)); ./avra check $R/a >/dev/null 2>&1
+vh=$(./avra check $R/a --verify-held 2>&1 | grep -v '^watch:')
+case "$vh" in
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over a -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over a: $(printf '%s' "$vh" | tail -5 | tr '\n' ' ')" ;;
+esac
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
