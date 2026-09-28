@@ -115,7 +115,8 @@ impl Decls {
     /// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
     /// arguments, a fn at its settled seats, a root no declaration owns. A plain
     /// declaration's body — a declared instance's included — is its FILE's
-    /// content; an instantiation is its PROGRAM's. THE DECLARATION
+    /// content, its unit wearing the file (`lower_root`'s `home`); an
+    /// instantiation is its PROGRAM's. THE DECLARATION
     /// ANSWERS, never the ask: a plain fn wanted from inside an instantiation
     /// arrives under its caller's substitution and is the same body all the same.
     fn instantiated(w: Wanted) -> bool {
@@ -270,6 +271,7 @@ export fn lower(a: Analysis) -> Lowered {
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
+            (_f: FileId) -> false,
         )
 }
 
@@ -305,7 +307,16 @@ export fn lower_unit(
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
     let first = when {
-        w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle, cross)
+        w.root != null -> lower_root(
+            a,
+            w.root!,
+            w.name,
+            w.seats,
+            externs,
+            settle,
+            cross,
+            if w.decl == null { null } else { a.view.file },
+        )
         w.decl == null -> lower_main(a, w.name, externs, settle, cross)
         is_collect_decl(a, w.decl!) -> lower_collect(
             a,
@@ -366,6 +377,7 @@ impl Decls {
         held_asks: List<Wanted>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
+        is_program: fn(FileId) -> bool,
     ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -375,7 +387,7 @@ impl Decls {
         // a body under the program's own symbol, for a runner's entry to
         // call in turn — every program in one binary
         mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
-        spoken = spoken.concat(self.outside_entry(files, entry))
+        spoken = spoken.concat(self.outside_entry(files, entry, is_program))
         let main_unit: Unit? = if entry == null {
             null
         } else {
@@ -405,6 +417,7 @@ impl Decls {
             unit_of,
             is_held,
             (w: Wanted) -> self.instantiated(w),
+            (w: Wanted) -> self.unlowered_stub(w),
         )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
@@ -424,8 +437,14 @@ impl Decls {
         }
     }
 
-    /// AN INSTANTIATION NOBODY LOWERED, as the declaration a caller's module needs:
-    /// its signature under its type arguments — what `lower_fn` would give it.
+    /// A DECLARATION NOBODY LOWERED A BODY FOR, HERE: an instantiation the
+    /// program owes but a held home never ran, or a HELD CALLEE a fresh
+    /// caller reaches — its signature under its type arguments (what
+    /// `lower_fn` would give it), and its OWN seat marks, so a caller's
+    /// memory pass (`marks_by_name`, compiler/memory/memory.av) can read a
+    /// held callee's `consumed` seats exactly as it reads a fresh one's,
+    /// instead of defaulting every seat plain because the callee's real
+    /// body never entered `l.fns`.
     fn unlowered_stub(w: Wanted) -> Body? {
         let d? = w.decl else { return null }
         let sig? = self.sig(d)?.fn_sig() else { return null }
@@ -437,13 +456,19 @@ impl Decls {
             ins: [],
             reg_types: [],
             weak: true,
+            marks: self.marks_of(d, sig.params.length),
         }
     }
 
-    /// THE ENTRY'S LAW over every other file: a module file runs nothing.
-    fn outside_entry(files: List<Analysis>, entry: int?) -> List<Diag> {
+    /// THE ENTRY'S LAW over every other file: a module file runs nothing. A program
+    /// file is no module file — its statements are its own program's.
+    fn outside_entry(files: List<Analysis>, entry: int?, is_program: fn(FileId) -> bool) -> List<
+        Diag,
+    > {
         if entry == null { return [] }
-        flatten([entry_only(a, files[entry!]) for i, a in files if i != entry!])
+        flatten(
+            [entry_only(a, files[entry!]) for i, a in files if i != entry! && !is_program(a.view.file)],
+        )
     }
 
     /// A const's initializer as a program of its own: the root unit's
@@ -452,7 +477,13 @@ impl Decls {
     /// lowers once.
     fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
         let ru = unit_of(root)
-        let d = drained(ru.wants, unit_of, (_f: FileId) -> false, (_w: Wanted) -> false)
+        let d = drained(
+            ru.wants,
+            unit_of,
+            (_f: FileId) -> false,
+            (_w: Wanted) -> false,
+            (_w: Wanted) -> null,
+        )
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let every_body = fns.concat([entry])
@@ -479,6 +510,7 @@ fn drained(
     unit_of: fn(Wanted) -> Unit,
     is_held: fn(FileId) -> bool,
     instantiated: fn(Wanted) -> bool,
+    held_stub: fn(Wanted) -> Body?,
 ) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
@@ -496,7 +528,19 @@ fn drained(
         // a home that is held has no body to lower from.
         let roams = instantiated(w)
         if roams { homes.push(w.file) }
-        if claim_seen(seen, w.name) && !is_held(w.file) {
+        let fresh = claim_seen(seen, w.name)
+        if fresh && is_held(w.file) {
+            // THE BODY IS THE STORE'S, BUT THE CONTRACT MUST STILL BE HERE: a
+            // fresh caller's memory pass reads a called-by-name callee's seat
+            // marks from `l.fns` alone (`marks_by_name`), and a held callee is
+            // never unit_of'd into it. Without a stub a held `consumed` seat
+            // reads as plain, the caller skips the retain the callee's own
+            // (held, unseen) release still performs, and the caller reads
+            // freed memory (.66 hole 3).
+            let stub: Body? = held_stub(w)
+            if stub != null { fns.push(stub!) }
+        }
+        if fresh && !is_held(w.file) {
             minted = minted + 1
             let u = unit_of(w)
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
@@ -1146,7 +1190,10 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
 /// annotation's argument: no params, the value inside the seats'
 /// bracket, the answer after it settles. The evaluator runs it to
 /// settle the value; a program never calls it — a settled value is
-/// spelled or laid out at its reads.
+/// spelled or laid out at its reads. A DECLARED INSTANCE's unit is the
+/// exception on both counts: a program calls it, and it is its file's
+/// content, so it wears `home` and the file's object holds it; a root no
+/// declaration owns has none.
 fn lower_root(
     a: Analysis,
     root: ExprId,
@@ -1155,6 +1202,7 @@ fn lower_root(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    home: FileId?,
 ) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
     mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross))
@@ -1177,6 +1225,7 @@ fn lower_root(
             gives: r,
             ins: lo.out.ins,
             reg_types: lo.out.reg_types,
+            file: home,
         },
         voices: lo.out.voices,
         jobs: lo.jobs,

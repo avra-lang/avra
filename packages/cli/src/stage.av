@@ -28,17 +28,25 @@ export fn light_phase(words: List<string>) -> int? {
     first_red(binaries)
 }
 
-/// A `.refuses` test's EVAL leg: the SAME scoped derivation the native
-/// leg links (`Want.Binary`, the entry's own closure — no sibling
-/// program test's top level stands in the way of it), its own body
-/// called by NAME (`program_symbol`, the suite's own symbol for a
-/// program test — the derivation's `Lowered.entry` is the WORKSPACE's,
-/// never this one file's) and run through the evaluator IN THIS
-/// PROCESS ALONE — a trap here ends this child and nothing else,
-/// which is the whole point of a leg. A trap's words on stderr, exit
-/// 2; clean, exit 0.
+/// A `.refuses` test's EVAL leg: an EVALUATION NEVER HOLDS A FILE WHOSE
+/// BODY IT CALLS — a hold is a native-link concept (the store's kept
+/// OBJECT stands in for what the evaluator has no linker to read), so
+/// a program calling its own package's held functions met a body with
+/// no instructions and traps on the compiler's OWN defect, not the
+/// law under test. `from_sources(null, Want.Binary)` holds nothing —
+/// every reached body is really there — and asking with NO SINGLE
+/// ENTRY is what already keeps a sibling program test's top level out
+/// of the entry-only law's way (`outside_entry` answers `[]` the
+/// moment `entry == null`, `union`'s `programs` flag lowers every
+/// file's own top level under its `program_symbol` regardless): the
+/// suite's own quarrel-retry (`evaluated()`, suite.av) already reaches
+/// for this exact derivation when a hold taints its first answer, so
+/// this leg reaches for it FIRST. Its own body called by NAME, run
+/// through the evaluator IN THIS PROCESS ALONE — a trap here ends
+/// this child and nothing else, which is the whole point of a leg. A
+/// trap's words on stderr, exit 2; clean, exit 0.
 fn refuse_eval(root: string, path: string) -> int {
-    match root_workspace(root).derived(path, Want.Binary) {
+    match root_workspace(root).from_sources(null, Want.Binary) {
         .Ok(d) -> match run_program(d.lowered, program_symbol(path)) {
             .Ok(_) -> 0,
             .Err(words) -> {

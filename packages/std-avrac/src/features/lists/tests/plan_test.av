@@ -1,0 +1,63 @@
+// The planner over a hand-written relation: its lookups wear the same
+// `@plans` marks a derive writes and are held to the same law. The
+// lookup answers nothing on purpose, so a narrowed scan is told from a
+// full one by its answer.
+use @std.avrac.testing.{refused_in, provided, answered}
+
+/// A relation of one row, `n: 1, tag: "a"`, whose lookups find nothing.
+fn rows() -> string {
+    "use @std.meta.{plans, plans_all}\n" +
+        "export type Row = { n: int, tag: string }\n" +
+        "impl Row {\n" +
+        "    @plans_all\n" +
+        "    static fn all(db: int) -> List<Row> { [Row { n: db, tag: \"a\" }] }\n" +
+        "    @plans(\"tag\")\n" +
+        "    static fn by_tag(db: int, v: string) -> List<Row> { [] }\n" +
+        "    @plans(\"n\")\n" +
+        "    static fn by_n(db: int, v: string) -> List<Row> { [] }\n" +
+        "}\n" +
+        "export fn ok(r: Row) -> bool { r.n > 0 }\n"
+}
+
+fn row_use() -> string { "use @x.c.{Row, ok}\n" }
+
+spec "features/lists — the comprehension planner" {
+    given "a declared lookup" {
+        then "an invariant compare narrows to it" {
+            answered(
+                provided(row_use() + "[r for r in Row.all(1) if r.tag == \"a\"].length", rows()),
+            ) == "0"
+        }
+        then "a compare to a call scans — the call runs per row" {
+            answered(
+                provided(
+                    row_use() +
+                        "fn a() -> string { \"a\" }\n[r for r in Row.all(1) if r.tag == a()].length",
+                    rows(),
+                ),
+            ) == "1"
+        }
+        then "a lookup whose seat does not wear the field's type is refused" {
+            refused_in(
+                provided(row_use() + "[r for r in Row.all(1) if r.n == 1].length", rows()),
+                "`by_n` is `@plans(n)`, and its value seat does not wear `n`'s type — a lookup files by the field's own type",
+            )
+        }
+    }
+    given "a filter no index narrows" {
+        then "handing the rows to a call over the whole set is refused" {
+            refused_in(
+                provided(row_use() + "[r for r in Row.all(1) if ok(r)].length", rows()),
+                "this filter hands `Row`'s rows to a call, and no declared index narrows the scan it would run over",
+            )
+        }
+        then "the same call beside a narrowing compare is a filter on the narrowed rows" {
+            answered(
+                provided(
+                    row_use() + "[r for r in Row.all(1) if r.tag == \"a\" && ok(r)].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+    }
+}

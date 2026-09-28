@@ -59,3 +59,16 @@ void* avra_array_get_owned(void* arr, int64_t i) {
 int64_t avra_array_len(void* arr) {
     return ((AvraArray*)arr)->len;
 }
+
+// The no-cell law with no cell to hold the answer — a method's
+// receiver, a borrowed parameter. Overwhelmingly not the binary's own
+// data, so the fast path is a retain; the rare clone is a tail call,
+// out of line, with the caller's own return address carried across it
+// so the clone log names the write site and not this leaf.
+void* avra_box_thawed(void* p) {
+    Header* h = avra_hdr(p);
+    if (__builtin_expect(h != 0 && IS_IMMORTAL(h->kind), 0))
+        return avra_box_thawed_cloned(p, __builtin_return_address(0));
+    avra_rc_retain(p);
+    return p;
+}

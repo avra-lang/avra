@@ -1,6 +1,6 @@
 // `@relation`'s contract over hand-built declarations: which shapes it
 // refuses, in which words, and what its shape fingerprint moves with.
-use @std.relation.{relation_problems, shape_hash}
+use @std.relation.{relation_problems, problems_under, NamedShape, shape_hash}
 use @std.meta.{Type, Field, Kind, Mark, Variant}
 
 fn field(name: string, ty: string, kind: Kind) -> Field {
@@ -53,13 +53,15 @@ spec "std/relation — the law" {
         then "the store's `id` never enters a row's content — a fn-typed one is judged only as an id" {
             kinds(row("Ided", [field("id", "fn() -> int", fn_kind()), field("n", "int", Kind.Int)])) == "id_not_int"
         }
-        then "the store mints an int `id`, so a typed one is refused" {
-            kinds(
+        then "the store mints an int or a `@dense` `id`, so any other typed one is refused" {
+            [d.kind ?? "?" for d in problems_under(
                 row(
                     "Ided",
                     [field("id", "CallId", Kind.Named("CallId", [])), field("n", "int", Kind.Int)],
                 ),
-            ) == "id_not_int"
+                (_n: string) -> NamedShape.Plain,
+            )]
+                .join(",") == "id_not_int"
         }
         then "a relation of only marked fields — a membership set — is a relation" {
             kinds(
@@ -83,16 +85,26 @@ spec "std/relation — the law" {
                 ),
             ) == ""
         }
-        then "a key field of a kind that files under no key is refused" {
-            kinds(row("K", [marked(field("xs", "List<int>", Kind.List(Kind.Int)), "key")])) == "lookup_kind"
+        then "a list key is refused — a key names one bucket, a list files under many" {
+            kinds(row("K", [marked(field("xs", "List<int>", Kind.List(Kind.Int)), "key")])) == "many_valued"
         }
         then "a relation with no fields at all is a relation" {
             kinds(row("Empty", [])) == ""
         }
     }
     given "the refusals" {
-        then "a lookup over a kind that files under no key is refused" {
-            kinds(row("L", [marked(field("xs", "List<int>", Kind.List(Kind.Int)), "index")])) == "lookup_kind"
+        then "a lookup over a kind that files under no key is refused, a list's elements included" {
+            kinds(
+                row(
+                    "L",
+                    [
+                        marked(
+                            field("xss", "List<List<int>>", Kind.List(Kind.List(Kind.Int))),
+                            "index",
+                        ),
+                    ],
+                ),
+            ) == "lookup_kind"
         }
         then "a type with no module — written by a compiler that predates qualified names — is refused, never named bare" {
             kinds(row("R", [field("n", "int", Kind.Int)]) with { module: "" }) == "no_module"
