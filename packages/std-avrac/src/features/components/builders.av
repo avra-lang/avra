@@ -97,7 +97,10 @@ fn build_instance_body(b: Builder) -> Result<LangNode, string> {
     if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
     let unwritten: List<TypeRef?> = [null for p in ps]
     b
-        .make_expr(Expr.Lambda(marked_seats(ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)))
+        .make_expr(
+            Expr
+                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
+        )
 }
 
 /// A ONE-SEAT FN FIELD'S BODY WRITTEN AS ARMS: `Name inst { pattern
@@ -413,7 +416,7 @@ impl NodeStore {
             .Expression -> Filled.Expr(f.record?.named ?? f.value),
             .Statement -> Filled.Stmts([self.alloc_stmt(Stmt.ExprStmt(f.value), self.expr_span(f.value))]),
             .Type -> self.pattern_type(f),
-            .Name or .Binder or .Arm or .Run -> Filled.Unplaceable(unplaceable_field()),
+            .Name or .Binder or .Arm or .Run or .Fields or .Inits -> Filled.Unplaceable(unplaceable_field()),
         }
     }
 

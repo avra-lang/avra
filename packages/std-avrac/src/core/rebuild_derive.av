@@ -20,7 +20,7 @@ export trait Rebuild {
     static fn marks(t: MetaType) -> List<string> { [] }
 
     static fn derive(t: MetaType) -> List<Directive> {
-        let arms = [arm_of(v) for v in t.variants]
+        let arms = [arm_of(t, v) for v in t.variants]
         [
             Directive {
                 twin: "",
@@ -39,10 +39,33 @@ export trait Rebuild {
 }
 
 /// One variant's arm: its payloads bound, each rebuilt by its own
-/// verb, the variant built again.
-fn arm_of(v: MetaVariant) -> Arms {
+/// verb, the variant built again — a literal's field names and their
+/// values rebuilt together, since a hole may stand for several.
+fn arm_of(t: MetaType, v: MetaVariant) -> Arms {
     let binders = ["p${i}" for i in 0..v.payload.length]
-    built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload])
+    let at? = inits_at(v.payload) else { return built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload]) }
+    let args = [init_arg(p, binders[i], i - at) for i, p in v.payload]
+    let names = name(binders[at])
+    let values = name(binders[at + 1])
+    quote { .${v}(${binders}) -> {
+        let inits = rb.inits(${names}, ${values})
+        if inits.spoiled { ${name(t.name)}.Error } else { .${v}(${..args}) }
+    } }
+}
+
+/// Where a variant's field INITS stand: a `List<Plain>` of names
+/// directly before the `List<ExprId>` of their values.
+fn inits_at(payload: List<string>) -> int? {
+    [i for i in 0..payload.length - 1 if payload[i] == "List<Plain>" && payload[i + 1] == "List<ExprId>"]
+        .first()
+}
+
+/// A payload of an arm that rebuilds inits: the names and values read
+/// from them, every other payload through its own verb.
+fn init_arg(spelling: string, binder: string, from: int) -> Code {
+    if from == 0 { return quote { inits.names } }
+    if from == 1 { return quote { inits.values } }
+    rebuilt_arg(spelling, binder)
 }
 
 /// One payload rebuilt: through the verb its TYPE names, or carried
@@ -74,6 +97,7 @@ fn verb_of(spelling: string) -> string? {
         "TypeRef?" -> "tref_opt",
         "List<TypeRef>" -> "trefs",
         "List<Arm>" -> "arms",
+        "List<CompClause>" -> "comp_clauses",
         "List<Case>" -> "cases",
         "List<Param>" -> "params",
         "List<Variant>" -> "variants",

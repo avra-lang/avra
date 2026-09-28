@@ -52,6 +52,17 @@ spec "std/relation — adversarial" {
             int_read([0]) == "0"
         }
     }
+    given "names against names: the generated members" {
+        then "a field named `get` collides with the generated accessor" {
+            refusals(one_row([Field { name: "get", ty: "int", at: null, kind: Kind.Int }])) == "name_collision"
+        }
+        then "a field named `all` collides with the generated accessor" {
+            refusals(one_row([Field { name: "all", ty: "int", at: null, kind: Kind.Int }])) == "name_collision"
+        }
+        then "a field named `rows_in` collides with the generated accessor" {
+            refusals(one_row([Field { name: "rows_in", ty: "int", at: null, kind: Kind.Int }])) == "name_collision"
+        }
+    }
     given "names against names: the marks" {
         then "a misspelled mark is refused rather than ignored" {
             refusals(one_row([marked_field("a", ["indx"])])) == "unknown_mark"
@@ -59,8 +70,17 @@ spec "std/relation — adversarial" {
         then "a mark written twice on one field is refused" {
             refusals(one_row([marked_field("a", ["key", "key"])])) == "duplicate_mark"
         }
-        then "every mark of the vocabulary, together, is accepted" {
-            refusals(one_row([marked_field("a", ["key", "unique", "index"])])) == ""
+        then "a key that is also an index is accepted — marks stack" {
+            refusals(one_row([marked_field("a", ["key", "index"])])) == ""
+        }
+        then "a key that is also unique is accepted" {
+            refusals(one_row([marked_field("a", ["key", "unique"])])) == ""
+        }
+        then "`@unique` with `@index` is refused — one row or every row, never both" {
+            refusals(one_row([marked_field("a", ["key", "unique", "index"])])) == "answer_clash"
+        }
+        then "a doubled mark speaks alone — no lookup law judges the field" {
+            refusals(one_row([marked_field("a", ["unique", "index", "unique"])])) == "duplicate_mark"
         }
         then "a mark on the store's `id` is judged like any other" {
             refusals(one_row([marked_field("id", ["indx"])])) == "unknown_mark"

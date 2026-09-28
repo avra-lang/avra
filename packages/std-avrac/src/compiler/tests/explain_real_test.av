@@ -1,0 +1,57 @@
+// `avra explain` over a REAL pack entry — the `Analysis` row
+// compiler/witness.av commits — not a hand-built one: grouped by the
+// family `name_parts` decodes, and every recorded edge re-asked against
+// the hash a second process derives live. The fixtures (`a_process`,
+// `checked`, `package_files`, `fresh_pack_path`) are witness_test.av's
+// own; this module shares one namespace.
+use compiler.{Workspace, name_parts}
+use compiler.store.{Pack, pack_at, real_entries, summarized, witnessed, Held}
+
+fn analysis_family(name: string) -> string? { name_parts(name)?.family }
+
+/// The pack a first process leaves after checking `b.av` — which calls
+/// `f` in `a.av` — read back as `avra explain` opens it: a fresh handle
+/// on the file.
+fn left_behind(path: string) -> Pack {
+    let first = a_process(package_files(), path)
+    let _ = checked(first, "/w/src/b.av")
+    pack_at(path, "witness-test")
+}
+
+/// Every edge of the pack's one entry, re-asked against what `ws`
+/// derives right now.
+fn edge_verdicts(pack: Pack, ws: Workspace) -> List<Held> {
+    let entry? = real_entries(pack).first() else { return [] }
+    [witnessed(pack, e.name, e.hash, [entry.name], (n: string) -> ws.edge_current_hash(n)).held for e in entry.edges]
+}
+
+spec "compiler/store/explain — over a real Analysis entry" {
+    given "one file checked by a first process" {
+        then "the pack holds that one entry, grouped as an Analysis, and its edges name Parsed and Sig dependencies" {
+            let s = summarized(left_behind(fresh_pack_path("explain_shape")), analysis_family)
+            [f.family for f in s.families].join(",") == "Analysis" &&
+                s.entries == 1 &&
+                [r.family for r in s.referenced].contains("Parsed") &&
+                [r.family for r in s.referenced].contains("Sig")
+        }
+    }
+    given "the same source, asked again by a second process" {
+        then "every recorded edge holds against the live hash that process derives" {
+            let path = fresh_pack_path("explain_holds")
+            let pack = left_behind(path)
+            let verdicts = edge_verdicts(pack, a_process(package_files(), path))
+            verdicts.length > 0 && verdicts.all((h: Held) -> h == Held.Matches)
+        }
+    }
+    given "the callee's signature edited before the second process" {
+        then "some edge is stale, and an edge the edit never touched still holds" {
+            let path = fresh_pack_path("explain_stale")
+            let pack = left_behind(path)
+            mut edited = package_files()
+            edited.set("/w/src/a.av", "export fn f() -> string {\n    \"one\"\n}\n")
+            let verdicts = edge_verdicts(pack, a_process(edited, path))
+            verdicts.any((h: Held) -> h == Held.Stale) &&
+                verdicts.any((h: Held) -> h == Held.Matches)
+        }
+    }
+}

@@ -36,13 +36,12 @@ use features.{
     type_row,
     Decl,
     new_type_facts,
-    type_named,
     TypeFacts,
     NameFacts,
     FileView,
     nothing,
     scalar_named,
-    Namespace,
+    Elsewhere,
     example_marks,
 }
 use features.structs.{fits_default}
@@ -61,7 +60,7 @@ export fn new_type_cx(
     keywords: List<string>,
     view: FileView,
     names: NameFacts,
-    written_in: fn(FileId) -> Namespace,
+    elsewhere: Elsewhere,
     lo: int,
     hi: int,
 ) -> TypeCx {
@@ -69,7 +68,7 @@ export fn new_type_cx(
     TypeCx {
         view: view,
         names: names,
-        written_in: written_in,
+        elsewhere: elsewhere,
         writer: null,
         facts: new_type_facts(lo, hi, view.store.stmts.count(), hole),
         error_type: hole,
@@ -628,13 +627,13 @@ impl TypeCx {
     /// The type an annotation WRITES at an expression, resolved in
     /// the scope in force.
     mut fn written(e: ExprId, tr: TypeRef) -> TypeId {
-        self.written_by(self.view.origin_of(e), self.view.loc_of(e), tr)
+        self.written_by(self.view.spanned_of(e), self.view.loc_of(e), tr)
     }
 
     /// A declared generic's arity by NAME, for the applied-type path —
     /// null when the name is not a generic declaration.
     fn declared_arity(name: string) -> int? {
-        let decl? = type_named(self.names, name) else { return null }
+        let decl? = self.type_decl_named(name) else { return null }
         let arity = self.view.decls.tparams(decl).length
         if arity == 0 { return null }
         arity

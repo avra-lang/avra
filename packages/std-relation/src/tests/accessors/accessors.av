@@ -1,0 +1,85 @@
+// A relation's generated accessors under a Db: `insert` in each of its
+// four shapes, `by_key` answering a key's row, `by_<field>` one row or
+// every row, `get` and `all` — and each Db's rows its own.
+use @std.relation.{relation}
+use @std.relation.db.{new_db}
+
+/// Ided, keyless: every insert is a new row.
+@relation
+type Flag = { id: int, @unique name: string, @index on: bool, @index rank: int }
+
+/// Idless, keyless.
+@relation
+type Note = { @index tag: string, text: string }
+
+/// Ided and keyed: an insert under a known key replaces that row, id kept.
+@relation
+type Account = { id: int, @index team: string, @key handle: string }
+
+/// Idless and keyed.
+@relation
+type Tagged = { @key name: string, tags: List<string> }
+
+fn names(fs: List<Flag>) -> string { [f.name for f in fs].join(",") }
+
+fn flags() -> string {
+    let db = new_db()
+    let x = Flag.insert(db, Flag { id: 0, name: "x", on: true, rank: 1 })
+    let y = Flag.insert(db, Flag { id: 0, name: "y", on: true, rank: 2 })
+    let _ = Flag.insert(db, Flag { id: 0, name: "z", on: false, rank: 1 })
+    let found = Flag.by_name(db, "y")?.rank ?? -1
+    "${x.id}${y.id} ${names(Flag.by_on(db, true))} ${names(Flag.by_rank(db, 1))} ${found} ${Flag.by_name(db, "nope") == null} ${Flag.get(db, 1)?.name ?? "-"}"
+}
+
+fn notes() -> string {
+    let db = new_db()
+    let _ = Note.insert(db, Note { tag: "a", text: "one" })
+    let _ = Note.insert(db, Note { tag: "a", text: "one" })
+    "${Note.all(db).length} ${Note.by_tag(db, "a").length}"
+}
+
+fn accounts() -> string {
+    let db = new_db()
+    let a = Account.insert(db, Account { id: 0, team: "red", handle: "ann" })
+    let b = Account.insert(db, Account { id: 0, team: "red", handle: "bo" })
+    let moved = Account.insert(db, Account { id: 9, team: "blue", handle: "ann" })
+    let team = Account.by_key(db, "ann")?.team ?? "-"
+    "${a.id}${b.id}${moved.id} ${Account.all(db).length} ${team} ${Account.by_team(db, "red").length}"
+}
+
+fn tagged() -> string {
+    let db = new_db()
+    let _ = Tagged.insert(db, Tagged { name: "n", tags: ["a"] })
+    let _ = Tagged.insert(db, Tagged { name: "n", tags: ["b", "c"] })
+    "${Tagged.all(db).length} ${(Tagged.by_key(db, "n")?.tags ?? []).join(",")}"
+}
+
+/// A relation of no lookup fields, and one whose name is two words.
+@relation
+type Plain = { n: int }
+
+@relation
+type ErrorSite = { id: int, @index at: int }
+
+fn plain_and_sites() -> string {
+    let db = new_db()
+    let _ = Plain.insert(db, Plain { n: 4 })
+    let _ = ErrorSite.insert(db, ErrorSite { id: 0, at: 7 })
+    let _ = ErrorSite.insert(db, ErrorSite { id: 0, at: 7 })
+    "${Plain.all(db).length} ${ErrorSite.by_at(db, 7).length} ${ErrorSite.get(db, 1)?.at ?? -1}"
+}
+
+/// Two Dbs keep their own rows; a Db knows only the relations it
+/// reached; a closed Db's rows are let go.
+fn dbs() -> string {
+    let a = new_db()
+    let b = new_db()
+    let _ = Note.insert(a, Note { tag: "t", text: "1" })
+    let _ = Flag.insert(a, Flag { id: 0, name: "f", on: true, rank: 1 })
+    let seen_in_b = Note.all(b).length
+    let reached = a.set_hashes().length
+    a.close()
+    "${seen_in_b} ${reached} ${Note.all(a).length}"
+}
+
+"${flags()} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()}"

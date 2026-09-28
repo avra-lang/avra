@@ -205,10 +205,20 @@ impl MetaHeap {
 
 /// Where a generated node was WRITTEN: in the file it stands in (a
 /// hole's fill, a hole-named node) or in the file whose template it
-/// was copied from.
+/// was copied from. `Spanned` is a THIRD place, for a node that is
+/// NEITHER: one node held TWO questions under `Written` alone — where
+/// its own name resolves, and whose text its span indexes — and a
+/// holed node answers them differently. Its name resolves HERE (the
+/// hole's fill names something in the file the code lands in), but
+/// its span is STILL the template's own offset (`minted_stmt`/
+/// `minted_expr` never rewrite it), so an error about it must be
+/// homed at the template or read a foreign offset as this file's own
+/// and trap. `Origins.at` (resolution) reads `Spanned` as `Here`;
+/// `Origins.spanned_at` (span-homing) reads it as `Written`.
 export enum Origin {
     Here
     Written(file: FileId)
+    Spanned(file: FileId)
 }
 
 /// A file's generated nodes' origins, dense by arena index — a node
@@ -225,12 +235,22 @@ export fn no_origins() -> Origins {
 }
 
 impl Origins {
-    /// The origin at an index, when the table reaches it.
+    /// The origin at an index, when the table reaches it — WHICH
+    /// FILE'S NAMESPACE a node's own name resolves in. `Spanned`
+    /// resolves HERE, same as `Here`: a holed node's identity belongs
+    /// to the file it lands in, whatever file its span still indexes.
     fn at(rows: List<Origin>, i: int) -> FileId? {
         if i >= rows.length { return null }
-        match rows[i] { .Written(f) -> f, .Here -> null }
+        match rows[i] { .Written(f) -> f, .Here or .Spanned(_) -> null }
     }
 
+    /// The file whose TEXT a node's span indexes, when the table
+    /// reaches it — `Written` and `Spanned` both point at the
+    /// template; only `Here` is this file's own offset.
+    fn spanned_at(rows: List<Origin>, i: int) -> FileId? {
+        if i >= rows.length { return null }
+        match rows[i] { .Written(f) or .Spanned(f) -> f, .Here -> null }
+    }
 }
 
 /// One admitted GENERATION of a file: the arena ranges its nodes

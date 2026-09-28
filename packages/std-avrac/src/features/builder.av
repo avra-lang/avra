@@ -17,6 +17,7 @@ use core.{
     Arm,
     Case,
     Mark,
+    CompClause,
     flatten,
     some_list,
     SeatMark,
@@ -186,6 +187,11 @@ impl Builder {
         .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
     }
 
+    /// One comprehension clause, as data.
+    fn make_comp_clause(c: CompClause) -> Result<LangNode, string> {
+        .Ok(LangNode.NCompClause(c))
+    }
+
     /// A new expression node, spanning the matched branch.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
         .Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
@@ -330,6 +336,17 @@ fn arm_at(args: List<Captured<Token, LangNode>>, i: int) -> Arm? {
     match args[i] { .Node(.NArm(a)) -> a, _ -> null }
 }
 
+/// The comprehension clause at `args[i]`, when that capture is one.
+export fn comp_clause_at(args: List<Captured<Token, LangNode>>, i: int) -> CompClause? {
+    match args[i] { .Node(.NCompClause(c)) -> c, _ -> null }
+}
+
+/// The repeated comprehension clause capture at `args[i]`, as clauses.
+export fn comp_clauses_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CompClause> {
+    let items = list_at(args, i)
+    flatten([some_list(comp_clause_at(items, j)) for j in 0..items.length])
+}
+
 /// The token at `args[i]`, when that capture is one.
 export fn token_at(args: List<Captured<Token, LangNode>>, i: int) -> Token? {
     match args[i] { .Terminal(t) -> t, _ -> null }
@@ -436,7 +453,8 @@ impl Builder {
         List<Param>,
         string,
     > {
-        if fs.length != ft.length {
+        let typed = [self.type_after(fs, ft, j) for j, f in fs]
+        if [t for t in typed if t != null].length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
         let w = MarkWindows {
@@ -447,10 +465,10 @@ impl Builder {
         .Ok(
             [Param {
                 name: Scoped(f.text),
-                ty: ft[j],
+                ty: typed[j],
                 default: self.default_before(fs, fds, j),
                 promises: plain_mark,
-                span: f.span,
+                id: self.store.alloc_param_id(f.span),
                 marks: w.at(f.span.lo),
             } for j, f in fs],
         )
@@ -470,10 +488,45 @@ impl Builder {
         fds.find((d) -> self.starts_between(d, lo, hi))
     }
 
+    /// The written type between field `j`'s name and the next field's
+    /// — null for a hole standing as the whole field.
+    fn type_after(fs: List<Token>, ft: List<TypeRef>, j: int) -> TypeRef? {
+        let lo = fs[j].span.lo
+        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
+        ft.find((t) -> t.span != null && between(t.span!.lo, lo, hi))
+    }
+
+    /// The value between field `j`'s name and the next field's — null
+    /// for a hole standing as the whole field.
+    fn value_after(vn: List<Token>, ve: List<ExprId>, j: int) -> ExprId? {
+        let lo = vn[j].span.lo
+        let hi: int = if j + 1 < vn.length { vn[j + 1].span.lo } else { 1000000000 }
+        ve.find((e) -> self.starts_between(e, lo, hi))
+    }
+
     fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
         let sp: Span? = self.store.expr_span(e)
         sp != null && between(sp!.lo, lo, hi)
     }
+}
+
+/// An entry's name as written: a hole SPREAD by `..` keeps the `..`,
+/// which is how a template tells a run of entries from a name hole.
+export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> string {
+    if spreads.any((s: Token) -> spread_before(s, f, all)) { "..${f.text}" } else { f.text }
+}
+
+/// Whether `..` stands directly before entry `f` — after every entry
+/// written before it.
+fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
+    s.span.lo < f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
+}
+
+/// Fields or seats renamed as written, a spread run keeping its `..`.
+export fn spread_named(entries: List<Param>, names: List<Token>, spreads: List<Token>) -> List<
+    Param,
+> {
+    [p with { name: Scoped(spread_name(names[j], spreads, names)) } for j, p in entries]
 }
 
 /// Strictly inside the window `after..before`.
@@ -484,8 +537,8 @@ export fn between(at: int, after: int, before: int) -> bool {
 /// Parameter seats from two parallel captures — the names and the
 /// types they aligned to — with no defaults: what every fn-shaped
 /// declaration zips.
-export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(ps, tys, [], [], 0)
+export fn seats(store: NodeStore, ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
+    marked_seats(store, ps, tys, [], [], 0)
 }
 
 /// Seats with their marks: a `mut` or `const` token between the
@@ -493,6 +546,7 @@ export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
 /// seat. ONE window law, so every param list — a fn's, a method's, a
 /// lambda's, a fn type's — reads the same marks the same way.
 export fn marked_seats(
+    store: NodeStore,
     ps: List<Token>,
     tys: List<TypeRef?>,
     muts: List<Token>,
@@ -504,7 +558,7 @@ export fn marked_seats(
         ty: tys[j],
         default: null,
         promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
-        span: p.span,
+        id: store.alloc_param_id(p.span),
     } for j, p in ps]
 }
 
