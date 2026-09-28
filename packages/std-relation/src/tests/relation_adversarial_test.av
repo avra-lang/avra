@@ -49,6 +49,15 @@ fn shapes(n: string) -> NamedShape {
     match n {
         "NodeId" -> NamedShape.Dense("index"),
         "Shade" -> NamedShape.Tagged(["Red", "Green"]),
+        "Tree" -> NamedShape.Record([kinded("kids", "List<Tree>", Kind.List(Kind.Named("Tree", [])), [])]),
+        "Held" -> NamedShape.Record([kinded("at", "NodeId", Kind.Named("NodeId", []), [])]),
+        "Kept" -> NamedShape
+            .Record(
+                [
+                    kinded("at", "NodeId", Kind.Named("NodeId", []), ["local"]),
+                    kinded("n", "int", Kind.Int, []),
+                ],
+            ),
         rest -> NamedShape.Plain,
     }
 }
@@ -153,6 +162,13 @@ spec "std/relation — adversarial" {
         then "a tagged enum is carried, and files in a lookup" {
             shaped([kinded("shade", "Shade", Kind.Named("Shade", []), ["index"])]) == "" &&
                 shaped([kinded("shades", "List<Shade>", Kind.List(Kind.Named("Shade", [])), [])]) == ""
+        }
+        then "a nested record is carried when its columns are, and a recursive one never is" {
+            shaped([kinded("k", "Kept", Kind.Named("Kept", []), [])]) == "" &&
+                shaped([kinded("t", "Tree", Kind.Named("Tree", []), [])]) == "kind_not_carried"
+        }
+        then "a dense id inside a nested record must be `@local` there" {
+            shaped([kinded("h", "Held", Kind.Named("Held", []), [])]) == "dense_unmarked"
         }
         then "any other named type is still not carried, unless it is `@local`" {
             shaped([kinded("p", "Point", Kind.Named("Point", []), [])]) == "kind_not_carried" &&
