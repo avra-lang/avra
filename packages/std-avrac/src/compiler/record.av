@@ -31,6 +31,7 @@ use core.{
 use features.{DeclSig, DeclFacts, AnnotationFact}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
+use @std.path.{relative_path}
 
 impl Workspace {
     /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
@@ -599,7 +600,21 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
             ws.hold.hold_asked.push(f)
         } else {
             ws.hold.read_files.push(ReadFile { path: f, why: why! })
-            ws.hold.read_with.set(ws.hold.read_with.get().concat(kept_runs(at)))
+            // WHY a run's own reads are excluded rides with them from birth: a
+            // candidate seeded straight into `reads` this way never passes through
+            // `settle_holds`'s own worklist, so a reason recorded only there would
+            // never reach it.
+            let carries = Reads.RunBy(relative_path(ws.root, f))
+            ws
+                .hold
+                .read_with
+                .set(
+                    ws
+                        .hold
+                        .read_with
+                        .get()
+                        .concat([ReadFile { path: p, why: carries } for p in kept_runs(at)]),
+                )
         }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
