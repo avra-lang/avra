@@ -104,6 +104,29 @@ spec "query/kernel — the dependency audit" {
         closed(r, 0)
         said(r) == "0/5@1"
     }
+    then "a cover an open query reaches through what it asked in turn is not told" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 3)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
+        closed(r, 3)
+        opened(r, 0)
+        let _ = r.db.ask(Key { family: 0, arg: 3 })
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        said(r) == ""
+    }
+    then "a query asked that never reached the cover does not cover" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 3)
+        closed(r, 3)
+        opened(r, 0)
+        let _ = r.db.ask(Key { family: 0, arg: 3 })
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        said(r) == "0/5@1"
+    }
     then "a read made inside the covering query itself is not told" {
         let r = rig()
         r.db.begin(Key { family: 1, arg: 5 })
