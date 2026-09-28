@@ -15,8 +15,14 @@
 # the file the first read was in, the declaration's name. The file's own header line
 # names the runs. A run that examined nothing leaves no lines and this fails.
 #
-# A standalone run, never a gate step: two whole-package runs. MEMCAP names the
-# memory-cap wrapper (cap 4000 MB).
+# THE AUDIT IS A COMPILE-TIME SWITCH (`audit_build`, features/bypass.av): a normal
+# compiler carries no audit code and pays nothing for it. This script sets the constant
+# true, builds the audit compiler (build/avra.audit) with the standing one, runs both
+# audits with it — the suite's own workspaces are built from the tree, so the constant
+# stays true until they finish — and sets it false again, whatever happens.
+#
+# A standalone run, never a gate step: a compiler build and two whole-package runs.
+# MEMCAP names the memory-cap wrapper (cap 4000 MB).
 set -u
 
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"
@@ -31,16 +37,46 @@ export AVRA_WATCH_HELD
 
 cd "$tree" || exit 1
 
-# A cold store is what makes every read happen in this run.
+# A cold store is what makes every read happen in a run: a held file, or a kept check,
+# answers without reading anything. It is made cold again before every run.
 mkdir -p "$logs/caches-aside"
-find . -name .avra-cache -type d -prune | while read -r c; do
-    mv "$c" "$logs/caches-aside/$(echo "${c#./}" | tr / _)"
-done
+colds=0
+cold() {
+    colds=$((colds + 1))
+    find . -name .avra-cache -type d -prune | while read -r c; do
+        mv "$c" "$logs/caches-aside/$colds$(echo "${c#./}" | tr / _)"
+    done
+}
+
+switch=packages/std-avrac/src/features/bypass.av
+set_audit_build() { # set_audit_build true|false
+    python3 - "$switch" "$1" <<'PY'
+import sys
+path, want = sys.argv[1:3]
+text = open(path).read()
+had = "export const audit_build: bool = " + ("false" if want == "true" else "true")
+now = "export const audit_build: bool = " + want
+if text.count(had) + text.count(now) != 1:
+    sys.stderr.write("dep_audit: %s does not carry exactly one audit_build constant\n" % path)
+    sys.exit(1)
+open(path, "w").write(text.replace(had, now))
+PY
+}
+restore() { set_audit_build false; }
+trap restore EXIT
+trap 'exit 1' INT TERM
+
+set_audit_build true || exit 1
+cold
+sh "$memcap" 4000 build/avra build packages/cli > "$logs/build.log" 2>&1 || { echo "dep_audit: the audit compiler did not build ($logs/build.log)"; exit 1; }
+cp packages/cli/src/main build/avra.audit
+codesign -s - -f build/avra.audit > /dev/null 2>&1
 
 status=0
 run() { # run <label> <avra args...>
     label="$1"; shift
-    AVRA_DEP_AUDIT="$logs/$label.tsv" sh "$memcap" 4000 build/avra "$@" > "$logs/$label.log" 2>&1
+    cold
+    AVRA_DEP_AUDIT="$logs/$label.tsv" sh "$memcap" 4000 build/avra.audit "$@" > "$logs/$label.log" 2>&1
     echo $? > "$logs/$label.exit"
     printf '%s: exit %s, %s lines\n' "$label" "$(cat "$logs/$label.exit")" "$(grep -vc '^#' "$logs/$label.tsv" 2> /dev/null || echo 0)"
 }

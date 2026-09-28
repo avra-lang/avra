@@ -309,8 +309,8 @@ export type Decls = {
     held_values: Cell<Map<string, Settled>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
-    /// THE DEPENDENCY AUDIT: off, one flag read per audited table read. On, the hook the
-    /// workspace arms hears each read that skipped the Kernel.
+    /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
+    /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
     audit_hook: Cell<fn(Bypassed) -> void>,
 
@@ -594,7 +594,7 @@ impl Decls {
 
     /// A path's identity — minted at first mention.
     fn decl(d: DeclId) -> Decl {
-        if self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
         self.decls.get()[d.index]
     }
 
@@ -1014,7 +1014,7 @@ impl Decls {
     /// `d` itself belongs to) and must not recurse back into it —
     /// null answers "not settled yet," never "not there is an error."
     fn sig_so_far(d: DeclId) -> DeclSig? {
-        if self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
         self.sigs.get()[d.index]
     }
 
@@ -1412,7 +1412,7 @@ impl Decls {
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
-        if self.auditing.get() { self.audited(Bypassed.Written(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Written(d)) }
         let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
@@ -1446,7 +1446,7 @@ impl Decls {
     /// A `_`-declared fn's growing error set, as the fixpoint found it
     /// so far — deduped by type identity, the pass's own read, hook-free.
     fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
-        if self.auditing.get() { self.audited(Bypassed.Errors(d)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
         self.inferred_errs.at(d.index) ?? []
     }
 
@@ -1944,7 +1944,7 @@ impl Decls {
 
     /// A type's registered methods, as they stand — the hook-free read.
     fn methods_of(target: DeclId) -> List<DeclId> {
-        if self.auditing.get() { self.audited(Bypassed.Methods(target)) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
         self.methods.get()[target.index].get()
     }
 
