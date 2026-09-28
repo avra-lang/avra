@@ -54,6 +54,7 @@
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
 use core.{
+    wire_fields,
     digest_of,
     joined,
     sorted_texts,
@@ -91,13 +92,13 @@ fn encoded_filewitness(w: FileWitness) -> string {
     joined([wire_escape(w.path), wire_escape(w.digest)], "\n")
 }
 
-/// `stable_fields` (witness.av), never a bare `split("\n")`: split
+/// `wire_fields` (core/text.av), never a bare `split("\n")`: split
 /// drops a TRAILING empty segment, so a witness whose `digest` is ""
 /// read back one field short and refused as undecodable — a
 /// witness of an empty file being the case that stayed unreachable
 /// until a decoder was asked for it.
 fn decoded_filewitness(text: string) -> FileWitness? {
-    let lines = stable_fields(text)
+    let lines = wire_fields(text, "\n")
     if lines.length < 2 { return null }
     FileWitness { path: wire_unescape(lines[0]), digest: wire_unescape(lines[1]) }
 }
@@ -137,7 +138,7 @@ export fn encoded_docfacts(facts: DocFacts) -> string {
 }
 
 export fn decoded_docfacts(text: string) -> DocFacts? {
-    let lines = text.split("\n")
+    let lines = wire_fields(text, "\n")
     if lines.length < 4 { return null }
     let count? = parse_int(lines[3]) else { return null }
     if lines.length < 4 + count { return null }

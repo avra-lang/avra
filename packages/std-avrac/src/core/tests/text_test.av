@@ -1,6 +1,7 @@
 // Edit distance and nearest-candidate: the numbers Axis 20.3's
 // confidence tiers hang from.
 use @std.avrac.core.{
+    wire_fields,
     edit_distance,
     closest,
     quoted_text,
@@ -11,6 +12,14 @@ use @std.avrac.core.{
 }
 
 spec "core/text" {
+    given "a joined record's fields" {
+        then "an empty line is one empty field" { wire_fields("", ",").length == 1 && wire_fields("", ",")[0] == "" }
+        then "a lone separator is two empty fields" { wire_fields(",", ",").length == 2 }
+        then "an empty last field is kept" { wire_fields("a,", ",").length == 2 && wire_fields("a,", ",")[1] == "" }
+        then "two empty last fields are both kept" { wire_fields("a,,", ",").length == 3 }
+        then "a leading empty field is kept" { wire_fields(",a", ",").length == 2 && wire_fields(",a", ",")[0] == "" }
+        then "a line with no separator is one field" { wire_fields("abc", ",").length == 1 && wire_fields("abc", ",")[0] == "abc" }
+    }
     given "ordering tuples of text" {
         then "(\"a.b\", \"c\") and (\"a\", \"b.c\") are two keys, never one" {
             tuple_before(["a", "b.c"], ["a.b", "c"]) && !tuple_before(["a.b", "c"], ["a", "b.c"])
