@@ -1,0 +1,156 @@
+//! THE DEPENDENCY AUDIT — which reads of a declaration's facts a durable row can
+//! never see. `AVRA_DEP_AUDIT=<file>` arms it: every table read that skips the
+//! Kernel's `ask` (`features/bypass.av`) is held once per (verb, subject) until the
+//! outermost open query settles, then judged against the queries that were open when
+//! it happened. A read none of them records a cover for (per verb, `audit_covers`) is
+//! written here, one line per (verb, scope, query stack) with the number of outermost
+//! queries that made it. A line is rewritten at each power of two of its count, so the
+//! last one a run leaves carries the count to within a factor of two. It exists only in a
+//! compiler built with `audit_build` true (features/bypass.av); any other compiler carries
+//! none of it.
+use core.{DeclId, FileId, joined, list_cell, map_cell, sorted_texts}
+use query.{Key, Bypass}
+use features.{
+    Bypassed,
+    audit_build,
+    bypass_word,
+    bypass_verbs,
+    bypass_ordinal,
+    bypass_subject,
+    bypassed_at,
+}
+use @std.io.{env, write_text}
+
+/// The run's tally, one slot per (read, scope, stack): a map cannot be walked, so the
+/// slot names the row and the count beside it. One process, one file.
+once fn audit_slots() -> Cell<Map<string, int>> { map_cell() }
+
+once fn audit_counts() -> Cell<List<int>> { list_cell() }
+
+once fn audit_rows() -> Cell<List<string>> { list_cell() }
+
+/// What the first sighting read: the file it was in and the declaration's name.
+once fn audit_samples() -> Cell<List<string>> { list_cell() }
+
+/// The slot a key's tally lives in, minted at its first sighting.
+fn audit_slot(key: string) -> int {
+    let slots = audit_slots()
+    let seen? = slots.get().get(key) else {
+        let at = audit_counts().get().length
+        slots.put(key, at)
+        audit_counts().push(0)
+        audit_rows().push("")
+        audit_samples().push("")
+        return at
+    }
+    seen
+}
+
+impl Workspace {
+    /// Arms the audit when the environment names a file to write.
+    fn arm_audit() {
+        if !audit_build { return }
+        let path? = env("AVRA_DEP_AUDIT") else { return }
+        if path.is_empty() { return }
+        self.decls.arm_audit((r: Bypassed) -> self.audit_read(r))
+        self
+            .db
+            .kernel
+            .audit_to(
+                bypass_verbs,
+                (b: Bypass) -> self.audit_exempt(bypassed_at(b.verb, b.subject)),
+                (b: Bypass) -> self.audit_covers(bypassed_at(b.verb, b.subject)),
+                (b: Bypass) -> self.audit_report(b, path),
+            )
+    }
+
+    /// One read that skipped `ask`, told to the Kernel as two numbers: the whole judging
+    /// waits for the outermost query to settle, and runs once per distinct read.
+    fn audit_read(r: Bypassed) { self.db.kernel.bypassed(bypass_ordinal(r), bypass_subject(r)) }
+
+    /// The language's own declarations are constants, and a file not yet admitted has
+    /// nothing to read.
+    fn audit_exempt(r: Bypassed) -> bool {
+        match r {
+            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> self.decls.is_builtin(d) || !self.audit_known(self.decls.decls.get()[d.index].file),
+            .Store(f) -> !self.audit_known(f),
+        }
+    }
+
+    fn audit_known(f: FileId) -> bool { f.index < self.decls.files.get().length }
+
+    /// What would have recorded the read, per verb: a declaration's row and facts are a
+    /// function of its file's parse and items (or its module's held record); a
+    /// signature only of its own `Sig`; a type's method table of its own `Methods` —
+    /// other files' impls move it, so the file does not cover it; a node store of the
+    /// file's parse; and what a whole-program pass computes of that pass.
+    fn audit_covers(r: Bypassed) -> List<Key> {
+        match r {
+            .Decl(d) or .Facts(d) -> self.file_covers(self.decls.decls.get()[d.index].file, true),
+            .SigSoFar(d) -> [key(Family.Sig, d.index)],
+            .Methods(d) -> [key(Family.Methods, d.index)],
+            .Store(f) -> self.file_covers(f, false),
+            .Written(_) -> [key(Family.Receivers, 0)],
+            .Errors(_) -> [key(Family.Failures, 0)],
+        }
+    }
+
+    /// A file's parse, its module's held record, and — for its rows — its items.
+    fn file_covers(f: FileId, rows: bool) -> List<Key> {
+        let base = [
+            key(Family.Parsed, f.index),
+            key(Family.HeldSig, self.decls.file(f).module_id.index),
+        ]
+        if rows { base.concat([key(Family.Items, f.index)]) } else { base }
+    }
+
+    /// The read as the report says it: the verb, the file it read in, the declaration.
+    fn audit_note(r: Bypassed) -> string {
+        match r {
+            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> "${bypass_word(r)}\t${self.decl_home(d)}\t${self.decls.decls.get()[d.index].name}",
+            .Store(f) -> "${bypass_word(r)}\t${self.decls.file(f).path}\t-",
+        }
+    }
+
+    fn decl_home(d: DeclId) -> string { self.decls.file(self.decls.decls.get()[d.index].file).path }
+
+    /// A read nothing covered, counted under its verb, its scope and the queries it
+    /// was made inside.
+    fn audit_report(b: Bypass, path: string) {
+        let words = self.audit_note(bypassed_at(b.verb, b.subject)).split("\t")
+        let line_key = "${words[0]}\t${self.audit_scope(b, words[1])}\t${joined([self.frame_word(k) for k in b.frames], "/")}"
+        let slot = audit_slot(line_key)
+        let n = audit_counts().get()[slot] + 1
+        audit_counts().set_at(slot, n)
+        if n == 1 { audit_samples().set_at(slot, "${words[1]}\t${words[2]}") }
+        if !power_of_two(n) { return }
+        audit_rows().set_at(slot, "${line_key}\t${n}\t${audit_samples().get()[slot]}")
+        let _ = write_text(
+            path,
+            joined(
+                    [
+                        "# AVRA_DEP_AUDIT: verb, scope, query stack, at least this many, first sighting's file and name",
+                    ]
+                        .concat(sorted_texts(audit_rows().get())),
+                    "\n",
+                ) +
+                "\n",
+        )
+    }
+
+    /// `own` when the outermost query is a file's analysis of the very file the read
+    /// was made in, `foreign` when it is another's, `-` under any other root.
+    fn audit_scope(b: Bypass, home: string) -> string {
+        let root? = b.frames.first() else { return "-" }
+        if root.family != ordinal(Family.Analysis) { return "-" }
+        if self.decls.file(FileId { index: root.arg }).path == home { "own" } else { "foreign" }
+    }
+
+    fn frame_word(k: Key) -> string { family_word(family_at(k.family)) }
+}
+
+fn power_of_two(n: int) -> bool {
+    mut p = 1
+    while p < n { p = p * 2 }
+    p == n
+}

@@ -357,6 +357,63 @@ case "$vh_hc" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
+# Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
+# — a held file with no OTHER declaration worth diffing would pass this suite
+# clean while the one fact an impl carries went unchecked. `vtlib/src/lib.av` is
+# held both times (never the entry); the impl lands in it exactly once, so the
+# SAME run's before/after declaration count proves it joined what was compared,
+# never just an absolute total that a run examining nothing could still print.
+mkdir -p $R/vtlib/src $R/vt/src
+cat > $R/vtlib/avra.toml <<'TOML'
+[package]
+name = "@rt/vtlib"
+version = "0.1.0"
+
+[lib]
+name = "rt-vtlib"
+path = "src/lib.av"
+TOML
+printf '[package]\nname = "rt-vt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/vtlib" = { path = "../vtlib" }\n' > $R/vt/avra.toml
+cat > $R/vtlib/src/lib.av <<'AV'
+export trait Shape { fn area() -> int }
+export type Sq = { s: int }
+AV
+printf 'use @rt.vtlib.{Sq}\nprintln("vt ${Sq { s: 3 }.s}")\n' > $R/vt/src/main.av
+S "cold vt: a trait/type pair, no impl yet" vt
+vh_vt0=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+n_vt0=$(printf '%s' "$vh_vt0" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
+steps=$((steps+1))
+case "$vh_vt0" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl) compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (no impl) -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl): $(printf '%s' "$vh_vt0" | tail -5 | tr '\n' ' ')" ;;
+esac
+ed $R/vtlib/src/lib.av 'export type Sq = { s: int }' 'export type Sq = { s: int }
+impl Shape for Sq { fn area() -> int { self.s * self.s } }'
+ed $R/vt/src/main.av 'use @rt.vtlib.{Sq}
+println("vt ${Sq { s: 3 }.s}")' 'use @rt.vtlib.{Shape, Sq}
+let sh: dyn Shape = Sq { s: 3 }
+println("vt ${sh.area()}")'
+S "vt: the impl lands in the same held file — a held impl is now present" vt
+vh_vt1=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+n_vt1=$(printf '%s' "$vh_vt1" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
+steps=$((steps+1))
+case "$vh_vt1" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl) compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (with impl) -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl): $(printf '%s' "$vh_vt1" | tail -5 | tr '\n' ' ')" ;;
+esac
+# THE DELTA IS THE PROOF: +2 is the impl block's own declaration and its one
+# method, measured (avra-8sb5.57.86) against this exact fixture shape — a run
+# that walked the file but skipped the impl (a kind filter dropping it, say)
+# would still pass every case above while this alone catches it.
+steps=$((steps+1))
+if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
+    fails=$((fails+1))
+    echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
+fi
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
