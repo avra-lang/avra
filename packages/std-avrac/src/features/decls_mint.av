@@ -780,6 +780,90 @@ impl Decls {
         d
     }
 
+    /// A WRAP directive: the annotated declaration's own identity
+    /// never moves — its NAME, its FILE, every binding that already
+    /// resolves to it — only what it COMPILES TO does. Its WRITTEN
+    /// body relocates to a fresh sibling (`mint_wrap_body`), which
+    /// KEEPS the written declaration's own range (its annotation's own
+    /// callee was allocated inside it, and stays inside it). Its own
+    /// statement, root AND RANGE repoint to the WRAPPER spliced beside
+    /// it — a FRESH range, like any other generated declaration's,
+    /// never anchored to the written one's: a splice lands past every
+    /// statement the file's own parse already allocated, so a range
+    /// anchored at the written floor would swallow whatever sits
+    /// between (another decl, Main's own runtime statements — a
+    /// DIFFERENT decl's `wants` table then answers for THEIR
+    /// expressions, and the wrong type read from it reads as a defect
+    /// downstream, far from this seam), and one anchored at the
+    /// written ceiling would miss the wrapper's own nodes and trap
+    /// reading them through a `wants` table that never covers them.
+    fn mint_wrap(
+        f: FileId,
+        annotated: DeclId,
+        wrapper_stmt: StmtId,
+        wrapper_root: ExprId?,
+        wrapper_lo: int,
+        wrapper_hi: int,
+        ann: string,
+        original: string,
+        at: Span?,
+    ) -> List<DeclId> {
+        let orig = self.decl(annotated)
+        let bd = self.mint_wrap_body(f, orig, ann, original, at)
+        self
+            .decls
+            .set_at(
+                annotated.index,
+                self.decl(annotated) with { stmt: wrapper_stmt, root: wrapper_root, lo: wrapper_lo, hi: wrapper_hi },
+            )
+        // A STMT-DRIVEN READER FINDS ITS DECL THROUGH `decl_of`, never
+        // by re-deriving it from the decl's OWN `.stmt` field — typing
+        // asks it of every `Stmt.FnDecl` it walks (`TypeCx.decl_of`,
+        // an `!` unwrap: every declaring statement answers ONE), and
+        // the annotation crossing scans for a decl whose OWN `.stmt`
+        // still matches the annotated line. The wrapper's spliced
+        // statement is new; without this it answers absent and
+        // typing traps mid-walk.
+        self.reindex_stmt(f, wrapper_stmt, annotated)
+        self.note_provenance(annotated, ann, original, at)
+        [bd, annotated]
+    }
+
+    /// One statement reindexed to the declaration that now reads it —
+    /// `record_generated`'s write, without its `file_decls` append
+    /// (the declaration already stands there).
+    fn reindex_stmt(f: FileId, s: StmtId, d: DeclId) {
+        mut by_stmt = self.decl_ids.get()[f.index].get()
+        by_stmt.grow_to(self.store_of(f).stmts.count())
+        by_stmt.set(s.index, d)
+        self.decl_ids.get()[f.index].set(by_stmt)
+    }
+
+    /// The private sibling a WRAP directive moves the written body
+    /// behind — the SAME written statement, under the mangled name no
+    /// written binding can take, so `record_generated` repoints
+    /// `by_stmt` at it in place of the (now wrapper-pointing) annotated
+    /// declaration: whatever asks "what declares this line" — typing's
+    /// `decl_of`, the annotation crossing — reaches the body, exactly
+    /// as it reaches any other declaring statement. A self-call inside
+    /// the body still reads the WRITTEN name, which resolves to
+    /// whatever the ANNOTATED declaration answers to now — the
+    /// wrapper — so recursion re-enters through it with no
+    /// special-casing. Idempotent by the generated key: a re-run
+    /// answers the same id and mints nothing.
+    fn mint_wrap_body(f: FileId, orig: Decl, ann: string, original: string, at: Span?) -> DeclId {
+        let key = generated_key(f, "${orig.owner}#${original}\$body")
+        let known: DeclId? = self.known_id(key)
+        if known != null { return known! }
+        let name = "${original}\$body"
+        let d = self
+            .mint(key, f, orig.stmt, name, orig.kind, false, orig.owner, orig.parent, false, orig.root)
+        self.decls.set_at(d.index, self.decl(d) with { lo: orig.lo, hi: orig.hi })
+        self.record_generated(f, [d])
+        self.note_provenance(d, ann, original, at)
+        d
+    }
+
     // ── declarations ──
 
 }

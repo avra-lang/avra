@@ -362,10 +362,16 @@ impl TypeCx {
     /// seat, and a flat record is a value in a register with no
     /// identity to write through, so a one-field record would break
     /// where a two-field one works. Sealing is sticky, so it holds
-    /// however late the record itself is typed.
+    /// however late the record itself is typed — BUT a held record's
+    /// own row must land FIRST (`declared_first`), or its "was flat"
+    /// belief never reaches `held_flat` and a stale held object (built
+    /// before this seat existed) survives unrefused.
     fn keep_boxed(seats: List<Param>, ptypes: List<TypeId>) {
         for j, pp in seats {
-            if pp.promises.mutable { self.view.types.unflatten(ptypes[j]) }
+            if pp.promises.mutable {
+                self.view.decls.declared_first(ptypes[j])
+                self.view.types.unflatten(ptypes[j])
+            }
         }
     }
 

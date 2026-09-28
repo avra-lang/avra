@@ -355,7 +355,24 @@ export fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs])
 /// it. A twin's name must be SPELLABLE — never a `$`-mangle. (NOT
 /// `Decl`: that name is the compiler's own declaration — a collision
 /// would arm a counterfeit.)
-export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }
+///
+/// `wraps: true` asks for the OTHER shape: `source` declares a fn
+/// under the annotated fn's OWN written name — the WRAPPER, written
+/// by the derive author — and the compiler moves the WRITTEN body to
+/// a private sibling (`wrapped`, below) so the written name resolves
+/// to the wrapper from every caller, itself included. `@query`'s
+/// memoization wants this, and so does tracing and timing — never
+/// both `wraps` and a `twin` in one directive.
+export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null, wraps: bool = false }
+
+/// The private sibling `wraps: true` moved the written body to, as a
+/// callable reference the wrapper's own template splices at a NAME
+/// seat: `${wrapped(f)}(args)` for a free fn, `self.${wrapped(f)}(args)`
+/// for a method — the receiver is the wrapper's own to write, since a
+/// bound method is never a value (only its NAME crosses a `.Name`
+/// seat). The mangling is the one both sides agree on; a `Code` answer
+/// cannot fill a `.Name` seat, which is why this hands back a `Fn`.
+export fn wrapped(f: Fn) -> Fn { f with { name: "${f.name}\$body" } }
 
 /// The OTHER answer a Declares-effect fn may give, beside a bare
 /// `List<Directive>` — the same effect, a second shape, for an

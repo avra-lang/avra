@@ -31,6 +31,7 @@ use core.{
 use features.{DeclSig, DeclFacts, AnnotationFact}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
+use @std.path.{relative_path}
 
 impl Workspace {
     /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
@@ -552,9 +553,27 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
     //
     // AND A RECORD NAMING A FILE THE MODULE NO LONGER HAS is a previous tree's: minting
     // its declarations asks the host for a source that is gone.
+    //
+    // EITHER WAY THE REFUSAL SPEAKS: a module refused whole is not a module
+    // "never asked about" — every file it would have held answers `read_files`
+    // with the one declaration (or the one stray file) that made the record
+    // short, so the refusal names itself instead of reading as "no reason
+    // recorded" at every file it would have covered.
     let here = ws.module_files(m)
-    if !record_complete(fields) ||
-        fields.any((parts) -> declares(parts) && !here.contains(parts[1])) {
+    let incomplete: string? = record_complete(fields)
+    let stray: List<string>? = fields.find((parts) -> declares(parts) && !here.contains(parts[1]))
+    if incomplete != null || stray != null {
+        let why = incomplete ?? "names `${stray![1]}`, which the module no longer has"
+        ws
+            .hold
+            .read_files
+            .set(
+                ws
+                    .hold
+                    .read_files
+                    .get()
+                    .concat([ReadFile { path: f, why: Reads.Undecodable(why) } for f in here]),
+            )
         return
     }
     // every module sees the prelude and none imports it
@@ -599,7 +618,24 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
             ws.hold.hold_asked.push(f)
         } else {
             ws.hold.read_files.push(ReadFile { path: f, why: why! })
-            ws.hold.read_with.set(ws.hold.read_with.get().concat(kept_runs(at)))
+            let runs = kept_runs(at)
+            ws.hold.read_with.set(ws.hold.read_with.get().concat(runs))
+            // WHY a run's own reads are excluded rides with them from birth,
+            // beside `read_with` rather than inside it: a candidate seeded
+            // straight into `reads` this way never passes through
+            // `settle_holds`'s own worklist, so a reason recorded only there
+            // would never reach it.
+            let carries = Reads.RunBy(relative_path(ws.root, f))
+            ws
+                .hold
+                .read_seeds
+                .set(
+                    ws
+                        .hold
+                        .read_seeds
+                        .get()
+                        .concat([ReadFile { path: p, why: carries } for p in runs]),
+                )
         }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
@@ -615,6 +651,7 @@ export enum Reads {
     Consts
     Unholdable
     RunBy(string)
+    Undecodable(string)
 }
 
 export type ReadFile = { path: string, why: Reads }
@@ -629,6 +666,7 @@ impl Reads {
             .Consts -> "a const's kept value is gone",
             .Unholdable -> "it declares what a record cannot carry",
             .RunBy(by) -> "its bodies run while ${by} compiles",
+            .Undecodable(why) -> "its module's record refused whole: ${why}",
         }
     }
 }
@@ -669,23 +707,31 @@ fn declares(parts: List<string>) -> bool { parts[0] != "import" && parts[0] != "
 /// WHETHER A RECORD CAN BE REBUILT WHOLE — a total check, run BEFORE any file is
 /// held, over the SAME decoder the mint uses. A field the writer adds that this
 /// reader does not know makes the record short, and a short record refuses the
-/// module rather than contributing a declaration nobody can see.
-// LICENSED compiler.free_state_verb: a pure PREDICATE — a record's lines in, whether all of them decode out.
-fn record_complete(fields: List<List<string>>) -> bool {
+/// module rather than contributing a declaration nobody can see. Null when
+/// whole; otherwise the one declaration that made it short, named — the
+/// refusal this answers for (`load_interface`'s own `Reads.Undecodable`).
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a record's lines in, the first break out.
+fn record_complete(fields: List<List<string>>) -> string? {
     // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
     // held declaration to its file, so a hole is a record where a declaration would be
     // silently missing. Checking it HERE refuses the whole module instead of truncating.
     mut seen: Map<string, int> = {}
     for parts in fields {
         if declares(parts) {
-            if !decodable(parts) { return false }
-            let ordinal? = wire_number(parts[2]) else { return false }
+            if !decodable(parts) {
+                return "`${parts[5]}`'s kind `${parts[6]}` (shape `${parts[0]}`) in ${parts[1]} does not decode"
+            }
+            let ordinal? = wire_number(parts[2]) else {
+                return "`${parts[5]}` in ${parts[1]} names no ordinal"
+            }
             let want: int = seen.get(parts[1]) ?? 0
-            if ordinal != want { return false }
+            if ordinal != want {
+                return "`${parts[5]}` in ${parts[1]} wants ordinal ${want}, names ${ordinal}"
+            }
             seen.set(parts[1], want + 1)
         }
     }
-    true
+    null
 }
 
 /// Whether a line names nothing where a name is owed: a CASE's name is any text,
@@ -800,6 +846,8 @@ fn kind_of_word(word: string) -> DeclKind? {
         "case" -> .Case,
         "const" -> .Const,
         "builtin" -> .Builtin,
+        "collect" -> .Collect,
+        "collect_enum" -> .CollectEnum,
         _ -> null,
     }
 }
