@@ -82,12 +82,23 @@ spec "query/kernel — the dependency audit" {
         closed(r, 0)
         said(r) == ""
     }
-    then "a cover recorded by an outer query covers a read made deeper" {
+    then "a cover only an ancestor of the reader recorded does not cover the read" {
         let r = rig()
         made(r, 5)
         opened(r, 0)
         let _ = r.db.ask(Key { family: 1, arg: 5 })
         opened(r, 1)
+        r.db.bypassed(0, 5)
+        closed(r, 1)
+        closed(r, 0)
+        said(r) == "0/5@2"
+    }
+    then "a cover the reader recorded covers a read made under an ancestor" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 0)
+        opened(r, 1)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
         r.db.bypassed(0, 5)
         closed(r, 1)
         closed(r, 0)
