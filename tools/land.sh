@@ -362,8 +362,9 @@ move_caches_aside() {
     printf '%s\n' "$found" | while read -r d; do
         [ -z "$d" ] && continue
         n=$((n + 1))
-        mv "$d" "$trash/avra-cache/cache-$n"
-        echo "land: moved $d -> $trash/avra-cache/cache-$n" >&2
+        to="$trash/avra-cache/cache-$$-$(date +%s)-$n"
+        mv "$d" "$to"
+        echo "land: moved $d -> $to" >&2
     done
 }
 
@@ -541,13 +542,16 @@ ff_refused() {
 # to main's CURRENT tip before every attempt, never removed and
 # re-added, since a bisection tries many attempts in one run. Its
 # path is overridable (AVRA_LAND_BATCH_WT) so a fixture never touches
-# the real one.
-batch_wt="${AVRA_LAND_BATCH_WT:-/tmp/avra-land-batch-wt}"
+# the real one. By default it stands beside main's own worktree, at a
+# physical path: a tree under a symlinked directory (/tmp is one) reads
+# every file path relative to the wrong root, and no baseline matches.
+batch_wt="${AVRA_LAND_BATCH_WT:-}"
 batch_branch="land/batch-integration"
 
 # Resets the integration worktree to main's current tip — creating it
 # first if this is the first attempt this process has made.
 reset_batch_wt() {
+    [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
     if [ ! -d "$batch_wt" ]; then
         mkdir -p "$(dirname "$batch_wt")"
         git -C "$main_wt" worktree add -q -B "$batch_branch" "$batch_wt" main
@@ -556,6 +560,9 @@ reset_batch_wt() {
     fi
     git -C "$batch_wt" reset -q --hard main
     git -C "$batch_wt" clean -q -fd
+    # Each attempt merges different content: a cache kept from the last
+    # one describes files that are no longer there.
+    move_caches_aside "$batch_wt"
     seed_compiler "$batch_wt"
 }
 
@@ -683,7 +690,8 @@ batch_core() {
     landed=""
     batch_note=""
     batch_base="$(git -C "$main_wt" rev-parse refs/heads/main)"
-    echo "land: batch of: $branches"
+    [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
+    echo "land: batch of: $branches (tree $batch_wt)"
 
     # A whole batch failing is a truthful answer, never a script error.
     good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
