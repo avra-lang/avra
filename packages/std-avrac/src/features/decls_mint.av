@@ -74,6 +74,7 @@ impl Decls {
 
     fn store_of(f: FileId) -> NodeStore {
         if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Store(f)) }
         self.stores.get()[f.index]!
     }
 
@@ -353,6 +354,7 @@ impl Decls {
     }
 
     fn facts_of(d: DeclId) -> DeclFacts? {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Facts(d)) }
         if d.index >= self.faces.get().length { return null }
         self.faces.get()[d.index]
     }
@@ -857,7 +859,7 @@ impl Decls {
     /// special-casing. Idempotent by the generated key: a re-run
     /// answers the same id and mints nothing.
     fn mint_wrap_body(f: FileId, orig: Decl, ann: string, original: string, at: Span?) -> DeclId {
-        let key = generated_key(f, "${orig.owner}#${original}\$body")
+        let key = wrap_body_key(f, orig.owner, original)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }
         let name = "${original}\$body"
@@ -869,8 +871,28 @@ impl Decls {
         d
     }
 
+    /// The body a WRAP moved out of `d`, once it has.
+    fn wrap_body_of(f: FileId, d: DeclId) -> DeclId? {
+        let x = self.decl(d)
+        self.known_id(wrap_body_key(f, x.owner, x.name))
+    }
+
+    /// Whether `d` is the body a WRAP moved behind a written declaration:
+    /// it rides that declaration's written statement, annotations and
+    /// all, and owes no expansion of its own.
+    fn is_wrap_body(f: FileId, d: DeclId) -> bool {
+        let p? = self.provenance_of(d) else { return false }
+        let body? = self.known_id(wrap_body_key(f, self.decl(d).owner, p.original)) else { return false }
+        same_decl(body, d)
+    }
+
     // ── declarations ──
 
+}
+
+/// The key a WRAP's moved body is minted under: its written owner and name.
+fn wrap_body_key(f: FileId, owner: string, original: string) -> string {
+    generated_key(f, "${owner}#${original}\$body")
 }
 
 /// Whether a declaration of this kind is the one its statement
