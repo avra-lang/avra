@@ -696,6 +696,13 @@ impl Workspace {
     /// answering its new id. Callers check `edge_id_memo(dk)` first
     /// — this never re-checks, so it never runs on a hit.
     fn interned_edge_at(dk: string, e: Edge) -> int {
+        // `ensure_memo_fresh` FIRST, always: it may CLEAR `edge_table`
+        // (a stale revision), and reading `.length` or pushing before
+        // that clear lands the push in a table the clear then wipes —
+        // the id answered points at an empty slot, and the edge this
+        // call was meant to intern is gone. `edge_id_remember`
+        // (below) ALSO calls it, too late to save a push already made.
+        self.ensure_memo_fresh()
         let id = self.edge_table.get().length
         self.edge_table.push(e)
         self.edge_id_remember(dk, id)
@@ -729,8 +736,10 @@ impl Workspace {
         self.edge_id_by_key.get().get(dk)
     }
 
+    /// Records ONLY — the caller (`interned_edge_at`) already paid
+    /// `ensure_memo_fresh` before touching `edge_table`, and paying it
+    /// again here would be too late to undo a push already made.
     fn edge_id_remember(dk: string, id: int) {
-        self.ensure_memo_fresh()
         self.edge_id_by_key.put(dk, id)
     }
 
