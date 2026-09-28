@@ -700,7 +700,12 @@ impl Decls {
             let hi: int = if mb == null { cursor } else { mb!.index + 1 }
             let md = self.mint_method(key, f, store, m, block.target, block_decl, mb)
             self.decls.set_at(md.index, self.decl(md) with { lo: cursor, hi: hi })
-            methods.push(md)
+            let mname = self.decl(md).name
+            let seats: List<Param> = store.fn_parts(m)?.params ?? []
+            let defaults = self
+                .mint_defaults("${key}#${mname}", f, m, seats, "${block.target}.${mname}", md)
+            self.range_defaults(defaults, cursor)
+            methods = methods.concat([md]).concat(defaults)
             cursor = hi
         }
         self.decls.set_at(block_decl.index, self.decl(block_decl) with { lo: lo, hi: cursor })
