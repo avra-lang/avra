@@ -415,6 +415,7 @@ impl Decls {
             unit_of,
             is_held,
             (w: Wanted) -> self.instantiated(w),
+            (w: Wanted) -> self.unlowered_stub(w),
         )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
@@ -434,8 +435,14 @@ impl Decls {
         }
     }
 
-    /// AN INSTANTIATION NOBODY LOWERED, as the declaration a caller's module needs:
-    /// its signature under its type arguments — what `lower_fn` would give it.
+    /// A DECLARATION NOBODY LOWERED A BODY FOR, HERE: an instantiation the
+    /// program owes but a held home never ran, or a HELD CALLEE a fresh
+    /// caller reaches — its signature under its type arguments (what
+    /// `lower_fn` would give it), and its OWN seat marks, so a caller's
+    /// memory pass (`marks_by_name`, compiler/memory/memory.av) can read a
+    /// held callee's `consumed` seats exactly as it reads a fresh one's,
+    /// instead of defaulting every seat plain because the callee's real
+    /// body never entered `l.fns`.
     fn unlowered_stub(w: Wanted) -> Body? {
         let d? = w.decl else { return null }
         let sig? = self.sig(d)?.fn_sig() else { return null }
@@ -447,6 +454,7 @@ impl Decls {
             ins: [],
             reg_types: [],
             weak: true,
+            marks: self.marks_of(d, sig.params.length),
         }
     }
 
@@ -462,7 +470,13 @@ impl Decls {
     /// lowers once.
     fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
         let ru = unit_of(root)
-        let d = drained(ru.wants, unit_of, (_f: FileId) -> false, (_w: Wanted) -> false)
+        let d = drained(
+            ru.wants,
+            unit_of,
+            (_f: FileId) -> false,
+            (_w: Wanted) -> false,
+            (_w: Wanted) -> null,
+        )
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let every_body = fns.concat([entry])
@@ -489,6 +503,7 @@ fn drained(
     unit_of: fn(Wanted) -> Unit,
     is_held: fn(FileId) -> bool,
     instantiated: fn(Wanted) -> bool,
+    held_stub: fn(Wanted) -> Body?,
 ) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
@@ -506,7 +521,19 @@ fn drained(
         // a home that is held has no body to lower from.
         let roams = instantiated(w)
         if roams { homes.push(w.file) }
-        if claim_seen(seen, w.name) && !is_held(w.file) {
+        let fresh = claim_seen(seen, w.name)
+        if fresh && is_held(w.file) {
+            // THE BODY IS THE STORE'S, BUT THE CONTRACT MUST STILL BE HERE: a
+            // fresh caller's memory pass reads a called-by-name callee's seat
+            // marks from `l.fns` alone (`marks_by_name`), and a held callee is
+            // never unit_of'd into it. Without a stub a held `consumed` seat
+            // reads as plain, the caller skips the retain the callee's own
+            // (held, unseen) release still performs, and the caller reads
+            // freed memory (.66 hole 3).
+            let stub: Body? = held_stub(w)
+            if stub != null { fns.push(stub!) }
+        }
+        if fresh && !is_held(w.file) {
             minted = minted + 1
             let u = unit_of(w)
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.

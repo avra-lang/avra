@@ -311,8 +311,18 @@ impl Workspace {
             // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
             // cannot answer, and a caller's `mut`/retain decision reads them. They ride
             // the fn's payload: one word per seat, then one bit per seat.
+            // `seat_mark` alone is the DECLARED promises only — `consumed` (R3) is a
+            // separate, whole-program inference merged in at lowering (`Body.marks`,
+            // compiler/lower/lower.av) and never written back into `Decls`'
+            // own table. A held reader has no lowering to merge it at, so the
+            // record is the only place `consumed` can ever reach it: write it here.
             let n = self.decls.seat_count(d.id)
-            let marks = joined([mark_word(self.decls.seat_mark(d.id, j)) for j in 0..n], ";")
+            let marks = joined(
+                [mark_word(
+                    self.decls.seat_mark(d.id, j) with { consumed: self.decls.consumed_seat(d.id, j) },
+                ) for j in 0..n],
+                ";",
+            )
             let writes = joined(
                 [if self.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n],
                 "",
