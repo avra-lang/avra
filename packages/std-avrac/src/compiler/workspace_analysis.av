@@ -325,7 +325,15 @@ impl Workspace {
         // other side — the value is asking for the const's own type.
         let d: DeclId? = self.decls.decl_of(ask.file, s)
         let cyclic = d != null && self.relation(Family.Typed).open(d!.index)
-        if d != null && !cyclic { touch(self.typed(d!)) }
+        // A HELD CONST'S TYPE IS ALREADY THE RECORD'S: its declaration's
+        // `lo`/`hi` are blank (a held Decl carries a signature, never an
+        // expression range), so typing its body here would read past an
+        // empty window. Fill its row instead — `fill_const` reads the
+        // record's own type.
+        if d != null && !cyclic {
+            let dv = d!
+            if self.is_held(ask.file) { self.fill_ensured(dv) } else { touch(self.typed(dv)) }
+        }
         let ty = self.decls.held_const_type(ask.file, s) ?? error
         let _ = self.relation(Family.ConstTyped).finish(id, DbRow.ConstTyped(ty), ty.index)
         cyclic
@@ -338,11 +346,7 @@ impl Workspace {
             .Compute -> self.relation(Family.Settled).begin(id),
         }
         let ask = self.settle_asks.get()[id]
-        let root: ExprId = match ask.root {
-            .Const(s) -> self.analysis(ask.file).view.store.const_value(s)!,
-            .Expr(e) -> e,
-        }
-        let r = self.settlement_of(ask.file, root, ask.name, ask.seats)
+        let r = self.settle_result(ask)
         // `embed` is the one permitted build-world read. Make every
         // file it opened a source input dependency before this query
         // closes, so its content participates in revalidation.
@@ -353,6 +357,32 @@ impl Workspace {
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
         let _ = self.relation(Family.Settled).finish(id, DbRow.Settled(held), settlement_hash(held))
         r
+    }
+
+    /// A HELD CONST'S VALUE IS THE RECORD'S, NEVER RE-EVALUATED: `analysis`
+    /// would fold and type its whole file to read its own initializer, and
+    /// a held file has no expression range to type (its Decl carries a
+    /// signature alone). `fill_const` already read the value off the
+    /// record; ask for that row, never the file's analysis.
+    fn settle_result(ask: SettleAsk) -> Result<Settled, Unsettled> {
+        match ask.root {
+            .Const(s) -> {
+                if !self.is_held(ask.file) {
+                    return self
+                        .settlement_of(
+                            ask.file,
+                            self.analysis(ask.file).view.store.const_value(s)!,
+                            ask.name,
+                            ask.seats,
+                        )
+                }
+                let d? = self.decls.decl_of(ask.file, s) else { return .Err(Unsettled.Trap("a held const names no declaration")) }
+                self.fill_ensured(d)
+                let v? = self.decls.held_value(d) else { return .Err(Unsettled.Trap("a held const's value did not decode")) }
+                .Ok(v)
+            },
+            .Expr(e) -> self.settlement_of(ask.file, e, ask.name, ask.seats),
+        }
     }
 
     /// One settlement run: the initializer lowered as a program, its

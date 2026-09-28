@@ -48,7 +48,6 @@ use core.{
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use core.{Fingerprint, fp, list_cell, map_cell, same_type, touch, Table, new_table}
-use core.{qtrace}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -351,6 +350,10 @@ export type Decls = {
     // inside `mint`, behind the same captured hooks.
     impls_by_name: Cell<Map<string, List<DeclId>>>,
     ensure: Cell<fn(DeclId) -> void>,
+    // the workspace's held-row hook: fills a held declaration's own
+    // record row before a fact it fills (an impl's target among them)
+    // is read
+    ensure_target: Cell<fn(DeclId) -> void>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
@@ -511,6 +514,7 @@ export fn new_decls() -> Decls {
         impls: Cell.new(no_impls),
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
+        ensure_target: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
         ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
@@ -1007,6 +1011,11 @@ impl Decls {
         self.ensure.set(ensure)
     }
 
+    /// The workspace arms the held-row hook once.
+    fn arm_target(ensure: fn(DeclId) -> void) {
+        self.ensure_target.set(ensure)
+    }
+
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
 
     /// The workspace arms the entry hook once.
@@ -1160,7 +1169,6 @@ impl Decls {
     fn flatten_enum(d: DeclId, e: EnumSig) {
         if !self.tparams(d).is_empty() { return }
         let ty = self.types.intern(Type.Enum(d, self.decl(d).name))
-        qtrace("WATCH_HELD\tflatten_enum\t${self.decl(d).name}\t${self.file(self.decl(d).file).path}\n")
         self.laid_out(d, ty, e)
         self.types.mark_settled(ty)
     }
@@ -1203,7 +1211,6 @@ impl Decls {
     fn declared_first(t: TypeId) {
         match self.types.shape_of(t) {
             .Struct(r, _) or .Enum(r, _) -> {
-                qtrace("WATCH_HELD\tdeclared_first\t${self.decl(r).name}\t${self.file(self.decl(r).file).path}\n")
                 for sealer in self.mut_seat_sealers(self.decl(r).name) { touch(self.sig(sealer)) }
                 let _ = self.sig(r)
             },
@@ -1534,6 +1541,7 @@ impl Decls {
     }
 
     fn target_of(impl_decl: DeclId) -> DeclId? {
+        (self.ensure_target.get())(impl_decl)
         let held: DeclId? = self.targets.get()[impl_decl.index]
         held
     }

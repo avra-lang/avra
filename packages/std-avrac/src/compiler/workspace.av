@@ -41,7 +41,6 @@ use core.{
     touch,
     Annotation,
     DeclKind,
-    qtrace,
 }
 use @std.path.{dir_of, joined_path}
 use features.components.{word_of, instanced, named_instances}
@@ -701,6 +700,7 @@ fn built(
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
@@ -754,6 +754,14 @@ impl Workspace {
 
     fn ensured(d: DeclId) {
         let _ = self.sig(d)
+    }
+
+    /// A held declaration's fact is its record's — filled on the ask
+    /// that names it, never before. `target_of` (an impl's target) is
+    /// the fact this hook exists for; a live declaration's sig fills
+    /// it the ordinary way, so only a held one needs the row forced.
+    fn target_ensured(d: DeclId) {
+        if self.is_held(self.decls.decl(d).file) { self.fill_ensured(d) }
     }
 
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
@@ -1546,7 +1554,6 @@ impl Workspace {
     /// The one context over a declaration's expression range: the view
     /// of its file, the names it reads.
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
-        qtrace("WATCH_HELD\tcx_over\t${x.name}\t${self.decls.file(x.file).path}\tlo=${x.lo}\thi=${x.hi}\theld=${self.is_held(x.file)}\n")
         let p = self.parsed(x.file)
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
