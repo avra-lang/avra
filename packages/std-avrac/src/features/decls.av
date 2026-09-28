@@ -19,6 +19,7 @@ use core.{
     StmtId,
     ExprId,
     PatId,
+    ParamId,
     Span,
     NodeStore,
     TypeRegistry,
@@ -633,7 +634,7 @@ impl Decls {
         pats: List<PatId>,
         origin: FileId,
     ) {
-        self.mark_origin(f, exprs, stmts, pats, Origin.Written(origin))
+        self.mark_origin(f, exprs, stmts, pats, [], Origin.Written(origin))
     }
 
     /// A HOLED node's own name resolves HERE, but its span still
@@ -646,9 +647,10 @@ impl Decls {
         exprs: List<ExprId>,
         stmts: List<StmtId>,
         pats: List<PatId>,
+        params: List<ParamId>,
         origin: FileId,
     ) {
-        self.mark_origin(f, exprs, stmts, pats, Origin.Spanned(origin))
+        self.mark_origin(f, exprs, stmts, pats, params, Origin.Spanned(origin))
     }
 
     fn mark_origin(
@@ -656,6 +658,7 @@ impl Decls {
         exprs: List<ExprId>,
         stmts: List<StmtId>,
         pats: List<PatId>,
+        params: List<ParamId>,
         mark: Origin,
     ) {
         let known = self.origins.get()[f.index]
@@ -671,6 +674,10 @@ impl Decls {
             while known.pats.get().length <= p.index { known.pats.push(Origin.Here) }
             known.pats.set_at(p.index, mark)
         }
+        for p in params {
+            while known.params.get().length <= p.index { known.params.push(Origin.Here) }
+            known.params.set_at(p.index, mark)
+        }
     }
 
     /// The file a generated node's own NAME resolves in, when it is
@@ -679,6 +686,10 @@ impl Decls {
     fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].exprs.get(), e.index) }
     fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].stmts.get(), s.index) }
     fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].pats.get(), p.index) }
+
+    /// Whether a seat's name came through a hole, so it binds where the
+    /// code lands rather than where its fn's template was written.
+    fn holed_param(f: FileId, p: ParamId) -> bool { self.origins.get()[f.index].holed(self.origins.get()[f.index].params.get(), p.index) }
 
     /// The file whose TEXT a generated node's span indexes, when it
     /// is another than this one — non-null for a written OR a holed

@@ -225,13 +225,19 @@ export enum Origin {
 /// past the table's end is written here. EACH TABLE IS A `Cell`: a bare
 /// list reaches a copy at every write, so marking n nodes through the
 /// record copied the whole table n times.
-export type Origins = { exprs: Cell<List<Origin>>, stmts: Cell<List<Origin>>, pats: Cell<List<Origin>> }
+export type Origins = {
+    exprs: Cell<List<Origin>>,
+    stmts: Cell<List<Origin>>,
+    pats: Cell<List<Origin>>,
+    params: Cell<List<Origin>>,
+}
 
 export fn no_origins() -> Origins {
     let a: List<Origin> = []
     let b: List<Origin> = []
     let c: List<Origin> = []
-    Origins { exprs: Cell.new(a), stmts: Cell.new(b), pats: Cell.new(c) }
+    let d: List<Origin> = []
+    Origins { exprs: Cell.new(a), stmts: Cell.new(b), pats: Cell.new(c), params: Cell.new(d) }
 }
 
 impl Origins {
@@ -242,6 +248,13 @@ impl Origins {
     fn at(rows: List<Origin>, i: int) -> FileId? {
         if i >= rows.length { return null }
         match rows[i] { .Written(f) -> f, .Here or .Spanned(_) -> null }
+    }
+
+    /// Whether a row came through a hole — its name resolves where the
+    /// code lands. A pronoun's param has no row.
+    fn holed(rows: List<Origin>, i: int) -> bool {
+        if i < 0 || i >= rows.length { return false }
+        match rows[i] { .Spanned(_) -> true, .Here or .Written(_) -> false }
     }
 
     /// The file whose TEXT a node's span indexes, when the table
