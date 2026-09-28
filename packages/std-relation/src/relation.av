@@ -31,7 +31,7 @@ use @std.meta.{
     name,
     refuse_as_at,
 }
-use rows.{Rows, IndexKey, text_key, int_key, bool_key}
+use rows.{Rows, IndexKey, text_key, int_key, bool_key, key_part, int_part, bool_part}
 use db.{Db, Stores, stores}
 use stable.{
     stable_hasher,
@@ -71,16 +71,14 @@ export fn relation_problems(t: Type) -> List<Diagnostic> {
     collisions.concat(marks).concat(kinds).concat(lookup_problems(t))
 }
 
-/// The lookup laws, over fields whose marks are sound: one `@key`
-/// field, no field answering both one row and a list, a lookup over a
-/// kind that files, and an `id` the store can mint.
+/// The lookup laws, over fields whose marks are sound: no field
+/// answering both one row and a list, a lookup over a kind that files,
+/// and an `id` the store can mint.
 fn lookup_problems(t: Type) -> List<Diagnostic> {
-    let keys = [f for f in lookups(t) if marked(f, "key")]
-    let composite = [composite_key(t, f) for f in keys.slice(1, keys.length)]
     let clashes = [answer_clash(t, f) for f in lookups(t) if marked(f, "unique") && marked(f, "index")]
     let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(f.kind)]
     let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind)]
-    composite.concat(clashes).concat(unfiled).concat(ids)
+    clashes.concat(unfiled).concat(ids)
 }
 
 /// Whether the store can mint an `id` of this kind.
@@ -98,12 +96,21 @@ fn lookup_marks(f: Field) -> List<string> {
     [m.name for m in f.marks if relation_marks.contains(m.name)]
 }
 
-/// The fields a lookup is generated for, in declared order — the
-/// store's indexes, numbered as they stand here. One index serves every
-/// mark a field wears; a field whose marks are unsound files nothing.
+/// Every field a lookup reads, in declared order; a field whose marks
+/// are unsound files nothing.
 fn lookups(t: Type) -> List<Field> {
     [f for f in t.fields if !lookup_marks(f).is_empty() && marks_ok(f)]
 }
+
+/// The `@key` fields, in declared order — together, the row's name.
+fn key_fields(t: Type) -> List<Field> { [f for f in lookups(t) if marked(f, "key")] }
+
+/// The fields looked up by their own name — `@unique` or `@index`.
+fn named_lookups(t: Type) -> List<Field> { [f for f in lookups(t) if names_a_lookup(f)] }
+
+/// The store's indexes: the key's first when there is one, then one per
+/// named lookup, in declared order.
+fn key_indexes(t: Type) -> int { if key_fields(t).is_empty() { 0 } else { 1 } }
 
 /// Whether a kind files under an index key.
 fn files(k: Kind) -> bool {
@@ -182,6 +189,8 @@ const generated_members: List<string> = [
     "insert",
     "index_keys",
     "by_key",
+    "key",
+    "key_text",
     "get",
     "all",
 ]
@@ -207,7 +216,7 @@ fn members(t: Type) -> List<Decls> {
         get_member(t),
         all_member(t),
     ]
-        .concat(key_lookups(t))
+        .concat(key_members(t))
         .concat(field_lookups(t))
 }
 
@@ -215,6 +224,7 @@ fn generated(t: Type) -> Decls {
     if !shape_ok(t) { return quote { impl ${t} { } } }
     quote {
         ${stores_decl(t)}
+        ${key_record(t)}
         impl ${t} {
             static fn relation_name() -> string { ${literal(stable_name(t))} }
 
@@ -235,7 +245,7 @@ fn stores_name(t: Type) -> string { "${snake(t.name)}_stores" }
 
 /// The relation's rows under every Db.
 fn stores_decl(t: Type) -> Decls {
-    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${lookups(t).length}) } }
+    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${key_indexes(t) + named_lookups(t).length}) } }
 }
 
 /// `rows_in`: this relation's rows under a Db, opened on the first reach.
@@ -253,13 +263,11 @@ fn all_member(t: Type) -> Decls {
     quote { static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all() } }
 }
 
-/// The row's key in each index, in the lookups' own order.
+/// The row's key in each index, in the store's index order.
 fn index_keys_member(t: Type) -> Decls {
-    let ls = lookups(t)
-    let first? = ls.first() else { return quote { fn index_keys() -> List<IndexKey> { [] } } }
-    mut acc: Code = quote { [${key_of(quote { self.${first.name} }, first.kind)}] }
-    for f in ls.slice(1, ls.length) { acc = quote { ${acc}.concat([${key_of(quote { self.${f.name} }, f.kind)}]) } }
-    quote { fn index_keys() -> List<IndexKey> { ${acc} } }
+    let keyed = if key_fields(t).is_empty() { [] } else { [quote { text_key(${name(t.name)}.key_text(self.key())) }] }
+    let parts = keyed.concat([key_of(quote { self.${f.name} }, f.kind) for f in named_lookups(t)])
+    quote { fn index_keys() -> List<IndexKey> { [${..parts}] } }
 }
 
 /// A value's index key, by its kind.
@@ -272,9 +280,10 @@ fn key_of(e: Code, k: Kind) -> Code {
     }
 }
 
-/// The `@key` field's place among the lookups, when there is one.
+/// The key's index, when the relation has a key.
 fn key_place(t: Type) -> int? {
-    lookups(t).find_index((f: Field) -> marked(f, "key"))
+    if key_fields(t).is_empty() { return null }
+    0
 }
 
 /// `insert`: a keyed row replaces the row its key already names, keeping
@@ -322,14 +331,49 @@ fn insert_member(t: Type) -> Decls {
     }
 }
 
-/// `by_key`, over the `@key` field's index.
-fn key_lookups(t: Type) -> List<Decls> {
-    [lookup_member(t, f, i, "by_key", true) for i, f in lookups(t) if marked(f, "key")]
+/// `key()`, `key_text` — each field length-prefixed, so no two keys
+/// share one text — and `by_key`, over the key's index; none without a
+/// key.
+fn key_members(t: Type) -> List<Decls> {
+    let keys = key_fields(t)
+    if keys.is_empty() { return [] }
+    let inits = [quote { W { ${f.name}: self.${f.name} } } for f in keys]
+    let parts = [part_of(quote { k.${f.name} }, f.kind) for f in keys]
+    [
+        quote { fn key() -> ${t}Key { ${t}Key { ..${inits} } } },
+        quote { static fn key_text(k: ${t}Key) -> string { [${..parts}].join("") } },
+        quote {
+            static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
+                let rs = ${name(t.name)}.rows_in(db)
+                rs.row(rs.first_id(rs.bucket_of(0, text_key(${name(t.name)}.key_text(k)))) ?? -1)
+            }
+        },
+    ]
 }
 
-/// `by_<field>`, over each `@unique` or `@index` field's index.
+/// The key record: the `@key` fields as a value to hold, hash and look
+/// up by.
+fn key_record(t: Type) -> List<Decls> {
+    let keys = key_fields(t)
+    if keys.is_empty() { return [] }
+    let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in keys]
+    [quote { type ${t}Key = { ..${fields} } }]
+}
+
+/// One key field's text, by its kind.
+fn part_of(e: Code, k: Kind) -> Code {
+    match k {
+        .Str -> quote { key_part(${e}) },
+        .Int -> quote { int_part(${e}) },
+        .Bool -> quote { bool_part(${e}) },
+        rest -> quote { a_relation_key_kind_with_no_text() },
+    }
+}
+
+/// `by_<field>`, over each `@unique` or `@index` field's own index.
 fn field_lookups(t: Type) -> List<Decls> {
-    [lookup_member(t, f, i, "by_${f.name}", marked(f, "unique")) for i, f in lookups(t) if names_a_lookup(f)]
+    let base = key_indexes(t)
+    [lookup_member(t, f, base + j, "by_${f.name}", marked(f, "unique")) for j, f in named_lookups(t)]
 }
 
 /// Whether a field is looked up by its own name — `@unique` or `@index`.
@@ -522,15 +566,6 @@ fn name_collision(t: Type, f: Field) -> Diagnostic {
         f.at ?? t.at,
         "`@relation` gives `${t.name}` a member named `${f.name}`, and the field wears that name",
         "rename the field",
-    )
-}
-
-fn composite_key(t: Type, f: Field) -> Diagnostic {
-    refuse_as_at(
-        "composite_key",
-        f.at ?? t.at,
-        "`${t.name}.${f.name}` is a second `@key` field — a composite key waits for the parameter-run hole",
-        "keep one `@key` field, and mark the others `@index` or `@unique`",
     )
 }
 

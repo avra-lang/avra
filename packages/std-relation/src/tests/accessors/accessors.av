@@ -43,7 +43,7 @@ fn accounts() -> string {
     let a = Account.insert(db, Account { id: 0, team: "red", handle: "ann" })
     let b = Account.insert(db, Account { id: 0, team: "red", handle: "bo" })
     let moved = Account.insert(db, Account { id: 9, team: "blue", handle: "ann" })
-    let team = Account.by_key(db, "ann")?.team ?? "-"
+    let team = Account.by_key(db, AccountKey { handle: "ann" })?.team ?? "-"
     "${a.id}${b.id}${moved.id} ${Account.all(db).length} ${team} ${Account.by_team(db, "red").length}"
 }
 
@@ -51,7 +51,7 @@ fn tagged() -> string {
     let db = new_db()
     let _ = Tagged.insert(db, Tagged { name: "n", tags: ["a"] })
     let _ = Tagged.insert(db, Tagged { name: "n", tags: ["b", "c"] })
-    "${Tagged.all(db).length} ${(Tagged.by_key(db, "n")?.tags ?? []).join(",")}"
+    "${Tagged.all(db).length} ${(Tagged.by_key(db, TaggedKey { name: "n" })?.tags ?? []).join(",")}"
 }
 
 /// A relation of no lookup fields, and one whose name is two words.
@@ -69,6 +69,25 @@ fn plain_and_sites() -> string {
     "${Plain.all(db).length} ${ErrorSite.by_at(db, 7).length} ${ErrorSite.get(db, 1)?.at ?? -1}"
 }
 
+/// A composite key: three fields together name a row, one of them
+/// indexed on its own too.
+@relation
+type Site = { id: int, @key module: string, @key owner: string, @key @index name: string, line: int }
+
+fn site(module: string, owner: string, name: string, line: int) -> Site {
+    Site { id: 0, module: module, owner: owner, name: name, line: line }
+}
+
+fn sites() -> string {
+    let db = new_db()
+    let a = Site.insert(db, site("m", "ab", "c", 1))
+    let b = Site.insert(db, site("m", "a", "bc", 2))
+    let moved = Site.insert(db, site("m", "ab", "c", 3))
+    let hit = Site.by_key(db, SiteKey { module: "m", owner: "a", name: "bc" })?.line ?? -1
+    let miss = Site.by_key(db, SiteKey { module: "m", owner: "abc", name: "" }) == null
+    "${a.id}${b.id}${moved.id} ${Site.all(db).length} ${hit} ${miss} ${Site.by_name(db, "c").length} ${a.key().owner}"
+}
+
 /// Two Dbs keep their own rows; a Db knows only the relations it
 /// reached; a closed Db's rows are let go.
 fn dbs() -> string {
@@ -82,4 +101,4 @@ fn dbs() -> string {
     "${seen_in_b} ${reached} ${Note.all(a).length}"
 }
 
-"${flags()} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()}"
+"${flags()} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()}"
