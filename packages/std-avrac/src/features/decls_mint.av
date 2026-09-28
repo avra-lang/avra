@@ -658,7 +658,23 @@ impl Decls {
         }
         let own_hi: int = if body == null { cursor } else { body!.index + 1 }
         self.decls.set_at(d.index, self.decl(d) with { lo: lo, hi: own_hi })
-        [d].concat(members)
+        let fields: List<Param> = store.struct_parts(s)?.fields ?? []
+        let seats: List<Param> = store.fn_parts(s)?.params ?? []
+        let defaults = self.mint_defaults(key, f, s, fields.concat(seats), name, d)
+        self.range_defaults(defaults, lo)
+        [d].concat(members).concat(defaults)
+    }
+
+    /// A generated declaration's defaults, each owning the expressions
+    /// minted since the one before it — a default's tree is minted in
+    /// seat order, its root last.
+    fn range_defaults(defaults: List<DeclId>, lo: int) {
+        mut from = lo
+        for dd in defaults {
+            let hi = (self.decl(dd).root?.index ?? from - 1) + 1
+            self.decls.set_at(dd.index, self.decl(dd) with { lo: from, hi: hi })
+            from = hi
+        }
     }
 
     /// A generated impl block, with its methods under it, each wearing
@@ -684,7 +700,12 @@ impl Decls {
             let hi: int = if mb == null { cursor } else { mb!.index + 1 }
             let md = self.mint_method(key, f, store, m, block.target, block_decl, mb)
             self.decls.set_at(md.index, self.decl(md) with { lo: cursor, hi: hi })
-            methods.push(md)
+            let mname = self.decl(md).name
+            let seats: List<Param> = store.fn_parts(m)?.params ?? []
+            let defaults = self
+                .mint_defaults("${key}#${mname}", f, m, seats, "${block.target}.${mname}", md)
+            self.range_defaults(defaults, cursor)
+            methods = methods.concat([md]).concat(defaults)
             cursor = hi
         }
         self.decls.set_at(block_decl.index, self.decl(block_decl) with { lo: lo, hi: cursor })
@@ -698,7 +719,7 @@ impl Decls {
     fn record_generated(f: FileId, made: List<DeclId>) {
         mut by_stmt = self.decl_ids.get()[f.index].get()
         by_stmt.grow_to(self.store_of(f).stmts.count())
-        for d in made { by_stmt.set(self.decl(d).stmt.index, d) }
+        for d in [d for d in made if names_its_stmt(self.decl(d).kind)] { by_stmt.set(self.decl(d).stmt.index, d) }
         self.decl_ids.get()[f.index].set(by_stmt)
         self.file_decls.get()[f.index].set(self.file_decls.get()[f.index].get().concat(made))
     }
@@ -753,4 +774,13 @@ impl Decls {
 
     // ── declarations ──
 
+}
+
+/// Whether a declaration of this kind is the one its statement
+/// declares — a default rides its owner's statement.
+fn names_its_stmt(kind: DeclKind) -> bool {
+    match kind {
+        .Default -> false,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> true,
+    }
 }

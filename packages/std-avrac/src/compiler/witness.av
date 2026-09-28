@@ -1,0 +1,377 @@
+//! DURABLE WITNESSES (COMPILER DB townhall §6.4, §6.5) — `Family.Analysis`
+//! made durable end to end, the first of the 23 in-kernel families to
+//! cross a process boundary. A dense `Key{family,arg}` means nothing in
+//! another process (§2.5 limit 3), so a settled query's stable name and
+//! its deps' (stable name, value hash) pairs go into the package's
+//! `Pack` (compiler/store/pack.av) beside its answer. A later process
+//! asking the same query reads the entry, asks each edge's CURRENT hash
+//! by re-running the ordinary in-process query it names, and reuses the
+//! stored answer only when every one still matches — red-green, down to
+//! `Parsed`'s and `Sig`'s own inputs, never a name it cannot resolve.
+//!
+//! `Parsed`, `Sig`, `Manifest` and `Methods` are the families this file
+//! can re-validate — the shapes `Family.Analysis` actually depends on:
+//! the file's own parse, a cross-file callee's signature
+//! (`sig_diagnostics`, `folded`'s type-checking), the package's own
+//! `avra.toml` (every file's namespace resolution reads it), and a
+//! type's method table (`method_diagnostics` scans every type
+//! declaration, builtins included, for every file). A dep in any other
+//! family answers unresolvable, which is a MISMATCH, never "nothing to
+//! check" — the safe direction, never a wrongly-trusted reuse. Widening
+//! it to the rest of the 23 is the next slice's work, family by family.
+use core.{DeclId, FileId, ModuleId, joined, wire_escape, wire_unescape, fp_str, flatten}
+use query.{Key}
+use features.{Decls, Decl}
+use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
+use @std.relation.stable.{
+    writer as stable_writer,
+    reader as stable_reader,
+    Writer,
+    Reader,
+    CodecFault,
+}
+use @std.text.{parse_int}
+
+// ── Stable names: a dense id means nothing in the next process ──
+
+/// Every field wire-escaped, then joined by a bare newline — the
+/// ARITY law without a new codec: `wire_escape` turns an embedded
+/// newline into `\n` literally, so splitting back on a raw newline
+/// recovers exactly the fields that were joined, at any depth
+/// (a nested `stable_line` is just one more escaped line inside the
+/// outer one). `db.av`'s `DocFacts`/`FileWitness` already spell facts
+/// this way; this is the same primitive turned into an id.
+fn stable_line(kind: string, parts: List<string>) -> string {
+    joined([kind].concat([wire_escape(p) for p in parts]), "\n")
+}
+
+/// `stable_line`'s inverse: the leading kind word, then every
+/// following line unescaped back to its own field.
+type StableId = { kind: string, parts: List<string> }
+
+fn parsed_stable(s: string) -> StableId {
+    let lines = s.split("\n")
+    let kind = lines.first() ?? ""
+    StableId { kind: kind, parts: [wire_unescape(lines[i]) for i in 1..lines.length] }
+}
+
+/// `stable_key_name`'s inverse: the family's own word, and the arg it
+/// keys by — still `arg`'s own encoded form (`stable_file_name`'s,
+/// `Decls.stable_decl_name`'s, …), one further `parsed_stable` away
+/// from its own fields. THE ONE DECODER: every reader of a pack
+/// entry's name — this file's own edge revalidation, and `avra explain
+/// db`'s grouping by family — calls this, never re-parses the string
+/// by hand.
+export type KeyName = { family: string, arg: string }
+
+export fn name_parts(name: string) -> KeyName? {
+    let outer = parsed_stable(name)
+    if outer.kind != "key" || outer.parts.length < 2 { return null }
+    KeyName { family: outer.parts[0], arg: outer.parts[1] }
+}
+
+export fn stable_file_name(path: string) -> string { stable_line("file", [path]) }
+
+export fn stable_module_name(name: string) -> string { stable_line("module", [name]) }
+
+/// A `Key`'s own dense identity, for a visited set during ONE
+/// process's own expansion — never persisted, never compared across
+/// processes (that is exactly what `Decls.stable_key_name` is for).
+fn depkey_string(k: Key) -> string { "${k.family}:${k.arg}" }
+
+impl Decls {
+    /// How many EARLIER declarations (by dense id, which is admission
+    /// order) share this one's (module, owner, name) — the
+    /// disambiguator a name alone cannot carry (`fn f()` shadowed by a
+    /// later `fn f()` is two declarations, one name). Moves only when
+    /// an earlier same-named sibling is added or removed above it,
+    /// never when anything else in the module changes.
+    fn sibling_index(module: string, d: DeclId) -> int {
+        let x = self.decl(d)
+        [i for i in 0..d.index if self.same_sibling(module, x, DeclId { index: i })].length
+    }
+
+    fn same_sibling(module: string, x: Decl, other: DeclId) -> bool {
+        let y = self.decl(other)
+        y.owner == x.owner &&
+            y.name == x.name &&
+            self.module_name(self.file(y.file).module_id) == module
+    }
+
+    export fn stable_decl_name(d: DeclId) -> string {
+        let x = self.decl(d)
+        let module = self.module_name(self.file(x.file).module_id)
+        stable_line("decl", [module, x.owner, x.name, "${self.sibling_index(module, d)}"])
+    }
+
+    /// A `Key`'s stable name: the family's own word (`family_word`,
+    /// this module), then the id it keys by, dispatched by what THAT
+    /// family keys by (workspace.av's own doc comment on `Family`:
+    /// FileId, ModuleId, DeclId, unit, or one whole-program key). A
+    /// REGISTRY, spelled by arm — CLAUDE.md's registry law — so a
+    /// family given real per-arg identity later moves ONE arm here,
+    /// and the ones still keyed by a bare int (`Lowered`, `Lifted`,
+    /// `Settled` — a unit or a const-site ask, dense-only today) stay
+    /// honestly named as such rather than pretending to an identity
+    /// they do not have yet.
+    export fn stable_key_name(k: Key) -> string {
+        let fam = family_at(k.family)
+        let word = family_word(fam)
+        match fam {
+            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain -> stable_line("key", [word, stable_file_name(self.file(FileId { index: k.arg }).path)]),
+            .Namespace or .HeldSig -> stable_line(
+                "key",
+                [word, stable_module_name(self.module_name(ModuleId { index: k.arg }))],
+            ),
+            .Sig or .Methods or .Typed or .ConstTyped or .Raised -> stable_line("key", [word, self.stable_decl_name(DeclId { index: k.arg })]),
+            // `Manifest` keys by PACKAGE ORDINAL (`packages.av`'s
+            // `manifest(i)`), never a true singleton — every package
+            // a workspace opens, root or dependency, has its own.
+            .Manifest -> stable_line("key", [word, stable_line("pkg", ["${k.arg}"])]),
+            .Receivers or .References or .Failures -> stable_line("key", [word, "singleton"]),
+            .Lowered or .Lifted or .Settled -> stable_line("key", [word, "arg${k.arg}"]),
+        }
+    }
+
+    /// A decl by the same (module, owner, name, sibling) tuple its
+    /// stable name carries — a linear scan, licensed for this slice's
+    /// small packages; the design's own index-bucket scheme (§6.5) is
+    /// the fix once this matters at scale.
+    // LICENSED compiler.free_state_verb: exempted by being the very method the rule asks for.
+    fn decl_by_stable(module: string, owner: string, name: string, sibling: int) -> DeclId? {
+        [DeclId { index: i } for i in 0..self.decls.get().length if self.matches_stable(module, owner, name, sibling, i)]
+            .first()
+    }
+
+    fn matches_stable(module: string, owner: string, name: string, sibling: int, i: int) -> bool {
+        let y = self.decl(DeclId { index: i })
+        y.owner == owner &&
+            y.name == name &&
+            self.sibling_index(module, DeclId { index: i }) == sibling &&
+            self.module_name(self.file(y.file).module_id) == module
+    }
+}
+
+fn family_from_word(w: string) -> Family? {
+    match w {
+        "Source" -> Family.Source,
+        "Parsed" -> Family.Parsed,
+        "Items" -> Family.Items,
+        "Namespace" -> Family.Namespace,
+        "Visible" -> Family.Visible,
+        "Resolved" -> Family.Resolved,
+        "Sig" -> Family.Sig,
+        "Methods" -> Family.Methods,
+        "Typed" -> Family.Typed,
+        "ConstTyped" -> Family.ConstTyped,
+        "Folded" -> Family.Folded,
+        "Analysis" -> Family.Analysis,
+        "Settled" -> Family.Settled,
+        "Lowered" -> Family.Lowered,
+        "Lifted" -> Family.Lifted,
+        "Manifest" -> Family.Manifest,
+        "Receivers" -> Family.Receivers,
+        "Expanded" -> Family.Expanded,
+        "Plain" -> Family.Plain,
+        "References" -> Family.References,
+        "Failures" -> Family.Failures,
+        "HeldSig" -> Family.HeldSig,
+        "Raised" -> Family.Raised,
+        rest -> null,
+    }
+}
+
+// ── The row this file makes durable: one file's rendered check ──
+
+/// What `Family.Analysis` is worth keeping across a process: whether
+/// the file is clean, and its rendered diagnostics — the two things
+/// `avra check` prints per file. Not the full `Analysis` struct: that
+/// carries a `NodeStore` arena and a `program: fn() -> Program`
+/// closure, neither of which a durable row can hold (M5b's own future
+/// slice, COMPILER DB townhall §6.11).
+export type WitnessedCheck = { clean: bool, report: string }
+
+fn encoded_witnessed_check(c: WitnessedCheck) -> Bytes {
+    let w = stable_writer()
+    w.bool(c.clean)
+    w.text(c.report)
+    w.bytes()
+}
+
+fn codec_ok<T>(r: Result<T, CodecFault>) -> T? {
+    match r { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn decoded_witnessed_check(b: Bytes) -> WitnessedCheck? {
+    let r = stable_reader(b)
+    let clean? = codec_ok(r.bool()) else { return null }
+    let report? = codec_ok(r.text()) else { return null }
+    WitnessedCheck { clean: clean, report: report }
+}
+
+/// Whether this call reused a durable answer or paid for a fresh one
+/// — the receipt a caller (and a test) can count without scraping a
+/// trace log.
+export enum WitnessedOutcome { Reused(WitnessedCheck), Recomputed(WitnessedCheck) }
+
+impl WitnessedOutcome {
+    fn value() -> WitnessedCheck {
+        match self { .Reused(c) or .Recomputed(c) -> c }
+    }
+
+    fn reused() -> bool { self is .Reused }
+}
+
+impl Workspace {
+    /// Opens (or re-opens) this workspace's own witness pack, over one
+    /// file per package (COMPILER DB townhall §6.6's disk shape) —
+    /// today, one file for the workspace's own root package, since
+    /// nothing here yet witnesses a dependency's rows.
+    fn attach_pack(p: Pack) { self.pack.set(p) }
+
+    fn open_pack(path: string) -> Pack {
+        let p = pack_at(path, self.compiler_id())
+        self.attach_pack(p)
+        p
+    }
+
+    /// `Family.Analysis(f)`, durable: a stored, still-valid witness
+    /// answers without touching `resolved`/`folded` at all; otherwise
+    /// the ordinary pipeline runs (`self.analysis(f)`) and the fresh
+    /// answer is committed with its witness before it is handed back.
+    fn witnessed_check(f: FileId) -> WitnessedOutcome {
+        let name = self.decls.stable_key_name(key(Family.Analysis, f.index))
+        let reused? = self.reused_check(name) else { return WitnessedOutcome.Recomputed(self.settled_check(f, name)) }
+        WitnessedOutcome.Reused(reused)
+    }
+
+    fn reused_check(name: string) -> WitnessedCheck? {
+        let pack? = self.pack.get() else { return null }
+        let entry? = pack.get(name) else { return null }
+        if !entry.edges.all((e: Edge) -> self.edge_current(e)) { return null }
+        decoded_witnessed_check(entry.payload)
+    }
+
+    fn edge_current(e: Edge) -> bool {
+        let h? = self.edge_current_hash(e.name) else { return false }
+        h == e.hash
+    }
+
+    /// An edge's CURRENT hash, by re-running the ordinary in-process
+    /// query it names — never by decoding a stored value, since
+    /// validating never materializes (§6.5). Only `Parsed`, `Sig` and
+    /// `Manifest` are wired (this file's own doc comment says why);
+    /// anything else answers null, which `edge_current` reads as a
+    /// mismatch — the safe direction, never a wrongly-trusted reuse.
+    fn edge_current_hash(name: string) -> int? {
+        let parts? = name_parts(name) else { return null }
+        let fam? = family_from_word(parts.family) else { return null }
+        let inner = parsed_stable(parts.arg)
+        match fam {
+            .Parsed -> self.current_parsed_hash(inner),
+            .Sig -> self.current_sig_hash(inner),
+            .Manifest -> self.current_manifest_hash(inner),
+            .Methods -> self.current_methods_hash(inner),
+            rest -> null,
+        }
+    }
+
+    fn current_parsed_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        let f = self.file_id(inner.parts[0])
+        let _ = self.parsed(f)
+        self.db.value_hash_of(key(Family.Parsed, f.index))
+    }
+
+    fn current_sig_hash(inner: StableId) -> int? {
+        if inner.kind != "decl" || inner.parts.length < 4 { return null }
+        let sibling? = parse_int(inner.parts[3]) else { return null }
+        let d? = self.decls.decl_by_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
+        let _ = self.sig(d)
+        self.db.value_hash_of(key(Family.Sig, d.index))
+    }
+
+    fn current_manifest_hash(inner: StableId) -> int? {
+        if inner.kind != "pkg" || inner.parts.length < 1 { return null }
+        let i? = parse_int(inner.parts[0]) else { return null }
+        let _ = self.manifest(i)
+        self.db.value_hash_of(key(Family.Manifest, i))
+    }
+
+    /// `method_diagnostics` (workspace_analysis.av) scans every TYPE
+    /// declaration in the whole table — builtins included — so a
+    /// type's method clashes are a dependency of every file's own
+    /// `Analysis`, whether or not that file names the type at all.
+    fn current_methods_hash(inner: StableId) -> int? {
+        if inner.kind != "decl" || inner.parts.length < 4 { return null }
+        let sibling? = parse_int(inner.parts[3]) else { return null }
+        let d? = self.decls.decl_by_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
+        let _ = self.methods(d)
+        self.db.value_hash_of(key(Family.Methods, d.index))
+    }
+
+    /// `root`'s deps, expanded to the families this file can
+    /// revalidate, as (stable name, current value hash) edges.
+    fn expanded_edges(root: Key) -> List<Edge> {
+        let empty: Map<string, bool> = {}
+        let visited: Cell<Map<string, bool>> = Cell.new(empty)
+        visited.put(depkey_string(root), true)
+        let leaves = flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(root)])
+        [Edge { name: self.decls.stable_key_name(k), hash: self.db.value_hash_of(k) ?? 0 } for k in leaves]
+    }
+
+    /// One dependency, expanded to `Parsed`/`Sig` — the two families
+    /// with real substructure to walk through. `Resolved`/`Folded`/…
+    /// are structural relay points, not answers a witness names, so
+    /// their OWN deps are walked through instead. A genuine dead end
+    /// (no further deps, and not one of the two) is kept AS ITSELF:
+    /// `Manifest` and `Methods` reach here this way (both INPUTS or
+    /// leaves with nothing recorded under them), and `edge_current_hash`
+    /// knows how to revalidate those too — an opaque edge for anything
+    /// it does not is the fallback, never a dependency silently dropped.
+    fn leaf_keys(k: Key, visited: Cell<Map<string, bool>>) -> List<Key> {
+        let vk = depkey_string(k)
+        if visited.get().get(vk) != null { return [] }
+        visited.put(vk, true)
+        let fam = family_at(k.family)
+        if fam is .Parsed || fam is .Sig { return [k] }
+        let children = self.db.deps_of(k)
+        if children.is_empty() { return [k] }
+        flatten([self.leaf_keys(d, visited) for d in children])
+    }
+
+    fn settled_check(f: FileId, name: string) -> WitnessedCheck {
+        let a = self.analysis(f)
+        let out = WitnessedCheck { clean: a.clean(), report: a.report() }
+        self.record_witness(f, name, out)
+        out
+    }
+
+    /// The just-settled `Analysis(f)` cell's own deps, EXPANDED down to
+    /// the families this file can revalidate (`Parsed`, `Sig`) —
+    /// `Analysis` nests `Resolved`/`Folded`/… under their own begin/
+    /// settle brackets, so their reads land on THEIR OWN cells, not
+    /// directly on `Analysis`'s (`Kernel.record_dep`'s nesting law) —
+    /// translated to (stable name, current value hash) edges and
+    /// committed beside the row's answer: one write (`Pack.put` then
+    /// `commit`), so a trap between the two never leaves a row with no
+    /// witness or a witness with no row (§4 decision 7).
+    fn record_witness(f: FileId, name: string, out: WitnessedCheck) {
+        let pack? = self.pack.get() else { return }
+        let edges = self.expanded_edges(key(Family.Analysis, f.index))
+        pack
+            .put(
+                PackEntry {
+                    // `WitnessedCheck`'s own shape version (§6.6's record
+                    // header fingerprint) — one field added later bumps
+                    // this, never the row's content.
+                    fingerprint: 1,
+                    name: name,
+                    hash: fp_str(out.report),
+                    edges: edges,
+                    payload: encoded_witnessed_check(out),
+                },
+            )
+        let _ = pack.commit()
+    }
+}
