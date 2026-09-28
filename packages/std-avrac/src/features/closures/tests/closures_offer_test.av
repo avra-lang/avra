@@ -1,0 +1,50 @@
+// A lambda filling a seat of ONE record takes the record's fields by
+// NAME — any subset, any order — rather than the record whole; a lone
+// parameter no field is named for is the record itself.
+use @std.avrac.testing.{shown, refused_with}
+
+/// A handler seat offered three fields.
+fn offered() -> string {
+    "type Offer = { req: string, db: int, user: string }\nfn handle(f: fn(Offer) -> string) -> string {\n    f(Offer { req: \"GET /\", db: 7, user: \"ada\" })\n}\n"
+}
+
+spec "features/closures — taking an offer by name" {
+    given "the forms" {
+        then "fields named in any order, each wearing its own type" {
+            shown(offered() + "handle { db, req -> \"\${req} \${db}\" }") == "GET / 7"
+        }
+        then "one field alone, by its name" {
+            shown(offered() + "handle { user -> user }") == "ada"
+        }
+        then "a lone name no field wears is the record whole" {
+            shown(offered() + "handle { o -> o.req }") == "GET /"
+        }
+        then "the pronoun `it` is the record itself, even where a field is named `it`" {
+            shown(
+                "type P = { it: int }\nfn one(f: fn(P) -> int) -> int {\n    f(P { it: 4 })\n}\none { it.it }",
+            ) == "4"
+        }
+        then "no names at all takes nothing" {
+            shown(offered() + "handle { \"ok\" }") == "ok"
+        }
+        then "a lambda set as a record's field hears the field's seat" {
+            shown(
+                offered() +
+                    "type Route = { run: fn(Offer) -> string }\nlet r = Route { run: (user) -> \"hi \${user}\" }\nr.run(Offer { req: \"q\", db: 1, user: \"bo\" })",
+            ) == "hi bo"
+        }
+        then "a record of ints offers its fields as well" {
+            shown(
+                "type Nums = { a: int, b: int }\nfn sum(f: fn(Nums) -> int) -> int {\n    f(Nums { a: 3, b: 4 })\n}\nsum { b, a -> a * 10 + b }",
+            ) == "34"
+        }
+    }
+    given "the refusals" {
+        then "a name the seat does not offer names what it does" {
+            refused_with(
+                offered() + "handle { db, reqq -> \"x\" }",
+                "`reqq` is not offered here — this seat offers `req`, `db`, `user`",
+            )
+        }
+    }
+}

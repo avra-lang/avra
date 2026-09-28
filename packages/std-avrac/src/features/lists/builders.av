@@ -1,22 +1,54 @@
 //! Parse-time lowering: captures -> the list node. An absent first
 //! element is the empty literal — typing owns its refusal.
-use core.{Expr, Scoped}
-use features.{token_at, expr_id_at, scoped_at, LangNode, Builder}
+use core.{Expr, Scoped, CompClause}
+use features.{token_at, expr_id_at, scoped_at, comp_clause_at, comp_clauses_at, LangNode, Builder}
 use grammar.{Token}
 
-fn build_list(mut b: Builder) -> Result<LangNode, string> {
+fn build_list(b: Builder) -> Result<LangNode, string> {
     let first? = expr_id_at(b.args, 0) else { return b.make_expr(Expr.ListLit([])) }
     b.make_expr(Expr.ListLit([first].concat(b.exprs(1)?)))
 }
 
-/// `[v for ix, en in src if c]` — the head is the `for` statement's:
-/// the index name is absent when the binder is a bare name, `hi` is
-/// present when the source is a range `lo..hi`, and the filter is
-/// absent when unwritten.
-fn build_comp(mut b: Builder) -> Result<LangNode, string> {
+/// `[v for ix, en in src for … if c …]` — one or more `for` heads
+/// (left outermost) and any number of `if` filters, in written order;
+/// the grammar requires the first clause to be a head.
+fn build_comp(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
-    let ix: Token? = token_at(b.args, 1)
-    let en = b.token(2)?
-    let src = b.expr(3)?
-    b.make_expr(Expr.Comp(v, scoped_at(ix), Scoped(en.text), src, expr_id_at(b.args, 4), expr_id_at(b.args, 5)))
+    let h? = comp_clause_at(b.args, 1) else {
+        return .Err(
+            "defect: a comprehension's own head is absent — the arena and the grammar disagree",
+        )
+    }
+    b.make_expr(Expr.Comp(v, [h].concat(comp_clauses_at(b.args, 2))))
+}
+
+/// `for ix, en in src..hi` — the index name is absent when the binder
+/// is a bare name, `hi` is present when the source is a range `lo..hi`.
+fn build_comp_head(b: Builder) -> Result<LangNode, string> {
+    let ix: Token? = token_at(b.args, 0)
+    let en = b.token(1)?
+    let src = b.expr(2)?
+    b.make_comp_clause(CompClause.Head(scoped_at(ix), Scoped(en.text), src, expr_id_at(b.args, 3)))
+}
+
+/// `if c` — a filter clause.
+fn build_comp_filter(b: Builder) -> Result<LangNode, string> {
+    b.make_comp_clause(CompClause.Filter(b.expr(0)?))
+}
+
+/// `collect { … }` — every line a statement, so the block keeps no
+/// tail: a last line's value is gathered like any other.
+fn build_collect(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Collect(b.expr_node(Expr.Block(b.stmts(0)?, null))))
+}
+
+/// `collect` with no block: the gathering needs statements to run.
+fn build_collect_blockless(_b: Builder) -> Result<LangNode, string> {
+    .Err(blockless_collect())
+}
+
+// ── voices ──
+
+fn blockless_collect() -> string {
+    "`collect` gathers the values its block's statements leave — write `collect { … }`"
 }

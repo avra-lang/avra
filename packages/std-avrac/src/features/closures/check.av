@@ -18,6 +18,8 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let names = [pp.name.of for pp in params]
     let twice: string? = names.find(repeated_in(names, it))
     if twice != null { return seat_named_twice(cx, e, twice!) }
+    let offer: TypeId? = offered(cx, e, params)
+    if offer != null { return taken_by_name(cx, e, params, body, offer!) }
     let heard: List<TypeId>? = heard_seats(cx, e, params)
     if heard == null {
         // no annotations, no want: DEFER — the first judging seat
@@ -46,10 +48,57 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let marks = heard_marks(cx, e, params)
     let ret = cx.lambda_body(e, ptys, marks, body)
     if cx.errored_ty(ret) { return cx.error_type }
-    if cx.escapes_with_task(cx.loc_of(body), "this body answers `${cx.view.types.name_of(ret)}`", ret) { return cx.error_type }
+    if cx
+        .escapes_with_task(cx.loc_of(body), "this body answers `${cx.view.types.name_of(ret)}`", ret) {
+        return cx.error_type
+    }
     match answer {
-        null -> cx.view.types.intern(Type.Fn(ptys, marks, ret))
         a? -> answered(cx, body, ptys, marks, ret, a)
+        null -> cx.view.types.intern(Type.Fn(ptys, marks, ret))
+    }
+}
+
+/// THE OFFER: a seat of one RECORD offers its fields, and a lambda
+/// takes the ones it NAMES — any subset, any order — rather than the
+/// record whole. A lone parameter no field is named for is the record
+/// itself, as any one-seat lambda is.
+fn offered(cx: TypeCx, e: ExprId, params: List<Param>) -> TypeId? {
+    let arrow? = wanted_arrow(cx, e, 1) else { return null }
+    if !takes_by_name(cx, params, arrow.seats) { return null }
+    arrow.seats[0]
+}
+
+/// Whether a lambda with these parameters takes a seat list of ONE
+/// record by field name — the one question the rescue and the rule ask.
+/// `it` is the pronoun for the thing ITSELF, so a lone `it` is always
+/// the record, whatever its fields are called.
+export fn takes_by_name(cx: TypeCx, params: List<Param>, seats: List<TypeId>) -> bool {
+    if seats.length != 1 { return false }
+    let fields? = cx.fields_of(seats[0]) else { return false }
+    if params.length != 1 { return true }
+    let lone = params[0].name.of
+    lone != "it" && fields.names.contains(lone)
+}
+
+/// Each named field bound as a parameter of its own type; the lambda
+/// wears the seat's `fn(Record)`, and lowering reads each parameter
+/// off the one record it is handed.
+fn taken_by_name(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId, record: TypeId) -> TypeId {
+    let fields = cx.fields_of(record)!
+    let stranger: Param? = params.find((pp: Param) -> !fields.names.contains(pp.name.of))
+    if stranger != null { return not_offered(cx, e, stranger!.name.of, fields.names) }
+    let written: Param? = params.find(it.ty != null)
+    if written != null { return typed_offer(cx, e, written!.name.of) }
+    let answer: TypeId? = wanted_answer(cx, e, 1)
+    if answer != null { cx.plant_want(body, answer!) }
+    let ptys = [fields.types[fields.slot_of(pp.name.of)!] for pp in params]
+    let marks = [SeatMark { mutable: false, settled: false } for pp in params]
+    cx.facts.offer(e)
+    let ret = cx.lambda_body(e, ptys, marks, body)
+    if cx.errored_ty(ret) { return cx.error_type }
+    match answer {
+        a? -> answered(cx, body, [record], [], ret, a)
+        null -> cx.view.types.intern(Type.Fn([record], [], ret))
     }
 }
 
@@ -57,7 +106,14 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
 /// it — the body's lift recorded like any seat's. A body that
 /// disagrees keeps the lambda's own type, and the SEAT speaks: an
 /// `accepts` miss is silent by contract.
-fn answered(mut cx: TypeCx, body: ExprId, ptys: List<TypeId>, marks: List<SeatMark>, ret: TypeId, a: TypeId) -> TypeId {
+fn answered(
+    mut cx: TypeCx,
+    body: ExprId,
+    ptys: List<TypeId>,
+    marks: List<SeatMark>,
+    ret: TypeId,
+    a: TypeId,
+) -> TypeId {
     cx.view.types.intern(Type.Fn(ptys, marks, if cx.accepts(body, a) { a } else { ret }))
 }
 
@@ -67,8 +123,8 @@ fn answered(mut cx: TypeCx, body: ExprId, ptys: List<TypeId>, marks: List<SeatMa
 fn heard_marks(cx: TypeCx, e: ExprId, params: List<Param>) -> List<SeatMark> {
     let arrow: Arrow? = wanted_arrow(cx, e, params.length)
     [SeatMark {
-        mutable: pp.promises.mutable || (pp.ty == null && arrow != null && mut_mark(arrow!.marks, j)),
-        settled: pp.promises.settled || (pp.ty == null && arrow != null && settled_mark(arrow!.marks, j)),
+        mutable: pp.promises.mutable || pp.ty == null && arrow != null && mut_mark(arrow!.marks, j),
+        settled: pp.promises.settled || pp.ty == null && arrow != null && settled_mark(arrow!.marks, j),
     } for j, pp in params]
 }
 
@@ -139,6 +195,7 @@ fn call_value_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId
 }
 
 fn valued(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
+    if !cx.nameless(cx.name_at(subject), args) { return cx.error_type }
     let held: Arrow? = cx.view.types.arrow_parts(cx.type_at(subject))
     if held != null {
         let arrow = held!
@@ -169,42 +226,153 @@ fn first_param_name(cx: TypeCx, e: ExprId) -> string {
 
 // ── The voices ──
 
+fn not_offered(mut cx: TypeCx, e: ExprId, name: string, offered: List<string>) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.not_offered",
+                cx.loc_of(e),
+                "`${name}` is not offered here — this seat offers ${offered_list(offered)}",
+                "`${name}` asked for here",
+                "name what the seat offers, in any order and any subset",
+            ),
+        )
+}
+
+fn typed_offer(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.not_offered",
+                cx.loc_of(e),
+                "`${name}` is taken by name, so it wears the offered field's type",
+                "annotated here",
+                "drop the annotation",
+            ),
+        )
+}
+
+fn offered_list(names: List<string>) -> string {
+    names.map("`${it}`").join(", ")
+}
+
 fn never_heard(mut cx: TypeCx, e: ExprId, name: string) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "`${name}` needs a type — this lambda's slot tells it nothing", "in this lambda", "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats"))
+    cx
+        .emit(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "`${name}` needs a type — this lambda's slot tells it nothing",
+                "in this lambda",
+                "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats",
+            ),
+        )
 }
 
 fn pronoun_starved(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "`it` has no element here — this seat takes `${cx.view.types.name_of(seat)}`, not a fn", "the pronoun", "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`"))
+    cx
+        .emit(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "`it` has no element here — this seat takes `${cx.view.types.name_of(seat)}`, not a fn",
+                "the pronoun",
+                "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`",
+            ),
+        )
 }
 
 fn seat_named_twice(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx.spoken(refusal("type.lambda", cx.loc_of(e), "`${name}` names two of this lambda's seats", "in this lambda", "seats have distinct names — rename one"))
+    cx
+        .spoken(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "`${name}` names two of this lambda's seats",
+                "in this lambda",
+                "seats have distinct names — rename one",
+            ),
+        )
 }
 
 fn pronoun_unseated(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "the body reads `it`, so the block takes one seat — this slot is `${cx.view.types.name_of(seat)}`, which hands it none", "the pronoun", "name the value some other way, or hand the block to a slot with a seat for `it`"))
+    cx
+        .emit(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "the body reads `it`, so the block takes one seat — this slot is `${cx.view.types.name_of(seat)}`, which hands it none",
+                "the pronoun",
+                "name the value some other way, or hand the block to a slot with a seat for `it`",
+            ),
+        )
 }
 
 fn misfit_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "this lambda does not fit its seat, `${cx.view.types.name_of(seat)}`", "in this lambda", "match the seat's params, or annotate them"))
+    cx
+        .emit(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "this lambda does not fit its seat, `${cx.view.types.name_of(seat)}`",
+                "in this lambda",
+                "match the seat's params, or annotate them",
+            ),
+        )
 }
 
 fn lambda_at_scalar(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.view.types.name_of(seat)}`", "in this lambda", "hand it to a fn-typed slot, or call it"))
+    cx
+        .emit(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "a lambda cannot sit here — this seat takes `${cx.view.types.name_of(seat)}`",
+                "in this lambda",
+                "hand it to a fn-typed slot, or call it",
+            ),
+        )
 }
 
 fn block_at_scalar(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "a trailing block fills a fn seat, and this seat takes `${cx.view.types.name_of(seat)}`", "this block", "a trailing block is the call's last argument, `(…) -> …` in a `fn` seat — pass the value in the parentheses instead"))
+    cx
+        .emit(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "a trailing block fills a fn seat, and this seat takes `${cx.view.types.name_of(seat)}`",
+                "this block",
+                "a trailing block is the call's last argument, `(…) -> …` in a `fn` seat — pass the value in the parentheses instead",
+            ),
+        )
 }
 
 fn uncapturable(mut cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {
     let cap: Cap? = cx.names.capture(e)
     let name = if cap == null { "this name" } else { cap!.names[j] }
     let ty = cx.view.types.name_of(seat)
-    cx.spoken(refusal("type.lambda", cx.loc_of(e), "a lambda cannot capture `${name}` — `${ty}` is no type of its own", "captured here", "declare its type where it is bound — `let ${name}: int? = null`"))
+    cx
+        .spoken(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "a lambda cannot capture `${name}` — `${ty}` is no type of its own",
+                "captured here",
+                "declare its type where it is bound — `let ${name}: int? = null`",
+            ),
+        )
 }
 
 fn uncallable(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    cx.spoken(refusal("type.lambda", cx.loc_of(e), "this is not callable — it holds a `${n}`", this_is(n), "only fns and fn-typed values take arguments"))
+    cx
+        .spoken(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "this is not callable — it holds a `${n}`",
+                this_is(n),
+                "only fns and fn-typed values take arguments",
+            ),
+        )
 }

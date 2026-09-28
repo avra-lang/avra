@@ -2,7 +2,23 @@
 // stage's own stderr kept, the first failing stage named with every
 // outcome riding along; and the three runners that share every law
 // above the syscall.
-use @std.process.{Tool, tool, cmd, Command, Exit, Stdin, ProcessError, Script, host, scripted, plan, run_through, parallel, race, exit_text}
+use @std.process.{
+    Tool,
+    tool,
+    cmd,
+    Command,
+    Exit,
+    Stdin,
+    ProcessError,
+    Script,
+    host,
+    scripted,
+    plan,
+    run_through,
+    parallel,
+    race,
+    exit_text,
+}
 use @std.time.{ms, now_ms}
 
 fn p_sh() -> Result<Tool, ProcessError> {
@@ -25,10 +41,7 @@ fn p_kind(e: ProcessError) -> string {
 }
 
 fn p_shown(r: Result<string, ProcessError>) -> string {
-    match r {
-        .Ok(s) -> s,
-        .Err(e) -> p_kind(e),
-    }
+    match r { .Ok(s) -> s, .Err(e) -> p_kind(e) }
 }
 
 fn sorted_lines() -> Result<string, ProcessError> {
@@ -90,11 +103,22 @@ fn fake_git() -> Tool {
 }
 
 fn scripts() -> List<Script> {
-    table<Script> {
-        program | args              | exit         | stdout      | stderr
-        "git"   | "describe --tags" | Exit.Clean   | "v1.4.0\n"  | ""
-        "git"   | "status"          | Exit.Code(1) | ""          | "not a repo\n"
-    }
+    [
+        Script {
+            program: "git",
+            args: "describe --tags",
+            exit: Exit.Clean,
+            stdout: "v1.4.0\n",
+            stderr: "",
+        },
+        Script {
+            program: "git",
+            args: "status",
+            exit: Exit.Code(1),
+            stdout: "",
+            stderr: "not a repo\n",
+        },
+    ]
 }
 
 fn through_script() -> Result<string, ProcessError> {
@@ -118,7 +142,12 @@ fn through_plan() -> Result<string, ProcessError> {
 
 fn many_at_once() -> Result<string, ProcessError> {
     let s = p_sh()?
-    let cs = [cmd(s, ["-c", "sleep 0.2; echo a"]), cmd(s, ["-c", "echo b"]), cmd(s, ["-c", "sleep 0.1; echo c"]), cmd(s, ["-c", "exit 4"])]
+    let cs = [
+        cmd(s, ["-c", "sleep 0.2; echo a"]),
+        cmd(s, ["-c", "echo b"]),
+        cmd(s, ["-c", "sleep 0.1; echo c"]),
+        cmd(s, ["-c", "exit 4"]),
+    ]
     let began = now_ms()
     let outs = parallel(cs, 4)?
     let took = now_ms() - began
@@ -206,7 +235,7 @@ fn a_failing_finisher_wins_too() -> Result<string, ProcessError> {
 /// is whole" misses a word still arriving after it.
 fn pipeline_grandchild_word() -> Result<string, ProcessError> {
     let s = p_sh()?
-    let head = (cmd(s, ["-c", "echo out; echo p1 >&2; (sleep 0.1; echo said >&2) &"]) with { drain_grace: ms(500) })
+    let head = cmd(s, ["-c", "echo out; echo p1 >&2; (sleep 0.1; echo said >&2) &"]) with { drain_grace: ms(500) }
     let po = head.pipe(cmd(s, ["-c", "cat"])).outcome()?
     po.stages[0].out.stderr.replace("\n", "/").trim()
 }
@@ -229,8 +258,8 @@ spec "std/process pipelines" {
             p_shown(a_failing_finisher_wins_too()) == "with code 2"
         }
     }
-
     given "a sweep is paced by ONE wait, and a stagger of zero by none" {
+
         // Both cases read the LAUNCHER and the PACING without a
         // stopwatch: one turns a latency into a refusal, the other
         // turns a missed poll into missing bytes.

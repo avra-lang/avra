@@ -2,42 +2,52 @@
 //! referent; `get` copies the held value and `set` replaces it without
 //! requiring the cell binding itself to be `mut`.
 use core.{Type, TypeId, ExprId, Reg}
-use features.{LanguageFeature, MethodRow, ReceiverEffect, TypeRow, TypeArgs, MethodCall, TypeCx, LowerCx, no_law, no_variants, slot_worthy, this_is}
+use features.{
+    LanguageFeature,
+    MethodRow,
+    ReceiverEffect,
+    TypeRow,
+    TypeArgs,
+    MethodCall,
+    TypeCx,
+    LowerCx,
+    no_law,
+    no_variants,
+    slot_worthy,
+    this_is,
+    unknown_answer,
+    void_answer,
+}
 use diagnostics.{DiagCode, refusal}
 
 export fn cells() -> LanguageFeature {
     let methods = table<MethodRow> {
-        name  | takes       | check     | lower     | effect
-        "new" | on_cell_type | check_new | lower_new | ReceiverEffect.Read
-        "get" | on_cell      | check_get | lower_get | ReceiverEffect.Lends
-        "set" | on_cell      | check_set | lower_set | ReceiverEffect.Shared
-        "push" | on_cell     | check_push | lower_push | ReceiverEffect.Shared
-        "set_at" | on_cell   | check_set_at | lower_set_at | ReceiverEffect.Shared
-        "put" | on_cell      | check_put | lower_put | ReceiverEffect.Shared
+        name     | takes        | check        | lower        | effect                | answers
+        "new"    | on_cell_type | check_new    | lower_new    | ReceiverEffect.Read   | unknown_answer
+        "get"    | on_cell      | check_get    | lower_get    | ReceiverEffect.Lends  | unknown_answer
+        "set"    | on_cell      | check_set    | lower_set    | ReceiverEffect.Shared | void_answer
+        "push"   | on_cell      | check_push   | lower_push   | ReceiverEffect.Shared | void_answer
+        "set_at" | on_cell      | check_set_at | lower_set_at | ReceiverEffect.Shared | void_answer
+        "put"    | on_cell      | check_put    | lower_put    | ReceiverEffect.Shared | void_answer
     }
     let types = table<TypeRow> {
         name   | arity | slots | judge  | builds     | variants
         "Cell" | 1     | true  | no_law | cell_shape | no_variants
     }
     let codes = table<DiagCode> {
-        kind            | id      | summary
-        "type.cell_map" | "F2094" | "`put` needs a cell holding a map"
+        kind            | summary
+        "type.cell_map" | "`put` needs a cell holding a map"
     }
-    component LanguageFeature f {
-        name = "cells"
-        docs = "`Cell.new(v)` creates an explicit shared `Cell<T>`; copies share one slot, `get()` reads its value, and `set(v)` replaces it through any copy."
-        methods = methods
-        types = types
-        diags = codes
+    LanguageFeature cells {
+        methods: methods
+        types: types
+        diags: codes
     }
-    f
+    cells
 }
 
 fn on_cell_type(t: Type) -> bool {
-    match t {
-        .TypeName(_, "Cell") -> true,
-        _ -> false,
-    }
+    match t { .TypeName(_, "Cell") -> true, _ -> false }
 }
 
 fn on_cell(t: Type) -> bool { t is .Cell }
@@ -171,11 +181,29 @@ fn cell_shape(args: TypeArgs) -> Type { Type.Cell(args.parts[0]) }
 
 fn unfit_cell(mut cx: TypeCx, arg: ExprId, held: TypeId) -> TypeId {
     let n = cx.name_at(arg)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(arg), "this cell holds `${cx.view.types.name_of(held)}`, this is `${n}`", this_is(n), null))
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(arg),
+                "this cell holds `${cx.view.types.name_of(held)}`, this is `${n}`",
+                this_is(n),
+                null,
+            ),
+        )
 }
 
 /// `put` inserts into the map a cell holds — a cell holding anything
 /// else has no map to insert into.
 fn cell_holds_no_map(mut cx: TypeCx, e: ExprId, held: TypeId) -> TypeId {
-    cx.spoken(refusal("type.cell_map", cx.loc_of(e), "`put` inserts into the map a cell holds, and this cell holds `${cx.view.types.name_of(held)}`", "not a map", "put values in through a `Cell<Map<string, V>>`"))
+    cx
+        .spoken(
+            refusal(
+                "type.cell_map",
+                cx.loc_of(e),
+                "`put` inserts into the map a cell holds, and this cell holds `${cx.view.types.name_of(held)}`",
+                "not a map",
+                "put values in through a `Cell<Map<string, V>>`",
+            ),
+        )
 }

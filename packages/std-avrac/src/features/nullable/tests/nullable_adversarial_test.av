@@ -68,8 +68,10 @@ spec "features/nullable (adversarial)" {
             shown("${makers}some(7) ! + 1") == "8"
         }
         then "a SECOND spaced `!` meets a bool" {
-            refused_with("${mb()}if mb(true)! ! { 1 } else { 0 }",
-                         "`!` insists on a nullable, this is `bool`")
+            refused_with(
+                "${mb()}if mb(true)! ! { 1 } else { 0 }",
+                "`!` insists on a nullable, this is `bool`",
+            )
         }
         then "`!` alone does not parse" {
             refusals("!") == 1
@@ -89,12 +91,16 @@ spec "features/nullable (adversarial)" {
             refused_with("[1]!", "`!` insists on a nullable, this is `List<int>`")
         }
         then "a record is a guarantee" {
-            refused_with("type P = { x: int }\nlet p = P { x: 1 }\np!",
-                         "`!` insists on a nullable, this is `P`")
+            refused_with(
+                "type P = { x: int }\nlet p = P { x: 1 }\np!",
+                "`!` insists on a nullable, this is `P`",
+            )
         }
         then "an enum value is a guarantee" {
-            refused_with("enum E {\n    a\n    b\n}\nE.a!",
-                         "`!` insists on a nullable, this is `E`")
+            refused_with(
+                "enum E {\n    a\n    b\n}\nE.a!",
+                "`!` insists on a nullable, this is `E`",
+            )
         }
         then "a TYPE NAME is not a value to insist on" {
             refused_with("enum E {\n    a\n    b\n}\nE!", "`!` insists on a nullable")
@@ -123,7 +129,9 @@ spec "features/nullable (adversarial)" {
             shown("${makers}when {\n    1 == 2 -> 0\n    _ -> some(5)!\n}") == "5"
         }
         then "a `match` arm" {
-            shown("${makers}enum E {\n    a\n    b\n}\nmatch E.a {\n    .a -> some(6)!\n    .b -> 0\n}") == "6"
+            shown(
+                "${makers}enum E {\n    a\n    b\n}\nmatch E.a {\n    .a -> some(6)!\n    .b -> 0\n}",
+            ) == "6"
         }
         then "a list element" {
             shown("${makers}[some(1)!, some(2)!]") == "[1, 2]"
@@ -138,7 +146,9 @@ spec "features/nullable (adversarial)" {
             shown("${makers}\"v \${some(7)!}\"") == "v 7"
         }
         then "a recursive call's argument" {
-            shown("${makers}fn d(n: int) -> int { if n <= 0 { 0 } else { n + d(n - 1) } }\nd(some(3)!)") == "6"
+            shown(
+                "${makers}fn d(n: int) -> int { if n <= 0 { 0 } else { n + d(n - 1) } }\nd(some(3)!)",
+            ) == "6"
         }
         then "a `mut` binding" {
             shown("${makers}mut x = some(5)!\nx = x + 1\nx") == "6"
@@ -152,7 +162,9 @@ spec "features/nullable (adversarial)" {
             shown("${makers}let x = some(1)\nfn f(x: int) -> int { x }\nf(x!)") == "1"
         }
         then "the same name at two levels" {
-            shown("${makers}fn f(n: int?) -> int {\n    if true {\n        let n = some(3)\n        n!\n    } else { 0 }\n}\nf(some(1))") == "3"
+            shown(
+                "${makers}fn f(n: int?) -> int {\n    if true {\n        let n = some(3)\n        n!\n    } else { 0 }\n}\nf(some(1))",
+            ) == "3"
         }
         then "a parameter named after the fn that makes it" {
             shown("${makers}fn f(some: int?) -> int { some! }\nf(some(4))") == "4"
@@ -160,13 +172,17 @@ spec "features/nullable (adversarial)" {
     }
     given "`!` — ownership, where a mis-managed slot would show" {
         then "forced across two frames" {
-            shown("${makers}fn a(x: int?) -> int { b(x) }\nfn b(x: int?) -> int { x! }\na(some(11))") == "11"
+            shown(
+                "${makers}fn a(x: int?) -> int { b(x) }\nfn b(x: int?) -> int { x! }\na(some(11))",
+            ) == "11"
         }
         then "the SAME nullable forced twice" {
             shown("${makers}let v = some(5)\nv! + v!") == "10"
         }
         then "three hundred forced in a loop" {
-            shown("${makers}mut t = 0\nmut i = 0\nwhile i < 300 {\n    t = t + some(i)!\n    i = i + 1\n}\nt") == "44850"
+            shown(
+                "${makers}mut t = 0\nmut i = 0\nwhile i < 300 {\n    t = t + some(i)!\n    i = i + 1\n}\nt",
+            ) == "44850"
         }
         then "a managed interpolation result carries the forced value" {
             shown("${mb()}\"r \${mb(true)!}\"") == "r true"
@@ -205,13 +221,17 @@ spec "features/nullable (adversarial)" {
     }
     given "the declared-slot law, which every slot shares" {
         then "a struct field holds a nullable scalar" {
-            shown("type P = { x: int? }\nlet p = P { x: 1 }\nlet q = P { x: null }\n\"\${p.x ?? 0} \${q.x ?? 5}\"") == "1 5"
+            shown(
+                "type P = { x: int? }\nlet p = P { x: 1 }\nlet q = P { x: null }\n\"\${p.x ?? 0} \${q.x ?? 5}\"",
+            ) == "1 5"
         }
         then "an enum payload holds one, absence intact" {
             shown("enum E {\n    a(int?)\n    b\n}\nmatch E.a(null) { .a(n) -> n ?? 4, .b -> 0 }") == "4"
         }
         then "a list element holds one" {
-            shown("${makers}let xs = [some(1), none()]\n\"\${xs.length} \${xs[0] ?? 0} \${xs[1] ?? 9}\"") == "2 1 9"
+            shown(
+                "${makers}let xs = [some(1), none()]\n\"\${xs.length} \${xs[0] ?? 0} \${xs[1] ?? 9}\"",
+            ) == "2 1 9"
         }
         then "a struct field refuses `void`, in ITS words" {
             let a = analyze_source("type P = { x: void }\n1")
@@ -223,33 +243,44 @@ spec "features/nullable (adversarial)" {
         }
         then "a list of `null` alone names no type, in ITS words" {
             let a = analyze_source("let xs = [null, null]\n1")
-            a.diagnostics.length == 1 && a.report().contains("a list element takes its type from its value, and `null` has none of its own")
+            a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains("a list element takes its type from its value, and `null` has none of its own")
         }
     }
     given "`if let`, adversarially — the sugar meets every law" {
         then "a KEYWORD bind refuses through the naming law" {
-            refused_with("${finder}if let while? = find_user(7) {\n    1\n} else {\n    0\n}",
-                         "`while` is a keyword")
+            refused_with(
+                "${finder}if let while? = find_user(7) {\n    1\n} else {\n    0\n}",
+                "`while` is a keyword",
+            )
         }
         then "the bind DIES with the branch — no escape to the scope after" {
-            refused_with("${finder}let got = if let u? = find_user(7) {\n    u.age\n} else {\n    0\n}\nu.age",
-                         "`u` is not defined")
+            refused_with(
+                "${finder}let got = if let u? = find_user(7) {\n    u.age\n} else {\n    0\n}\nu.age",
+                "`u` is not defined",
+            )
         }
         then "disagreeing arms refuse through the sugar in the arms' words" {
-            refused_with("${finder}if let u? = find_user(7) {\n    u\n} else {\n    \"stranger\"\n}",
-                         "the arms disagree: `User` vs `string`")
+            refused_with(
+                "${finder}if let u? = find_user(7) {\n    u\n} else {\n    \"stranger\"\n}",
+                "the arms disagree: `User` vs `string`",
+            )
         }
         then "a single-line `if let` rides an interpolation hole" {
             shown("${finder}\"got \${if let u? = find_user(7) { u.age } else { 0 }}\"") == "got 30"
         }
         then "the SUBJECT reads the outer name; the bind shadows only inside" {
-            shown("${halver}let v = half(4)\nlet got = if let v? = v {\n    v * 10\n} else {\n    0 - 1\n}\n" +
-                  "\"\${got} and \${v ?? 0 - 5}\"") == "20 and 2"
+            shown(
+                "${halver}let v = half(4)\nlet got = if let v? = v {\n    v * 10\n} else {\n    0 - 1\n}\n" +
+                    "\"\${got} and \${v ?? 0 - 5}\"",
+            ) == "20 and 2"
         }
         then "RECORDED FUTURE-FORM: `if let u = e` (no `?`) refuses today" {
             // a plain-binding if-let would be a NEW form — this pin
             // makes landing one a conscious change, not an accident
-            refusals("${finder}if let u = find_user(7) {\n    1\n} else {\n    0\n}") == 2
+            refusals("${finder}if let u = find_user(7) {\n    1\n} else {\n    0\n}") == 1
         }
     }
     given "the asking arms, mis-aimed" {
@@ -260,8 +291,10 @@ spec "features/nullable (adversarial)" {
                 !a.report().contains("guarantee")
         }
         then "arms over a guarantee name the BIND, not the form" {
-            refused_with("let x = 1\nmatch x {\n    v? -> v\n    null -> 0\n}",
-                         "`v?` asks a nullable, this is `int`")
+            refused_with(
+                "let x = 1\nmatch x {\n    v? -> v\n    null -> 0\n}",
+                "`v?` asks a nullable, this is `int`",
+            )
         }
     }
     given "precedence, which decides what `??` even asks" {
@@ -278,7 +311,10 @@ spec "features/nullable (adversarial)" {
             shown("fn mb(b: bool) -> bool? { b }\nif mb(false) ?? false && true { 1 } else { 2 }") == "2"
         }
         then "a chain's middle nullable is fine; its last must fit the carried type" {
-            refused_with("${makers}none() ?? none() ?? \"z\"", "`??` answers with a `int`, this is `string`")
+            refused_with(
+                "${makers}none() ?? none() ?? \"z\"",
+                "`??` answers with a `int`, this is `string`",
+            )
         }
         then "the grouped chain answers" {
             shown("${makers}none() ?? (none() ?? 7)") == "7"
@@ -292,28 +328,44 @@ spec "features/nullable (adversarial)" {
             shown("fn f(b: bool) -> int? { if b { 3 } else { null } }\nf(true) ?? 0") == "3"
         }
         then "an ALREADY nullable branch joins without lifting twice" {
-            shown("fn f(n: int) -> int? { if n > 0 { if n > 5 { n } else { null } } else { null } }\nf(9) ?? 0") == "9"
+            shown(
+                "fn f(n: int) -> int? { if n > 0 { if n > 5 { n } else { null } } else { null } }\nf(9) ?? 0",
+            ) == "9"
         }
         then "a `when` arm joins with an absence too" {
-            shown("fn f(b: bool) -> int? {\n    when {\n        b -> 1\n        _ -> null\n    }\n}\nf(true) ?? 0") == "1"
+            shown(
+                "fn f(b: bool) -> int? {\n    when {\n        b -> 1\n        _ -> null\n    }\n}\nf(true) ?? 0",
+            ) == "1"
         }
         then "a `when` joins when the ABSENCE anchors" {
-            shown("fn f(b: bool) -> int? {\n    when {\n        b -> null\n        _ -> 5\n    }\n}\nf(false) ?? 0") == "5"
+            shown(
+                "fn f(b: bool) -> int? {\n    when {\n        b -> null\n        _ -> 5\n    }\n}\nf(false) ?? 0",
+            ) == "5"
         }
         then "a `match` arm joins with an absence" {
-            shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> 1\n        .b -> null\n    }\n}\nf(E.a) ?? 0") == "1"
+            shown(
+                "enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> 1\n        .b -> null\n    }\n}\nf(E.a) ?? 0",
+            ) == "1"
         }
         then "a `match` joins when the absence comes FIRST" {
-            shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> null\n        .b -> 7\n    }\n}\nf(E.b) ?? 0") == "7"
+            shown(
+                "enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> null\n        .b -> 7\n    }\n}\nf(E.b) ?? 0",
+            ) == "7"
         }
         then "an absent `match` arm answers absent" {
-            shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> null\n        .b -> 7\n    }\n}\nf(E.a) ?? 42") == "42"
+            shown(
+                "enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> null\n        .b -> 7\n    }\n}\nf(E.a) ?? 42",
+            ) == "42"
         }
         then "an ALREADY nullable arm joins without lifting twice" {
-            shown("fn g(v: int) -> int? { v }\nfn f(b: bool) -> int? {\n    when {\n        b -> g(3)\n        _ -> null\n    }\n}\nf(true) ?? 0") == "3"
+            shown(
+                "fn g(v: int) -> int? { v }\nfn f(b: bool) -> int? {\n    when {\n        b -> g(3)\n        _ -> null\n    }\n}\nf(true) ?? 0",
+            ) == "3"
         }
         then "arms that genuinely disagree STILL refuse" {
-            let a = analyze_source("fn f(b: bool) -> int {\n    when {\n        b -> 1\n        _ -> \"s\"\n    }\n}\nf(true)")
+            let a = analyze_source(
+                "fn f(b: bool) -> int {\n    when {\n        b -> 1\n        _ -> \"s\"\n    }\n}\nf(true)",
+            )
             a.diagnostics.length == 1 && a.report().contains("arms disagree")
         }
         then "two disagreeing values still refuse" {
@@ -341,7 +393,9 @@ spec "features/nullable (adversarial)" {
     }
     given "crossing every other feature" {
         then "a `while` condition takes the answer" {
-            shown("fn mb(b: bool) -> bool? { b }\nmut i = 0\nwhile mb(i < 3) ?? false {\n    i = i + 1\n}\ni") == "3"
+            shown(
+                "fn mb(b: bool) -> bool? { b }\nmut i = 0\nwhile mb(i < 3) ?? false {\n    i = i + 1\n}\ni",
+            ) == "3"
         }
         then "a `for` bound takes the answer" {
             shown("${makers}mut t = 0\nfor k in 0..(none() ?? 3) {\n    t = t + 1\n}\nt") == "3"
@@ -353,28 +407,40 @@ spec "features/nullable (adversarial)" {
             shown("type P = { x: int }\n${makers}let p = P { x: none() ?? 7 }\np.x") == "7"
         }
         then "`with` takes the answer" {
-            shown("type P = { x: int, y: int }\n${makers}let base = P { x: 1, y: 2 }\nlet q = base with { x: none() ?? 9 }\nq.x") == "9"
+            shown(
+                "type P = { x: int, y: int }\n${makers}let base = P { x: 1, y: 2 }\nlet q = base with { x: none() ?? 9 }\nq.x",
+            ) == "9"
         }
         then "an index takes the answer" {
             shown("${makers}let xs = [10, 20, 30]\nxs[none() ?? 1]") == "20"
         }
         then "a variant payload takes the answer" {
-            shown("${makers}enum E {\n    a(int)\n    b\n}\nmatch E.a(none() ?? 7) { .a(n) -> n, .b -> 0 }") == "7"
+            shown(
+                "${makers}enum E {\n    a(int)\n    b\n}\nmatch E.a(none() ?? 7) { .a(n) -> n, .b -> 0 }",
+            ) == "7"
         }
         then "`?.length` on a nullable map measures the MAP" {
-            shown("fn m(b: bool) -> Map<string, int>? {\n    mut x: Map<string, int> = {}\n    x.set(\"a\", 1)\n    x.set(\"b\", 2)\n    if b { x } else { null }\n}\n(m(true)?.length ?? 0) * 10 + (m(false)?.length ?? 0)") == "20"
+            shown(
+                "fn m(b: bool) -> Map<string, int>? {\n    mut x: Map<string, int> = {}\n    x.set(\"a\", 1)\n    x.set(\"b\", 2)\n    if b { x } else { null }\n}\n(m(true)?.length ?? 0) * 10 + (m(false)?.length ?? 0)",
+            ) == "20"
         }
         then "a `mut` binding takes the answer" {
             shown("${makers}mut x = none() ?? 1\nx = x + 1\nx") == "2"
         }
         then "an absence crosses five fns unchanged" {
-            shown("fn a() -> int? { null }\nfn b() -> int? { a() }\nfn c() -> int? { b() }\nfn d() -> int? { c() }\nd() ?? 5") == "5"
+            shown(
+                "fn a() -> int? { null }\nfn b() -> int? { a() }\nfn c() -> int? { b() }\nfn d() -> int? { c() }\nd() ?? 5",
+            ) == "5"
         }
         then "eight grouped coalesces answer the innermost" {
-            shown("fn n() -> int? { null }\nn() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? 8)))))))") == "8"
+            shown(
+                "fn n() -> int? { null }\nn() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? 8)))))))",
+            ) == "8"
         }
         then "a thousand nullables allocate and answer" {
-            shown("fn some(v: int) -> int? { v }\nmut t = 0\nmut i = 0\nwhile i < 1000 {\n    t = t + (some(i) ?? 0)\n    i = i + 1\n}\nt") == "499500"
+            shown(
+                "fn some(v: int) -> int? { v }\nmut t = 0\nmut i = 0\nwhile i < 1000 {\n    t = t + (some(i) ?? 0)\n    i = i + 1\n}\nt",
+            ) == "499500"
         }
     }
     given "the naming law, which reaches the absence" {

@@ -3,24 +3,18 @@
 use core.{Expr, ExprId, StmtId, TypeId, Reg}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
-export type IfSemantics = { }
+export type IfSemantics = {}
 
 impl NodeSemantics for IfSemantics {
     fn kids(e: Expr) -> List<ExprId> {
         // the BRANCHES are hidden: each types under the narrow a
         // presence-test condition may prove, so the rule walks them
-        match e {
-            .If(c, _, _) -> [c],
-            _ -> [],
-        }
+        match e { .If(c, _, _) -> [c], _ -> [] }
     }
 
     fn heirs(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
-        match e {
-            .If(_, t, f) -> [t, f],
-            _ -> [],
-        }
+        match e { .If(_, t, f) -> [t, f], _ -> [] }
     }
 
     fn resolve(mut cx: ResolveCx, e: ExprId) {
@@ -28,7 +22,7 @@ impl NodeSemantics for IfSemantics {
             .If(_, t, f) -> {
                 cx.arm_scope([], t)
                 cx.arm_scope([], f)
-            }
+            },
             _ -> nothing(),
         }
     }
@@ -45,7 +39,7 @@ impl NodeSemantics for IfSemantics {
 
 /// The STATEMENT form's semantics: a valueless region — the guard
 /// idiom's home. Each branch scopes its own statements.
-export type IfStmtSemantics = { }
+export type IfStmtSemantics = {}
 
 impl StmtSemantics for IfStmtSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
@@ -54,7 +48,7 @@ impl StmtSemantics for IfStmtSemantics {
                 cx.walk(c)
                 cx.scope_stmts(t)
                 cx.scope_stmts(e)
-            }
+            },
             _ -> nothing(),
         }
     }
@@ -66,7 +60,7 @@ impl StmtSemantics for IfStmtSemantics {
                 cx.require_bool(c, "an `if` condition", "this decides the branch")
                 cx.type_stmts(t)
                 cx.type_stmts(e)
-            }
+            },
             _ -> nothing(),
         }
     }
@@ -76,7 +70,7 @@ impl StmtSemantics for IfStmtSemantics {
             .IfStmt(c, t, e) -> {
                 lower_if_stmt(cx, c, t, e)
                 null
-            }
+            },
             _ -> null,
         }
     }

@@ -1,0 +1,38 @@
+//! An instance's semantics: its EXPANSION is the node every pass
+//! reads — typing answers its type, lowering its register. Nothing of
+//! the component survives to the IR.
+use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx}
+
+export type ComponentSemantics = {}
+
+impl NodeSemantics for ComponentSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        // a feature matching its own variant
+        match e {
+            // a check reads the literal, so walking it walks the expansion once
+            .Component(_, _, _, .Expanded(x), check) -> [check ?? x],
+            rest -> [],
+        }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        let x? = cx.view.store.expansion_of(e) else { return cx.error_type }
+        cx.type_at(x)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        let x? = cx.view.store.expansion_of(e) else { return cx.lower_defect(e, "an instance that never expanded") }
+        let check: ExprId? = cx.view.store.instance_check(e)
+        if check != null { checked(cx, e, check!) }
+        augmented(cx, e, x, cx.reg_of(x))
+    }
+}
+
+export type ComponentDeclSemantics = {}
+
+impl StmtSemantics for ComponentDeclSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { resolve_component(cx, s) }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) { check_component(cx, s) }
+}

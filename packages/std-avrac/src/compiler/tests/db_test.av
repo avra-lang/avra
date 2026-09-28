@@ -1,0 +1,124 @@
+//! `Db`'s own contract: a row inserted answers back at once, a name
+//! nothing inserted answers null, and the two witnesses a durable
+//! answer's validity rides on — the package's file listing and a
+//! file's own content — change exactly when the thing they witness
+//! does. `fresh_db()` mints an independent `Db` per case; each still
+//! uses its own package root, so a store read never crosses cases.
+use @std.io.{make_dirs, write_text, remove, list_dir}
+use @std.path.{joined_path}
+use compiler.db.{
+    fresh_db,
+    DocFacts,
+    FileWitness,
+    current_listing_digest,
+    current_file_digest,
+    encoded_docfacts,
+    decoded_docfacts,
+}
+use compiler.store.{store_at}
+
+/// A clean package per call: a prior run's leftovers under `src/` are
+/// gone before this one writes its own, so a listing comparison never
+/// inherits another run's files at a path this suite reuses.
+fn db_pkg_named(name: string) -> string {
+    let root = "/tmp/avra-db-test/${name}"
+    let src = "${root}/src"
+    let _ = make_dirs(src)
+    for f in list_dir(src) catch [] { let _ = remove(joined_path(src, f)) }
+    root
+}
+
+spec "compiler/db — Db, Row and their witnesses" {
+    given "a Sig row this process just inserted" {
+        then "the same process answers its text back, no witness to fail" {
+            let root = db_pkg_named("sig-insert-get")
+            let store = store_at("${root}/.avra-cache")
+            mut d = fresh_db()
+            d.insert_sig(store, "pkg.mod", "the record text")
+            d.sig(store, "pkg.mod") == "the record text"
+        }
+    }
+    given "a Warn row this process just inserted" {
+        then "the same process answers its text back" {
+            let root = db_pkg_named("warn-insert-get")
+            let store = store_at("${root}/.avra-cache")
+            mut d = fresh_db()
+            d.insert_warn(store, "check:pkg", "warning[x]: y")
+            d.warn(store, "check:pkg") == "warning[x]: y"
+        }
+    }
+    given "a row this process just inserted" {
+        then "the same process answers it back" {
+            let root = db_pkg_named("insert-get")
+            let store = store_at("${root}/.avra-cache")
+            let facts = DocFacts { root: root, answer: "a's doc", listing_digest: "x", files: [] }
+            mut d = fresh_db()
+            d.insert_decl(store, "pkg.a", facts)
+            d.decl(store, "pkg.a")?.answer == "a's doc"
+        }
+    }
+    given "a name nothing ever inserted" {
+        then "it answers null, on disk and in memory alike" {
+            let root = db_pkg_named("miss")
+            let store = store_at("${root}/.avra-cache")
+            mut d = fresh_db()
+            d.decl(store, "pkg.never-inserted") == null
+        }
+    }
+    given "the file-listing witness" {
+        then "one file alone digests the same however many times it is asked" {
+            let root = db_pkg_named("listing-stable")
+            let _ = write_text("${root}/src/main.av", "fn a() {}")
+            current_listing_digest(root) == current_listing_digest(root)
+        }
+        then "a new file under the package moves the listing digest" {
+            let root = db_pkg_named("listing-moves")
+            let _ = write_text("${root}/src/main.av", "fn a() {}")
+            let before = current_listing_digest(root)
+            let _ = write_text("${root}/src/extra.av", "fn b() {}")
+            before != current_listing_digest(root)
+        }
+    }
+    given "@derive(Wire) over DocFacts — a multi-line answer, embedded newlines, and a trailing list of a nested Wire type" {
+        then "round-trips exactly, including a mid-struct field holding real newlines" {
+            let facts = DocFacts {
+                root: "/pkg",
+                listing_digest: "abc",
+                answer: "line one\nline two\nline three",
+                files: [
+                    FileWitness { path: "/pkg/a.av", digest: "d1" },
+                    FileWitness { path: "/pkg/b.av", digest: "d2" },
+                ],
+            }
+            let back? = decoded_docfacts(encoded_docfacts(facts)) else { return false }
+            back.root == facts.root &&
+                back.listing_digest == facts.listing_digest &&
+                back.answer == facts.answer &&
+                back.files.length == 2 &&
+                back.files[0].path == "/pkg/a.av" &&
+                back.files[1].digest == "d2"
+        }
+        then "an empty file list round-trips too — the empty case is not a special case" {
+            let facts = DocFacts { root: "/pkg", listing_digest: "x", answer: "", files: [] }
+            let back? = decoded_docfacts(encoded_docfacts(facts)) else { return false }
+            back.answer == "" && back.files.is_empty()
+        }
+    }
+    given "the file-content witness" {
+        then "an unedited file digests the same as it did before" {
+            let root = db_pkg_named("content-stable")
+            let path = "${root}/src/main.av"
+            let _ = write_text(path, "fn a() {}")
+            let before = current_file_digest(path)
+            current_file_digest(path) == before
+        }
+        then "editing a file moves its own digest" {
+            let root = db_pkg_named("content-moves")
+            let path = "${root}/src/main.av"
+            let _ = write_text(path, "fn a() {}")
+            let before = current_file_digest(path)
+            let _ = write_text(path, "fn a() { 1 }")
+            before != current_file_digest(path)
+        }
+    }
+}

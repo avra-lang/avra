@@ -6,16 +6,26 @@ use @std.avrac.testing.{shown, refused_with, halver}
 spec "features/mutation" {
     given "the borrow — a copy is a copy, whatever the place" {
         then "a mut bound to an IMMUTABLE parameter's field is a copy" {
-            shown("type M = { xs: List<int> }\nfn grow(m: M, x: int) {\n    mut xs = m.xs\n    xs.push(x)\n}\nlet m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length") == "0"
+            shown(
+                "type M = { xs: List<int> }\nfn grow(m: M, x: int) {\n    mut xs = m.xs\n    xs.push(x)\n}\nlet m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length",
+            ) == "0"
         }
         then "a mut bound to a MUT parameter's field is ALSO a copy" {
-            shown("type M = { xs: List<int> }\nfn grow(mut m: M, x: int) {\n    mut xs = m.xs\n    xs.push(x)\n}\nmut m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length") == "0"
+            shown(
+                "type M = { xs: List<int> }\nfn grow(mut m: M, x: int) {\n    mut xs = m.xs\n    xs.push(x)\n}\nmut m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length",
+            ) == "0"
         }
         then "a PATH WRITE through a mut parameter's field reaches the record" {
-            shown("type M = { xs: List<int> }\nfn grow(mut m: M, x: int) {\n    m.xs.push(x)\n}\nmut m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length") == "2"
+            shown(
+                "type M = { xs: List<int> }\nfn grow(mut m: M, x: int) {\n    m.xs.push(x)\n}\nmut m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length",
+            ) == "2"
         }
         then "a mut bound to a local's field is a copy — value semantics" {
-            shown("type M = { xs: List<int> }\nlet m = M { xs: [1] }\nmut xs = m.xs\nxs.push(2)\n\"" + "\${xs.length} " + "\${m.xs.length}\"") == "2 1"
+            shown(
+                "type M = { xs: List<int> }\nlet m = M { xs: [1] }\nmut xs = m.xs\nxs.push(2)\n\"" +
+                    "\${xs.length} " +
+                    "\${m.xs.length}\"",
+            ) == "2 1"
         }
     }
     given "mut and assignment" {
@@ -28,7 +38,6 @@ spec "features/mutation" {
     }
     given "the annotated cell — `mut x: T = v` and the pair unlock" {
         then "a mut nullable SCALAR is a legal cell — the state machine lives" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut best: int? = null\nbest = 5\nbest = null\nbest = 4\nbest ?? 0 - 1") == "4"
         }
         then "assignment WIDENS into the declared cell" {
@@ -38,18 +47,19 @@ spec "features/mutation" {
             shown("mut plain: int = 40\nplain = plain + 2\nplain") == "42"
         }
         then "a bool? cell carries present FALSE" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut f: bool? = null\nf = false\nif f ?? true { 1 } else { 0 }") == "0"
         }
         then "a MANAGED niche cell works — the null no-ops by construction" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut s: string? = null\ns ?? \"d\"") == "d"
         }
         then "the declared-binding law reaches mut: `mut x: int = null` refuses" {
             refused_with("mut x: int = null\nx", "`x` declares `int`, this is `null`")
         }
         then "an assignment against the DECLARED type refuses in its words" {
-            refused_with("mut x: int? = 5\nx = \"s\"\nx ?? 0", "assignment changes `x`: `int?` to `string`")
+            refused_with(
+                "mut x: int? = 5\nx = \"s\"\nx ?? 0",
+                "assignment changes `x`: `int?` to `string`",
+            )
         }
         then "an UNANNOTATED mut still infers — null does not fit an int cell" {
             refused_with("mut x = 5\nx = null\nx", "assignment changes `x`: `int` to `null`")
@@ -88,30 +98,61 @@ spec "features/mutation" {
             shown("type P = { x: int }\nmut p = P { x: 1 }\np.x = 5\np.x") == "5"
         }
         then "a nested field assigns — copy-on-write along the path" {
-            shown("type A = { c: string }\ntype U = { a: A }\nmut u = U { a: A { c: \"SF\" } }\nlet s = u\nu.a.c = \"NYC\"\n\"" + "\${u.a.c}" + " " + "\${s.a.c}" + "\"") == "NYC SF"
+            shown(
+                "type A = { c: string }\ntype U = { a: A }\nmut u = U { a: A { c: \"SF\" } }\nlet s = u\nu.a.c = \"NYC\"\n\"" +
+                    "\${u.a.c}" +
+                    " " +
+                    "\${s.a.c}" +
+                    "\"",
+            ) == "NYC SF"
         }
         then "an index assigns, and an alias keeps what it saw" {
-            shown("mut xs = [1, 2]\nlet ys = xs\nxs[0] = 9\n\"" + "\${xs[0]}" + " " + "\${ys[0]}" + "\"") == "9 1"
+            shown(
+                "mut xs = [1, 2]\nlet ys = xs\nxs[0] = 9\n\"" +
+                    "\${xs[0]}" +
+                    " " +
+                    "\${ys[0]}" +
+                    "\"",
+            ) == "9 1"
         }
         then "a `let` is deeply immutable — the remedy names `mut` and `with`" {
             refused_with("type P = { x: int }\nlet p = P { x: 1 }\np.x = 5\n2", "`p` is not `mut`")
         }
         then "a value is not a place" {
-            refused_with("type P = { x: int }\nfn mk() -> P {\n    P { x: 1 }\n}\nmk().x = 5\n2", "a mutation lands on a place")
+            refused_with(
+                "type P = { x: int }\nfn mk() -> P {\n    P { x: 1 }\n}\nmk().x = 5\n2",
+                "a mutation lands on a place",
+            )
+        }
+        then "an unwrap is a step on a path, never a target itself" {
+            refused_with(
+                "type R = { x: int }\nmut r: R? = R { x: 1 }\nr! = R { x: 2 }\n3",
+                "a mutation lands on a place",
+            )
         }
         then "a slot refuses the wrong type in the slot's words" {
-            refused_with("type P = { x: int }\nmut p = P { x: 1 }\np.x = \"s\"\n2", "assignment changes a slot of `p`: `int` to `string`")
+            refused_with(
+                "type P = { x: int }\nmut p = P { x: 1 }\np.x = \"s\"\n2",
+                "assignment changes a slot of `p`: `int` to `string`",
+            )
         }
         then "a lambda assigned into a fn-typed field hears its seat" {
-            shown("type H = { f: fn(int) -> int }\nmut h = H { f: (x: int) -> x }\nh.f = (x) -> x * 3\nh.f(4)") == "12"
+            shown(
+                "type H = { f: fn(int) -> int }\nmut h = H { f: (x: int) -> x }\nh.f = (x) -> x * 3\nh.f(4)",
+            ) == "12"
         }
     }
     given "the mut-seat law's escape hatch — a `Cell<T>` REPLACES, a `mut` seat WRITES" {
         then "a plain seat holding a Cell<T> reassigns it whole, no `mut` needed" {
-            shown("fn bump(c: Cell<int>) {\n    c.set(c.get() + 1)\n}\nlet c = Cell.new(1)\nbump(c)\nbump(c)\nc.get()") == "3"
+            shown(
+                "fn bump(c: Cell<int>) {\n    c.set(c.get() + 1)\n}\nlet c = Cell.new(1)\nbump(c)\nbump(c)\nc.get()",
+            ) == "3"
         }
         then "a `mut` seat still refuses whole reassignment, and names `Cell<T>`" {
-            refused_with("fn zero(mut n: int) { n = 0 }\nmut k = 5\nzero(k)\nk", "wrap the value in a `Cell<T>`")
+            refused_with(
+                "fn zero(mut n: int) { n = 0 }\nmut k = 5\nzero(k)\nk",
+                "wrap the value in a `Cell<T>`",
+            )
         }
     }
 }

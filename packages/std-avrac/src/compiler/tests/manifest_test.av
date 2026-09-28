@@ -1,7 +1,6 @@
 // The manifest read into facts, and every rule of the manifest spec
 // speaking in its own words — errors that refuse, warnings that do
 // not.
-use @std.avrac.compiler.{avra}
 use @std.avrac.diagnostics.{new_source_file, render}
 
 use features.{budgets_of}
@@ -27,14 +26,24 @@ fn speaks(text: string, kind: string) -> bool {
 }
 
 fn tooled(rest: string) -> string {
-    packaged("\n[process.tools]\ngit = { from = \"path\", terminator = \"--end-of-options\" }\nfind = { terminator = false }\n\n[process.tools.clang]\nfrom = \"env\"\nvar = \"CC\"\ndefault = \"clang\"\n${rest}")
+    packaged(
+        "\n[process.tools]\ngit = { from = \"path\", terminator = \"--end-of-options\" }\nfind = { terminator = false }\n\n[process.tools.clang]\nfrom = \"env\"\nvar = \"CC\"\ndefault = \"clang\"\n${rest}",
+    )
 }
 
 spec "compiler/manifest" {
     given "[process.tools]" {
         then "tools are read in both spellings, with their provenance and their terminator" {
             let m = read(tooled(""))
-            m.voices.length == 0 && m.tools.length == 3 && m.tools[0].name == "git" && m.tools[0].terminator == "--end-of-options" && m.tools[1].terminator == null && m.tools[2].name == "clang" && m.tools[2].from is .Env && m.tools[2].var == "CC" && m.tools[2].default == "clang"
+            m.voices.length == 0 &&
+                m.tools.length == 3 &&
+                m.tools[0].name == "git" &&
+                m.tools[0].terminator == "--end-of-options" &&
+                m.tools[1].terminator == null &&
+                m.tools[2].name == "clang" &&
+                m.tools[2].from is .Env &&
+                m.tools[2].var == "CC" &&
+                m.tools[2].default == "clang"
         }
         then "a tool not saying where it comes from comes from the PATH, ending its options at `--`" {
             let m = read(tooled(""))
@@ -42,34 +51,59 @@ spec "compiler/manifest" {
         }
         then "an unknown key under [process] REFUSES — a bound on what may run is never degraded" {
             let m = read(tooled("nope = 1\n"))
-            m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_process_key" && m.voices[0].severity is .Error
+            m.voices.length == 1 &&
+                m.voices[0].kind == "manifest.unknown_process_key" &&
+                m.voices[0].severity is .Error
         }
         then "an unknown key inside a tool's own row refuses too" {
-            speaks(packaged("\n[process.tools]\ngit = { colour = 1 }\n"), "manifest.unknown_process_key")
+            speaks(
+                packaged("\n[process.tools]\ngit = { colour = 1 }\n"),
+                "manifest.unknown_process_key",
+            )
         }
         then "a provenance that is not path, env or abs is refused" {
-            speaks(packaged("\n[process.tools]\ngit = { from = \"magic\" }\n"), "manifest.bad_tool_from")
+            speaks(
+                packaged("\n[process.tools]\ngit = { from = \"magic\" }\n"),
+                "manifest.bad_tool_from",
+            )
         }
         then "an env tool names its variable; an abs tool names its file" {
-            speaks(packaged("\n[process.tools]\ncc = { from = \"env\" }\n"), "manifest.tool_env_var") && speaks(packaged("\n[process.tools]\nld = { from = \"abs\" }\n"), "manifest.tool_abs_at")
+            speaks(
+                    packaged("\n[process.tools]\ncc = { from = \"env\" }\n"),
+                    "manifest.tool_env_var",
+                ) &&
+                speaks(
+                    packaged("\n[process.tools]\nld = { from = \"abs\" }\n"),
+                    "manifest.tool_abs_at",
+                )
         }
     }
     given "the reference manifest" {
         then "its facts are read" {
             let m = read(reference())
-            m.name == "@acme/app" && m.version == "0.1.0" && m.bin == "src/main.av" && m.lib == "src/lib.av" && m.voices.is_empty()
+            m.name == "@acme/app" &&
+                m.version == "0.1.0" &&
+                m.bin == "src/main.av" &&
+                m.lib == "src/lib.av" &&
+                m.voices.is_empty()
         }
         then "its dependencies are keys with paths, tests' marked" {
             let m = read(reference())
-            m.deps.length == 3 && m.deps[0].key == "@std/http" && m.deps[0].path == "../http" && !m.deps[0].dev && m.deps[2].dev
+            m.deps.length == 3 &&
+                m.deps[0].key == "@std/http" &&
+                m.deps[0].path == "../http" &&
+                !m.deps[0].dev &&
+                m.deps[2].dev
         }
         then "a new dependency line goes after the last one" {
             let m = read(reference())
             let at = deps_offset(m)!
-            reference().substring(at - 3, at) == "\" }" && deps_offset(read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n")) == null
+            reference().substring(at - 3, at) == "\" }" &&
+                deps_offset(read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n")) == null
         }
         then "an undeclared target is absent, a bare one is its default" {
-            read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").bin == null && read(packaged("[bin]\n")).bin == "src/main.av"
+            read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").bin == null &&
+                read(packaged("[bin]\n")).bin == "src/main.av"
         }
     }
     given "the rules refuse" {
@@ -80,10 +114,23 @@ spec "compiler/manifest" {
         then "a pre-release suffix is semver" { read("[package]\nname = \"app\"\nversion = \"1.2.3-beta.1\"\n").voices.is_empty() }
         then "a name that is neither @scope/name nor a word" { speaks("[package]\nname = \"My App\"\nversion = \"1.0.0\"\n", "manifest.bad_name") }
         then "a dependency on itself" { speaks(packaged("[dependencies]\napp = { path = \".\" }\n"), "manifest.self_dependency") }
-        then "an unscoped dependency" { speaks(packaged("[dependencies]\nhttp = { path = \"../http\" }\n"), "manifest.unscoped_dependency") }
+        then "an unscoped dependency" {
+            speaks(
+                packaged("[dependencies]\nhttp = { path = \"../http\" }\n"),
+                "manifest.unscoped_dependency",
+            )
+        }
         then "a registry or git dependency" {
-            speaks(packaged("[dependencies]\n\"@std/http\" = \"1.2\"\n"), "manifest.unsupported_dependency") &&
-                speaks(packaged("[dependencies]\n\"@std/http\" = { git = \"https://x/y\", rev = \"abc\" }\n"), "manifest.unsupported_dependency")
+            speaks(
+                    packaged("[dependencies]\n\"@std/http\" = \"1.2\"\n"),
+                    "manifest.unsupported_dependency",
+                ) &&
+                speaks(
+                    packaged(
+                        "[dependencies]\n\"@std/http\" = { git = \"https://x/y\", rev = \"abc\" }\n",
+                    ),
+                    "manifest.unsupported_dependency",
+                )
         }
         then "an opt level outside the set" { speaks(packaged("[profile.release]\nopt_level = 7\n"), "manifest.bad_opt_level") }
         then "a profile name outside its charset" { speaks(packaged("[profile.Fast]\nopt_level = 2\n"), "manifest.bad_profile") }
@@ -91,8 +138,14 @@ spec "compiler/manifest" {
     }
     given "[link] is typed — a dependency cannot spell a clang option" {
         then "objects, search and libs read as words" {
-            let m = read(packaged("[link]\nobjects = [\"a.o\"]\nsearch = [\"/opt/lib\"]\nlibs = [\"m\", \"pthread\"]\n"))
-            m.objects.join(",") == "a.o" && m.search.join(",") == "/opt/lib" && m.libs.join(",") == "m,pthread"
+            let m = read(
+                packaged(
+                    "[link]\nobjects = [\"a.o\"]\nsearch = [\"/opt/lib\"]\nlibs = [\"m\", \"pthread\"]\n",
+                ),
+            )
+            m.objects.join(",") == "a.o" &&
+                m.search.join(",") == "/opt/lib" &&
+                m.libs.join(",") == "m,pthread"
         }
         then "a `-`-leading token in libs is refused — the row spells the NAME" {
             speaks(packaged("[link]\nlibs = [\"-lm\"]\n"), "manifest.link_option")
@@ -113,27 +166,37 @@ spec "compiler/manifest" {
             read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).voices.is_empty()
         }
     }
-
     given "the unknown warns" {
+
         then "an unknown section is a warning that names it" {
             let m = read(packaged("[grants]\nnetwork = []\n"))
-            m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_section" && m.voices[0].severity is .Warning
+            m.voices.length == 1 &&
+                m.voices[0].kind == "manifest.unknown_section" &&
+                m.voices[0].severity is .Warning
         }
         then "an unknown key is a warning that names it" {
             let m = read("[package]\nname = \"app\"\nversion = \"1.0.0\"\ncolour = \"red\"\n")
-            m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_key" && m.voices[0].message.contains("`colour`")
+            m.voices.length == 1 &&
+                m.voices[0].kind == "manifest.unknown_key" &&
+                m.voices[0].message.contains("`colour`")
         }
     }
     given "rendered" {
         then "a `[link]` row spelling an option renders with its code and remedy" {
             let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"-lm\"]\n"
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4015]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]")
+            render(m.voices[0], new_source_file("avra.toml", text))
+                .starts_with(
+                    "error[manifest.link_option]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]",
+                )
         }
         then "a refusal points at its line in the manifest" {
             let text = "[package]\nname = \"app\"\nversion = \"1.2\"\n"
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4003]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
+            render(m.voices[0], new_source_file("avra.toml", text))
+                .starts_with(
+                    "error[manifest.bad_version]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]",
+                )
         }
     }
     given "[lifted]" {
@@ -143,20 +206,25 @@ spec "compiler/manifest" {
         }
         then "an absent row takes the measured default" {
             let m = read(packaged("\n[lifted]\nsteps = 500\n"))
-            m.budgets.steps == 500 && m.budgets.bytes == budgets_of(null, null).bytes
+            m.budgets.steps == 500 && m.budgets.bytes == budgets_of().bytes
         }
         then "a row that is not a count of at least 1 is refused and reads as the default" {
             let m = read(packaged("\n[lifted]\nsteps = 0\nmemory = \"lots\"\n"))
-            m.voices.length == 2 && m.voices.all(it.kind == "manifest.bad_budget") && m.budgets.steps == budgets_of(null, null).steps
+            m.voices.length == 2 &&
+                m.voices.all(it.kind == "manifest.bad_budget") &&
+                m.budgets.steps == budgets_of().steps
         }
         then "a memory past what bytes can hold is no ceiling, never a wrapped one" {
             let m = read(packaged("\n[lifted]\nmemory = 9223372036854775807\n"))
-            m.voices.length == 0 && m.budgets.bytes > 0 && m.budgets.bytes >= budgets_of(null, 8796093022207).bytes
+            m.voices.length == 0 &&
+                m.budgets.bytes > 0 &&
+                m.budgets.bytes >= budgets_of(null, 8796093022207).bytes
         }
         then "the refusal names the row and its units" {
             let text = packaged("\n[lifted]\nmemory = 0\n")
             let m = read(text)
-            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).contains("error[F4017]: `[lifted] memory` is a count of at least 1")
+            render(m.voices[0], new_source_file("avra.toml", text))
+                .contains("error[manifest.bad_budget]: `[lifted] memory` is a count of at least 1")
         }
     }
 }

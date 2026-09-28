@@ -3,8 +3,19 @@
 use core.{Expr, BodyView}
 use features.{LangNode, Builder}
 
-// LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
+// LICENSED compiler.free_state_verb: a builder is a registry ROW's fn, not a verb on `Builder` —
 // the shape every `features/*/builders.av` carries, exempt there by path alone
-fn build_body_text(mut b: Builder) -> Result<LangNode, string> {
+fn build_body_text(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Body("text", [t.text for t in b.tokens(0)?], b.exprs(1)?, BodyView.None))
+}
+
+/// A plain string literal — imperative rather than the declarative
+/// Node sugar, so a token spelled `"""raw"""` can mark itself: the
+/// lexer hands both delimiters through the one `Str` kind, and the
+/// mark is the only place that survives to tell them apart.
+fn build_str_lit(mut b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    let e = b.expr_node(Expr.StrLit(t.text))
+    if t.raw { b.store.mark_raw_string(e) }
+    b.wrap_expr(e)
 }

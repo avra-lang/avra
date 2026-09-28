@@ -1,14 +1,22 @@
 //! `avra build` — compile a program to a native binary: the cached
 //! module when these inputs have been built before, else the emitted
 //! `.ll` linked with Avra's runtime by clang.
-use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.cli.{CliResult, Runnable, command}
 
-type BuildCmd = { }
+type BuildCmd = {}
 
 impl Runnable for BuildCmd {
-    fn run(args: CliResult) -> int { cached_build(args) }
+    fn run(args: CliResult) -> int {
+        let code = cached_build(args)
+        if code != 0 || !args.has_flag("verify_held") { return code }
+        let path? = argued_path(args) else { return 2 }
+        verify_held_said(path)
+    }
 }
 
-export fn build_command() -> Subcommand {
-    Subcommand { meta: file_command("build", "Compile a program to a native binary"), body: BuildCmd { } }
+export command build {
+    description: "Compile a program to a native binary"
+    flags: [time, verify_held]
+    args: [file]
+    run: BuildCmd {}
 }

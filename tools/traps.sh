@@ -292,9 +292,8 @@ trapped tx_hot_journal "avra: index 5 is out of bounds (length 1)
 avra: the writer exited 2, and of the 3 rows it wrote the database kept 1" 2 '
 [dependencies]
 "@std/sqlite" = { path = "../../../packages/std-sqlite" }
-' 'use @std.sqlite.open.{Db, open, close}
-use @std.sqlite.stmt.{Stmt, run, prepare, step, finalize, int_at}
-use @std.sqlite.tx.{begin}
+' 'use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError}
 
 extern fn avra_trap(message: string)
@@ -307,11 +306,11 @@ fn db_path() -> string { "build/traps/tx_hot_journal.db" }
 /// The half that dies: one row committed, a transaction opened, two more
 /// written, and the process gone with the transaction standing.
 fn wrote() -> Result<int, SqlError> {
-    mut db = open(db_path())?
+    mut db = Db.open(db_path())?
     let _ = run(db, "drop table if exists t")?
     let _ = run(db, "create table t (n int)")?
     let _ = run(db, "insert into t values (1)")?
-    let _ = begin(db)?
+    let _ = db.begin()?
     let _ = run(db, "insert into t values (2)")?
     let _ = run(db, "insert into t values (3)")?
     let xs = [0]
@@ -320,17 +319,17 @@ fn wrote() -> Result<int, SqlError> {
 
 /// The half that reads what the other half left behind.
 fn counted() -> Result<int, SqlError> {
-    mut db = open(db_path())?
-    mut s = prepare(db, "select count(*) from t")?
+    mut db = Db.open(db_path())?
+    mut s = db.prepare("select count(*) from t")?
     let n = read_one(s)?
-    let _ = finalize(s)
-    let _ = close(db)
+    let _ = s.finalize()
+    let _ = db.close()
     n
 }
 
 fn read_one(mut s: Stmt) -> Result<int, SqlError> {
-    let _ = step(s)?
-    int_at(s, 0)?
+    let _ = s.step()?
+    s.int_at(0)?
 }
 
 fn said(r: Result<int, SqlError>) -> string {

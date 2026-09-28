@@ -1,0 +1,334 @@
+//! THE REFERENCES PASS — fills `Decls`'s references relation: one
+//! row per named USE of a declaration (`Ref`, features/decls.av),
+//! filled per file as that file is resolved and typed, replaced
+//! whole when the file changes. A WHOLE-PROGRAM PASS MUST NOT RUN
+//! INSIDE A RESOLVE — receivers.av's law, held here too: the pass
+//! answers nothing while a resolve is in flight, and runs whole at
+//! the first ask after.
+//!
+//! A ROW'S TARGET IS A DECLARATION, never a local: a param or a
+//! `mut` local is scoped to its own body, so `Code.reads`/
+//! `Code.writes` (features/code.av) answer those with a bounded walk
+//! of their own, no whole-program relation needed — this pass only
+//! ever settles rows keyed by `DeclId`, which is what crosses files.
+//!
+//! A WRITTEN TYPE NAMES A DECLARATION TOO: a param's, a field's, a
+//! `let`'s annotation, a bound, a return — none of them a nested
+//! EXPRESSION, so `expr_refs`'s walk never sees them on its own.
+//! `type_use_refs` reads `NodeStore.type_roots` (core/parts.av) and
+//! resolves every name it reaches — arguments and `or` alternatives
+//! included — through the file's namespace, exactly as a written
+//! type resolves under typing (`declare.av`'s `named_type`/
+//! `trait_decl_named` both bottom out at `names.type_decl`). A name
+//! bound as the STATEMENT's OWN type parameter names no declaration.
+//!
+//! AN ANNOTATION'S CALLEE IS AN ORDINARY EXPRESSION (`@name(args)` is
+//! the call `name(...)`), so `expr_refs`'s blanket walk already sees
+//! it — a decl and a type position alike. A FIELD MARK is not: it is
+//! a free-standing WORD the compiler judges no reader over (marks
+//! stay free names everywhere else), so `mark_refs` is the one place
+//! that treats a mark's word as a POSSIBLE use — a fn visible under
+//! that name reads through it, and a mark matching nothing answers
+//! no row, exactly as an unclaimed mark answers no reader elsewhere.
+use core.{
+    DeclId,
+    FileId,
+    ExprId,
+    StmtId,
+    At,
+    NodeStore,
+    Nominal,
+    TypeRef,
+    UseParts,
+    Mark,
+    touch,
+    fp,
+    fp_list,
+    flatten,
+    some_list,
+    Span,
+}
+use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
+use @std.relation.db.{new_db as new_refs_db, Db as RelDb}
+
+impl Workspace {
+    /// THE PASS: every admitted file's own rows, folded into one
+    /// relation.
+    fn references() -> int {
+        if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
+        // THE RELATION SETTLES AFTER TYPING. Asked while a file is
+        // still typing, or while a compile-time run is lowering, its
+        // walk would read `folded`'s smaller recursive view for that
+        // file and settle the whole program's rows on an incomplete
+        // one — permanently, since a settled answer is never redone.
+        // `computed_consumed` no longer reaches here from a lift; a
+        // caller that still does is the defect this names.
+        if self.db.family_active(ordinal(Family.Typed)) ||
+            self.db.family_active(ordinal(Family.Folded)) ||
+            self.comptime_active() {
+            avra_trap(
+                "defect: the references relation settles after typing, and something asked for it while a file was still typing",
+            )
+        }
+        let k = key(Family.References, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let all_files = self.decls.files.get()
+        let files = [x.id for x in all_files if !self.is_held(x.id)]
+        let fresh = new_refs_db()
+        let fps = flatten([self.filed_refs(fresh, f) for f in files])
+        self.decls.settle_refs(fresh)
+        // A HELD FILE IS NOT SURVEYED (no store to walk), so a
+        // workspace carrying one answers an INCOMPLETE relation — a
+        // decl this pass calls unused may be used from inside it.
+        // `Decls.used` reads this before ever answering "no use
+        // anywhere": an unsure answer is never "unused".
+        self.decls.mark_refs_incomplete(files.length < all_files.length)
+        self.db.settle(k, fp(41, [fp_list(fps)]))
+        fps.length
+    }
+
+    /// One file's own rows, inserted into `db` as `file_refs` produces
+    /// them — never held whole across the program first — and each
+    /// row's own fingerprint, for the pass's settle.
+    fn filed_refs(db: RelDb, f: FileId) -> List<int> {
+        [self.filed_ref(db, r) for r in self.file_refs(f)]
+    }
+
+    fn filed_ref(db: RelDb, r: Ref) -> int {
+        let _ = Ref.insert(db, decl: r.decl, file: r.file, at: r.at, kind: r.kind)
+        ref_fp(r)
+    }
+
+    /// One file's own rows: every expression naming a declaration,
+    /// every assignment's own target, and every `use` line's imports.
+    fn file_refs(f: FileId) -> List<Ref> {
+        let names = self.resolved(f)
+        let facts = self.folded(f)
+        let store = self.decls.store_of(f)
+        let expr_rows = flatten(
+            [self.expr_refs(f, names, facts, store, ExprId { index: i }) for i in 0..store.exprs.count()],
+        )
+        let write_rows = flatten([self.write_refs(f, names, store, s) for s in store.stmt_ids()])
+        let impl_rows = flatten(
+            [self.impl_refs(f, names, d) for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Impl],
+        )
+        let type_rows = flatten([self.type_use_refs(f, names, store, s) for s in store.stmt_ids()])
+        let mark_rows = flatten([self.mark_refs(f, names, store, s) for s in store.stmt_ids()])
+        expr_rows
+            .concat(write_rows)
+            .concat(impl_rows)
+            .concat(type_rows)
+            .concat(mark_rows)
+            .concat(self.template_refs(f, names, store))
+            .concat(self.import_refs(f))
+    }
+
+    /// A TEMPLATE'S OWN NAMES are read where its quote is written, when
+    /// it is spliced, and resolve never walks a quote's body — so each
+    /// name a body calls or reads, spanned inside a quote and bound to
+    /// nothing, is read here through this file's namespace, as a
+    /// written type already is. A hole's fill is ordinary code, bound
+    /// where it stands, and counted by the walk above.
+    fn template_refs(f: FileId, names: NameFacts, store: NodeStore) -> List<Ref> {
+        let quotes = flatten(
+            [quote_span(store, ExprId { index: i }) for i in 0..store.exprs.count()],
+        )
+        if quotes.is_empty() { return [] }
+        let inside = [ExprId { index: i } for i in 0..store.exprs.count() if spanned_in(store, ExprId { index: i }, quotes)]
+        flatten([some_list(self.template_name_ref(f, names, store, e)) for e in inside])
+    }
+
+    fn template_name_ref(f: FileId, names: NameFacts, store: NodeStore, e: ExprId) -> Ref? {
+        if bound_decl_of(names, e) != null { return null }
+        let called: string? = store.callee_name(e)
+        if called != null { return self.named_use(f, names, e, called!, UseKind.Call) }
+        let read? = store.ident_name(e) else { return null }
+        self.named_use(f, names, e, read, UseKind.Read)
+    }
+
+    /// A name resolved through the file's namespace — a fn's first, a
+    /// type's for a name read as a receiver.
+    fn named_use(f: FileId, names: NameFacts, e: ExprId, name: string, kind: UseKind) -> Ref? {
+        let d? = names.names.fn_decl(name) ?? names.names.type_decl(name) else { return null }
+        expr_use(d, f, e, kind)
+    }
+
+    /// An `impl … for` block's own TRAIT, and an impl's own TARGET
+    /// type — both named in the SIGNATURE alone, never as an
+    /// expression, so no expression-level walk sees them. `of`
+    /// (features/decls.av's `DeclFacts`) is captured at admission;
+    /// the target answers once the impl is SIGNED, which `folded(f)`
+    /// (typing, `file_refs`'s own caller) already forced.
+    fn impl_refs(f: FileId, names: NameFacts, d: DeclId) -> List<Ref> {
+        let trait_name = self.decls.facts_of(d)?.of ?? ""
+        let trait_rows = if trait_name.is_empty() { [] } else { some_list(self.named_impl_ref(f, names, d, trait_name)) }
+        let target_rows = flatten(
+            [some_list(
+                Ref { decl: t, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read },
+            ) for t in some_list(self.decls.target_of(d))],
+        )
+        trait_rows.concat(target_rows)
+    }
+
+    fn named_impl_ref(f: FileId, names: NameFacts, d: DeclId, trait_name: string) -> Ref? {
+        let target? = names.names.type_decl(trait_name) else { return null }
+        Ref { decl: target, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read }
+    }
+
+    /// One expression's own use, if it names a declaration — zero or
+    /// one row: a `Call`'s callee and a `MethodCall`'s method are
+    /// NAME fields, not nested expressions, so one expression id
+    /// never contributes twice.
+    fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: NodeStore, e: ExprId) -> List<
+        Ref,
+    > {
+        match store.expr(e) {
+            .Call(_, _, _) -> some_list(self.use_of(f, names, e, UseKind.Call)),
+            .MethodCall(subject, name, _) -> some_list(self.method_ref(f, facts, store, e, subject, name.of)),
+            .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
+            .Component(word, _, _, _, _) -> some_list(self.component_ref(f, names, e, word)),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Named(_, _) or .Error -> some_list(self.use_of(f, names, e, UseKind.Read)),
+        }
+    }
+
+    /// An expression's own binding, when it names a DECLARATION —
+    /// null for a local (a param, a `mut`, a capture) and for an
+    /// expression naming nothing.
+    fn use_of(f: FileId, names: NameFacts, e: ExprId, kind: UseKind) -> Ref? {
+        let d? = bound_decl_of(names, e) else { return null }
+        expr_use(d, f, e, kind)
+    }
+
+    /// A method call's own target, read off the ALREADY-SETTLED
+    /// method table (`Decls.methods_of`) — the subject's STATIC type
+    /// names its declaring type, and the call's own name picks the
+    /// member. `folded(f)` (`file_refs`'s own caller) already forced
+    /// this file's typing, which forced every type it calls a method
+    /// on to be signed; `self.methods(target)` (the QUERY, not the
+    /// table) would re-walk that type's whole impl closure per call
+    /// site even on a cache hit — the table read never does.
+    fn method_ref(
+        f: FileId,
+        facts: TypeFacts,
+        store: NodeStore,
+        e: ExprId,
+        subject: ExprId,
+        name: string,
+    ) -> Ref? {
+        let target? = declaring_decl(self.decls.types.shape_of(facts.type_at(subject))) else { return null }
+        let m? = self.decls.methods_of(target).find((d: DeclId) -> self.decls.decl(d).name == name) else { return null }
+        Ref { decl: m, file: f, at: At.Expr(e), kind: UseKind.MethodCall }
+    }
+
+    /// A struct literal's own construction: its NAME spells a type
+    /// directly, resolved through the file's namespace — the one
+    /// construction site a name-use scan alone cannot see, since a
+    /// literal's name is a text field, never a nested expression.
+    fn named_type_ref(f: FileId, names: NameFacts, e: ExprId, name: Nominal) -> Ref? {
+        self.type_name_ref(f, names, e, name.of)
+    }
+
+    /// An instance's own WORD (`within deadline { }`, `get "/p" { }`):
+    /// `Expr.Component`'s component is a plain string, never a nested
+    /// expression a name-use scan would see on its own — a component
+    /// declares a `DeclKind.Record` (`declared_kind`, core/parts.av),
+    /// resolved through the same TYPE namespace a struct literal's
+    /// name is.
+    fn component_ref(f: FileId, names: NameFacts, e: ExprId, word: string) -> Ref? {
+        self.type_name_ref(f, names, e, word)
+    }
+
+    /// A type name read directly off a text field, never a nested
+    /// expression — `named_type_ref` and `component_ref`'s one door.
+    fn type_name_ref(f: FileId, names: NameFacts, e: ExprId, name: string) -> Ref? {
+        let d? = names.names.type_decl(name) else { return null }
+        Ref { decl: d, file: f, at: At.Expr(e), kind: UseKind.Read }
+    }
+
+    /// A statement's own assignment target, when its place is rooted
+    /// in a declaration — rare (a declaration is almost never a
+    /// writable place), kept for the relation's own symmetry.
+    fn write_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+        let t? = store.assign_target(s) else { return [] }
+        let root? = store.place_root(t) else { return [] }
+        some_list(self.use_of(f, names, root, UseKind.Write))
+    }
+
+    /// Every written type on this statement's own signature, one row
+    /// per declaration it names — the statement is the site, since a
+    /// type has no expression id of its own to point at.
+    fn type_use_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+        let tparams = store.decl_tparams(s)
+        flatten(
+            [[Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.TypeUse } for d in type_use_decls(names, tparams, t)] for t in store.type_roots(s)],
+        )
+    }
+
+    /// Every mark this statement's members carry, read where a fn
+    /// answers to that word — the statement is the site, a mark
+    /// having no expression id either. A mark is a free name: most
+    /// match no fn at all and answer no row, exactly as a mark
+    /// nothing claims still parses.
+    fn mark_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+        flatten([some_list(self.mark_ref(f, names, s, m)) for m in store.marks_written(s)])
+    }
+
+    fn mark_ref(f: FileId, names: NameFacts, s: StmtId, m: Mark) -> Ref? {
+        let d? = names.names.fn_decl(m.name) else { return null }
+        Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.Read }
+    }
+
+    /// Every `use` line's own imports, one row per item — the site is
+    /// the `use` STATEMENT: several items on one line share it, since
+    /// no finer position exists yet for an import specifier.
+    fn import_refs(f: FileId) -> List<Ref> {
+        let p = self.parsed(f)
+        flatten([self.one_use_refs(f, p, u) for u in use_lines(p)])
+    }
+
+    fn one_use_refs(f: FileId, p: Parsed, u: UseParts) -> List<Ref> {
+        [Ref { decl: i.decl, file: f, at: At.Stmt(u.stmt), kind: UseKind.Import } for i in self.imported_line(p, u).imports]
+    }
+}
+
+/// A written type's own declarations — recursing through its
+/// arguments and its `or` alternatives, so `List<Foo>`, `Map<string,
+/// Foo>` and `fn(Foo) -> Bar` are seen the way a bare `Foo` is.
+/// Resolved through the file's namespace alone, as `named_type_ref`
+/// resolves a struct literal's name — never a second resolver.
+fn type_use_decls(names: NameFacts, tparams: List<string>, t: TypeRef) -> List<DeclId> {
+    let here = if t.name.is_empty() || tparams.contains(t.name) { [] } else { some_list(names.names.type_decl(t.name)) }
+    here
+        .concat(flatten([type_use_decls(names, tparams, a) for a in t.args]))
+        .concat(flatten([type_use_decls(names, tparams, a) for a in t.alternatives]))
+}
+
+/// One row's own fingerprint — what the pass settles the whole
+/// relation's answer on.
+fn ref_fp(r: Ref) -> int {
+    fp(42, [r.decl.index, r.file.index, kind_ord(r.kind)])
+}
+
+fn kind_ord(k: UseKind) -> int {
+    match k { .Call -> 0, .MethodCall -> 1, .Read -> 2, .Write -> 3, .Import -> 4, .TypeUse -> 5 }
+}
+
+/// A quote's own span, as written — none for any other expression.
+fn quote_span(store: NodeStore, e: ExprId) -> List<Span> {
+    let body? = store.expr(e).body_of() else { return [] }
+    match body.view {
+        .Verbatim(_, _) -> some_list(store.expr_span(e)),
+        .None or .Expanded(_) -> [],
+    }
+}
+
+/// Whether an expression is written inside one of the quote spans —
+/// never the quote itself.
+fn spanned_in(store: NodeStore, e: ExprId, quotes: List<Span>) -> bool {
+    let sp? = store.expr_span(e) else { return false }
+    !store.spanned_elsewhere(e) && quotes.any((q: Span) -> q.lo < sp.lo && sp.hi <= q.hi)
+}
+
+/// One expression's use of a declaration.
+fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl: d, file: f, at: At.Expr(e), kind: kind } }

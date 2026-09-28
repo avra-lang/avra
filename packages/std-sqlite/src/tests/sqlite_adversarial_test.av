@@ -5,7 +5,18 @@
 // null), and a borrowed immortal `const char*` survives every retain
 // path only because `hdr` refuses a header without its tag.
 use @std.text.{from_codepoint, from_codepoints}
-use @std.sqlite.{version, compiled_with, compile_options, is_complete, describe, is_keyword, like, glob, equal_nocase, keyword_count}
+use @std.sqlite.{
+    version,
+    compiled_with,
+    compile_options,
+    is_complete,
+    describe,
+    is_keyword,
+    like,
+    glob,
+    equal_nocase,
+    keyword_count,
+}
 use @std.sqlite.c.{sqlite3_keyword_check, sqlite3_stricmp, sqlite3_complete}
 use @std.sqlite.error.{SqlError}
 
@@ -54,10 +65,7 @@ fn adv_complete_says(sql: string) -> bool { is_complete(sql) catch false }
 
 /// The kind the face refuses a text with, or the word for an answer.
 fn complete_kind(sql: string) -> string {
-    match is_complete(sql) {
-        .Ok(_) -> "ANSWERED",
-        .Err(e) -> e.cause.kind(),
-    }
+    match is_complete(sql) { .Ok(_) -> "ANSWERED", .Err(e) -> e.cause.kind() }
 }
 
 /// The WALL's own answer, unguarded — this is C's behaviour and the
@@ -86,14 +94,14 @@ spec "std/sqlite adversarial" {
         then "the walk ends where the library says, not at a guess" { compile_options().length < 200 }
         then "no option in the list is empty text" { [o for o in compile_options() if o.is_empty()].length == 0 }
     }
-
     given "a borrowed pointer SQLite owns and never frees" {
+
         then "it survives a list, a struct field, a fn seat and a concat" { retained().length == 4 }
         then "and every one of them still reads as the version" { [s for s in retained() if s.starts_with("3.53.4")].length == 4 }
         then "its length comes out right without a header" { version().length == 6 }
     }
-
     given "empty text at every door — the empty case written first" {
+
         then "empty SQL is not a complete statement" { !adv_complete_says("") }
         then "empty text is not a keyword" { !is_keyword("") }
         then "an empty option name is not carried" { !held(compiled_with("")) }
@@ -102,8 +110,8 @@ spec "std/sqlite adversarial" {
         then "GLOB of empty against empty matches" { held(glob("", "")) }
         then "NOCASE holds two empties equal" { held(equal_nocase("", "")) }
     }
-
     given "a `const char*` seat that CARRIES a length" {
+
         // `select\0x` is eight bytes. Passing the honest length puts
         // the NUL inside the compared region, so the wall judges all
         // eight — which is why the face never passes -1 and never
@@ -114,8 +122,8 @@ spec "std/sqlite adversarial" {
         then "a lone NUL is one byte to us" { from_codepoint(0).length == 1 }
         then "and one byte to the wall too, so it is no keyword" { !is_keyword(from_codepoint(0)) }
     }
-
     given "a `const char*` seat with NO length — the language refuses the crossing" {
+
         // THE WALL'S HALF OF THE NUL LAW, AND WHAT BECAME OF IT. Avra's
         // string carries its length; C's ends at the first NUL, so a
         // seat with no companion length read the C half and a longer
@@ -140,15 +148,15 @@ spec "std/sqlite adversarial" {
         then "though Avra still sees every byte of it" { "select 1;${from_codepoint(0)} select".length == 17 }
         then "and the two Avra strings the wall could not tell apart are still different lengths" { "DQS=0${from_codepoint(0)}x".length != "DQS=0".length }
     }
-
     given "codes and options nobody promised" {
+
         then "a negative result code still answers text" { describe(0 - 1) == "unknown error" }
         then "a huge result code still answers text" { describe(2147483647).length > 0 }
         then "an option name that is a prefix of a real one is not carried" { !held(compiled_with("ENABLE_FTS")) }
         then "the keyword count is a real count, not a sentinel" { keyword_count() > 100 && keyword_count() < 1000 }
     }
-
     given "a C `int` read at its own width" {
+
         // THESE CASES USED TO PIN A LIE. C writes 32 bits and neither
         // ABI promises the half above, so a declared `int` read
         // `sqlite3_stricmp("a","b")` — which is -1 — as 4294967295, and
@@ -167,8 +175,8 @@ spec "std/sqlite adversarial" {
         then "so ordering by the wall's own answer is right now" { sqlite3_stricmp("a", "b") < sqlite3_stricmp("b", "a") }
         then "and the face's equality is unaffected either way" { held(equal_nocase("Ada", "aDA")) && !held(equal_nocase("a", "b")) }
     }
-
     given "an IMMORTAL borrowed pointer, measured rather than cited" {
+
         // The four `-> string` declarations are permitted only because
         // the text is static for the life of the process. That is read
         // in the amalgamation, and it is ASSERTED here: an Avra `string`
@@ -180,8 +188,8 @@ spec "std/sqlite adversarial" {
         then "different codes still answer differently" { describe(5) != describe(7) }
         then "the version survives the same traffic" { version_survives() }
     }
-
     given "the three verbs that stopped at a NUL — their trigger fired" {
+
         // `strlike`, `strglob` and `stricmp` are C string calls with no
         // length, so C would end both arguments at the first NUL and
         // answer about a PREFIX. THE TRIGGER RECORDED HERE HAS FIRED —
@@ -198,8 +206,8 @@ spec "std/sqlite adversarial" {
         then "GLOB does the same" { guard_kind(glob("ab", "ab${from_codepoint(0)}cd")) == "sqlite.holds_nul" }
         then "and all three are honest about text with no NUL in it" { held(equal_nocase("abcd", "abcd")) && !held(equal_nocase("abcd", "ab")) }
     }
-
     given "patterns that make the operators work" {
+
         then "LIKE takes _ as one character" { held(like("a_c", "abc")) }
         then "LIKE's _ is one, not many" { !held(like("a_c", "abbc")) }
         then "GLOB takes ? as one character" { held(glob("a?c", "abc")) }

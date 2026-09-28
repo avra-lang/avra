@@ -29,8 +29,21 @@
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
 use core.{flatten, PayloadRow, node_payload_rows}
 use @std.meta.{Field}
-use grammar.{Diagnostic, Ready, ready, node_builder_name}
-use features.{LanguageFeature, BuilderRow, compose_grammar, builder_defects, builder_index, code_defects, LanguageRows, Dispatch, bind_nodes, node_builders}
+use @std.grammar.{Diagnostic, Ready, ready, node_builder_name}
+use grammar.{avra_known_terminals}
+use features.{
+    LanguageFeature,
+    BuilderRow,
+    compose_grammar,
+    builder_defects,
+    builder_index,
+    code_defects,
+    LanguageRows,
+    Dispatch,
+    bind_nodes,
+    node_builders,
+    BlockWords,
+}
 use diagnostics.{Diag, DiagCode, new_source_file}
 use features.type_expr.{type_expr}
 use features.stmt_spine.{stmt_spine}
@@ -67,6 +80,7 @@ use features.modules.{modules}
 use features.specs.{specs}
 use features.str_lit.{str_lit}
 use features.bytes.{bytes}
+use features.collects.{collects}
 
 /// A feature set assembled once: composed, parsed, merged, and gated
 /// on grammar + builder coherence. `grammar` is null when assembly
@@ -98,11 +112,21 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     // PREPARED ONCE: validated and indexed here, so a parse pays for
     // neither — and the defects the assembly gates on ARE that
     // validation, asked a single time.
-    let rd = ready(bound.g)
+    let rd = ready(bound.g, avra_known_terminals())
     let codes = code_registry(features)
-    let defects = flatten([rd.defects, bound.defects, builder_defects(features, g), code_defects(codes)])
+    let defects = flatten(
+        [rd.defects, bound.defects, builder_defects(features, g), code_defects(codes)],
+    )
     if !defects.is_empty() { return unassembled(features, defects) }
-    Language { features: features, builders: with_nodes(builder_index(features), rows), syntax: rd, keywords: g.keywords(), rows: rows_of(features, codes), dispatch: new_dispatch(), diagnostics: [] }
+    Language {
+        features: features,
+        builders: with_nodes(builder_index(features), rows),
+        syntax: rd,
+        keywords: g.keywords(),
+        rows: rows_of(features, codes),
+        dispatch: new_dispatch(),
+        diagnostics: [],
+    }
 }
 
 /// The feature builders, plus one per node variant a rule may name.
@@ -124,8 +148,10 @@ fn payloads_for(rows: List<PayloadRow>, name: string) -> List<Field> {
 /// The language's registries, gathered once from its features.
 fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRows {
     LanguageRows {
-        methods: flatten([f.methods for f in features]), types: flatten([f.types for f in features]),
-        properties: flatten([f.properties for f in features]), codes: codes,
+        methods: flatten([f.methods for f in features]),
+        types: flatten([f.types for f in features]),
+        properties: flatten([f.properties for f in features]),
+        codes: codes,
         remedies: flatten([f.remedies for f in features]),
     }
 }
@@ -133,11 +159,19 @@ fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRo
 /// Assembly refused: the defects, projected, are the language's
 /// diagnostics.
 fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
-    Language { features: features, builders: {}, syntax: null, keywords: [], rows: rows_of(features, []), dispatch: new_dispatch(), diagnostics: as_defects(defects) }
+    Language {
+        features: features,
+        builders: {},
+        syntax: null,
+        keywords: [],
+        rows: rows_of(features, []),
+        dispatch: new_dispatch(),
+        diagnostics: as_defects(defects),
+    }
 }
 
 /// Built-in codes plus every feature's registered codes, in feature
-/// order — the registry `avra explain` walks.
+/// order — the registry `avra docs` walks.
 fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
     flatten([builtin_codes].concat([f.diags for f in features]))
 }
@@ -146,60 +180,103 @@ fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
 /// feature order is branch order is the language.
 export fn language_features() -> List<LanguageFeature> {
     [
-        stmt_spine(),   // a program IS statements — and the START rule
-        closures(),     // `fn(int) -> bool` types and `(x: int) -> e`
-        tasks(),        // `spawn e` and `Task<T>` — keyword-anchored
-                        // lambdas — BOTH keyword/paren-anchored, so they
-                        // merge before type_expr's bare NAME and before
-                        // the paren group in the primary ladder
-        type_expr(),    // `int`, `int?` — the surface annotations share
-        block(),        // { statements… value } — braces, defined once
-        annotations(),  // `@name(args)` above a declaration: the compiler's call over it
-        modules(),      // `use a.b.{x}` and the `export` prefix
-        specs(),        // `spec "…" { given "…" { then "…" { … } } }` — keyword-anchored
+        stmt_spine(),
+        // a program IS statements — and the START rule
+        closures(),
+        // `fn(int) -> bool` types and `(x: int) -> e`
+        tasks(),
+        // `spawn e` and `Task<T>` — keyword-anchored
+        components(),
+        // `component N(h) { … }` declares; an imported component's
+        // word opens its instance — anchored on the word's own token
+        // kind, so it merges before every NAME-headed branch
+        // lambdas — BOTH keyword/paren-anchored, so they
+        // merge before type_expr's bare NAME and before
+        // the paren group in the primary ladder
+        type_expr(),
+        // `int`, `int?` — the surface annotations share
+        block(),
+        // { statements… value } — braces, defined once
+        annotations(),
+        // `@name(args)` above a declaration: the compiler's call over it
+        modules(),
+        // `use a.b.{x}` and the `export` prefix
+        specs(),
+        // `spec "…" { given "…" { then "…" { … } } }` — keyword-anchored
+        collects(),
+        // `collect name: List<T> = kind in scope as Ty { … } by …` —
+        // keyword-anchored; shares the "collect" word with the
+        // list feature's `collect { … }` expression, disambiguated
+        // by the NAME that must follow (never recovers, so a miss
+        // falls through to that floor)
         let_stmt(),
-        consts(),      // `const NAME = v` — settled by the compiler,
-                       // so a use is the value and never a load     // `let` names a value
-        impls(),        // `impl Target { … }`, `trait`, `mut fn`, and the
-                        // `self` primary — keyword-anchored; BEFORE
-                        // mutation, whose recovering `mut` statement
-                        // would otherwise swallow `mut fn`
-        mutation(),     // `mut` declares; `name = e` reassigns
-        loops(),        // `while c { statements }`
-        bool_lit(),     // `true` and `false`
-        quote_lit(),    // `quote { … }` — generated source as a `Code` value
-        sublang(),      // `syntax w { … }` declares a sublanguage; `w { … }` is its block
-        if_expr(),      // `if c { a } else { b }`, an expression
-        when_expr(),    // `when { c -> a, ..., _ -> d }`, total
-        structs(),      // `type N = { f: t = d }`; literals BEFORE the bare NAME
-        components(),   // `component N { config { … } }` and `component N inst { … }`
-        nullable(),     // `null`, `a ?? b`, `v!`, and `match v { b? -> }`
-                        // — its `match` arms are MORE SPECIFIC than an
-                        // enum's, and enums' branch @expects its `}`, so
-                        // this one must be tried first
-        formats(),      // a STRING in pattern position: `"{m} {p}"` binds
-                        // its holes — it owns that parse, so it merges
-                        // BEFORE enums, whose pattern ladder is otherwise
-                        // unchanged
-        enums(),        // `enum N { A B }`; `match v { .A -> x }`, total
-        results(),      // `fail` raises on the Result channel; keyword-
-                        // anchored, so it merges with the statements
-        defers(),       // `defer e` runs e when the scope ends, `errdefer e`
-                        // when the fn fails — keyword-anchored statements
-        fns(),          // `fn` declares a body; a call applies it — the
-                        // call branch is NAME-HEADED, so it lands AFTER
-                        // every keyword anchor: `if (c)` would otherwise
-                        // parse as a call to a fn named `if`
-        tables(),       // table<Row> { … } — a keyword anchor, before NAME
-        grammar_lit(),  // grammar """ … """ — a keyword anchor, before NAME
-        expr_spine(),   // literals, names, the operator ladder, postfix
-        lists(),        // [e, e, e] — the first aggregate
-        maps(),         // { "k": v } — string-keyed, insertion-ordered
-        bytes(),        // octets: `s.bytes()`, `b.text()`, the exact word between
-        cells(),        // Cell.new(v) — explicit shared interior mutation
-        str_lit(),      // "text"
-        expr_stmt(),    // the stmt FLOOR: a bare expression line, and it
-                        // RECOVERS — every keyword statement merges first
+        consts(),
+        // `const NAME = v` — settled by the compiler,
+        // so a use is the value and never a load     // `let` names a value
+        impls(),
+        // `impl Target { … }`, `trait`, `mut fn`, and the
+        // `self` primary — keyword-anchored; BEFORE
+        // mutation, whose recovering `mut` statement
+        // would otherwise swallow `mut fn`
+        mutation(),
+        // `mut` declares; `name = e` reassigns
+        loops(),
+        // `while c { statements }`
+        bool_lit(),
+        // `true` and `false`
+        quote_lit(),
+        // `quote { … }` — generated source as a `Code` value
+        sublang(),
+        // `syntax w { … }` declares a sublanguage; `w { … }` is its block
+        if_expr(),
+        // `if c { a } else { b }`, an expression
+        when_expr(),
+        // `when { c -> a, ..., _ -> d }`, total
+        lists(),
+        // [e, e, e] — the first aggregate; `collect { … }` is a
+        // keyword anchor, before a struct literal's NAME `{`
+        structs(),
+        // `type N = { f: t = d }`; literals BEFORE the bare NAME
+        nullable(),
+        // `null`, `a ?? b`, `v!`, and `match v { b? -> }`
+        // — its `match` arms are MORE SPECIFIC than an
+        // enum's, and enums' branch @expects its `}`, so
+        // this one must be tried first
+        formats(),
+        // a STRING in pattern position: `"{m} {p}"` binds
+        // its holes — it owns that parse, so it merges
+        // BEFORE enums, whose pattern ladder is otherwise
+        // unchanged
+        enums(),
+        // `enum N { A B }`; `match v { .A -> x }`, total
+        results(),
+        // `fail` raises on the Result channel; keyword-
+        // anchored, so it merges with the statements
+        defers(),
+        // `defer e` runs e when the scope ends, `errdefer e`
+        // when the fn fails — keyword-anchored statements
+        fns(),
+        // `fn` declares a body; a call applies it — the
+        // call branch is NAME-HEADED, so it lands AFTER
+        // every keyword anchor: `if (c)` would otherwise
+        // parse as a call to a fn named `if`
+        tables(),
+        // table<Row> { … } — a keyword anchor, before NAME
+        grammar_lit(),
+        // grammar """ … """ — a keyword anchor, before NAME
+        expr_spine(),
+        // literals, names, the operator ladder, postfix
+        maps(),
+        // { "k": v } — string-keyed, insertion-ordered
+        bytes(),
+        // octets: `s.bytes()`, `b.text()`, the exact word between
+        cells(),
+        // Cell.new(v) — explicit shared interior mutation
+        str_lit(),
+        // "text"
+        expr_stmt(),
+        // the stmt FLOOR: a bare expression line, and it
+        // RECOVERS — every keyword statement merges first
     ]
 }
 
@@ -211,9 +288,10 @@ export once fn avra() -> Language {
     assemble(language_features())
 }
 
-/// The canonical language over one nameless source.
+/// The canonical language over one nameless source — a lone source
+/// stands in no package, so it names no import: no block words.
 export fn parse_source(text: string) -> Parsed {
-    parse_program(avra(), new_source_file("<source>", text), [])
+    parse_program(avra(), new_source_file("<source>", text), BlockWords {})
 }
 
 /// The canonical language's whole pipeline over one nameless source.

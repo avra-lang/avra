@@ -1,0 +1,168 @@
+//! Running a Grammar's rules as a LEXICON: maximal munch, never the
+//! parser's ordered-choice-with-backtracking. A lexicon is NOT a
+//! second data model — every rule in an ordinary `Grammar` is a
+//! candidate token at every position, tried against the SAME
+//! `Rule`/`Alt`/`Seq`/`Item`/`Prim`/`Rep` shapes the parser runs.
+//! `Ref`/`Group`/`Lit` compose a token pattern exactly the way they
+//! compose a parse rule; `NotChar` is the only vocabulary a lexicon
+//! needs that a parser does not — negation over an open character set
+//! has no finite-alternation equivalent, so it earns its own
+//! primitive; everything else (a character range, "any char", "scan
+//! until a closer") composes from `NotChar`/`Star`/`Ref` over an
+//! ordinary alternation, never a primitive of its own. Author a
+//! lexicon's rules with the SAME helpers `seed.av` already exports
+//! (`rule_def`, `seq`, `item`, `alt`, `lit`, `group`, `rule_ref`) —
+//! declare the shape, derive the scanner; nobody hand-writes a scan
+//! loop.
+//!
+//! Maximal munch applies at every level, not only across rules: among
+//! a single rule's own alternatives, the LONGEST branch wins, not the
+//! first — the parser's ordered-choice law is deliberately NOT reused
+//! here, because a lexicon's whole point is "longest match, always."
+
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
+use @std.errors.{Loc}
+
+export type LexToken = { kind: string, text: string, loc: Loc }
+export type LexResult = { tokens: List<LexToken>, errors: List<LexError> }
+export type LexError = { at: int, char: string }
+
+fn loc(lo: int, hi: int) -> Loc { Loc { file: null, lo: lo, hi: hi } }
+
+type RuleHit = { rule: string, end: int }
+
+/// Tokenize `source` against every rule in `g.rules`. `skip` names
+/// rules whose match is discarded rather than becoming a token
+/// (whitespace, comments) — a lexing-time decision, not a property of
+/// the Grammar value itself, so the same lexicon can be run once
+/// keeping comments (a formatter) and once discarding them (a parser
+/// feed) with no second declaration.
+export fn lex(g: Grammar, source: string, skip: List<string> = []) -> LexResult {
+    mut i = 0
+    mut tokens: List<LexToken> = []
+    mut errors: List<LexError> = []
+    while i < source.length {
+        let hit = longest_rule_match(g, source, i)
+        match hit {
+            m? -> {
+                if !skip.any(it == m.rule) {
+                    tokens
+                        .push(
+                            LexToken {
+                                kind: m.rule,
+                                text: source.substring(i, m.end),
+                                loc: loc(i, m.end),
+                            },
+                        )
+                }
+                i = m.end
+            }
+            null -> {
+                errors.push(LexError { at: i, char: source.substring(i, i + 1) })
+                i = i + 1
+            }
+        }
+    }
+    // The engine matches EOF as a position, not a token, but still
+    // expects one to exist at the end of the stream to ask about —
+    // `lex`'s own maximal-munch loop needs no such marker, only the
+    // parser running ON these tokens does.
+    tokens.push(LexToken { kind: "EOF", text: "", loc: loc(source.length, source.length) })
+    LexResult { tokens: tokens, errors: errors }
+}
+
+fn longest_rule_match(g: Grammar, s: string, at: int) -> RuleHit? {
+    mut best: RuleHit? = null
+    for r in g.rules {
+        let end = munch_alt(g, r.body, s, at)
+        best = match end {
+            pos? -> {
+                let candidate = RuleHit { rule: r.name, end: pos }
+                match best {
+                    b? -> if candidate.end > b.end { candidate } else { b }
+                    null -> candidate
+                }
+            }
+            null -> best
+        }
+    }
+    best
+}
+
+/// The longest any one branch of `a` reaches at `at`.
+fn munch_alt(g: Grammar, a: Alt, s: string, at: int) -> int? {
+    mut best: int? = null
+    for branch in a.branches {
+        let end = munch_seq(g, branch, s, at)
+        best = match end {
+            pos? -> match best {
+                b? -> if pos > b { pos } else { b }
+                null -> pos
+            }
+            null -> best
+        }
+    }
+    best
+}
+
+fn munch_seq(g: Grammar, sq: Seq, s: string, at: int) -> int? {
+    mut pos = at
+    for member in sq.items {
+        let next? = munch_item(g, member, s, pos) else { return null }
+        pos = next
+    }
+    pos
+}
+
+fn munch_item(g: Grammar, member: Item, s: string, at: int) -> int? {
+    match member.rep {
+        .One -> munch_prim(g, member.prim, s, at),
+        .Opt -> munch_prim(g, member.prim, s, at) ?? at,
+        .Star -> munch_repeat(g, member.prim, s, at),
+        .Plus -> {
+            let first? = munch_prim(g, member.prim, s, at) else { return null }
+            munch_repeat(g, member.prim, s, first)
+        },
+    }
+}
+
+fn munch_repeat(g: Grammar, p: Prim, s: string, at: int) -> int {
+    mut pos = at
+    while true {
+        let next = munch_prim(g, p, s, pos)
+        if next == null || next == pos { return pos }
+        pos = next!
+    }
+    pos
+}
+
+/// One primitive's match. `Group`/`Ref` widen to `munch_alt`'s own
+/// longest-branch answer, never the parser's first-match-wins —
+/// maximal munch has to hold all the way down, or a rule built from a
+/// `Group` would silently stop being maximal-munch partway through.
+fn munch_prim(g: Grammar, p: Prim, s: string, at: int) -> int? {
+    match p {
+        .Lit(text) -> munch_lit(text, s, at),
+        .NotChar(inner) -> munch_not(g, inner, s, at),
+        .Group(inner) -> munch_alt(g, inner, s, at),
+        .Ref(name) -> munch_rule_named(g, name, s, at),
+        .Named(_) -> null,
+    }
+}
+
+fn munch_lit(text: string, s: string, at: int) -> int? {
+    let n = text.length
+    if at + n <= s.length && s.substring(at, at + n) == text { at + n } else { null }
+}
+
+fn munch_not(g: Grammar, inner: Prim, s: string, at: int) -> int? {
+    if at >= s.length { return null }
+    if munch_prim(g, inner, s, at) != null { return null }
+    at + 1
+}
+
+fn munch_rule_named(g: Grammar, name: string, s: string, at: int) -> int? {
+    let r? = g.rules.find(it.name == name) else { return null }
+    munch_alt(g, r.body, s, at)
+}
+

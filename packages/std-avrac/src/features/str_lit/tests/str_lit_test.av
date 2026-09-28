@@ -15,14 +15,15 @@ spec "features/str_lit" {
     given "a string in a program" {
         then "it parses, types as string, and nothing is wrong" {
             let a = analyze_source("let s = \"hi\"\ns")
-            a.clean() && a.type_name(value_of(a, 0)) == "string" &&
+            a.clean() &&
+                a.type_name(value_of(a, 0)) == "string" &&
                 a.type_name(value_of(a, 1)) == "string"
         }
     }
     given "a string fed to arithmetic" {
         then "the mismatch names the operator, the type, and the place" {
             let lang = avra()
-            let expected = """error[F2000]: `+` needs `int` operands, found `string`
+            let expected = """error[type.mismatch]: `+` needs `int` operands, found `string`
   ╭─[app.av:1:13]
 1 │ let x = 1 + "a"
   ·             ┬
@@ -56,7 +57,9 @@ spec "features/str_lit" {
         then "a list hole refuses with the remedy" {
             let a = analyze_source("let xs = [1]\n\"\${xs}\"")
             a.diagnostics.length == 1 &&
-                a.report().contains("an interpolation hole prints as a scalar or string, found `List<int>`")
+                a
+                    .report()
+                    .contains("an interpolation hole prints as a scalar or string, found `List<int>`")
         }
     }
     given "string length" {
@@ -80,13 +83,34 @@ spec "features/str_lit" {
     }
     given "the vocabulary" {
         then "the scans" {
-            shown("let s = \"hello world\"\n\"" + "\${s.contains(\"lo w\")} " + "\${s.starts_with(\"hell\")} " + "\${s.ends_with(\"d\")} " + "\${s.index_of(\"o\")} " + "\${s.index_of(\"z\")}\"") == "true true true 4 -1"
+            shown(
+                "let s = \"hello world\"\n\"" +
+                    "\${s.contains(\"lo w\")} " +
+                    "\${s.starts_with(\"hell\")} " +
+                    "\${s.ends_with(\"d\")} " +
+                    "\${s.index_of(\"o\")} " +
+                    "\${s.index_of(\"z\")}\"",
+            ) == "true true true 4 -1"
         }
         then "substring clamps and answers empty past its bounds" {
-            shown("let s = \"hello\"\n\"" + "\${s.substring(1, 3)}|" + "\${s.substring(3, 99)}|" + "\${s.substring(4, 2)}|\"") == "el|lo||"
+            shown(
+                "let s = \"hello\"\n\"" +
+                    "\${s.substring(1, 3)}|" +
+                    "\${s.substring(3, 99)}|" +
+                    "\${s.substring(4, 2)}|\"",
+            ) == "el|lo||"
         }
         then "split keeps a leading empty piece, drops one trailing, and splits nothing from empty text" {
-            shown("let a = \"a.b\".split(\".\")\nlet b = \".a\".split(\".\")\nlet c = \"a.\".split(\".\")\n\"" + "\${a.join(\"|\")} " + "\${a.length} " + "\${b.join(\"|\")} " + "\${b.length} " + "\${c.join(\"|\")} " + "\${c.length} " + "\${\"\".split(\".\").length}\"") == "a|b 2 |a 2 a 1 0"
+            shown(
+                "let a = \"a.b\".split(\".\")\nlet b = \".a\".split(\".\")\nlet c = \"a.\".split(\".\")\n\"" +
+                    "\${a.join(\"|\")} " +
+                    "\${a.length} " +
+                    "\${b.join(\"|\")} " +
+                    "\${b.length} " +
+                    "\${c.join(\"|\")} " +
+                    "\${c.length} " +
+                    "\${\"\".split(\".\").length}\"",
+            ) == "a|b 2 |a 2 a 1 0"
         }
         then "replace changes every occurrence" {
             shown("\"a/b/c\".replace(\"/\", \".\")") == "a.b.c"
@@ -95,12 +119,20 @@ spec "features/str_lit" {
             shown("let s = \"hello\"\n\"" + "\${s.char_code()} " + "\${s.char_code(1)}\"") == "104 101"
         }
         then "trim strips surrounding blanks, and an empty `from` replaces nothing" {
-            shown("\"" + "\${\"  x y \".trim()}|" + "\${\"ab\".replace(\"\", \"-\")}|" + "\${\"a..b\".replace(\".\", \"\")}\"") == "x y|ab|ab"
+            shown(
+                "\"" +
+                    "\${\"  x y \".trim()}|" +
+                    "\${\"ab\".replace(\"\", \"-\")}|" +
+                    "\${\"a..b\".replace(\".\", \"\")}\"",
+            ) == "x y|ab|ab"
         }
     }
     given "the vocabulary's laws" {
         then "a wrong argument speaks in the seat's words" {
-            refused_with("\"a\".substring(\"b\", 2)", "argument 1 of `substring` wants `int`, found `string`")
+            refused_with(
+                "\"a\".substring(\"b\", 2)",
+                "argument 1 of `substring` wants `int`, found `string`",
+            )
         }
         then "the count is the row's" {
             refused_with("\"a\".contains()", "`contains` takes 1 arguments, found 0")
@@ -111,7 +143,9 @@ spec "features/str_lit" {
     }
     given "is_empty — a string knows when it holds nothing" {
         then "empty and not, the same word a list answers" {
-            shown("let a = \"\"\nlet b = \"x\"\n\"\${a.is_empty()} \${b.is_empty()} \${\"ab\".substring(2, 2).is_empty()}\"") == "true false true"
+            shown(
+                "let a = \"\"\nlet b = \"x\"\n\"\${a.is_empty()} \${b.is_empty()} \${\"ab\".substring(2, 2).is_empty()}\"",
+            ) == "true false true"
         }
         then "it takes no argument" {
             refused_with("\"x\".is_empty(1)", "`is_empty` takes 0 arguments, found 1")

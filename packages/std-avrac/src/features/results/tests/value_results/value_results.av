@@ -1,0 +1,85 @@
+// A RESULT OF TWO ONE-WORD SIDES IS ITS TAG AND ONE WORD, in registers.
+// `?` and a selective `catch` hand a failure to the enclosing fn's own
+// Result: passed on as it stands where the two are laid out alike,
+// re-wrapped where one is a value and the other a box (a `Span` side
+// is two words, so its Result is boxed). Every seat a box used to be
+// holds one: a list, a record field, a map, a nullable, a Cell.
+type Span = { lo: int, hi: int }
+type Oops = { why: string, code: int }
+enum Kind { Bad(string), Worse(int) }
+
+fn parse(s: string) -> Result<int, string> {
+    if s == "" { fail "empty" }
+    s.length
+}
+
+fn wide(s: string) -> Result<Span, string> {
+    let n = parse(s)?
+    Span { lo: 0, hi: n }
+}
+
+fn back(s: string) -> Result<List<int>, string> {
+    let sp = wide(s)?
+    [sp.lo, sp.hi]
+}
+
+fn oops(n: int) -> Result<string, Oops> {
+    if n < 0 { fail Oops { why: "neg${n}", code: n } }
+    "ok${n}"
+}
+
+fn kinded(n: int) -> Result<int, Kind> {
+    if n == 1 { fail Kind.Bad("one") }
+    if n == 2 { fail Kind.Worse(2) }
+    n
+}
+
+fn selective(n: int) -> Result<Span, Kind> {
+    let v = kinded(n) catch .Worse(k) -> k * 100
+    Span { lo: v, hi: v }
+}
+
+fn shown<T>(r: Result<T, string>, f: fn(T) -> string) -> string {
+    match r { .Ok(v) -> f(v), .Err(e) -> "err:${e}" }
+}
+
+fn span_text(s: Span) -> string { "${s.lo}-${s.hi}" }
+fn list_text(xs: List<int>) -> string { "${xs.length}" }
+fn int_text(n: int) -> string { "${n}" }
+
+type Holder = { r: Result<int, string>, tag: string }
+
+mut out: List<string> = []
+out.push(shown(parse("abc"), int_text))
+out.push(shown(parse(""), int_text))
+out.push(shown(wide("ab"), span_text))
+out.push(shown(wide(""), span_text))
+out.push(shown(back("abcd"), list_text))
+out.push(shown(back(""), list_text))
+out.push(match oops(3) { .Ok(s) -> s, .Err(o) -> o.why })
+out.push(match oops(-2) { .Ok(s) -> s, .Err(o) -> "${o.why}/${o.code}" })
+out.push(match selective(2) { .Ok(s) -> span_text(s), .Err(k) -> "k" })
+out
+    .push(
+        match selective(1) {
+            .Ok(s) -> span_text(s),
+            .Err(k) -> match k { .Bad(w) -> w, .Worse(n) -> "${n}" },
+        },
+    )
+out.push(match selective(5) { .Ok(s) -> span_text(s), .Err(k) -> "k" })
+mut rs: List<Result<int, string>> = []
+for i in 0..4 { rs.push(parse(if i % 2 == 0 { "" } else { "x${i}" })) }
+out.push([shown(r, int_text) for r in rs].join(","))
+let h = Holder { r: parse("hello"), tag: "t" }
+out.push(shown(h.r, int_text))
+let m: Map<string, Result<int, string>> = {"a": parse(""), "b": parse("zz")}
+out.push(shown(m.get("a") ?? parse("q"), int_text))
+out.push(shown(m.get("b") ?? parse("q"), int_text))
+let maybe: Result<int, string>? = parse("xy")
+out.push(shown(maybe ?? parse(""), int_text))
+let none: Result<int, string>? = null
+out.push(shown(none ?? parse(""), int_text))
+let c = Cell.new(parse("abc"))
+c.set(parse(""))
+out.push(shown(c.get(), int_text))
+out.join(" | ")

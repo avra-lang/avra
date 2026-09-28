@@ -1,0 +1,103 @@
+//! A component's declaration: its record takes the record's laws — the
+//! naming law over its fields, each default a body of its own — and its
+//! methods walk as an impl's. Its own laws are its template's: `expand`
+//! answers the code an instance becomes, and a template reads each of
+//! its instance's fields once.
+use core.{StmtId, TypeId, ComponentParts}
+use features.{ResolveCx, TypeCx}
+use diagnostics.{Diag, refusal}
+use @std.errors.{Loc}
+
+fn resolve_component(mut cx: ResolveCx, s: StmtId) {
+    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
+    let c? = cx.view.store.component_parts(s) else { return }
+    cx.check_params(c.head.concat(c.fields), s)
+    for f in c.fields {
+        if f.default != null { cx.walk_under([], f.default!) }
+    }
+    cx.impl_stmts(c.fns)
+}
+
+fn check_component(mut cx: TypeCx, s: StmtId) {
+    let c? = cx.view.store.component_parts(s) else { return }
+    check_law(cx, c)
+    expand_law(cx, c)
+    format_law(cx, s, c)
+}
+
+/// A `check` takes nothing and answers `List<Diagnostic>` — what the
+/// compiler speaks at each instance.
+fn check_law(mut cx: TypeCx, c: ComponentParts) {
+    let m? = c.fns.find((f: StmtId) -> cx.view.store.fn_parts(f)?.name == "check") else { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, m) else { return }
+    let sig? = cx.view.decls.sig(d)?.fn_sig() else { return }
+    let elem: TypeId? = cx.view.types.element(sig.ret)
+    if sig.params.length <= 1 && elem != null && cx.view.decls.meta_type(elem!, "Diagnostic") { return }
+    cx.emit(no_diagnostics(cx.stmt_loc(m), cx.view.types.name_of(sig.ret)))
+}
+
+fn expand_law(mut cx: TypeCx, c: ComponentParts) {
+    let expand? = c.fns.find((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") else { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, expand) else { return }
+    let answer? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return }
+    if !cx.view.decls.meta_type(answer, "Code") && !cx.view.decls.meta_type(answer, "Decls") {
+        return cx.emit(no_code(cx.stmt_loc(expand), cx.view.types.name_of(answer)))
+    }
+    let parts? = expand_of(cx.view.store, c) else { return }
+    let body? = template_body(cx.view.store, parts) else { return }
+    let twice? = read_twice(cx.view.store, body, formats_of(c)) else { return }
+    cx.emit(read_again(cx.stmt_loc(expand), c.name, twice))
+}
+
+/// A head spelled `Format` is `@std.meta`'s pattern: the instance read
+/// the spelling, so the resolved type must agree.
+fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    let d? = cx.view.decls.decl_of(cx.view.file, s) else { return }
+    let sig? = cx.view.decls.sig(d)?.record_sig() else { return }
+    let formats = formats_of(c)
+    for j, n in sig.names {
+        if formats.contains(n) && !cx.view.decls.meta_type(sig.types[j], "Format") { cx.emit(foreign_format(cx.stmt_loc(s), n)) }
+    }
+}
+
+// ── voices ──
+
+fn no_diagnostics(at: Loc?, found: string) -> Diag {
+    refusal(
+        "type.component_check",
+        at,
+        "a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `${found}`",
+        "this `check`",
+        "`fn check() -> List<Diagnostic> { … }`, with `Diagnostic` from `@std.meta`",
+    )
+}
+
+fn no_code(at: Loc?, found: string) -> Diag {
+    refusal(
+        "type.component_expand",
+        at,
+        "`expand` answers the code an instance becomes — `Code`, or `Decls` for declarations — and this answers `${found}`",
+        "this `expand`",
+        "answer a template: `fn expand() -> Code { quote { … } }`",
+    )
+}
+
+fn read_again(at: Loc?, name: string, field: string) -> Diag {
+    refusal(
+        "type.component_twice",
+        at,
+        "the template of `${name}` reads `self.${field}` twice — an instance's code runs where the template writes it, once",
+        "this `expand`",
+        "bind it once — `let v = \${self.${field}}` — and read `v` after",
+    )
+}
+
+fn foreign_format(at: Loc?, field: string) -> Diag {
+    refusal(
+        "type.component_format",
+        at,
+        "a `Format` head is `@std.meta`'s pattern type, and `${field}`'s `Format` names another",
+        "this component",
+        "`use @std.meta.{Format}`, or rename the other type",
+    )
+}

@@ -1,0 +1,203 @@
+// ADVERSARIAL: node_grammar's shape law, attacked over `Field.kind`
+// rather than `Field.ty` (avra-9cbe/C2b) — every `Kind` arm
+// wanted_carrier/absence_is_a_value/texted answers, a named type
+// that is FREE at runtime (the one gap the crossing leaves — see
+// node_grammar.av's own note on `flat_named`), a nullable list
+// against a list of nullables, a forward-declared payload type, and
+// a Field whose spelling and kind DISAGREE — proving the DECISION
+// reads kind and the MESSAGE still reads the spelling the author
+// wrote.
+use @std.grammar.{Grammar, Diagnostic}
+use @std.avrac.grammar.{parse_grammar}
+use @std.avrac.features.{bind_nodes}
+use @std.avrac.core.{PayloadRow, Scoped, Grammar as GrammarDerive}
+use @std.meta.{derive, Field}
+
+/// A flat type node_grammar.av does NOT know — proves the gap is
+/// real, not merely theoretical.
+type Word = string
+
+/// A real, boxed record — a single field, but declared as a struct,
+/// so it rides a pointer and is never flattened (nodes.av's own
+/// `ExprId` is this same shape).
+type Held = { n: int }
+
+@derive(GrammarDerive)
+enum Shapes {
+    Scalar(n: int)
+    Wordy(w: Word)
+    ScopedName(s: Scoped)
+    Built(x: Held)
+    NullList(xs: List<Held>?)
+    ListNull(xs: List<Held?>)
+    Forward(x: Later)
+}
+
+/// Declared AFTER `Shapes`, which names it as a payload — the sig
+/// fix this rewrite depends on (avra-8sb5.11.115) is what makes this
+/// enum's `Kind` earned rather than `Unspelled` above.
+enum Later { A, B(n: int) }
+
+@derive(GrammarDerive)
+enum Odd {
+    Floaty(f: float)
+    Pointy(p: ptr)
+    Celled(c: Cell<int>)
+    Mapped(m: Map<string, int>)
+    Resulted(r: Result<int, string>)
+    Fnned(f: fn(int) -> int)
+    Dynned(d: dyn Shown)
+}
+
+trait Shown {
+    fn shown() -> string
+}
+
+@derive(GrammarDerive)
+enum Poly<T> { Of(t: T) }
+
+/// Shapes no declaration can produce — `Void` names no payload seat,
+/// and `Unspelled` only ever answers a type the crossing could not
+/// place — so these are hand-built, the same way `node_grammar_test`
+/// builds every one of its rows.
+fn exotic_rows() -> List<PayloadRow> {
+    [
+        PayloadRow {
+            owner: "X",
+            variant: "V",
+            payloads: [Field { name: "v", ty: "void", at: null, kind: .Void }],
+        },
+        PayloadRow {
+            owner: "X",
+            variant: "U",
+            payloads: [Field { name: "u", ty: "<error>", at: null, kind: .Unspelled("") }],
+        },
+    ]
+}
+
+/// A Field whose `ty` spelling and `kind` shape disagree — the write
+/// no `@derive` ever produces, and exactly the case that proves which
+/// one `node_grammar.av` actually reads.
+fn mismatched_rows() -> List<PayloadRow> {
+    [
+        PayloadRow {
+            owner: "M",
+            variant: "V",
+            payloads: [Field { name: "x", ty: "string", at: null, kind: .Named("Held", []) }],
+        },
+    ]
+}
+
+fn attack_grammar(src: string) -> Grammar {
+    parse_grammar(src).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+fn attack_defects(rows: List<PayloadRow>, src: string) -> List<Diagnostic> {
+    bind_nodes(attack_grammar(src), rows).defects
+}
+
+fn attack_clean(rows: List<PayloadRow>, src: string) -> bool {
+    attack_defects(rows, src).is_empty()
+}
+
+fn attack_refuses(rows: List<PayloadRow>, src: string, words: string) -> bool {
+    attack_defects(rows, src).any(it.message.contains(words))
+}
+
+spec "features/node_grammar — adversarial: Field.kind over Field.ty" {
+    given "a named type that is free at runtime" {
+        then "the compiler's own Scoped is known text — a bare token fills it" {
+            attack_clean(grammar_payloads_Shapes(), "r = s:NAME -> Shapes.ScopedName\n")
+        }
+        then "a rule reference is refused for Scoped, same law as a bare string" {
+            attack_refuses(
+                grammar_payloads_Shapes(),
+                "r = s:sub -> Shapes.ScopedName\nsub = NAME\n",
+                "a built node, and it holds a token's text",
+            )
+        }
+        then "a NEW flat type this file declares is NOT known text — a rule reference fills it cleanly" {
+            attack_clean(grammar_payloads_Shapes(), "r = w:sub -> Shapes.Wordy\nsub = NAME\n")
+        }
+        then "and a bare token is refused for it, unlike Scoped — the gap is real" {
+            attack_refuses(
+                grammar_payloads_Shapes(),
+                "r = w:NAME -> Shapes.Wordy\n",
+                "a token's text, and it holds a built node",
+            )
+        }
+    }
+    given "a forward-declared payload type" {
+
+        then "Later, declared after Shapes, still crosses as a real Named kind — a rule reference fills it" {
+            attack_clean(grammar_payloads_Shapes(), "r = x:sub -> Shapes.Forward\nsub = NAME\n")
+        }
+        then "and a bare token is refused, since a built type is expected" {
+            attack_refuses(
+                grammar_payloads_Shapes(),
+                "r = x:NAME -> Shapes.Forward\n",
+                "a token's text, and it holds a built node",
+            )
+        }
+    }
+    given "a nullable list against a list of nullables" {
+
+        then "a nullable list may go unnamed — its absence is null" {
+            attack_clean(grammar_payloads_Shapes(), "r = \"x\" -> Shapes.NullList\n")
+        }
+        then "a list of nullables may go unnamed too — its absence is the empty list" {
+            attack_clean(grammar_payloads_Shapes(), "r = \"x\" -> Shapes.ListNull\n")
+        }
+    }
+    given "a payload whose spelling and kind disagree" {
+
+        then "the DECISION reads kind — a built node fills it cleanly though ty says string" {
+            attack_clean(mismatched_rows(), "r = x:sub -> M.V\nsub = NAME\n")
+        }
+        then "a bare token is refused, because the kind is Built despite the string spelling" {
+            attack_refuses(
+                mismatched_rows(),
+                "r = x:NAME -> M.V\n",
+                "a token's text, and it holds a built node",
+            )
+        }
+        then "the MESSAGE still reads the spelling the author wrote, not the kind" {
+            attack_refuses(mismatched_rows(), "r = x:NAME -> M.V\n", "`x: string`")
+        }
+    }
+    given "kinds the node model has never asked node_grammar about" {
+
+        then "float defaults to a built node, not text" {
+            attack_clean(grammar_payloads_Odd(), "r = f:sub -> Odd.Floaty\nsub = NAME\n")
+        }
+        then "ptr defaults to a built node" {
+            attack_clean(grammar_payloads_Odd(), "r = p:sub -> Odd.Pointy\nsub = NAME\n")
+        }
+        then "a cell defaults to a built node" {
+            attack_clean(grammar_payloads_Odd(), "r = c:sub -> Odd.Celled\nsub = NAME\n")
+        }
+        then "a map defaults to a built node" {
+            attack_clean(grammar_payloads_Odd(), "r = m:sub -> Odd.Mapped\nsub = NAME\n")
+        }
+        then "a result defaults to a built node" {
+            attack_clean(grammar_payloads_Odd(), "r = r:sub -> Odd.Resulted\nsub = NAME\n")
+        }
+        then "a fn type defaults to a built node" {
+            attack_clean(grammar_payloads_Odd(), "r = f:sub -> Odd.Fnned\nsub = NAME\n")
+        }
+        then "dyn defaults to a built node" {
+            attack_clean(grammar_payloads_Odd(), "r = d:sub -> Odd.Dynned\nsub = NAME\n")
+        }
+        then "a generic declaration's own unpinned type parameter defaults to a built node" {
+            attack_clean(grammar_payloads_Poly(), "r = t:sub -> Poly.Of\nsub = NAME\n")
+        }
+        then "void defaults to a built node, and absence is never a value for it" {
+            attack_clean(exotic_rows(), "r = v:sub -> X.V\nsub = NAME\n") &&
+                attack_refuses(exotic_rows(), "r = \"x\" -> X.V\n", "nothing fills")
+        }
+        then "unspelled defaults to a built node, and absence is never a value for it either" {
+            attack_clean(exotic_rows(), "r = u:sub -> X.U\nsub = NAME\n") &&
+                attack_refuses(exotic_rows(), "r = \"x\" -> X.U\n", "nothing fills")
+        }
+    }
+}

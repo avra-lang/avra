@@ -4,18 +4,15 @@
 //! literal's own laws judge each cell and the list's law the rows.
 //! No node, no rule of its own — a builder.
 use features.{LanguageFeature, BuilderRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 export fn tables() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name        | build
         "table_lit" | build_table
         "table_row" | build_row
     }
-    component LanguageFeature f {
-        name = "tables"
-        docs = "`table<Row> { a | b \\n x | y }` — a list of `Row` literals, the header naming the fields, one row per line."
-        gram = grammar {
+    LanguageFeature tables {
+        gram: grammar {
             primary = "table" "<" t:NAME ">" "{" BREAK h:NAME ( "|" h:NAME )* BREAK ( r:table_row BREAK )* "}" @expect("}", "expected `}` to close the table, or a cell that stopped early — a cell is a value up to `+`, so `==`, `??` and the bitwise operators need parentheses") -> table_lit(t, h, r)
             // A CELL PARSES BELOW THE BITWISE BAND. `|` is this
             // literal's column separator, so a cell that could
@@ -26,7 +23,7 @@ export fn tables() -> LanguageFeature {
             // grammar parenthesises — `primary` takes `( … )`.
             table_row = c:additive ( "|" c:additive )* -> table_row(c)
         }
-        builders = rows
+        builders: rows
     }
-    f
+    tables
 }

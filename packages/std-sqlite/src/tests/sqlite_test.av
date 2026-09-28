@@ -2,7 +2,23 @@
 // it was compiled with, and the SQL-text judgements that need no
 // connection. Every case here runs against the amalgamation in
 // vendor/, never against the system library.
-use @std.sqlite.{version, version_number, source_id, compiled_with, compile_options, threadsafe, is_complete, describe, keyword_count, is_keyword, like, glob, equal_nocase, memory_used, memory_highwater}
+use @std.sqlite.{
+    version,
+    version_number,
+    source_id,
+    compiled_with,
+    compile_options,
+    threadsafe,
+    is_complete,
+    describe,
+    keyword_count,
+    is_keyword,
+    like,
+    glob,
+    equal_nocase,
+    memory_used,
+    memory_highwater,
+}
 use @std.sqlite.c.{sqlite3_free}
 
 /// The flags `vendor/FLAGS.md` promises, spelled as
@@ -11,16 +27,35 @@ use @std.sqlite.c.{sqlite3_free}
 /// answer.
 fn promised() -> List<string> {
     [
-        "ENABLE_COLUMN_METADATA", "ENABLE_PREUPDATE_HOOK", "ENABLE_SESSION",
-        "ENABLE_SNAPSHOT", "ENABLE_NORMALIZE", "ENABLE_STMT_SCANSTATUS",
-        "ENABLE_UNLOCK_NOTIFY", "ENABLE_FTS5", "ENABLE_RTREE", "ENABLE_GEOPOLY",
-        "ENABLE_MATH_FUNCTIONS", "ENABLE_DBSTAT_VTAB", "ENABLE_DBPAGE_VTAB",
-        "ENABLE_BYTECODE_VTAB", "ENABLE_STAT4", "ENABLE_EXPLAIN_COMMENTS",
-        "ENABLE_OFFSET_SQL_FUNC", "ENABLE_API_ARMOR", "LIKE_DOESNT_MATCH_BLOBS",
-        "STRICT_SUBTYPE", "DEFAULT_FOREIGN_KEYS", "DQS=0",
-        "THREADSAFE=1", "MAX_EXPR_DEPTH=1000", "DEFAULT_MEMSTATUS=0",
-        "DEFAULT_WAL_SYNCHRONOUS=1", "DEFAULT_MMAP_SIZE=268435456",
-        "MAX_MMAP_SIZE=1099511627776", "DEFAULT_CACHE_SIZE=-8000",
+        "ENABLE_COLUMN_METADATA",
+        "ENABLE_PREUPDATE_HOOK",
+        "ENABLE_SESSION",
+        "ENABLE_SNAPSHOT",
+        "ENABLE_NORMALIZE",
+        "ENABLE_STMT_SCANSTATUS",
+        "ENABLE_UNLOCK_NOTIFY",
+        "ENABLE_FTS5",
+        "ENABLE_RTREE",
+        "ENABLE_GEOPOLY",
+        "ENABLE_MATH_FUNCTIONS",
+        "ENABLE_DBSTAT_VTAB",
+        "ENABLE_DBPAGE_VTAB",
+        "ENABLE_BYTECODE_VTAB",
+        "ENABLE_STAT4",
+        "ENABLE_EXPLAIN_COMMENTS",
+        "ENABLE_OFFSET_SQL_FUNC",
+        "ENABLE_API_ARMOR",
+        "LIKE_DOESNT_MATCH_BLOBS",
+        "STRICT_SUBTYPE",
+        "DEFAULT_FOREIGN_KEYS",
+        "DQS=0",
+        "THREADSAFE=1",
+        "MAX_EXPR_DEPTH=1000",
+        "DEFAULT_MEMSTATUS=0",
+        "DEFAULT_WAL_SYNCHRONOUS=1",
+        "DEFAULT_MMAP_SIZE=268435456",
+        "MAX_MMAP_SIZE=1099511627776",
+        "DEFAULT_CACHE_SIZE=-8000",
         "DEFAULT_WORKER_THREADS=0",
     ]
 }
@@ -35,7 +70,16 @@ fn forbidden() -> List<string> {
     // USE_URI is FORBIDDEN, not merely absent: it makes URI parsing
     // global with no runtime way back, because the off switch is
     // `sqlite3_config`, which is variadic (vendor/FLAGS.md).
-    ["OMIT_AUTOINIT", "OMIT_DECLTYPE", "OMIT_DEPRECATED", "OMIT_LOAD_EXTENSION", "OMIT_JSON", "OMIT_DESERIALIZE", "OMIT_PROGRESS_CALLBACK", "USE_URI"]
+    [
+        "OMIT_AUTOINIT",
+        "OMIT_DECLTYPE",
+        "OMIT_DEPRECATED",
+        "OMIT_LOAD_EXTENSION",
+        "OMIT_JSON",
+        "OMIT_DESERIALIZE",
+        "OMIT_PROGRESS_CALLBACK",
+        "USE_URI",
+    ]
 }
 
 /// Forbidden flags this build carries.
@@ -60,8 +104,8 @@ spec "std/sqlite" {
         then "the source id names the pinned check-in" { source_id().starts_with("2026-07-24 19:02:57") }
         then "the library carries its mutexes" { threadsafe() }
     }
-
     given "the compile options, asked of the object rather than the build file" {
+
         then "every flag vendor/FLAGS.md promises is carried" { unpromised().length == 0 }
         then "no flag that amputates the surface is set" { amputated().length == 0 }
         then "double-quoted strings are off at the source" { held(compiled_with("DQS=0")) }
@@ -71,15 +115,15 @@ spec "std/sqlite" {
         then "the option list is as long as the promise" { compile_options().length >= promised().length }
         then "the list ends rather than running off the end" { compile_options().length < 200 }
     }
-
     given "SQL text judged without a connection" {
+
         then "a terminated statement is complete" { complete_says("select 1;") }
         then "an unterminated statement is not" { !complete_says("select 1") }
         then "an open string literal is not" { !complete_says("select 'a;") }
         then "empty text is not a statement" { !complete_says("") }
     }
-
     given "a result code described" {
+
         then "OK is named" { describe(0) == "not an error" }
         then "an unknown code still answers text, never null" { describe(999999) == "unknown error" }
         // SQLITE_BUSY_SNAPSHOT and SQLITE_BUSY_TIMEOUT collapse onto
@@ -90,15 +134,15 @@ spec "std/sqlite" {
         then "and so does the other busy" { describe(517) == describe(5) }
         then "the number is the only thing that keeps them apart" { 261 != 517 }
     }
-
     given "the keywords this build recognises" {
+
         then "there are some" { keyword_count() > 100 }
         then "select is one" { is_keyword("select") }
         then "SELECT is one, case folded" { is_keyword("SELECT") }
         then "a name of ours is not" { !is_keyword("avra") }
     }
-
     given "SQLite's own pattern operators" {
+
         then "LIKE folds case, as SQL says" { held(like("ABC", "abc")) }
         then "LIKE takes % as any run" { held(like("a%d", "abcd")) }
         then "LIKE refuses what does not match" { !held(like("a%d", "abce")) }
@@ -107,8 +151,8 @@ spec "std/sqlite" {
         then "NOCASE folds ASCII" { held(equal_nocase("Ada", "aDA")) }
         then "NOCASE keeps different text apart" { !held(equal_nocase("ada", "adb")) }
     }
-
     given "the connection, statement, column and binding walls" {
+
         // Everything in those four files takes a handle, and no handle
         // exists until `open_v2` can be declared — so the only one that
         // RUNS today is the free, which SQLite documents as a no-op on
@@ -116,8 +160,8 @@ spec "std/sqlite" {
         // the object proves the other 60 names resolve.
         then "a declaration from the new walls links and runs" { freed_null() }
     }
-
     given "the library's memory figures" {
+
         then "the counters are off, as DEFAULT_MEMSTATUS=0 asks" { memory_used() == 0 }
         then "the high-water mark reads without disturbing it" { memory_highwater() >= 0 }
     }

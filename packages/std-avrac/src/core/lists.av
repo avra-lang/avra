@@ -6,7 +6,7 @@
 export fn flatten<T>(xs: List<List<T>>) -> List<T> {
     mut out: List<T> = []
     for x in xs {
-        // LICENSED I3: an accumulator; `.concat()` here is quadratic
+        // LICENSED loops.push_loop: an accumulator; `.concat()` here is quadratic
         for v in x { out.push(v) }
     }
     out
@@ -17,20 +17,31 @@ export fn filled<T>(n: int, v: T) -> List<T> {
     [v for i in 0..n]
 }
 
+/// Two lists, elementwise, under a caller's own equality — never `==`,
+/// which compares scalars only. Same length and every pair agrees.
+export fn list_eq<T>(a: List<T>, b: List<T>, eq: fn(T, T) -> bool) -> bool {
+    a.length == b.length && [i for i in 0..a.length if !eq(a[i], b[i])].is_empty()
+}
+
+/// Two nullables, elementwise, under a caller's own equality — both
+/// absent, or both present and equal.
+export fn opt_eq<T>(a: T?, b: T?, eq: fn(T, T) -> bool) -> bool {
+    (a == null) == (b == null) && (a == null || eq(a!, b!))
+}
+
 /// `dst` with `src` laid over it from position `at` — the answer,
 /// never a write through the argument: a fn cannot change its
 /// caller's value, so the owner assigns what comes back.
 export fn copied<T>(dst: List<T>, src: List<T>, at: int) -> List<T> {
     mut out = dst
-    // LICENSED I3: a write per element into the copy, not a build
+    // LICENSED loops.push_loop: a write per element into the copy, not a build
     for j, v in src { out.set(at + j, v) }
     out
 }
 
 /// A value asked for its effect alone.
-// LICENSED I23: the parameter IS the contract — the value was computed
-export fn touch<T>(x: T) {
-}
+// LICENSED fns.dead_parameter: the parameter IS the contract — the value was computed
+export fn touch<T>(x: T) {}
 
 /// A copy with `x` at position `at` — the insertion every ordered
 /// build shares.
@@ -103,4 +114,43 @@ export fn distinct(xs: List<string>) -> List<string> {
         }
     }
     out
+}
+
+/// A `///` doc's own SENTENCE — its lines up to the first blank one.
+export fn doc_first_paragraph(lines: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for l in lines {
+        if l == "" { return out }
+        out.push(l)
+    }
+    out
+}
+
+/// `xs` in the order `before` answers, STABLE: equals keep their order.
+/// A merge sort, since the lists it meets run to thousands.
+export fn sorted_by<T>(xs: List<T>, before: fn(T, T) -> bool) -> List<T> {
+    if xs.length < 2 { return [x for x in xs] }
+    let mid = xs.length / 2
+    merged_by(
+        sorted_by(xs.slice(0, mid), before),
+        sorted_by(xs.slice(mid, xs.length), before),
+        before,
+    )
+}
+
+/// Two sorted runs as one, the first run's items ahead of their equals.
+fn merged_by<T>(a: List<T>, b: List<T>, before: fn(T, T) -> bool) -> List<T> {
+    mut out: List<T> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length && j < b.length {
+        if before(b[j], a[i]) {
+            out.push(b[j])
+            j = j + 1
+        } else {
+            out.push(a[i])
+            i = i + 1
+        }
+    }
+    out.concat(a.slice(i, a.length)).concat(b.slice(j, b.length))
 }

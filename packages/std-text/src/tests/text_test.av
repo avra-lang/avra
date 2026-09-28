@@ -1,7 +1,23 @@
 // Text built and shaped, vertically: the builder joins what it was
 // given, shaping measures in code points, rows split honestly, and
 // the walk reads every UTF-8 width.
-use @std.text.{Text, builder, repeat, pad_left, pad_right, lines, indent, is_blank, codepoints, chars, codepoint_count, from_codepoint, from_codepoints, nul_at, has_nul}
+use @std.text.{
+    Text,
+    builder,
+    repeat,
+    pad_left,
+    pad_right,
+    lines,
+    indent,
+    is_blank,
+    codepoints,
+    chars,
+    codepoint_count,
+    from_codepoint,
+    from_codepoints,
+    nul_at,
+    has_nul,
+}
 
 /// A text's code points as decimal words.
 /// "AB", a NUL, then "CD" — five bytes C reads as two.
@@ -15,7 +31,7 @@ fn codes(s: string) -> string {
 
 fn built_from(pieces: List<string>) -> string {
     mut t = builder()
-    // LICENSED I3: the builder's push IS the subject under test
+    // LICENSED loops.push_loop: the builder's push IS the subject under test
     for p in pieces { t.push(p) }
     t.built()
 }
@@ -36,10 +52,15 @@ spec "std/text" {
     }
     given "shaping" {
         then "repeat writes n times, and nothing for zero or less" {
-            repeat("ab", 3) == "ababab" && repeat("ab", 0) == "" && repeat("ab", 0 - 2) == "" && repeat("", 5) == ""
+            repeat("ab", 3) == "ababab" &&
+                repeat("ab", 0) == "" &&
+                repeat("ab", 0 - 2) == "" &&
+                repeat("", 5) == ""
         }
         then "pad_right fills to the width and leaves a wider text alone" {
-            pad_right("ab", 4) == "ab  " && pad_right("abcd", 4) == "abcd" && pad_right("abcde", 4) == "abcde"
+            pad_right("ab", 4) == "ab  " &&
+                pad_right("abcd", 4) == "abcd" &&
+                pad_right("abcde", 4) == "abcde"
         }
         then "pad_left fills before" { pad_left("7", 3) == "  7" }
         then "width is code points, not bytes — an accent takes one column" {
@@ -70,15 +91,20 @@ spec "std/text" {
         }
         then "a mixed text walks in order" { chars("a😀b").join("|") == "a|😀|b" }
         then "from_codepoint writes each width back" {
-            from_codepoint(97) == "a" && from_codepoint(233) == "é" && from_codepoint(26085) == "日" && from_codepoint(128512) == "😀"
+            from_codepoint(97) == "a" &&
+                from_codepoint(233) == "é" &&
+                from_codepoint(26085) == "日" &&
+                from_codepoint(128512) == "😀"
         }
         then "the walk and its inverse round-trip" { from_codepoints(codepoints("héllo 日本 😀")) == "héllo 日本 😀" }
         then "a code point no sequence carries is the replacement character" {
-            from_codepoint(0 - 1) == from_codepoint(65533) && from_codepoint(55296) == from_codepoint(65533) && from_codepoint(1114112) == from_codepoint(65533)
+            from_codepoint(0 - 1) == from_codepoint(65533) &&
+                from_codepoint(55296) == from_codepoint(65533) &&
+                from_codepoint(1114112) == from_codepoint(65533)
         }
     }
-
     given "the C boundary" {
+
         then "nul_at finds the NUL a C reader would stop at" { nul_at(holed()) == 2 }
         then "nul_at is -1 for text a C reader would take whole" { nul_at("plain") == 0 - 1 }
         then "nul_at is -1 for the empty text" { nul_at("") == 0 - 1 }
@@ -95,7 +121,7 @@ spec "std/text" {
             (from_codepoint(0) + "x").length == 2
         }
         then "text beginning with a NUL does not equal the empty string" {
-            !((from_codepoint(0) + "x") == "")
+            !(from_codepoint(0) + "x" == "")
         }
         then "a lone NUL does not equal the empty string" { !(from_codepoint(0) == "") }
         then "a NUL is an ordinary needle — found where it is" {

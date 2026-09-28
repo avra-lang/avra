@@ -711,7 +711,10 @@ export enum Signup { Created(id: int), Taken }
 fn signup(db: Db, email: string) -> Result<Signup, SqlError> {
     match db.insert(sql("insert into users(email) values (?)").args([.Text(email)])) {
         .Ok(id) -> Signup.Created(id),
-        .Err(e) -> { if e.cause is .Constraint { return Signup.Taken } fail e },
+        .Err(e) -> {
+            if e.cause is .Constraint { return Signup.Taken }
+            fail e
+        },
     }
 }
 
@@ -1317,7 +1320,10 @@ impl Db {
         mut t = self.begin(TxMode.Immediate)?
         match body() {
             .Ok(v) -> { t.commit()? },
-            .Err(e) -> { t.abandon() fail e },
+            .Err(e) -> {
+                t.abandon()
+                fail e
+            },
         }
     }
 

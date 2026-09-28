@@ -6,7 +6,24 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Reg, body_symbol, hosted_symbol, static_symbol, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file}
+use core.{
+    Reg,
+    body_symbol,
+    hosted_symbol,
+    static_symbol,
+    TypeId,
+    TypeRegistry,
+    RtKind,
+    RtSig,
+    rt_sigs,
+    rt_index,
+    Static,
+    StaticBox,
+    Slot,
+    FileId,
+    same_file,
+    static_code_syms,
+}
 use features.{nothing}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
@@ -57,6 +74,12 @@ fn mangled(name: string) -> string {
     "av_${name}"
 }
 
+/// A `once fn`'s own slot global — one per symbol, distinct from the
+/// fn's own mangled name so the two never collide.
+fn once_slot_name(sym: string) -> string {
+    "${mangled(sym)}.once"
+}
+
 /// WHAT A MODULE'S BODIES NAME — the bodies they call or take the address
 /// of, the hosted rows they call, and the statics they address.
 ///
@@ -80,11 +103,7 @@ export enum Owned { Whole, File(f: FileId), Program }
 
 impl Owned {
     fn defines(b: Body) -> bool {
-        match self {
-            .Whole -> true,
-            .File(f) -> owns(b, f),
-            .Program -> home_of(b) == null,
-        }
+        match self { .Whole -> true, .File(f) -> owns(b, f), .Program -> home_of(b) == null }
     }
 
     fn carries_entry() -> bool { !(self is .File) }
@@ -98,18 +117,19 @@ impl Owned {
 /// wrapper minted here is not in the stored object.
 /// Whether a module OWNS the body — its file is that module's file. ONE question,
 /// asked once, so no caller opens the nullable twice and none can disagree.
-// LICENSED I39: a pure PROJECTION — a program, a body and a file in, one answer out.
 fn owns(b: Body, f: FileId) -> bool {
     let home = home_of(b)
     home != null && same_file(home!, f)
 }
 
-// LICENSED I39: a pure PROJECTION — a body in, the file it belongs to out.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a body in, the file it belongs to out.
 export fn home_of(b: Body) -> FileId? { b.file }
 
 /// What these bodies NAME, and their own names with it: a module declares a
-/// body it owns as much as one it only calls.
-fn refs_of(bodies: List<Body>) -> Refs {
+/// body it owns as much as one it only calls. A STATIC this module lays out
+/// names too — a capture-free closure's `Slot.Code` is a body reference as
+/// real as an instruction's, just not one an `Ins` scan would ever see.
+fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
     mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
     // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
     // `carries` asks membership per body, per static and per runtime row. The lists this
@@ -124,6 +144,11 @@ fn refs_of(bodies: List<Body>) -> Refs {
             if host != null { r.hosted.set(host!, true) }
             let st = static_symbol(i)
             if st != null { r.statics.set(st!, true) }
+        }
+    }
+    for st in statics {
+        if r.statics.get(st.name) != null {
+            for sym in static_code_syms(st.boxes) { r.bodies.set(sym, true) }
         }
     }
     r
@@ -175,7 +200,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
     let own = [bd for bd in l.fns if which.defines(bd)]
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned) }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
@@ -193,6 +218,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
             let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
             if failure != null { return wreck(m, path, failure!) }
             if bd.weak { avra_llvm_set_weak_odr(f) }
+            if l.cold.get(bd.name) != null { avra_llvm_set_cold(f) }
         }
     }
     if which.carries_entry() {
@@ -219,15 +245,16 @@ fn emit_static(lc: ptr, m: ptr, st: Static) {
 }
 
 fn box_name(st: Static, j: int) -> string {
-    if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}$${j}" }
+    if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}\$${j}" }
 }
 
 fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
     match b {
         .Slots(cells) -> { let _ = static_array(lc, m, name, st, cells) },
+        .Octets(b) -> { let _ = avra_llvm_global_text(m, b, b.length, name) },
         .Table(keys, values) -> {
-            let k = static_array(lc, m, "${name}$k", st, [Slot.Text(key) for key in keys])
-            let v = static_array(lc, m, "${name}$v", st, values)
+            let k = static_array(lc, m, "${name}\$k", st, [Slot.Text(key) for key in keys])
+            let v = static_array(lc, m, "${name}\$v", st, values)
             let _ = avra_llvm_static_map(m, name, k, v)
         },
     }
@@ -239,7 +266,11 @@ fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) ->
     let marks = avra_llvm_value_array_new(cells.length)
     for j, c in cells {
         avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c))
-        avra_llvm_value_array_set(marks, j, avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0))
+        avra_llvm_value_array_set(
+            marks,
+            j,
+            avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0),
+        )
     }
     let payload = avra_llvm_static_array(m, name, arr, marks, cells.length)
     avra_llvm_value_array_free(arr)
@@ -253,7 +284,9 @@ fn slot_mark(c: Slot) -> int {
     match c {
         .Text(_) or .Box(_) or .Null -> 1,
         .Absent -> 2,
-        .Int(_) or .Float(_) or .Bool(_) -> 0,
+        // a code address is a raw word, never a header — `push_slot`
+        // treats a dynamic closure's own code slot the same way
+        .Int(_) or .Float(_) or .Bool(_) or .Code(_) -> 0,
     }
 }
 
@@ -268,6 +301,9 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
         .Box(at) -> avra_llvm_global_payload(m, box_name(st, at)),
         .Null -> avra_llvm_const_pointer_null(avra_llvm_pointer_type(lc)),
         .Absent -> avra_llvm_const_int(avra_llvm_int64_type(lc), 0, 0),
+        // the function's own address, a pointer constant like `.Box` —
+        // `avra_llvm_static_array` ptrtoints any pointer-shaped cell
+        .Code(sym) -> avra_llvm_get_named_function(m, mangled(sym)),
     }
 }
 
@@ -295,8 +331,13 @@ export fn program_closed(l: Lowered) -> string? {
 /// entry answered. The argument pair crosses the seam exactly here
 /// — a program reads it through the host from then on.
 fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
-    declare(m, "avra_args_init", avra_llvm_void_type(lc),
-            [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(
+        m,
+        "avra_args_init",
+        avra_llvm_void_type(lc),
+        [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)],
+        false,
+    )
     declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
     let entry = avra_llvm_get_named_function(m, "av_entry")
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
@@ -307,15 +348,24 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> st
 /// `int main(int argc, char** argv)`: the arguments handed over,
 /// then the entry.
 fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
-    declare(m, "main", avra_llvm_int32_type(lc),
-            [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(
+        m,
+        "main",
+        avra_llvm_int32_type(lc),
+        [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)],
+        false,
+    )
     let f = avra_llvm_get_named_function(m, "main")
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let init = avra_llvm_get_named_function(m, "avra_args_init")
     let args = avra_llvm_value_array_new(2)
     // argc is C's `int` and is never negative, so the widening is a
     // ZERO extend — said here because only this site knows the sign
-    avra_llvm_value_array_set(args, 0, avra_llvm_build_zext(b, avra_llvm_get_param(f, 0), avra_llvm_int64_type(lc), "argc"))
+    avra_llvm_value_array_set(
+        args,
+        0,
+        avra_llvm_build_zext(b, avra_llvm_get_param(f, 0), avra_llvm_int64_type(lc), "argc"),
+    )
     avra_llvm_value_array_set(args, 1, avra_llvm_get_param(f, 1))
     avra_llvm_build_call(b, avra_llvm_fn_type_of(init), init, args, 2, "")
     avra_llvm_value_array_free(args)
@@ -329,13 +379,31 @@ fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
 
 /// One body into one function: params seed the value table, every
 /// instruction emits, the verifier gates.
-fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>, rt: Map<string, RtSig>, bd: Body, f: ptr) -> string? {
+fn emit_body(
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    types: TypeRegistry,
+    externs: List<RtSig>,
+    rt: Map<string, RtSig>,
+    bd: Body,
+    f: ptr,
+) -> string? {
     mut vals: List<ptr> = []
-    // LICENSED I3: a RANGE walk — comprehensions iterate lists only
+    // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
     mut em = Emit {
-        lc: lc, m: m, b: b, fn_val: f, types: types,
-        tys: bd.reg_types, vals: vals, frames: [], loops: [], externs: externs, rt: rt,
+        lc: lc,
+        m: m,
+        b: b,
+        fn_val: f,
+        types: types,
+        tys: bd.reg_types,
+        vals: vals,
+        frames: [],
+        loops: [],
+        externs: externs,
+        rt: rt,
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { em.emit_ins(i) }
@@ -396,8 +464,13 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
 
 /// One user fn's declaration, typed from its signature's shapes.
 fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
-    declare(m, mangled(bd.name), ll_type_of(lc, types, bd.ret),
-            [ll_type_of(lc, types, pt) for pt in bd.params], false)
+    declare(
+        m,
+        mangled(bd.name),
+        ll_type_of(lc, types, bd.ret),
+        [ll_type_of(lc, types, pt) for pt in bd.params],
+        false,
+    )
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
@@ -418,6 +491,12 @@ enum SlotForm { Address, Widened, Reinterpreted, Word }
 /// `rides_pointer` and the rest split a word from a double from a
 /// bit.
 fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
+    // a value enum: its tag and its word
+    if types.valued_carrier(ty) {
+        let word = types.type(int)
+        return wide_ll_type(lc, types, [word, word])
+    }
+    if types.travels_wide(ty) { return wide_ll_type(lc, types, types.flat_fields(types.machine_type(ty))) }
     // THE MACHINE FORM decides, never the bare shape: a FLAT record
     // IS its one field, so a name over `string` is a pointer and a
     // name over `float` is a double.
@@ -428,16 +507,27 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _)
-            or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
+        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) -> avra_llvm_pointer_type(lc),
     }
 }
 
+/// A VALUE RECORD's machine type: its fields as one aggregate, in
+/// registers.
+fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
+    let arr = avra_llvm_type_array_new(fields.length)
+    for j, f in fields { avra_llvm_type_array_set(arr, j, ll_type_of(lc, types, f)) }
+    let st = avra_llvm_struct_type(lc, arr, fields.length)
+    avra_llvm_type_array_free(arr)
+    st
+}
+
 /// A nullable's machine type: the niche IS its value's pointer; a
-/// scalar pair is a first-class {present: i1, value} aggregate that
-/// lives in registers and never touches memory.
+/// WORD ENUM's nullable is its own register, the spare tag its
+/// absence; a scalar pair is a first-class {present: i1, value}
+/// aggregate that lives in registers and never touches memory.
 fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
     if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
+    if types.is_word_enum(inner) { return ll_type_of(lc, types, inner) }
     let arr = avra_llvm_type_array_new(2)
     avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
     avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))

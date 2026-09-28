@@ -2,8 +2,19 @@
 //! The decl is a keyword-anchored statement; the call branch merges
 //! into `primary` BEFORE the spine's bare NAME, and the executor's
 //! backtracking sends `f(x)` here while `f` alone falls through.
+//! Generic with `fn name<T>(…)` — one abstract check, one lowering
+//! per instantiation, `name<int>(args)` pinning what the arguments
+//! cannot. A `mut` parameter is a seat the fn writes through,
+//! filled by a `mut` place; on an `extern fn` it is the INOUT — C
+//! is handed the address of the caller's cell. A seat may carry a
+//! default (`n: int = 1`), a body of its own that a call leaving
+//! the seat unwritten runs. A call may name its seats (`f(1, n:
+//! 2)`) — a named argument fills the seat of its name, a
+//! positional one the seat at its own position, and arguments run
+//! in written order. `return` answers early.
 use features.{LanguageFeature, BuilderRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use features.fns.{dead_parameter}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn fns() -> LanguageFeature {
@@ -17,32 +28,33 @@ export fn fns() -> LanguageFeature {
         "return_stmt" | build_return
     }
     let codes = table<DiagCode> {
-        kind                   | id      | summary
-        "type.duplicate_param" | "F2020" | "a fn's parameters have distinct names"
-        "type.unknown"         | "F2001" | "a type annotation names no known type"
-        "resolve.duplicate_fn" | "F3003" | "two fns share one name"
-        "resolve.nested_fn"    | "F3004" | "fn declarations live at the top level"
-        "type.return"     | "F2025" | "`return` answers the enclosing fn"
-        "type.once_fn"    | "F2055" | "a `once` fn takes no arguments and answers a value the runtime owns"
-        "type.const_seat" | "F2073" | "a `const` seat is filled by a value that settles at compile time"
-        "type.host_seat"  | "F2056" | "a `mut` host seat wears a cell C may write, and is handed a local"
-        "type.row_shape"  | "F2084" | "an extern that names a runtime row wears the row's shape — its seat count, and the box each pointer seat reads"
-        "type.host_absence" | "F2088" | "a runtime row's seat takes no absence — core's C reads every pointer it is handed"
-        "type.extern_value" | "F2093" | "an extern fn is a C symbol, not a value — wrap it to hand it around"
+        kind                   | summary
+        "type.duplicate_param" | "a fn's parameters have distinct names"
+        "type.unknown"         | "a type annotation names no known type"
+        "resolve.duplicate_fn" | "two fns share one name"
+        "resolve.nested_fn"    | "fn declarations live at the top level"
+        "type.return"          | "`return` answers the enclosing fn"
+        "type.once_fn"         | "a `once` fn takes no arguments and answers a value the runtime owns"
+        "type.const_seat"      | "a `const` seat is filled by a value that settles at compile time"
+        "type.host_seat"       | "a `mut` host seat wears a cell C may write, and is handed a local"
+        "type.row_shape"       | "an extern that names a runtime row wears the row's shape — its seat count, and the box each pointer seat reads"
+        "type.host_absence"    | "a runtime row's seat takes no absence — core's C reads every pointer it is handed"
+        "type.extern_value"    | "an extern fn is a C symbol, not a value — wrap it to hand it around"
+        "type.named_arg"       | "a named argument writes a seat its callee declares, once — only a declared fn's, method's or static's seats have names"
+        "type.param_default"   | "a default fills a plain seat whose type names no type parameter, after every seat without one, and its seat accepts it"
+        "type.isolated"        | "an `isolated` seat takes a fn that shares nothing with its caller — a lambda capturing no identity, a declared fn, or an `isolated` parameter"
     }
-    component LanguageFeature f {
-        name = "fns"
-        docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; a `mut` parameter is a seat the fn writes through, filled by a `mut` place — on an `extern fn` it is the INOUT: C is handed the address of the caller's cell; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; `return` answers early."
-        gram = grammar {
+    LanguageFeature fns {
+        gram: grammar {
             stmt = "extern" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? END @recover(sync_to: "END") -> extern_fn(n, ck, mk, ps, pt, r)
-            stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, ps, pt, r, b)
+            stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( ( ck:"const" )? ( mk:"mut" )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) ( "," ( ( ck:"const" )? ( mk:"mut" )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, ps, pt, pd, r, b, ik, sp)
             stmt = "once" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ck, mk, ps, pt, r, b)
             stmt = "return" ( v:expression )? END @recover(sync_to: "END") -> return_stmt(v)
-            primary = c:NAME "<" pin:type ( "," pin:type )* ","? ">" "(" ( as:expression ( "," as:expression )* ","? )? ")" -> pinned_call(c, pin, as)
-            primary = c:NAME "(" ( as:expression ( "," as:expression )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
+            primary = c:NAME "<" pin:type ( "," pin:type )* ","? ">" "(" ( as:argument ( "," as:argument )* ","? )? ")" -> pinned_call(c, pin, as)
+            primary = c:NAME "(" ( as:argument ( "," as:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    fns
 }

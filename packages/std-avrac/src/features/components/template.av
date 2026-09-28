@@ -1,0 +1,204 @@
+//! A component's TEMPLATE, read off its provider's parse: the one
+//! `quote` its `expand` answers and the field each hole reads. An
+//! importing file's parse copies it where an instance stands, so the
+//! reading needs nothing but the provider's text — never its typing.
+use core.{
+    NodeStore,
+    StmtId,
+    ExprId,
+    TypeRef,
+    BodyView,
+    BodyParts,
+    ComponentParts,
+    FnParts,
+    Param,
+    flatten,
+    some_list,
+    body_behavior,
+}
+use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced}
+use grammar.{Token, TokenKind, lex_source}
+
+/// An exported component as an importing file's block word.
+export fn word_of(store: NodeStore, s: StmtId, origin: string) -> ComponentWord? {
+    let c? = store.component_parts(s) else { return null }
+    ComponentWord {
+        word: c.name,
+        declared: c.name,
+        form: instancing(store, c),
+        store: store,
+        origin: origin,
+    }
+}
+
+/// A named instance's statement as a name a body may list.
+export fn instanced(store: NodeStore, s: StmtId) -> Instanced? {
+    let of? = store.instance_of(s) else { return null }
+    let name? = store.let_name(s) else { return null }
+    Instanced { name: name, declared: of }
+}
+
+/// The named instances a file declares at its top level
+/// (`layer auth { … }`), read off its tokens before it parses — so a
+/// body lists one by name wherever in the file it is declared.
+export fn named_instances(text: string, words: List<ComponentWord>) -> List<Instanced> {
+    let tokens = lex_source(text).tokens
+    flatten([some_list(instance_at(tokens, i, words)) for i in top_starts(tokens)])
+}
+
+/// Where each top-level statement begins, past an `export`.
+fn top_starts(tokens: List<Token>) -> List<int> {
+    mut depth = 0
+    mut fresh = true
+    mut starts: List<int> = []
+    // LICENSED loops.push_loop: a running depth — each token's place depends on every brace before it
+    for i, t in tokens {
+        if depth == 0 && fresh && !t.lit_matches("export") { starts.push(i) }
+        if t.lit_matches("{") { depth = depth + 1 }
+        if t.lit_matches("}") { depth = depth - 1 }
+        fresh = t.kind == TokenKind.Break || fresh && t.lit_matches("export")
+    }
+    starts
+}
+
+/// `word name` opening a statement, where `word` is a component whose
+/// named instance binds its name.
+fn instance_at(tokens: List<Token>, i: int, words: List<ComponentWord>) -> Instanced? {
+    if i + 1 >= tokens.length || tokens[i + 1].kind != TokenKind.Name { return null }
+    let w? = words.find(it.word == tokens[i].text && binds_name(it)) else { return null }
+    Instanced { name: tokens[i + 1].text, declared: w.declared }
+}
+
+/// Whether a named instance of the component binds its name: a
+/// record with no head.
+fn binds_name(c: ComponentWord) -> bool {
+    match c.form { .Record(r) -> r.head.is_empty(), .Template(_) or .Refused(_) -> false }
+}
+
+/// How an instance of the component stands in place: its template,
+/// or the library's reason it cannot.
+fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
+    let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c)) }
+    if c.fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
+    if c.fields.length > 1 { return Instancing.Refused(many_fields(c.name, c.fields.length)) }
+    let head = [p.name.of for p in c.head]
+    let block = c.fields[0].name.of
+    let body? = template_body(store, expand) else { return Instancing.Refused(computes(c.name)) }
+    let reads = [self_field(store, h) ?? "" for h in body.holes]
+    if !reads.all((r) -> head.contains(r) || r == block) { return Instancing.Refused(computes(c.name)) }
+    Instancing
+        .Template(
+            Template {
+                head: head,
+                block: block,
+                reads: reads,
+                stmts: verbatim(body.view),
+                formats: formats_of(c),
+            },
+        )
+}
+
+/// A component read as a record: its head in order, the `List` fields
+/// its instance's statements may fill, and its one fn field.
+fn record_of(store: NodeStore, c: ComponentParts) -> Record {
+    let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false]
+    Record {
+        head: [p.name.of for p in c.head],
+        slots: [ChildSlot {
+            name: p.name.of,
+            of: element_name(p),
+            gathers: !declares_component(store, element_name(p)),
+        } for p in c.fields if lists(p)],
+        named: c.fields.any(it.name.of == "name"),
+        checks: member(store, c, "check") != null,
+        fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.of } else { null },
+        fn_optional: arrow_fields.length == 1 && answers_nullable(arrow_fields[0].ty),
+    }
+}
+
+/// A written fn type's own answer — its LAST seat — reads as
+/// nullable: the `?` an arms body's implicit `_ -> null` tail
+/// answers to.
+fn answers_nullable(ty: TypeRef?) -> bool {
+    let t? = ty else { return false }
+    let ans? = t.args.last() else { return false }
+    ans.optional
+}
+
+/// Whether the file declares a component by this name — a list of its
+/// records takes that component's instances alone.
+fn declares_component(store: NodeStore, name: string) -> bool {
+    store.stmt_ids().any((s) -> store.component_parts(s)?.name == name)
+}
+
+/// The name a `List` field's elements are written with.
+fn element_name(p: Param) -> string {
+    p.ty?.args?.first()?.name ?? ""
+}
+
+fn lists(p: Param) -> bool {
+    p.ty?.name == "List"
+}
+
+/// A component's `expand`, when it declares one.
+export fn expand_of(store: NodeStore, c: ComponentParts) -> FnParts? {
+    member(store, c, "expand")
+}
+
+/// A component's method of this name, when it declares one.
+export fn member(store: NodeStore, c: ComponentParts, name: string) -> FnParts? {
+    flatten([some_list(store.fn_parts(m)) for m in c.fns]).find(it.name == name)
+}
+
+/// The `quote` an `expand` answers, when its body is that one quote.
+export fn template_body(store: NodeStore, expand: FnParts) -> BodyParts? {
+    let quoted? = store.lone_value(expand.body) else { return null }
+    let body? = store.expr(quoted).body_of() else { return null }
+    if !(body_behavior(body.word) is .Quote) { return null }
+    body
+}
+
+/// The first CODE field of `self` a template reads more than once —
+/// a pattern is a value, read as often as the template likes.
+export fn read_twice(store: NodeStore, body: BodyParts, values: List<string>) -> string? {
+    let reads = [r for r in flatten([some_list(self_field(store, h)) for h in body.holes]) if !values.contains(r)]
+    reads.find([x for x in reads if x == it].length > 1)
+}
+
+/// The head fields a component declares as PATTERNS.
+export fn formats_of(c: ComponentParts) -> List<string> {
+    [p.name.of for p in c.head if p.ty?.name == "Format"]
+}
+
+/// A quote's body as written.
+fn verbatim(view: BodyView) -> List<StmtId> {
+    match view { .Verbatim(stmts, _) -> stmts, .None or .Expanded(_) -> [] }
+}
+
+/// The field of `self` an expression reads, when that is all it does.
+fn self_field(store: NodeStore, e: ExprId) -> string? {
+    let step? = store.place_step(e) else { return null }
+    match step {
+        .Field(subject, name) -> if is_self(store, subject) { name.of } else { null },
+        _ -> null,
+    }
+}
+
+fn is_self(store: NodeStore, e: ExprId) -> bool {
+    let step? = store.place_step(e) else { return false }
+    match step { .Root(name) -> name.of == "self", _ -> false }
+}
+
+// ── voices ──
+
+fn no_block_field(name: string) -> string {
+    "`${name}` declares no field for an instance's block"
+}
+
+fn many_fields(name: string, n: int) -> string {
+    "`${name}` declares ${n} fields beside its head, and an instance's block fills one"
+}
+
+fn computes(name: string) -> string {
+    "the `expand` of `${name}` is not one `quote` over its own fields, so an instance cannot be copied in place"
+}

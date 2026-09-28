@@ -4,11 +4,11 @@
 //! `ins <Name>` prints the IR VOCABULARY PROTOCOL: the two
 //! questions that gate growth, then the consumers a new
 //! instruction owes. Both end at `make gate`.
-use @std.cli.{Subcommand, CliResult, Runnable, ArgDef}
+use @std.cli.{CliResult, Runnable, command, arg}
 use @std.io.{write_text, exists, make_dirs}
 use @std.process.{exit, Exit}
 
-type NewCmd = { }
+type NewCmd = {}
 
 impl Runnable for NewCmd {
     fn run(args: CliResult) -> int {
@@ -21,12 +21,17 @@ impl Runnable for NewCmd {
     }
 }
 
-export fn new_command() -> Subcommand {
-    let args = [
-        ArgDef { name: "kind", description: "what to scaffold (`feature` or `ins`)", required: true, variadic: false },
-        ArgDef { name: "name", description: "its snake_case name", required: true, variadic: false },
-    ]
-    Subcommand { meta: arg_command("new", "Scaffold the next feature, or an IR instruction's checklist", args), body: NewCmd { } }
+export command new {
+    description: "Scaffold the next feature, or an IR instruction's checklist"
+    arg kind {
+        description: "what to scaffold (`feature` or `ins`)"
+        required: true
+    }
+    arg name {
+        description: "its snake_case name"
+        required: true
+    }
+    run: NewCmd {}
 }
 
 /// `foo` -> `Foo`.
@@ -107,7 +112,9 @@ fn scaffold_ins(name: string) -> int {
     println("       .${name}(...) -> null,   (unless it calls one)")
     println("  8. core/ir.av            hosted_symbol the hosted fn it calls")
     println("       .${name}(...) -> null,   (unless it calls one)")
-    println("  9. compiler/memory/memory.av      managed_dst whether its answer is the caller's to release")
+    println(
+        "  9. compiler/memory/memory.av      managed_dst whether its answer is the caller's to release",
+    )
     println("       .${name}(...) -> dst,    (null for a borrowed or immortal answer)")
     println("")
     println("prove it: a program test (eval == native == expected) and the")
@@ -135,41 +142,48 @@ fn hole(word: string) -> string {
 }
 
 fn mod_template(name: string) -> string {
-    filled_in("""//! TODO: what `${name}` IS, in one breath.
+    filled_in(
+        """//! TODO: what `${name}` IS, in one breath.
 use features.{LanguageFeature, BuilderRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 
 export fn ${name}() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name      | build
         "${name}" | build_${name}
     }
-    component LanguageFeature f {
-        name = "${name}"
-        docs = "TODO: the one-line surface."
-        gram = grammar {
+    LanguageFeature ${name} {
+        gram: grammar {
             TODO = TODO -> ${name}()
         }
-        builders = rows
+        builders: rows
     }
-    f
+    ${name}
 }
-""", name, "")
+""",
+        name,
+        "",
+    )
 }
 
 fn builders_template(name: string) -> string {
-    filled_in("""//! Parse-time lowering: captures -> the ${name} node.
+    filled_in(
+        """//! Parse-time lowering: captures -> the ${name} node.
 use core.{Expr}
 use features.{LangNode, Builder}
 
 fn build_${name}(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Error)
 }
-""", name, "")
+""",
+        name,
+        "",
+    )
 }
 
 fn semantics_template(name: string, ty: string) -> string {
-    filled_in("""//! The ${name} NodeSemantics: dispatch only. Typing lives in
+    filled_in(
+        """//! The ${name} NodeSemantics: dispatch only. Typing lives in
 //! check.av; lowering — the MEANING — in lower.av.
 use core.{Expr, ExprId, TypeId, Reg}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
@@ -197,33 +211,45 @@ impl NodeSemantics for ${ty} {
         ${name}_lower(cx, e)
     }
 }
-""", name, ty)
+""",
+        name,
+        ty,
+    )
 }
 
 fn check_template(name: string) -> string {
-    filled_in("""//! The typing rule: TODO.
+    filled_in(
+        """//! The typing rule: TODO.
 use core.{ExprId, TypeId}
 use features.{TypeCx}
 
 fn ${name}_type(cx: TypeCx, e: ExprId) -> TypeId {
     cx.error_type
 }
-""", name, "")
+""",
+        name,
+        "",
+    )
 }
 
 fn lower_template(name: string) -> string {
-    filled_in("""//! The lowering rule — the ONE meaning: TODO.
+    filled_in(
+        """//! The lowering rule — the ONE meaning: TODO.
 use core.{ExprId, Reg}
 use features.{LowerCx}
 
 fn ${name}_lower(cx: LowerCx, e: ExprId) -> Reg {
     cx.result(e)
 }
-""", name, "")
+""",
+        name,
+        "",
+    )
 }
 
 fn test_template(name: string) -> string {
-    filled_in("""// TODO: the vertical, tested — parse, type, run, and the IR.
+    filled_in(
+        """// TODO: the vertical, tested — parse, type, run, and the IR.
 use @std.avrac.testing.{shown}
 
 spec "features/${name}" {
@@ -233,5 +259,8 @@ spec "features/${name}" {
         }
     }
 }
-""", name, "")
+""",
+        name,
+        "",
+    )
 }

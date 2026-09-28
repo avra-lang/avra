@@ -3,19 +3,41 @@
 // it — and a value that crosses cleanly must arrive whole, with its
 // absences absent and its presences present.
 use @std.avrac.compiler.{avra, new_workspace, Program}
-use @std.avrac.testing.{vendored_meta_as, vendored_meta_paths, real_meta_source, refused_n, refused_in}
+use @std.avrac.testing.{
+    vendored_meta_as,
+    vendored_meta_paths,
+    real_meta_source,
+    refused_n,
+    refused_in,
+}
 use compiler.host.{memory_host}
 
 /// A program whose annotations come from a PROVIDER package, under
 /// the `@std/meta` source given.
 fn under(main: string, meta: string) -> Program {
-    let files = vendored_meta_as({
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
-        "/w/src/main.av": main,
-        "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-        "/w/vendor/prov/src/prov.av": provider(),
-    }, meta)
-    let ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
+    let files = vendored_meta_as(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
+            "/w/src/main.av": main,
+            "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/prov/src/prov.av": provider(),
+        },
+        meta,
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/prov/avra.toml",
+                "/w/vendor/prov/src/prov.av",
+            ]
+                .concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
     ws.program("/w/src/main.av")
 }
 
@@ -27,17 +49,17 @@ fn real(main: string) -> Program { under(main, real_meta_source()) }
 /// answer is a long list.
 fn provider() -> string {
     "use @std.meta.{Fn, Type, Directive, Diagnostic, Decls, Code, refuse, refuse_as_at, refuse_at, literal}\n" +
-    "export trait Shape {\n" +
-    "    static fn derive(t: Type) -> List<Directive> {\n" +
-    "        let parts = [\"\${f.name}:\${f.ty}\" for f in t.fields].concat([\"\${v.name}(\${v.payload.join(\"|\")})\" for v in t.variants])\n" +
-    "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn shape() -> string { \${literal(parts.join(\",\"))} } } } }]\n" +
-    "    }\n" +
-    "}\n" +
-    "export fn plainly(f: Fn) -> List<Diagnostic> { [refuse(\"plainly from `\${f.name}`\")] }\n" +
-    "export fn dressed(f: Fn) -> List<Diagnostic> { [refuse_as_at(\"E9\", f.at, \"dressed from `\${f.name}`\", \"the remedy\")] }\n" +
-    "export fn placeless(f: Fn) -> List<Diagnostic> { [refuse_at(null, \"placeless from `\${f.name}`\", null)] }\n" +
-    "export fn seats(f: Fn) -> List<Diagnostic> { [refuse(\"\${f.params.length} seats, first `\${f.params[0].name}: \${f.params[0].ty}` mut=\${f.params[0].mutable} const=\${f.params[0].settled}, answers `\${f.answer}`\")] }\n" +
-    "export fn many(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at } for i in 0..5000] }\n"
+        "export trait Shape {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let parts = [\"\${f.name}:\${f.ty}\" for f in t.fields].concat([\"\${v.name}(\${v.payload.join(\"|\")})\" for v in t.variants])\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn shape() -> string { \${literal(parts.join(\",\"))} } } } }]\n" +
+        "    }\n" +
+        "}\n" +
+        "export fn plainly(f: Fn) -> List<Diagnostic> { [refuse(\"plainly from `\${f.name}`\")] }\n" +
+        "export fn dressed(f: Fn) -> List<Diagnostic> { [refuse_as_at(\"E9\", f.at, \"dressed from `\${f.name}`\", \"the remedy\")] }\n" +
+        "export fn placeless(f: Fn) -> List<Diagnostic> { [refuse_at(null, \"placeless from `\${f.name}`\", null)] }\n" +
+        "export fn seats(f: Fn) -> List<Diagnostic> { [refuse(\"\${f.params.length} seats, first `\${f.params[0].name}: \${f.params[0].ty}` mut=\${f.params[0].mutable} const=\${f.params[0].settled}, answers `\${f.answer}`\")] }\n" +
+        "export fn many(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at } for i in 0..5000] }\n"
 }
 
 /// `@std/meta` with ONE thing changed, from the real source.
@@ -45,21 +67,39 @@ fn provider() -> string {
 /// constructor `@std/meta` writes, so the package still compiles.
 fn renamed_field() -> string { real_meta_source().replace("message", "msg") }
 /// Two variants SWAPPED — the tag a value carries now names another.
-fn swapped_variants() -> string { real_meta_source().replace("    Name(text: string)\n    /// a string literal\n    Text(text: string)", "    Text(text: string)\n    /// an identifier\n    Name(text: string)") }
+fn swapped_variants() -> string {
+    real_meta_source()
+        .replace(
+            "    Name(text: string)\n    /// a string literal\n    Text(text: string)",
+            "    Text(text: string)\n    /// an identifier\n    Name(text: string)",
+        )
+}
 /// A variant that GREW a payload, its own reads and writes grown
 /// with it.
 fn widened_variant() -> string {
     real_meta_source()
         .replace("Many(items: List<Node>)", "Many(items: List<Node>, why: string)")
         .replace(".Many(items) ->", ".Many(items, _) ->")
-        .replace("Node.Many([Node.Name(t) for t in texts])", "Node.Many([Node.Name(t) for t in texts], \"\")")
+        .replace(
+            "Node.Many([Node.Name(t) for t in texts])",
+            "Node.Many([Node.Name(t) for t in texts], \"\")",
+        )
         .replace("Node.Many([x.node for x in xs])", "Node.Many([x.node for x in xs], \"\")")
 }
 /// A record that declares FEWER than the crossing reads — the slot
 /// is gone and the reader would take the NEXT one for it.
-fn shrunk_record() -> string { real_meta_source().replace("export type Named = { name: string, at: Loc? }", "export type Named = { name: string }") }
+fn shrunk_record() -> string {
+    real_meta_source()
+        .replace("export type Named = { name: string, at: Loc? }", "export type Named = { name: string }")
+}
 /// A record that declares MORE than the crossing reads.
-fn extra_field() -> string { real_meta_source().replace("export type Named = { name: string, at: Loc? }", "export type Named = { name: string, at: Loc?, extra: int = 0 }") }
+fn extra_field() -> string {
+    real_meta_source()
+        .replace(
+            "export type Named = { name: string, at: Loc? }",
+            "export type Named = { name: string, at: Loc?, extra: int = 0 }",
+        )
+}
 
 /// A program that DERIVES — so a refused boundary leaves its
 /// generated method missing and every use of it refusing.
@@ -74,13 +114,25 @@ fn validated(verb: string) -> string {
 spec "features/crossing — the meta boundary" {
     given "an `@std/meta` whose shapes moved" {
         then "a RENAMED field is named, and the annotation never runs" {
-            refused_n(under(validated("plainly"), renamed_field()), "`Diagnostic` declares `msg` where the crossing reads `message`", 1)
+            refused_n(
+                under(validated("plainly"), renamed_field()),
+                "`Diagnostic` declares `msg` where the crossing reads `message`",
+                1,
+            )
         }
         then "SWAPPED variants are named by the first that moved" {
-            refused_n(under(validated("plainly"), swapped_variants()), "`Node` declares `Text` where the crossing reads `Name`", 1)
+            refused_n(
+                under(validated("plainly"), swapped_variants()),
+                "`Node` declares `Text` where the crossing reads `Name`",
+                1,
+            )
         }
         then "a SHRUNK record is named by the slot that is gone" {
-            refused_n(under(validated("plainly"), shrunk_record()), "`Named` declares nothing where the crossing reads `at`", 1)
+            refused_n(
+                under(validated("plainly"), shrunk_record()),
+                "`Named` declares nothing where the crossing reads `at`",
+                1,
+            )
         }
         then "THE BOUNDARY SPEAKS FIRST AND ALONE — no cascade of missing accessors" {
             // A refused boundary generates nothing, so every USE of a
@@ -90,7 +142,8 @@ spec "features/crossing — the meta boundary" {
             // nothing else; the VERDICT still counts everything.
             let said = under(uses_a_derive(), shrunk_record()).report()
             said.contains("the compiler crosses `@std/meta`'s own shapes") &&
-                !said.contains("F2030") && !said.contains("has no method")
+                !said.contains("type.method") &&
+                !said.contains("has no method")
         }
     }
     given "a program whose derives never ran" {
@@ -112,7 +165,10 @@ spec "features/crossing — the meta boundary" {
             refused_n(under(validated("plainly"), widened_variant()), "plainly from `answer`", 1)
         }
         then "every refusal wears the boundary's own words" {
-            refused_in(under(validated("plainly"), renamed_field()), "the compiler was built against another `@std/meta`")
+            refused_in(
+                under(validated("plainly"), renamed_field()),
+                "the compiler was built against another `@std/meta`",
+            )
         }
     }
     given "the `@std/meta` this compiler ships" {
@@ -120,7 +176,17 @@ spec "features/crossing — the meta boundary" {
             !refused_in(real(validated("plainly")), "another `@std/meta`")
         }
         then "a program that loads no `@std/meta` crosses nothing and is refused nothing" {
-            let ws = new_workspace(memory_host({ "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": "1" }, ["/w/avra.toml", "/w/src/main.av"]), "/w", avra())
+            let ws = new_workspace(
+                memory_host(
+                    {
+                        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                        "/w/src/main.av": "1",
+                    },
+                    ["/w/avra.toml", "/w/src/main.av"],
+                ),
+                "/w",
+                avra(),
+            )
             ws.program("/w/src/main.av").check() is .Ok
         }
     }
@@ -130,7 +196,9 @@ spec "features/crossing — the meta boundary" {
         }
         then "with every optional PRESENT, the kind, the place and the remedy all arrive" {
             let p = real(validated("dressed"))
-            refused_in(p, "dressed from `answer`") && refused_in(p, "the remedy") && refused_in(p, "@x/prov: E9")
+            refused_in(p, "dressed from `answer`") &&
+                refused_in(p, "the remedy") &&
+                refused_in(p, "@x/prov:E9")
         }
         then "an absent `Loc` falls back to the declaration, never to a slot nobody wrote" {
             refused_n(real(validated("placeless")), "placeless from `answer`", 1)
@@ -138,14 +206,22 @@ spec "features/crossing — the meta boundary" {
     }
     given "a declaration crossing in" {
         then "a fn's seats and answer arrive with their marks" {
-            refused_n(real(validated("seats")), "1 seats, first `n: int` mut=false const=false, answers `int`", 1)
+            refused_n(
+                real(validated("seats")),
+                "1 seats, first `n: int` mut=false const=false, answers `int`",
+                1,
+            )
         }
         then "a record's fields and an enum's payloads arrive as NESTED lists" {
-            let p = real("use @std.meta.{derive}\nuse @x.prov.{Shape}\n@derive(Shape)\ntype P = { x: int, y: string }\nP { x: 1, y: \"a\" }.shape()")
+            let p = real(
+                "use @std.meta.{derive}\nuse @x.prov.{Shape}\n@derive(Shape)\ntype P = { x: int, y: string }\nP { x: 1, y: \"a\" }.shape()",
+            )
             p.check() is .Ok
         }
         then "a payload-carrying enum's spellings arrive one per payload" {
-            let p = real("use @std.meta.{derive}\nuse @x.prov.{Shape}\n@derive(Shape)\nenum E { A, B(int, string) }\nE.A.shape()")
+            let p = real(
+                "use @std.meta.{derive}\nuse @x.prov.{Shape}\n@derive(Shape)\nenum E { A, B(int, string) }\nE.A.shape()",
+            )
             p.check() is .Ok
         }
     }

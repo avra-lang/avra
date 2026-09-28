@@ -114,7 +114,7 @@ native == expected` for every task program.
   joins, as `errdefer` runs before `FnExit`. A block that spawns
   nothing lowers to nothing.
 - ESCAPE: a `Task` value reaching past its block (answered, stored,
-  captured by an outer owner) is refused (F2101 in the tour). An
+  captured by an outer owner) is refused (F2107 in the tour). An
   OWNER value (`server`, `cluster`, a `Scope`) is the only door to a
   longer life: `owner.spawn { }`.
 - CANCELLATION arrives at a pause point as a failure (`Cancelled`) on
@@ -190,7 +190,7 @@ the cores placement's work.
 - F1 runtime core: switch, stacks, guard, run queue, rows, deadlock
   trap. Unchanged by §0.
 - F2 language: `spawn`, `Task<T, E>`, `.await`, EVERY BLOCK A SCOPE
-  (join at `}`, cancel on failure, F2101 escape), both engines.
+  (join at `}`, cancel on failure, F2107 escape), both engines.
 - F3 deterministic test scheduler: `avra test` seeds the run queue,
   virtual time, interleaving exploration, a failure prints its seed.
   Early on purpose: every later slice is tested under it.
@@ -231,8 +231,9 @@ the cores placement's work.
   lands on the guard page.
 - Waiters are filed by DESCRIPTOR AND DIRECTION; readiness wakes one
   and re-arms for the rest. A join that closes a ring traps at once.
-- The rows are UNHOSTED until F2 (the two-landing ladder), and an
-  `extern` naming any language-only row is F2094.
+- The rows were UNHOSTED until F2 (the two-landing ladder); a
+  declaration naming a row is judged by the crossing law, which exempts
+  only the rows the evaluator hosts.
 
 ### Deadlines F2 and F3 inherit (conditions that expire)
 
@@ -302,8 +303,8 @@ PROOF the compiler demands before work may go there.
 - OWNERS: a `Task<T>`, a `Task<T>?` (the niche — absence joins
   nothing) and a `List<Task<T>>`. The join is a `Deferral.Settle`
   entry in the `defer` frames, so both engines run it at the same
-  instruction. Every other holder is F2101.
-- F2101 refuses a task in an answer (a fn's, a method's, a lambda's,
+  instruction. Every other holder is F2107.
+- F2107 refuses a task in an answer (a fn's, a method's, a lambda's,
   a task's own), a record field, an enum payload, a generic slot, a
   lambda VALUE's capture (a task's own body may capture a sibling: it
   is joined in the same block), a holder no block joins (`Map`,
@@ -325,5 +326,127 @@ PROOF the compiler demands before work may go there.
   task parked on a descriptor before it closes, and each retry reports
   the closed descriptor.
 - `@std/time.sleep(d)` parks the calling task on the scheduler's timer.
-- Per-call timeouts are not parameters: the `within d { }` scope (F4)
-  carries one deadline for every park inside it.
+- Per-call timeouts are not parameters: the `within d { }` scope
+  carries one deadline for every park inside it (§12).
+
+## 12. As built (F5 — @std/http, one task per connection)
+
+- DEADLINES ARE A SCOPE, NEVER A PARAMETER (P6). A timeout parameter is
+  explicit at one call and threads by hand through every layer; a callee
+  the caller does not own (a handler's query) cannot inherit it.
+  `within d { … }` is both: lexically visible, and every park inside —
+  in this task or one it spawns — ends by it. Nested scopes take the
+  earlier deadline; the block restores the outer one however it exits.
+  A park past it fails its verb (`NetError.timed_out()`); `sleep` is
+  unaffected until F4 brings cancellation at every pause point. The head
+  is a `Duration`: `within` is `@std/time`'s component, and its template's
+  typed `limit` says so ("`limit` declares `Duration`, this is `int`").
+  One mechanism for the concept: @std/process's
+  `within:` parameters were renamed `limit:`, and moving them onto the
+  scope is recorded.
+- `Tasks` IS THE OWNER A LOOP THAT NEVER ENDS NEEDS. `Tasks.new()`,
+  `owner.push(spawn e)`: answers are discarded, and a full owner sheds
+  its finished tasks before it grows (O(1) amortized — 2M tasks through
+  one owner peak at 25 MB). It is an owner under the task law: joined
+  where its binding ends, refused in a field, an answer or a capture.
+- THE SERVER: `run` accepts on the calling task and spawns each
+  connection; `stop` closes the listener. Each connection holds its OWN
+  COPY of the application: a plain field is that connection's state,
+  and shared state is a `Cell` the application declares. The framing
+  laws are the old loop's, unchanged. The client parks under `within`.
+- THE POLLER REGISTERS ONCE, EDGE-TRIGGERED, and caches readiness: an
+  edge sets a direction's bit, a short read or a park clears it, and a
+  read whose socket is known drained parks before reading. A peer's end
+  is STICKY readiness, or a FIN landing with the last bytes is never
+  seen (std-net's `parked_eof`, witnessed stalling without it). It holds
+  while every close of a parkable descriptor goes through
+  `avra_fiber_fd_closing`.
+- MEASURED on a Linux Sprite (8 × EPYC, server pinned to one core, wrk
+  on the rest; `tools/bench/wrk.sh`, `FLOOR=1` for the C floor):
+
+  | | keep-alive c=50 | c=200 | c=1000 | pipelined ×16 |
+  |---|---|---|---|---|
+  | old event loop | 39.4k | 35.6k | 33.8k | 167k |
+  | task per connection | 41.9k | 41.5k | 36.0k | 164k |
+  | C floor (epoll, read + write only) | 65.4k | 65.5k | 60.9k | 1.03M |
+
+  Syscalls per request match the floor (one read, one write). The gap is
+  user space — about 5 µs a request against the floor's 1 µs
+  (`tools/bench/request`): immutable values copied instead of reused.
+  That is the reuse-in-place campaign's, not HTTP's.
+
+
+## 13. As built (cores — @std/http on every core)
+
+- ONE PROCESS PER CORE, SHARING NOTHING (P6: the thread-vs-process
+  choice dissolves once nothing is shared — then a process IS the
+  thread-local runtime, with the kernel as the isolation proof). Every
+  global the runtime holds (`g_current`, the free lists, the poller, the
+  timer heap, the descriptor table) stays a plain global. Measured on
+  the Sprite (x86-64, the runtime's `-fPIC` archive): a free-list take
+  + give costs 3.1 ns as a global and 6.0 ns as `__thread` (every
+  access through the TLS resolver), and every allocation pays it; a
+  fork costs 2.5 ms with 64 MB touched, once at start. Threads return
+  with the fork campaign's atomic retains (§1), for work that SHARES.
+- ONE LISTENER, FORKED: the cores accept from one queue. SO_REUSEPORT
+  measured no better on the C floor (below, within noise at every N),
+  and it would weaken the listener's refusal of a second binder
+  (std-net's `net_bound`).
+- `runtime/avra_cores.c`: a GROUP is a private record, one shared page
+  of slots (a core's live count, what it accepted, its errno), and
+  pipes that carry no bytes. The supervisor holds the ONE stop pipe's
+  write end: closing it — or dying — is end-of-file in every core. Each
+  core holds the write end of its OWN pipe, closed by the kernel however
+  the core ends, so the supervisor parks on it and learns of a crash
+  without a signal handler. A core keeps the calling task alone
+  (`avra_fiber_forked`) and closes every descriptor but the standard
+  three, the listener and its two pipe ends; buffered output is flushed
+  before the fork, so nothing prints once per core.
+- A CELL IS PER CORE, AND THE TYPE SAYS SO (owner, 2026-09-23): the
+  server takes a MAKER, run once on each core — `served(l, () -> App {
+  hits: Cell.new(0) }, …)`. Its seat is `isolated`: a fn that shares
+  nothing with its caller. F2111 refuses a lambda there that captures an
+  identity (a `Cell`, a task, a pointer, a fn value, a `dyn`, a type
+  parameter — or a record or enum holding one), and a fn VALUE whose
+  captures are unknown; a declared fn and an `isolated` parameter pass
+  on. The promise is `SeatMark.unshared`, so it rides the fn type: a fn
+  with an `isolated` seat does not fit a fn type promising none.
+  Cross-core shared state (`Shared<T>`, atomics) is a later slice.
+- ONE SPELLING: `s.run()` serves on every core this process may run on
+  (its affinity mask); `s.run(cores: 1)` serves on the calling task with
+  no process of its own, as F5 did. The default needed F2104 narrowed:
+  a default whose seat names no type parameter is one body even in a
+  generic fn (and a generic call now unifies only the seats it writes).
+- A CORE THAT CRASHES STOPS THE SERVER (fail-fast): placement never
+  changes what a program means, so a trap on one core of four ends it as
+  it would on one. The rest are told to stop, drain their connections,
+  and `run` traps "core i of n ended with status s — the server
+  stopped" (or "was killed by signal k"). Restart is policy for a
+  process manager above, which sees the exit. A core whose accept FAILS
+  (not a crash) answers `run`'s `Err`. `stop` (or the supervisor dying)
+  reaches every core.
+- MEASURED on a Linux Sprite (8 × EPYC; the server on cores 0..N-1, wrk
+  on the rest; `CORES=N sh tools/bench/wrk.sh`, `FLOOR=1` for the C
+  floor, forked N ways the same way):
+
+  | req/s | N | keep-alive c=50 | c=200 | c=1000 | pipelined ×16 |
+  |---|---|---|---|---|---|
+  | Avra | 1 | 43.8k | 42.6k | 35.5k | 151k |
+  | Avra | 2 | 86.7k (1.98×) | 85.3k (2.00×) | 73.2k (2.06×) | 294k (1.95×) |
+  | Avra | 4 | 165k (3.77×) | 184k (4.31×) | 161k (4.55×) | 592k (3.92×) |
+  | C floor | 1 | 73.3k | 70.7k | 61.4k | 1.08M |
+  | C floor | 2 | 143k | 143k | 129k | 2.14M |
+  | C floor | 4 | 261k | 264k | 254k | 3.21M |
+
+  Within 10% of linear at 4 cores in every column. Server CPU per
+  request does not move with N (23 µs keep-alive, 6.7 µs pipelined), so
+  the scaling is the kernel's; the gap to the floor is the per-request
+  user space (reuse in place, §12). At 4 cores the floor's pipelined
+  column is wrk-bound (4 generator threads), not server-bound.
+- RECORDED, NOT BUILT: `isolated` is spelled on a declared fn's seats
+  (`fn`, `static fn`, `mut fn`) — a lambda's, a trait's and a fn TYPE's
+  cannot spell it yet; `@std/meta`'s `Param` does not carry it across
+  the derive crossing; a descriptor held as an `int` inside a captured
+  record is closed in each core, so its use fails loud (EBADF) rather
+  than sharing. The ELF link now puts the runtime archive LAST, so a
+  member only a package object reaches is not dropped.

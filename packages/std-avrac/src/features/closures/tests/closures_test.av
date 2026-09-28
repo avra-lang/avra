@@ -10,21 +10,32 @@ spec "features/closures" {
             shown("let f = (x: int) -> x * 2\nf(21)") == "42"
         }
         then "a capture rides by value — the box outlives the frame" {
-            shown("fn adder(n: int) -> fn(int) -> int {\n    (x: int) -> x + n\n}\nlet f = adder(40)\nf(2)") == "42"
+            shown(
+                "fn adder(n: int) -> fn(int) -> int {\n    (x: int) -> x + n\n}\nlet f = adder(40)\nf(2)",
+            ) == "42"
         }
         then "a named fn is a value wearing its signature" {
-            shown("fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 21)") == "42"
+            shown(
+                "fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 21)",
+            ) == "42"
         }
         then "fn seats unify structurally through generics" {
-            shown("fn apply<T>(f: fn(T) -> T, v: T) -> T {\n    f(v)\n}\napply((x: int) -> x + 2, 40)") == "42"
+            shown(
+                "fn apply<T>(f: fn(T) -> T, v: T) -> T {\n    f(v)\n}\napply((x: int) -> x + 2, 40)",
+            ) == "42"
         }
         then "a fn-typed FIELD dispatches through the dot — the capability record" {
-            shown("type Ops = { scale: fn(int) -> int }\nlet s: fn(int) -> int = (x: int) -> x * 7\nlet ops = Ops { scale: s }\nops.scale(6)") == "42"
+            shown(
+                "type Ops = { scale: fn(int) -> int }\nlet s: fn(int) -> int = (x: int) -> x * 7\nlet ops = Ops { scale: s }\nops.scale(6)",
+            ) == "42"
         }
     }
     given "the refusals, each in its own words" {
         then "a lambda no slot informs refuses at the walk's end" {
-            refused_with("let f = (x) -> x + 1\n2", "`x` needs a type — this lambda's slot tells it nothing")
+            refused_with(
+                "let f = (x) -> x + 1\n2",
+                "`x` needs a type — this lambda's slot tells it nothing",
+            )
         }
         then "an unannotated lambda HEARS a declared slot" {
             shown("let f: fn(int) -> int = (x) -> x * 2\nf(21)") == "42"
@@ -33,7 +44,10 @@ spec "features/closures" {
             shown("[1, 2, 3].map(it * 10)[2]") == "30"
         }
         then "an applied EXPRESSION that holds no fn refuses with its name" {
-            refused_with("let n = 5\nlet xs = [n]\nxs[0](2)", "this is not callable — it holds a `int`")
+            refused_with(
+                "let n = 5\nlet xs = [n]\nxs[0](2)",
+                "this is not callable — it holds a `int`",
+            )
         }
         then "a call chains through what a call answered" {
             shown("fn adder(n: int) -> fn(int) -> int {\n    (x: int) -> x + n\n}\nadder(40)(2)") == "42"
@@ -42,26 +56,39 @@ spec "features/closures" {
             refused_with("let n = 5\nn(1)", "`n` is not callable — it holds a `int`")
         }
         then "a generic fn is not a value" {
-            refused_with("fn id<T>(v: T) -> T {\n    v\n}\nlet g = id\n2", "a generic fn is not a value")
+            refused_with(
+                "fn id<T>(v: T) -> T {\n    v\n}\nlet g = id\n2",
+                "a generic fn is not a value",
+            )
         }
         then "`return` cannot escape a lambda" {
-            refused_with("fn f() -> int {\n    let g = (v: int) -> if v > 0 {\n        return v\n    } else {\n        0\n    }\n    g(1)\n}\nf()",
-                         "a `return` answers a fn, and there is none enclosing")
+            refused_with(
+                "fn f() -> int {\n    let g = (v: int) -> if v > 0 {\n        return v\n    } else {\n        0\n    }\n    g(1)\n}\nf()",
+                "a `return` answers a fn, and there is none enclosing",
+            )
         }
         then "a fn value refuses the seat it does not wear" {
-            refused_with("let f: fn(int) -> bool = (x: int) -> x + 1\n2",
-                         "`f` declares `fn(int) -> bool`, this is `fn(int) -> int`")
+            refused_with(
+                "let f: fn(int) -> bool = (x: int) -> x + 1\n2",
+                "`f` declares `fn(int) -> bool`, this is `fn(int) -> int`",
+            )
         }
     }
     given "a fn type answering nothing" {
         then "a parameter of type `fn(int)` takes a valueless lambda" {
-            shown("fn noop(n: int) { }\nfn run(f: fn(int)) -> int {\n    f(1)\n    2\n}\nrun((n: int) -> noop(n))") == "2"
+            shown(
+                "fn noop(n: int) { }\nfn run(f: fn(int)) -> int {\n    f(1)\n    2\n}\nrun((n: int) -> noop(n))",
+            ) == "2"
         }
         then "`fn()` takes a thunk" {
-            shown("fn noop(n: int) { }\nfn twice(f: fn()) -> int {\n    f()\n    f()\n    3\n}\ntwice(() -> noop(0))") == "3"
+            shown(
+                "fn noop(n: int) { }\nfn twice(f: fn()) -> int {\n    f()\n    f()\n    3\n}\ntwice(() -> noop(0))",
+            ) == "3"
         }
         then "a field may hold one" {
-            shown("fn noop(n: int) { }\ntype H = { on: fn(int) }\nlet h = H { on: (n: int) -> noop(n) }\nh.on(3)\n4") == "4"
+            shown(
+                "fn noop(n: int) { }\ntype H = { on: fn(int) }\nlet h = H { on: (n: int) -> noop(n) }\nh.on(3)\n4",
+            ) == "4"
         }
     }
     given "a trailing comma in every comma list" {
@@ -71,39 +98,61 @@ spec "features/closures" {
     }
     given "the body hears the answer — a typed let's arrow reaches into the lambda" {
         then "a bare variant reads the declared Result" {
-            shown("enum E {\n    bad\n}\nlet f: fn(int) -> Result<int, E> = (n: int) -> if n > 0 { .Ok(n * 4) } else { .Err(E.bad) }\n\"\${f(5) catch 0 - 1} \${f(0 - 5) catch 0 - 1}\"") == "20 -1"
+            shown(
+                "enum E {\n    bad\n}\nlet f: fn(int) -> Result<int, E> = (n: int) -> if n > 0 { .Ok(n * 4) } else { .Err(E.bad) }\n\"\${f(5) catch 0 - 1} \${f(0 - 5) catch 0 - 1}\"",
+            ) == "20 -1"
         }
         then "a free Var in the body is pinned by the declared answer" {
-            shown("fn empty<T>() -> List<T> {\n    []\n}\nlet f: fn() -> List<int> = () -> empty()\nf().length") == "0"
+            shown(
+                "fn empty<T>() -> List<T> {\n    []\n}\nlet f: fn() -> List<int> = () -> empty()\nf().length",
+            ) == "0"
         }
         then "a struct in the body boxes into a declared dyn answer, and the lambda wears the answer" {
-            shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nlet mk: fn(int) -> dyn Show = (n: int) -> P { x: n }\nmk(4).show()") == "4"
+            shown(
+                "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nlet mk: fn(int) -> dyn Show = (n: int) -> P { x: n }\nmk(4).show()",
+            ) == "4"
         }
     }
     given "`mut` in a fn TYPE — a seat's contract travels with it" {
         then "a writing fn fills a seat that permits writing, and writes" {
-            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\n\"\${g(ys, 2)} \${ys.length}\"") == "2 2"
+            shown(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\n\"\${g(ys, 2)} \${ys.length}\"",
+            ) == "2 2"
         }
         then "a field seat carries the contract" {
-            shown("type Rows = { grow: fn(mut List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nmut ys = [1]\nlet r = Rows { grow: writes }\n\"\${r.grow(ys, 9)} \${ys.length}\"") == "2 2"
+            shown(
+                "type Rows = { grow: fn(mut List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nmut ys = [1]\nlet r = Rows { grow: writes }\n\"\${r.grow(ys, 9)} \${ys.length}\"",
+            ) == "2 2"
         }
         then "a parameter seat carries it too" {
-            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nfn through(g: fn(mut List<int>, int) -> int, mut xs: List<int>) -> int {\n    g(xs, 9)\n}\nmut ys = [1]\n\"\${through(writes, ys)} \${ys.length}\"") == "2 2"
+            shown(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nfn through(g: fn(mut List<int>, int) -> int, mut xs: List<int>) -> int {\n    g(xs, 9)\n}\nmut ys = [1]\n\"\${through(writes, ys)} \${ys.length}\"",
+            ) == "2 2"
         }
         then "a fn type is an answer like any other" {
-            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nfn picked() -> fn(mut List<int>, int) -> int {\n    writes\n}\nmut ys = [1]\n\"\${picked()(ys, 5)} \${ys.length}\"") == "2 2"
+            shown(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nfn picked() -> fn(mut List<int>, int) -> int {\n    writes\n}\nmut ys = [1]\n\"\${picked()(ys, 5)} \${ys.length}\"",
+            ) == "2 2"
         }
         then "a seat that PERMITS writing accepts a fn that does not write" {
-            shown("fn reads(xs: List<int>) -> int {\n    xs.length\n}\nlet g: fn(mut List<int>) -> int = reads\nmut ys = [1, 2]\ng(ys)") == "2"
+            shown(
+                "fn reads(xs: List<int>) -> int {\n    xs.length\n}\nlet g: fn(mut List<int>) -> int = reads\nmut ys = [1, 2]\ng(ys)",
+            ) == "2"
         }
         then "a lambda fills a writing seat — a lambda writes through nothing" {
-            shown("let g: fn(mut List<int>) -> int = (xs: List<int>) -> xs.length\nmut ys = [1, 2, 3]\ng(ys)") == "3"
+            shown(
+                "let g: fn(mut List<int>) -> int = (xs: List<int>) -> xs.length\nmut ys = [1, 2, 3]\ng(ys)",
+            ) == "3"
         }
         then "two marked seats, two roots" {
-            shown("fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length + b.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\nmut y = [0]\n\"\${g(x, y)} \${x.length} \${y.length}\"") == "4 2 2"
+            shown(
+                "fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length + b.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\nmut y = [0]\n\"\${g(x, y)} \${x.length} \${y.length}\"",
+            ) == "4 2 2"
         }
         then "the mark rides a trailing comma like every other list" {
-            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int,) -> int = writes\nmut ys = [1]\ng(ys, 2)") == "2"
+            shown(
+                "fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int,) -> int = writes\nmut ys = [1]\ng(ys, 2)",
+            ) == "2"
         }
     }
 }

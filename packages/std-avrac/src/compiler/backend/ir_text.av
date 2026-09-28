@@ -1,22 +1,43 @@
 //! The human projection of Lowered IR (P7): brackets as braces, one
 //! instruction per line, registers by mint order. What `avra ir`
 //! prints and the golden tests pin.
-use core.{quoted_text, Ins, Reg, Level, joined, flatten, filled, op_symbol, un_symbol, Static, StaticBox, Slot}
+use core.{
+    quoted_text,
+    Ins,
+    Reg,
+    Level,
+    joined,
+    flatten,
+    filled,
+    op_symbol,
+    un_symbol,
+    Static,
+    StaticBox,
+    Slot,
+}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
 
 export fn render_ir(l: Lowered) -> string {
-    joined(flatten([fn_block(l, b) for b in l.fns]).concat(flatten([static_block(s) for s in l.statics])).concat(body_lines(l.entry.ins)), "\n")
+    joined(
+        flatten([fn_block(l, b) for b in l.fns])
+            .concat(flatten([static_block(s) for s in l.statics]))
+            .concat(body_lines(l.entry.ins)),
+        "\n",
+    )
 }
 
 /// One static as its lines: each box by index, the root last.
 fn static_block(s: Static) -> List<string> {
-    ["static ${s.name} {"].concat([line(1, "${j}: ${box_text(b)}") for j, b in s.boxes]).concat(["}", ""])
+    ["static ${s.name} {"]
+        .concat([line(1, "${j}: ${box_text(b)}") for j, b in s.boxes])
+        .concat(["}", ""])
 }
 
 fn box_text(b: StaticBox) -> string {
     match b {
         .Slots(cells) -> "[${joined([slot_text(c) for c in cells], ", ")}]",
+        .Octets(b) -> "octets(${b.length})",
         .Table(keys, values) -> "{${joined(["${quoted_text(k)}: ${slot_text(values[j])}" for j, k in keys], ", ")}}",
     }
 }
@@ -30,12 +51,14 @@ fn slot_text(c: Slot) -> string {
         .Box(at) -> "@${at}",
         .Null -> "null",
         .Absent -> "absent",
+        .Code(sym) -> "code(${sym})",
     }
 }
 
 /// One fn as its lines: signature, body, a separating blank.
 fn fn_block(l: Lowered, b: Body) -> List<string> {
-    ["fn ${b.name}(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}"].concat(body_lines(b.ins).concat([""]))
+    ["fn ${b.name}(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}"]
+        .concat(body_lines(b.ins).concat([""]))
 }
 
 /// A fn's params as registers with their type names.
@@ -54,43 +77,43 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .ScopeEnter(tier) -> {
                 lines.push(line(depth, "scope ${tier_word(tier)} {"))
                 depth = depth + 1
-            }
+            },
             .ScopeExit(gives) -> {
                 if gives != null { lines.push(yield_line(depth, gives!)) }
                 depth = depth - 1
                 lines.push(line(depth, "}"))
-            }
+            },
             .IfStart(c) -> {
                 lines.push(line(depth, "if r${c.index} {"))
                 switched.push(false)
                 depth = depth + 1
-            }
+            },
             .SwitchStart(sel, cases) -> {
                 lines.push(line(depth, "switch r${sel.index} over [${int_list(cases)}] {"))
-                // LICENSED I15: a region STACK across arms, not a bracket body
+                // LICENSED compiler.bracket_ritual: a region STACK across arms, not a bracket body
                 switched.push(true)
                 depth = depth + 1
-            }
+            },
             .ArmEnd(gives) -> {
                 lines.push(yield_line(depth, gives))
                 depth = depth - 1
                 let word = if switched.last() ?? false { "arm" } else { "else" }
                 lines.push(line(depth, "} ${word} {"))
                 depth = depth + 1
-            }
+            },
             .RegionEnd(dst, gives) -> {
                 lines.push(yield_line(depth, gives))
                 depth = depth - 1
                 let _ = switched.pop()
                 lines.push(line(depth, "} -> r${dst.index}"))
-            }
+            },
             .ConstInt(d, v) -> lines.push(line(depth, "r${d.index} = int ${v}")),
             .ConstFloat(d, bits) -> lines.push(line(depth, "r${d.index} = float ${avra_float_text_bits(bits)}")),
             .ConstStr(d, s) -> lines.push(line(depth, "r${d.index} = str ${quoted_text(s)}")),
             .ConstBool(d, v) -> {
                 let word = if v { "true" } else { "false" }
                 lines.push(line(depth, "r${d.index} = bool ${word}"))
-            }
+            },
             .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_symbol(op)} r${b.index}")),
             .Un(d, op, src) -> lines.push(line(depth, "r${d.index} = ${un_symbol(op)}r${src.index}")),
             .CallRt(d, callee, args) -> lines.push(call_line(depth, d, callee, args)),
@@ -100,6 +123,8 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .Call(d, callee, args) -> lines.push(call_line(depth, d, callee, args)),
             .FnAddr(d, sym) -> lines.push(line(depth, "r${d.index} = addr ${sym}")),
             .StaticAddr(d, sym) -> lines.push(line(depth, "r${d.index} = static ${sym}")),
+            .OnceRead(d, sym) -> lines.push(line(depth, "r${d.index} = once ${sym}")),
+            .OnceCommit(sym, value) -> lines.push(line(depth, "once ${sym} <- r${value.index}")),
             .CallPtr(d, f, args) -> lines.push(line(depth, "r${d.index} = callptr r${f.index}(${reg_list(args)})")),
             .Alloca(d) -> lines.push(line(depth, "r${d.index} = slot")),
             .Load(d, slot) -> lines.push(line(depth, "r${d.index} = load r${slot.index}")),
@@ -107,12 +132,12 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .LoopStart -> {
                 lines.push(line(depth, "loop {"))
                 depth = depth + 1
-            }
+            },
             .LoopCond(c) -> lines.push(line(depth, "while r${c.index}")),
             .LoopEnd -> {
                 depth = depth - 1
                 lines.push(line(depth, "}"))
-            }
+            },
             .Release(r) -> lines.push(line(depth, "release r${r.index}")),
             .Retain(r) -> lines.push(line(depth, "retain r${r.index}")),
             .RetVal(r) -> lines.push(line(depth, "ret r${r.index}")),

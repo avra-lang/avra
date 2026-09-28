@@ -7,18 +7,22 @@
 // it and both are pinned below — one as a WARNING about behaviour that
 // stands, one as a refusal that did not exist.
 use @std.text.{from_codepoint}
-use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, slots, width, standing, class_at, int_at, text_at, blob_at}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{memory_used}
-use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes,
-                   sqlite3_hard_heap_limit64}
+use @std.sqlite.c.{
+    sqlite3_column_type,
+    sqlite3_column_blob,
+    sqlite3_column_bytes,
+    sqlite3_hard_heap_limit64,
+}
 
 // ── The fixtures, so each case shows only its attack ─────────────
 
 /// A memory database with `t(v integer)` and nothing in it.
 fn fresh() -> Result<Db, SqlError> {
-    mut db = memory()?
+    let db = Db.memory()?
     let _ = run(db, "create table t(v integer)")?
     db
 }
@@ -43,16 +47,16 @@ fn cw(c: Storage) -> string {
 fn rows_in(db: Db) -> string { ik(one_int(db, "select count(*) from t")) }
 
 fn one_int(db: Db, sql: string) -> Result<int, SqlError> {
-    mut s = prepare(db, sql)?
+    let s = db.prepare(sql)?
     let v = head_int(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     v
 }
 
 fn head_int(s: Stmt) -> Result<int, SqlError> {
-    let more = step(s)?
+    let more = s.step()?
     if !more { fail no_row_here() }
-    int_at(s, 0)
+    s.int_at(0)
 }
 
 fn no_row_here() -> SqlError {
@@ -64,91 +68,76 @@ fn no_row_here() -> SqlError {
 /// AN INSERT STEPPED THREE TIMES. Every step answers DONE, and each one
 /// RUNS THE STATEMENT AGAIN.
 fn insert_thrice() -> string {
-    match fresh() {
-        .Ok(db) -> thrice(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> thrice(db), .Err(e) -> e.cause.kind() }
 }
 
 fn thrice(db: Db) -> string {
-    let word = match prepare(db, "insert into t(v) values (1)") {
+    let word = match db.prepare("insert into t(v) values (1)") {
         .Ok(s) -> stepped_thrice(s),
         .Err(e) -> e.cause.kind(),
     }
     let n = rows_in(db)
-    let _ = close(db)
+    let _ = db.close()
     "${word} rows=${n}"
 }
 
 fn stepped_thrice(s: Stmt) -> string {
-    let w = "${sk(step(s))} ${sk(step(s))} ${sk(step(s))}"
-    let _ = finalize(s)
+    let w = "${sk(s.step())} ${sk(s.step())} ${sk(s.step())}"
+    let _ = s.finalize()
     w
 }
 
 /// A SELECT stepped past DONE hands its rows out AGAIN.
 fn select_past_done() -> string {
-    match fresh() {
-        .Ok(db) -> two_passes(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> two_passes(db), .Err(e) -> e.cause.kind() }
 }
 
 fn two_passes(db: Db) -> string {
     let _ = run(db, "insert into t(v) values (1), (2)")
-    let word = match prepare(db, "select v from t") {
+    let word = match db.prepare("select v from t") {
         .Ok(s) -> five_steps(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn five_steps(s: Stmt) -> string {
-    let w = "${sk(step(s))} ${sk(step(s))} ${sk(step(s))} | ${sk(step(s))} ${sk(step(s))}"
-    let _ = finalize(s)
+    let w = "${sk(s.step())} ${sk(s.step())} ${sk(s.step())} | ${sk(s.step())} ${sk(s.step())}"
+    let _ = s.finalize()
     w
 }
 
 /// A BIND after a STEP, with no RESET between them.
 fn rebound_late() -> string {
-    match fresh() {
-        .Ok(db) -> late(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> late(db), .Err(e) -> e.cause.kind() }
 }
 
 fn late(db: Db) -> string {
-    let word = match prepare(db, "insert into t(v) values (?1)") {
+    let word = match db.prepare("insert into t(v) values (?1)") {
         .Ok(s) -> bind_step_bind(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn bind_step_bind(s: Stmt) -> string {
-    let a = ik(bind_int(s, 1, 10))
-    let b = sk(step(s))
-    let c = ik(bind_int(s, 1, 20))
-    let _ = finalize(s)
+    let a = ik(s.bind_int(1, 10))
+    let b = sk(s.step())
+    let c = ik(s.bind_int(1, 20))
+    let _ = s.finalize()
     "bind=${a} step=${b} rebind=${c}"
 }
 
 /// EVERY VERB AFTER FINALIZE.
 fn after_finalize() -> string {
-    match fresh() {
-        .Ok(db) -> dead(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> dead(db), .Err(e) -> e.cause.kind() }
 }
 
 fn dead(db: Db) -> string {
-    let word = match prepare(db, "select 1") {
-        .Ok(s) -> used_after(s),
-        .Err(e) -> e.cause.kind(),
-    }
-    let _ = close(db)
+    let word = match db.prepare("select 1") { .Ok(s) -> used_after(s), .Err(e) -> e.cause.kind() }
+    let _ = db.close()
     word
 }
 
@@ -157,33 +146,27 @@ fn dead(db: Db) -> string {
 /// not swallow it: `width=1` says the statement is there, `standing=0`
 /// says no row is, and the refusal must name the ROW.
 fn live_before_step() -> string {
-    match fresh() {
-        .Ok(db) -> unstepped(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> unstepped(db), .Err(e) -> e.cause.kind() }
 }
 
 fn unstepped(db: Db) -> string {
-    let word = match prepare(db, "select 1") {
-        .Ok(s) -> read_early(s),
-        .Err(e) -> e.cause.kind(),
-    }
-    let _ = close(db)
+    let word = match db.prepare("select 1") { .Ok(s) -> read_early(s), .Err(e) -> e.cause.kind() }
+    let _ = db.close()
     word
 }
 
 fn read_early(s: Stmt) -> string {
-    let said = "width=${width(s)} standing=${standing(s)} int=${ik(int_at(s, 0))} bind=${ik(bind_int(s, 1, 1))}"
-    let _ = finalize(s)
+    let said = "width=${s.width()} standing=${s.standing()} int=${ik(s.int_at(0))} bind=${ik(s.bind_int(1, 1))}"
+    let _ = s.finalize()
     said
 }
 
 fn used_after(s: Stmt) -> string {
-    let rc = finalize(s)
-    "finalize=${rc} step=${sk(step(s))} reset=${reset(s)}" +
-    " width=${width(s)} standing=${standing(s)} slots=${slots(s)}" +
-    " class=${ck(class_at(s, 0))} int=${ik(int_at(s, 0))}" +
-    " bind_int=${ik(bind_int(s, 1, 1))} bind_text=${ik(bind_text(s, 1, "x"))}"
+    let rc = s.finalize()
+    "finalize=${rc} step=${sk(s.step())} reset=${s.reset()}" +
+        " width=${s.width()} standing=${s.standing()} slots=${s.slots()}" +
+        " class=${ck(s.class_at(0))} int=${ik(s.int_at(0))}" +
+        " bind_int=${ik(s.bind_int(1, 1))} bind_text=${ik(s.bind_text(1, "x"))}"
 }
 
 // ── The copy at the boundary ─────────────────────────────────────
@@ -192,29 +175,26 @@ fn used_after(s: Stmt) -> string {
 /// copy. Read row one, step to row two, and row one's text must still
 /// be row one's text.
 fn text_survives_a_step() -> string {
-    match fresh() {
-        .Ok(db) -> two_rows(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> two_rows(db), .Err(e) -> e.cause.kind() }
 }
 
 fn two_rows(db: Db) -> string {
     let _ = run(db, "insert into t(v) values (11), (22)")
-    let word = match prepare(db, "select cast(v as text) from t order by v") {
+    let word = match db.prepare("select cast(v as text) from t order by v") {
         .Ok(s) -> read_then_step(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn read_then_step(s: Stmt) -> string {
-    let _ = step(s)
-    let first = tk(text_at(s, 0))
-    let _ = step(s)
-    let second = tk(text_at(s, 0))
-    let again = tk(text_at(s, 0))
-    let _ = finalize(s)
+    let _ = s.step()
+    let first = tk(s.text_at(0))
+    let _ = s.step()
+    let second = tk(s.text_at(0))
+    let again = tk(s.text_at(0))
+    let _ = s.finalize()
     "first=${first} second=${second} first_still=${again == second} kept=${first}"
 }
 
@@ -223,18 +203,18 @@ fn read_then_step(s: Stmt) -> string {
 fn octets_hold_nuls() -> string { in_memory(holed_blob) }
 
 fn holed_blob(db: Db) -> string {
-    let word = match prepare(db, "select x'004100ff00'") {
+    let word = match db.prepare("select x'004100ff00'") {
         .Ok(s) -> stepped_blob(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn stepped_blob(s: Stmt) -> string {
-    let _ = step(s)
-    let said = "blob=${bk(blob_at(s, 0))} as_text=${tk(text_at(s, 0))}"
-    let _ = finalize(s)
+    let _ = s.step()
+    let said = "blob=${bk(s.blob_at(0))} as_text=${tk(s.text_at(0))}"
+    let _ = s.finalize()
     said
 }
 
@@ -242,20 +222,17 @@ fn stepped_blob(s: Stmt) -> string {
 fn text_holds_a_nul() -> string { in_memory(nul_round_trip) }
 
 fn nul_round_trip(db: Db) -> string {
-    let word = match prepare(db, "select ?") {
-        .Ok(s) -> bound_nul(s),
-        .Err(e) -> e.cause.kind(),
-    }
-    let _ = close(db)
+    let word = match db.prepare("select ?") { .Ok(s) -> bound_nul(s), .Err(e) -> e.cause.kind() }
+    let _ = db.close()
     word
 }
 
 fn bound_nul(s: Stmt) -> string {
     let held = "ab" + from_codepoint(0) + "cd"
-    let _ = bind_text(s, 1, held)
-    let _ = step(s)
-    let said = "sent=${held.length} back=${tk(text_at(s, 0))}"
-    let _ = finalize(s)
+    let _ = s.bind_text(1, held)
+    let _ = s.step()
+    let said = "sent=${held.length} back=${tk(s.text_at(0))}"
+    let _ = s.finalize()
     said
 }
 
@@ -263,18 +240,18 @@ fn bound_nul(s: Stmt) -> string {
 fn a_big_blob() -> string { in_memory(big_blob) }
 
 fn big_blob(db: Db) -> string {
-    let word = match prepare(db, "select zeroblob(1048576)") {
+    let word = match db.prepare("select zeroblob(1048576)") {
         .Ok(s) -> stepped_big(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn stepped_big(s: Stmt) -> string {
-    let _ = step(s)
-    let said = bk(blob_at(s, 0))
-    let _ = finalize(s)
+    let _ = s.step()
+    let said = bk(s.blob_at(0))
+    let _ = s.finalize()
     said
 }
 
@@ -288,28 +265,25 @@ fn bk(r: Result<Bytes, SqlError>) -> string {
 
 /// RESET REWINDS AND KEEPS THE BINDINGS.
 fn reset_keeps() -> string {
-    match fresh() {
-        .Ok(db) -> kept(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> kept(db), .Err(e) -> e.cause.kind() }
 }
 
 fn kept(db: Db) -> string {
-    let word = match prepare(db, "insert into t(v) values (?1)") {
+    let word = match db.prepare("insert into t(v) values (?1)") {
         .Ok(s) -> bind_step_reset_step(s),
         .Err(e) -> e.cause.kind(),
     }
     let n = ik(one_int(db, "select count(*) from t where v = 77"))
-    let _ = close(db)
+    let _ = db.close()
     "${word} 77s=${n}"
 }
 
 fn bind_step_reset_step(s: Stmt) -> string {
-    let _ = bind_int(s, 1, 77)
-    let a = sk(step(s))
-    let rc = reset(s)
-    let b = sk(step(s))
-    let _ = finalize(s)
+    let _ = s.bind_int(1, 77)
+    let a = sk(s.step())
+    let rc = s.reset()
+    let b = sk(s.step())
+    let _ = s.finalize()
     "step=${a} reset=${rc} again=${b}"
 }
 
@@ -320,23 +294,23 @@ fn varying() -> string { in_memory(varied) }
 fn varied(db: Db) -> string {
     let _ = run(db, "create table mixed(x)")
     let _ = run(db, "insert into mixed(x) values (1), ('two'), (null)")
-    let word = match prepare(db, "select x from mixed order by rowid") {
+    let word = match db.prepare("select x from mixed order by rowid") {
         .Ok(s) -> three_classes(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
 fn three_classes(s: Stmt) -> string {
     let w = "${one_class(s)} ${one_class(s)} ${one_class(s)}"
-    let _ = finalize(s)
+    let _ = s.finalize()
     w
 }
 
 fn one_class(s: Stmt) -> string {
-    match step(s) {
-        .Ok(m) -> if m { "${ck(class_at(s, 0))}/${ik(int_at(s, 0))}" } else { "DONE" },
+    match s.step() {
+        .Ok(m) -> if m { "${ck(s.class_at(0))}/${ik(s.int_at(0))}" } else { "DONE" },
         .Err(e) -> e.cause.kind(),
     }
 }
@@ -347,19 +321,19 @@ fn nul_trip() -> string { in_memory(tripped) }
 
 fn tripped(db: Db) -> string {
     let _ = run(db, "create table n(t text)")
-    let word = match prepare(db, "insert into n(t) values (?1)") {
+    let word = match db.prepare("insert into n(t) values (?1)") {
         .Ok(s) -> bound_with_nul(s),
         .Err(e) -> e.cause.kind(),
     }
     let bytes = ik(one_int(db, "select length(cast(t as blob)) from n"))
-    let _ = close(db)
+    let _ = db.close()
     "${word} bytes=${bytes}"
 }
 
 fn bound_with_nul(s: Stmt) -> string {
-    let a = ik(bind_text(s, 1, "ab${from_codepoint(0)}cd"))
-    let b = sk(step(s))
-    let _ = finalize(s)
+    let a = ik(s.bind_text(1, "ab${from_codepoint(0)}cd"))
+    let b = sk(s.step())
+    let _ = s.finalize()
     "bind=${a} step=${b}"
 }
 
@@ -367,26 +341,23 @@ fn bound_with_nul(s: Stmt) -> string {
 /// form: the connection is marked and freed when the last derived object
 /// goes, so the statement keeps working.
 fn outlives() -> string {
-    match fresh() {
-        .Ok(db) -> across(db),
-        .Err(e) -> e.cause.kind(),
-    }
+    match fresh() { .Ok(db) -> across(db), .Err(e) -> e.cause.kind() }
 }
 
 fn across(db: Db) -> string {
     let _ = run(db, "insert into t(v) values (1), (2)")
-    match prepare(db, "select v from t order by v") {
+    match db.prepare("select v from t order by v") {
         .Ok(s) -> stepped_across(db, s),
         .Err(e) -> e.cause.kind(),
     }
 }
 
 fn stepped_across(db: Db, s: Stmt) -> string {
-    mut held = s
-    let a = "${sk(step(held))}/${ik(int_at(held, 0))}"
-    let rc = close(db)
-    let b = "${sk(step(held))}/${ik(int_at(held, 0))}"
-    let fin = finalize(held)
+    let held = s
+    let a = "${sk(held.step())}/${ik(held.int_at(0))}"
+    let rc = db.close()
+    let b = "${sk(held.step())}/${ik(held.int_at(0))}"
+    let fin = held.finalize()
     "before=${a} close=${rc} after=${b} finalize=${fin}"
 }
 
@@ -396,7 +367,7 @@ fn nested(n: int) -> string { in_memory((db) -> deep(db, n)) }
 
 fn deep(db: Db, n: int) -> string {
     let word = ik(one_int(db, "select ${dup("(", n)}1${dup(")", n)}"))
-    let _ = close(db)
+    let _ = db.close()
     word
 }
 
@@ -407,20 +378,17 @@ fn dup(s: string, n: int) -> string { [s for i in 0..n].join("") }
 fn cell_of(sql: string) -> string { in_memory((db) -> celled(db, sql)) }
 
 fn celled(db: Db, sql: string) -> string {
-    let word = match prepare(db, sql) {
-        .Ok(s) -> three_questions(s),
-        .Err(e) -> e.cause.kind(),
-    }
-    let _ = close(db)
+    let word = match db.prepare(sql) { .Ok(s) -> three_questions(s), .Err(e) -> e.cause.kind() }
+    let _ = db.close()
     word
 }
 
 fn three_questions(s: Stmt) -> string {
-    let out = match step(s) {
+    let out = match s.step() {
         .Ok(m) -> if m { asked_in_order(s) } else { "no row" },
         .Err(e) -> e.cause.kind(),
     }
-    let _ = finalize(s)
+    let _ = s.finalize()
     out
 }
 
@@ -442,8 +410,8 @@ fn blob_under_limit() -> string {
 }
 
 spec "std/sqlite statement adversarial" {
-
     given "a statement stepped PAST done — it runs AGAIN, silently" {
+
         // THE FINDING, and it stands as behaviour rather than a fix.
         // `sqlite3_step` auto-resets after DONE, so a second step
         // RE-EXECUTES. Every step answers DONE and nothing in the answer
@@ -463,15 +431,15 @@ spec "std/sqlite statement adversarial" {
         then "and one insert writes ONE row, however many times it is stepped" { insert_thrice().ends_with("rows=1") }
         then "a SELECT gives each row once and then stops" { select_past_done() == "ROW ROW DONE | sqlite.done sqlite.done" }
     }
-
     given "a bind after a step, with no reset" {
+
         // SQLite answers SQLITE_MISUSE (21). It is the CALLER's protocol
         // mistake, and the driver must not name it a driver defect.
         then "the first bind and step are fine" { rebound_late().starts_with("bind=0 step=DONE") }
         then "the rebind is refused" { rebound_late() == "bind=0 step=DONE rebind=sqlite.defect" }
     }
-
     given "every verb after finalize" {
+
         // EVERY VERB THAT CAN REFUSE NAMES THE LAW. `finalize` nulls the
         // handle, and each read and bind asks the statement before it
         // asks a count — otherwise a finalized statement is zero columns
@@ -491,8 +459,8 @@ spec "std/sqlite statement adversarial" {
         then "the counting verbs answer zero, from the driver" { after_finalize().contains("reset=0 width=0 standing=0 slots=0") }
         then "the whole sequence, exactly" { after_finalize() == "finalize=0 step=sqlite.finalized reset=0 width=0 standing=0 slots=0 class=sqlite.finalized int=sqlite.finalized bind_int=sqlite.finalized bind_text=sqlite.finalized" }
     }
-
     given "a LIVE statement, which the new door must not swallow" {
+
         // ZERO COLUMNS IS NOT NO STATEMENT. The finalized door stands in
         // front of the out-of-row and out-of-slots laws, so a statement
         // that is present but unstepped must still hear THEM — and the
@@ -502,8 +470,8 @@ spec "std/sqlite statement adversarial" {
         then "and the read names the ROW, not the statement" { live_before_step().contains("int=sqlite.out_of_row") }
         then "and the bind names the SLOTS" { live_before_step().ends_with("bind=sqlite.out_of_slots") }
     }
-
     given "the copy at the boundary" {
+
         // SQLite's buffer dies at the next step, reset or finalize.
         // Every one of these would pass with a BORROWED view until the
         // moment the buffer was reused, and then answer whatever was
@@ -515,8 +483,8 @@ spec "std/sqlite statement adversarial" {
         then "text holding a NUL comes back whole" { text_holds_a_nul() == "sent=5 back=5" }
         then "and a megabyte is a megabyte" { a_big_blob() == "1048576" }
     }
-
     given "reset rewinds and KEEPS the bindings" {
+
         then "the statement runs twice on one bind" { reset_keeps() == "step=DONE reset=0 again=DONE 77s=2" }
         // AND IT IS THE REMEDY THE REFUSAL NAMES. A step past DONE is
         // refused precisely so that running the statement again is a
@@ -526,31 +494,31 @@ spec "std/sqlite statement adversarial" {
         then "a reset makes the next step legal again" { reset_keeps().contains("again=DONE") }
         then "and the second run really wrote a second row" { reset_keeps().ends_with("77s=2") }
     }
-
     given "one column, a different class every row" {
+
         then "the class is asked per row, and a wrong read refused per row" {
             varying() == "int/1 text/sqlite.mismatch null/sqlite.mismatch"
         }
     }
-
     given "a NUL bound as text" {
+
         then "every byte arrives — the length is Avra's, never strlen's" { nul_trip() == "bind=0 step=DONE bytes=5" }
     }
-
     given "a statement outliving its connection" {
+
         // close_v2's zombie form is what makes this safe; `close` would
         // answer BUSY and leave the file locked.
         then "it keeps stepping after the connection is closed" {
             outlives() == "before=ROW/1 close=0 after=ROW/2 finalize=0"
         }
     }
-
     given "an expression deeper than the parser allows" {
+
         then "a shallow nest is fine" { nested(10) == "1" }
         then "and a very deep one is REFUSED, never a segfault" { nested(5000) == "sqlite.syntax" }
     }
-
     given "one NULL pointer, three meanings — what the CLASS can separate" {
+
         // `sqlite3_column_blob` answers a NULL pointer for SQL NULL, for
         // a ZERO-LENGTH BLOB, and on an ALLOCATION FAILURE. A read that
         // tested the POINTER would fold all three together; asking the
@@ -558,7 +526,10 @@ spec "std/sqlite statement adversarial" {
         // order is a law and not a style.
         then "SQL NULL is class 5 with a NULL pointer" { cell_of("select null") == "class=5 blob=NULL bytes=0" }
         then "a zero-length blob is class 4 with the SAME NULL pointer" { cell_of("select x''") == "class=4 blob=NULL bytes=0" }
-        then "so the pointer alone cannot tell them apart" { cell_of("select null").contains("blob=NULL") && cell_of("select x''").contains("blob=NULL") }
+        then "so the pointer alone cannot tell them apart" {
+            cell_of("select null").contains("blob=NULL") &&
+                cell_of("select x''").contains("blob=NULL")
+        }
         then "and a real blob is class 4 WITH a pointer" { cell_of("select x'00ff'") == "class=4 blob=ptr bytes=2" }
         // THE THIRD MEANING IS NOT REACHED HERE, and saying so is the
         // point: an allocation failure would need the memory counters,
@@ -566,8 +537,8 @@ spec "std/sqlite statement adversarial" {
         // of the evidence, not a claim about the OOM path.
         then "a big blob succeeds, so no OOM case is covered by these" { blob_under_limit() == "class=4 blob=ptr bytes=8388608" }
     }
-
     given "a heap limit that is stored, reported, and never applied" {
+
         // `SQLITE_DEFAULT_MEMSTATUS=0` buys speed and costs enforcement:
         // the limit lands in `mem0.alarmThreshold` and the allocator
         // never consults it, because the counter it would compare

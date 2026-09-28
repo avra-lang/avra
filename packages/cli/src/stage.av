@@ -3,41 +3,203 @@
 //! gone. Not a command — `test` re-executes this program with the hand-off's
 //! own first word, and the entry reads it before its commands do. The first
 //! red suite stops the run, so a failure names one thing.
-use @std.avrac.compiler.{verdict_of, staged_binaries}
-use @std.process.{status_of}
-use commands.{run_binary, refused_by_host}
+use @std.avrac.compiler.{verdict_of, staged_binaries, Want}
+use @std.avrac.compiler.backend.{run_program}
+use @std.avrac.compiler.lower.{program_symbol}
+use @std.process.{status_of, tool, cmd, Env, Outcome, ProcessError, minimal}
+use @std.text.{parse_int}
+use @std.io.{env}
+use commands.{run_binary, refused_by_host, root_workspace}
+
+/// A `.refuses` test's EVAL leg's own hand-off word — a package's root and
+/// one file under it, never a suite binary.
+const refuse_eval_word = "@refuse-eval"
+
+/// The words a `.refuses` test's eval leg is spawned with.
+export fn refuse_eval_words(root: string, path: string) -> List<string> {
+    [refuse_eval_word, root, path]
+}
 
 /// The light phase's exit when the words are a hand-off; null when
 /// they are a person's line.
 export fn light_phase(words: List<string>) -> int? {
+    if words.first() == refuse_eval_word && words.length == 3 { return refuse_eval(words[1], words[2]) }
     let binaries? = staged_binaries(words) else { return null }
     first_red(binaries)
 }
 
-/// Each suite run in turn: the first red one's code, or 0.
+/// A `.refuses` test's EVAL leg: an EVALUATION NEVER HOLDS A FILE WHOSE
+/// BODY IT CALLS — a hold is a native-link concept (the store's kept
+/// OBJECT stands in for what the evaluator has no linker to read), so
+/// a program calling its own package's held functions met a body with
+/// no instructions and traps on the compiler's OWN defect, not the
+/// law under test. `from_sources(null, Want.Binary)` holds nothing —
+/// every reached body is really there — and asking with NO SINGLE
+/// ENTRY is what already keeps a sibling program test's top level out
+/// of the entry-only law's way (`outside_entry` answers `[]` the
+/// moment `entry == null`, `union`'s `programs` flag lowers every
+/// file's own top level under its `program_symbol` regardless): the
+/// suite's own quarrel-retry (`evaluated()`, suite.av) already reaches
+/// for this exact derivation when a hold taints its first answer, so
+/// this leg reaches for it FIRST. Its own body called by NAME, run
+/// through the evaluator IN THIS PROCESS ALONE — a trap here ends
+/// this child and nothing else, which is the whole point of a leg. A
+/// trap's words on stderr, exit 2; clean, exit 0.
+fn refuse_eval(root: string, path: string) -> int {
+    match root_workspace(root).from_sources(null, Want.Binary) {
+        .Ok(d) -> match run_program(d.lowered, program_symbol(path)) {
+            .Ok(_) -> 0,
+            .Err(words) -> {
+                eprintln("avra: ${words}")
+                2
+            },
+        },
+        .Err(report) -> {
+            println(report)
+            1
+        },
+    }
+}
+
+/// `AVRA_SOUNDNESS` asks for the two extra runs below — off by
+/// default, the way `AVRA_LIGHT` and `--time` are asked for rather
+/// than assumed: two more processes per suite measure noticeably on a
+/// suite already spawning dozens, and the guard's own inflated memory
+/// can trip a budget a plain run never approaches (found on this very
+/// tree's own `features/crossing` stress spec — see the doc's §32).
+fn soundness_wanted() -> bool {
+    env("AVRA_SOUNDNESS") != null
+}
+
+/// Each suite run in turn: the first red one's code, or 0. A suite the
+/// plain run proved green is then run SOUND, when asked — there is
+/// nothing to check in one the plain run already refused.
 fn first_red(binaries: List<string>) -> int {
+    let checked = soundness_wanted()
     for binary in binaries {
         let code = match run_binary(binary) {
-            .Ok(x) -> judged(status_of(x)),
+            .Ok(x) -> judged(binary, status_of(x)),
             .Err(e) -> refused_by_host(e),
         }
         if code != 0 { return code }
+        if checked {
+            let sound = soundness_of(binary)
+            if sound != 0 { return sound }
+        }
     }
     0
 }
 
-/// The verdict as an exit code, its two wrecks spoken.
-fn judged(status: int) -> int {
+/// The verdict as an exit code, EVERY non-green one spoken — a status
+/// is a verdict, and a bare `1` told nobody which suite failed nor
+/// that the run stops here without running the rest.
+export fn judged(binary: string, status: int) -> int {
     match verdict_of(status) {
         .Green -> 0,
-        .Red -> 1,
+        .Red -> {
+            println(
+                "STOPPED — ${binary} reported a failure above; the rest of the suite never ran",
+            )
+            1
+        },
         .CouldNotStart -> {
             println("the binary could not start — the link answered a path that does not run")
             1
-        }
+        },
         .Died -> {
-            println("STOPPED — the case or program named above trapped, and everything after it never ran")
+            println(
+                "STOPPED — the case or program named above trapped, and everything after it never ran",
+            )
             1
-        }
+        },
     }
+}
+
+// ── SOUNDNESS: the same binary, twice more ────────────────────────
+// A green suite is run again under `AVRA_RC_GUARD=1` — a released box
+// is KEPT, poisoned and marked dead, so a stale read answers garbage
+// or traps instead of finding a plausible value by luck (CLAUDE.md's
+// debug guard) — and again under `AVRA_MEM_STATS=1`, whose exact-byte
+// ledger already credits out every `once` cache's answer (a cache
+// held for the process's life is not a leak) and every static
+// aggregate (never touched the ledger to begin with), so zero is what
+// a suite that freed everything it was owed prints. Both runs are the
+// SAME already-linked binary, captured rather than streamed to the
+// terminal — a pass costs two more short-lived processes and says
+// nothing; only a disagreement speaks.
+
+/// The two soundness runs, in order: a stale read would as soon show
+/// up in the tally the guard changes as in the memory the leak check
+/// counts, so the cheaper, more specific signal goes first.
+fn soundness_of(binary: string) -> int {
+    let g = match guarded_run(binary) {
+        .Ok(out) -> guard_verdict(binary, out),
+        .Err(e) -> refused_by_host(e),
+    }
+    if g != 0 { return g }
+    match measured_run(binary) {
+        .Ok(live) -> leak_verdict(binary, live),
+        .Err(e) -> refused_by_host(e),
+    }
+}
+
+/// The binary run again with nothing changed but the guard.
+fn guarded_run(binary: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool(binary)?, []) with { env: soundness_env("AVRA_RC_GUARD") }).outcome()
+}
+
+/// The binary run again with nothing changed but the accounting —
+/// the exact byte count its own ledger printed, or absent when the
+/// line never arrived.
+fn measured_run(binary: string) -> Result<int?, ProcessError> {
+    let out = (cmd(tool(binary)?, []) with { env: soundness_env("AVRA_MEM_STATS") }).outcome()?
+    .Ok(live_bytes(out.out.stderr))
+}
+
+/// A minimal, reproducible environment plus the one flag being asked
+/// for — never the developer's whole world, which a soundness run has
+/// no more need of than the plain run already had.
+fn soundness_env(flag: string) -> Env {
+    minimal().with_var(flag, "1")
+}
+
+/// The guarded run's own verdict, spelled: Green passes silently, and
+/// every other shape is a disagreement the plain run's own compare
+/// did not have the poison to catch.
+fn guard_verdict(binary: string, out: Outcome) -> int {
+    match verdict_of(status_of(out.exit)) {
+        .Green -> 0,
+        .Red -> unsound(binary, "AVRA_RC_GUARD=1 disagreed: a stale read changed the answer"),
+        .CouldNotStart -> unsound(binary, "AVRA_RC_GUARD=1: the binary would not start"),
+        .Died -> unsound(binary, "AVRA_RC_GUARD=1: trapped — a stale read or a double free"),
+    }
+}
+
+/// The measured run's own verdict: zero bytes passes silently, a
+/// present nonzero count is bytes owed and never freed, and an absent
+/// line is the check unable to speak at all — never read as zero.
+fn leak_verdict(binary: string, live: int?) -> int {
+    let n? = live else {
+        return unsound(
+            binary,
+            "AVRA_MEM_STATS=1: no live-byte line printed — the run died before it, or predates the ledger",
+        )
+    }
+    if n == 0 { 0 } else { unsound(binary, "AVRA_MEM_STATS=1: ${n} bytes still live at exit") }
+}
+
+/// The exact byte count off the runtime's own line (CLAUDE.md's
+/// mortal ledger, `runtime/avra_runtime.c`'s `acc_report`) — the one
+/// place this check reads, never the MB-rounded categories beside it.
+fn live_bytes(stderr: string) -> int? {
+    let line? = stderr.split("\n").find(it.starts_with("mem: live ")) else { return null }
+    parse_int(line.substring("mem: live ".length, line.index_of(" bytes")))
+}
+
+/// One soundness voice for both checks: the binary named, the
+/// disagreement in its own words, red.
+fn unsound(binary: string, why: string) -> int {
+    println("SOUNDNESS: ${binary}")
+    println("  ${why}")
+    1
 }

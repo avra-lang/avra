@@ -2,25 +2,36 @@
 //! design. `m.get(k)` answers `V?`, `m.set(k, v)` mutates a place,
 //! `m.length` measures; `{}` is adopted by whatever map claims it,
 //! as `[]` is by a list.
-use features.{LanguageFeature, BuilderRow, MethodRow, ReceiverEffect, TypeRow, PropertyRow, no_variants, measured_reg}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use features.{
+    LanguageFeature,
+    BuilderRow,
+    MethodRow,
+    ReceiverEffect,
+    TypeRow,
+    PropertyRow,
+    no_variants,
+    measured_reg,
+    unknown_answer,
+    void_answer,
+}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn maps() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name      | build
-        "map_lit" | build_map
+        name        | build
+        "map_lit"   | build_map
         "map_empty" | build_map_empty
     }
     let codes = table<DiagCode> {
-        kind             | id      | summary
-        "type.map_key"   | "F2035" | "a map's keys are strings"
-        "type.map_value" | "F2036" | "a map's values share one type"
+        kind             | summary
+        "type.map_key"   | "a map's keys are strings"
+        "type.map_value" | "a map's values share one type"
     }
     let methods = table<MethodRow> {
-        name  | takes  | check     | lower | effect
-        "get" | on_map | check_get | lower_get | ReceiverEffect.Lends
-        "set" | on_map | check_set | lower_set | ReceiverEffect.Write
+        name  | takes  | check     | lower     | effect               | answers
+        "get" | on_map | check_get | lower_get | ReceiverEffect.Lends | unknown_answer
+        "set" | on_map | check_set | lower_set | ReceiverEffect.Write | void_answer
     }
     let types = table<TypeRow> {
         name  | arity | slots | judge       | builds    | variants
@@ -30,17 +41,15 @@ export fn maps() -> LanguageFeature {
         name     | takes  | check            | lower
         "length" | on_map | check_map_length | measured_reg
     }
-    component LanguageFeature f {
-        name = "maps"
-        docs = "`{ \"k\": v, … }` — a string-keyed, insertion-ordered map; `m.get(k)` answers `V?`, `m.set(k, v)` mutates a `mut` place, `m.length` measures."
-        gram = grammar {
+    LanguageFeature maps {
+        gram: grammar {
             primary = "{" BREAK? "}" -> map_empty() | "{" BREAK? k:expression ":" v:expression ( "," BREAK? k:expression ":" v:expression )* ","? BREAK? "}" @expect("}", "expected `}` to close the map") -> map_lit(k, v) | b:block -> b
         }
-        builders = rows
-        diags = codes
-        methods = methods
-        types = types
-        properties = properties
+        builders: rows
+        diags: codes
+        methods: methods
+        types: types
+        properties: properties
     }
-    f
+    maps
 }

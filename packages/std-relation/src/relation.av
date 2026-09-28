@@ -1,0 +1,1085 @@
+//! `@std/relation` — a record type IS a relation's row. `@relation`
+//! reads a declaration's fields and answers what makes its rows durable:
+//! a hash and a codec over every field's STABLE encoding, and the
+//! declaration's own contract, in one `Declared` value.
+//!
+//!     use @std.relation.{relation}
+//!
+//!     @relation
+//!     type Call = { id: int, @index caller: string, @index callee: string, line: int }
+//!
+//! THE VOCABULARY, shared with `@std/db`'s `@model`: a field named `id`
+//! is an `int` the store mints, so it never enters a hash or a record;
+//! `@key` fields together are the row's stable name; `@unique` is a
+//! constraint an insert answers as a `Result`; `@index` is a lookup
+//! that answers a list. A field is an `int`, a `bool`, a `string`, or a
+//! nullable or list of those — a typed id, an enum, a `float` or a type
+//! parameter is refused by name.
+//!
+//! Rows only arrive: a keyed insert replaces the row its key names, and
+//! a keyless one appends, so key a row you will update. Nothing removes
+//! a row but closing its Db. RECORDED TRIGGER: removal arrives with
+//! `@query`, whose rerun replaces the rows it owns — owner: ORM.
+//!
+//! Stands ALONE with `@std/meta` and its own package: the file that
+//! types this derive must not also carry code the annotated file's
+//! names could shadow. The templates' own names (`stable_hasher`,
+//! `Writer`) resolve here.
+use @std.meta.{
+    plans,
+    plans_all,
+    type_named,
+    Type,
+    Field,
+    Mark,
+    Kind,
+    Directive,
+    Diagnostic,
+    Declared,
+    Code,
+    Stmts,
+    Decls,
+    Arms,
+    literal,
+    name,
+    refuse_as_at,
+}
+use rows.{Rows, IndexKey, text_key, int_key, dense_key, bool_key, key_part, int_part, bool_part}
+use db.{Db, Stores, stores}
+use refused.{InsertRefused, unheld, int_text, bool_text}
+use stable.{
+    stable_hasher,
+    text_hash,
+    hashed_opt,
+    hashed_list,
+    written_opt,
+    written_list,
+    written_all,
+    writer,
+    reader,
+    read_opt,
+    read_list,
+    StableHasher,
+    Writer,
+    Reader,
+    CodecFault,
+    tagged,
+}
+
+export trait RelationRow {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: generated(t) }]
+    }
+
+    /// The field marks this derive reads.
+    static fn marks(t: Type) -> List<string> { relation_marks }
+}
+
+/// `@derive(Columns)` — a record carried as a relation's nested column,
+/// hashed and written field by field. It generates nothing: it claims
+/// the `@local` mark, a field this process alone reads.
+export trait Columns {
+    static fn derive(_t: Type) -> List<Directive> { [] }
+
+    static fn marks(_t: Type) -> List<string> { ["local"] }
+}
+
+/// `@relation` — the generated row members and the shape's contract,
+/// from one reading of the declaration.
+export fn relation(t: Type) -> Declared {
+    Declared { made: RelationRow.derive(t), problems: relation_problems(t) }
+}
+
+/// Every way a declaration breaks the relation law, each spoken at the
+/// field or type that breaks it.
+export fn relation_problems(t: Type) -> List<Diagnostic> { problems_under(t, named_shape) }
+
+/// The relation law, each declared name's shape answered by `shapes`.
+export fn problems_under(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic> {
+    if t.module.is_empty() { return [no_module(t)] }
+    if !t.variants.is_empty() { return [not_a_record(t)] }
+    let names = member_names(t)
+    let collisions = [name_collision(t, f) for f in content(t) if names.contains(f.name) && !takes_key_lookup(t, f)]
+    let marks = [mark_problem(t, f) for f in t.fields if !marks_ok(f)]
+    let kinds = [kind_problem(t, f, shapes) for f in stable(t) if !carried(f.kind, shapes)]
+    let seats = [seat_collision(t, f) for f in content(t) if f.name == db_seat]
+    collisions.concat(seats).concat(marks).concat(kinds).concat(lookup_problems(t, shapes))
+}
+
+/// The lookup laws, over fields whose marks are sound: no field
+/// answering both one row and a list, a lookup over a kind that files,
+/// and an `id` the store can mint.
+fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic> {
+    let clashes = [answer_clash(t, f) for f in lookups(t) if marked(f, "unique") && marked(f, "index")]
+    let taken = [lookup_collision(t, f) for f in content(t) if takes_key_lookup(t, f)]
+    let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(filed_kind(f.kind), shapes)]
+    let many = [many_valued(t, f) for f in lookups(t) if is_list(f.kind) && (marked(f, "key") || marked(f, "unique") || index_with(f, "grain"))]
+    let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind, shapes)]
+    let keyed_local = [key_local(t, f) for f in lookups(t) if marked(f, "key") && marked(f, "local")]
+    let grains = [f for f in lookups(t) if index_with(f, "grain")]
+    let more_grains = [grain_twice(t, f) for f in grains.slice(1, grains.length)]
+    clashes
+        .concat(taken)
+        .concat(unfiled)
+        .concat(ids)
+        .concat(keyed_local)
+        .concat(more_grains)
+        .concat(many)
+}
+
+/// Whether a field's own lookup would be named `by_key`, the name the
+/// `@key` fields' lookup already wears.
+fn takes_key_lookup(t: Type, f: Field) -> bool {
+    f.name == "key" && names_a_lookup(f) && marks_ok(f) && !key_fields(t).is_empty()
+}
+
+/// Whether the store can mint an `id` of this kind.
+fn mints(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
+    match k {
+        .Int -> true,
+        .Named(n, _) -> match shapes(n) {
+            .Dense(_) -> true,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> false,
+        },
+        .Float or .Bool or .Str or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+fn marked(f: Field, mark: string) -> bool { f.marks.any(it.name == mark) }
+
+/// The lookup marks a field wears.
+fn lookup_marks(f: Field) -> List<string> {
+    [m.name for m in f.marks if lookup_words.contains(m.name)]
+}
+
+/// Every field a lookup reads, in declared order; a field whose marks
+/// are unsound files nothing.
+fn lookups(t: Type) -> List<Field> {
+    [f for f in t.fields if !lookup_marks(f).is_empty() && marks_ok(f)]
+}
+
+/// The `@key` fields, in declared order — together, the row's name.
+fn key_fields(t: Type) -> List<Field> { [f for f in lookups(t) if marked(f, "key")] }
+
+/// The fields looked up by their own name — `@unique` or `@index`.
+fn named_lookups(t: Type) -> List<Field> { [f for f in lookups(t) if names_a_lookup(f)] }
+
+/// The store's indexes: the key's first when there is one, then one per
+/// named lookup, in declared order.
+fn key_indexes(t: Type) -> int { if key_fields(t).is_empty() { 0 } else { 1 } }
+
+/// Whether a kind files under an index key.
+/// The kind a lookup files by: a list's element — the row files under
+/// each — and any other kind itself.
+fn filed_kind(k: Kind) -> Kind {
+    match k { .List(elem) -> elem, rest -> k }
+}
+
+fn is_list(k: Kind) -> bool {
+    match k { .List(_) -> true, rest -> false }
+}
+
+fn files(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
+    match k {
+        .Int or .Bool or .Str -> true,
+        .Named(n, _) -> match shapes(n) {
+            .Dense(_) or .Tagged(_) -> true,
+            .Over(shape) -> files(shape, shapes),
+            .Record(_) or .Plain -> false,
+        },
+        .Float or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// A relation's STABLE NAME: its declaring module fully qualified, then
+/// its own name — two modules may each declare a same-named relation,
+/// and neither shares the other's seed or record.
+export fn stable_name(t: Type) -> string {
+    "${t.module}.${t.name}"
+}
+
+/// The shape's own fingerprint: every field's name, spelling and marks,
+/// in declared order. A stored row whose shape differs is recomputed,
+/// never decoded.
+export fn shape_hash(t: Type) -> int {
+    mut h = stable_hasher(text_hash(stable_name(t))).count(t.fields.length)
+    for f in t.fields {
+        h = h.text(f.name).text(f.ty).count(f.marks.length)
+        for m in f.marks { h = h.text(m.name) }
+    }
+    h.finish()
+}
+
+// ── The law ──
+
+/// Why a field's kind has no stable encoding — a fn and a dense id for
+/// their own reasons.
+fn kind_problem(t: Type, f: Field, shapes: fn(string) -> NamedShape) -> Diagnostic {
+    if holds_dense(f.kind, shapes) { return dense_unmarked(t, f) }
+    match f.kind { .Fn(_, _) -> fn_field(t, f), rest -> kind_not_carried(t, f) }
+}
+
+/// Whether a field kind has a stable encoding.
+fn carried(k: Kind, shapes: fn(string) -> NamedShape) -> bool { carried_under(k, shapes, []) }
+
+/// `carried`, inside the records `seen` already: a record reached again
+/// is its own column at any depth, which no fixed arity encodes.
+fn carried_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) -> bool {
+    match k {
+        .Int or .Bool or .Str -> true,
+        .Opt(inner) -> carried_under(inner, shapes, seen),
+        .List(elem) -> carried_under(elem, shapes, seen),
+        .Named(n, _) -> match shapes(n) {
+            .Tagged(_) -> true,
+            .Record(fs) -> !seen.contains(n) &&
+                columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n]))),
+            .Over(shape) -> carried_under(shape, shapes, seen),
+            .Dense(_) or .Plain -> false,
+        },
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// A nested record's columns: its fields but the `@local` ones.
+fn columns(fs: List<Field>) -> List<Field> { [f for f in fs if !marked(f, "local")] }
+
+/// Whether a kind holds a dense id outside a `@local` column, at any depth.
+fn holds_dense(k: Kind, shapes: fn(string) -> NamedShape) -> bool { dense_under(k, shapes, []) }
+
+fn dense_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) -> bool {
+    match k {
+        .Named(n, _) -> match shapes(n) {
+            .Dense(_) -> true,
+            .Record(fs) -> !seen.contains(n) &&
+                columns(fs).any((f: Field) -> dense_under(f.kind, shapes, seen.concat([n]))),
+            .Over(shape) -> dense_under(shape, shapes, seen),
+            .Tagged(_) or .Plain -> false,
+        },
+        .Opt(inner) -> dense_under(inner, shapes, seen),
+        .List(elem) -> dense_under(elem, shapes, seen),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// Whether a kind reads back from its record: a nested record never does
+/// yet — its columns carry, and reading one back arrives with its own
+/// stored shape.
+fn decodable(k: Kind) -> bool {
+    match k {
+        .Int or .Bool or .Str -> true,
+        .Opt(inner) -> decodable(inner),
+        .List(elem) -> decodable(elem),
+        .Named(n, _) -> match named_shape(n) {
+            .Tagged(_) -> true,
+            .Dense(_) or .Record(_) or .Over(_) or .Plain -> false,
+        },
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// What a declared name is to the store.
+export enum NamedShape {
+    /// a `@dense` record of one int, the field that holds it
+    Dense(field: string)
+    /// an enum whose variants carry nothing, by name in declared order
+    Tagged(names: List<string>)
+    /// a record, each field a column of its own
+    Record(fields: List<Field>)
+    /// a NAMED type — `type Code = string` — carried as its shape, read
+    /// through `.of`, its name kept at every seat
+    Over(shape: Kind)
+    /// anything else
+    Plain
+}
+
+/// A declared name's shape, read from its declaration.
+export fn named_shape(n: string) -> NamedShape {
+    let ty? = type_named(n) else { return NamedShape.Plain }
+    if spelled_shape(ty.over) { return NamedShape.Over(ty.over) }
+    if !ty.variants.is_empty() && ty.variants.all(it.payload.is_empty()) { return NamedShape.Tagged([v.name for v in ty.variants]) }
+    let one? = ty.fields.first() else { return NamedShape.Plain }
+    if ty.fields.length == 1 && one.kind is .Int && ty.annotations.any(it.name == "dense") { return NamedShape.Dense(one.name) }
+    if ty.variants.is_empty() { return NamedShape.Record(ty.fields) }
+    NamedShape.Plain
+}
+
+/// Whether a kind names a shape — `Unspelled` names none.
+fn spelled_shape(k: Kind) -> bool {
+    match k { .Unspelled(_) -> false, rest -> true }
+}
+
+/// A tagged enum's variant names, none for any other kind.
+fn tags(k: Kind) -> List<string> {
+    match k {
+        .Named(n, _) -> match named_shape(n) {
+            .Tagged(names) -> names,
+            .Dense(_) or .Record(_) or .Over(_) or .Plain -> [],
+        },
+        rest -> [],
+    }
+}
+
+/// A tagged value's variant NAME — never its ordinal.
+fn tag_of(e: Code, k: Kind) -> Code {
+    let arms: List<Arms> = [quote { .${v} -> ${literal(v)} } for v in tags(k)]
+    quote { match ${e} { ${arms} } }
+}
+
+/// A tagged value read back by name: its place among the names, then
+/// the variant standing there.
+fn tag_read(r: Code, k: Kind) -> Code {
+    let names = [literal(v) for v in tags(k)]
+    let variants = [quote { ${name(k.spelled())}.${v} } for v in tags(k)]
+    quote { tagged(${r}.variant([${..names}]), [${..variants}]) }
+}
+
+/// The marks that file a field in a lookup.
+const lookup_words: List<string> = ["key", "unique", "index"]
+
+/// The field marks of the vocabulary: the lookups, and `local` — a
+/// column this process alone can read, never hashed or encoded.
+const relation_marks: List<string> = lookup_words.concat(["local"])
+
+/// Whether a field's marks are the vocabulary's, each worn once.
+fn marks_ok(f: Field) -> bool {
+    let names = [m.name for m in f.marks]
+    names.all(known_mark) && repeated(names).is_empty() && f.marks.all(args_ok)
+}
+
+/// The arguments an `@index` may carry: `ordered` hashes its buckets in
+/// id order, `grain` is the bucket `get` records a row's read through.
+const index_args: List<string> = ["ordered", "grain"]
+
+/// Whether a mark's arguments are its own — only `@index` takes any.
+fn args_ok(m: Mark) -> bool {
+    if m.name == "index" { return m.args.all((a: string) -> index_args.contains(a)) && repeated(m.args).is_empty() }
+    m.args.is_empty()
+}
+
+/// Whether a field's `@index` carries `arg`.
+fn index_with(f: Field, arg: string) -> bool { f.marks.any(it.name == "index" && it.args.contains(arg)) }
+
+fn known_mark(name: string) -> bool { relation_marks.contains(name) }
+
+/// Each name that appears again after its first place.
+fn repeated(names: List<string>) -> List<string> {
+    [n for i, n in names if names.index_of(n) != i]
+}
+
+/// A field's first unknown mark, else its first repeated one.
+fn mark_problem(t: Type, f: Field) -> Diagnostic {
+    let names = [m.name for m in f.marks]
+    let unknown? = names.find((n: string) -> !known_mark(n)) else { return known_mark_problem(t, f, names) }
+    unknown_mark(t, f, unknown)
+}
+
+/// Every mark known: a repeated one, else one whose arguments are wrong.
+fn known_mark_problem(t: Type, f: Field, names: List<string>) -> Diagnostic {
+    let twice? = repeated(names).first() else { return mark_args(t, f, f.marks.find(!args_ok(it))?.name ?? "") }
+    duplicate_mark(t, f, twice)
+}
+
+/// The seat `insert` takes the Db in, beside a seat per content field.
+const db_seat: string = "db"
+
+/// The member names the derive writes onto every relation.
+const every_member: List<string> = [
+    "relation_name",
+    "shape_hash",
+    "stable_hash",
+    "encoded",
+    "decoded",
+    "rows_in",
+    "insert",
+    "index_keys",
+    "get",
+    "all",
+    "prior",
+]
+
+/// The member names the derive writes onto this relation: every
+/// relation's, the key's when it has one, and one per named lookup.
+fn member_names(t: Type) -> List<string> {
+    let keyed: List<string> = if key_fields(t).is_empty() { [] } else { ["key", "key_text", "by_key"] }
+    every_member.concat(keyed).concat(["by_${f.name}" for f in named_lookups(t)])
+}
+
+// ── The generated members ──
+
+/// The fields a row's content is made of — all but the store's `id`.
+fn content(t: Type) -> List<Field> {
+    [f for f in t.fields if f.name != "id"]
+}
+
+/// The content every process reads alike — all but the `@local` columns.
+fn stable(t: Type) -> List<Field> { [f for f in content(t) if !marked(f, "local")] }
+
+fn shape_ok(t: Type) -> bool {
+    relation_problems(t).is_empty()
+}
+
+/// Every member the derive writes onto a sound relation.
+fn members(t: Type) -> List<Decls> {
+    [
+        encoded_member(t),
+        store_member(t),
+        index_keys_member(t),
+        insert_member(t),
+        get_member(t),
+        all_member(t),
+        prior_member(t),
+    ]
+        .concat(decoded_members(t))
+        .concat(key_members(t))
+        .concat(field_lookups(t))
+}
+
+fn generated(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    quote {
+        ${stores_decl(t)}
+        ${key_record(t)}
+        ${stored_record(t)}
+        impl ${t} {
+            static fn relation_name() -> string { ${literal(stable_name(t))} }
+
+            static fn shape_hash() -> int { ${shape_hash(t)} }
+
+            /// Every content field's stable encoding, in declared order,
+            /// seeded by the relation's name so two relations holding the
+            /// same values never share a hash.
+            fn stable_hash() -> int { ${hash_chain(t)}.finish() }
+
+            ${members(t)}
+        }
+    }
+}
+
+/// The index `get` records a row's read through: the `@index(grain)`
+/// field's, or -1 for the whole relation.
+fn grain_index(t: Type) -> int {
+    let base = key_indexes(t)
+    [base + j for j, f in named_lookups(t) if index_with(f, "grain")].first() ?? -1
+}
+
+/// An int with bit `i` set for each `i`.
+fn bits(at: List<int>) -> int {
+    mut m = 0
+    for i in at { m = m | (1 << i) }
+    m
+}
+
+/// The generated store's name: `decl_stores` for `Decl`.
+fn stores_name(t: Type) -> string { "${snake(t.name)}_stores" }
+
+/// The relation's rows under every Db.
+fn stores_decl(t: Type) -> Decls {
+    let base = key_indexes(t)
+    let mask = bits([base + j for j, f in named_lookups(t) if index_with(f, "ordered")])
+    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${base + named_lookups(t).length}, ${mask}) } }
+}
+
+/// `rows_in`: this relation's rows under a Db, opened on the first reach.
+fn store_member(t: Type) -> Decls {
+    quote { static fn rows_in(db: Db) -> Rows<${t}> { ${stores_name(t)}().reach(db) } }
+}
+
+/// `get`: the row an id names under a Db.
+fn get_member(t: Type) -> Decls {
+    let ty = t.fields.find(it.name == "id")?.ty ?? "int"
+    quote { static fn get(db: Db, id: ${ty}) -> ${t}? { ${name(t.name)}.rows_in(db).got(db, ${id_int(t, quote { id })}, ${grain_index(t)}) } }
+}
+
+/// `prior`: the running query's rows as its previous run left them —
+/// the one read of a relation a query writes, recording nothing.
+fn prior_member(t: Type) -> Decls {
+    quote { static fn prior(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).prior_in(db, ${literal(t.name)}) } }
+}
+
+/// `all`: every live row under a Db, in id order.
+fn all_member(t: Type) -> Decls {
+    quote {
+        @plans_all
+        static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all_in(db) }
+    }
+}
+
+/// The row's key in each index, in the store's index order.
+fn index_keys_member(t: Type) -> Decls {
+    let keyed = if key_fields(t).is_empty() { [] } else { [quote { [text_key(${name(t.name)}.key_text(self.key()))] }] }
+    let parts = keyed.concat([keys_of(f) for f in named_lookups(t)])
+    quote { fn index_keys() -> List<List<IndexKey>> { [${..parts}] } }
+}
+
+/// A field's keys in its index: its value's one, or one per element of
+/// a list.
+fn keys_of(f: Field) -> Code {
+    match f.kind {
+        .List(elem) -> quote { [${key_of(quote { x }, elem)} for x in self.${f.name}] },
+        rest -> quote { [${key_of(quote { self.${f.name} }, f.kind)}] },
+    }
+}
+
+/// A value's index key, by its kind.
+fn key_of(e: Code, k: Kind) -> Code {
+    match k {
+        .Str -> quote { text_key(${e}) },
+        .Int -> quote { int_key(${e}) },
+        .Bool -> quote { bool_key(${e}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Dense(f) -> quote { dense_key(${e}.${f}) },
+            .Tagged(_) -> quote { text_key(${tag_of(e, k)}) },
+            .Over(shape) -> key_of(quote { ${e}.of }, shape),
+            .Record(_) or .Plain -> quote { a_relation_lookup_kind_with_no_index_key() },
+        },
+        rest -> quote { a_relation_lookup_kind_with_no_index_key() },
+    }
+}
+
+/// `insert`, seated by the row's fields — `id` has none, since the
+/// store mints it. A keyed row replaces the row its key already names,
+/// keeping that row's id; any other row takes the next id. A relation
+/// with a `@unique` field answers a `Result`: a value another row
+/// already holds refuses the insert.
+fn insert_member(t: Type) -> Decls {
+    let seats = [quote { fn _(${f.name}: ${f.ty}) {} } for f in content(t)]
+    let inits = id_init(t).concat([quote { W { ${f.name}: ${name(f.name)} } } for f in content(t)])
+    let own = if key_fields(t).is_empty() { quote { rs.next_id() } } else { quote { rs.first_id(rs.bucket_of(0, keys[0][0])) ?? rs.next_id() } }
+    let stored = if ided(t) { quote { r with { id: ${minted_id(t, quote { own })} } } } else { quote { r } }
+    let checks = unique_checks(t)
+    if checks.is_empty() {
+        return quote {
+            static fn insert(db: Db, ..${seats}) -> ${t} {
+                let r = ${t} { ..${inits} }
+                let rs = ${name(t.name)}.rows_in(db)
+                let keys = r.index_keys()
+                let own = ${own}
+                let stored = ${stored}
+                rs.put_in(db, ${literal(t.name)}, own, stored, stored.stable_hash(), keys)
+                stored
+            }
+        }
+    }
+    quote {
+        static fn insert(db: Db, ..${seats}) -> Result<${t}, InsertRefused> {
+            let r = ${t} { ..${inits} }
+            let rs = ${name(t.name)}.rows_in(db)
+            let keys = r.index_keys()
+            let own = ${own}
+            ${checks}
+            let stored = ${stored}
+            rs.put_in(db, ${literal(t.name)}, own, stored, stored.stable_hash(), keys)
+            stored
+        }
+    }
+}
+
+/// Each `@unique` field's check, per insert: a value another row holds
+/// refuses. RECORDED TRIGGER: fires when the Db gains commits (§6.3),
+/// which check the final set instead — owner: ORM.
+fn unique_checks(t: Type) -> List<Stmts> {
+    let base = key_indexes(t)
+    [unique_check(t, f, base + j) for j, f in named_lookups(t) if marked(f, "unique")]
+}
+
+fn unique_check(t: Type, f: Field, i: int) -> Stmts {
+    quote {
+        let _ = unheld(rs.holder(${i}, keys[${i}][0], own), ${literal(t.name)}, ${literal(f.name)}, ${shown(quote { r.${f.name} }, f.kind)})?
+    }
+}
+
+/// A looked-up value's text, by its kind.
+fn shown(e: Code, k: Kind) -> Code {
+    match k {
+        .Str -> e,
+        .Int -> quote { int_text(${e}) },
+        .Bool -> quote { bool_text(${e}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Dense(f) -> quote { int_text(${e}.${f}) },
+            .Tagged(_) -> tag_of(e, k),
+            .Over(shape) -> shown(quote { ${e}.of }, shape),
+            .Record(_) or .Plain -> quote { a_relation_lookup_kind_with_no_text() },
+        },
+        rest -> quote { a_relation_lookup_kind_with_no_text() },
+    }
+}
+
+/// `key()`, `key_text` — each field length-prefixed, so no two keys
+/// share one text — and `by_key`, over the key's index; none without a
+/// key.
+fn key_members(t: Type) -> List<Decls> {
+    let keys = key_fields(t)
+    if keys.is_empty() { return [] }
+    let inits = [quote { W { ${f.name}: self.${f.name} } } for f in keys]
+    let parts = [part_of(quote { k.${f.name} }, f.kind) for f in keys]
+    [
+        quote { fn key() -> ${t}Key { ${t}Key { ..${inits} } } },
+        quote { static fn key_text(k: ${t}Key) -> string { [${..parts}].join("") } },
+        quote {
+            static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
+                let rs = ${name(t.name)}.rows_in(db)
+                rs.row(rs.first_id(rs.read_text(db, 0, ${name(t.name)}.key_text(k))) ?? -1)
+            }
+        },
+    ]
+}
+
+/// Whether the row has a `@local` column.
+fn localized(t: Type) -> bool { content(t).any(marked(it, "local")) }
+
+/// The STORED row: the stable columns alone, what a record read back from
+/// disk can honestly hold. A `@local` column is this process's own, so a
+/// stored row has none to read.
+fn stored_record(t: Type) -> List<Decls> {
+    if !localized(t) { return [] }
+    let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in stable(t)]
+    [quote { type ${t}Stored = { ..${fields} } }]
+}
+
+/// The key record: the `@key` fields as a value to hold, hash and look
+/// up by.
+fn key_record(t: Type) -> List<Decls> {
+    let keys = key_fields(t)
+    if keys.is_empty() { return [] }
+    let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in keys]
+    [quote { type ${t}Key = { ..${fields} } }]
+}
+
+/// One key field's text, by its kind.
+fn part_of(e: Code, k: Kind) -> Code {
+    match k {
+        .Str -> quote { key_part(${e}) },
+        .Int -> quote { int_part(${e}) },
+        .Bool -> quote { bool_part(${e}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Over(shape) -> part_of(quote { ${e}.of }, shape),
+            .Tagged(_) or .Dense(_) or .Record(_) or .Plain -> quote { key_part(${tag_of(e, k)}) },
+        },
+        rest -> quote { a_relation_key_kind_with_no_text() },
+    }
+}
+
+/// `by_<field>`, over each `@unique` or `@index` field's own index.
+fn field_lookups(t: Type) -> List<Decls> {
+    let base = key_indexes(t)
+    [lookup_member(t, f, base + j, "by_${f.name}", marked(f, "unique")) for j, f in named_lookups(t)]
+}
+
+/// Whether a field is looked up by its own name — `@unique` or `@index`.
+fn names_a_lookup(f: Field) -> bool { marked(f, "unique") || marked(f, "index") }
+
+/// One lookup named `n`: `one` answers the row filed under the value,
+/// otherwise every row. Each member is whole in one template, so its
+/// parameters are named where they are declared.
+fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
+    let k = filed_kind(f.kind)
+    match k {
+        .Str -> if one {
+            quote {
+                static fn ${n}(db: Db, v: string) -> ${t}? {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.row(rs.first_id(rs.read_text(db, ${i}, v)) ?? -1)
+                }
+            }
+        } else {
+            quote {
+                @plans(${literal(f.name)})
+                static fn ${n}(db: Db, v: string) -> List<${t}> {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.members(rs.read_text(db, ${i}, v))
+                }
+            }
+        },
+        rest -> if one {
+            quote {
+                static fn ${n}(db: Db, v: ${k.spelled()}) -> ${t}? {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.row(rs.first_id(rs.read_key(db, ${i}, ${key_of(quote { v }, k)})) ?? -1)
+                }
+            }
+        } else {
+            quote {
+                @plans(${literal(f.name)})
+                static fn ${n}(db: Db, v: ${k.spelled()}) -> List<${t}> {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.members(rs.read_key(db, ${i}, ${key_of(quote { v }, k)}))
+                }
+            }
+        },
+    }
+}
+
+fn hash_chain(t: Type) -> Code {
+    mut acc: Code = quote { stable_hasher(${text_hash(stable_name(t))}) }
+    for f in stable(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind) }
+    acc
+}
+
+/// `acc` with one value folded in. A `?` layer folds its presence
+/// first and a list its count, so the arity is fixed per kind; a nested
+/// value folds through a lambda that captures nothing.
+fn hashed(acc: Code, e: Code, k: Kind) -> Code {
+    match k {
+        .Int -> quote { ${acc}.int(${e}) },
+        .Bool -> quote { ${acc}.bool(${e}) },
+        .Str -> quote { ${acc}.text(${e}) },
+        .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner)}) },
+        .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem)}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Record(fs) -> folded_record(acc, e, fs),
+            .Over(shape) -> hashed(acc, quote { ${e}.of }, shape),
+            .Tagged(_) or .Dense(_) or .Plain -> quote { ${acc}.text(${tag_of(e, k)}) },
+        },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// A nested record folded column by column in declared order — a fixed
+/// arity per record type, its `@local` fields never folded.
+fn folded_record(acc: Code, e: Code, fs: List<Field>) -> Code {
+    mut folded = acc
+    for f in columns(fs) { folded = hashed(folded, quote { ${e}.${f.name} }, f.kind) }
+    folded
+}
+
+/// The lambda that folds one value of kind `k`. Its parameters are the
+/// template's own names, so each nested lambda has its own.
+fn hash_each(k: Kind) -> Code {
+    match k {
+        .Int -> quote { (h: StableHasher, v: int) -> h.int(v) },
+        .Bool -> quote { (h: StableHasher, v: bool) -> h.bool(v) },
+        .Str -> quote { (h: StableHasher, v: string) -> h.text(v) },
+        .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner)}) },
+        .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem)}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Record(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs)} },
+            .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape)} },
+            .Tagged(_) or .Dense(_) or .Plain -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
+        },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// The row's content as a record: every field in declared order, in
+/// the hash's own arity.
+fn encoded_member(t: Type) -> Decls {
+    if stable(t).is_empty() { return quote { fn encoded() -> Bytes { writer().bytes() } } }
+    let w = "w"
+    quote {
+        fn encoded() -> Bytes {
+            let ${w} = writer()
+            ${[written(name(w), quote { self.${f.name} }, f.kind) for f in stable(t)]}
+            ${name(w)}.bytes()
+        }
+    }
+}
+
+/// `decoded`, when every stable column reads back. RECORDED TRIGGER:
+/// fires when a relation can be asked to be durable — that ask refuses
+/// a relation whose columns cannot read back, naming the column, never
+/// a silently undurable one — owner: ORM.
+fn decoded_members(t: Type) -> List<Decls> {
+    if !stable(t).all((f: Field) -> decodable(f.kind)) { return [] }
+    [decoded_member(t)]
+}
+
+/// `decoded`: a record's octets read back into its row, field by field
+/// in declared order — `id` left for the store to mint, and a record with
+/// octets to spare refused, never half read. A row with `@local` columns
+/// reads back as its STORED type, which has none to read.
+fn decoded_member(t: Type) -> Decls {
+    let read = [quote { W { ${f.name}: ${read_value(f.kind)} } } for f in stable(t)]
+    if localized(t) {
+        return quote {
+            static fn decoded(b: Bytes) -> Result<${t}Stored, CodecFault> {
+                let rd = reader(b)
+                let row = ${t}Stored { ..${read} }
+                if !rd.done() { fail CodecFault.Trailing }
+                row
+            }
+        }
+    }
+    let inits = id_init(t).concat(read)
+    quote {
+        static fn decoded(b: Bytes) -> Result<${t}, CodecFault> {
+            let rd = reader(b)
+            let row = ${t} { ..${inits} }
+            if !rd.done() { fail CodecFault.Trailing }
+            row
+        }
+    }
+}
+
+/// A built row's `id` before the store mints it: zero, when it has one.
+fn id_init(t: Type) -> List<Code> {
+    if ided(t) { [quote { W { id: ${minted_id(t, quote { 0 })} } }] } else { [] }
+}
+
+/// The row's `id` at place `n`: the int itself, or a `@dense` id holding it.
+fn minted_id(t: Type, n: Code) -> Code {
+    let id? = t.fields.find(it.name == "id") else { return n }
+    match id.kind {
+        .Named(ty, _) -> match named_shape(ty) {
+            .Dense(f) -> quote { ${ty} { ..${[quote { W { ${f}: ${n} } }]} } },
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> n,
+        },
+        rest -> n,
+    }
+}
+
+/// An `id` value's place: the int itself, or the one a `@dense` id holds.
+fn id_int(t: Type, e: Code) -> Code {
+    let id? = t.fields.find(it.name == "id") else { return e }
+    match id.kind {
+        .Named(ty, _) -> match named_shape(ty) {
+            .Dense(f) -> quote { ${e}.${f} },
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> e,
+        },
+        rest -> e,
+    }
+}
+
+/// Whether the row declares the `id` the store mints.
+fn ided(t: Type) -> bool { t.fields.any(it.name == "id") }
+
+/// One value read back through `rd`, `written`'s mirror.
+fn read_value(k: Kind) -> Code {
+    match k {
+        .Int -> quote { rd.int()? },
+        .Bool -> quote { rd.bool()? },
+        .Str -> quote { rd.text()? },
+        .Opt(inner) -> quote { read_opt(rd, ${read_each(inner)})? },
+        .List(elem) -> quote { read_list(rd, ${read_each(elem)})? },
+        .Named(_, _) -> quote { ${tag_read(quote { rd }, k)}? },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// The lambda that reads one value of kind `k`, `write_each`'s mirror.
+fn read_each(k: Kind) -> Code {
+    match k {
+        .Int -> quote { (r: Reader) -> r.int() },
+        .Bool -> quote { (r: Reader) -> r.bool() },
+        .Str -> quote { (r: Reader) -> r.text() },
+        .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner)}) },
+        .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem)}) },
+        .Named(_, _) -> quote { (r: Reader) -> ${tag_read(quote { r }, k)} },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// One value written through `w`, in the hash's own order and arity.
+fn written(w: Code, e: Code, k: Kind) -> Code {
+    match k {
+        .Int -> quote { ${w}.int(${e}) },
+        .Bool -> quote { ${w}.bool(${e}) },
+        .Str -> quote { ${w}.text(${e}) },
+        .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner)}) },
+        .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem)}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Record(fs) -> {
+                let writers = column_writers(k, fs)
+                quote { written_all(${w}, ${e}, [${..writers}]) }
+            },
+            .Over(shape) -> written(w, quote { ${e}.of }, shape),
+            .Tagged(_) or .Dense(_) or .Plain -> quote { ${w}.text(${tag_of(e, k)}) },
+        },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+/// A nested record's writers, one per column in declared order.
+fn column_writers(k: Kind, fs: List<Field>) -> List<Code> {
+    [quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.${f.name} }, f.kind)} } for f in columns(fs)]
+}
+
+/// The lambda that writes one value of kind `k`, `hash_each`'s twin.
+fn write_each(k: Kind) -> Code {
+    match k {
+        .Int -> quote { (w: Writer, v: int) -> w.int(v) },
+        .Bool -> quote { (w: Writer, v: bool) -> w.bool(v) },
+        .Str -> quote { (w: Writer, v: string) -> w.text(v) },
+        .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner)}) },
+        .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem)}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Record(fs) -> {
+                let writers = column_writers(k, fs)
+                quote { (w: Writer, v: ${k.spelled()}) -> written_all(w, v, [${..writers}]) }
+            },
+            .Over(shape) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.of }, shape)} },
+            .Tagged(_) or .Dense(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> w.text(${tag_of(quote { v }, k)}) },
+        },
+        rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
+    }
+}
+
+// ── Voices ──
+
+fn no_module(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "no_module",
+        t.at,
+        "a relation is named by its declaring module, and the compiler handed `${t.name}` none — it predates qualified relation names",
+        "build this package with a compiler that writes a declaration's module",
+    )
+}
+
+fn not_a_record(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "not_a_record",
+        t.at,
+        "a relation's rows are records — `${t.name}` is an enum",
+        "declare the row as a record: `type ${t.name} = { … }`",
+    )
+}
+
+fn kind_not_carried(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "kind_not_carried",
+        f.at ?? t.at,
+        "a relation's fields carry a stable encoding — an int, a bool, a string, a tagged enum, a named type over one of those, a nested record of them, or a list or nullable of any — and `${t.name}.${f.name}` is `${f.ty}`",
+        "store what identifies the value as one of those kinds, or mark the column `@local`",
+    )
+}
+
+fn fn_field(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "fn_field",
+        f.at ?? t.at,
+        "a relation's row is data, and `${t.name}.${f.name}` is a fn — a stored fn has no stable encoding, and one capturing the store is a cycle",
+        "store the data the fn would compute, or compute it in a query",
+    )
+}
+
+fn unknown_mark(t: Type, f: Field, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "unknown_mark",
+        f.at ?? t.at,
+        "`@${mark}` on `${t.name}.${f.name}` is not a relation mark — the marks are `@key`, `@unique` and `@index`",
+        "spell the mark as one of them, or drop it",
+    )
+}
+
+fn duplicate_mark(t: Type, f: Field, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "duplicate_mark",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` wears `@${mark}` twice",
+        "write the mark once",
+    )
+}
+
+fn seat_collision(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "seat_collision",
+        f.at ?? t.at,
+        "`${t.name}.insert` takes the Db as its seat `${db_seat}`, beside a seat per field, and the field wears that name",
+        "rename the field",
+    )
+}
+
+fn dense_unmarked(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "dense_unmarked",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` holds a dense id, which means nothing in another process, so it never enters a stable hash or a record",
+        "mark it `@local`, or hold a keyed relation's id",
+    )
+}
+
+fn mark_args(t: Type, f: Field, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "mark_args",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}`'s `@${mark}` takes arguments it does not know — only `@index` takes any: `ordered`, `grain`, each once",
+        "write `@${mark}` bare, or `@index(ordered)` / `@index(grain)`",
+    )
+}
+
+fn many_valued(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "many_valued",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is a list, so its row files under every element — a key, a `@unique` or a grain names ONE bucket",
+        "mark it `@index`, the lookup that answers every row holding a value",
+    )
+}
+
+fn grain_twice(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "grain_twice",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is a second `@index(grain)` — `get` records a row's read through ONE bucket",
+        "keep `grain` on one field",
+    )
+}
+
+fn key_local(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "key_local",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is `@key` and `@local` — a key is the row's stable name, and a local column is this process's own",
+        "drop `@local`, or key the row by a stable field",
+    )
+}
+
+fn name_collision(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "name_collision",
+        f.at ?? t.at,
+        "`@relation` gives `${t.name}` a member named `${f.name}`, and the field wears that name",
+        "rename the field",
+    )
+}
+
+fn lookup_collision(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "lookup_collision",
+        f.at ?? t.at,
+        "`${t.name}.key` is looked up as `by_key`, and the `@key` fields' lookup already wears that name",
+        "rename the field",
+    )
+}
+
+fn answer_clash(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "answer_clash",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is `@unique` and `@index` — `by_${f.name}` answers one row or every row, never both",
+        "keep `@unique` for one row, or `@index` for every row",
+    )
+}
+
+fn lookup_kind(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "lookup_kind",
+        f.at ?? t.at,
+        "a lookup files by an int, a bool or a string, and `${t.name}.${f.name}` is `${f.ty}`",
+        "look the row up by a field of one of those kinds",
+    )
+}
+
+fn id_not_int(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "id_not_int",
+        f.at ?? t.at,
+        "the store mints `id` as an int or a `@dense` id, and `${t.name}.id` is `${f.ty}`",
+        "declare `id: int` or a `@dense` id type, or drop the field",
+    )
+}
+
+const upper_letters: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+const lower_letters: string = "abcdefghijklmnopqrstuvwxyz"
+
+/// A type name's snake_case: `ErrorSite` is `error_site`.
+fn snake(name: string) -> string {
+    [snake_letter(name.substring(i, i + 1), i) for i in 0..name.length].join("")
+}
+
+fn snake_letter(c: string, i: int) -> string {
+    let at = upper_letters.index_of(c)
+    if at < 0 { return c }
+    let low = lower_letters.substring(at, at + 1)
+    if i == 0 { low } else { "_${low}" }
+}

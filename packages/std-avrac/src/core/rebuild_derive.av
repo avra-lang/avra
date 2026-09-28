@@ -14,28 +14,58 @@
 use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Arms, Code, name}
 
 /// The compiler's derive for the template rebuilder.
-trait Rebuild {
+export trait Rebuild {
     /// No marks: a payload's type says everything, and a body's parsed
     /// form and expansion ride a payload of their own (`BodyView`).
     static fn marks(t: MetaType) -> List<string> { [] }
 
     static fn derive(t: MetaType) -> List<Directive> {
-        let arms = [arm_of(v) for v in t.variants]
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        let arms = [arm_of(t, v) for v in t.variants]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             impl ${t} {
                 fn rebuilt(mut rb: Rebuilder) -> ${t} {
                     match self { ${arms} }
                 }
             }
-        } }]
+        },
+            },
+        ]
     }
 }
 
 /// One variant's arm: its payloads bound, each rebuilt by its own
-/// verb, the variant built again.
-fn arm_of(v: MetaVariant) -> Arms {
+/// verb, the variant built again — a literal's field names and their
+/// values rebuilt together, since a hole may stand for several.
+fn arm_of(t: MetaType, v: MetaVariant) -> Arms {
     let binders = ["p${i}" for i in 0..v.payload.length]
-    built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload])
+    let at? = inits_at(v.payload) else { return built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload]) }
+    let args = [init_arg(p, binders[i], i - at) for i, p in v.payload]
+    let names = name(binders[at])
+    let values = name(binders[at + 1])
+    quote { .${v}(${binders}) -> {
+        let inits = rb.inits(${names}, ${values})
+        if inits.spoiled { ${name(t.name)}.Error } else { .${v}(${..args}) }
+    } }
+}
+
+/// Where a variant's field INITS stand: a `List<Plain>` of names
+/// directly before the `List<ExprId>` of their values.
+fn inits_at(payload: List<string>) -> int? {
+    [i for i in 0..payload.length - 1 if payload[i] == "List<Plain>" && payload[i + 1] == "List<ExprId>"]
+        .first()
+}
+
+/// A payload of an arm that rebuilds inits: the names and values read
+/// from them, every other payload through its own verb.
+fn init_arg(spelling: string, binder: string, from: int) -> Code {
+    if from == 0 { return quote { inits.names } }
+    if from == 1 { return quote { inits.values } }
+    rebuilt_arg(spelling, binder)
 }
 
 /// One payload rebuilt: through the verb its TYPE names, or carried
@@ -46,21 +76,11 @@ fn rebuilt_arg(spelling: string, binder: string) -> Code {
     quote { rb.${verb}(${name(binder)}) }
 }
 
-/// THE ARM, SPELLED ONCE PER PAYLOAD COUNT. A hole splices a binder
-/// LIST and a statement list, and no seat splices an ARGUMENT list —
-/// so the construction is written out by arity. The one place this
-/// derive repeats itself, and the backlog's ask names the site.
+/// THE ARM, ONE CALL FOR EVERY ARITY: a run hole splices a whole
+/// argument list, so the variant is built again in one quote — no
+/// ceiling, no per-count repetition.
 fn built(v: MetaVariant, bs: List<string>, args: List<Code>) -> Arms {
-    match args.length {
-        0 -> quote { .${v} -> .${v} },
-        1 -> quote { .${v}(${bs}) -> .${v}(${args[0]}) },
-        2 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}) },
-        3 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}) },
-        4 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}) },
-        5 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4]}) },
-        6 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4]}, ${args[5]}) },
-        _ -> quote { .${v} -> a_variant_of_seven_payloads_needs_its_arity_spelled() },
-    }
+    quote { .${v}(${bs}) -> .${v}(${..args}) }
 }
 
 /// THE VERB A PAYLOAD'S TYPE NAMES, or absence when the payload is
@@ -77,6 +97,7 @@ fn verb_of(spelling: string) -> string? {
         "TypeRef?" -> "tref_opt",
         "List<TypeRef>" -> "trefs",
         "List<Arm>" -> "arms",
+        "List<CompClause>" -> "comp_clauses",
         "List<Case>" -> "cases",
         "List<Param>" -> "params",
         "List<Variant>" -> "variants",

@@ -4,7 +4,6 @@ Patterns proven in this tree — reach for these before writing the
 C-style version. Probe unfamiliar features in scratch first; known
 gaps live in CLAUDE.md "The subset today".
 
-
 ### A write reaches a PLACE, never a value
 
 A fn changes its caller's data only through a PARAMETER'S FIELD
@@ -15,10 +14,13 @@ so is an ELEMENT read out of a container (`mut r = xs[i]`), which
 is why a mutated element must be written BACK (`xs.set(i, r)`).
 
 So a mutable out-parameter is a one-field STRUCT, never a bare
-list: `Pins { slots }` for the unifier's bindings, `Frames { stack }`
-for a narrowing bracket, `Table<T> { rows }` for every memo. The
+list: `type Pins = { slots: List<TypeId?> }` for the unifier's
+bindings, `type Table<T> = { rows: List<T?> }` for every memo. The
 struct's field is the place; the bare list was only ever bs2's
-aliasing in disguise.
+aliasing in disguise. There is no field shorthand — a literal
+spells every pair (`Pins { slots: slots }`) — and a generic literal
+takes its type from a typed `let`, never from `<int>` at the
+construction (`let t: Table<int> = Table { rows: [] }`).
 
 Discovered by self-hosting: every one of these sites worked under
 bs2 and silently did nothing under Avra's own semantics.
@@ -34,8 +36,14 @@ commit). When a review round or a milestone discovers a NEW idiom,
 it lands here AT DISCOVERY, with its smell, its licensed
 exceptions, and — where greppable — a ratchet rule.
 
-THE BAR (tools/idioms.py) rests on five laws, and the first three
-exist because the old ratchet had a hole under each:
+THE BAR rests on five laws, and the first three exist because the
+old ratchet had a hole under each. Every idiom the language can
+state is a `rule` declaration now, found by `avra check` itself
+(compiler/idioms.av, or a feature's own idioms.av) — `tools/idioms.py`,
+the regex tool this section originally described, is gone, ported
+out to the last shape (avra-8sb5.25.16); `tools/idioms.baseline` and
+`avra check --baseline` (wired into `make idioms`/`make idioms-accept`)
+carry the five laws below now.
 
   1. THE BASELINE LISTS SITES, NEVER COUNTS. The old tool compared
      totals, so fixing one smell while adding another passed
@@ -43,14 +51,14 @@ exist because the old ratchet had a hole under each:
   2. NO TOOL PATH ADDS TO THE BASELINE. `--accept` only PRUNES what
      is gone, so the debt can only fall. The old escape hatch was
      "bump the pinned number", which is how a ratchet becomes
-     theatre: I1 drifted 39 -> 41 -> 40 -> 41 -> 43 across four
+     theatre: style.accumulator_declaration drifted 39 -> 41 -> 40 -> 41 -> 43 across four
      milestones, each bump self-licensed in its own commit.
-  3. A LICENSE LIVES AT THE SITE: `// LICENSED I3: a ZIP of
+  3. A LICENSE LIVES AT THE SITE: `// LICENSED loops.push_loop: a ZIP of
      parallel captures`. The reason sits where the code is,
      forever, instead of as an integer nobody reads. A new
      violation therefore has two honest exits — write the
      idiomatic form, or say why it cannot be written.
-  4. THE REGISTRY MAY NOT OUTRUN THE RATCHET. Every I-code here
+  4. THE REGISTRY MAY NOT OUTRUN THE RATCHET. Every idiom named here
      must have a matcher or an entry in the tool's UNRATCHETED with
      its reason; the tool fails otherwise. New idioms arrive with
      enforcement or with a written admission of why they cannot.
@@ -58,7 +66,7 @@ exist because the old ratchet had a hole under each:
      hand-kept, so std-http, std-net and std-sqlite were never on it
      and the bar reported ZERO DEBT over three packages it had never
      opened — 71 unlicensed sites, including three `xs[xs.length - 1]`
-     that I7 has ratcheted for four milestones. A check that examined
+     that lists.last_index has ratcheted for four milestones. A check that examined
      nothing is not a check that passed, so the roots are read from
      `packages/*/src` and the run PRINTS WHAT IT LOOKED AT (389 files
      in 16 packages today). The same disease has two other known
@@ -77,28 +85,82 @@ of 99 laws found 17 stale decorations, 5 of them names a grep
 finds and 12 counts, line numbers and attributions no tool can
 see. Licences live in `tools/cited.allow`, each with its reason.
 
-Ratcheted: `python3 tools/idioms.py --rules` answers, from the tool's own
-`RULES` keys — never a hand copy here.
-Unratcheted, read by a human: I5 (a matcher cannot see whether a
-predicate has effects), I31 (a stolen doc and a legitimate
+Ratcheted: `avra rules --json` answers every native rule the
+compiler carries, by its `<module>.<rule>` id — `avra rules
+--markdown` prints this section's own bullet shape, one line per
+DOCUMENTED rule, and `make dogfooding-rules` refuses the two
+disagreeing (paid off avra-8sb5.25.16's own follow-up). The block
+below is GENERATED: edit a rule's `///` doc and regenerate, never
+a bullet here.
+
+<!-- GENERATED:RULES:START -->
+- closures.pronoun_lambda A one-parameter lambda handed to a method call is `it` — the pronoun says the predicate and nothing else: no binder, no annotation, no arrow. THE ONE LAMBDA THAT STAYS: `it` binds at the NEAREST enclosing method call, so a parameter handed on to ANOTHER call's own arguments cannot be the pronoun — that is the language's own spelling; nor a block body, a nested lambda (any `->` inside reaches this the same way), or a body that already says `it`.
+- compiler.bool_of_defaulted A payload the value-protocol dispatch GUARANTEES, papered over with a `??` default — absence here is a DEFECT the caller should speak (`cx.lower_defect(e, ...)`), never a plausible fallback. All six of core/protocol.av's projections (`bool_of`, `text_of`, `int_of`, `bits_of`, `elems_of`, `pairs_of`) are the same shape.
+- compiler.bracket_ritual A `push` held open across a stretch of work until a later `pop` on the same name — a bracket fn taking a thunk owns the pop on every path out, not just the one written.
+- compiler.duplicated_literal A struct literal written twice in one PRODUCT file, field for field — a fixture built by hand rather than named. Tests are exempt: a fixture built twice there is the test being explicit.
+- compiler.duplicated_message A long string literal written twice in one PRODUCT file — a message repeated rather than named. Guarded to a SHARED-SENTENCE shape (20+ characters, starting lowercase, the house style every diagnostic and fixture message already wears) so a short symbolic literal repeated by coincidence (a type name, a key) never fires; `fingerprint_siblings()` answers by STRUCTURE, never by re-reading `.text()`. Tests are exempt: a repeated fixture there is not a message that can drift.
+- compiler.emit_then_error `emit` immediately followed by `intern(Type.Error)` — the pair a typing law's refusal tail always ends with — is `spoken(d)`.
+- compiler.filled_by_arena_count `hand_sized_index`'s sibling half of ONE idiom: a fact column SEEDED from an arena's own count — `filled(store.exprs.count(), null)` — rather than through `SideTable<V>`, which states the storage, the window, the growth and the out-of-window defect once. TWO ARMS, one shape: `filled(...)` and `filled<T>(...)` — a pinned type argument is a TYPE-seat hole (avra-8sb5.25.10), held open only so the SECOND arm's message can quote it back; the smell is the same either way, the first ARGUMENT ending in `.count()`.
+- compiler.free_state_verb A VOCABULARY VERB written as a free fn taking a pass STATE first — `open_region(cx, c)`, `sig(ws, d)` — where the state's own impl IS its vocabulary, so the verb belongs there as a method (`cx.open_region(c)`, `ws.sig(d)`). A BARE-HOLE ROOT, structural GUARD (`Code.fn_params`, features/code.av, the same door `modified_copy_literal`/`one_body_arms` read a struct literal's fields and a `match`'s arms through): a param LIST has no fixed arity a quote pattern can spell, so only the FIRST param's own written type is asked, structurally, never bound through the pattern itself. THE REACH is the pass's own files — a `fn` declared directly under `features/` or `compiler/`, never one nested a directory deeper (`features/quote/lower.av`'s own dispatch targets stay free, `push_loop`'s same file-shape test).
+- compiler.hand_sized_index A fact column sized by hand, or an id read through an offset — `SideTable<V>` states the window, the growth and the out-of-window defect once: `side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`.
+- compiler.if_start_raw A region instruction emitted raw in a feature — the emission vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`, `close_region`/`close_region_as`. The vocabulary's own file is exempt. Every `Ins` variant `open_region`'s family covers: `IfStart`, `ArmEnd`, `RegionEnd`, `LoopStart`, `LoopCond`, `LoopEnd`.
+- compiler.interned_int A structural type interned by hand where a type literal spells it — a scalar shape's own constructor call, held by hand instead of read off the surface syntax. The scalar shapes rewrite directly; the aggregate ones (`Opt`/`List`/`Map`/`Res`) carry an inner shape a rewrite cannot re-spell without re-deriving it (`intern(Type.Str)` vs `Type.Str` vs an already-bound `TypeId` all reach the same inner type by different routes), so they Say. core/types.av's own `interned`/`substituted` is the fold that GIVES a type literal its meaning, recursing through `intern(...)` by construction — the family's one exempt file, on every rule below: rewriting its OWN base case into `.type(T)` would call back into the fold this rule's rewrite exists to shortcut.
+- compiler.modified_copy_literal A struct literal copying every other field from ONE subject — that is `with`. Guarded RULE-SIDE over `kids()` (`Expr.StructLit` has no fixed field count a quote pattern can spell): a field COPIES when its value is STRUCTURALLY `subject.<its own field name>` — a `Prop` node whose own name agrees, never a text guess (a compound value that merely ENDS in `.field`, `a.x + b.x`, is not a `Prop` and is refused before its "subject" is trusted). The rule fires only when AT LEAST TWO fields agree on ONE copied subject (the MOST-COPIED one, when more than one candidate appears) and at least one other field does not — a lone copy is too weak a signal. A field copying a DIFFERENT subject than the winner is read as "modified" too, same as one copying nothing at all — `with` only ever names ONE subject, so every other field is what it says explicitly, whatever its own value happens to look like. Narrower than the retired regex: no DECLARED-TYPE trace for the FIELDS (a coincidental `x.field` name match is accused too) — but the SUBJECT's own type IS asked (`same_type`), because `with` requires it: a subject typed differently from the literal being built merely SHARES some field names, and `subject with { … }` there is not a rewrite, it is a type error (`Parsed`'s `store`/ `stmts`/`source` read exactly like a `FileView`'s until the two are checked against each other).
+- compiler.one_body_arms Two ADJACENT `match` arms answering one IDENTICAL body — `or` joins their patterns (`.Struct(d, _) -> d`, `.Enum(d, _) -> d` is `.Struct(d, _) or .Enum(d, _) -> d`), since the alternatives may bind (every one binding the same names at the same types, F2039's law). GUARDED RULE-SIDE over `Code.arms()` (`Expr.Match` has no fixed arm count a quote pattern can spell): two sibling arms agree when neither carries a guard and their VALUE Codes are text-equal — wider than the retired regex, which read single-line arms only.
+- compiler.raw_mint_emit_bin A register MINTED, then DEFINED by a raw `emit(Ins...)` a few statements later, outside the emission vocabulary itself — where a vocabulary verb mints and emits in ONE call (`cx.bin(sh, op, a, b)`, features/emit.av). THE MINT LAW ("a register is defined in the order it was minted") holds by CONSTRUCTION once the mint and the emit are one call; split across two statements, a refactor can separate them and the register defines out of order with nothing to catch it. `features/emit.av` is exempt — it IS the vocabulary these verbs collapse into, so its own bodies mint then emit by hand once, on purpose. Nine sibling rules, one per Ins variant a vocabulary verb covers (`CallRt`/`CallRtVoid` are `raw_rt_call`'s concern, never this one's; `FnAddr`, `ConstFloat` and a bare `Alloca` have no covering verb in any form, so there is nothing for a rule to measure there yet).
+- compiler.raw_rt_call A runtime row named by a BARE STRING — `Ins.CallRt(dst, "avra_x", args)` / `Ins.CallRtVoid("avra_x", args)` — instead of through its GENERATED method (`cx.x(sh, args)`, features/rt.av, minted from `core/rt_namespace.av`'s projection of `rt_sigs()`). A row's method carries the row's own arity in its signature, so a misspelled row is the ordinary "no method" refusal at typing and a wrong seat count the ordinary fn-arity refusal; a bare string reopens both holes a typo can hide behind. Two files spell the string BY DESIGN and are exempt: `compiler/suite_entry.av` builds the TEST BINARY's own entry from its own separate row table, never `rt_sigs()`; `compiler/memory/memory.av` rewrites an ALREADY-LOWERED instruction's string field (the owned-twin substitution) — neither reads a row through `LowerCx`.
+- compiler.raw_rt_call_void The void twin — no `dst` to bind.
+- compiler.refusal_assembled A refusal assembled from `pointed`/`error_at` by hand — the one shape is `refusal(kind, at, message, label, help)`.
+- compiler.repeated_projection The same method call computed twice on both sides of one `&&`/ `||` — `cx.shape_at(e) && cx.shape_at(e)` — where the second call answers exactly what the first already holds. Guarded by FINGERPRINT, so `cx.shape_at(e) && cx.shape_at(f)` (a different argument) never fires.
+- compiler.scope_enter_raw A raw scope bracket through a lowering context — the frame verbs (`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`, `arm_stmts`) are the spelling; a raw bracket is invisible to the `defer` frames. Their own implementation (compiler/lower/walk.av) is exempt.
+- compiler.seen_accumulator A `mut` list built to answer "have I seen this before" — a POSITION law once the whole list is already in hand: the first index a value occurs at is decided by `.index_of`, compared against the current one (`xs.index_of(x) < j`, over `enumerate`), which is what `duplicate_names` (features/contract.av) already reads instead of accumulating. `${..head}`/`${..body}` — a run hole (avra-8sb5.25.10) — is what lets this rule sit ANYWHERE in the enclosing block rather than only as its first statement.
+- compiler.stmt_index_walk A walk over a NodeStore's own statements BY INDEX — `for i in 0..store.stmts.count() { … }` — where `for s in store.stmt_ids()` hands the ids themselves, the thing every such walk actually wants. A BARE-HOLE ROOT, structural GUARD (`Code.for_range`, features/code.av, the same shape `loops.index_walk` reads its own range head off): the bound is `${owner}.stmts.count()` here rather than a list's `.length`. `core/store.av` is exempt — its own `stmt_ids()` IS this walk, the one place it is allowed to be spelled out.
+- compiler.str_grown_quadratically Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field is read out beside the value that holds it, so the text is never held alone and every turn copies it. A LOCAL `mut` grows in place (the memory pass hands the cell's text to the append), so a bare name is not this smell. Guarded to STRINGS ONLY — `n = n + 1` is an ordinary int accumulator.
+- compiler.uncounted_refusal A refusal asserted as `>= 1` — a cascade of five passes it just as easily as one; pin the count (`refused_with`, `refused_n`, or `== n`). Every receiver shape the tree has worn it in: `refusals(...)`, `.diagnostics`/`.diagnostics.length`, and `.voices.list.length`.
+- enums.bool_variant_match A `match` answering only true/false, one arm a bare variant and the other the wildcard, is `is` — `x is .Ready`. THE ONE MATCH THAT STAYS: an `or`-run on the untested side (`.Narrow or .Ptr -> false`) spells a REGISTRY's remaining variants by NAME, so folding it to a boolean forgets the next one exactly as a catch-all would — the pattern's own WILDCARD seat (`_`, never an `or`-run) refuses that shape structurally, before any guard is asked.
+- enums.bool_variant_match_negated The arms-swapped twin: the bare variant answers `false`, the wildcard `true` — `!(x is .Ready)`.
+- fns.dead_parameter A parameter nothing reads — the signature lies about what the fn needs, and every call site carries the lie. `dead_params()` (features/code.av) already exempts a contract-bound member (a `trait` signature or an `impl Trait for` method — the TRAIT owns the seat count) and a bodiless declaration.
+- grammar_lit.comma_list_open A repeated comma list inside a `grammar { }` block with no trailing-comma option: CLAUDE.md's grammar law, `( "," x )*` ends `","?` before its closer, in every rule. A list that refuses the comma is a defect, not a style.
+- if_expr.when_ladder An if/else-if ladder of 3+ arms answering a value is `when`. The pattern's own three parts (`if`, `else if`, `else`) are the floor — "3+ arms" — and a LONGER chain nests the same shape one level down, so this rule fires again there rather than needing a pattern that spans every length: `Expr.If`'s own kids are three ExprIds fixed by arity, never a list a `${..}` run could span, so a chain of unbounded depth is read by RECURSING a bound Code, never by one wider pattern. THE FORM ITSELF excludes what the retired regex excluded by construction: a chain that answers VOID (used for its side effects, never its value) parses as `Stmt.IfStmt` — a different node kind by POSITION (avra-8sb5.25.21) — so it never reaches this pattern's `Expr.If` shape at all, and a bare two-arm `if … else …` (no `else if`) has no THIRD part to fill this pattern's own `else` seat.
+- impls.default_override An `impl Trait for T` method whose body is the trait's own DEFAULT body for that name, span-blind and with a written no-op (`nothing()`) elided on either side, is a copy: omitting it inherits the identical default (`Decls.defaulted`), so the override says nothing the trait does not already say.
+- let_stmt.unmutated_mut `mut` that nothing ever mutates — the reader is told to expect a change that never comes. `writes()` (features/code.av) already counts a place written through a call (`x.push(v)`), so this is stricter than a text scan: a local only ever READ, or handed where nothing writes back, is caught the same way a bare assignment's absence is.
+- lists.bool_comprehension_list A comprehension over a LIST folded to a bool is a SCAN — `xs.all(pred)` stops at the first answer and builds nothing, where `[e for j in src].all(it)` mints the whole list first. A comprehension with its own `if` filter is not yet reached (the subset today).
+- lists.bool_comprehension_range The range-source twin — `[e for j in lo..hi].all(it)`.
+- lists.last_index Last-element index arithmetic is `xs.last()!` — the same trap on an empty list, spelled once.
+- loops.branched_push_loop `push_loop`'s BRANCHED twin: each arm of a per-element `if`/`else` pushes to the SAME accumulator, one shape or the other depending on a condition — `[if ${cond} { a } else { b } for x in xs]` builds the identical list.
+- loops.index_walk `for j in 0..xs.length` that then reads `xs[j]` — that walk is `for (j, x) in xs.enumerate()`, which hands over both. The rewrite reads every exact `${xs}[${j}]` inside `body` as bare `x` — the same token-splice `let_else_guard`'s `unforced` and `pronoun_lambda`'s `renamed` already use for a substitution a hole only ever holds as OPAQUE re-splicable text, never as editable structure; a body this pattern cannot walk as structure it can still walk as characters.
+- loops.push_loop A `for` loop whose WHOLE body is one `push` is a MAP — a comprehension, or a `concat` when the pushed list already exists. `${out}.concat([${v} for ${x} in ${xs}])` is sound whether `out` started `[]` or already held content: appending N values one push at a time equals concatenating those same N values at the end, GUARDED to a `v` that never itself reads `out` — a push whose pushed value depends on `out`'s length-so-far (a running index, a running total) is not this shape, and the rewrite refuses it. The matched root is the `for` STATEMENT itself, and a `Fix.Rewrite`'s payload is always `@std.meta.Code` — a single EXPRESSION shape — so the replacement ASSIGNMENT (a statement, not an expression in this language) crosses through `@std/meta`'s raw-text door rather than `quote{}`'s own grammar, the same seam `modified_copy_literal` and `pronoun_lambda` use for a shape `quote{}` cannot hold.
+- modules.unused_import A name imported and never used ANYWHERE in its MODULE — never per FILE, since bs2 merges a module's own files into one bundle, so an import in one file may serve another (`program.av`'s import can be `mod.av`'s to use); a per-file scan deletes an import a sibling still depends on. The compiler refuses a MISSING import (F3000) and one a module does not export (F3012); an unused one is silent, so this rule keeps that direction. `unused_imports()`/`unused_import_decls()` (features/code.av, THE REFERENCES RELATION) already exempt a component instance (`DeclFacts.instance`): its use is being REACHABLE for a `collect`, not being read.
+- nullable.if_null_ternary A null test that picks the value or a default is `??`.
+- nullable.let_else_guard `let x = E` guarded by an immediate absence-exit — `let x? = E else { … }` — with every later `x!` in the block reading `x` bare. A `mut` never matches: the pattern's own `let` name-seat sees only a `let`'s binder, a different node kind entirely.
+- nullable.nullable_flag_local A `mut` local seeded `null` with an explicit nullable type — is this scan a `find`/`index_of`? No hole binds the TYPE (a quote pattern has none in type position yet, avra-8sb5.25.10): a bare-hole root guarded `lit.is_nullable_flag_mut()` reads it off the declaration structurally instead.
+- nullable.repeated_unwrap A `let` LOCAL forced open (`!`) three or more times within its own declaration — a value the code already knows it has, insisted on again and again instead of guarded once. A `mut` never matches (`forces()`'s own law): it changes every turn, so there is no one value to bind.
+- specs.refusal_uncounted_contains A `then` case asserting only `.report().contains(...)` — the shape that lets a cascade of refusals hide behind a message that happens to appear. Pin the count too (`diagnostics.length`, `refusals(...) == n`, `refused_with`/`refused_n`/`refused_in`).
+- structs.index_compared A hand-rolled identity comparison — every typed id (`TypeId`, `ExprId`, a struct wrapping one field) is compared by `.index` pervasively in this compiler's own source, but the SHAPE that makes the comparison honest — one word, nothing more — is a property of the type, not of the site that wrote it. `avra fix` names no mechanical rewrite here: a `.index` comparison names no verb the type doesn't already carry, so this rule only SAYS, never rewrites.
+<!-- GENERATED:RULES:END -->
+
+Unratcheted, read by a human: style.dedupe_union_fold (a matcher cannot see whether a
+predicate has effects), style.doc_run_stolen (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
-I12 came BACK from unratcheted once its regex was repaired: it had
+style.duplicated_literal came BACK from unratcheted once its regex was repaired: it had
 been reading `if x is .Error { return ... }` as a struct literal,
 so it was retired for false positives that were the rule's fault,
 not the code's. Requiring a `field:` pair inside the braces fixed
 it, and it immediately found three constructors waiting for names
 (Span's four spellings, seed's `alt`, memory's nested scope).
-Not ratcheted, each with its reason in tools/idioms.py's
-UNRATCHETED: I1 (the accumulator DECLARATION is a weak proxy — I3
-matches the real smell), I2 (died with the eval collapse), I5
-(duplicate DETECTION), I6 (subsumed by I3), I8 (the ritual and the
-only legitimate use are textually identical), I10 and I17
-(semantic — the review round hunts them), I12 (false-positives on
-doc prose), I28 (voicehood is intent — the round hunts inline
-prose; I11 catches the duplicated-wording consequence).
+Not ratcheted — the tool's UNRATCHETED table, entire, each with its
+reason there: style.accumulator_declaration (the accumulator DECLARATION is a weak proxy — loops.push_loop
+matches the real smell), style.evaluated_payload_chain (died with the eval collapse), style.dedupe_union_fold
+(duplicate DETECTION), style.head_plus_tail_build (subsumed by loops.push_loop), style.statement_value_ritual (the ritual and the
+only legitimate use are textually identical), style.value_if_ladder and style.name_generalization
+(semantic — the review round hunts them), style.wrong_payload_count_pattern and style.restrlen_loop (RETIRED —
+the compiler's F2015 and the string header answer them), style.early_answer_mint (mint
+order is structure, not a token), style.doc_run_stolen (above), style.whole_table_scan (only a profile
+tells the per-query scan from the one-shot walk), style.same_scope_borrow (the matcher
+needs the enclosing fn's scope), style.fold_as_flag (above).
 
 A RULE MUST BE ABLE TO FIRE. Every matcher carries a specimen the
-tool re-checks on every run — added after I18 shipped with a regex
+tool re-checks on every run — added after compiler.bool_of_defaulted shipped with a regex
 that could not span a nested call, which would have reported
 success forever. A dead rule is the same disease as a drifting
 baseline, one level up.
@@ -107,45 +169,37 @@ DEBT TODAY: ZERO. Every site is either idiomatic or licensed in
 place with a reason. From here a single new violation fails the
 gate — there is no amnesty left to hide in.
 
-- I1  (ratcheted) an empty-list accumulator asks: is this loop a
+- style.accumulator_declaration  (ratcheted) an empty-list accumulator asks: is this loop a
       MAP? If yes, it is a comprehension (`switch_start`'s arm
       blocks). LICENSED where it cannot be: a STACK (`open_scopes`,
       ir_text's `switched`), a dual-channel fold, or a filter that
       needs the INDEX (`arm_cases` — comprehensions cannot
       destructure an enumerate).
-- I2  RETIRED: the evaluated-payload chain. It died with the eval
+- style.evaluated_payload_chain  RETIRED: the evaluated-payload chain. It died with the eval
       collapse — no site can exist to catch, so the matcher is gone.
       The number stays retired.
-- I3  (ratcheted) a for-loop whose whole body is one PUSH — that is
-      a comprehension, or a `concat`. The most-licensed rule in the
-      tree, and the licenses are the honest half: a walk whose OUTPUT
-      ACCUMULATES across several branches (one `made` filled by six
-      of them), a push through a FIELD ALIAS (a concat would rebind
-      the local), an INDEX SCAN where the position is the answer, and
-      a fold whose pushes must be EMITTED in order. What is no longer
-      licensed: "the paired form does not parse" and "a comprehension
-      over a RANGE is our own sugar backlog" — both landed, and the
-      loops that cited them are comprehensions now.
-- I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
+- style.hand_rolled_scan  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
       `int?`), as `core/modules.av` reads a key's cut.
-- I5  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
+- style.dedupe_union_fold  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
       only on purpose — `contains` compares non-strings by
       identity). The grammar's own folds use it — `first.av`,
       `diagnostics.av`, `ast.av`;
       validate's and coherence's `seen` folds are duplicate
       DETECTION (they emit on the dup), a different concept, left.
-- I6  head-plus-tail list builds — `concat`/`flatten` today, spread
-      literals when the sugar lands (backlog). AND `concat` COSTS THE
-      WHOLE LIST, so this entry must never be read as "append one
-      element with it": building n items by appending one at a time
-      copies a growing list n times, which is quadratic. MEASURED
-      (2026-09-17), 20,000 appends: through a LOCAL `mut` binding
-      0.002s (the push is in place); through a RECORD FIELD of a
-      shared value, or through a `Cell`'s `get`→`push`→`set`, 0.45s
-      — the whole list copied per element. So `concat` JOINS TWO
-      LISTS, and a loop that appends builds through a local `mut`
-      binding or is a comprehension. The two worst sites in the tree
+- style.head_plus_tail_build  head-plus-tail list builds — `concat`/`flatten` today, spread
+      literals when the sugar lands (backlog). WHERE THE LIST LIVES
+      DECIDES WHAT AN APPEND COSTS. Through a LOCAL `mut` binding,
+      `out = out.concat(x)` and `s = s + x` append IN PLACE — the
+      memory pass hands the cell's box to the reusing twin
+      (docs/2026_09_23_REUSE_IN_PLACE.md). MEASURED (2026-09-23),
+      100,000 appends: list 13.7s -> 0.001s, text 0.385s -> 0.004s.
+      Through a RECORD FIELD of a shared value, or a `Cell`'s
+      `get`→`push`→`set`, the whole value is still copied per append
+      (measured 2026-09-17: 20,000 appends, 0.45s) — that growth is
+      quadratic, and `compiler.str_grown_quadratically` names the text case.
+      So a loop that appends builds through a local `mut` binding or
+      is a comprehension. The two worst sites in the tree
       were both this shape: `Db.record_dep` (97% of the `bodies`
       phase) and `Decls.note_origins` (97% of `resolve`). AND THE
       COST IS NOT THE COPY-ON-WRITE — a push on a local that shares
@@ -153,28 +207,11 @@ gate — there is no amnesty left to hide in.
       same 0.002s. It is that a write reaching a list through a
       field of a shared value, or a `Cell` round trip, cannot keep
       the unique copy, so no write is ever the one that pays.
-- I7  (ratcheted) `xs[xs.length - 1]` is `xs.last()!`; `xs[0]` read
-      MORE THAN ONCE binds a `head`. LICENSED exception: the
-      rebind-alias mutation pattern REQUIRES index syntax — `mut
-      top = xs[xs.length - 1].field` aliases for shared mutation,
-      and `last()` may copy (memory.av's two sites).
-- I8  the statement-value ritual is a VERB, never a two-step:
+- style.statement_value_ritual  the statement-value ritual is a VERB, never a two-step:
       `cx.walk_value(s)` / `cx.eval_value(s)` / `cx.lower_value(s)`
       (features/values.av) — eight spelled-out copies collapsed
       across let_stmt, expr_stmt, and mutation.
-- I9  type agreement is ONE law: `types_disagree(cx, got, want)`
-      (features/checks.av) — two-sided Error absorb, then interned
-      ids. Its third hand-rolled copy (the call-argument check) was
-      ONE-SIDED and cascaded "wants `<error>`" at the user — the
-      extraction WAS the bug fix; the absorb test now counts
-      diagnostics, not just contains(). The deep dive found three
-      MORE hand copies (list elements, if branches, when arms) —
-      six consumers now; the if-branch copy compared SHAPES with
-      `==`, a latent hazard on payload shapes (List) that
-      id-comparison closes. Its sibling law: `spoken(cx, d)` —
-      speak and absorb, the standard refusal tail, which ten sites
-      spelled as emit-then-intern.
-- I10 an if-ladder mapping a value to values is a MATCH, returned
+- style.value_if_ladder an if-ladder mapping a value to values is a MATCH, returned
       directly — match is an expression, `_ -> null` closes a
       non-exhaustive subject (`shape_named`, `term_kind`). A TABLE
       only when the mapping is consumed AS DATA: iterated, rows
@@ -183,45 +220,8 @@ gate — there is no amnesty left to hide in.
       CONDITION arms — mapping one subject through `when` repeats
       the subject in every arm. (Reserved words refuse as field
       names: `shape`/`table`/`ref`/`none`.)
-- I11 shared MESSAGES are fns, defined once (`hole_defect()` in the
-      features root) — module-level lets do not cross imports, so a
-      shared string's one definition is a fn. Four drifting copies
-      collapsed. Repeat-a-string is data too:
-      `joined(filled(depth, "  "), "")`.
-- I12 an identical struct literal written twice is a CONSTRUCTOR
-      waiting for its name (`no_first()` — the empty FirstSet was
-      spelled out four times). Hunt with:
-      `grep -rhoE "[A-Z][a-zA-Z]+ \{ [^{}]* \}" | sort | uniq -c`.
-- I13 the same projection computed twice in ONE expression binds a
-      local (`let sh = cx.shape_at(e); sh is .Int || sh is .Bool`).
-      The commonest case: a diagnostic whose MESSAGE and LABEL both
-      project the same value (`found \`${n}\`` … `this is a
-      \`${n}\``) — twelve emit sites bound their `n`, and the two
-      lines now visibly agree. LICENSED exception: a
-      comprehension's filter and element cannot share a binding —
-      `defs_of` computes `let_name` twice by necessity;
-      comprehension bindings / `filter_map` are on the sugar
-      backlog for it.
-- I14 a GUARD PAIR repeated across sites is one law method
-      answering bool (`refused_name` — the keyword+reserved
-      refusal lived three times as when-pairs; sites now read
-      `if self.refused_name(n, at) { return }`).
-- I15 a PUSH/RUN/POP ritual around varying bodies is ONE bracket
-      fn taking a thunk (`under_overlay(r, () -> ...)` — the
-      overlay push/pop lived three times in resolve; the bracket
-      now guarantees the pop). A zero-arg closure closes over what
-      the body reads; a capture is a COPY (F3005 refuses a write to
-      it), so state the body changes travels as the thunk's answer
-      or through a receiver.
-- I16 dup detection is a POSITION law, not a seen-accumulator:
-      inside `for (j, x) in xs.enumerate()`, a duplicate is
-      `xs.index_of(x) < j` — first occurrence earlier than here.
-      Kills the `mut seen + contains + push` ritual wherever the
-      list is small (structs' field laws, twice). The seen-list
-      stays licensed where detection must survive ACROSS lists
-      (coherence's cross-table scans).
 
-- I17 a construct that GENERALIZES gets a general NAME. When one
+- style.name_generalization a construct that GENERALIZES gets a general NAME. When one
       shape starts serving two masters, the special-case name
       becomes a lie the vocabulary carries forever: `Else` and
       `IfEnd` separated and closed a SWITCH's arms once regions
@@ -231,56 +231,13 @@ gate — there is no amnesty left to hide in.
       published surface (`avra ir`, the IR goldens, every feature
       that emits them).
 
-- I18 a projection the dispatch GUARANTEES, read with a plausible
-      default, is a SILENT WRONG ANSWER: `truth_of(e) ?? false`
-      compiles `false` into the program when the node was not a
-      bool. Absence there is a DEFECT — `lower_defect(cx, e, "a
-      bool literal without its value")` records it and the driver
-      refuses the build. Five sites (bool, string, list, and two in
-      enums/structs) said a plausible lie instead. LICENSED where
-      there is no failure channel and the default is the right
-      answer: `kids()` returning `[]` for a node that is not a list.
-      FALSE-POSITIVE signature: a TEST line pairing an `*_of(...)`
-      helper with an embedded source's own `??` (`ir_of("… f(1) ??
-      0")`) trips the regex. The cure is the fixture discipline,
-      not a license: name the source (`fn boxed_read() -> string`)
-      and the attack line carries no `_of(` — which is how the
-      adversarial files want to read anyway.
-
-- I19 an INDEX WALK over a list is `enumerate`: `for j in
-      0..xs.length` that then reads `xs[j]` should be `for (j, x) in
-      xs.enumerate()`, which hands over both. It survived as prose
-      for four milestones with no code, and was violated three times
-      — including both zip builders, where the index is still needed
-      for the PARALLEL list and enumerate serves that perfectly.
-- I20a a test asserting `A || B` asserts NEITHER: if the outcome is
+- A test asserting `A || B` asserts NEITHER (`style.disjunctive_refusal_test`,
+      never its own registry entry — no matcher, no UNRATCHETED reason,
+      just the name for citation): if the outcome is
       uncertain, run it and pin what happens. (Found writing the
       first adversarial suite — the disjunction was hiding that I
       did not know whether forward type references worked. They do.)
-- I20 a REFUSAL TEST pins the diagnostic COUNT, not just
-      `contains`: `a.diagnostics.length == 1 && a.report()
-      .contains(...)`. Without the count a CASCADE hides behind a
-      message that happens to appear — the types_disagree bug was
-      found exactly that way, and three tests still asserted
-      contains alone. The matcher's first guard looked for the
-      SUBSTRING `diagnostics.length`, so `>= 1` passed as a count;
-      it now demands the real thing — `== n` or `refused_with(`.
-- I30 a refusal asserted as `>= 1`: `refusals(src) >= 1`,
-      `a.diagnostics.length >= 1`, `p.diagnostics >= 1`,
-      `p.voices.list.length >= 1`. Each says "something was
-      refused", which a cascade of five says just as well — one
-      mistake earns one message, so the number IS the assertion.
-      The idiomatic form pins it: `refused_with(src, phrase)` for
-      the one-refusal case, `refusals(src) == n` where a cascade is
-      today's truth and pinning it makes a later improvement
-      VISIBLE. LICENSED only where the count is genuinely not
-      deterministic (none in the tree today) — the reason at the
-      site, or it is a bug being hidden.
-- I21 a `mut` nothing mutates is a `let`. The reader is told to
-      expect a change that never comes; two survived (a type
-      registry threaded through a pass, and its test twin).
- GREW 2026-09-04 with the inout seats: a `mut` handed to a call may fill a `mut` seat, and one receiving a method may be a writing method's place — the compiler refuses a `let` at both — so the ratchet counts an argument or a receiver as mutated; the compiler's own laws now judge `mut` more exactly than the grep.
-- I22 a match where TWO OR MORE variants answer is a REGISTRY, and
+- style.registry_catchall a match where TWO OR MORE variants answer is a REGISTRY, and
       a registry ending in `_ ->` silently forgets the NEXT variant.
       One answering arm is a PROJECTION and its catch-all is honest:
       the contract already pins the answer for variants that do not
@@ -293,7 +250,7 @@ gate — there is no amnesty left to hide in.
       a feature cannot enumerate other features' variants, and
       interp's run loop delegates everything else to `step`.
       GREW 2026-09-05: the LICENSE IS NOW A SPELLING, not a comment.
-      `rest ->` says in the LANGUAGE what `// LICENSED I22` said in
+      `rest ->` says in the LANGUAGE what `// LICENSED style.registry_catchall` said in
       prose — the compiler reads it (F2040 goes quiet), the ratchet
       reads it (`_ ->` is what it looks for), and a reader sees the
       deliberate remainder without a tooling footnote. The old law
@@ -310,47 +267,25 @@ gate — there is no amnesty left to hide in.
       registry hole that BINDS (`other -> f(other)`) cannot be
       spelled `rest`, which binds nothing. The compiler says so at
       that site rather than giving advice that will not compile, and
-      `// LICENSED I22` is the exit left for it. A spelling that
+      `// LICENSED style.registry_catchall` is the exit left for it. A spelling that
       covers most cases does not get to close the escape hatch for
       the rest (P8).
+      RETIRED (avra-8sb5.25.16): the regex found ZERO sites at the
+      moment of retirement — no baseline debt, no `// LICENSED
+      style.registry_catchall` comment anywhere in the tree — which is
+      what "the old law fired at 191 sites and none was the defect it
+      names" already predicted: once `rest ->`'s spelling and F2040's
+      (now `type.registry_hole`'s) own count took over, the grep's
+      SYNTACTIC net over `_ ->` text did no work a TYPED count over
+      the declared enum's own variants was not already doing more
+      precisely — and doing it for every package `avra check` touches,
+      not only the ones this tool's own sweep reached. Not ported as a
+      `rule`: the enforcement was never idioms.py's to hand off, it
+      already lived in the type checker. `registry_forgets`/
+      `registry_forgets_bound` (features/enums/check.av) are the live
+      voices; a NEW catch-all still refuses there, gate or no gate.
 
-- I23 a PARAMETER nothing reads: the signature lies about what the
-      fn needs and every call site carries the lie (`declare` threaded
-      an `lc` it never used). LICENSED where a CALLBACK contract owns
-      the list — a policy fn or a test builder must match the
-      signature it is passed as. The matcher was anchored at column
-      0 and never read a METHOD for four milestones; it reads
-      indented fns now, and excludes BY MATCHER the one shape that
-      cannot drop a parameter — a method under `impl Trait for T`,
-      whose signature the trait owns (fifty `nothing()` pass
-      methods would otherwise each carry a license). Bodiless trait
-      signatures and template text are skipped the same way.
-      THE LICENSED CASE HAS A SPELLING, and it is I22's lesson one
-      rule over: a parameter a SEAT owns and the body never reads is
-      named `_q`, not annotated. The matcher has always skipped a
-      leading underscore and nothing in the tree had ever written one,
-      so nineteen route handlers — whose signature `routed`/`fixed`/
-      `tailed` owns — were each facing a comment. The spelling says
-      "unread by contract" in the language, where a reader sees it
-      without a tooling footnote.
-      ITS MATCHER READ A LAMBDA'S SEAT AS THE FN'S OWN: the parameter
-      list was taken to the line's LAST `)`, so a one-line body
-      holding `f(line, (q: Request) -> ...)` put `q` in the fn's list
-      and the rule accused a parameter that was never declared. Ten
-      hits across std-http and std-sqlite were that, against nineteen
-      true ones — the list ends at its MATCHING paren now.
-- I herein note why I24 is MODULE-scoped: bs2 merges a module's
-      files into one bundle, so an import in `program.av` serves
-      `mod.av`. Per-FILE unused-import analysis is wrong and will
-      delete imports that siblings depend on — it did, and the suite
-      caught it.
-- I24 an IMPORT nothing in the module uses. The resolver refuses
-      a MISSING import (F3000) and an import of a name a module does
-      not export (F3012), but an unused one is silent, so imports
-      rot in that one direction — 54 had accumulated, several
-      created by the same day's refactors. The matcher reads through the `mut` mark on a seat (2026-09-04): `mut cx: TypeCx` is a parameter named `cx`.
-
-- I25 RETIRED (2026-09-04): a variant pattern writing the WRONG
+- style.wrong_payload_count_pattern RETIRED (2026-09-04): a variant pattern writing the WRONG
       payload count. The bootstrap accepted `.A(_, _)` against a
       three-payload variant and bound the wrong things silently, so
       this rule kept the doctrine's "a new field breaks every site"
@@ -361,7 +296,7 @@ gate — there is no amnesty left to hide in.
 
 A REFUSAL TEST THAT SAYS `>= 1` ASSERTS ALMOST NOTHING. One mistake
 earns one message, so the COUNT is half the assertion — a cascade of
-five passes `>= 1` silently. I20 already demands a count beside
+five passes `>= 1` silently. style.refusal_uncounted_contains already demands a count beside
 `contains`, but it never saw this spelling, and 33 sites used it.
 `refused_with(source, phrase)` in @std.avrac.testing makes the honest
 form the SHORT one: it pins the count at one and the phrase together,
@@ -378,8 +313,8 @@ instead of one moving it. `testing/mod.av` exports it now, with
 workspace's voices, its defects) and `refused_in` beside it. Spell a
 cascade `refused_n(p, phrase, n)` or `refusals(src) == n`.
 
-The remainder is no longer a hand-kept tally: I30 ratchets the
-`>= 1` spelling and I20's guard demands a real count, so the number
+The remainder is no longer a hand-kept tally: compiler.uncounted_refusal ratchets the
+`>= 1` spelling and style.refusal_uncounted_contains's guard demands a real count, so the number
 is whatever `make idioms` prints and the gate refuses a new one. The
 sites were converted a suite at a time — a script conversion had
 FAILED, because each suite interpolates its own fixtures, so the
@@ -389,18 +324,18 @@ tests broke.
 THE REACH LAW (learned the hard way, four times): a rule claims a
 SHAPE, and one specimen proves only that its matcher is ALIVE. Four
 rules shipped blind spots a single specimen walked straight past —
-I7 could not see a dotted receiver, I3 could not see a one-line
-loop, I4 could not see a generic with two parameters, and I26 read
+lists.last_index could not see a dotted receiver, loops.push_loop could not see a one-line
+loop, style.hand_rolled_scan could not see a generic with two parameters, and style.repeated_unwrap read
 `s.token!` as a local. SPECIMENS now holds EVERY spelling a rule
 claims, and the self-test refuses the tool when any is missed:
-reintroducing I3's blind spot names the two spellings it lost.
+reintroducing loops.push_loop's blind spot names the two spellings it lost.
 
-- I7's matcher was BLIND to a dotted receiver: it read
+- lists.last_index's matcher was BLIND to a dotted receiver: it read
       `xs[xs.length - 1]` but never `m.frames[m.frames.length - 1]`,
       so six product sites hid from it — including the interpreter's
       register path, run on every instruction. Two matchers in a row
-      have now been wrong in the same direction (I26 over-counted
-      field unwraps; I7 under-counted dotted ones), which is the
+      have now been wrong in the same direction (style.repeated_unwrap over-counted
+      field unwraps; lists.last_index under-counted dotted ones), which is the
       lesson: a rule's REACH is as much a claim as its wording, and
       both need a hit list read by eye before the rule is believed.
 
@@ -433,34 +368,13 @@ reintroducing I3's blind spot names the two spellings it lost.
       loop and the closing walk had each been hand-spelled three
       times before the extraction. A fourth generic surface joins
       by calling the verbs, never re-spelling the walks.
-- I27 RETIRED (2026-09-05): a STRING's `.length` re-measured in a
+- style.restrlen_loop RETIRED (2026-09-05): a STRING's `.length` re-measured in a
       loop condition. It was `strlen`, so a re-measure was O(length)
       per turn and the rule ratcheted the hoists. Lane A gave the
       string box a length in its header, so the measure is a load and
       the re-measure costs nothing; the hoists that stand are
       harmless. The number stays retired.
-- I28 a LAW that assembles PROSE. RATCHETED since the second cruft
-      round: every refusal is ONE call, `refusal(kind, at, message,
-      label, help)` (diagnostics/mod.av) — 173 hand assemblies became
-      that call, and `pointed(error_at(` outside the constructor is
-      the greppable smell. A `spoken(cx, pointed(error_at(…`
-      block inline in a rule body drowns the law in ceremony: the
-      guard ladder in enums' variant_lit_type was 32 lines, 24 of
-      them wording. The idiomatic form: every refusal is a NAMED
-      VOICE — a fn whose whole body is the one refusal, living in
-      a `── The voices ──` section at the file's tail (or shared
-      in checks.av/contract.av when features share words). The LAW
-      then reads as guard + verb: `if sig.tag_of(v) == null {
-      return no_such_variant(cx, e, tname, v, sig) }`. Exemplars:
-      enums/check.av (the refactor that minted this), nullable's
-      `not_absent_able` (one voice, four operators), structs'
-      field voices, fns' wrong_argument/wrong_arity. NOT the
-      smell: the voice fn's own body, and a refusal spoken exactly
-      once in a fn that is otherwise one guard (extraction would
-      just rename it). Unratcheted — voicehood is intent, not
-      text; the review round hunts it, and I11 (duplicated long
-      strings) catches the worst consequence mechanically.
-- I29 an EMISSION VERB that mints its answer register early. The
+- style.early_answer_mint an EMISSION VERB that mints its answer register early. The
       lowering contract is one line — registers are numbered in
       emission order — and a shared verb that takes `dst` from its
       caller invites the caller to mint it BEFORE the verb's own
@@ -482,39 +396,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       subject, cx.result(e))` — is the answer minted early by
       another route; `reg_of` may lower lazily and mint, so the
       answer is minted after every `reg_of`, never handed in.
-- I38 (ratcheted) a GRAMMAR comma list with no trailing-comma
-      option. CLAUDE.md's grammar law says a repeated `( "," x )*`
-      ends `","?` before its closer, in every rule — a list that
-      refuses the comma is a defect, not a style. The law was
-      written when nine spots were fixed at once and then went
-      unenforced, which is the same gap I3 sat in: a rule the spec
-      states and no tool implements. All fifteen comply today, so
-      the ratchet exists to catch DRIFT — a rule copied from a
-      sibling and quietly diverging, which is how two of the three
-      `fn`-shaped rules came to differ on `mut`. Lane B named the
-      class; this is the first tool that can see an instance of it.
-- I48 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
-      FOLDED TO A BOOL. `[writable(h) for h in r.headers].all(it)`
-      builds every element and then measures what it built;
-      `r.headers.all((h) -> writable(h))` stops at the first answer
-      and allocates nothing. Seven sites when the rule landed, five of
-      them in one campaign's two writer laws — and the file holding
-      one of those spelled the scan correctly two lines further down,
-      which is what makes this a habit rather than a belief. Two more
-      were in a suite, where the list is a table of hostile inputs and
-      the scan reads better than the fold did. LICENSED BY THE MATCHER
-      and never by an annotation, in the two shapes where the scan
-      cannot be written: over a RANGE (a range takes no methods, so
-      the comprehension is the only form the language has — seven such
-      sites stand, in route.av, format.av and interp_bytes.av), and
-      under a PAIRED head (`for i, k in xs`), where the element alone
-      is what native `all` hands over. Nothing in the tree matches
-      today, so the ratchet is against DRIFT, as I38's is.
-      THE NEAR RELATION IS NOT THE SMELL: a FILTERED comprehension
-      (`[f(x) for x in xs if p(x)].any(it)`) folds a different
-      question, and converting it inverts the predicate; the matcher
-      does not claim it.
-- I37 a FOLD written as a flag where a scan would short-circuit past
+- style.fold_as_flag a FOLD written as a flag where a scan would short-circuit past
       a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
       a loop whose body must run for every element — `paired_unify`
       unifies each pair for its effect of BINDING the declaration's
@@ -523,19 +405,20 @@ reintroducing I3's blind spot names the two spellings it lost.
       with no annotation; the idiom is `all(...)` whenever the body
       is a pure test. UNRATCHETED: a matcher cannot see whether a
       predicate has effects, so this one is read by a human.
-      (It took a TAKEN number until 2026-09-05 — it was filed as a
-      second I5, so seven `LICENSED I5` sites pointed at the dedupe
-      rule that is the real I5. Lane A found the collision; the tool
-      now refuses a repeated number in the registry as well as in
-      its own source.)
-- I31 a `///` RUN THAT HEADS TWO DECLARATIONS. An inserted
+      (Under the tree's old numbering this idiom took a TAKEN number
+      until 2026-09-05 — it was filed as a second "I5", so seven
+      `LICENSED I5` sites pointed at the dedupe rule that is the
+      real I5, `style.dedupe_union_fold` today. Lane A found the
+      collision; the tool refused a repeated NUMBER after that, and
+      refuses a repeated NAME now that numbers are gone.)
+- style.doc_run_stolen a `///` RUN THAT HEADS TWO DECLARATIONS. An inserted
       definition takes the doc of the one below it, and both lose:
       the newcomer wears a contract it does not have, and the
       original is left bare. Five sites the day the rule landed, all
       from one arc — `unflatten` wearing `mark_flat`'s doc,
       `flat_at` wearing three paragraphs about `field_read` and
       `slot_read`, `unified_lift` wearing THE ASSIGNMENT LAW that
-      belongs to `accepts`, `flat_value` wearing `pack_value`'s, and
+      belongs to `accepts`, `bare_value` wearing `pack_value`'s, and
       `FlatRow` wearing the interner's. The smell is greppable: two
       or more `///` lines where an earlier line ENDS a sentence and a
       later one OPENS a new definition ("A ", "The ", "One ",
@@ -551,7 +434,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       matcher printed 78 hits and the two inspected split one real
       (`workspace`'s `shown`) and one legitimate (`full_type`); a
       rule must justify every hit it prints.
-- I32 A WHOLE-TABLE SCAN FOR A KEYED SUBSET. A verb asked per
+- style.whole_table_scan A WHOLE-TABLE SCAN FOR A KEYED SUBSET. A verb asked per
       query that walks every row of a workspace-wide table to keep
       the few with one key — `[x.id for x in ws.decls.decls if
       is_impl_of(x, name)]`, asked per method dispatch — is a
@@ -564,26 +447,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       hottest in the compiler by self time and the ledger had
       guessed elsewhere. NOT the smell: a one-shot walk that builds
       the index itself, or a scan a program performs once.
-- I33 A REGION INSTRUCTION EMITTED RAW IN A FEATURE. `IfStart`,
-      `ArmEnd` and `RegionEnd` were spelled by hand at 13 sites across
-      seven features, each a `let dst = cx.result(e)` + emit + `dst`
-      triple, while values.av held the verb under a presence-specific
-      name (`close_presence`). The emission vocabulary
-      (features/emit.av) speaks them — `open_region`, `arm_end`,
-      `close_region`, `close_region_as` — beside `const_int`,
-      `const_bool` (three copies became one) and `measured_reg` (the
-      `length` lowering, three verbatim copies became one row fn).
-      THE RULE: a feature's lowering emits its own VALUE shape and
-      speaks every CONTROL shape; the IR of all 73 corpus programs
-      was byte-identical before and after. The loop brackets
-      (`loop_start`/`loop_cond`/`loop_end`) and THE WALK (`opened`
-      over a list, `counted` over a range, `turn_open`/`turn_index`/
-      `turn_elem`/`turn_close`) followed: the skeleton that lived in
-      lists/walks.av and again by hand in loops/lower.av is one, so a
-      comprehension, a `for x in xs` and an `xs.map(f)` emit one
-      stream by construction. RATCHETED over regions and loop brackets
-      (the matcher exempts emit.av's own body).
-- I34 THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
+- style.same_scope_borrow THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
       followed by `xs.push(v)` is the alias form of a write — the
       smell is the alias where a path write (`self.field.push(v)`)
       says the same thing without a second name. It is LICENSED, and
@@ -617,85 +481,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       matcher needs the enclosing fn's scope (a read BEFORE the
       write); the read-then-write scan lives in lane C's landing.
 
-- I26 one nullable LOCAL forced open with `!` three or more times
-      in a fn. The value is already known to be there — CLAUDE.md's
-      own style rule settles it ("a `let` earns its place when the
-      value is read more than once"), so guard once, bind once, and
-      read the name. Eleven sites when the rule landed, in code as
-      old as the lexer; `annotated` had SIX `t!` in five lines.
-      NOT the smell, and excluded by the matcher rather than by an
-      annotation: a `mut` ACCUMULATOR (`closest`'s `best!`), which
-      changes every turn — there is no one value to bind. The first
-      matcher over-counted by reading `s.token!` as a local; a rule
-      must justify every hit it prints.
-- I36 (ratcheted) TEXT GROWN BY `s = s + piece` IN A LOOP. Every
-      step copies what came before, so a scanner over n bytes does
-      n²/2 work — the lexer's string literal, the toml scanner and
-      `quoted_text` all spelled it, and the cli's padding too. The
-      form: a `@std/text` builder (`mut out = builder()`, `out.push`,
-      `out.built()`) that keeps pieces apart and joins once; a
-      scanner pushes RUNS (`src.substring(run, j)` at each escape),
-      not characters; a column is `repeat`/`pad_left`/`pad_right`.
-      The matcher reads `x = x + "…"`, `x = x + (…)` and `x = x +
-      y.substring(…)` — an int's `n = n + 1` never matches. Four
-      sites converted at discovery (2026-09-05), none licensed.
-- I35 (ratcheted) a RAW SCOPE BRACKET through a lowering context:
-      `cx.emit(Ins.ScopeEnter(…))`, `cx.emit(Ins.ScopeExit(…))`,
-      `lo.out.give(Ins.Scope…)`. A scope IS a `defer` frame, and the
-      frames live in the walk's verbs — `scope_enter`/`scope_exit`
-      for a scope, `seats_enter`/`seats_exit` for the seats' bracket
-      (no statement list, so no frame), `arm_stmts` for a
-      statement-list arm — so a bracket emitted raw is invisible to
-      them: a `defer` written inside runs at the ENCLOSING frame's
-      end (an `if` statement's branch did, landing `defer`). Eight
-      sites converted at discovery (three loops, the comprehension
-      walk, the block, the fn, the lambda, the entry). LICENSED at
-      the four verbs that ARE the spelling; an Emitter's own `give`
-      in a synthesized body (suite_entry.av) has no context and is not
-      the smell.
-- I39 (ratcheted) A VOCABULARY VERB AS A FREE FN TAKING A PASS
-      STATE FIRST — `open_region(cx, c)`, `accepts(cx, e, want)`,
-      `sig(ws, d)`. A state struct's impl IS its vocabulary, so the
-      verb is a method (`cx.open_region(c)`, `ws.sig(d)`) and the
-      context reads as the receiver it is: eight of nine lines of a
-      lowering rule once carried `cx` as a first argument. Landed
-      as sugar 1's level one (docs/2026_09_09_SUGAR_1_CONTEXT_
-      RECEIVER.md): 320 verbs across the shared vocabularies
-      (checks, values, emit, unify, variants, places, contexts,
-      contract, namespace, builder) and the drivers (workspace,
-      receivers, typing, lower, interp) became methods in one
-      scripted sweep, every call site with them; the IR of 88
-      programs was byte-identical before and after. THE REACH is
-      the pass's own files — features/*.av and compiler/**.av —
-      where the shared vocabularies live; a feature dir's rule
-      bodies (`call_type(cx, e)`) are dispatch targets and stay
-      free. NOT the smell: a pass ENTRY POINT taking the pass's
-      INPUT (`lower(a: Analysis)`, `memory(l: Lowered)`,
-      `render_ir(l)`) — that is a pass's one standard signature,
-      and a constructor taking a `Host`. LICENSED where a TABLE
-      ROW holds the fn as a value (`measured_reg`): a method is no
-      value. THE PRONOUN TRAP the sweep hit ten times: `xs.any(
-      verb(cx, it))` rewritten to `xs.any(cx.verb(it))` rebinds
-      `it` to the NEAREST method call — the wrapper lambda `(k) ->
-      cx.verb(k)` is the spelling, as the subset already says of
-      `self.rides(it)`. And a `..` before a name is not a field's
-      dot: a rewrite that refused `.name` refused `0..name` too,
-      and one site read `decls` as undefined.
-- I40 (ratcheted) A STRUCTURAL TYPE INTERNED BY HAND —
-      `cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))`,
-      the type rebuilt inside out, one `intern` per level. The
-      TYPE LITERAL spells it as a program does: `cx.type(string?)`,
-      `cx.type(Map<string, want>)`, `types.type(fn(int) -> bool)`.
-      Landed as sugar 2 (docs/2026_09_09_SUGAR_2_TYPE_LITERALS.md):
-      87 sites in one scripted sweep. THE REACH is every file but
-      core/types.av, whose `interned` IS the fold. NOT the smell: a
-      shape the literal cannot spell — a declared type (`Enum`,
-      `Struct`, `App`, `Var`, `Dyn`, `TypeName`), `Error`, `Null`,
-      the empty literals' own types — and a part that is an
-      EXPRESSION rather than a name (`Type.Opt(seat!.elem)`): a hole
-      is a NAME, so those four sites bind a name first or stay.
-
-- I41 (unratcheted) AN UNWRITABLE SPELLING IS A KEY — a name or a
+- style.unwritable_spelling_key (unratcheted) AN UNWRITABLE SPELLING IS A KEY — a name or a
       key that must never collide with what a program writes is
       spelled with a character the lexer refuses in that position,
       and the reader tests that one character. Three instances name
@@ -708,92 +494,54 @@ reintroducing I3's blind spot names the two spellings it lost.
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
 
-- I50 A ONE-PARAMETER LAMBDA HANDED TO A METHOD CALL IS `it` —
-      `cases.any(it == null)`, `declared.find(it.word == item)`,
-      `seats.all(retains_of(ins, it) == 0)`. The pronoun says the
-      predicate and nothing else: no binder, no annotation, no arrow.
-      THE ONE LAMBDA THAT STAYS: `it` binds at the NEAREST enclosing
-      method call, so a parameter handed on to ANOTHER method call
-      (`held.find((o) -> !store.has(k, o.key))`, `xs.any((k) ->
-      self.rides(k))`) cannot be the pronoun — that is the language's
-      own spelling, and the matcher never accuses it; nor a block body,
-      a nested lambda, or a body that already says `it`. Ratcheted
-      (`pronoun_lambda`). Sugar backlog: a pronoun that names its OWN
-      call, which would retire the half that stays.
+- style.arm_duplicates_sibling_answer (unratcheted) A MATCH ARM'S VALUE THAT IS `if c { x } else { y }`,
+      WHERE ONE BRANCH ANSWERS WHAT ANOTHER ARM OF THE SAME MATCH
+      ALREADY ANSWERS, IS A GUARD — the branch that duplicates becomes
+      the fall-through, and the arm keeps only the branch that does
+      not: `.Struct(_, _) -> if meta_type(ret, "Derived") { Derives }
+      else { null }` beside a trailing `rest -> null` becomes
+      `.Struct(_, _) if meta_type(ret, "Derived") -> Derives` (rest
+      already answers `null` for everything else, Struct included);
+      `.Variant(n, args) -> if n.of == name { padded(args, arity) }
+      else { null }` beside `.Wild or .Rest or .Bind(_) or .Lit(_) or
+      .Format(_, _) -> null` becomes the guarded arm plus `.Variant(_,
+      _) or .Wild or …` — the payload-blind or-run widened to include
+      the tested variant, since here nothing else already caught it.
+      THE ONE SHAPE THAT STAYS: an arm whose EITHER branch answers a
+      value no other arm shares (`.B(b) -> if b { "true" } else {
+      "false" }` with no sibling saying either word) — nothing to fall
+      to, so the `if`/`else` is the honest spelling; and a wide
+      REGISTRY dispatch where every arm computes its own distinct
+      answer (the interpreter's instruction stepper: `pc + 1` against
+      `b.past_else(pc)`, `b.past_loop(pc)` — CLAUDE.md's own "wide
+      REGISTRY, every arm distinct" case). UNRATCHETED: telling "this
+      branch is what a DIFFERENT arm already answers" apart from two
+      branches that merely LOOK similar needs reading every other
+      arm's own answer and judging whether they are the same
+      computation — the payload-blind or-run growing to include the
+      guarded variant's own pattern is itself a per-site call a grep
+      cannot make safely. Found sweeping the 52 `-> if` arm lines
+      landed before arm guards existed (avra-8sb5.25.1): 23 converted,
+      29 stayed — most of the survivors are the wide-registry shape,
+      the rest genuinely answer two unrelated values.
 
-- I51 A MATCH ANSWERING ONLY true/false IS `is` — `match x { .Ready
-      -> true, _ -> false }` becomes `x is .Ready`; with the arms
-      swapped it becomes `!(x is .Ready)`. THE ONE MATCH THAT STAYS:
-      the untested side must be the WILDCARD (`_`/`rest`) — it
-      already answers for every variant not yet written, exactly as
-      `is`'s complement does. An `or`-run there instead SPELLS a
-      registry's remaining variants by name (`rides_fp`,
-      `answers_word` in llvm.av — RtKind is a registry, and folding
-      it to a boolean forgets the next variant exactly as a
-      catch-all would), so the matcher never accuses one; nor an arm
-      carrying a payload, nor a match of more than two arms, nor one
-      over a nullable enum (`is` there is F2013) or over a literal.
-      Ratcheted (`bool_variant_match`).
+- style.named_type_representation_check (unratcheted) A NAMED TYPE'S REPRESENTATION IS NOT PART OF
+      `Kind` — `Kind.Named(name, args)` answers a declared name and
+      its type arguments alone, never whether the declaration is a
+      real record or enum (boxed, built) or a flat wrapper over one
+      scalar (`type X = string`, free at runtime, filled from a
+      token exactly as the scalar itself is). A rule that must tell
+      these apart — `node_grammar.av`'s `flat_named`, deciding
+      whether a grammar payload is text-filled or built — has no
+      `Kind` arm to dispatch on, so it names the tree's three free
+      wrappers (`Scoped`, `Plain`, `Nominal`) by hand, LICENSED at
+      the site. THE SMELL nothing greps for cleanly: any OTHER named
+      type this check would need to widen for is itself the trigger
+      to give `Kind` (or `Field`) a representation bit, not to grow
+      this list further. Not ratcheted — the exception is one closed
+      site, not a shape a grep can generalize from.
 
-- I52 A NULL TEST THAT PICKS THE VALUE OR A DEFAULT IS `??` —
-      `if x == null { d } else { x! }` is `x ?? d`, and with the arms
-      swapped on `!= null` it is the same thing. THE ONE TERNARY THAT
-      STAYS: a present branch that does anything MORE than `x!`
-      (`x!.text()`, `f(x!)`) — `??` hands back `x` itself, never a
-      derived value, so those stay written out. Restricted to ONE
-      PHYSICAL LINE, which is what keeps a default from ever being a
-      block of statements (a statement cannot span a `;`) and a
-      subject from ever being a call written twice (a call's parens
-      are never part of the matched name).
-      Ratcheted (`if_null_ternary`).
-
-- I53 A LITERAL COPYING EVERY OTHER FIELD FROM ONE VALUE IS `with` —
-      `Scope { tier: top.tier, managed: top.managed.concat([r]),
-      cells: top.cells }` becomes `top with { managed:
-      top.managed.concat([r]) }`. THIS SMELL CAN SILENTLY CHANGE
-      BEHAVIOUR: a literal built from a DIFFERENT type than `v` only
-      happens to share field NAMES (`Directive { twin: "", name:
-      t.name, at: t.at, source: … }` where `t: MetaType` — the
-      annotation-crossing convention throughout `core/*_derive.av`),
-      so the matcher traces `v`'s DECLARED type — an enclosing
-      `impl`'s receiver, a parameter's annotation, a `let`'s
-      annotation, or one hop through a bare `x!` unwrap — and
-      accuses only when it can CONFIRM that type equals the
-      literal's own; an unknown or a mismatched type is never
-      accused, nor a literal spanning more than one line (the whole
-      field list must be in hand at once to judge it). Ratcheted
-      (`modified_copy_literal`).
-
-- I54 AN if/else-if LADDER OF 3+ ARMS ANSWERING A VALUE IS `when` —
-      `let base = if a { x } else if b { y } else { z }` becomes
-      `let base = when { a -> x, b -> y, _ -> z }`, and the same
-      reads over a match arm's `->`, a `return`, or a fn's tail. THE
-      ONE LADDER THAT STAYS: an arm that is not a single-line VALUE
-      — a `return`/`fail`/`break`/`continue`, an assignment, a
-      nested `if`, or a body spanning more than one line — since
-      `when`'s arms are values and this never combines a nested
-      condition into one; a ladder of only two arms; and a bare
-      `if` mid-body that closes some OTHER block (a `while`, a
-      `for`) rather than standing as its own fn's tail. Ratcheted
-      (`when_ladder`).
-
-- I55 `let x = E` GUARDED BY AN IMMEDIATE ABSENCE EXIT IS `let x? = E
-      else { … }` — `let held = get()` then `if held == null { return
-      null }` becomes `let held? = get() else { return null }`, and
-      every later `held!` in the same block reads `held`. THE ONE
-      GUARD THAT STAYS: `x` that is a `mut` binding, a parameter, or
-      a field/path (`self.store == null`) — only an adjacent
-      immutable `let`; a later use of `x` that is not an unwrap
-      (passed to a `T?` seat, compared to null again, `x?.f`) — the
-      rewrite makes `x` non-null for the rest of the block, so a
-      surviving nullable read would refuse or silently change
-      meaning; a guard with `||`/`&&`; a `let` with an explicit
-      NON-nullable annotation; and a name a LATER binding in the
-      same block could SHADOW (a lambda or `for` parameter, a nested
-      `let`/`mut` of the same name) — a text scan cannot then tell
-      which binding a later `x!` names. Ratcheted (`let_else_guard`).
-
-- I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
+- style.pack_unpack_one_table (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over
       it, arm for arm. The word slot is the instance: `slot_form`
@@ -809,7 +557,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       catch-all or an `is` test inside either — so a hole in one
       direction fails the gate whichever direction grew it.
 
-- I42 (unratcheted) A READ ASKS THE SEEN SHAPE, A SEAT ASKS THE
+- style.seen_shape_vs_seat_shape (unratcheted) A READ ASKS THE SEEN SHAPE, A SEAT ASKS THE
       TYPE — the named-type law (`type Rows = List<int>`) written as
       a code shape. A rule that DISPATCHES ON A SHAPE to read,
       print, measure, walk, index or compare asks `cx.seen_at(e)` /
@@ -825,28 +573,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       `named_adversarial_test.av` reaches every vocabulary a name
       can stand over.
 
-- I43 (ratcheted) A FACT COLUMN SIZED BY HAND — `filled(store.
-      exprs.count(), null)` beside its siblings, a `- self.lo` at
-      every read, and a `concat(filled(n - xs.length, null))` where
-      the arena grew. Four things live in that shape and NONE of
-      them is stated: the STORAGE, the WINDOW the column covers, the
-      GROWTH when new ids arrive, and what a read OUTSIDE the window
-      means. `SideTable<V>` (core/side_table.av) states all four —
-      `side_table(name, lo, hi, seed)` is born total, `get`/`set`
-      take the id and never an offset, `grow_to` is the one door,
-      and a read outside the window traps naming the TABLE and the
-      ID rather than "index 1 is out of bounds (length 0)". THE
-      SMELL: `filled(` with an arena `count()` in its first
-      argument, and `.index - ` anywhere. NOT the smell: a
-      fn-local scratch list keyed by a seat, a field or a type
-      parameter (`Pins.slots`, `range_bodies`'s `lo`/`hi`) — those
-      have no window and no life past the call. The KEY is a slot
-      `int`, not the typed id, because a bound is spellable on a
-      free fn's parameters and nowhere else; the typed door stays
-      on the owner (`type_at(e: ExprId)`), which is where every
-      reader already goes.
-
-- I44 (unratcheted) A POSITIONAL BOUNDARY SPELLS ITS ORDER ONCE — a
+- style.positional_boundary_unspelled (unratcheted) A POSITIONAL BOUNDARY SPELLS ITS ORDER ONCE — a
       value crossing between two compilations of the same
       declaration travels by SLOT, so the order is a REGISTRY ROW
       carrying the name, the payload count and the reader together
@@ -861,8 +588,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       keeper is the boundary check itself, whose fixtures move each
       shape and demand the refusal name it.
 
-
-- I45 (unratcheted) A DERIVE STANDS ALONE IN ITS FILE — a file that
+- style.derive_file_not_alone (unratcheted) A DERIVE STANDS ALONE IN ITS FILE — a file that
       declares a trait's associated `derive` declares that trait, its
       helpers and `use @std.meta` and NOTHING ELSE. Running the derive
       TYPES the whole declaring file, and it runs while the ANNOTATED
@@ -879,7 +605,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       nothing else" from an ordinary file with a trait in it, and the
       shape that breaks it is whatever ELSE the file holds; the keeper
       is the law in CLAUDE.md and the first build that tries.
-- I47 (unratcheted) A SPAN WINDOW'S ANCHOR SET HOLDS EVERY MEMBER IT
+- style.span_anchor_incomplete (unratcheted) A SPAN WINDOW'S ANCHOR SET HOLDS EVERY MEMBER IT
       COULD CLOSE ON. Optional pieces of a declaration are attached to
       the member they precede by WINDOWS over spans — a window opens
       at the previous anchor and closes at this one — and the whole
@@ -904,7 +630,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       through the printer. Nine such cases round-trip at
       `annotations_adversarial_test.av`'s "payload marks — alignment";
       every one of them would have failed the partial anchor set.
-- I46 (unratcheted) A PER-DECLARATION WALK ASKS A STATEMENT'S
+- style.per_decl_walk_asks_stmt (unratcheted) A PER-DECLARATION WALK ASKS A STATEMENT'S
       QUESTION TWICE. A declared MEMBER can carry a declaration of its
       own standing on its OWNER'S statement — a record field's DEFAULT
       is minted with the struct's `s` (`decls.av`'s `mint("${owner}#${field}", f, s, …)`)
@@ -924,55 +650,48 @@ reintroducing I3's blind spot names the two spellings it lost.
       that has a declaration of its own, which is a field with a
       default.
 
-- I56 (ratcheted) A RUNTIME ROW NAMED BY A BARE STRING —
-      `cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))` — where a
-      generated method carries the row instead: `cx.array_sized(sh,
-      size)`. `rt_sigs()` projects into one `LowerCx` method per row
-      (`features/rt.av`, generated by `avra runtime-namespace` from
-      `core/rt_namespace.av`), so a call site is checked at TYPING
-      for free: a misspelled row and a wrong seat count are BOTH the
-      ordinary "no method"/method-arity refusal (F2030) — no keeper,
-      no runtime defect, because each row's OWN method carries the
-      row's arity in its own signature (verified directly, red-team,
-      2026-09-22: both fire on real generated methods). THE FIRST
-      DRAFT generated a SEPARATE `rt` namespace of free fns instead
-      (`rt.str_of_bytes(cx, sh, octets)`, closer to the sugar's own
-      wording); `make idioms` refused every one of the 91 as I39 — a
-      vocabulary verb is a method on the pass state, never a free fn
-      taking it first — so the namespace collapsed into `LowerCx`
-      itself and the call reads `cx.str_of_bytes(sh, octets)`, no
-      separate value at all. Landed as sugar 3
-      (docs/2026_09_09_SUGAR_3_TYPED_RUNTIME_ROWS.md, landing
-      docs/2026_09_22_SUGAR_3_LANDING.md): ~79 sites across 20 files
-      swept in one pass — the survey's own grep for `Ins.CallRt(`
-      undercounted by 23, blind to a wrapper's OWN callers
-      (`rt_method(mc, "avra_x", extra)` had 21 further sites no grep
-      for the instruction saw). Three helpers (`grown_box`,
-      `tagged_value`, `fn_box`) took an already-minted `dst: Reg` as a
-      parameter; a generated method always mints its own destination,
-      so they were refactored to mint through it and RETURN the
-      register instead — safe because every one of their ~17 callers
-      minted `dst` solely to hand it over. IR byte-identical before
-      and after over every lists/maps/structs/enums/cells/bytes_scan
-      test. THE TWO NAMED EXCEPTIONS: `compiler/suite_entry.av`
-      builds the TEST BINARY's entry from its own separate row table
-      (not `rt_sigs()`, a different builder — `e.give`, not
-      `LowerCx`), and `compiler/memory/memory.av` rewrites an
-      ALREADY-LOWERED instruction's string field (the owned-twin
-      substitution) — neither reads a row through `LowerCx`.
-      Ratcheted (`raw_rt_call`).
+- style.mutable_slot_not_cell (unratcheted) A MUTABLE SLOT IS A `Cell`, NEVER A ONE-ELEMENT
+      LIST. `ensure: List<fn(DeclId)>` written `self.ensure.set(0, f)`
+      and read `self.ensure[0]` is a Cell spelled as a list: its writes
+      are list writes, so a copy of the holder forks them and the
+      receiver law counts every arming as a write through `self`.
+      `ensure: Cell<fn(DeclId)>`, `.set(f)`, `.get()(d)` says what it is,
+      and a copy shares it. Decls held nine; the tree holds none now.
+      Not ratcheted: no grep tells a one-slot list from a list whose
+      first element is written.
 
-- I57 (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
-      `.Struct(d, _) -> d` then `.Enum(d, _) -> d` — are one arm:
-      `.Struct(d, _) or .Enum(d, _) -> d`. An `or` arm BINDS when every
-      alternative binds the same names at the same types, by name, in
-      any position (`.A(x, y) or .B(y, x) -> …`); F2039 refuses the
-      rest, naming which alternative binds what. It could not bind until
-      the fibers campaign's evaluator rewrite wanted `.RetVal(r) or
-      .FnExit(r)`, and the tree held ~50 split pairs spelled around the
-      gap. LICENSED at the site when the names bind at DIFFERENT types
-      (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
-      a block body is its own sentence. Ratcheted (`one_body_arms`).
+- style.encoding_empty_field_dropped (unratcheted) A DELIMITED ENCODING
+      DECODES ITS EMPTY LAST FIELD. `split` drops a trailing empty
+      segment, so a name joined by a separator and ending in an empty
+      field reads back one field short: `stable_line("module", [""])` is
+      "module\n" and splits to one piece. The root module's name is
+      empty, so every witness edge naming it answered unresolved, in
+      both processes, and no root-module file could ever reuse an
+      answer. A refusal case cannot see this — it passes when
+      everything is refused — and only a positive control (an unchanged
+      source is reused) failed. `stable_fields` restores the field.
+      THE SMELL: a decoder that splits on the separator its encoder
+      joined with and takes the field count from the result. THE IDIOM:
+      write the empty case first — an empty last field, an empty first
+      one, an empty middle one — as a round trip beside the codec, and
+      ask of every such decoder whether its encoder can emit an empty
+      tail. Not ratcheted: no grep tells a decoder from any other split.
+
+- compiler.publish_by_rename (unratcheted) A PATH OTHER PROCESSES READ IS
+      PUBLISHED, NEVER WRITTEN. A linker unlinks and re-creates its output,
+      and a placed row is written at mode 0644, so writing a shared path in
+      place shows a reader — a peer building the same package, the suite's
+      own re-exec — the file missing, half-written or not yet executable:
+      a package's suite binary was seen non-executable in 5 of 6 warm
+      rounds, the window between the place and the mode set after it.
+      `staged_beside` names a path no other process names, the file is
+      finished THERE (linked, placed, mode set), and `published` renames
+      it on in one step. THE SMELL: a verb that writes a path and then
+      adjusts it — a mode, a stamp, a second write. THE IDIOM: adjust the
+      staged file, then rename. A guard that samples the path proves it:
+      tools/witness_parallel_build.sh reads mode and size in one `stat`
+      while runs repeat, and a poller that read nothing is no witness.
+      Not ratcheted: no grep tells a path others read from one nobody does.
 
 ## Lowering: MINT IN EMISSION ORDER
 
@@ -985,10 +704,8 @@ time (it resolves by lookup, not by position). Found writing `??`:
 the payload register was minted before the constant it indexes with.
 
 ```avra
-let one = cx.mint_shape(Type.Int)      // mint, then emit
-cx.emit(Ins.ConstInt(one, 1))
-let carried = cx.mint(e)
-cx.emit(Ins.CallRt(carried, "avra_array_get", [v, one]))
+let one = cx.const_int(1)              // mint and emit, one call (style.raw_mint_emit)
+let carried = cx.array_get(sh, v, one) // the row's own typed method (style.raw_rt_call)
 ```
 
 THE COMPOSITION COROLLARY (found collapsing the presence verbs,
@@ -1027,13 +744,22 @@ that spells, a comprehension spells too.
 
 ## The native list vocabulary
 
-`push`, `length`, indexing, `set(i, v)`, `get`, `pop`, `insert`,
-`slice`, `join`, `map`, `filter`, `reduce`, `foreach`, `enumerate`,
-`zip`, `sort`, `reverse`, `contains(v)` (-> bool), `index_of(v)`,
-`find(pred)` (-> `T?`), `any(pred)`, `all(pred)`, `first()`/`last()`
-(-> `T?`), `is_empty()` — all native, and native closures are
-mono-safe (unlike fn args through OUR generics). They work in
-`<N>`-generic bodies too (`bindings.find(it.label == label)`).
+`length`, indexing, `push`, `set(i, v)`, `pop` (-> `T`, never
+`T?`), `concat(ys)`, `slice(lo, hi)`, `join(sep)`, `map`, `filter`,
+`contains(v)` (-> bool), `index_of(v)`, `find(pred)` (-> `T?`),
+`any(pred)`, `all(pred)`, `first()`/`last()` (-> `T?`),
+`is_empty()` — all native, and native closures are mono-safe
+(unlike fn args through OUR generics). They work in `<N>`-generic
+bodies too (`bindings.find(it.label == label)`). The list is
+features/lists/mod.av's method table, entire.
+
+`enumerate` is a `for`-head and a comprehension head only, never a
+value: `xs.enumerate()` alone is F2005 "`enumerate` pairs only
+under a paired `for` head". And the runtime has NO `get`, `insert`,
+`reduce`, `foreach`, `zip`, `sort` or `reverse` — each is F2030
+"`.sort(…)` calls a method, and `List<int>` has none". core/lists
+answers two of them with COPIES (`reversed`, `inserted`); a fold is
+a loop, and there is no sort.
 
 A scan is never a loop:
 
@@ -1053,12 +779,12 @@ and stateful transforms.
 ## Absence reads STRAIGHT — the if-null rule
 
 One of the most important patterns in this tree.
-A null/`let x ->` MATCH earns its lines only when both arms carry
-real payload logic — absence handling reads straight, never as a
-two-arm ceremony:
+A two-arm `null ->` / `x? ->` MATCH earns its lines only when both
+arms carry real payload logic — absence handling reads straight,
+never as a two-arm ceremony:
 
 ```avra
-if target == null { return null }     // not: match target { null -> null, let s -> ... }
+if target == null { return null }     // not: a `null ->` / `s? ->` match
 self.slots[target!.index]
 
 let f = r.farthest ?? FarthestFailure { cursor: c, expected: [p], in_rule: r }
@@ -1089,8 +815,8 @@ evaluated payload of a child is `cx.int_at(e)` / `cx.truth_at(e)` /
 `int_of(cx.store.expr(cx.value_at(e)))`, which appeared eight times
 before it was named. And after a null guard, a value read more than
 once REBINDS (`let es = elems!`) so the `!` happens exactly once —
-flow narrowing is on the sugar backlog; until the language absorbs
-it, the rebind is the pattern.
+flow narrowing is tracked as avra-8sb5.10.100 in the tasks db; until
+the language absorbs it, the rebind is the pattern.
 
 ## A field default is evaluated per construction
 
@@ -1118,7 +844,7 @@ let regs = [cx.reg_of(k) for k in elems]
 
 A map the tree repeats gets a NAME (`expr_fps`, `stmt_fps`); a
 mixed head-plus-tail builds with `concat`/`flatten` (spread
-literals `[head, ..tail]` are on the sugar backlog); and a
+literals `[head, ..tail]` are tracked as avra-8sb5.10.24); and a
 two-per-item map is `flatten([[a, b] for p in ps])` — proven in
 the subset (param_fps).
 
@@ -1214,7 +940,8 @@ impl Prim {
 
 Absence is `T?`, never `-1` or `""`: `label: string?`, `build: Build?`
 (null = pass-through), `expect: Expect?`. Consume with `??`, `!`, and
-null/`let x ->` match arms.
+`null ->` / `x? ->` match arms — one arm per LINE, since a
+comma-ended arm swallows the `x?` that follows it.
 
 ```avra
 text = text + (unescape(e) ?? src.substring(j, j + 2))
@@ -1231,8 +958,9 @@ fn later_def(name: string) -> StmtId? {
 engine_codes().find(it.cause == c)?.kind ?? "language.defect"
 ```
 
-`?.` reaches FIELDS only; mapping a present value through a fn or
-constructor is a guarded `if`.
+`?.` reaches FIELDS and METHODS — `p?.doubled()` answers the
+method's type, nullable. Mapping a present value through a FREE fn
+or a constructor is still a guarded `if`.
 
 ## Extractor + `want` for typed unwrapping
 
@@ -1276,24 +1004,23 @@ Proven capabilities:
 - Constructions infer under a typed `let` and in a fn's TAIL position
   (expected types thread through match arms, if-branches, and list
   elements) — `Captured.Many([Captured.Terminal(t), v])` needs no
-  pinned intermediate, and a generic ctor works as a match-arm tail.
-  Early `return`s do NOT get this — keep the typed let there. Neither
-  does a construction whose only N-evidence is SIBLING fields
-  (`MatchResult { status: r.status, state: state, ... }` — F1002):
-  that one keeps its typed-let pin.
+  pinned intermediate, a generic ctor works as a match-arm tail, and
+  an early `return` reads the declared answer type too. What does
+  NOT infer is a construction whose only N-evidence is SIBLING
+  fields (`MatchResult { status: st, state: state, held:
+  Captured.Absent }` — F2003 "`Captured.Absent` cannot pin `N` —
+  nothing carries it"): that one keeps its typed-let pin.
 
-Pin explicitly (`f<N>(...)`) when:
-
-- the only N-evidence rides inside a struct argument
-  (`match_rule<N>(cx, ...)` — `cx: MatchContext<N>` is not enough), or
-- the call happens inside another generic fn's body, even at a
-  concrete type (`concat<Diagnostic>(diagnostics, r.diagnostics)`).
-
-Never nest a generic type inside an explicit type argument —
-`concat<Captured<N>>(...)` does not take (write the loop instead).
-Fn-typed arguments carry no T-evidence, and pinning `<T>` over one
-corrupts scalar payloads through mono — never thread fn args through
-generics.
+Pin explicitly (`f<N>(...)`) when the arguments carry no evidence.
+The case the compiler names is a bare `null`: `filled(3, null)` is
+F2000 "argument 2 of `filled` wants `T`, found `null`", help "a bare
+`null` cannot pin `T` — write `filled<...>(...)`". A struct argument
+carries its own evidence (fn-typed fields included), and so does a
+call sitting inside another generic body — probe before adding a
+pin, and nesting a generic inside the pin (`f<Captured<N>>(...)`)
+takes fine. Fn-typed ARGUMENTS carry no T-evidence, and pinning
+`<T>` over one corrupts scalar payloads through mono — never thread
+fn args through generics.
 
 ```avra
 fn captured_absent<N>() -> Captured<N> { Captured.Absent }
@@ -1472,17 +1199,19 @@ for (i, m) in out.enumerate() {
 }
 ```
 
-## `concat` / `flatten` / `joined` / `filled` / `some_list` from core/lists
+## `flatten` / `joined` / `filled` / `some_list` from core/lists
 
 ```avra
-diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+diagnostics = diagnostics.concat(r.diagnostics)          // two lists — the native method
 diagnostics: flatten([p.diagnostics, r.diagnostics, t.diagnostics])  // N lists, in order
 "[${joined([render(x) for x in items], " ")}]"
 targets: filled<StmtId?>(p.store.exprs.count(), null)   // dense-table prefill
 ```
 
-Pin `concat<T>` inside generic fn bodies — mono needs the explicit
-type there even when T is concrete.
+`concat` is the LIST's own method, not a core fn — there is no free
+`concat` anywhere (`concat<int>(a, b)` is F3000 "no `fn concat` is
+defined"). `filled` keeps its pin because its only T-carrying
+argument is a bare `null`.
 
 ## Components for self-describing bundles
 
@@ -1543,6 +1272,28 @@ CAPTURE reference and defects at assembly ("uncaptured label").
 corrupt through generic/mono flows (subset note). Struct ids ride
 every boundary safely and stay nominally distinct.
 
+## A value type earns identity through ONE minted id, not a new arena
+
+A value that flows by-value everywhere (`Param`: embedded inline in
+six different node payloads, read by dozens of passes) does not need
+a full arena — `List<Param>` fields, its readers, and the four
+derive-macro generators that fold/compare it all stay untouched — to
+give it a real, side-table-keyed fact. Replace the inline fact
+(`span: Span?`) with a minted id field (`id: ParamId`) and grow ONLY
+the store's span table (`param_spans: Cell<List<Span?>>`,
+`alloc_param_id`/`param_id_span` beside `alloc_pat`/`pat_span`) — the
+value's OTHER fields, and every consumer of them, never change. The
+mint happens at every CONSTRUCTION site (a builder threads the store
+through, or gains one), and a REBUILD (quote/macro expansion) mints
+its own fresh id rather than carrying the source's unchanged — an id
+names a slot in ONE store's table, and `src`/`dst` in a splice are not
+the same store, so an unminted copy would read a foreign index the
+day the two tables diverge in length. A synthetic constant with no
+store to mint from (`pronoun_param`) takes a reserved sentinel index
+(`ParamId { index: -1 }`, matching `no_stmt`'s reserved slot 0) — an
+identity question (`same_param_id`), never an absence check
+(`span == null`) that any real value could also satisfy by accident.
+
 ## Match guards
 
 ```avra
@@ -1557,13 +1308,16 @@ match self {
 
 A trait names a contract; types join by `impl Trait for` — across
 package boundaries too. Keep mandatory methods to the one thing every
-implementor must say (default bodies are not in the language yet —
-CLAUDE.md, "The subset today"):
+implementor must say; a method most implementors need not repeat
+takes a DEFAULT BODY instead, typed once against the trait's own
+`Self` and lowered per signatory — an override wins over its default
+(ROADMAP, "trait default method bodies", landed 2026-09-05):
 
 ```avra
 // @std.errors
 export trait Error {
     fn describe() -> ErrorInfo
+    fn cause() -> dyn Error? { null }
 }
 
 // any package
@@ -1621,7 +1375,7 @@ shared vocabularies every feature speaks (checks.av, emit.av,
 values.av, unify.av, variants.av, places.av) — so a feature's rule
 reads as prose on its receiver, `cx.accepts(e, want)`,
 `cx.open_region(c)`, `cx.presence(v, held, e) { cx, carried -> … }
-else { … }`, and never as `accepts(cx, e, want)`. I39 ratchets it
+else { … }`, and never as `accepts(cx, e, want)`. style.free_state_verb ratchets it
 (the pass's own files); a feature dir's rule bodies dispatch on the
 context and stay free.
 
@@ -1733,9 +1487,57 @@ voice belongs to the feature whose code registers it. UNRATCHETED:
 the shape is a placement, not a greppable token; the review round
 reads for it.
 
+## A hole's `$` needs escaping ONCE, matching every other escape
+
+A fixture that embeds another file's SOURCE as an Avra string
+literal (a vendored template, a derive's fixture) writes a hole's
+`${...}` the same way it writes `\n` or `\"` — ONE backslash. `\$` is
+a real escape yielding a literal `$`; `\\$` yields a literal
+BACKSLASH followed by `$`, which the INNER file's own lexer then
+reads as a stray character before an ordinary `${...}` (or, in a
+`quote` body specifically, breaks the hole's own tokenization) —
+and the failure reads as an unrelated name-resolution defect ("no
+fn X is defined") rather than an escaping mistake, because the
+generated text still LOOKS like a hole to a human skimming it.
+Diffing the string's DECODED bytes (a tiny probe program printing
+`"a\$b"`, or `python3 -c "print(repr(...))"` on the raw file) settles
+it in one step; guessing from the source text does not, since both
+one and two backslashes render identically at a glance.
+
+## A parked file survives a merge by CONTENT, never by BRANCH
+
+Restoring a file wholesale from a parking branch or a backed-up copy
+— after a merge that ALSO touched that same file — overwrites the
+merge's own changes with whatever the parking branch happened to
+hold, silently: no conflict marker fires, because git never sees the
+two changes as one operation. This is the record-literal-merge law's
+sibling one level up: `--theirs` taken whole loses a field the other
+side added; a parked file taken whole loses whatever the merge
+added, over the FULL FILE instead of one field list. Diff the
+restored content against the merged HEAD before trusting it, on
+every restore, not only when a conflict marker would have warned —
+the merge's own diff already names the ground truth to check against.
+
+## A fixture stands where the real thing stands, or it tests the stand-in
+
+A keeper's fixture builds a small stand-in tree, and every place the
+stand-in differs from the real tree is a place the keeper is not
+tested. land.sh's batch fixtures passed 44/44 while every real batch
+failed: the stub repo COMMITTED its fake `build/avra`, so each fresh
+worktree carried a compiler, where the real tree ignores `build/` and
+a fresh worktree has none. The same fixtures had no idioms baseline,
+no warm cache, no `@fixes` rules and no symlinked `/tmp` path — four
+more differences, and a real batch failed on each of them in turn.
+The stand-in is written to make the fixture run, so it quietly
+supplies whatever the code under test forgot to. Give the stand-in the
+real tree's absences (an ignored `build/`, an empty cache, a physical
+path), and before trusting a keeper built on stubs, run it once
+through the real thing — one real branch through the real pipeline
+is the receipt a green fixture cannot be.
+
 ## Proven but awaiting their first honest use
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.
 
 - THE ROOTS GREW 2026-09-05: the ratchet reads every std package (`packages/std-time`, `std-process`, `std-io`, `std-cli`), not the compiler and the cli alone — the first sweep found 13 sites in packages written under the bar but outside the tool's eye, all paid; a new `packages/std-<name>/src` joins SRC in tools/idioms.py with its first slice.
-- I20/I25 GREW 2026-09-03: a counted refusal also spells `voices.length == n` (a Program's package voices are diagnostics); the ratchet's roots now include packages/std-toml/src, so a standalone package is held to the same bar; I25 reads one variant per line (CLAUDE.md records the one-line-enum blind spot).
+- style.refusal_uncounted_contains/style.wrong_payload_count_pattern GREW 2026-09-03: a counted refusal also spells `voices.length == n` (a Program's package voices are diagnostics); the ratchet's roots now include packages/std-toml/src, so a standalone package is held to the same bar; style.wrong_payload_count_pattern reads one variant per line (CLAUDE.md records the one-line-enum blind spot).

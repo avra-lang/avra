@@ -35,12 +35,45 @@ export fn read_format(text: string) -> Format {
     let b = text.bytes()
     mut r = Reading { at: 0, head: null, parts: [], runs: [], pending: null }
     while true {
-        match stepped(b, text, r) {
-            .More(next) -> { r = next },
-            .Done(f) -> { return f },
-        }
+        match stepped(b, text, r) { .More(next) -> { r = next }, .Done(f) -> { return f } }
     }
     closed(r, "")
+}
+
+/// What a hole reads its span AS: the text itself, or the integer the
+/// text spells — `parse_int`'s law, `-`? digits and nothing more.
+export enum Reads { Text, Int }
+
+/// The reading a hole's written type names, absent for a type no
+/// text reads as. An untyped hole reads text.
+export fn reads_of(h: Hole) -> Reads? {
+    let ty? = h.ty else { return Reads.Text }
+    match ty.name { "string" -> .Text, "int" -> .Int, _ -> null }
+}
+
+/// The type a hole's reading binds, by its name.
+export fn read_type_name(r: Reads) -> string {
+    match r { .Text -> "string", .Int -> "int" }
+}
+
+/// A format spelled back as it is written — `read_format`'s inverse:
+/// the head, then each hole (`{name...: Type}`) and the literal after
+/// it, a literal brace doubled.
+export fn pattern_text(head: string, parts: List<FormatPart>) -> string {
+    joined(
+        [escaped_braces(head)].concat([hole_text(p.hole) + escaped_braces(p.piece) for p in parts]),
+        "",
+    )
+}
+
+fn hole_text(h: Hole) -> string {
+    let greed = if h.greedy { ellipsis() } else { "" }
+    let typed = if h.ty == null { "" } else { ": ${h.ty!.name}" }
+    "{" + h.name + greed + typed + "}"
+}
+
+fn escaped_braces(text: string) -> string {
+    text.replace("{", "{{").replace("}", "}}")
 }
 
 /// Whether a literal spells a format at all. A literal with no holes
@@ -147,7 +180,7 @@ fn doubled(b: Bytes, at: int) -> bool {
 /// answers belongs beside the name.
 fn hole_of(body: string, at: int) -> Result<Hole, Fault> {
     let colon = body.index_of(":")
-    let written = (if colon < 0 { body } else { body.substring(0, colon) }).trim()
+    let written = if colon < 0 { body } else { body.substring(0, colon) }.trim()
     let name = shorn(written)
     let ty: string? = if colon < 0 { null } else { body.substring(colon + 1, body.length).trim() }
     if !named(name) { return .Err(Fault.Malformed(at, body)) }
@@ -173,11 +206,13 @@ fn written_type(ty: string?) -> TypeRef? {
 
 /// Whether the text is identifier-shaped — a name, not a phrase.
 fn named(s: string) -> bool {
-    !s.is_empty() && name_start(s.char_code(0)) && [name_part(s.char_code(i)) for i in 0..s.length].all(it)
+    !s.is_empty() &&
+        name_start(s.char_code(0)) &&
+        [name_part(s.char_code(i)) for i in 0..s.length].all(it)
 }
 
-fn name_start(c: int) -> bool { c == 95 || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) }
-fn name_part(c: int) -> bool { name_start(c) || (c >= 48 && c <= 57) }
+fn name_start(c: int) -> bool { c == 95 || c >= 65 && c <= 90 || c >= 97 && c <= 122 }
+fn name_part(c: int) -> bool { name_start(c) || c >= 48 && c <= 57 }
 
 // ── The two laws over the holes ─────────────────────────────────
 

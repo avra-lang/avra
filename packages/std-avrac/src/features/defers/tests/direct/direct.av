@@ -1,0 +1,66 @@
+// proves: a `defer` of ONE call answering nothing, every argument a
+// scalar literal or capture, runs exactly as a boxed one: arguments
+// read at the `defer` (a `mut` stepped after it is read as it was),
+// last first, on every exit — the frame's end, `return`, `fail`, `?`,
+// a loop's turn — and an `errdefer` only when the fn fails.
+extern fn avra_puts(s: string)
+
+fn mark(n: int) {
+    avra_puts("mark ${n}")
+}
+
+fn pair(a: int, b: bool) {
+    avra_puts("pair ${a} ${b}")
+}
+
+fn steps() -> int {
+    mut i = 1
+    defer mark(i)
+    i = 2
+    defer pair(i, true)
+    defer mark(7)
+    i
+}
+
+fn early(n: int) -> int {
+    defer mark(n)
+    if n > 2 {
+        defer mark(100)
+        return n * 10
+    }
+    n
+}
+
+fn risky(fails: bool) -> Result<int, string> {
+    defer mark(1)
+    errdefer mark(2)
+    if fails {
+        fail "no"
+    }
+    3
+}
+
+fn passes(fails: bool) -> Result<int, string> {
+    defer mark(4)
+    let v = risky(fails)?
+    v
+}
+
+fn told(r: Result<int, string>) -> string {
+    match r { .Ok(v) -> "${v}", .Err(e) -> e }
+}
+
+fn turns() {
+    for t in 0..2 {
+        defer mark(t)
+        avra_puts("turn ${t}")
+    }
+}
+
+turns()
+let s = steps()
+let e1 = early(1)
+let e3 = early(3)
+let ok = told(passes(false))
+let bad = told(passes(true))
+"${s} ${e1} ${e3} ${ok} ${bad}"

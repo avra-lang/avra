@@ -10,7 +10,7 @@
 # a registry the two say the same thing — this variant, and silence
 # for the ones that do not exist yet.
 #
-# ONE TABLE, THREE REGISTRIES. It was two loops with two messages
+# ONE TABLE, EVERY REGISTRY. It was two loops with two messages
 # saying the same thing in different words; the third registry is what
 # named the concept. A row is: the enum, the file, the dispatch fn,
 # how it is guarded, and what it decides.
@@ -77,7 +77,12 @@ SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	unworded	spelled	t
 SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	answer_form	spelled	which of them survives a non-word answer
 Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	spelled	how it crosses into the evaluator
 Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with
-RtHost	packages/std-avrac/src/compiler/backend/interp.av	rt_dispatch	spelled	the arm that evaluates a row"
+RtHost	packages/std-avrac/src/compiler/backend/interp.av	rt_dispatch	spelled	the arm that evaluates a row
+DeclKind	packages/std-avrac/src/core/nodes.av	binds_name	spelled	whether a declaration is found by its name
+DeclKind	packages/std-avrac/src/core/nodes.av	binds_type	spelled	whether a declaration names a type
+Origin	packages/std-avrac/src/features/worklist.av	at	spelled	which file a node's own name resolves in
+Origin	packages/std-avrac/src/features/worklist.av	spanned_at	spelled	which file's text a node's span indexes
+Origin	packages/std-avrac/src/features/worklist.av	holed	spelled	whether a binder's name came through a hole"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.

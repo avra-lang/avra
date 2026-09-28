@@ -27,17 +27,35 @@ spec "features/structs (adversarial)" {
         // refused with an internal defect while the backend quietly
         // answered `false` for two IDENTICAL records — an engine
         // divergence and a silently wrong native answer.
-        then "equality refuses, and says to compare a field" {
-            let a = analyze_source("${p1_bound()}let b = P { x: 1 }\na == b")
+        then "a record of two fields refuses equality, and says to compare a field" {
+            let a = analyze_source(
+                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\na == b",
+            )
             a.diagnostics.length == 1 &&
-                a.report().contains("`==` compares scalars for now") &&
+                a
+                    .report()
+                    .contains(
+                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                    ) &&
                 a.report().contains("compare a field instead")
         }
-        then "inequality refuses the same way" {
-            refusals("${p1_bound()}a != a") == 1
+        then "inequality over two fields refuses the same way" {
+            refusals("type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\na != a") == 1
         }
-        then "a record compared to an int refuses" {
-            refusals("${p1_bound()}a == 1") == 1
+        then "a record of ONE field compares by it" {
+            shown("${p1_bound()}let b = P { x: 1 }\nlet c = P { x: 2 }\n\"\${a == b} \${a != c}\"") == "true true"
+        }
+        then "a record of one field whose field does not compare refuses" {
+            refusals("type L = { xs: List<int> }\nL { xs: [1] } == L { xs: [1] }") == 1
+        }
+        then "two different one-field types are two types" {
+            refused_with(
+                "type A = { n: int }\ntype B = { n: int }\nA { n: 1 } == B { n: 1 }",
+                "`==` compares matching types, found `A` and `B`",
+            )
+        }
+        then "a one-field record against its own field's scalar is two types" {
+            refused_with("${p1_bound()}a == 1", "`==` compares matching types, found `P` and `int`")
         }
         then "arithmetic on a record refuses" {
             refused_with("${p1_bound()}a + 1", "`+` needs `int` operands, found `P`")
@@ -62,13 +80,17 @@ spec "features/structs (adversarial)" {
     }
     given "crossing other features" {
         then "a record survives a fn boundary both ways" {
-            shown("${p1()}fn mk(n: int) -> P { P { x: n } }\nfn get(p: P) -> int { p.x }\nget(mk(6))") == "6"
+            shown(
+                "${p1()}fn mk(n: int) -> P { P { x: n } }\nfn get(p: P) -> int { p.x }\nget(mk(6))",
+            ) == "6"
         }
         then "a record built inside a loop reads back" {
             shown("${p1()}mut t = 0\nfor i in 0..3 {\n    t = t + P { x: 2 }.x\n}\nt") == "6"
         }
         then "a copy of a copy keeps the untouched fields" {
-            shown("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = (p with { x: 5 }) with { y: 6 }\nq.x + q.y") == "11"
+            shown(
+                "type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = (p with { x: 5 }) with { y: 6 }\nq.x + q.y",
+            ) == "11"
         }
         then "a record declared inside a block refuses AT the declaration" {
             let a = analyze_source("fn f() -> int {\n    ${p1()}    1\n}\nf()")
@@ -82,19 +104,31 @@ spec "features/structs (adversarial)" {
     }
     given "a default is a body of its own" {
         then "it cannot read the top level's run-time bindings — one refusal, the floor's" {
-            refused_with("let k = 3\ntype Q = { y: int = k }\nQ {}.y", "`k` is a run-time binding of the top level")
+            refused_with(
+                "let k = 3\ntype Q = { y: int = k }\nQ {}.y",
+                "`k` is a run-time binding of the top level",
+            )
         }
         then "a top-level `mut` is hidden the same way" {
-            refused_with("mut k = 3\ntype Q = { y: int = k }\nQ {}.y", "`k` is a run-time binding of the top level")
+            refused_with(
+                "mut k = 3\ntype Q = { y: int = k }\nQ {}.y",
+                "`k` is a run-time binding of the top level",
+            )
         }
         then "it may call a fn, and a fn value, declared anywhere in the file" {
-            shown("type Q = { y: int = twice(4), f: fn(int) -> int = twice }\nfn twice(n: int) -> int {\n    n * 2\n}\nlet q = Q {}\nq.y + q.f(1)") == "10"
+            shown(
+                "type Q = { y: int = twice(4), f: fn(int) -> int = twice }\nfn twice(n: int) -> int {\n    n * 2\n}\nlet q = Q {}\nq.y + q.f(1)",
+            ) == "10"
         }
         then "a method reached only through a default lowers — the program reaches it" {
-            shown("type P = { x: int }\nimpl P {\n    fn m() -> int {\n        self.x * 2\n    }\n}\ntype Q = { v: int = P { x: 4 }.m() }\nQ {}.v") == "8"
+            shown(
+                "type P = { x: int }\nimpl P {\n    fn m() -> int {\n        self.x * 2\n    }\n}\ntype Q = { v: int = P { x: 4 }.m() }\nQ {}.v",
+            ) == "8"
         }
         then "every literal calls the one body — a managed default is fresh per instance" {
-            shown("type Q = { tags: List<string> = [] }\nmut a = Q {}\nlet b = Q {}\na.tags.push(\"x\")\na.tags.length * 10 + b.tags.length") == "10"
+            shown(
+                "type Q = { tags: List<string> = [] }\nmut a = Q {}\nlet b = Q {}\na.tags.push(\"x\")\na.tags.length * 10 + b.tags.length",
+            ) == "10"
         }
     }
 }

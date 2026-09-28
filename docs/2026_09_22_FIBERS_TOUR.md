@@ -123,7 +123,7 @@ fn stock(shop: Shop, sku: string) -> Response {
 Refusals: mistakes you cannot write.
 
 ```
-error[F2101]: a task cannot outlive the block that spawned it
+error[F2107]: a task cannot outlive the block that spawned it
   --> shop.av:88
    |  fn start(url: string) -> Task<Response, HttpError> { spawn { get(url) } }
    |                                                      ^^^^^^^^^^^^^^^^^ joined at this `}`

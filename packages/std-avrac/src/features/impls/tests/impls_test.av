@@ -26,6 +26,17 @@ fn counter() -> string {
     "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn get() -> int { self.n }\n}\n"
 }
 
+/// A holder handing its field to a type's static fns and to a reader
+/// on a local — no seat anywhere is written.
+fn handed() -> string {
+    "type D = { id: int }\ntype R = { n: int }\nimpl R {\n    static fn make() -> R { R { n: 0 } }\n    static fn take(d: D, v: int) -> int { d.id + v }\n    fn peek(d: D, v: int) -> int { self.n + d.id + v }\n}\ntype H = { d: D, t: int }\n"
+}
+
+/// The holder's `mint`, run once through a `let`.
+fn minted(body: string) -> string {
+    "${handed()}impl H {\n    fn mint(v: int) -> int {\n        ${body}\n    }\n}\nlet h = H { d: D { id: 5 }, t: 0 }\nh.mint(1)"
+}
+
 /// The standard receiver.
 fn boxy() -> string {
     "type P = { x: int, y: int }\nimpl P {\n    fn area() -> int {\n        self.x * self.y\n    }\n    fn scaled(k: int) -> P {\n        P { x: self.x * k, y: self.y * k }\n    }\n}\n"
@@ -34,39 +45,65 @@ fn boxy() -> string {
 spec "features/impls" {
     given "a method writes through its receiver" {
         then "a field assigned through `self` is the caller's box" {
-            shown("type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n}\nlet c = C { n: 1 }\nc.bump()\nc.bump()\nc.n") == "3"
+            shown(
+                "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n}\nlet c = C { n: 1 }\nc.bump()\nc.bump()\nc.n",
+            ) == "3"
         }
         then "a list grown through `self`" {
-            shown("type Bag = { xs: List<int> }\nimpl Bag {\n    fn put(x: int) { self.xs.push(x) }\n}\nlet b = Bag { xs: [] }\nb.put(4)\nb.put(5)\nb.xs.length") == "2"
+            shown(
+                "type Bag = { xs: List<int> }\nimpl Bag {\n    fn put(x: int) { self.xs.push(x) }\n}\nlet b = Bag { xs: [] }\nb.put(4)\nb.put(5)\nb.xs.length",
+            ) == "2"
         }
         then "`self` itself is no place" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn swap() { self = C { n: 2 } }\n}\n2", "`self` is the receiver — it is not assigned")
+            refused_with(
+                "type C = { n: int }\nimpl C {\n    fn swap() { self = C { n: 2 } }\n}\n2",
+                "`self` is the receiver — it is not assigned",
+            )
         }
     }
     given "a generic type's impl — methods over the type's own Vars" {
         then "a method reads the payload as the receiver's argument" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n}\nBox { v: 4 }.get() + 1") == "5"
+            shown(
+                "type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n}\nBox { v: 4 }.get() + 1",
+            ) == "5"
         }
         then "two instantiations lower two bodies" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n}\nlet a = Box { v: 4 }\nlet b = Box { v: \"s\" }\n\"" + "\${a.get()} " + "\${b.get()}\"") == "4 s"
+            shown(
+                "type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n}\nlet a = Box { v: 4 }\nlet b = Box { v: \"s\" }\n\"" +
+                    "\${a.get()} " +
+                    "\${b.get()}\"",
+            ) == "4 s"
         }
         then "a method takes and answers the type's argument, and calls a sibling" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n    fn with(x: T) -> Box<T> { Box { v: x } }\n    fn twice() -> T { self.with(self.get()).get() }\n}\nBox { v: \"q\" }.with(\"r\").twice()") == "r"
+            shown(
+                "type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n    fn with(x: T) -> Box<T> { Box { v: x } }\n    fn twice() -> T { self.with(self.get()).get() }\n}\nBox { v: \"q\" }.with(\"r\").twice()",
+            ) == "r"
         }
         then "a wrong argument is judged against the instantiated seat" {
-            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn with(x: T) -> Box<T> { Box { v: x } }\n}\nBox { v: 4 }.with(\"s\")\n2", "argument 1 of `Box.with` wants `int`, found `string`")
+            refused_with(
+                "type Box<T> = { v: T }\nimpl Box<T> {\n    fn with(x: T) -> Box<T> { Box { v: x } }\n}\nBox { v: 4 }.with(\"s\")\n2",
+                "argument 1 of `Box.with` wants `int`, found `string`",
+            )
         }
         then "a name the type did not declare names no type" {
-            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> Q { self.v }\n}\n2", "`Q` names no type")
+            refused_with(
+                "type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> Q { self.v }\n}\n2",
+                "`Q` names no type",
+            )
         }
         then "a trait impl over a generic type is still recorded" {
-            refused_with("trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> int { 1 }\n}\n2", "a trait impl over a generic type is recorded, not landed")
+            refused_with(
+                "trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> int { 1 }\n}\n2",
+                "a trait impl over a generic type is recorded, not landed",
+            )
         }
     }
     given "the receiver law — a writing method needs a `mut` place (a warning until the tree's own sites are places)" {
         then "a `let` receiver of a writing method is warned, and the program still runs" {
             let a = analyze_source("${counter()}let c = C { n: 1 }\nc.bump()\nc.get()")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`c` is not `mut` — `bump` writes through it")
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`c` is not `mut` — `bump` writes through it")
         }
         then "a `mut` receiver is clean" {
             let a = analyze_source("${counter()}mut c = C { n: 1 }\nc.bump()\nc.get()")
@@ -74,35 +111,66 @@ spec "features/impls" {
         }
         then "a value receiver is warned in its own words" {
             let a = analyze_source("${counter()}C { n: 1 }.bump()\n2")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`bump` writes its receiver, and this is a value")
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`bump` writes its receiver, and this is a value")
         }
         then "writing is TRANSITIVE — a method calling a writer on self writes" {
-            let a = analyze_source("${counter()}impl C {\n    fn twice() { self.bump()\n        self.bump() }\n}\nlet c = C { n: 1 }\nc.twice()\nc.get()")
+            let a = analyze_source(
+                "${counter()}impl C {\n    fn twice() { self.bump()\n        self.bump() }\n}\nlet c = C { n: 1 }\nc.twice()\nc.get()",
+            )
             a.diagnostics.length == 1 && a.report().contains("`twice` writes through it")
         }
         then "a mutating vocabulary method on a self-rooted place writes" {
-            let a = analyze_source("type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length")
+            let a = analyze_source(
+                "type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length",
+            )
             a.diagnostics.length == 1 && a.report().contains("`put` writes through it")
         }
         then "a self-rooted place handed to a `mut` seat writes" {
-            let a = analyze_source("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2")
+            let a = analyze_source(
+                "type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2",
+            )
             a.diagnostics.length == 1 && a.report().contains("`fill` writes through it")
         }
+        then "a field handed to a type's static fn draws no warning" {
+            let a = analyze_source(minted("R.take(self.d, v)"))
+            a.diagnostics.is_empty() && a.ran() == "6"
+        }
+        then "a field handed to a reader on a local bound to a static fn's answer draws no warning" {
+            let a = analyze_source(minted("let rs = R.make()\n        rs.peek(self.d, v)"))
+            a.diagnostics.is_empty() && a.ran() == "6"
+        }
+        then "a field handed to a reader on a local bound to a construction draws no warning" {
+            let a = analyze_source(minted("let rs = R { n: 2 }\n        rs.peek(self.d, v)"))
+            a.diagnostics.is_empty() && a.ran() == "8"
+        }
         then "mutual recursion with no write is not writing" {
-            let a = analyze_source("type C = { n: int }\nimpl C {\n    fn even(k: int) -> bool { if k == 0 { true } else { self.odd(k - 1) } }\n    fn odd(k: int) -> bool { if k == 0 { false } else { self.even(k - 1) } }\n}\nlet c = C { n: 1 }\nif c.even(4) { 1 } else { 0 }")
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    fn even(k: int) -> bool { if k == 0 { true } else { self.odd(k - 1) } }\n    fn odd(k: int) -> bool { if k == 0 { false } else { self.even(k - 1) } }\n}\nlet c = C { n: 1 }\nif c.even(4) { 1 } else { 0 }",
+            )
             a.diagnostics.is_empty() && a.ran() == "1"
         }
         then "a write reached only through a cycle is still found — the fixpoint, not a demand" {
-            let a = analyze_source("type D = { n: int }\nimpl D {\n    fn a() { self.b()\n        self.x() }\n    fn b() { self.a() }\n    fn x() { self.n = 1 }\n}\nlet d = D { n: 0 }\nd.b()\nd.n")
+            let a = analyze_source(
+                "type D = { n: int }\nimpl D {\n    fn a() { self.b()\n        self.x() }\n    fn b() { self.a() }\n    fn x() { self.n = 1 }\n}\nlet d = D { n: 0 }\nd.b()\nd.n",
+            )
             a.diagnostics.length == 1 && a.report().contains("`b` writes through it")
         }
         then "a generic impl's writing method is found once for every instantiation" {
-            let a = analyze_source("type Arena<N> = { nodes: List<N> }\nimpl Arena<N> {\n    fn add(n: N) -> int {\n        self.nodes.push(n)\n        self.nodes.length - 1\n    }\n}\nlet ints: Arena<int> = Arena { nodes: [] }\nints.add(7)")
-            a.diagnostics.length == 1 && a.report().contains("`ints` is not `mut` — `add` writes through it")
+            let a = analyze_source(
+                "type Arena<N> = { nodes: List<N> }\nimpl Arena<N> {\n    fn add(n: N) -> int {\n        self.nodes.push(n)\n        self.nodes.length - 1\n    }\n}\nlet ints: Arena<int> = Arena { nodes: [] }\nints.add(7)",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("`ints` is not `mut` — `add` writes through it")
         }
         then "a variant receiver is a value, not a missing `mut` — beside the never-writes warning" {
-            let a = analyze_source("enum G {\n    a\n}\nimpl G {\n    mut fn flip() -> int { 1 }\n}\nG.a.flip()")
-            a.clean() && a.diagnostics.length == 2 && a.report().contains("`flip` writes its receiver, and this is a value")
+            let a = analyze_source(
+                "enum G {\n    a\n}\nimpl G {\n    mut fn flip() -> int { 1 }\n}\nG.a.flip()",
+            )
+            a.clean() &&
+                a.diagnostics.length == 2 &&
+                a.report().contains("`flip` writes its receiver, and this is a value")
         }
     }
     given "`mut` seats — declared, filled by `mut` places" {
@@ -110,96 +178,168 @@ spec "features/impls" {
             shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length") == "2"
         }
         then "a plain seat cannot be written, and the help names `mut`" {
-            let a = analyze_source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length")
-            a.diagnostics.length == 1 && a.report().contains("`xs` is not `mut` — `push` mutates it")
+            let a = analyze_source(
+                "fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("`xs` is not `mut` — `push` mutates it")
         }
         then "a `let` cannot fill a `mut` seat" {
-            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nlet v = [1]\ngrow(v)\nv.length", "`v` is not `mut` — seat 1 of `grow` writes through it")
+            refused_with(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nlet v = [1]\ngrow(v)\nv.length",
+                "`v` is not `mut` — seat 1 of `grow` writes through it",
+            )
         }
         then "a value cannot fill a `mut` seat" {
-            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\ngrow([1])\n2", "seat 1 of `grow` is `mut`, and this is a value")
+            refused_with(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\ngrow([1])\n2",
+                "seat 1 of `grow` is `mut`, and this is a value",
+            )
         }
         then "THE EXCLUSIVITY LAW: one root never fills two `mut` seats" {
-            refused_with("fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nswap(v, v)\nv.length", "`v` is handed `mut` twice in one call to `swap`")
+            refused_with(
+                "fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nswap(v, v)\nv.length",
+                "`v` is handed `mut` twice in one call to `swap`",
+            )
         }
         then "two roots fill two seats" {
-            shown("fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nmut w = [1]\nswap(v, w)\nv.length + w.length") == "4"
+            shown(
+                "fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nmut w = [1]\nswap(v, w)\nv.length + w.length",
+            ) == "4"
         }
         then "A `mut` SEAT KEEPS ITS BOX: a FLAT record writes through like any other, so behaviour never turns on a field count" {
-            shown("type Id = { index: int }\nfn bump(mut i: Id, by: int) -> int {\n    i.index = i.index + by\n    i.index\n}\nmut held = Id { index: 1 }\nbump(held, 4)") == "5"
+            shown(
+                "type Id = { index: int }\nfn bump(mut i: Id, by: int) -> int {\n    i.index = i.index + by\n    i.index\n}\nmut held = Id { index: 1 }\nbump(held, 4)",
+            ) == "5"
         }
         then "the flat seat and its two-field twin answer alike" {
-            shown("type Id = { index: int }\nfn bump(mut i: Id) -> int {\n    i.index = i.index + 1\n    i.index\n}\nmut a = Id { index: 1 }\nbump(a)\na.index") == shown("type Id = { index: int, tag: int }\nfn bump(mut i: Id) -> int {\n    i.index = i.index + 1\n    i.index\n}\nmut a = Id { index: 1, tag: 0 }\nbump(a)\na.index")
+            shown(
+                "type Id = { index: int }\nfn bump(mut i: Id) -> int {\n    i.index = i.index + 1\n    i.index\n}\nmut a = Id { index: 1 }\nbump(a)\na.index",
+            ) == shown(
+                "type Id = { index: int, tag: int }\nfn bump(mut i: Id) -> int {\n    i.index = i.index + 1\n    i.index\n}\nmut a = Id { index: 1, tag: 0 }\nbump(a)\na.index",
+            )
         }
         then "a seat assigned WHOLE is refused, and points at `Cell<T>`" {
-            refused_with("fn zero(mut n: int) { n = 0 }\nmut k = 5\nzero(k)\nk", "`n` is a `mut` seat — a seat is written along a path, never replaced whole")
+            refused_with(
+                "fn zero(mut n: int) { n = 0 }\nmut k = 5\nzero(k)\nk",
+                "`n` is a `mut` seat — a seat is written along a path, never replaced whole",
+            )
         }
     }
     given "the receiver's contract — a trait's word decides for every signatory" {
         then "a method writing under a plain trait sig refuses, naming the remedy" {
-            refused_with("trait Tick {\n    fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = 1 }\n}\n2", "`tick` writes through `self`, but `Tick.tick` declares no `mut`")
+            refused_with(
+                "trait Tick {\n    fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = 1 }\n}\n2",
+                "`tick` writes through `self`, but `Tick.tick` declares no `mut`",
+            )
         }
         then "under `mut fn` the signatory writes, and a `mut` dyn receiver is clean" {
-            let a = analyze_source("trait Tick {\n    mut fn tick()\n    fn count() -> int\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut d: dyn Tick = C { n: 0 }\nd.tick()\nd.count()")
+            let a = analyze_source(
+                "trait Tick {\n    mut fn tick()\n    fn count() -> int\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut d: dyn Tick = C { n: 0 }\nd.tick()\nd.count()",
+            )
             a.diagnostics.is_empty() && a.ran() == "1"
         }
         then "a `let` dyn receiver of a `mut fn` is warned by the contract's word" {
-            let a = analyze_source("trait Tick {\n    mut fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = 1 }\n}\nlet d: dyn Tick = C { n: 0 }\nd.tick()\n2")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`d` is not `mut` — `tick` writes through it")
+            let a = analyze_source(
+                "trait Tick {\n    mut fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = 1 }\n}\nlet d: dyn Tick = C { n: 0 }\nd.tick()\n2",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`d` is not `mut` — `tick` writes through it")
         }
         then "an inherent `mut fn` that never writes is warned" {
-            let a = analyze_source("type C = { n: int }\nimpl C {\n    mut fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.get()")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`mut fn` — `get` never writes through `self`")
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    mut fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.get()",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`mut fn` — `get` never writes through `self`")
         }
         then "a signatory not using a declared `mut` is not warned — a permission, not an obligation" {
-            let a = analyze_source("trait Tick {\n    mut fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { }\n}\nmut c = C { n: 0 }\nc.tick()\n2")
+            let a = analyze_source(
+                "trait Tick {\n    mut fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { }\n}\nmut c = C { n: 0 }\nc.tick()\n2",
+            )
             a.diagnostics.is_empty()
         }
     }
     given "the seats' contract — a `mut` seat the body never writes is warned" {
         then "a seat only read" {
-            let a = analyze_source("fn count(mut xs: List<int>) -> int { xs.length }\nmut v = [1]\ncount(v)")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`xs` is a `mut` seat — `count` never writes through it")
+            let a = analyze_source(
+                "fn count(mut xs: List<int>) -> int { xs.length }\nmut v = [1]\ncount(v)",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`xs` is a `mut` seat — `count` never writes through it")
         }
         then "a seat written only by handing it on is written" {
-            let a = analyze_source("fn grow(mut xs: List<int>) { xs.push(1) }\nfn twice(mut ys: List<int>) { grow(ys)\n    grow(ys) }\nmut v = [1]\ntwice(v)\nv.length")
+            let a = analyze_source(
+                "fn grow(mut xs: List<int>) { xs.push(1) }\nfn twice(mut ys: List<int>) { grow(ys)\n    grow(ys) }\nmut v = [1]\ntwice(v)\nv.length",
+            )
             a.diagnostics.is_empty() && a.ran() == "3"
         }
         then "handed on to a seat nobody writes, both are warned — the fixpoint, not the mark" {
-            let a = analyze_source("fn peek(mut xs: List<int>) -> int { xs.length }\nfn wrap(mut ys: List<int>) -> int { peek(ys) }\nmut v = [1]\nwrap(v)")
-            a.clean() && a.diagnostics.length == 2 && a.report().contains("`peek` never writes") && a.report().contains("`wrap` never writes")
+            let a = analyze_source(
+                "fn peek(mut xs: List<int>) -> int { xs.length }\nfn wrap(mut ys: List<int>) -> int { peek(ys) }\nmut v = [1]\nwrap(v)",
+            )
+            a.clean() &&
+                a.diagnostics.length == 2 &&
+                a.report().contains("`peek` never writes") &&
+                a.report().contains("`wrap` never writes")
         }
         then "handed to a trait's `mut` seat is written by permission" {
-            let a = analyze_source("trait Sink {\n    fn take(mut xs: List<int>)\n}\nfn hand(mut ys: List<int>, s: dyn Sink) { s.take(ys) }\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\nhand(v, s)\nv.length")
+            let a = analyze_source(
+                "trait Sink {\n    fn take(mut xs: List<int>)\n}\nfn hand(mut ys: List<int>, s: dyn Sink) { s.take(ys) }\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\nhand(v, s)\nv.length",
+            )
             a.diagnostics.is_empty() && a.ran() == "2"
         }
         then "a named list's seat written by the name's own writing method is written" {
-            let a = analyze_source("type Rows = List<int>\nimpl Rows { mut fn add(v: int) { self.push(v) } }\nfn grow(mut r: Rows) { r.add(7) }\nmut r: Rows = [1]\ngrow(r)\nr.length")
+            let a = analyze_source(
+                "type Rows = List<int>\nimpl Rows { mut fn add(v: int) { self.push(v) } }\nfn grow(mut r: Rows) { r.add(7) }\nmut r: Rows = [1]\ngrow(r)\nr.length",
+            )
             a.diagnostics.is_empty() && a.ran() == "2"
         }
         then "a named list's seat written by its shape's row is written" {
-            let a = analyze_source("type Rows = List<int>\nfn grow(mut r: Rows) { r.push(7) }\nmut r: Rows = [1]\ngrow(r)\nr.length")
+            let a = analyze_source(
+                "type Rows = List<int>\nfn grow(mut r: Rows) { r.push(7) }\nmut r: Rows = [1]\ngrow(r)\nr.length",
+            )
             a.diagnostics.is_empty() && a.ran() == "2"
         }
         then "a named list's seat only read by the name's own method is warned" {
-            let a = analyze_source("type Rows = List<int>\nimpl Rows { fn size() -> int { self.length } }\nfn peek(mut r: Rows) -> int { r.size() }\nmut r: Rows = [1]\npeek(r)")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`r` is a `mut` seat — `peek` never writes through it")
+            let a = analyze_source(
+                "type Rows = List<int>\nimpl Rows { fn size() -> int { self.length } }\nfn peek(mut r: Rows) -> int { r.size() }\nmut r: Rows = [1]\npeek(r)",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`r` is a `mut` seat — `peek` never writes through it")
         }
         then "a scalar seat only read" {
             let a = analyze_source("fn show(mut n: int) -> int { n }\nmut k = 5\nshow(k)")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`n` is a `mut` seat — `show` never writes through it")
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`n` is a `mut` seat — `show` never writes through it")
         }
         then "`mut fn` and a `mut` seat both unused — two warnings, one each" {
-            let a = analyze_source("type C = { n: int }\nimpl C {\n    mut fn get(mut k: int) -> int { self.n + k }\n}\nmut c = C { n: 1 }\nmut k = 2\nc.get(k)")
-            a.clean() && a.diagnostics.length == 2 && a.report().contains("`get` never writes through `self`") && a.report().contains("`k` is a `mut` seat")
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    mut fn get(mut k: int) -> int { self.n + k }\n}\nmut c = C { n: 1 }\nmut k = 2\nc.get(k)",
+            )
+            a.clean() &&
+                a.diagnostics.length == 2 &&
+                a.report().contains("`get` never writes through `self`") &&
+                a.report().contains("`k` is a `mut` seat")
         }
         then "a measured property handed to a scan on a local is a copy — the method stays reading" {
-            let a = analyze_source("type B = { xs: List<int> }\nimpl B {\n    fn read() -> int {\n        let names = self.xs.map(it + 1)\n        if names.contains(self.xs.length) { 1 } else { 0 }\n    }\n}\nlet b = B { xs: [1] }\nb.read()")
+            let a = analyze_source(
+                "type B = { xs: List<int> }\nimpl B {\n    fn read() -> int {\n        let names = self.xs.map(it + 1)\n        if names.contains(self.xs.length) { 1 } else { 0 }\n    }\n}\nlet b = B { xs: [1] }\nb.read()",
+            )
             a.diagnostics.is_empty() && a.ran() == "0"
         }
         then "a local bound to a construction is typed — a seat fed through it is found" {
-            let a = analyze_source("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`fill` writes through it")
+            let a = analyze_source(
+                "type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`fill` writes through it")
         }
     }
     given "the method surface" {
@@ -210,10 +350,14 @@ spec "features/impls" {
             shown("${boxy()}P { x: 1, y: 2 }.scaled(3).scaled(2).area()") == "72"
         }
         then "methods call methods, and free fns, from self" {
-            shown("fn bump(n: int) -> int {\n    n + 1\n}\ntype P = { x: int }\nimpl P {\n    fn next() -> int {\n        bump(self.x)\n    }\n    fn two() -> int {\n        self.next() + 1\n    }\n}\nP { x: 40 }.two()") == "42"
+            shown(
+                "fn bump(n: int) -> int {\n    n + 1\n}\ntype P = { x: int }\nimpl P {\n    fn next() -> int {\n        bump(self.x)\n    }\n    fn two() -> int {\n        self.next() + 1\n    }\n}\nP { x: 40 }.two()",
+            ) == "42"
         }
         then "enums take methods too — match on self inside" {
-            shown("enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score() -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()") == "7"
+            shown(
+                "enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score() -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()",
+            ) == "7"
         }
         then "the paren witness tells a call from a property" {
             shown("${boxy()}let p = P { x: 5, y: 6 }\np.x + p.area()") == "35"
@@ -221,64 +365,88 @@ spec "features/impls" {
     }
     given "the refusals, each in its own words" {
         then "an unknown method names the impl spelling" {
-            refused_with("${boxy()}P { x: 1, y: 1 }.volume()",
-                         "`P` has no method `volume`")
+            refused_with("${boxy()}P { x: 1, y: 1 }.volume()", "`P` has no method `volume`")
         }
         then "a method on a scalar says methods live on declared types" {
-            refused_with("let n = 5\nn.area()",
-                         "`.area(…)` calls a method, and `int` has none")
+            refused_with("let n = 5\nn.area()", "`.area(…)` calls a method, and `int` has none")
         }
         then "arity counts beside self" {
-            refused_with("${boxy()}P { x: 1, y: 1 }.scaled(2, 3)",
-                         "`P.scaled` takes 1 arguments beside `self`, found 2")
+            refused_with(
+                "${boxy()}P { x: 1, y: 1 }.scaled(2, 3)",
+                "`P.scaled` takes 1 arguments beside `self`, found 2",
+            )
         }
         then "an impl on nothing refuses" {
-            refused_with("impl Ghost {\n    fn boo() -> int {\n        1\n    }\n}\n2",
-                         "`impl Ghost` serves no declared type")
+            refused_with(
+                "impl Ghost {\n    fn boo() -> int {\n        1\n    }\n}\n2",
+                "`impl Ghost` serves no declared type",
+            )
         }
         then "a method with no receiver in its list still rides the receiver" {
-            shown("type P = { x: int }\nimpl P {\n    fn plus(k: int) -> int {\n        self.x + k\n    }\n}\nP { x: 40 }.plus(2)") == "42"
+            shown(
+                "type P = { x: int }\nimpl P {\n    fn plus(k: int) -> int {\n        self.x + k\n    }\n}\nP { x: 40 }.plus(2)",
+            ) == "42"
         }
         then "`self` written in the list refuses ONCE, with the receiver's own remedy" {
-            refused_with("type P = { x: int }\nimpl P {\n    fn get(self) -> int {\n        self.x\n    }\n}\nP { x: 1 }.get()",
-                         "`self` is implicit in a method — drop it from the parameter list")
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    fn get(self) -> int {\n        self.x\n    }\n}\nP { x: 1 }.get()",
+                "`self` is implicit in a method — drop it from the parameter list",
+            )
         }
         then "`self` outside a method names no receiver" {
-            refused_with("fn f() -> int {\n    self.x\n}\n2",
-                         "`self` names a method's receiver — this is not a method")
+            refused_with(
+                "fn f() -> int {\n    self.x\n}\n2",
+                "`self` names a method's receiver — this is not a method",
+            )
         }
     }
     given "traits — the behavior contracts (T2)" {
         then "a bound resolves the abstract call per specialization" {
-            shown("${showed()}fn twice<T: Show>(v: T) -> int {\n    v.show() * 2\n}\ntwice(P { x: 21 })") == "42"
+            shown(
+                "${showed()}fn twice<T: Show>(v: T) -> int {\n    v.show() * 2\n}\ntwice(P { x: 21 })",
+            ) == "42"
         }
         then "an unbounded T names the spec's remedy" {
-            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
-                         "`T` has no known methods")
+            refused_with(
+                "fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
+                "`T` has no known methods",
+            )
         }
         then "a fn's unbounded T is told to write the bound" {
-            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
-                         "add a bound — `<T: SomeTrait>`")
+            refused_with(
+                "fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
+                "add a bound — `<T: SomeTrait>`",
+            )
         }
         then "a type's parameter is told a bound is not spellable there" {
-            refused_with("type B<K> = { held: K }\nimpl B<K> {\n    fn read() -> int { self.held.show() }\n}\n2",
-                         "a type's and an impl's parameters take no bound yet")
+            refused_with(
+                "type B<K> = { held: K }\nimpl B<K> {\n    fn read() -> int { self.held.show() }\n}\n2",
+                "a type's and an impl's parameters take no bound yet",
+            )
         }
         then "a binding without the impl refuses at the call" {
-            refused_with("${showed()}type Q = { y: int }\nfn f<T: Show>(v: T) -> int {\n    v.show()\n}\nf(Q { y: 1 })",
-                         "`Q` does not implement `Show`")
+            refused_with(
+                "${showed()}type Q = { y: int }\nfn f<T: Show>(v: T) -> int {\n    v.show()\n}\nf(Q { y: 1 })",
+                "`Q` does not implement `Show`",
+            )
         }
         then "an impl-for answers every method — a missing one names itself" {
-            refused_with("${showp()}impl Show for P {\n}\n2",
-                         "`impl Show for P` must answer `show`")
+            refused_with(
+                "${showp()}impl Show for P {\n}\n2",
+                "`impl Show for P` must answer `show`",
+            )
         }
         then "an impl-for holds ONLY the trait's methods" {
-            refused_with("${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n    fn extra() -> int {\n        1\n    }\n}\n2",
-                         "`extra` is not part of `Show`")
+            refused_with(
+                "${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n    fn extra() -> int {\n        1\n    }\n}\n2",
+                "`extra` is not part of `Show`",
+            )
         }
         then "a wrong signature refuses naming both sides" {
-            refused_with("${showp()}impl Show for P {\n    fn show() -> bool {\n        true\n    }\n}\n2",
-                         "`P.show` does not wear `Show.show`'s signature")
+            refused_with(
+                "${showp()}impl Show for P {\n    fn show() -> bool {\n        true\n    }\n}\n2",
+                "`P.show` does not wear `Show.show`'s signature",
+            )
         }
     }
     given "dyn — the contract as a value (T3)" {
@@ -286,31 +454,63 @@ spec "features/impls" {
             shown("${showed()}let d: dyn Show = P { x: 42 }\nd.show()") == "42"
         }
         then "two signatories ride one dyn slot" {
-            shown("${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()") == "107"
+            shown(
+                "${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()",
+            ) == "107"
         }
         then "a non-signatory refuses at the binding" {
-            refused_with("${showp()}type Q = { y: int }\nlet d: dyn Show = Q { y: 1 }\n2",
-                         "`d` declares `dyn Show`, this is `Q`")
+            refused_with(
+                "${showp()}type Q = { y: int }\nlet d: dyn Show = Q { y: 1 }\n2",
+                "`d` declares `dyn Show`, this is `Q`",
+            )
         }
         then "a dyn call reaches only the contract's methods" {
-            refused_with("${showed()}let d: dyn Show = P { x: 1 }\nd.volume()",
-                         "`Show` has no method `volume`")
+            refused_with(
+                "${showed()}let d: dyn Show = P { x: 1 }\nd.volume()",
+                "`Show` has no method `volume`",
+            )
         }
         then "`dyn` of a non-trait names the remedy" {
-            refused_with("type P = { x: int }\nlet d: dyn P = P { x: 1 }\n2",
-                         "`dyn P` names no trait")
+            refused_with(
+                "type P = { x: int }\nlet d: dyn P = P { x: 1 }\n2",
+                "`dyn P` names no trait",
+            )
         }
         then "a bounded T boxes into a dyn slot — the bound is the proof" {
-            shown("${showed()}fn speak(v: dyn Show) -> int {\n    v.show()\n}\nfn relay<T: Show>(v: T) -> int {\n    speak(v)\n}\nlet pre: dyn Show = P { x: 20 }\nrelay(P { x: 13 }) + relay(pre)") == "33"
+            shown(
+                "${showed()}fn speak(v: dyn Show) -> int {\n    v.show()\n}\nfn relay<T: Show>(v: T) -> int {\n    speak(v)\n}\nlet pre: dyn Show = P { x: 20 }\nrelay(P { x: 13 }) + relay(pre)",
+            ) == "33"
         }
         then "a second declaration of one method name refuses" {
-            refused_with("${showed()}impl P {\n    fn show() -> int {\n        999\n    }\n}\n2",
-                         "`P.show` is declared twice")
+            refused_with(
+                "${showed()}impl P {\n    fn show() -> int {\n        999\n    }\n}\n2",
+                "`P.show` is declared twice",
+            )
+        }
+        then "a second method of one name in the SAME block refuses" {
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    fn show() -> int { 1 }\n    fn show() -> int { 2 }\n}\nP { x: 1 }.show()",
+                "`P.show` is declared twice",
+            )
+        }
+        then "a second static method of one name in the same block refuses" {
+            refused_with(
+                "type P = { x: int }\nimpl P {\n    static fn mk() -> int { 1 }\n    static fn mk() -> int { 2 }\n}\nP.mk()",
+                "`P.mk` is declared twice",
+            )
+        }
+        then "a trait naming one member twice refuses" {
+            refused_with(
+                "trait T {\n    fn m() -> int\n    fn m() -> int\n}\n2",
+                "`T.m` is declared twice",
+            )
         }
     }
     given "a trailing comma in every comma list" {
         then "a trait signature, an impl's type parameters and a mut fn" {
-            shown("trait Tr {\n    fn m(a: int, b: int,) -> int\n}\ntype P<T,> = { x: T }\ntype Q = { y: int }\nimpl P<T,> {\n    fn get() -> T { self.x }\n}\nimpl Tr for Q {\n    fn m(a: int, b: int,) -> int { a + b + self.y }\n}\nP { x: 5 }.get() + Q { y: 1 }.m(1, 2,)") == "9"
+            shown(
+                "trait Tr {\n    fn m(a: int, b: int,) -> int\n}\ntype P<T,> = { x: T }\ntype Q = { y: int }\nimpl P<T,> {\n    fn get() -> T { self.x }\n}\nimpl Tr for Q {\n    fn m(a: int, b: int,) -> int { a + b + self.y }\n}\nP { x: 5 }.get() + Q { y: 1 }.m(1, 2,)",
+            ) == "9"
         }
     }
     given "trait default method bodies — a member with a body answers for every signatory" {
@@ -318,32 +518,52 @@ spec "features/impls" {
             shown("${defaulted()}P { x: 21 }.twice()") == "42"
         }
         then "a signatory's own method overrides the default" {
-            shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> int {\n        7\n    }\n}\nG.hot.twice()") == "7"
+            shown(
+                "${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> int {\n        7\n    }\n}\nG.hot.twice()",
+            ) == "7"
         }
         then "a default reaches the abstract member per signatory — and an override through another default" {
-            shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> int {\n        7\n    }\n}\nP { x: 5 }.quad() + G.hot.quad()") == "34"
+            shown(
+                "${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> int {\n        7\n    }\n}\nP { x: 5 }.quad() + G.hot.quad()",
+            ) == "34"
         }
         then "a dyn box dispatches a default through its vtable" {
             shown("${defaulted()}let d: dyn Show = P { x: 5 }\nd.twice()") == "10"
         }
         then "a bounded generic reaches a default" {
-            shown("${defaulted()}fn eight<T: Show>(v: T) -> int {\n    v.quad() * 2\n}\neight(P { x: 2 })") == "16"
+            shown(
+                "${defaulted()}fn eight<T: Show>(v: T) -> int {\n    v.quad() * 2\n}\neight(P { x: 2 })",
+            ) == "16"
         }
         then "a `mut fn` default writes through the receiver" {
-            shown("trait Bump {\n    mut fn bump()\n    mut fn twice_bump() {\n        self.bump()\n        self.bump()\n    }\n}\ntype C = { n: int }\nimpl Bump for C {\n    mut fn bump() {\n        self.n = self.n + 1\n    }\n}\nmut c = C { n: 1 }\nc.twice_bump()\nc.n") == "3"
+            shown(
+                "trait Bump {\n    mut fn bump()\n    mut fn twice_bump() {\n        self.bump()\n        self.bump()\n    }\n}\ntype C = { n: int }\nimpl Bump for C {\n    mut fn bump() {\n        self.n = self.n + 1\n    }\n}\nmut c = C { n: 1 }\nc.twice_bump()\nc.n",
+            ) == "3"
         }
         then "`Self` names the implementor in a sig — the answer wears the receiver's type" {
-            shown("trait Same {\n    fn me() -> Self {\n        self\n    }\n}\ntype P = { x: int }\nimpl Same for P {\n}\nP { x: 4 }.me().x") == "4"
+            shown(
+                "trait Same {\n    fn me() -> Self {\n        self\n    }\n}\ntype P = { x: int }\nimpl Same for P {\n}\nP { x: 4 }.me().x",
+            ) == "4"
         }
         then "a trait of defaults alone is answered by an empty impl-for" {
-            shown("trait Greet {\n    fn hi() -> int {\n        1\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()") == "1"
+            shown(
+                "trait Greet {\n    fn hi() -> int {\n        1\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()",
+            ) == "1"
         }
         then "a default takes parameters like any method" {
-            shown("trait Scale {\n    fn base() -> int\n    fn by(k: int) -> int {\n        self.base() * k\n    }\n}\ntype P = { x: int }\nimpl Scale for P {\n    fn base() -> int {\n        self.x\n    }\n}\nP { x: 3 }.by(4)") == "12"
+            shown(
+                "trait Scale {\n    fn base() -> int\n    fn by(k: int) -> int {\n        self.base() * k\n    }\n}\ntype P = { x: int }\nimpl Scale for P {\n    fn base() -> int {\n        self.x\n    }\n}\nP { x: 3 }.by(4)",
+            ) == "12"
         }
         then "the abstract member is still owed when a default stands beside it" {
-            refused_with("${showp()}impl Show for P {\n}\n1".replace("trait Show {\n    fn show() -> int\n}", "trait Show {\n    fn show() -> int\n    fn twice() -> int {\n        self.show() * 2\n    }\n}"),
-                         "`impl Show for P` must answer `show`")
+            refused_with(
+                "${showp()}impl Show for P {\n}\n1"
+                    .replace(
+                        "trait Show {\n    fn show() -> int\n}",
+                        "trait Show {\n    fn show() -> int\n    fn twice() -> int {\n        self.show() * 2\n    }\n}",
+                    ),
+                "`impl Show for P` must answer `show`",
+            )
         }
     }
 }

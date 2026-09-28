@@ -11,36 +11,36 @@
 //! reference `expression`; an assembly that parses annotations must
 //! therefore include this feature.
 use features.{LanguageFeature, BuilderRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn type_expr() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name                | build
-        "dyn_opt_type"      | build_dyn_opt_type
-        "dyn_type"          | build_dyn_type
-        "applied_opt_type"  | build_applied_opt_type
-        "applied_type"      | build_applied_type
-        "opt_type"          | build_opt_type
-        "plain_type"        | build_plain_type
+        name               | build
+        "dyn_opt_type"     | build_dyn_opt_type
+        "dyn_type"         | build_dyn_type
+        "applied_opt_type" | build_applied_opt_type
+        "applied_type"     | build_applied_type
+        "opt_type"         | build_opt_type
+        "plain_type"       | build_plain_type
+        "union_type"       | build_union_type
     }
     let codes = table<DiagCode> {
-        kind           | id      | summary
-        "type.applied" | "F2019" | "a type applied to arguments it does not take"
+        kind           | summary
+        "type.applied" | "a type applied to arguments it does not take"
     }
-    component LanguageFeature f {
-        name = "type_expr"
-        docs = "A written type: `int`, `int?`, `List<int>` — the surface every annotation shares."
-        gram = grammar {
-            type = "dyn" n:NAME "?" -> dyn_opt_type(n)
-            type = "dyn" n:NAME -> dyn_type(n)
-            type = n:NAME "<" a:type ( "," a:type )* ","? ">" "?" -> applied_opt_type(n, a)
-            type = n:NAME "<" a:type ( "," a:type )* ","? ">" -> applied_type(n, a)
-            type = n:NAME "?" -> opt_type(n)
-            type = n:NAME -> plain_type(n)
+    LanguageFeature type_expr {
+        gram: grammar {
+            type = t:type_atom ( "or" a:type_atom )* -> union_type(t, a)
+            type_atom = "dyn" n:NAME "?" -> dyn_opt_type(n)
+            type_atom = "dyn" n:NAME -> dyn_type(n)
+            type_atom = n:NAME "<" a:type ( "," a:type )* ","? ">" "?" -> applied_opt_type(n, a)
+            type_atom = n:NAME "<" a:type ( "," a:type )* ","? ">" -> applied_type(n, a)
+            type_atom = n:NAME "?" -> opt_type(n)
+            type_atom = n:NAME -> plain_type(n)
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    type_expr
 }

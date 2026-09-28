@@ -32,13 +32,20 @@ use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code,
 /// The compiler's derive for a node's content identity.
 export trait Identity {
     static fn derive(t: MetaType) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
             impl NodeStore {
                 fn ${fold_of(t.name)}(node: ${t}) -> int {
                     match node { ${[ident_arm(t, v, j) for j, v in t.variants]} }
                 }
             }
-        } }]
+        },
+            },
+        ]
     }
 
     /// The words this derive reads off a variant — none: a node's
@@ -72,6 +79,7 @@ fn part(f: Field) -> Code {
         "List<ExprId>" -> quote { fp_list(self.expr_fps(${b})) },
         "List<StmtId>" -> quote { fp_list(self.stmt_fps(${b})) },
         "List<Arm>" -> quote { fp_list(self.arm_fps(${b})) },
+        "List<CompClause>" -> quote { fp_list(self.comp_clause_fps(${b})) },
         "List<Param>" -> quote { fp_list(self.param_fps(${b})) },
         "List<Variant>" -> quote { fp_list(self.variant_fps(${b})) },
         "List<Case>" -> quote { fp_list(self.case_fps(${b})) },
@@ -87,6 +95,9 @@ fn part(f: Field) -> Code {
         "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
         "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
         "BodyView" -> quote { self.view_fp(${b}) },
+        "CollectKind" -> quote { collectkind_fp(${b}) },
+        "CollectScope" -> quote { collectscope_fp(${b}) },
+        "Projection" -> quote { projection_fp(${b}) },
         _ -> quote { a_payload_type_the_identity_derive_has_no_row_for() },
     }
 }

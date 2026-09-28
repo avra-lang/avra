@@ -1,7 +1,7 @@
 //! Coherence: the composed grammar, the feature tables, and the code
 //! registry must agree before any source parses.
 use core.{flatten, joined}
-use grammar.{Grammar, Alt, Build, Diagnostic, defect}
+use @std.grammar.{Grammar, Alt, Build, Diagnostic, defect}
 use diagnostics.{DiagCode}
 
 /// Every disagreement between a composed grammar's build calls and the
@@ -37,7 +37,8 @@ fn duplicate_defects(features: List<LanguageFeature>) -> List<Diagnostic> {
             if prior == null {
                 seen.set(row.name, f.name)
             } else {
-                out.push(defect(f.name, "builder `${row.name}` is already registered by `${prior!}`"))
+                out
+                    .push(defect(f.name, "builder `${row.name}` is already registered by `${prior!}`"))
             }
         }
     }
@@ -49,8 +50,7 @@ fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Dia
     let searched = joined(features.map(it.name), ", ")
     mut out: List<Diagnostic> = []
     for r in g.rules {
-        let missing = [defect(r.name, "no feature registers builder `${name}` (searched ${searched})")
-            for name in call_names_in_alt(r.body) if registrar_of(features, name) == null]
+        let missing = [defect(r.name, "no feature registers builder `${name}` (searched ${searched})") for name in call_names_in_alt(r.body) if registrar_of(features, name) == null]
         out = out.concat(missing)
     }
     out
@@ -60,8 +60,7 @@ fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Dia
 fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) -> List<Diagnostic> {
     mut out: List<Diagnostic> = []
     for f in features {
-        let dead = [defect(f.name, "builder `${row.name}` is never called by any grammar rule")
-            for row in f.builders if referenced.get(row.name) == null]
+        let dead = [defect(f.name, "builder `${row.name}` is never called by any grammar rule") for row in f.builders if referenced.get(row.name) == null]
         out = out.concat(dead)
     }
     out
@@ -84,20 +83,16 @@ fn build_call_name(b: Build?) -> List<string> {
     }
 }
 
-/// A kind or F-code registered twice is an assembly defect.
+/// A kind registered twice is an assembly defect.
 export fn code_defects(codes: List<DiagCode>) -> List<Diagnostic> {
-    // LICENSED I16: duplicate DETECTION across tables, not one list
+    // LICENSED compiler.seen_accumulator: duplicate DETECTION across tables, not one list
     mut seen: List<string> = []
     mut out: List<Diagnostic> = []
     for c in codes {
         if seen.contains(c.kind) {
             out.push(defect(c.kind, "diagnostic kind is registered more than once"))
         }
-        if seen.contains(c.id) {
-            out.push(defect(c.id, "diagnostic code is registered more than once"))
-        }
         seen.push(c.kind)
-        seen.push(c.id)
     }
     out
 }

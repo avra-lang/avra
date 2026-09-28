@@ -18,12 +18,16 @@
 //!
 //! The head's field spans index the buffer they were framed from, so
 //! a `Request` keeps that buffer and slices a value only when asked.
-use frame.{Head, Field, Method, TargetForm, target_form, scheme_end, admits, is_target, is_tchar, is_vchar}
+use frame.{Head, Field, Method, target_form, scheme_end, admits, is_target, is_tchar, is_vchar}
 use query.{Query, query_of}
 
 /// What a handler receives: the raw buffer the head was framed from,
-/// the head, the body (owned, complete), and who sent it.
-export type Request = { raw: Bytes, head: Head, body: Bytes, peer: string }
+/// the head, the body (owned, complete), who sent it, and what its
+/// route read of the path — `Unrouted` until a route reads it.
+export type Request<P> = { raw: Bytes, head: Head, body: Bytes, peer: string, params: P }
+
+/// The params of a request no route has read.
+export type Unrouted = {}
 
 impl Request {
     fn method() -> Method { self.head.method }
@@ -62,6 +66,17 @@ impl Request {
         }
     }
 
+    /// Whether this request is for `prefix` or anything beneath it, by
+    /// WHOLE SEGMENTS of its `path()`: `/admin` is under `/admin`, and
+    /// so is `/admin/users?tab=2`; `/administrator` is not. The router's
+    /// own segment law decides, so a layer and the routes it guards
+    /// read one path alike. A target with no path (`OPTIONS *`) is
+    /// under nothing.
+    fn under(prefix: string) -> bool {
+        let p? = self.path() else { return false }
+        falls_under(p, prefix.bytes())
+    }
+
     /// THE AUTHORITY AN ABSOLUTE-FORM TARGET CARRIED, which `path()`
     /// strips — absent for every other form. RFC 9112 §3.3 has an
     /// origin server IGNORE the `Host` field when the target is
@@ -91,18 +106,18 @@ impl Request {
     fn absolute_path() -> Bytes? {
         let stop = self.split_at()
         let from = self.authority_to()
-        if from == stop { return root() }
+        if from == stop { return root }
         self.raw.slice(from, stop)
     }
 
     /// Where an absolute-form target's authority begins: past `://`.
-    fn authority_from() -> int { self.raw.index_of(scheme_end(), self.head.target.lo) + 3 }
+    fn authority_from() -> int { self.raw.index_of(scheme_end, self.head.target.lo) + 3 }
 
     /// Where it ends: at the path's first `/`, else where the path
     /// class itself ends — a `?` or the target's own last octet.
     fn authority_to() -> int {
         let stop = self.split_at()
-        let at = self.raw.index_of(slash(), self.authority_from())
+        let at = self.raw.index_of(slash, self.authority_from())
         if at < 0 || at >= stop { return stop }
         at
     }
@@ -124,7 +139,7 @@ impl Request {
     /// but not `?` stops at the query OR at the target's own end,
     /// whichever comes first, in one call.
     fn split_at() -> int {
-        let stop = self.raw.run(self.head.target.lo, path_char())
+        let stop = self.raw.run(self.head.target.lo, path_char)
         if stop > self.head.target.hi { return self.head.target.hi }
         stop
     }
@@ -138,10 +153,10 @@ impl Request {
     /// request carries none. Field values are ASCII by framing, so
     /// the text is total.
     fn header(name: string) -> string? {
-        let wanted = name.bytes()
-        let raw = self.raw
-        let f? = self.head.fields.find((f) -> raw.ieq_at(f.name.lo, f.name.hi, wanted)) else { return null }
-        raw.slice(f.value.lo, f.value.hi).text()
+        let i = self.head.fields.named(self.raw, name.bytes())
+        if i < 0 { return null }
+        let v = self.head.fields.value_at(i)
+        self.raw.slice(v.lo, v.hi).text()
     }
 }
 
@@ -154,24 +169,53 @@ export type Response = { status: int = 200, headers: List<Header> = [], body: By
 
 fn nothing() -> Bytes { "".bytes() }
 
+// ── Segments ────────────────────────────────────────────────────
+
+/// Whether a segment ENDS at offset `i` — at a separator, or past
+/// the last octet. THIS IS THE ONE DEFINITION OF A SEGMENT: a
+/// pattern's shape and a target's descent both ask it, so the two can
+/// never disagree about where a segment is.
+///
+/// It asks about SEPARATORS, not pieces: `split` drops a trailing
+/// empty segment, so `/ideas/` would come up one short of
+/// `/ideas/{id}` and a route would refuse its own empty capture.
+export fn separates(b: Bytes, i: int) -> bool { i == b.length || b.at(i) == slash_octet() }
+
+fn slash_octet() -> int { 47 }
+
+/// Whether `path` is `prefix` or beneath it: it opens with the prefix,
+/// and the prefix stops where a segment does — or ends in `/` itself.
+export fn falls_under(path: Bytes, prefix: Bytes) -> bool {
+    let n = prefix.length
+    if path.length < n || path.slice(0, n) != prefix { return false }
+    separates(path, n) || n > 0 && prefix.at(n - 1) == slash_octet()
+}
+
+/// What answers a request: a route's handler, a layer's `next`.
+export alias Handler = fn(Request<Unrouted>) -> Response
+
 /// How much a socket is asked for per read: h2o's figure times four,
 /// one read per wake-up.
 export fn read_size() -> int { 16384 }
 
 /// A target octet that is not `?` — composed from the framer's law
 /// rather than restated, so the two cannot drift apart.
-once fn path_char() -> Bytes { admits((c) -> is_target(c) && c != question_octet()) }
+const path_char: Bytes = admits((c) -> is_target(c) && c != question_octet())
 
 fn question_octet() -> int { 63 }
 
 /// The root path, for an absolute-form target that carried none.
-once fn root() -> Bytes { "/".bytes() }
+const root: Bytes = "/".bytes()
 
-once fn slash() -> Bytes { "/".bytes() }
+const slash: Bytes = "/".bytes()
 
 /// A plain-text response of this status.
 export fn text(status: int, body: string) -> Response {
-    Response { status: status, headers: [Header { name: "content-type", value: "text/plain; charset=utf-8" }], body: body.bytes() }
+    Response {
+        status: status,
+        headers: [Header { name: "content-type", value: "text/plain; charset=utf-8" }],
+        body: body.bytes(),
+    }
 }
 
 /// A 200 of plain text.
@@ -179,6 +223,25 @@ export fn ok(body: string) -> Response { text(200, body) }
 
 /// A bare status, no fields and no body.
 export fn status(code: int) -> Response { Response { status: code } }
+
+/// What a handler may answer with, and the reply it becomes: a
+/// `Response` as it is, text as a 200 that carries it, a number as
+/// that status with no body.
+export trait Respond {
+    fn response() -> Response
+}
+
+impl Respond for Response {
+    fn response() -> Response { self }
+}
+
+impl Respond for string {
+    fn response() -> Response { text(200, self) }
+}
+
+impl Respond for int {
+    fn response() -> Response { status(self) }
+}
 
 /// The response on the wire: status line, the fields, the body's
 /// length, the connection's fate, then the body. The fate is spoken
@@ -203,14 +266,49 @@ export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// carry and cut the head mid-field.
 export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
+/// THE RESPONSE WRITTEN STRAIGHT INTO ONE BUFFER: each piece appended
+/// in place — no list gathered and copied once, since a local `mut`
+/// accumulator grown by `concat` already lands in one box (reuse in
+/// place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
 fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    let fields = ["${h.name}: ${h.value}\r\n" for h in r.headers].join("")
-    let fate = when {
+    mut w = reply_line(r.status)
+    for h in r.headers {
+        w = w.concat(h.name.bytes())
+        w = w.concat(field_colon)
+        w = w.concat(h.value.bytes())
+        w = w.concat(crlf)
+    }
+    w = w.concat(length_field)
+    w = w.concat("${r.body.length}".bytes())
+    w = w.concat(crlf)
+    w = w.concat(fate(keep_alive, minor).bytes())
+    w = w.concat(crlf)
+    w = w.concat(r.body)
+    w
+}
+
+/// Every status line a response can carry, laid out once in the binary.
+const reply_lines: List<Bytes> = [reply_text(s).bytes() for s in 100..1000]
+
+/// A status line: the binary's for a status of three digits.
+fn reply_line(status: int) -> Bytes {
+    if status < 100 || status > 999 { return reply_text(status).bytes() }
+    reply_lines[status - 100]
+}
+
+fn reply_text(status: int) -> string { "HTTP/1.1 ${status} ${reason(status)}\r\n" }
+
+const field_colon: Bytes = ": ".bytes()
+
+const length_field: Bytes = "content-length: ".bytes()
+
+/// The connection's fate, when the peer cannot assume it.
+fn fate(keep_alive: bool, minor: int) -> string {
+    when {
         !keep_alive -> "connection: close\r\n"
         minor == 0 -> "connection: keep-alive\r\n"
         _ -> ""
     }
-    "HTTP/1.1 ${r.status} ${reason(r.status)}\r\n${fields}content-length: ${r.body.length}\r\n${fate}\r\n".bytes().concat(r.body)
 }
 
 /// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a status of three
@@ -218,7 +316,7 @@ fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// are not statuses — and every field a field the framer would frame.
 /// Public so a handler can ask before it answers.
 export fn sendable(r: Response) -> bool {
-    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes())
+    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes)
 }
 
 /// EVERY FIELD A WRITER MAY WRITE: each one a field the framer would
@@ -228,7 +326,10 @@ export fn sendable(r: Response) -> bool {
 /// ONE, and a writer says only which fields it owns. The reply's
 /// writer and the request's each name their own list.
 export fn fields_writable(headers: List<Header>, written_by: List<Bytes>) -> bool {
-    headers.all(writable(it)) && !headers.any(names_one_of(it.name, written_by))
+    for h in headers {
+        if !writable(h) || names_one_of(h.name, written_by) { return false }
+    }
+    true
 }
 
 /// A FIELD LINE ON THE WIRE OBEYS THE FRAMER'S OWN LAW, or the two
@@ -238,7 +339,7 @@ export fn fields_writable(headers: List<Header>, written_by: List<Bytes>) -> boo
 /// reader stays strict. An empty VALUE is a value and passes; an
 /// empty NAME is not a token.
 export fn writable(h: Header) -> bool {
-    !h.name.is_empty() && every_octet(h.name, token_char()) && every_octet(h.value, value_char())
+    !h.name.is_empty() && every_octet(h.name, token_char) && every_octet(h.value, value_char)
 }
 
 /// EVERY OCTET OF `s` IS IN `class` — the one place text is judged
@@ -252,30 +353,64 @@ export fn every_octet(s: string, class: Bytes) -> bool {
 /// Whether `name` is one of `written_by`, ASCII-folded.
 export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
     let b = name.bytes()
-    written_by.any((w) -> b.ieq_at(0, b.length, w))
+    for w in written_by {
+        if b.ieq_at(0, b.length, w) { return true }
+    }
+    false
 }
 
 /// What octet a field NAME may carry, as a class table.
-export once fn token_char() -> Bytes { admits(is_tchar) }
+export const token_char: Bytes = admits(is_tchar)
 
 /// What octet a field VALUE may carry, as a class table.
-export once fn value_char() -> Bytes { admits(is_vchar) }
+export const value_char: Bytes = admits(is_vchar)
 
 /// The framing fields `wire` writes from what it is sending.
-once fn reply_writes() -> List<Bytes> { [w.bytes() for w in ["content-length", "connection", "transfer-encoding"]] }
+const reply_writes: List<Bytes> = [w.bytes() for w in ["content-length", "connection", "transfer-encoding"]]
 
 /// The reason phrase — the registered ones, and the class's word for
 /// the rest.
 export fn reason(status: int) -> string {
     match status {
-        100 -> "Continue", 101 -> "Switching Protocols",
-        200 -> "OK", 201 -> "Created", 202 -> "Accepted", 204 -> "No Content", 206 -> "Partial Content",
-        301 -> "Moved Permanently", 302 -> "Found", 303 -> "See Other", 304 -> "Not Modified", 307 -> "Temporary Redirect", 308 -> "Permanent Redirect",
-        400 -> "Bad Request", 401 -> "Unauthorized", 403 -> "Forbidden", 404 -> "Not Found", 405 -> "Method Not Allowed",
-        408 -> "Request Timeout", 409 -> "Conflict", 411 -> "Length Required", 413 -> "Content Too Large", 414 -> "URI Too Long",
-        415 -> "Unsupported Media Type", 417 -> "Expectation Failed", 422 -> "Unprocessable Content", 429 -> "Too Many Requests",
+        100 -> "Continue",
+        101 -> "Switching Protocols",
+        200 -> "OK",
+        201 -> "Created",
+        202 -> "Accepted",
+        204 -> "No Content",
+        206 -> "Partial Content",
+        301 -> "Moved Permanently",
+        302 -> "Found",
+        303 -> "See Other",
+        304 -> "Not Modified",
+        307 -> "Temporary Redirect",
+        308 -> "Permanent Redirect",
+        400 -> "Bad Request",
+        401 -> "Unauthorized",
+        403 -> "Forbidden",
+        404 -> "Not Found",
+        405 -> "Method Not Allowed",
+        408 -> "Request Timeout",
+        409 -> "Conflict",
+        411 -> "Length Required",
+        413 -> "Content Too Large",
+        414 -> "URI Too Long",
+        415 -> "Unsupported Media Type",
+        417 -> "Expectation Failed",
+        422 -> "Unprocessable Content",
+        429 -> "Too Many Requests",
         431 -> "Request Header Fields Too Large",
-        500 -> "Internal Server Error", 501 -> "Not Implemented", 502 -> "Bad Gateway", 503 -> "Service Unavailable", 504 -> "Gateway Timeout", 505 -> "HTTP Version Not Supported",
-        _ -> when { status < 300 -> "Success", status < 400 -> "Redirection", status < 500 -> "Client Error", _ -> "Server Error" },
+        500 -> "Internal Server Error",
+        501 -> "Not Implemented",
+        502 -> "Bad Gateway",
+        503 -> "Service Unavailable",
+        504 -> "Gateway Timeout",
+        505 -> "HTTP Version Not Supported",
+        _ -> when {
+            status < 300 -> "Success"
+            status < 400 -> "Redirection"
+            status < 500 -> "Client Error"
+            _ -> "Server Error"
+        },
     }
 }

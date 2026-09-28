@@ -42,7 +42,7 @@ slug=$(basename "$worktree")
 # file and a deleted file all name a different tree.
 tarfile=$(mktemp -t avra-sprite.XXXXXX)
 trap 'rm -f "$tarfile"' EXIT
-# The gate reads doctrine as data (tools/idioms.py, tools/cited.py), so
+# The gate reads doctrine as data (tools/idioms.baseline, tools/cited.py), so
 # those files travel even though they are not source.
 (
     cd "$worktree"

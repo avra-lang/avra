@@ -1,0 +1,127 @@
+// R15a: A Result of a BOOL or a FLOAT side rides registers — the tag
+// and the side's own word, exactly as `Result<int, E>` already did.
+// `false` and `0.0` are ordinary Ok payloads, never absence (the
+// empty-value law); a nullable, a record field, a list element, a
+// Cell and a generic `T` pinned to a scalar Result all carry the
+// pair without boxing.
+type Holder = { r: Result<bool, string> }
+
+fn parse_bool(s: string) -> Result<bool, string> {
+    if s == "true" { return .Ok(true) }
+    if s == "false" { return .Ok(false) }
+    .Err("bad bool: ${s}")
+}
+
+fn parse_float(s: string) -> Result<float, string> {
+    if s == "0" { return .Ok(0.0) }
+    if s == "-0" { return .Ok(neg_zero()) }
+    if s == "nan" { return .Ok(0.0 / 0.0) }
+    if s == "inf" { return .Ok(1.0 / 0.0) }
+    if s == "-inf" { return .Ok(-1.0 / 0.0) }
+    if s == "sub" { return .Ok(subnormal()) }
+    .Err("bad float: ${s}")
+}
+
+// A negative zero, built without a literal spelling one: `-0.0`'s
+// bits are the sign bit alone.
+fn neg_zero() -> float { 0.0 * -1.0 }
+
+// A binary64 subnormal: below the smallest normal, above zero — the
+// smallest one, reached by halving down through the whole exponent
+// range rather than a literal the lexer has no exponent form for.
+fn subnormal() -> float {
+    mut x = 1.0
+    for _i in 0..1074 { x = x / 2.0 }
+    x
+}
+
+fn is_neg_zero(x: float) -> bool { x == 0.0 && 1.0 / x < 0.0 }
+fn is_pos_zero(x: float) -> bool { x == 0.0 && 1.0 / x > 0.0 }
+fn is_nan(x: float) -> bool { x != x }
+fn is_pos_inf(x: float) -> bool { x > 0.0 && x == x / 2.0 }
+fn is_neg_inf(x: float) -> bool { x < 0.0 && x == x / 2.0 }
+
+fn shown_bool(r: Result<bool, string>) -> string {
+    match r { .Ok(b) -> "ok:${b}", .Err(e) -> "err:${e}" }
+}
+
+// A CLASSIFICATION, not the default print — `-0.0`/`0.0` and a
+// subnormal near zero all render alike through `${x}`, which would
+// hide the very bit patterns this test exists to pin. The subnormal
+// arm asks whether the crossed value equals a FRESH, independently
+// built one: the round trip is bit-exact only if that holds.
+fn shown_float(r: Result<float, string>) -> string {
+    match r {
+        .Ok(x) -> when {
+            is_nan(x) -> "ok:nan"
+            is_pos_zero(x) -> "ok:+0"
+            is_neg_zero(x) -> "ok:-0"
+            is_pos_inf(x) -> "ok:+inf"
+            is_neg_inf(x) -> "ok:-inf"
+            x > 0.0 && x < subnormal() * 2.0 && x == subnormal() -> "ok:sub"
+            _ -> "ok:${x}"
+        },
+        .Err(e) -> "err:${e}",
+    }
+}
+
+// `?` propagation: a bool Result's Ok side crosses unboxed, its Err
+// side wraps into the caller's own layout.
+fn doubled(s: string) -> Result<bool, string> {
+    let b = parse_bool(s)?
+    .Ok(!b)
+}
+
+// A selective `catch`: the ok side survives untouched when the error
+// arm supplies a value of its own.
+fn safe_bool(s: string) -> bool {
+    parse_bool(s) catch e -> false
+}
+
+mut out: List<string> = []
+
+// The empty case first: `false` and `0.0` must read PRESENT, not
+// absent.
+out.push(shown_bool(parse_bool("false")))
+out.push(shown_bool(parse_bool("true")))
+out.push(shown_bool(parse_bool("no")))
+out.push(shown_float(parse_float("0")))
+out.push(shown_float(parse_float("-0")))
+out.push(shown_float(parse_float("nan")))
+out.push(shown_float(parse_float("inf")))
+out.push(shown_float(parse_float("-inf")))
+out.push(shown_float(parse_float("sub")))
+
+// `Result<bool, E>?` — the spare tag carries absence, never a
+// present `false`.
+let some_false: Result<bool, string>? = parse_bool("false")
+let none: Result<bool, string>? = null
+out.push("${some_false == null} ${none == null}")
+out.push(shown_bool(some_false ?? parse_bool("true")))
+
+// A record field.
+let h = Holder { r: parse_bool("true") }
+let h2 = h with { r: parse_bool("false") }
+out.push("${shown_bool(h.r)} ${shown_bool(h2.r)}")
+
+// A list of scalar Results, mixed ok/err.
+mut rs: List<Result<bool, string>> = []
+for s in ["true", "false", "x"] { rs.push(parse_bool(s)) }
+out.push([shown_bool(r) for r in rs].join(","))
+
+// A Cell.
+let c = Cell.new(parse_bool("true"))
+c.set(parse_bool("false"))
+out.push(shown_bool(c.get()))
+
+// `?` propagation and a selective `catch`.
+out.push(shown_bool(doubled("false")))
+out.push(shown_bool(doubled("x")))
+out.push("${safe_bool("true")} ${safe_bool("x")}")
+
+// A generic `T` pinned to a scalar Result.
+fn through<T>(x: T) -> T { x }
+out.push(shown_bool(through(parse_bool("true"))))
+out.push(shown_float(through(parse_float("sub"))))
+
+out.join(" | ")

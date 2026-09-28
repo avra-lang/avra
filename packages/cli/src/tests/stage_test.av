@@ -1,0 +1,33 @@
+//! `judged`'s law (avra-8sb5.57.28): a status is a verdict, so every
+//! non-green one must SPEAK — a bare `1` for `.Red` told nobody which
+//! binary failed nor that the rest of the suite never ran, the one
+//! branch its `.CouldNotStart`/`.Died` siblings never got wrong. This
+//! pins the CONTRACT (every non-green status still answers non-zero);
+//! the printed words themselves were confirmed by hand — `avra test`
+//! over a suite carrying one deliberately failing case now ends
+//! `STOPPED — <binary> reported a failure above; the rest of the
+//! suite never ran` instead of a bare, silent exit 1.
+use stage.{judged}
+
+spec "judged answers every verdict, and never silently" {
+    given "a green run" {
+        then "answers 0" {
+            judged("suite", 0) == 0
+        }
+    }
+    given "a red run — some case or program failed" {
+        then "still answers non-zero" {
+            judged("suite", 1) == 1
+        }
+    }
+    given "a binary that could not start" {
+        then "still answers non-zero" {
+            judged("suite", 127) == 1
+        }
+    }
+    given "a binary that died — a trap or a signal" {
+        then "still answers non-zero" {
+            judged("suite", 9) == 1
+        }
+    }
+}

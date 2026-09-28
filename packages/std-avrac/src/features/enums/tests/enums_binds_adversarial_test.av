@@ -20,22 +20,36 @@ fn ab_enum() -> string {
     "enum E {\n    a(int)\n    b\n}\n"
 }
 
+fn boxed_enum() -> string {
+    "enum E {\n    a(int, int)\n    b\n}\n"
+}
+
 spec "features/enums — pattern binds (adversarial)" {
     given "binds against every scope" {
         then "a bind beats a fn PARAM of the same name" {
-            shown("${ab_enum()}fn f(n: int) -> int {\n    match E.a(7) {\n        .a(n) -> n\n        .b -> 0\n    }\n}\nf(35)") == "7"
+            shown(
+                "${ab_enum()}fn f(n: int) -> int {\n    match E.a(7) {\n        .a(n) -> n\n        .b -> 0\n    }\n}\nf(35)",
+            ) == "7"
         }
         then "a bind beats an outer let, which survives the arm" {
-            shown("let n = 100\n${ab_enum()}let r = match E.a(7) {\n    .a(n) -> n\n    .b -> 0\n}\nr + n") == "107"
+            shown(
+                "let n = 100\n${ab_enum()}let r = match E.a(7) {\n    .a(n) -> n\n    .b -> 0\n}\nr + n",
+            ) == "107"
         }
         then "three nested binds of one name: the innermost wins" {
-            shown("${ab_enum()}match E.a(1) {\n    .a(n) -> match E.a(2) {\n        .a(n) -> match E.a(39) { .a(n) -> n, .b -> 0 }\n        .b -> 0\n    }\n    .b -> 0\n}") == "39"
+            shown(
+                "${ab_enum()}match E.a(1) {\n    .a(n) -> match E.a(2) {\n        .a(n) -> match E.a(39) { .a(n) -> n, .b -> 0 }\n        .b -> 0\n    }\n    .b -> 0\n}",
+            ) == "39"
         }
         then "an outer bind survives a nested match that rebinds" {
-            shown("${ab_enum()}match E.a(40) {\n    .a(n) -> match E.a(2) { .a(m) -> m, .b -> 0 } + n\n    .b -> 0\n}") == "42"
+            shown(
+                "${ab_enum()}match E.a(40) {\n    .a(n) -> match E.a(2) { .a(m) -> m, .b -> 0 } + n\n    .b -> 0\n}",
+            ) == "42"
         }
         then "sibling arms may reuse one bind name" {
-            shown("enum E {\n    a(int)\n    b(int)\n}\nmatch E.b(41) {\n    .a(v) -> v\n    .b(v) -> v + 1\n}") == "42"
+            shown(
+                "enum E {\n    a(int)\n    b(int)\n}\nmatch E.b(41) {\n    .a(v) -> v\n    .b(v) -> v + 1\n}",
+            ) == "42"
         }
         then "a bind may take its own variant's name" {
             shown("${ab_enum()}match E.a(7) {\n    .a(a) -> a\n    .b -> 0\n}") == "7"
@@ -44,7 +58,9 @@ spec "features/enums — pattern binds (adversarial)" {
             shown("${ab_enum()}match E.a(9) {\n    .a(E) -> E\n    .b -> 0\n}") == "9"
         }
         then "a bind beats a fn name for the arm, and the fn still calls" {
-            shown("fn n(v: int) -> int { v }\n${ab_enum()}match E.a(7) {\n    .a(n) -> n + n(1)\n    .b -> 0\n}") == "8"
+            shown(
+                "fn n(v: int) -> int { v }\n${ab_enum()}match E.a(7) {\n    .a(n) -> n + n(1)\n    .b -> 0\n}",
+            ) == "8"
         }
         then "a bind dies with its arm" {
             refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n    .b -> n\n}") == 1
@@ -58,31 +74,37 @@ spec "features/enums — pattern binds (adversarial)" {
         then "`_` in the payload slot is the hole — the arm accepts the variant whole" {
             shown("${ab_enum()}match E.a(1) {\n    .a(_) -> 1\n    .b -> 0\n}") == "1"
         }
-        // today's truth: 2 each, for the eight malformed binds below — the
+        // today's truth: 2 each, for the seven malformed binds below — the
         // bind fails the match's `}`, then the stmt's BREAK cascades
         then "a literal in the payload slot is a test — the variant is not covered whole" {
-            refused_with("${ab_enum()}match E.a(1) { .a(1) -> 1, .b -> 0 }", "`match` on `E` must handle `.a`")
+            refused_with(
+                "${ab_enum()}match E.a(1) { .a(1) -> 1, .b -> 0 }",
+                "`match` on `E` must handle `.a`",
+            )
         }
         then "empty parens refuse — a bind slot binds something" {
-            refusals("${ab_enum()}match E.a(1) { .a() -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a() -> 1, .b -> 0 }") == 1
         }
         then "two patterns for one payload refuse — the arity is the variant's" {
-            refused_with("${ab_enum()}match E.a(1) { .a(n, m) -> 1, .b -> 0 }", "`.a` carries 1, the pattern names 2")
+            refused_with(
+                "${ab_enum()}match E.a(1) { .a(n, m) -> 1, .b -> 0 }",
+                "`.a` carries 1, the pattern names 2",
+            )
         }
-        then "a trailing comma refuses" {
-            refusals("${ab_enum()}match E.a(1) { .a(n,) -> 1, .b -> 0 }") == 2
+        then "a trailing comma is the payload list's own law — the bind still reads" {
+            shown("${ab_enum()}match E.a(7) { .a(n,) -> n, .b -> 0 }") == "7"
         }
         then "parens around the bind refuse" {
-            refusals("${ab_enum()}match E.a(1) { .a((n)) -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a((n)) -> 1, .b -> 0 }") == 1
         }
         then "a bind with no arrow refuses" {
-            refusals("${ab_enum()}match E.a(1) { .a(n) 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n) 1, .b -> 0 }") == 1
         }
         then "an unclosed bind refuses" {
-            refusals("${ab_enum()}match E.a(1) { .a(n -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n -> 1, .b -> 0 }") == 1
         }
         then "a bind with no value refuses" {
-            refusals("${ab_enum()}match E.a(1) { .a(n) ->, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n) ->, .b -> 0 }") == 1
         }
         then "a unit variant carries nothing to bind — ONE refusal" {
             refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n    .b(x) -> 0\n}") == 1
@@ -97,7 +119,9 @@ spec "features/enums — pattern binds (adversarial)" {
             refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n}") == 1
         }
         then "a bind is its PAYLOAD's type, not the enum's" {
-            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> match n { .a(m) -> m, .b -> 0 }\n    .b -> 0\n}") == 1
+            refusals(
+                "${ab_enum()}match E.a(1) {\n    .a(n) -> match n { .a(m) -> m, .b -> 0 }\n    .b -> 0\n}",
+            ) == 1
         }
     }
     given "binds crossing every other feature" {
@@ -105,65 +129,84 @@ spec "features/enums — pattern binds (adversarial)" {
             shown("${ab_enum()}match E.a(7) {\n    .a(n) -> \"got \${n}\"\n    .b -> \"none\"\n}") == "got 7"
         }
         then "a bind steers an if" {
-            shown("${ab_enum()}match E.a(7) {\n    .a(n) -> if n > 3 { 42 } else { 0 }\n    .b -> 0\n}") == "42"
+            shown(
+                "${ab_enum()}match E.a(7) {\n    .a(n) -> if n > 3 { 42 } else { 0 }\n    .b -> 0\n}",
+            ) == "42"
         }
         then "a bind fills a struct field" {
-            shown("type P = { x: int }\n${ab_enum()}let p = match E.a(42) {\n    .a(n) -> P { x: n }\n    .b -> P { x: 0 }\n}\np.x") == "42"
+            shown(
+                "type P = { x: int }\n${ab_enum()}let p = match E.a(42) {\n    .a(n) -> P { x: n }\n    .b -> P { x: 0 }\n}\np.x",
+            ) == "42"
         }
         then "a bind feeds `with`" {
-            shown("type P = { x: int, y: int }\n${ab_enum()}let base = P { x: 1, y: 2 }\nlet p = match E.a(42) {\n    .a(n) -> base with { x: n }\n    .b -> base\n}\np.x") == "42"
+            shown(
+                "type P = { x: int, y: int }\n${ab_enum()}let base = P { x: 1, y: 2 }\nlet p = match E.a(42) {\n    .a(n) -> base with { x: n }\n    .b -> base\n}\np.x",
+            ) == "42"
         }
         then "a bind rebuilds its own enum" {
-            shown("${ab_enum()}match E.a(20) {\n    .a(n) -> match E.a(n + 1) { .a(m) -> m + 21, .b -> 0 }\n    .b -> 0\n}") == "42"
+            shown(
+                "${ab_enum()}match E.a(20) {\n    .a(n) -> match E.a(n + 1) { .a(m) -> m + 21, .b -> 0 }\n    .b -> 0\n}",
+            ) == "42"
         }
         then "a bind drives recursion" {
-            shown("enum N {\n    more(int)\n    done\n}\nfn walk(n: N) -> int {\n    match n {\n        .more(k) -> if k == 0 { 0 } else { k + walk(N.more(k - 1)) }\n        .done -> 0\n    }\n}\nwalk(N.more(4))") == "10"
+            shown(
+                "enum N {\n    more(int)\n    done\n}\nfn walk(n: N) -> int {\n    match n {\n        .more(k) -> if k == 0 { 0 } else { k + walk(N.more(k - 1)) }\n        .done -> 0\n    }\n}\nwalk(N.more(4))",
+            ) == "10"
         }
         then "every arm of eight binds, and the sixth answers" {
-            shown("enum E {\n    a(int)\n    b(int)\n    c(int)\n    d(int)\n    e(int)\n    f(int)\n    g(int)\n    h(int)\n}\nmatch E.f(6) {\n    .a(n) -> n * 1\n    .b(n) -> n * 2\n    .c(n) -> n * 3\n    .d(n) -> n * 4\n    .e(n) -> n * 5\n    .f(n) -> n * 6\n    .g(n) -> n * 7\n    .h(n) -> n * 8\n}") == "36"
+            shown(
+                "enum E {\n    a(int)\n    b(int)\n    c(int)\n    d(int)\n    e(int)\n    f(int)\n    g(int)\n    h(int)\n}\nmatch E.f(6) {\n    .a(n) -> n * 1\n    .b(n) -> n * 2\n    .c(n) -> n * 3\n    .d(n) -> n * 4\n    .e(n) -> n * 5\n    .f(n) -> n * 6\n    .g(n) -> n * 7\n    .h(n) -> n * 8\n}",
+            ) == "36"
         }
     }
     given "the payload load, in the IR" {
+        // A BOXED enum on purpose: a variant carrying two ints is a box,
+        // and the load is what these pin. An enum of one-word payloads is
+        // a value — its payload is a register, and the last case shows it.
         then "the load lives INSIDE its arm — an untaken arm never reads it" {
             let expected = """scope application {
   r0 = int 21
-  r1 = int 2
-  r2 = call avra_array_sized(r1)
-  r3 = int 0
-  call avra_array_push(r2, r3)
-  call avra_array_push(r2, r0)
+  r1 = int 0
+  r2 = int 3
+  r3 = call avra_array_sized(r2)
   r4 = int 0
-  r5 = call avra_array_get(r2, r4)
-  switch r5 over [0] {
-    r6 = int 1
-    r7 = call avra_array_get(r2, r6)
-    r8 = int 2
-    r9 = r7 * r8
-    yield r9
-  } arm {
-    r10 = int 0
+  call avra_array_push(r3, r4)
+  call avra_array_push(r3, r0)
+  call avra_array_push(r3, r1)
+  r5 = int 0
+  r6 = call avra_array_get(r3, r5)
+  switch r6 over [0] {
+    r7 = int 1
+    r8 = call avra_array_get(r3, r7)
+    r9 = int 2
+    r10 = r8 * r9
     yield r10
-  } -> r11
-  r12 = call avra_int_text(r11)
-  call avra_puts(r12)
-  release r12
-  release r2
+  } arm {
+    r11 = int 0
+    yield r11
+  } -> r12
+  r13 = call avra_int_text(r12)
+  call avra_puts(r13)
+  release r13
+  release r3
 }
 ret 0"""
-            ir_text("${ab_enum()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
+            ir_text("${boxed_enum()}match E.a(21, 0) {\n    .a(n, _) -> n * 2\n    .b -> 0\n}") == expected
         }
         then "a called subject is lowered ONCE — the arms read one value" {
             let expected = """fn mk() -> E
 scope application {
   r0 = int 1
-  r1 = int 2
-  r2 = call avra_array_sized(r1)
-  r3 = int 0
-  call avra_array_push(r2, r3)
-  call avra_array_push(r2, r0)
-  yield r2
+  r1 = int 0
+  r2 = int 3
+  r3 = call avra_array_sized(r2)
+  r4 = int 0
+  call avra_array_push(r3, r4)
+  call avra_array_push(r3, r0)
+  call avra_array_push(r3, r1)
+  yield r3
 }
-ret r2
+ret r3
 
 scope application {
   r0 = call mk()
@@ -183,7 +226,31 @@ scope application {
   release r0
 }
 ret 0"""
-            ir_text("${ab_enum()}fn mk() -> E { E.a(1) }\nmatch mk() {\n    .a(n) -> n\n    .b -> 0\n}") == expected
+            ir_text(
+                "${boxed_enum()}fn mk() -> E { E.a(1, 0) }\nmatch mk() {\n    .a(n, _) -> n\n    .b -> 0\n}",
+            ) == expected
+        }
+        then "a value enum is its tag and word — no box, and nothing counted when no variant carries a pointer" {
+            let expected = """scope application {
+  r0 = int 21
+  r1 = int 0
+  r2 = pack r1, r0
+  r3 = r2.0
+  switch r3 over [0] {
+    r4 = r2.1
+    r5 = int 2
+    r6 = r4 * r5
+    yield r6
+  } arm {
+    r7 = int 0
+    yield r7
+  } -> r8
+  r9 = call avra_int_text(r8)
+  call avra_puts(r9)
+  release r9
+}
+ret 0"""
+            ir_text("${ab_enum()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
         }
     }
 }

@@ -2,16 +2,47 @@
 //! (`core/holes.av`'s `fits`, the one registry), and the quote answers
 //! the meta kind its body parsed as — both judged HERE, in the file
 //! that wrote the template, with no user of it.
-use core.{ExprId, TypeId, DeclId, StmtId, Type, BodyParts, HoleKind, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name}
+use core.{
+    ExprId,
+    TypeId,
+    PatId,
+    DeclId,
+    StmtId,
+    Type,
+    BodyParts,
+    HoleKind,
+    QuoteHole,
+    MetaKind,
+    FillClass,
+    hole_kinds,
+    quote_kind,
+    fits,
+    holes_kind,
+    holes_seat,
+    meta_name,
+    quote_pat_holes,
+    quote_pat_names,
+    quote_pat_root,
+    quote_pat_reached,
+    quote_pat_is_text,
+    quote_pat_mixed,
+    quote_pat_is_run,
+    quote_pat_run_mixed,
+    quote_pat_is_type,
+    quote_pat_adjacent_runs,
+    is_run_kid,
+}
 use features.{TypeCx, Decls, this_is}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
 fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let q? = (cx.view.store.expr(e)).body_of() else { return cx.error_type }
+    let q? = cx.view.store.expr(e).body_of() else { return cx.error_type }
     // a body that did not parse has spoken already
     let stmts: List<StmtId> = match q.view { .Verbatim(ss, _) -> ss, rest -> [] }
     if stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error) { return cx.error_type }
+    // a hole whose own value refused has spoken already
+    if q.holes.any((h: ExprId) -> cx.errored(h)) { return cx.error_type }
     let classes = [class_of(cx.view.decls, cx.type_at(h), cx.shape_at(h)) for h in q.holes]
     let whole = quote_kind(cx.view.store, e)
     let kinds = hole_kinds(cx.view.store, e)
@@ -21,7 +52,10 @@ fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
         if classes[k] == null {
             let at = cx.loc_of(h)
             let found = cx.name_at(h)
-            return cx.spoken(if whole is .Holes { unfillable(at, found) } else { hole_refused(at, kinds[k], found) })
+            return cx
+                .spoken(
+                    if whole is .Holes { unfillable(at, found) } else { hole_refused(at, kinds[k], found) },
+                )
         }
     }
     let answered: MetaKind? = match whole {
@@ -54,6 +88,8 @@ export fn template_kind(decls: Decls, ty: TypeId) -> MetaKind? {
 export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
     let own: MetaKind? = template_kind(decls, ty)
     if own != null { return FillClass.Template(own!) }
+    if decls.avrac_type(ty, "Code") { return FillClass.Held }
+    if decls.meta_type(ty, "Format") { return FillClass.Pattern }
     let elem: TypeId? = decls.elem_of(ty)
     if elem != null {
         let inner: MetaKind? = template_kind(decls, elem!)
@@ -65,32 +101,60 @@ export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
         .Str -> FillClass.Text,
         .Int -> FillClass.Int,
         .Bool -> FillClass.Bool,
-        .Ptr or .Bytes or .Float or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _)
-            or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
-            or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+        .Ptr or .Bytes or .Float or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) -> null,
     }
 }
 
 // ── voices ──
 
 fn no_meta(at: Loc?, answer: string) -> Diag {
-    refusal("type.quote_meta", at, "a `quote` answers `@std.meta.${answer}`, and this program does not load `@std/meta`", "the quote", "add `\"@std/meta\"` to the package's dependencies")
+    refusal(
+        "type.quote_meta",
+        at,
+        "a `quote` answers `@std.meta.${answer}`, and this program does not load `@std/meta`",
+        "the quote",
+        "add `\"@std/meta\"` to the package's dependencies",
+    )
 }
 
 fn ambiguous_text(at: Loc?) -> Diag {
-    refusal("type.quote_hole", at, "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name", "this hole", "say which: `\${literal(s)}` or `\${name(s)}`")
+    refusal(
+        "type.quote_hole",
+        at,
+        "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name",
+        "this hole",
+        "say which: `\${literal(s)}` or `\${name(s)}`",
+    )
 }
 
 fn hole_refused(at: Loc?, kind: HoleKind, n: string) -> Diag {
-    refusal("type.quote_hole", at, "a hole in ${seat_word(kind)} position takes ${takes_word(kind)}, found `${n}`", this_is(n), "fill the hole with what its seat takes")
+    refusal(
+        "type.quote_hole",
+        at,
+        "a hole in ${seat_word(kind)} position takes ${takes_word(kind)}, found `${n}`",
+        this_is(n),
+        "fill the hole with what its seat takes",
+    )
 }
 
 fn unfillable(at: Loc?, n: string) -> Diag {
-    refusal("type.quote_hole", at, "a hole takes a template, a number, a name, a list of names or of templates, found `${n}`", this_is(n), "splice a `quote { … }` of it, or its name")
+    refusal(
+        "type.quote_hole",
+        at,
+        "a hole takes a template, a number, a name, a list of names or of templates, found `${n}`",
+        this_is(n),
+        "splice a `quote { … }` of it, or its name",
+    )
 }
 
 fn mixed_holes(at: Loc?) -> Diag {
-    refusal("type.quote_hole", at, "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree", "the quote", "give every hole the first's kind, or write the body around them")
+    refusal(
+        "type.quote_hole",
+        at,
+        "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree",
+        "the quote",
+        "give every hole the first's kind, or write the body around them",
+    )
 }
 
 fn seat_word(kind: HoleKind) -> string {
@@ -101,6 +165,9 @@ fn seat_word(kind: HoleKind) -> string {
         .Type -> "type",
         .Statement -> "statement",
         .Arm -> "arm",
+        .Run -> "run",
+        .Fields -> "field",
+        .Inits -> "record-field",
     }
 }
 
@@ -112,5 +179,259 @@ fn takes_word(kind: HoleKind) -> string {
         .Type -> "a `Type`, a `Field`'s or a `string` spelling",
         .Statement -> "`Code`, `Stmts` or `Decls`, or a list of them",
         .Arm -> "`Arms` or a `List<Arms>`",
+        .Run -> "a `List<Code>` — a call's arguments, a list literal's elements",
+        .Fields -> "`Decls` of `type _ = { … }` or `fn _(…)`, or a list of them",
+        .Inits -> "`Code` of a record literal `W { … }`, or a list of them",
     }
+}
+
+// ── the quote AS A PATTERN — a DIFFERENT law: a hole BINDS instead
+// of filling, so only a seat whose written text is a CHILD POSITION
+// rather than a scalar folded into its owner's identity can be held
+// open (core/quote_pat.av). Judged here too, never re-derived. ──
+
+/// The body is one node, no arms; every hole stands at a seat this
+/// matcher can hold open — an expression, a statement, or (2b) a
+/// LONE name seat — judged FIRST, since a malformed pattern is a
+/// defect whatever it is matched against. Then the subject: THIS
+/// COMPILER'S OWN `Code` handle. Every binder answers `Code`, unless
+/// every one of its occurrences is a name seat, which answers its
+/// own written `string` instead — first-occurrence order, and one
+/// binder used at seats of both kinds is refused before either type
+/// is picked.
+export fn quote_pat_types(mut cx: TypeCx, p: PatId, body: ExprId, expected: TypeId) -> List<TypeId> {
+    let root? = quote_pat_root(cx.view.store, body) else { return bad_shape(cx, p) }
+    let holes = quote_pat_holes(cx.view.store, body)
+    if is_run_kid(cx.view.store, root, holes) { return bare_run_root(cx, p) }
+    if quote_pat_adjacent_runs(cx.view.store, root, holes) { return adjacent_runs(cx, p) }
+    let reached = quote_pat_reached(cx.view.store, root)
+    let bad? = [k for k, h in holes if !reached.contains(k)].first() else { return bare_checked(cx, p, expected, holes) }
+    hole_seat_refused(cx, p, holes[bad])
+}
+
+/// Every hole stands at a position this matcher can hold open —
+/// reachability alone does not say the FILL there was a bare name
+/// (`\${1 + 1}` reaches the same expression seat `\${x}` does).
+fn bare_checked(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHole>) -> List<TypeId> {
+    let unnamed? = holes.find(it.name == null) else { return checked_names(cx, p, expected, holes) }
+    not_bare(cx, p)
+}
+
+fn checked_names(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHole>) -> List<TypeId> {
+    let names = quote_pat_names(holes)
+    let mixed? = names.find(quote_pat_mixed(holes, it)) else { return run_checked(cx, p, expected, holes, names) }
+    mixed_seat(cx, p, mixed)
+}
+
+/// A binder used once as a run and once bare answers no ONE shape —
+/// `checked_names`' own mixing check, over run-ness instead of
+/// text-vs-code.
+fn run_checked(
+    mut cx: TypeCx,
+    p: PatId,
+    expected: TypeId,
+    holes: List<QuoteHole>,
+    names: List<string>,
+) -> List<TypeId> {
+    let mixed? = names.find(quote_pat_run_mixed(holes, it)) else { return subject_types(cx, p, expected, holes, names) }
+    run_mixed_seat(cx, p, mixed)
+}
+
+fn subject_types(
+    mut cx: TypeCx,
+    p: PatId,
+    expected: TypeId,
+    holes: List<QuoteHole>,
+    names: List<string>,
+) -> List<TypeId> {
+    let d? = cx.view.decls.avrac_named("Code") else { return no_avrac(cx, p) }
+    let code_ty = cx.view.decls.self_type_of(d)
+    if cx.types_disagree(expected, code_ty) { return wrong_subject(cx, p, cx.view.types.name_of(expected)) }
+    let td? = cx.view.decls.avrac_named("TypeRef") else { return no_avrac(cx, p) }
+    let string_ty = cx.type(string)
+    let run_ty = cx.type(List<code_ty>)
+    let type_ty = cx.view.decls.self_type_of(td)
+    [binder_type(holes, n, string_ty, run_ty, type_ty, code_ty) for n in names]
+}
+
+/// One binder's answer: its own written text, a `List<Code>` for a
+/// run, its own written `TypeRef`, or `Code` — the four shapes a
+/// quote pattern's binder wears.
+fn binder_type(
+    holes: List<QuoteHole>,
+    n: string,
+    string_ty: TypeId,
+    run_ty: TypeId,
+    type_ty: TypeId,
+    code_ty: TypeId,
+) -> TypeId {
+    if quote_pat_is_text(holes, n) { return string_ty }
+    if quote_pat_is_run(holes, n) { return run_ty }
+    if quote_pat_is_type(holes, n) { return type_ty }
+    code_ty
+}
+
+fn hole_seat_refused(mut cx: TypeCx, p: PatId, bad: QuoteHole) -> List<TypeId> {
+    match bad.kind {
+        .Type -> unheld_type(cx, p),
+        .Arm or .Fields or .Inits -> unheld_seat(cx, p, bad.kind),
+        .Name or .Binder -> unheld_name(cx, p),
+        .Expression or .Statement or .Run -> not_bare(cx, p),
+    }
+}
+
+// ── voices, the pattern's own ──
+
+fn no_avrac(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_subj",
+                cx.pat_loc(p),
+                "a `quote` pattern reads code — this program does not load `@std/avrac`",
+                "this pattern",
+                "the handle arrives with `@std/avrac`",
+            ),
+        )
+    []
+}
+
+fn wrong_subject(mut cx: TypeCx, p: PatId, found: string) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_subj",
+                cx.pat_loc(p),
+                "a `quote` pattern reads code — a `Code`, found `${found}`",
+                this_is(found),
+                "match over a `Code` — the handle a rule holds",
+            ),
+        )
+    []
+}
+
+fn bad_shape(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_shape",
+                cx.pat_loc(p),
+                "a `quote` pattern matches one node — one statement, no arms",
+                "this pattern",
+                "write one pattern per node; a run of several arrives with `\${..}` holes",
+            ),
+        )
+    []
+}
+
+fn unheld_type(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_type",
+                cx.pat_loc(p),
+                "a hole in type position binds only its WHOLE field — a lone `\${T}`, nothing around it — at a `let`/`mut`/`const`'s own annotation, a call's one pinned type argument, or a param's own type",
+                "this pattern",
+                "write `\${T}` alone at one of those seats, or write the type out",
+            ),
+        )
+    []
+}
+
+fn unheld_seat(mut cx: TypeCx, p: PatId, kind: HoleKind) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_seat",
+                cx.pat_loc(p),
+                "a hole in ${seat_word(kind)} position binds nothing yet — this matcher has no position for one",
+                "this pattern",
+                "write it out whole — a hole cannot bind this position yet",
+            ),
+        )
+    []
+}
+
+fn unheld_name(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_seat",
+                cx.pat_loc(p),
+                "a hole in name position binds only its WHOLE field — a lone `\${x}`, nothing around it — at a let/for/const binder, a bind pattern, a variant test, a call's callee, a method or a field name",
+                "this pattern",
+                "write `\${x}` alone at one of those seats, or write the name out",
+            ),
+        )
+    []
+}
+
+fn mixed_seat(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_mixed",
+                cx.pat_loc(p),
+                "`${n}` binds code once and a name once — one binder answers one type",
+                "this pattern",
+                "give it a code seat everywhere, or a name seat everywhere",
+            ),
+        )
+    []
+}
+
+fn run_mixed_seat(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_mixed",
+                cx.pat_loc(p),
+                "`${n}` binds a run once and one node once — one binder answers one shape",
+                "this pattern",
+                "write `\${..${n}}` everywhere, or `\${${n}}` everywhere",
+            ),
+        )
+    []
+}
+
+fn adjacent_runs(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_run",
+                cx.pat_loc(p),
+                "two run holes with nothing between them — no scan can split them",
+                "this pattern",
+                "put a fixed node between them, or merge them into one run",
+            ),
+        )
+    []
+}
+
+fn bare_run_root(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_run",
+                cx.pat_loc(p),
+                "a run hole binds a span among siblings — this pattern is nothing but the run, with no node around it to hold one",
+                "this pattern",
+                "write a run inside a call's arguments, a list literal's elements, or a block's statements",
+            ),
+        )
+    []
+}
+
+fn not_bare(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_hole",
+                cx.pat_loc(p),
+                "a hole in a pattern names a fresh variable — write a bare name",
+                "this pattern",
+                "`\${x}` binds `x`; a written expression has nothing to bind it to",
+            ),
+        )
+    []
 }

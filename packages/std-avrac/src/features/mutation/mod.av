@@ -8,27 +8,25 @@
 //! break into a hole HIT, and a recovering NAME-headed branch would
 //! swallow every expression line.
 use features.{LanguageFeature, BuilderRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn mutation() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name          | build
-        "mut_stmt"    | build_mut
+        name       | build
+        "mut_stmt" | build_mut
     }
     let codes = table<DiagCode> {
-        kind                | id      | summary
-        "resolve.immutable" | "F3005" | "assignment needs a `mut` binding"
-        "resolve.place"     | "F3009" | "a mutation lands on a place — a name, a field, or an index"
+        kind                | summary
+        "resolve.immutable" | "assignment needs a `mut` binding"
+        "resolve.place"     | "a mutation lands on a place — a name, a field, or an index"
     }
-    component LanguageFeature f {
-        name = "mutation"
-        docs = "`mut <name>[: <type>] = <e>` declares a reassignable cell; `<place> = <e>` assigns — a name, a field, or an index rooted in a `mut` binding — accepted by the slot's type; `let` is deeply immutable."
-        gram = grammar {
+    LanguageFeature mutation {
+        gram: grammar {
             stmt = "mut" n:NAME ( ":" t:type )? "=" v:expression END @recover(sync_to: "END") -> mut_stmt(n, t, v)
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    mutation
 }

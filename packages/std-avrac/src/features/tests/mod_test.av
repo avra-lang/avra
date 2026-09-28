@@ -3,14 +3,24 @@
 // coherence cross-checks the tables against the composed grammar's
 // build calls.
 use @std.avrac.core.{new_node_store, Expr}
-use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use @std.avrac.features.{LangNode, LanguageFeature, BuilderRow, Builder, compose_grammar, dispatch, builder_defects, feature, no_grammar}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.avrac.features.{
+    LangNode,
+    LanguageFeature,
+    BuilderRow,
+    Builder,
+    compose_grammar,
+    dispatch,
+    builder_defects,
+    feature,
+    no_grammar,
+}
 
-fn build_a(mut b: Builder) -> Result<LangNode, string> {
+fn build_a(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.IntLit(b.args.length))
 }
 
-// LICENSED I23: conforms to a callback signature — the CONTRACT owns
+// LICENSED fns.dead_parameter: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
 fn build_b(b: Builder) -> Result<LangNode, string> {
     Result.Err("beta cannot build that")
@@ -69,10 +79,7 @@ fn fixture() -> List<LanguageFeature> {
         name   | build
         "mk_b" | build_b
     }
-    [
-        with_rows("alpha", alpha_gram(), alpha_rows()),
-        with_rows("beta", beta_gram(), beta_rows),
-    ]
+    [with_rows("alpha", alpha_gram(), alpha_rows()), with_rows("beta", beta_gram(), beta_rows)]
 }
 
 fn defects_for(feats: List<LanguageFeature>) -> List<string> {
@@ -115,26 +122,24 @@ spec "features/mod" {
         then "an unregistered build call names the gap and the search" {
             let no_rows: List<BuilderRow> = []
             let ds = defects_for([with_rows("solo", ghost_gram(), no_rows)])
-            ds.length == 1 &&
-                ds[0] == "no feature registers builder `ghost` (searched solo)"
+            ds.length == 1 && ds[0] == "no feature registers builder `ghost` (searched solo)"
         }
         then "a name registered twice names the prior owner" {
-            let ds = defects_for([
-                with_rows("alpha", alpha_gram(), alpha_rows()),
-                with_rows("alpha2", bare_gram(), alpha_rows()),
-            ])
-            ds.length == 1 &&
-                ds[0] == "builder `mk_a` is already registered by `alpha`"
+            let ds = defects_for(
+                [
+                    with_rows("alpha", alpha_gram(), alpha_rows()),
+                    with_rows("alpha2", bare_gram(), alpha_rows()),
+                ],
+            )
+            ds.length == 1 && ds[0] == "builder `mk_a` is already registered by `alpha`"
         }
         then "a builder no rule calls is dead" {
             let ds = defects_for([with_rows("alpha", uncalled_gram(), alpha_rows())])
-            ds.length == 1 &&
-                ds[0] == "builder `mk_a` is never called by any grammar rule"
+            ds.length == 1 && ds[0] == "builder `mk_a` is never called by any grammar rule"
         }
         then "a build call inside a group is seen" {
             let ds = defects_for([with_rows("alpha", grouped_gram(), alpha_rows())])
-            ds.length == 1 &&
-                ds[0] == "no feature registers builder `ghost` (searched alpha)"
+            ds.length == 1 && ds[0] == "no feature registers builder `ghost` (searched alpha)"
         }
         then "a name registered twice in one feature is caught" {
             let rows = table<BuilderRow> {
@@ -143,8 +148,7 @@ spec "features/mod" {
                 "mk_a" | build_b
             }
             let ds = defects_for([with_rows("alpha", alpha_gram(), rows)])
-            ds.length == 1 &&
-                ds[0] == "builder `mk_a` is already registered by `alpha`"
+            ds.length == 1 && ds[0] == "builder `mk_a` is already registered by `alpha`"
         }
     }
 }

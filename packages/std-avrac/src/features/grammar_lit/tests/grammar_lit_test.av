@@ -3,34 +3,127 @@
 // (`Prim.Lit`, `Rep.One`) and only a file inside a package can import
 // them — which is also why `shown`, over a lone source, can prove
 // only the refusals.
-use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use @std.avrac.testing.{refusals, refused_with}
 
 /// A grammar written the way a feature writes one.
 fn written() -> Grammar {
-    grammar {
-        stmt = "let" n:NAME "=" v:expression -> let_stmt(n, v)
-             | "{" body:stmt* "}" -> block(body)
-        expression = NAME -> ident()
+    Grammar {
+        name: "stmt",
+        start: "stmt",
+        rules: [
+            Rule {
+                name: "stmt",
+                body: Alt {
+                    branches: [
+                        Seq {
+                            items: [
+                                Item {
+                                    label: null,
+                                    prim: Prim.Lit("let"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                                Item {
+                                    label: "n",
+                                    prim: Prim.Named("NAME"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                                Item {
+                                    label: null,
+                                    prim: Prim.Lit("="),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                                Item {
+                                    label: "v",
+                                    prim: Prim.Ref("expression"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                            ],
+                            build: Build.Call("let_stmt", ["n", "v"]),
+                            recover: null,
+                        },
+                        Seq {
+                            items: [
+                                Item {
+                                    label: null,
+                                    prim: Prim.Lit("{"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                                Item {
+                                    label: "body",
+                                    prim: Prim.Ref("stmt"),
+                                    rep: Rep.Star,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                                Item {
+                                    label: null,
+                                    prim: Prim.Lit("}"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                            ],
+                            build: Build.Call("block", ["body"]),
+                            recover: null,
+                        },
+                    ],
+                },
+            },
+            Rule {
+                name: "expression",
+                body: Alt {
+                    branches: [
+                        Seq {
+                            items: [
+                                Item {
+                                    label: null,
+                                    prim: Prim.Named("NAME"),
+                                    rep: Rep.One,
+                                    expect: null,
+                                    head: false,
+                                    trailer: false,
+                                },
+                            ],
+                            build: Build.Call("ident", []),
+                            recover: null,
+                        },
+                    ],
+                },
+            },
+        ],
     }
 }
 
 fn prim_word(p: Prim) -> string {
     match p {
-        .Lit(t) -> "lit:${t}"
-        .Named(t) -> "named:${t}"
-        .Ref(t) -> "ref:${t}"
-        .Group(_) -> "group"
+        .Lit(t) -> "lit:${t}",
+        .Named(t) -> "named:${t}",
+        .Ref(t) -> "ref:${t}",
+        .Group(_) -> "group",
+        .NotChar(_) -> "not",
     }
 }
 
 fn rep_word(r: Rep) -> string {
-    match r {
-        .One -> "one"
-        .Star -> "star"
-        .Plus -> "plus"
-        .Opt -> "opt"
-    }
+    match r { .One -> "one", .Star -> "star", .Plus -> "plus", .Opt -> "opt" }
 }
 
 fn first_branch() -> Seq {
@@ -70,8 +163,8 @@ spec "features/grammar_lit — the DSL, read at compile time" {
         }
         then "the build keeps its name and its arguments" {
             match first_branch().build! {
-                .Call(name, args) -> name == "let_stmt" && args.length == 2
-                .Var(_) or .Node(_, _, _, _) -> false
+                .Call(name, args) -> name == "let_stmt" && args.length == 2,
+                .Var(_) or .Node(_, _, _, _) -> false,
             }
         }
     }
@@ -87,8 +180,8 @@ spec "features/grammar_lit — the DSL, read at compile time" {
         then "the grammar is refused where it is WRITTEN, not where it is used" {
             refused_with("let g = grammar {\n= = =\n}\n1", "the grammar does not parse")
         }
-        then "an unclosed block is named by the lexer, and the parse adds its two" {
-            refusals("let g = grammar {\na = \"x\" -> f()\n1") == 3
+        then "an unclosed block is named by the lexer, and the parse adds one" {
+            refusals("let g = grammar {\na = \"x\" -> f()\n1") == 2
         }
     }
 }

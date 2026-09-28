@@ -1,0 +1,25 @@
+// The voice a refused hold speaks (compiler/derive.av): the law on one
+// line, the held attempt's own words set apart under it — so a fallback
+// that WORKED does not read as a crash.
+use compiler.{hold_refusal}
+
+fn law_line() -> string {
+    "avra: the hold was refused — the kept results for this program are stale, so it is built from its sources instead. Under the hold it said:"
+}
+
+spec "compiler/derive — the refused hold's voice" {
+    given "a held attempt that said something under the hold" {
+        then "the law leads on one line, and the attempt's words follow indented" {
+            hold_refusal("error[x]: boom\n  detail") == "${law_line()}\n    error[x]: boom\n      detail"
+        }
+        then "a blank line inside the detail stays blank, with no trailing spaces" {
+            hold_refusal("a\n\nb").contains("    a\n\n    b")
+        }
+        then "the first line carries the phrase tools/cache_attacks.sh and tools/hold_sweep.sh grep for" {
+            hold_refusal("x").starts_with("avra: the hold was refused")
+        }
+        then "the line right after the phrase is the attempt's first line, which cache_attacks.sh quotes" {
+            hold_refusal("first\nsecond").split("\n")[1] == "    first"
+        }
+    }
+}

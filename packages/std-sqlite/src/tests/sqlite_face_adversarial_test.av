@@ -1,0 +1,312 @@
+// The red team's record for the ERGONOMIC FACE (`sql.av`) — the values
+// that cross it, rather than the wall's own protocol (already covered
+// by the statement/connection adversarial suites).
+use @std.sqlite.open.{Db}
+use @std.sqlite.error.{SqlError}
+use @std.sqlite.sql.{sql, Row, SqlValue}
+
+fn fadv_db() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    db.run(sql("create table t (v)"))?
+    db
+}
+
+fn fadv_kind<T>(r: Result<T, SqlError>) -> string {
+    match r { .Ok(_) -> "", .Err(e) -> e.cause.kind() }
+}
+
+spec "std/sqlite face adversarial" {
+    given "the empty triple, written through BIND rather than a literal" {
+        // The pending face suite proves this reading LITERAL SQL
+        // (`''`, `x''`, `null`); a bound `.Text("")`/`.Blob(...)`/`.Null`
+        // is a DIFFERENT code path (`bind_text`/`bind_blob_bytes`/
+        // `bind_null`) and the empty-value law says to write the empty
+        // case first for every representation that crosses.
+        then "a bound null reads back as null" { fadv_class_via_bind(.Null) == "null" }
+        then "a bound empty string reads back as text, not absence" { fadv_class_via_bind(.Text("")) == "text" }
+        then "a bound empty blob reads back as a blob, not absence" { fadv_class_via_bind(.Blob("".bytes())) == "blob" }
+    }
+    given "a blob that is not valid UTF-8, bound and read back" {
+
+        // `bind_blob_bytes` exists precisely because a face taking `string`
+        // could never carry this: 0xFF is not a UTF-8 lead byte anywhere.
+        then "its octets round-trip exactly" { fadv_blob_length([255, 254, 0, 128]) == 4 }
+        then "reading it as text refuses by class, not by decoding" { fadv_read_as_text([255, 254]) == "sqlite.mismatch" }
+    }
+    given "text with multi-byte UTF-8, bound and read back" {
+
+        then "an emoji's bytes and its .length agree" { fadv_text_round_trip("héllo 🎉 wörld") }
+    }
+    given "a Sql's argument count against the statement's slots" {
+
+        // `Cause.Unfilled` exists for exactly this and was unused until
+        // this face; a bind loop that ran anyway would bind past the end
+        // or leave slots NULL by accident, silently.
+        then "too few arguments are refused before anything binds" { fadv_run_kind("update t set v = ? where v = ?", []) == "sqlite.unfilled" }
+        then "too many arguments are refused the same way" { fadv_run_kind("insert into t (v) values (?)", [.Int(1), .Int(2)]) == "sqlite.unfilled" }
+        then "the right count runs clean" { fadv_run_kind("insert into t (v) values (?)", [.Int(1)]) == "" }
+    }
+    given "a column index outside the row, asked through the face" {
+
+        then "a negative index is refused, not read as the last column" { fadv_kind(fadv_row_int(-1)) == "sqlite.out_of_row" }
+        then "a negative index into text is refused the same way" { fadv_kind(fadv_row_text(-1)) == "sqlite.out_of_row" }
+    }
+    given "a Row, after the statement that made it moves on" {
+
+        // `Row` is documented as a copy taken before the statement steps,
+        // resets or finalizes again — this is the claim, exercised.
+        then "its values survive the statement finalizing" { fadv_row_survives_finalize() == "7|seven" }
+        then "its values survive an unrelated later query on the same db" { fadv_row_survives_reuse() == "7|seven" }
+    }
+    given "a query answering no rows, through every multi-row verb" {
+
+        then "`all` answers the empty list, not a refusal" { fadv_all_count("select v from t where 0") == 0 }
+        then "`first` answers absence, not a refusal" { fadv_first_absent("select v from t where 0") }
+    }
+    given "one `Sql` value, run more than once" {
+
+        // Binding is a property of the CALL (`prepared` re-binds fresh
+        // every time), never of the `Sql` value — so the same value runs
+        // twice with no "already bound" state to trip over.
+        then "the same Sql value runs clean twice in a row" { fadv_run_twice() == "1|1" }
+    }
+    given "the connection's statement cache, exercised rather than assumed" {
+
+        // The cache reuses ONE compiled statement across many calls —
+        // fifty inserts through the same text, each with its own bound
+        // value. A two-call test cannot tell a correct rebind from a
+        // reset that silently kept the FIRST call's binding; fifty
+        // distinct values, read back in order, can.
+        then "fifty inserts through one cached statement all land, in order" { fadv_cache_write_order() == "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49" }
+        // The read side of the same claim: fifty lookups through one
+        // cached SELECT, each asking for a different value, each
+        // answering ITS OWN — never a neighbour's, which is what a
+        // rebind that missed a slot would produce.
+        then "fifty reads through one cached statement each answer their own value" { fadv_cache_read_each() }
+        // A statement that FAILED mid-execution — a UNIQUE violation —
+        // is still sitting in the cache afterwards; the next call for
+        // the same text must find it usable, not wedged in the failed
+        // call's state.
+        then "a cached statement that just failed a UNIQUE check runs clean next time" { fadv_cache_after_failure() == "err|ok|ok" }
+        // The slot-count guard reads `slots()` fresh every call — a
+        // cache hit must not let a wrong argument count through just
+        // because the statement was seen before.
+        then "the wrong argument count is still refused on a statement the cache already holds" { fadv_cache_wrong_arity() == "sqlite.unfilled" }
+        // Two spellings of one query that differ only by whitespace and
+        // a trailing comment are two DIFFERENT map keys — no sharing,
+        // and each pays its own prepare, but both still run correctly.
+        then "texts differing by whitespace are cached separately and both still work" { fadv_cache_whitespace_variants() == "1|1" }
+    }
+}
+
+/// Fifty inserts through the SAME `Sql` text (the cache's one entry),
+/// each with a different bound value; the values read back, in
+/// insertion order, joined by a comma.
+fn fadv_cache_write_order() -> string {
+    fadv_cache_write_order_or() catch "?"
+}
+
+fn fadv_cache_write_order_or() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let ins = sql("insert into t (v) values (?)")
+    for i in 0..50 {
+        let _ = db.run(ins.args([.Int(i)]))?
+    }
+    let rows = db.all(sql("select v from t order by rowid"))?
+    ["${row.int(0)?}" for row in rows].join(",")
+}
+
+/// Fifty lookups through one cached SELECT, each asking for a distinct
+/// value already written — a stale rebind would answer a neighbour's
+/// value instead of the one just asked for.
+fn fadv_cache_read_each() -> bool {
+    fadv_cache_read_each_or() catch false
+}
+
+fn fadv_cache_read_each_or() -> Result<bool, SqlError> {
+    mut db = fadv_db()?
+    let ins = sql("insert into t (v) values (?)")
+    for i in 0..50 {
+        let _ = db.run(ins.args([.Int(i)]))?
+    }
+    let sel = sql("select v from t where v = ?")
+    for i in 0..50 {
+        let row = db.one(sel.args([.Int(i)]))?
+        if row.int(0)? != i { return false }
+    }
+    true
+}
+
+/// A UNIQUE-constrained insert: the same cached statement fails once
+/// (the duplicate) and then succeeds twice more (fresh values) —
+/// `err|ok|ok`, or the kind of whichever call broke that shape.
+fn fadv_cache_after_failure() -> string {
+    fadv_cache_after_failure_or() catch "?"
+}
+
+fn fadv_cache_after_failure_or() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    db.run(sql("create table u (v unique)"))?
+    let ins = sql("insert into u (v) values (?)")
+    let _ = db.run(ins.args([.Int(1)]))?
+    let first = fadv_outcome_word(db.run(ins.args([.Int(1)])))
+    let second = fadv_outcome_word(db.run(ins.args([.Int(2)])))
+    let third = fadv_outcome_word(db.run(ins.args([.Int(3)])))
+    "${first}|${second}|${third}"
+}
+
+fn fadv_outcome_word(r: Result<int, SqlError>) -> string { if fadv_kind(r).is_empty() { "ok" } else { "err" } }
+
+/// A statement the cache already holds, called next with the wrong
+/// number of arguments — refused the same way a fresh `prepare` would
+/// refuse it, or the kind IS the refusal and the call before it is
+/// empty when it ran clean.
+fn fadv_cache_wrong_arity() -> string {
+    fadv_cache_wrong_arity_or() catch "?"
+}
+
+fn fadv_cache_wrong_arity_or() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let ins = sql("insert into t (v) values (?)")
+    let _ = db.run(ins.args([.Int(1)]))?
+    fadv_kind(db.run(ins.args([])))
+}
+
+/// Two texts naming the same insert, one with a trailing comment —
+/// different cache keys, both still run and both still write their row.
+fn fadv_cache_whitespace_variants() -> string {
+    fadv_cache_whitespace_variants_or() catch "?|?"
+}
+
+fn fadv_cache_whitespace_variants_or() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let a = db.run(sql("insert into t (v) values (?)").args([.Int(1)]))?
+    let b = db.run(sql("insert into t (v) values (?) -- note").args([.Int(2)]))?
+    "${a}|${b}"
+}
+
+fn fadv_class_via_bind(v: SqlValue) -> string {
+    fadv_class_of(fadv_written(v))
+}
+
+fn fadv_written(v: SqlValue) -> Result<Row, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql("insert into t (v) values (?)").args([v]))?
+    db.one(sql("select v from t"))
+}
+
+fn fadv_class_of(r: Result<Row, SqlError>) -> string {
+    match r { .Err(e) -> e.cause.kind(), .Ok(row) -> row.class().name() }
+}
+
+fn fadv_blob_length(octets: List<int>) -> int {
+    match fadv_blob_row(octets) { .Err(_) -> 0 - 1, .Ok(row) -> fadv_blob_len_of(row) }
+}
+
+fn fadv_blob_len_of(row: Row) -> int {
+    match row.values[0] { .Blob(b) -> b.length, _ -> 0 - 1 }
+}
+
+fn fadv_blob_row(octets: List<int>) -> Result<Row, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql("insert into t (v) values (?)").args([.Blob(octets.bytes()!)]))?
+    db.one(sql("select v from t"))
+}
+
+fn fadv_read_as_text(octets: List<int>) -> string {
+    fadv_kind(fadv_text_of_blob(octets))
+}
+
+fn fadv_text_of_blob(octets: List<int>) -> Result<string, SqlError> {
+    (fadv_blob_row(octets)?).text(0)
+}
+
+fn fadv_text_round_trip(s: string) -> bool {
+    (fadv_text_read_back(s) catch "") == s
+}
+
+fn fadv_text_read_back(s: string) -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql("insert into t (v) values (?)").args([.Text(s)]))?
+    (db.one(sql("select v from t"))?).text(0)
+}
+
+fn fadv_run_kind(text: string, args: List<SqlValue>) -> string {
+    fadv_kind(fadv_run_with(text, args))
+}
+
+fn fadv_run_with(text: string, args: List<SqlValue>) -> Result<int, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql(text).args(args))
+}
+
+fn fadv_row_int(i: int) -> Result<int, SqlError> {
+    (fadv_one_row("select v from t")?).int(i)
+}
+
+fn fadv_row_text(i: int) -> Result<string, SqlError> {
+    (fadv_one_row("select v from t")?).text(i)
+}
+
+fn fadv_one_row(text: string) -> Result<Row, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql("insert into t (v) values (7)"))?
+    db.one(sql(text))
+}
+
+fn fadv_row_survives_finalize() -> string {
+    match fadv_seeded_row() { .Err(_) -> "?", .Ok(row) -> fadv_row_words(row) }
+}
+
+fn fadv_seeded_row() -> Result<Row, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql("create table u (n integer, w text)"))?
+    db.run(sql("insert into u (n, w) values (?, ?)").args([.Int(7), .Text("seven")]))?
+    db.one(sql("select n, w from u"))
+}
+
+fn fadv_row_words(row: Row) -> string {
+    let n = row.int(0) catch 0 - 1
+    let w = row.text(1) catch "?"
+    "${n}|${w}"
+}
+
+fn fadv_row_survives_reuse() -> string {
+    match fadv_seeded_row_and_db() { .Err(_) -> "?", .Ok(row) -> fadv_row_words(row) }
+}
+
+fn fadv_seeded_row_and_db() -> Result<Row, SqlError> {
+    mut db = fadv_db()?
+    db.run(sql("create table u (n integer, w text)"))?
+    db.run(sql("insert into u (n, w) values (?, ?)").args([.Int(7), .Text("seven")]))?
+    let row = db.one(sql("select n, w from u"))?
+    db.run(sql("create table other (z)"))?
+    let _ = db.run(sql("insert into other (z) values (1)"))?
+    row
+}
+
+fn fadv_all_count(text: string) -> int {
+    match fadv_all_rows(text) { .Err(_) -> 0 - 1, .Ok(rows) -> rows.length }
+}
+
+fn fadv_all_rows(text: string) -> Result<List<Row>, SqlError> {
+    (fadv_db()?).all(sql(text))
+}
+
+fn fadv_first_absent(text: string) -> bool {
+    (fadv_first_row(text) catch null) == null
+}
+
+fn fadv_first_row(text: string) -> Result<Row?, SqlError> {
+    (fadv_db()?).first(sql(text))
+}
+
+fn fadv_run_twice() -> string { fadv_twice() catch "?" }
+
+fn fadv_twice() -> Result<string, SqlError> {
+    mut db = fadv_db()?
+    let statement = sql("insert into t (v) values (1)")
+    let first = db.run(statement)?
+    let second = db.run(statement)?
+    "${first}|${second}"
+}

@@ -1,0 +1,108 @@
+// The RED TEAM's permanent record for NAMED ERROR UNIONS —
+// `Result<T, A or B>`, `fail`, `?` propagation, and the `catch`
+// member-bind form. Every program here was written to BREAK the
+// feature, not to use it.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refusals, refused_with}
+
+/// `refused_with`'s twin for a bad ARM beside a GOOD one: the bad
+/// arm's own refusal cascades a second — coverage is short one
+/// member, since the bad arm never joined it — so the count here is
+/// two, never one.
+fn refused_with_cascade(source: string, phrase: string) -> bool {
+    let a = analyze_source(source)
+    a.diagnostics.length == 2 && a.report().contains(phrase)
+}
+
+spec "features/results: error unions (adversarial)" {
+    given "`fail` against a union err side" {
+        then "a value outside the set refuses, naming both sides" {
+            refused_with(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nenum C {\n    C\n}\nfn f() -> Result<int, A or B> {\n    fail C.C\n}\nf()",
+                "`fail` raises a `A or B`, this is `C`",
+            )
+        }
+        then "a member of the set is accepted" {
+            refusals(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf()",
+            ) == 0
+        }
+    }
+    given "`catch` naming a member" {
+        then "a name that is no type at all refuses" {
+            refused_with_cascade(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf() catch {\n    e: A -> 1\n    e: Nope -> 2\n}",
+                "`Nope` names no member",
+            )
+        }
+        then "a real type that is not a member of THIS union refuses" {
+            refused_with_cascade(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nenum C {\n    C\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf() catch {\n    e: A -> 1\n    e: C -> 2\n}",
+                "`C` names no member of `A or B`",
+            )
+        }
+        then "a member named twice refuses" {
+            refused_with_cascade(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf() catch {\n    e: A -> 1\n    e2: A -> 2\n}",
+                "`A` is named twice",
+            )
+        }
+        then "a selective catch at the top level names what is left uncarried" {
+            refused_with(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf() catch e: A -> -1",
+                "promise `Result<_, B>`",
+            )
+        }
+        then "naming every member recovers TOTAL, no diagnostics" {
+            refusals(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nlet v = f() catch {\n    e: A -> 1\n    e: B -> 2\n}\nv",
+            ) == 0
+        }
+        then "a catch-all still binds the whole error, unchanged" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf() catch e -> 9",
+            ) == "9"
+        }
+        then "an arm's answer still answers the OK side, not the error's own type" {
+            refused_with(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nf() catch {\n    e: A -> e\n    e: B -> 2\n}",
+                "answers the ok side",
+            )
+        }
+    }
+    given "`?` propagation across a union promise" {
+        then "a plain error widens into a union that names it" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A> {\n    fail A.A\n}\nfn g() -> Result<int, A or B> {\n    f()?\n}\ng() catch {\n    e: A -> 1\n    e: B -> 2\n}",
+            ) == "1"
+        }
+        then "the LIFT tells members apart — a plain B propagated the same way is not read as A" {
+            shown(
+                "enum A {\n    A\n}\ntype B = { n: int }\nfn f() -> Result<int, B> {\n    fail B { n: 7 }\n}\nfn g() -> Result<int, A or B> {\n    f()?\n}\ng() catch {\n    e: A -> -1\n    e: B -> e.n\n}",
+            ) == "7"
+        }
+        then "a narrower union widens into a wider one with no repack needed" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nenum C {\n    C\n}\nfn f() -> Result<int, A or B> {\n    fail B.B\n}\nfn g() -> Result<int, A or B or C> {\n    f()?\n}\ng() catch {\n    e: A -> 1\n    e: B -> 2\n    e: C -> 3\n}",
+            ) == "2"
+        }
+        then "a promise missing a raised member refuses, naming both sides" {
+            refused_with(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nenum C {\n    C\n}\nfn f() -> Result<int, A or B> {\n    fail A.A\n}\nfn g() -> Result<int, A or C> {\n    f()?\n}\ng()",
+                "the failures disagree",
+            )
+        }
+    }
+    given "order and shape" {
+        then "`A or B` and `B or A` are ONE type — propagation between them needs no catch at all" {
+            shown(
+                "enum A {\n    A\n}\nenum B {\n    B\n}\nfn f() -> Result<int, A or B> {\n    3\n}\nfn g() -> Result<int, B or A> {\n    f()?\n}\nmatch g() {\n    .Ok(v) -> v,\n    .Err(_) -> 0,\n}",
+            ) == "3"
+        }
+        then "a repeated member in one written union collapses — `A or A` is just `A`, so the ORDINARY enum dot-form still catches it (a real union would refuse a bare dot arm)" {
+            shown(
+                "enum A {\n    A\n}\nfn f() -> Result<int, A or A> {\n    fail A.A\n}\nf() catch .A -> 5",
+            ) == "5"
+        }
+    }
+}

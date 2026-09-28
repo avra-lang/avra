@@ -3,14 +3,14 @@
 use core.{Expr, Annotation, Mark, Scoped}
 use features.{LangNode, Builder}
 
-fn build_annotated(mut b: Builder) -> Result<LangNode, string> {
+fn build_annotated(b: Builder) -> Result<LangNode, string> {
     let name = b.token(0)?
     let args = b.exprs(1)?
     let d = b.stmt(2)?
     // the token carries its `@`; the callee is the name behind it
     let word = name.text.substring(1, name.text.length)
     let callee = b.store.alloc_expr(Expr.Ident(Scoped(word)), name.span)
-    b.store.annotate(d, Annotation { name: word, callee: callee, args: args, span: b.span })
+    b.store.annotate_before(d, Annotation { name: word, callee: callee, args: args, span: b.span })
     .Ok(LangNode.NStmt(d))
 }
 
@@ -20,5 +20,14 @@ fn build_annotated(mut b: Builder) -> Result<LangNode, string> {
 fn build_mark(b: Builder) -> Result<LangNode, string> {
     let word = b.token(0)?
     // the token carries its `@`; the mark is the word behind it
-    .Ok(LangNode.NMark(Mark { name: word.text.substring(1, word.text.length), args: [g.text for g in b.tokens(1)?], span: b.span ?? word.span }))
+    .Ok(
+        LangNode
+            .NMark(
+                Mark {
+                    name: word.text.substring(1, word.text.length),
+                    args: [g.text for g in b.tokens(1)?],
+                    span: b.span ?? word.span,
+                },
+            ),
+    )
 }

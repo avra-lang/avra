@@ -36,133 +36,142 @@
 //! database is not corrupted. That is SQLITE's guarantee and not this
 //! driver's, which is why it is written down with the numbers rather
 //! than trusted.
-use error.{Cause, SqlError, refused, barred}
-use open.{Db, closed_fault}
+use error.{Cause, SqlError, barred}
+use open.{Db}
 use stmt.{run}
 use c.{sqlite3_get_autocommit}
 
-/// Whether a transaction is open on this connection. SQLite's own
-/// answer — `sqlite3_get_autocommit` is zero inside one — so no flag of
-/// ours can drift from the truth.
-///
-/// A CLOSED CONNECTION IS IN NO TRANSACTION, and the null test is what
-/// says so, because C will not. `sqlite3_get_autocommit` answers 0 for a
-/// handle it refuses (`SQLITE_ENABLE_API_ARMOR`, sqlite3.c:191346) and 0
-/// is also its answer for a connection INSIDE one: the misuse path
-/// SPENDS the value the real answer needs. Read through, every guard in
-/// this module inverts on a closed handle — `begin` answered "a
-/// transaction is already open on this connection" about a connection
-/// that was gone, and `finish` answered 0, its word for "nothing was
-/// open", to a cleanup path that had cleaned up nothing.
-export fn in_transaction(db: Db) -> bool {
-    if db.raw.get() == null { return false }
-    sqlite3_get_autocommit(db.raw.get()) == 0
-}
+impl Db {
+    /// Whether a transaction is open on this connection. SQLite's own
+    /// answer — `sqlite3_get_autocommit` is zero inside one — so no flag
+    /// of ours can drift from the truth.
+    ///
+    /// A CLOSED CONNECTION IS IN NO TRANSACTION, and the null test is
+    /// what says so, because C will not. `sqlite3_get_autocommit`
+    /// answers 0 for a handle it refuses (`SQLITE_ENABLE_API_ARMOR`,
+    /// sqlite3.c:191346) and 0 is also its answer for a connection
+    /// INSIDE one: the misuse path SPENDS the value the real answer
+    /// needs. Read through, every guard in this module inverts on a
+    /// closed handle — `begin` answered "a transaction is already open
+    /// on this connection" about a connection that was gone, and
+    /// `finish` answered 0, its word for "nothing was open", to a
+    /// cleanup path that had cleaned up nothing.
+    fn in_transaction() -> bool {
+        if self.raw.get() == null { return false }
+        sqlite3_get_autocommit(self.raw.get()) == 0
+    }
 
-/// A WRITE transaction begun. Takes the write lock now, so a busy
-/// database is a wait at the start rather than a stale-snapshot failure
-/// in the middle.
-export fn begin(db: Db) -> Result<int, SqlError> { started(db, "begin immediate") }
+    /// A WRITE transaction begun. Takes the write lock now, so a busy
+    /// database is a wait at the start rather than a stale-snapshot
+    /// failure in the middle.
+    fn begin() -> Result<int, SqlError> { started(self, "begin immediate") }
 
-/// A READ transaction begun — deferred, taking no lock until the first
-/// statement. Correct for a connection that only reads, and wrong for
-/// one that might write, which is why it says `read` in its name.
-export fn begin_read(db: Db) -> Result<int, SqlError> { started(db, "begin deferred") }
+    /// A READ transaction begun — deferred, taking no lock until the
+    /// first statement. Correct for a connection that only reads, and
+    /// wrong for one that might write, which is why it says `read` in
+    /// its name.
+    fn begin_read() -> Result<int, SqlError> { started(self, "begin deferred") }
 
-/// The work kept.
-///
-/// A FAILED COMMIT MAY LEAVE THE TRANSACTION OPEN, and which failures do
-/// is not a caller's to remember. `SQLITE_BUSY` — another connection
-/// reading while this one tries to promote — is answered with the
-/// transaction STILL STANDING, measured:
-///
-/// ```
-/// commit under a standing reader   sqlite.busy: database is locked
-///   still in a transaction?        true
-///   finish afterwards              1     <- there was one to roll back
-/// ```
-///
-/// while a constraint failure, a full disk and an I/O error have already
-/// rolled back by the time they answer. So a caller who catches this
-/// calls `finish`, which asks autocommit and sends the right verb or
-/// none. Carrying on instead leaves a write transaction holding the
-/// database for the life of the connection, and every later write joins
-/// work the caller believes was ended.
-export fn commit(db: Db) -> Result<int, SqlError> {
-    let _ = barred(closed_fault(db))?
-    if !in_transaction(db) { fail nothing_to_keep }
-    run(db, "commit")
-}
+    /// The work kept.
+    ///
+    /// A FAILED COMMIT MAY LEAVE THE TRANSACTION OPEN, and which failures
+    /// do is not a caller's to remember. `SQLITE_BUSY` — another
+    /// connection reading while this one tries to promote — is answered
+    /// with the transaction STILL STANDING, measured:
+    ///
+    /// ```
+    /// commit under a standing reader   sqlite.busy: database is locked
+    ///   still in a transaction?        true
+    ///   finish afterwards              1     <- there was one to roll back
+    /// ```
+    ///
+    /// while a constraint failure, a full disk and an I/O error have
+    /// already rolled back by the time they answer. So a caller who
+    /// catches this calls `finish`, which asks autocommit and sends the
+    /// right verb or none. Carrying on instead leaves a write
+    /// transaction holding the database for the life of the connection,
+    /// and every later write joins work the caller believes was ended.
+    fn commit() -> Result<int, SqlError> {
+        let _ = barred(self.closed_fault())?
+        if !self.in_transaction() { fail nothing_to_keep }
+        run(self, "commit")
+    }
 
-/// The work thrown away. Answers nothing when no transaction is open,
-/// because a rollback of nothing is what a caller means when they are
-/// cleaning up after a failure they did not cause.
-export fn rollback(db: Db) -> Result<int, SqlError> {
-    if !in_transaction(db) { return 0 }
-    run(db, "rollback")
-}
+    /// The work thrown away. Answers nothing when no transaction is
+    /// open, because a rollback of nothing is what a caller means when
+    /// they are cleaning up after a failure they did not cause.
+    fn rollback() -> Result<int, SqlError> {
+        if !self.in_transaction() { return 0 }
+        run(self, "rollback")
+    }
 
-/// A transaction begun only if one is not already open. Answers whether
-/// it opened one, and `finish_if_opened` is what that answer is FOR —
-/// an inner scope that ends a transaction it was handed rolls back its
-/// caller's work with nothing reporting it.
-export fn begin_unless_open(db: Db) -> Result<bool, SqlError> {
-    if in_transaction(db) { return false }
-    let _ = begin(db)?
-    true
-}
+    /// A transaction begun only if one is not already open. Answers
+    /// whether it opened one, and `finish_if_opened` is what that
+    /// answer is FOR — an inner scope that ends a transaction it was
+    /// handed rolls back its caller's work with nothing reporting it.
+    fn begin_unless_open() -> Result<bool, SqlError> {
+        if self.in_transaction() { return false }
+        let _ = self.begin()?
+        true
+    }
 
-/// THE CLEANUP THAT CANNOT SEND THE WRONG VERB. Ends whatever is open,
-/// or does nothing when nothing is — so a failure path calls this and
-/// never has to know whether the commit got far enough to have already
-/// rolled back.
-///
-/// This is the shape T69 asks for: ASK AUTOCOMMIT FIRST, and never let
-/// a "cannot rollback" message replace the real error a caller was
-/// about to be told.
-export fn finish(db: Db) -> int {
-    if !in_transaction(db) { return 0 }
-    rolled_back(db)
-}
+    /// THE CLEANUP THAT CANNOT SEND THE WRONG VERB. Ends whatever is
+    /// open, or does nothing when nothing is — so a failure path calls
+    /// this and never has to know whether the commit got far enough to
+    /// have already rolled back.
+    ///
+    /// This is the shape T69 asks for: ASK AUTOCOMMIT FIRST, and never
+    /// let a "cannot rollback" message replace the real error a caller
+    /// was about to be told.
+    fn finish() -> int {
+        if !self.in_transaction() { return 0 }
+        rolled_back(self)
+    }
 
-/// THE CLEANUP FOR A SCOPE THAT MAY NOT OWN THE TRANSACTION — the other
-/// half of `begin_unless_open`, and what makes its answer a value rather
-/// than advice.
-///
-/// `finish` ends WHATEVER is open, which is right for the driver that
-/// owns the connection and wrong for a nested helper. Measured, with the
-/// helper cleaning up through `finish`:
-///
-/// ```
-/// inner opened one?        false
-/// inner called finish      1        <- it rolled back its CALLER's work
-/// outer still open?        false
-/// a later write            Ok(1)    <- and ran in autocommit, silently
-/// ```
-///
-/// No error is raised anywhere along that path: the outer scope's
-/// transaction becomes a run of independent auto-committed writes, and
-/// its own `commit` then finds nothing to keep.
-export fn finish_if_opened(db: Db, opened: bool) -> int {
-    if !opened { return 0 }
-    finish(db)
-}
-
-fn rolled_back(db: Db) -> int {
-    match rollback(db) {
-        .Ok(n) -> n,
-        .Err(_) -> 0,
+    /// THE CLEANUP FOR A SCOPE THAT MAY NOT OWN THE TRANSACTION — the
+    /// other half of `begin_unless_open`, and what makes its answer a
+    /// value rather than advice.
+    ///
+    /// `finish` ends WHATEVER is open, which is right for the driver
+    /// that owns the connection and wrong for a nested helper. Measured,
+    /// with the helper cleaning up through `finish`:
+    ///
+    /// ```
+    /// inner opened one?        false
+    /// inner called finish      1        <- it rolled back its CALLER's work
+    /// outer still open?        false
+    /// a later write            Ok(1)    <- and ran in autocommit, silently
+    /// ```
+    ///
+    /// No error is raised anywhere along that path: the outer scope's
+    /// transaction becomes a run of independent auto-committed writes,
+    /// and its own `commit` then finds nothing to keep.
+    fn finish_if_opened(opened: bool) -> int {
+        if !opened { return 0 }
+        self.finish()
     }
 }
 
+fn rolled_back(db: Db) -> int {
+    match db.rollback() { .Ok(n) -> n, .Err(_) -> 0 }
+}
+
 fn started(db: Db, sql: string) -> Result<int, SqlError> {
-    let _ = barred(closed_fault(db))?
-    if in_transaction(db) { fail already_open }
+    let _ = barred(db.closed_fault())?
+    if db.in_transaction() { fail already_open }
     run(db, sql)
 }
 
 // ── The voices ──────────────────────────────────────────────────
 
-const nothing_to_keep: SqlError = refused(Cause.NoTransaction, "`commit` found no transaction open — either none was begun, or the database ended it under you after the error it already reported")
+const nothing_to_keep: SqlError = SqlError
+    .refused(
+        Cause.NoTransaction,
+        "`commit` found no transaction open — either none was begun, or the database ended it under you after the error it already reported",
+    )
 
-const already_open: SqlError = refused(Cause.TransactionOpen, "a transaction is already open on this connection — nesting wants a savepoint, which is a later slice")
+const already_open: SqlError = SqlError
+    .refused(
+        Cause.TransactionOpen,
+        "a transaction is already open on this connection — nesting wants a savepoint, which is a later slice",
+    )

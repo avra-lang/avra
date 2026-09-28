@@ -3,7 +3,8 @@
 //! builds one; reads ride the spine's postfix ladder (`p.x`).
 //! `type Name = <type>` declares a NAMED TYPE over a shape — always
 //! DISTINCT from it, never an alias; `Name(v)` wraps and `v.of`
-//! reads the shape back, free at runtime. ONE `stmt` rule carries both
+//! reads the shape back, free at runtime. `alias Name = <type>` is
+//! the other door: a SHORTHAND, the same type under a second name. ONE `stmt` rule carries both
 //! forms as an ordered choice, so one keyword claim and one
 //! recovery stand where two branches on `type` could not.
 //! Fields are scalars until ownership analysis covers managed
@@ -11,38 +12,41 @@
 //! spine's bare NAME; a non-literal brace falls through by
 //! backtracking, so conditions like `if x { ... }` stay whole.
 use features.{LanguageFeature, BuilderRow, PropertyRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use features.structs.{index_compared}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn structs() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name          | build
-        "type_decl"   | build_type_decl
-        "struct_lit"  | build_struct_lit
+        name         | build
+        "type_decl"  | build_type_decl
+        "alias_decl" | build_alias_decl
+        "struct_lit" | build_struct_lit
     }
     let codes = table<DiagCode> {
-        kind                     | id      | summary
-        "resolve.duplicate_type" | "F3006" | "two types share one name"
-        "type.struct_scalar"     | "F2008" | "a struct field holds a value"
-        "type.duplicate_field"   | "F2009" | "a struct's fields have distinct names"
-        "type.struct_fields"     | "F2010" | "a literal provides each declared field exactly once"
-        "type.with_struct"       | "F2011" | "`with` copies a struct value"
-        "type.named"             | "F2083" | "a named type stands over one written shape"
+        kind                     | summary
+        "resolve.duplicate_type" | "two types share one name"
+        "type.struct_scalar"     | "a struct field holds a value"
+        "type.duplicate_field"   | "a struct's fields have distinct names"
+        "type.struct_fields"     | "a literal provides each declared field exactly once"
+        "type.with_struct"       | "`with` copies a struct value"
+        "type.named"             | "a named type stands over one written shape"
+        "type.alias"             | "an alias names one type that is not itself"
+        "type.tparam"            | "a declaration's type parameters are fresh, distinct names"
     }
     let properties = table<PropertyRow> {
         name | takes      | check          | lower
         "of" | on_nominal | check_named_of | lower_named_of
     }
-    component LanguageFeature f {
-        name = "structs"
-        docs = "`type Name = { field: ty, ... }` declares a record; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies. `type Name = <type>` declares a NAMED TYPE — its own type over that shape, never an alias: a literal fills it, the shape answers its reads, `Name(value)` wraps, and `value.of` reads the shape back."
-        gram = grammar {
-            stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fs, ft, fd, nt, fm)
-            primary = t:NAME "{" BREAK? ( vn:NAME ":" ve:expression ( "," BREAK? vn:NAME ":" ve:expression )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve)
+    LanguageFeature structs {
+        gram: grammar {
+            stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( ( ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? | sp:".." fs:HOLE ) ( ( "," | BREAK ) BREAK? ( ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? | sp:".." fs:HOLE ) )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fs, ft, fd, nt, fm, sp)
+            stmt = "alias" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" t:type END @recover(sync_to: "END") -> alias_decl(n, tp, t)
+            primary = t:NAME "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." vn:HOLE ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." vn:HOLE ) )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve, sp)
         }
-        builders = rows
-        diags = codes
-        properties = properties
+        builders: rows
+        diags: codes
+        properties: properties
     }
-    f
+    structs
 }

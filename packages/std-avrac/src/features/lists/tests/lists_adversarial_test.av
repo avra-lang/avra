@@ -36,10 +36,16 @@ spec "features/lists/adversarial" {
             refused_with("mut xs = [1]\n[xs.push(1)]\n2", "cannot hold nothing")
         }
         then "an argument" {
-            refused_with("mut xs = [1]\nfn f(k: int) -> int {\n    k\n}\nf(xs.push(1))", "found `void`")
+            refused_with(
+                "mut xs = [1]\nfn f(k: int) -> int {\n    k\n}\nf(xs.push(1))",
+                "found `void`",
+            )
         }
         then "a fn tail" {
-            refused_with("fn f() -> int {\n    mut xs = [1]\n    xs.push(1)\n}\nf()", "answers `void`")
+            refused_with(
+                "fn f() -> int {\n    mut xs = [1]\n    xs.push(1)\n}\nf()",
+                "answers `void`",
+            )
         }
         then "a mut binding" {
             refused_with("mut xs = [1]\nmut m = xs.push(1)\n2", "answers nothing")
@@ -47,19 +53,60 @@ spec "features/lists/adversarial" {
     }
     given "ownership through growth" {
         then "two thousand pushed strings" {
-            shown("mut xs: List<string> = []\nmut i = 0\nwhile i < 2000 {\n    xs.push(\"s" + "\${i}\")\n    i = i + 1\n}\n\"" + "\${xs.length} " + "\${xs[1999]}\"") == "2000 s1999"
+            shown(
+                "mut xs: List<string> = []\nmut i = 0\nwhile i < 2000 {\n    xs.push(\"s" +
+                    "\${i}\")\n    i = i + 1\n}\n\"" +
+                    "\${xs.length} " +
+                    "\${xs[1999]}\"",
+            ) == "2000 s1999"
         }
         then "a snapshot survives three hundred copy-on-write pushes" {
-            shown("mut g: List<List<string>> = [[\"a\"]]\nlet snap = g\nmut i = 0\nwhile i < 300 {\n    g[0].push(\"x" + "\${i}\")\n    i = i + 1\n}\n\"" + "\${g[0].length} " + "\${snap[0].length}\"") == "301 1"
+            shown(
+                "mut g: List<List<string>> = [[\"a\"]]\nlet snap = g\nmut i = 0\nwhile i < 300 {\n    g[0].push(\"x" +
+                    "\${i}\")\n    i = i + 1\n}\n\"" +
+                    "\${g[0].length} " +
+                    "\${snap[0].length}\"",
+            ) == "301 1"
         }
         then "a list slot overwritten five hundred times releases each old list" {
-            shown("type Q = { xs: List<string> }\nmut q = Q { xs: [\"a\"] }\nmut i = 0\nwhile i < 500 {\n    q.xs = [\"b" + "\${i}\", \"c\"]\n    i = i + 1\n}\n\"" + "\${q.xs[0]} " + "\${q.xs.length}\"") == "b499 2"
+            shown(
+                "type Q = { xs: List<string> }\nmut q = Q { xs: [\"a\"] }\nmut i = 0\nwhile i < 500 {\n    q.xs = [\"b" +
+                    "\${i}\", \"c\"]\n    i = i + 1\n}\n\"" +
+                    "\${q.xs[0]} " +
+                    "\${q.xs.length}\"",
+            ) == "b499 2"
         }
     }
     given "names against names — the comprehension's head" {
         then "a pair names two distinct binders, as the for statement's does" {
             refused_with("[i for i, i in [1, 2]]", "`i` names both the index and the element") &&
                 refused_with("[i for (i, i) in [1, 2]]", "`i` names both the index and the element")
+        }
+    }
+    given "malformed surface — one mistake inside a statement, one message" {
+        then "a comprehension's dangling `if`" {
+            refused_with("[a for a in [1, 2] if]\n", "expected `]` to close the comprehension")
+        }
+        then "a comprehension's second `for` with no iterable" {
+            refused_with(
+                "[a for a in [1, 2] for b in]\n",
+                "expected `]` to close the comprehension",
+            )
+        }
+        then "a comprehension's comma before a second `for`" {
+            refused_with(
+                "[a for a in [1, 2], for b in [3, 4]]\n",
+                "expected `]` to close the comprehension",
+            )
+        }
+        then "a list literal's stray `if`" {
+            refused_with("[1, 2 if]\n", "expected `]` to close the list")
+        }
+        then "a call's stray `if`" {
+            refused_with(
+                "fn f(a: int, b: int) -> int { a }\nf(1, 2 if)\n",
+                "expected `)` to close the arguments",
+            )
         }
     }
 }

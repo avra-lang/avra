@@ -26,14 +26,17 @@
 //!             where each one ends rather than scanning for `;`
 //! boundary.av what the guards must see: why a NUL must be refused at
 //!             the extern seat, which is the only place it truncates
+//! sql.av      THE ERGONOMIC FACE — `Sql`, `Row`, `SqlValue`, and
+//!             `Db`'s `run`/`exec`/`one`/`first`/`all`/`scalar`, built
+//!             from the statement's own prepare/step/finalize
 //! sqlite.av   this file — the library-wide face
 //! ```
 //!
 //! CONNECTIONS AND STATEMENTS ARE HERE — `open`/`close`, `prepare`/
-//! `step`/`finalize`, the binds and the transaction verbs all land.
-//! WHAT A ROW CAN ANSWER is still an integer and a storage class: `text`
-//! and `blob` wait on a `Bytes` value the language does not have
-//! (`Bytes` names no type), and the driver refuses to fake one.
+//! `step`/`finalize`, the binds and the transaction verbs all land. A
+//! ROW ANSWERS EVERY STORAGE CLASS — `sql.av`'s `SqlValue` carries an
+//! integer, a real, text or `Bytes`, or NULL — copied out of the
+//! statement at the row's own width before it steps again.
 //!
 //! THE FAILURE TYPES ARE REACHED THROUGH THEIR MODULE, not through this
 //! file: `use @std.sqlite.error.{SqlError, Cause}`. The design spells
@@ -45,8 +48,23 @@
 
 use script.{completes}
 use @std.text.{has_nul}
-use error.{Cause, SqlError, refused}
-use c.{sqlite3_libversion, sqlite3_libversion_number, sqlite3_sourceid, sqlite3_compileoption_used, sqlite3_compileoption_get, sqlite3_threadsafe, sqlite3_errstr, sqlite3_keyword_count, sqlite3_keyword_check, sqlite3_strlike, sqlite3_strglob, sqlite3_stricmp, sqlite3_memory_used, sqlite3_memory_highwater}
+use error.{Cause, SqlError}
+use c.{
+    sqlite3_libversion,
+    sqlite3_libversion_number,
+    sqlite3_sourceid,
+    sqlite3_compileoption_used,
+    sqlite3_compileoption_get,
+    sqlite3_threadsafe,
+    sqlite3_errstr,
+    sqlite3_keyword_count,
+    sqlite3_keyword_check,
+    sqlite3_strlike,
+    sqlite3_strglob,
+    sqlite3_stricmp,
+    sqlite3_memory_used,
+    sqlite3_memory_highwater,
+}
 
 /// The vendored SQLite's version — "3.53.4".
 export fn version() -> string { sqlite3_libversion() }
@@ -100,7 +118,13 @@ export fn threadsafe() -> bool { sqlite3_threadsafe() != 0 }
 /// and is asserted directly against `sqlite3_complete` in the
 /// adversarial suite; the FACE is where the law is kept.
 export fn is_complete(sql: string) -> Result<bool, SqlError> {
-    if has_nul(sql) { fail refused(Cause.HoldsNul, "this text holds a NUL, and `sqlite3_complete` reads only the bytes before it — the answer would be about a prefix") }
+    if has_nul(sql) {
+        fail SqlError
+            .refused(
+                Cause.HoldsNul,
+                "this text holds a NUL, and `sqlite3_complete` reads only the bytes before it — the answer would be about a prefix",
+            )
+    }
     completes(sql)
 }
 
@@ -153,7 +177,7 @@ export fn equal_nocase(a: string, b: string) -> Result<bool, SqlError> {
 /// seat that carries NO length, where C stops at the first NUL and the
 /// answer would be about a prefix.
 fn nul_free(s: string, verb: string) -> Result<int, SqlError> {
-    if has_nul(s) { fail refused(Cause.HoldsNul, holds_nul_words(verb)) }
+    if has_nul(s) { fail SqlError.refused(Cause.HoldsNul, holds_nul_words(verb)) }
     0
 }
 

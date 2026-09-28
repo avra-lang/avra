@@ -11,6 +11,8 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <llvm-c/Error.h>
+#include <llvm-c/BitReader.h>
+#include <llvm-c/Linker.h>
 #include <stdlib.h>
 #include <string.h>
 void avra_trap(const char* msg);
@@ -19,6 +21,7 @@ void avra_trap(const char* msg);
 #include <pthread.h>
 #include <stddef.h>
 #include "../runtime/avra_box.h"
+#include "../build/avra_hot.inc"
 
 // ── Context / Module / Builder ──
 
@@ -266,6 +269,22 @@ void avra_llvm_set_weak_odr(LLVMValueRef fn) {
     LLVMSetLinkage(fn, LLVMWeakODRLinkage);
 }
 
+// A body the compiler proved runs at most once (R12, cold_bodies):
+// `cold` tells the optimizer it is rarely reached, `minsize` tells it
+// to favor fewer bytes over fewer cycles inside it — together, the
+// straight-line table-building this marks stops paying for the hot
+// leaves' inlined bodies it will only ever execute once.
+static LLVMAttributeRef enum_attr(LLVMContextRef ctx, const char* name) {
+    unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
+    return LLVMCreateEnumAttribute(ctx, kind, 0);
+}
+
+void avra_llvm_set_cold(LLVMValueRef fn) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "cold"));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
+}
+
 LLVMValueRef avra_llvm_get_named_function(LLVMModuleRef m, const char* name) {
     char* sym = avra_mangle_symbol(name);
     LLVMValueRef fn = LLVMGetNamedFunction(m, sym ? sym : name);
@@ -462,6 +481,21 @@ LLVMValueRef avra_llvm_build_alloca(LLVMBuilderRef b, LLVMTypeRef ty, const char
     // (rcsf.5) is the long-term replacement for this blanket guard.
     if (LLVMGetTypeKind(ty) == LLVMPointerTypeKind) {
         LLVMBuildStore(entry_builder, LLVMConstNull(ty), alloca);
+    }
+    // A struct-typed cell needs the same zeroing, whole, padding
+    // included: `avra_cell_release` reads the cell's first word raw,
+    // and a per-field `LLVMConstNull` store leaves inter-field padding
+    // (an i1 tag's alignment gap before the pointer that follows it)
+    // untouched — read as that pointer, on a settle before the seed
+    // store ever writes it.
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        LLVMBuildMemSet(
+            entry_builder,
+            alloca,
+            LLVMConstInt(LLVMInt8TypeInContext(LLVMGetTypeContext(ty)), 0, 0),
+            LLVMSizeOf(ty),
+            8
+        );
     }
     LLVMDisposeBuilder(entry_builder);
     return alloca;
@@ -661,6 +695,22 @@ LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
     return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
 }
 
+// A `once fn`'s OWN SLOT: one raw pointer word, null-initialized,
+// private to this module — UNHEADERED, unlike every other global
+// here, because nothing walks it as a box; it holds the ADDRESS
+// `OnceRead`/`OnceCommit` load and store through. Idempotent by
+// name, so a fn's read and its own commit answer the SAME global.
+LLVMValueRef avra_llvm_once_slot(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (g) { return g; }
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(ctx, 0);
+    g = LLVMAddGlobal(m, ptr_ty, name);
+    LLVMSetInitializer(g, LLVMConstPointerNull(ptr_ty));
+    LLVMSetLinkage(g, LLVMPrivateLinkage);
+    return g;
+}
+
 // ── Calls ──
 
 LLVMValueRef avra_llvm_build_call(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMValueRef fn_val, LLVMValueRef* args, int count, const char* name) {
@@ -786,6 +836,40 @@ static int native_target_ready(void) {
     return ready ? 0 : 1;
 }
 
+// THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
+// compiler carries is linked into a module before its passes, every
+// definition AVAILABLE EXTERNALLY — the optimizer may inline it and emits
+// none, so a call it keeps resolves to the runtime library's own. The
+// leaves take the module's target, never the one clang compiled them for,
+// so the inliner finds them compatible. AVRA_INLINE_RUNTIME=0 keeps them
+// calls — a leaf's return address then names its caller exactly.
+static int hot_off = 0;
+
+__attribute__((constructor))
+static void hot_settled(void) {
+    const char* v = getenv("AVRA_INLINE_RUNTIME");
+    hot_off = v != NULL && strcmp(v, "0") == 0;
+}
+
+static void hot_linked(LLVMModuleRef m) {
+    if (hot_off || avra_hot_bc_len == 0) return;
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRange((const char*)avra_hot_bc, (size_t)avra_hot_bc_len, "avra_hot", 0);
+    LLVMModuleRef hot;
+    int bad = LLVMParseBitcodeInContext2(ctx, buf, &hot);
+    LLVMDisposeMemoryBuffer(buf);
+    if (bad) return;
+    for (LLVMValueRef f = LLVMGetFirstFunction(hot); f; f = LLVMGetNextFunction(f)) {
+        if (LLVMIsDeclaration(f)) continue;
+        LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-cpu", 10);
+        LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-features", 15);
+        if (LLVMGetLinkage(f) == LLVMExternalLinkage) LLVMSetLinkage(f, LLVMAvailableExternallyLinkage);
+    }
+    LLVMSetTarget(hot, LLVMGetTarget(m));
+    LLVMSetDataLayout(hot, LLVMGetDataLayoutStr(m));
+    LLVMLinkModules2(m, hot);
+}
+
 // A MODULE AS AN OBJECT: the `default<O1>`-style pipeline clang runs on
 // bitcode, then the native target's code generator, at clang's level 0..3.
 // Atomic as the writers above — a temp, then rename. Answers 0, or 1 with the
@@ -811,9 +895,14 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     LLVMSetModuleDataLayout(m, layout);
     int failed = 0;
     if (level > 0) {
+        hot_linked(m);
         char passes[32];
         snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
         LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+        // Structural duplicates (a pointer-shaped generic's instantiations)
+        // fold into thunks. Sound while no fn is `unnamed_addr`: the pass
+        // then merges bodies, never addresses.
+        LLVMPassBuilderOptionsSetMergeFunctions(opts, 1);
         LLVMErrorRef ran = LLVMRunPasses(m, passes, tm, opts);
         LLVMDisposePassBuilderOptions(opts);
         if (ran) {
@@ -972,11 +1061,19 @@ LLVMValueRef avra_llvm_cast_to_type(LLVMBuilderRef b, LLVMValueRef val, LLVMType
         if (aw < ew) avra_trap("cast_to_type asked to WIDEN an integer — the sign is the caller's to name: build_zext or build_sext");
         return val;
     }
-    // UNREACHABLE TODAY: no double value exists in the language, so
-    // these four arms have never run. They also pre-decide a question
-    // float's lane has not answered — a BITCAST reinterprets bits and
-    // a conversion changes the number, and which one a "cast" means
-    // is exactly what that lane must choose deliberately.
+    // A REINTERPRETATION, never a conversion, settled by R15a: a value
+    // enum's word slot is an i64 whichever payload it carries, so a
+    // float payload crossing it is the same 64 bits under a different
+    // type. i64 -> double is real and exercised — `Ins.Extract`'s
+    // destination cast (llvm_emit.av) reads a value enum's Float
+    // payload back this way, and the slot it reads from is always i64,
+    // so this always bitcasts. double -> i64 is not reached by
+    // anything today: the one caller that packs a float INTO the word
+    // slot (`pack_value`'s `valued` branch) goes through `worded`,
+    // which bitcasts directly rather than asking this general
+    // function. Both narrower-width arms (FPToSI/SIToFP) stay a real
+    // NUMERIC conversion, for a narrower float value nothing asks for
+    // yet.
     // double ↔ i64: bitcast (preserves bits)
     if (ak == LLVMDoubleTypeKind && ek == LLVMIntegerTypeKind) {
         unsigned ew = LLVMGetIntTypeWidth(expected);

@@ -11,42 +11,49 @@
 // A test that asked `path()` alone would prove the reader and not the
 // property, and the property is that ONE HANDLER answers both.
 use @std.http.frame.{Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, fixed, tailed}
 
-fn tf_serve_admin(_q: Request) -> Response { text(200, "admin") }
-fn tf_serve_root(_q: Request) -> Response { text(200, "root") }
+fn tf_serve_admin(_q: Request<Unrouted>) -> Response { text(200, "admin") }
+fn tf_serve_root(_q: Request<Unrouted>) -> Response { text(200, "root") }
 
-fn tf_serve_static(_q: Request, s: TfStatic) -> Response { text(200, "static ${s.path}") }
+fn tf_serve_static(q: Request<TfStatic>) -> Response { text(200, "static ${q.params.path}") }
 
 grammar TfStatic = "/static/{path...}"
 
 fn tf_routes() -> List<Route> {
-    [fixed(Method.Get, "/admin", tf_serve_admin),
-     fixed(Method.Get, "/", tf_serve_root),
-     tailed<TfStatic>(Method.Get, "/static/{path...}", (t: Bytes) -> TfStatic.parse(t), tf_serve_static)]
+    [
+        fixed(Method.Get, "/admin", tf_serve_admin),
+        fixed(Method.Get, "/", tf_serve_root),
+        tailed<TfStatic>(
+            Method.Get,
+            "/static/{path...}",
+            (t: Bytes) -> TfStatic.parse(t),
+            tf_serve_static,
+        ),
+    ]
 }
 
 /// The status and body a request line earns FROM THE ROUTER, or
 /// "unframed" when the framer refused the line first.
-fn tf_answered(line: string) -> string { under(tf_routes(), line) }
+fn tf_answered(line: string) -> string { answer_of(tf_routes(), line) }
 
 /// What one reader answers for a request line, with "unframed" when
 /// the framer refused the line first — the guard the three readers
 /// below share.
-fn tf_read(line: string, pick: fn(Request) -> string) -> string {
+fn tf_read(line: string, pick: fn(Request<Unrouted>) -> string) -> string {
     let q? = asked(line) else { return "unframed" }
     pick(q)
 }
 
 /// What `path()` reads, with absence spelled — the router's input.
-fn tf_path(line: string) -> string { tf_read(line, (q: Request) -> q.path()?.text() ?? "<none>") }
+fn tf_path(line: string) -> string { tf_read(line, (q: Request<Unrouted>) -> q.path()?.text() ?? "<none>") }
 
 /// What `authority()` reads, with absence spelled.
-fn tf_authority(line: string) -> string { tf_read(line, (q: Request) -> q.authority() ?? "<none>") }
+fn tf_authority(line: string) -> string { tf_read(line, (q: Request<Unrouted>) -> q.authority() ?? "<none>") }
 
 /// The whole target as sent — unchanged by any of this.
-fn tf_target(line: string) -> string { tf_read(line, (q: Request) -> q.target() ?? "<not text>") }
+fn tf_target(line: string) -> string { tf_read(line, (q: Request<Unrouted>) -> q.target() ?? "<not text>") }
 
 spec "@std.http target forms" {
     given "one resource, two forms, one handler" {
@@ -76,8 +83,8 @@ spec "@std.http target forms" {
                 tf_answered("GET http://h/admin?x=1 HTTP/1.1") == "200 admin"
         }
     }
-
     given "the path component of each form" {
+
         then "origin-form IS its path" {
             tf_path("GET /admin HTTP/1.1") == "/admin"
         }
@@ -95,8 +102,7 @@ spec "@std.http target forms" {
                 tf_path("GET http://h/admin?x=/evil HTTP/1.1") == "/admin"
         }
         then "AN EMPTY PATH IS `/` — the root has a spelling with no slash in it" {
-            tf_path("GET http://h HTTP/1.1") == "/" &&
-                tf_path("GET http://h?x=1 HTTP/1.1") == "/"
+            tf_path("GET http://h HTTP/1.1") == "/" && tf_path("GET http://h?x=1 HTTP/1.1") == "/"
         }
         then "and it routes to the root, which is the whole reason it is minted" {
             tf_answered("GET http://h HTTP/1.1") == "200 root" &&
@@ -130,8 +136,8 @@ spec "@std.http target forms" {
             tf_path("CONNECT h:443 HTTP/1.1") == "<none>"
         }
     }
-
     given "the authority, which `path()` strips" {
+
         then "absolute-form hands it over" {
             tf_authority("GET http://h/admin HTTP/1.1") == "h"
         }
@@ -150,8 +156,8 @@ spec "@std.http target forms" {
                 tf_authority("CONNECT h:443 HTTP/1.1") == "<none>"
         }
     }
-
     given "a target that names no resource is not routed" {
+
         then "asterisk-form earns a 404 — the table is never walked" {
             tf_answered("OPTIONS * HTTP/1.1") == "404 "
         }
@@ -166,8 +172,8 @@ spec "@std.http target forms" {
                 tf_answered("CONNECT /admin HTTP/1.1") == "unframed"
         }
     }
-
     given "what none of this moved" {
+
         then "`target()` still answers the form that was SENT" {
             tf_target("GET http://h/admin?x=1 HTTP/1.1") == "http://h/admin?x=1" &&
                 tf_target("OPTIONS * HTTP/1.1") == "*" &&

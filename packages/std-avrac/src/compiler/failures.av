@@ -1,0 +1,596 @@
+//! ERROR UNIONS PHASE 2 — the whole-program fixpoint behind
+//! `Result<T, _>`: which error types a `_`-declared fn's `fail` and
+//! `?` sites can actually raise. Mirrors receivers.av's shape (a
+//! Summary per fn, edges between fns, a Kleene loop to a fixpoint,
+//! ONE whole-program kernel key rather than a per-decl memo — see
+//! docs/2026_09_25_ERROR_UNIONS_PHASE2_DESIGN.md §6 for why the
+//! kernel's own Cycle/start_recursive answers a different question).
+//! A structural walk over the RESOLVED body alone, no unification —
+//! structural_types.av's DeclaredTypes proved this enough for
+//! receivers.av's writer inference, and the same declared-type
+//! questions answer a fail/`?` site's raised type here.
+//!
+//! THE ONE LAW A NAIVE REUSE OF DeclaredTypes WOULD BREAK: asking
+//! another `_`-declared fn's `sig()` for its answer type, mid-
+//! fixpoint, reads whatever the sig table holds RIGHT NOW — not yet
+//! the truth for a fn this same pass is still settling, and `null`
+//! for one nobody has signed yet. A callee is checked against its
+//! OWN WRITTEN return shape FIRST (`declared_result_hole`, pure AST,
+//! no `sig()` at all); only once that says "not `_`-declared" is
+//! `sig()` asked. This is not merely a recursion guard — it is the
+//! mechanism that makes the transitive fixpoint answer through
+//! EDGES rather than through a call to `sig()` that would just
+//! answer null for exactly the fns the edge exists to reach.
+use core.{
+    DeclId,
+    ExprId,
+    StmtId,
+    TypeId,
+    TypeRef,
+    Type,
+    NodeStore,
+    Span,
+    flatten,
+    fp,
+    fp_list,
+    some_list,
+    same_decl,
+    same_expr,
+    same_type as same_type_id,
+}
+use features.{Decls, Decl, bound_decl_of}
+use query.{FixpointRefusal, spoken as fixpoint_spoken}
+
+/// `Result<_, _>`'s error side — a bare `_`, checked by SHAPE: `_?`,
+/// `_<T>` and `_ or E` are not this, and stay ordinary unresolved
+/// names.
+fn is_bare_underscore(tr: TypeRef) -> bool {
+    tr.name == "_" &&
+        tr.args.is_empty() &&
+        !tr.optional &&
+        !tr.dynamic &&
+        tr.alternatives.is_empty()
+}
+
+/// A written return type spells `Result<_, _>`.
+export fn result_infers(ret: TypeRef) -> bool {
+    ret.name == "Result" && ret.args.length == 2 && is_bare_underscore(ret.args[1])
+}
+
+/// One `_`-declared fn's own evidence: the error types its direct
+/// `fail`/`?` sites raise, and the OTHER `_`-declared fns whose own
+/// (still-settling) set flows in through a `?`.
+type FailSummary = { direct: List<TypeId>, calls: List<DeclId> }
+
+/// A fail/propagate site's contribution, once its value is asked:
+/// a concrete type, an edge into another pending fn's set, or
+/// UNRESOLVED — the structural walk cannot tell, and `_` refuses
+/// rather than silently under-approximating (design doc §4).
+enum Contribution {
+    Direct(ty: TypeId)
+    ViaEdge(callee: DeclId)
+    Unresolved
+}
+
+fn direct_ty(c: Contribution) -> TypeId? {
+    match c { .Direct(ty) -> ty, rest -> null }
+}
+
+fn edge_callee(c: Contribution) -> DeclId? {
+    match c { .ViaEdge(g) -> g, rest -> null }
+}
+
+fn is_unresolved(c: Contribution) -> bool { c is .Unresolved }
+
+/// M6 PREP (avra-8sb5.57.9): one row per fail/propagate/catch site,
+/// kept in this plain per-program table until M5 lands and it becomes
+/// a `@relation` — the accessors built on it today (`raised_by`,
+/// `error_sites_by_callee`, `error_sites_within`) keep their names
+/// across that swap. `errors` is the site's own DIRECT contribution
+/// only, never the fixpoint's transitive answer — that lives
+/// separately, in `raised_by`, never folded back into a site.
+export enum SiteHow { Fail, Propagate, Catch }
+
+export type ErrorSite = {
+    at: ExprId,
+    owner: DeclId,
+    how: SiteHow,
+    callee: DeclId?,
+    within: ExprId?,
+    errors: List<TypeId>,
+}
+
+/// A site's own answer, once resolved: `sig()` on a still-pending
+/// `_`-declared callee is never asked — `via_callee` intercepts first.
+enum SiteType {
+    Type(ty: TypeId)
+    Edge(callee: DeclId)
+    Unresolved
+}
+
+/// The declared-type view for one fn, plus the guard `via_callee`
+/// applies wherever `DeclaredTypes` would otherwise call `sig()`.
+type FailSurvey = { dt: DeclaredTypes }
+
+impl FailSurvey {
+    /// Mirrors `DeclaredTypes.place_type`'s own dispatch, guarded.
+    fn site_type(value: ExprId) -> SiteType {
+        let step? = self.dt.store.place_step(value) else { return self.called_type(value) }
+        match step {
+            .Root(_) -> self.root_site(value),
+            .Field(subject, name) -> self.field_site(subject, name.of),
+            .At(subject, _) -> self.wrap(self.dt.element_type(self.unwrapped(subject))),
+            .Unwrap(subject) -> self.wrap(self.dt.carried_type(self.unwrapped(subject))),
+        }
+    }
+
+    /// `EnumName.Variant` with NO payload and NO call parens (`fail
+    /// A.A`) parses as a bare `.Prop`, the same node an ordinary field
+    /// read is — `qualified_variant_type` is checked first, since a
+    /// field read on a TYPE NAME subject is never a real field.
+    fn field_site(subject: ExprId, name: string) -> SiteType {
+        let qv: TypeId? = self.qualified_variant_type(subject, name)
+        if qv != null { return SiteType.Type(qv!) }
+        self.wrap(self.dt.field_type(self.unwrapped(subject), name))
+    }
+
+    /// A subject's type, through the SAME guarded path — a subject
+    /// that is itself pending or unresolvable has no field/element/
+    /// carried type this walk can name either.
+    fn unwrapped(e: ExprId) -> TypeId? {
+        match self.site_type(e) { .Type(ty) -> ty, .Edge(_) or .Unresolved -> null }
+    }
+
+    fn wrap(ty: TypeId?) -> SiteType {
+        let t? = ty else { return SiteType.Unresolved }
+        SiteType.Type(t)
+    }
+
+    /// Mirrors `DeclaredTypes.root_type`.
+    fn root_site(e: ExprId) -> SiteType {
+        let b? = self.dt.names.binding(e) else { return SiteType.Unresolved }
+        match b {
+            .Receiver -> self.wrap(self.dt.receiver),
+            .Param(i) if i < self.dt.seats.length -> self.wrap(self.dt.seats[i]),
+            .Def(s) -> self.def_site(s),
+            .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> SiteType.Unresolved,
+        }
+    }
+
+    /// Mirrors `DeclaredTypes.bound_type`'s LET-tracing half.
+    fn def_site(s: StmtId) -> SiteType {
+        let value? = self.dt.store.stmt_value(s) else { return SiteType.Unresolved }
+        self.site_type(value)
+    }
+
+    /// `value` names no place — a construction, a named call, or a
+    /// method call. A CONSTRUCTION IS CHECKED FIRST, by its own node
+    /// kind: the resolver binds a construction's own type name the
+    /// same way it binds a call's callee (both are `Binding.Decl`), so
+    /// asking `bound_decl_of` first would read a struct's declaration
+    /// as though it were being CALLED and ask a Record for its
+    /// (nonexistent) `fn_sig`. Mirrors `DeclaredTypes.bound_type`'s
+    /// call-tracing half otherwise, guarded at both points it would
+    /// ask a callee's `sig()`.
+    fn called_type(value: ExprId) -> SiteType {
+        if self.dt.store.struct_lit_name(value) != null { return self.wrap(self.dt.constructed_type(value)) }
+        let callee: DeclId? = bound_decl_of(self.dt.names, value)
+        if callee != null { return self.via_callee(callee!) }
+        let m? = self.dt.store.method_parts(value) else { return SiteType.Unresolved }
+        let qv: TypeId? = self.qualified_variant_type(m.subject, m.name)
+        if qv != null { return SiteType.Type(qv!) }
+        let subject? = self.unwrapped(m.subject) else { return SiteType.Unresolved }
+        match self.dt.callee_of(subject, m.name) {
+            .Method(d) or .Static(d) or .Contract(d) -> self.via_callee(d),
+            .FnSeats(held) -> self.wrap(held.answer),
+            .Row(_, _) or .None -> SiteType.Unresolved,
+        }
+    }
+
+    /// `EnumName.Variant(args)` — parsed as a METHOD-CALL-shaped node
+    /// (`subject.name(args)`, the same shape an ordinary method call
+    /// takes; TYPING tells them apart by the subject's shape, not the
+    /// parser). Unlike the bare `.Variant(args)` shorthand (which has
+    /// no type name in its own text and genuinely needs a contextual
+    /// want this walk cannot offer, `_` being exactly the want not yet
+    /// known), the type name is written right here as the subject's
+    /// own name, so no want is needed.
+    fn qualified_variant_type(subject: ExprId, vname: string) -> TypeId? {
+        let tname? = self.ident_name(subject) else { return null }
+        let d? = self.dt.names.names.type_decl(tname) else { return null }
+        if !self.dt.decls.is_enum(d) { return null }
+        let sig? = self.dt.decls.sig(d)?.enum_sig() else { return null }
+        if sig.tag_of(vname) == null { return null }
+        self.dt.decls.types.intern(Type.Enum(d, tname))
+    }
+
+    fn ident_name(e: ExprId) -> string? {
+        match self.dt.store.expr(e) { .Ident(name) -> name.of, rest -> null }
+    }
+
+    /// THE GUARD: a callee's own written shape decides before its
+    /// `sig()` is ever asked.
+    fn via_callee(d: DeclId) -> SiteType {
+        if self.dt.decls.declared_result_hole(d) { return SiteType.Edge(d) }
+        self.wrap(self.dt.decls.sig(d)?.fn_sig()?.ret)
+    }
+}
+
+fn fail_contribution(fs: FailSurvey, v: ExprId) -> Contribution {
+    match fs.site_type(v) {
+        .Type(ty) -> Contribution.Direct(ty),
+        .Edge(g) -> Contribution.ViaEdge(g),
+        .Unresolved -> Contribution.Unresolved,
+    }
+}
+
+/// A `?` or `catch` site's contribution — null (no soundness concern)
+/// when the value's structural type is known but is not a Result at
+/// all: that is an ordinary type error refused elsewhere, not a hole
+/// in this walk's coverage. Shared by `propagate_contribution` and a
+/// `catch`'s own subject (M6 prep) — both read the SAME error side of
+/// the SAME kind of value.
+fn result_error_contribution(fs: FailSurvey, decls: Decls, v: ExprId) -> Contribution? {
+    match fs.site_type(v) {
+        .Type(ty) -> {
+            let sides? = decls.types.res_parts(ty) else { return null }
+            Contribution.Direct(sides.err)
+        },
+        .Edge(g) -> Contribution.ViaEdge(g),
+        .Unresolved -> Contribution.Unresolved,
+    }
+}
+
+fn propagate_contribution(fs: FailSurvey, decls: Decls, v: ExprId) -> Contribution? {
+    result_error_contribution(fs, decls, v)
+}
+
+fn fail_values(store: NodeStore) -> List<ExprId> {
+    flatten([fail_value(store, s) for s in store.stmt_ids()])
+}
+
+fn fail_value(store: NodeStore, s: StmtId) -> List<ExprId> {
+    match store.stmt(s) { .Fail(v) -> [v], rest -> [] }
+}
+
+fn fail_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
+    [v for v in fail_values(store) if v.index >= lo && v.index < hi]
+}
+
+fn propagate_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
+    flatten([propagate_value(store, ExprId { index: i }) for i in lo..hi])
+}
+
+fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
+    match store.expr(e) { .Propagate(v) -> [v], rest -> [] }
+}
+
+/// M6 PREP: every `catch` expression in `[lo, hi)` — the same
+/// index-range sweep `propagate_sites` already uses, since a `catch`
+/// expression is addressed the same way (an `ExprId` in the decl's own
+/// range), no new arena assumption needed. Finds a catch AT ANY DEPTH,
+/// a nested catch included — this is a flat index-range scan, blind to
+/// AST shape, same as `fail_sites`/`propagate_sites`.
+fn catch_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
+    [ExprId { index: i } for i in lo..hi if is_catch(store, ExprId { index: i })]
+}
+
+fn is_catch(store: NodeStore, e: ExprId) -> bool { store.expr(e) is .Catch }
+
+/// M6 PREP: one catch arm's OWN source span — the whole text a re-raise
+/// nested anywhere inside it (an `if`, a `match`, any depth) still falls
+/// within, byte for byte. Mirrors `decls_mint.av`'s `OwnerSpan`/
+/// `innermost` — the same "smallest span containing a site" answer a
+/// decl's own [lo, hi) is built from, aimed at an arm instead of a
+/// top-level declaration.
+type ArmOwner = { catch_at: ExprId, span: Span }
+
+fn arm_owners(store: NodeStore, catches: List<ExprId>) -> List<ArmOwner> {
+    flatten([catch_arm_owners(store, c) for c in catches])
+}
+
+fn catch_arm_owners(store: NodeStore, c: ExprId) -> List<ArmOwner> {
+    match store.expr(c) {
+        .Catch(_, _, _, values) -> flatten([some_list(arm_owner(store, c, arm)) for arm in values]),
+        rest -> [],
+    }
+}
+
+fn arm_owner(store: NodeStore, c: ExprId, arm: ExprId) -> ArmOwner? {
+    let sp? = store.expr_span(arm) else { return null }
+    ArmOwner { catch_at: c, span: sp }
+}
+
+/// The innermost catch whose arm's span contains `v`'s own span — null
+/// when `v` sits in none. A catch nested inside another's arm hands
+/// back the NEARER one, exactly as `decls_mint.av`'s `innermost` picks
+/// the smallest containing span among several candidates.
+fn innermost_catch(store: NodeStore, owners: List<ArmOwner>, v: ExprId) -> ExprId? {
+    let sp? = store.expr_span(v) else { return null }
+    let containing = [o for o in owners if o.span.lo <= sp.lo && sp.hi <= o.span.hi]
+    if containing.is_empty() { return null }
+    smallest_owner(containing).catch_at
+}
+
+fn smallest_owner(owners: List<ArmOwner>) -> ArmOwner {
+    mut best = owners[0]
+    for o in owners { if o.span.hi - o.span.lo < best.span.hi - best.span.lo { best = o } }
+    best
+}
+
+/// M6 PREP: every `ErrorSite` one fn's body contains — the walk
+/// `fail_summary` already runs, reshaped as rows instead of a single
+/// folded `FailSummary`. `fail_sites`/`propagate_sites` already find a
+/// site at any nesting depth (they are index-range scans, blind to AST
+/// shape), so tagging each with `innermost_catch` is the whole of
+/// `within` — no separate arm walk, and so no double count either.
+fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: NodeStore, lo: int, hi: int) -> List<
+    ErrorSite,
+> {
+    let catches_at = catch_sites(store, lo, hi)
+    let owners = arm_owners(store, catches_at)
+    let fails = [fail_error_site(fs, d, v, innermost_catch(store, owners, v)) for v in fail_sites(store, lo, hi)]
+    let props = flatten(
+        [some_list(propagate_error_site(fs, decls, d, v, innermost_catch(store, owners, v))) for v in propagate_sites(store, lo, hi)],
+    )
+    let catches = [catch_error_site(fs, decls, d, store, c, innermost_catch(store, owners, c)) for c in catches_at]
+    fails.concat(props).concat(catches)
+}
+
+fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId, within: ExprId?) -> ErrorSite {
+    let c = fail_contribution(fs, v)
+    ErrorSite {
+        at: v,
+        owner: d,
+        how: SiteHow.Fail,
+        callee: edge_callee(c),
+        within: within,
+        errors: some_list(direct_ty(c)),
+    }
+}
+
+fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId, within: ExprId?) -> ErrorSite? {
+    let c? = propagate_contribution(fs, decls, v) else { return null }
+    ErrorSite {
+        at: v,
+        owner: d,
+        how: SiteHow.Propagate,
+        callee: edge_callee(c),
+        within: within,
+        errors: some_list(direct_ty(c)),
+    }
+}
+
+fn contribution_callee(c: Contribution?) -> DeclId? {
+    let k? = c else { return null }
+    edge_callee(k)
+}
+
+fn contribution_errors(c: Contribution?) -> List<TypeId> {
+    let k? = c else { return [] }
+    some_list(direct_ty(k))
+}
+
+fn catch_error_site(
+    fs: FailSurvey,
+    decls: Decls,
+    d: DeclId,
+    store: NodeStore,
+    c: ExprId,
+    within: ExprId?,
+) -> ErrorSite {
+    match store.expr(c) {
+        .Catch(subject, _, _, _) -> {
+            let contribution = result_error_contribution(fs, decls, subject)
+            ErrorSite {
+                at: c,
+                owner: d,
+                how: SiteHow.Catch,
+                callee: contribution_callee(contribution),
+                within: within,
+                errors: contribution_errors(contribution),
+            }
+        },
+        rest -> ErrorSite { at: c, owner: d, how: SiteHow.Catch, callee: null, within: within, errors: [] },
+    }
+}
+
+/// M6 PREP: the growing-set fixpoint's lattice over `raised_by`'s
+/// answer — sets of `TypeId`, join = union, deduped by index.
+fn raised_join(a: List<TypeId>, b: List<TypeId>) -> List<TypeId> {
+    a.concat([x for x in b if !a.any((y: TypeId) -> same_type_id(y, x))])
+}
+
+fn raised_fp(v: List<TypeId>) -> int { fp_list([t.index for t in v]) }
+
+fn callee_is(callee: DeclId?, f: DeclId) -> bool {
+    let c? = callee else { return false }
+    same_decl(c, f)
+}
+
+fn within_is(within: ExprId?, c: ExprId) -> bool {
+    let w? = within else { return false }
+    same_expr(w, c)
+}
+
+fn refusal_of(r: Result<int, FixpointRefusal>) -> FixpointRefusal? {
+    match r { .Ok(_) -> null, .Err(e) -> e }
+}
+
+impl Workspace {
+    /// The pass: every `_`-declared fn's inferred error union,
+    /// settled once per program state. ONE whole-program key, never
+    /// a per-decl memo (see this file's header).
+    fn failures() -> int {
+        if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
+        let k = key(Family.Failures, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let fns = [x.id for x in self.decls.decls.get() if !self.is_held(x.file) && self.decls.inferring(x)]
+        self.decls.clear_inferred()
+        let sums = [self.fail_summary(d) for d in fns]
+        self.decls.settle_failures(fns, sums)
+        // M6 PREP: the same per-site facts `fail_summary` just built
+        // into `self.error_sites` feed a SECOND, additive answer — the
+        // same fixpoint math, as a `Fixpoint<T>` solve instead of
+        // `Decls`' own Kleene loop. Both run; only the OLD one is read
+        // by typing today, so this cannot regress it.
+        let raised_result = self
+            .raised_fixpoint
+            .solve([f.index for f in fns], (arg: int) -> self.raised_compute(arg))
+        let refusal = refusal_of(raised_result)
+        if refusal != null { self.defect("defect: ${fixpoint_spoken(refusal!)}") }
+        self
+            .db
+            .settle(
+                k,
+                fp(
+                    21,
+                    [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns],
+                ),
+            )
+        fns.length
+    }
+
+    /// One fn's own evidence, read from its resolved body and the
+    /// declarations its expressions name — never from another
+    /// `_`-declared fn's `sig()` (FailSurvey.via_callee's guard).
+    fn fail_summary(d: DeclId) -> FailSummary {
+        let x = self.decls.decl(d)
+        if x.root == null { return FailSummary { direct: [], calls: [] } }
+        let receiver: TypeId? = self.receiver_type(x)
+        // `sig_so_far`, never `sig`: `d` is one of THIS fixpoint's own
+        // decls, and `d` has not necessarily started signing yet —
+        // `sig(d)` would start it, running straight into `d`'s own
+        // `inferred_answer`, which asks this same fixpoint for an
+        // answer it has not settled yet (empty table, spurious refusal).
+        let seats: List<TypeId> = self.decls.sig_so_far(d)?.fn_sig()?.params ?? []
+        let store = self.decls.store(d)
+        let fs = FailSurvey {
+            dt: DeclaredTypes {
+                ws: self,
+                decls: self.decls,
+                store: store,
+                names: self.resolved(x.file),
+                receiver: receiver,
+                seats: seats,
+            },
+        }
+        let fails = [fail_contribution(fs, v) for v in fail_sites(store, x.lo, x.hi)]
+        let props = flatten(
+            [some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.lo, x.hi)],
+        )
+        let all = fails.concat(props)
+        if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
+        let new_sites = built_error_sites(fs, self.decls, d, store, x.lo, x.hi)
+        self.error_sites.set(self.error_sites.get().concat(new_sites))
+        FailSummary {
+            direct: flatten([some_list(direct_ty(c)) for c in all]),
+            calls: flatten([some_list(edge_callee(c)) for c in all]),
+        }
+    }
+
+    /// M6 PREP: one member's raw contribution to the raised-set
+    /// fixpoint — every Fail/Propagate row this fn owns, its own
+    /// direct errors unioned with whatever its callee (if any) is
+    /// currently known to raise. `Catch` rows contribute nothing here
+    /// by design: a catch that fully absorbs stops the chain, and a
+    /// re-raise inside its arm is already its OWN Fail/Propagate row
+    /// (with `within` set), counted on its own turn.
+    fn raised_compute(arg: int) -> List<TypeId> {
+        let sites = [s for s in self.error_sites.get() if s.owner.index == arg && (s.how is .Fail || s.how is .Propagate)]
+        flatten([s.errors.concat(self.raised_via_callee(s.callee)) for s in sites])
+    }
+
+    /// A site's callee edge, followed — the transitive half of a
+    /// fn's raised set. No edge means no transitive contribution.
+    fn raised_via_callee(callee: DeclId?) -> List<TypeId> {
+        let c? = callee else { return [] }
+        self.raised_fixpoint.value_at(c.index)
+    }
+
+    /// The whole-program fixpoint's per-fn answer — every error type
+    /// `d` can actually raise, direct or through a call into another
+    /// `_`-declared fn. `self.failures()` is idempotent per revision,
+    /// so asking this never re-solves what is already settled.
+    fn raised_by(d: DeclId) -> List<TypeId> {
+        let _ = self.failures()
+        self.raised_fixpoint.value_at(d.index)
+    }
+
+    /// Every site whose `callee` is `f` — the reverse edge `chain`
+    /// walks up through.
+    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> {
+        [s for s in self.error_sites.get() if callee_is(s.callee, f)]
+    }
+
+    /// Every site lexically within catch `c`'s own arm — `chain`'s
+    /// downward step when it reaches a `Catch`.
+    fn error_sites_within(c: ExprId) -> List<ErrorSite> {
+        [s for s in self.error_sites.get() if within_is(s.within, c)]
+    }
+
+    /// The error topology's own worked example (design doc §6.7,
+    /// round 2's corrected shape): a `Catch` never touches `seen` —
+    /// containment inside one fn's finite tree cannot cycle — a `Fail`
+    /// or `Propagate` does, since a call edge can.
+    fn chain(s: ErrorSite, seen: List<int>) -> Chain {
+        match s.how {
+            .Catch -> Chain { site: s, next: [self.chain(n, seen) for n in self.error_sites_within(s.at)] },
+            .Fail or .Propagate -> {
+                if seen.contains(s.owner.index) { return Chain { site: s, next: [] } }
+                let deeper = seen.concat([s.owner.index])
+                Chain {
+                    site: s,
+                    next: [self.chain(n, deeper) for n in self.error_sites_by_callee(s.owner)],
+                }
+            },
+        }
+    }
+}
+
+/// A walked error topology, rooted at one site — a tree, since one fn
+/// may have many callers and a catch may re-raise several ways.
+export type Chain = { site: ErrorSite, next: List<Chain> }
+
+impl Decls {
+    /// Whether `d`'s OWN written signature is `Result<_, _>` — read off
+    /// its declaring statement's raw node, never off a (possibly still
+    /// computing, possibly not yet asked at all) `sig()`.
+    fn declared_result_hole(d: DeclId) -> bool {
+        let x = self.decl(d)
+        match self.store(d).stmt(x.stmt) {
+            .FnDecl(_, _, _, ret, _) -> result_infers(ret),
+            rest -> false,
+        }
+    }
+
+    /// Whether `x` is one of the declarations this fixpoint holds at
+    /// all — every `_`-declared, not-held fn or method, found purely
+    /// syntactically.
+    fn inferring(x: Decl) -> bool {
+        seated(x) && self.declared_result_hole(x.id)
+    }
+
+    /// Kleene iteration over SETS: a fn's inferred error type is a
+    /// member of its own direct raises, or of any callee's set it
+    /// flows from — until no set grows. Same proof receivers.av's
+    /// `settle_writers` already states, for a growing set under union
+    /// rather than a growing set of true bits under OR.
+    fn settle_failures(fns: List<DeclId>, sums: List<FailSummary>) {
+        mut changed = true
+        while changed {
+            changed = false
+            for j, d in fns {
+                if self.settle_fail_one(d, sums[j]) { changed = true }
+            }
+        }
+    }
+
+    fn settle_fail_one(d: DeclId, s: FailSummary) -> bool {
+        let before = self.inferred_errors_so_far(d).length
+        for ty in s.direct { self.record_inferred_error(d, ty) }
+        for g in s.calls { for ty in self.inferred_errors_so_far(g) { self.record_inferred_error(d, ty) } }
+        self.inferred_errors_so_far(d).length != before
+    }
+}

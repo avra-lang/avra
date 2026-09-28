@@ -51,7 +51,10 @@ fn vendored(main: string) -> Map<string, string> {
 
 /// The vendored `Pair` beside a vendored trait.
 fn vendored_show(main: string) -> Map<string, string> {
-    vendored_over("${pair()}export trait Show {\n    fn show() -> string\n}\n", "use @acme.util.{Pair, Show}\n${main}")
+    vendored_over(
+        "${pair()}export trait Show {\n    fn show() -> string\n}\n",
+        "use @acme.util.{Pair, Show}\n${main}",
+    )
 }
 
 fn vendored_names() -> List<string> {
@@ -61,135 +64,297 @@ fn vendored_names() -> List<string> {
 spec "compiler/workspace (adversarial)" {
     given "names against names" {
         then "a local fn duplicating a sibling's refuses — the sibling named" {
-            refuses_once({ "/w/src/main.av": "fn helper(n: int) -> int {\n    n * 5\n}\nhelper(1)\n", "/w/src/a.av": "fn helper(n: int) -> int {\n    n\n}\n" },
-                         ["/w/src/main.av", "/w/src/a.av"], "`helper` is declared twice in this module — here and in `a.av`")
+            refuses_once(
+                {
+                    "/w/src/main.av": "fn helper(n: int) -> int {\n    n * 5\n}\nhelper(1)\n",
+                    "/w/src/a.av": "fn helper(n: int) -> int {\n    n\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/a.av"],
+                "`helper` is declared twice in this module — here and in `a.av`",
+            )
         }
         then "an import shadowed by a local declaration refuses" {
-            refuses_once({ "/w/src/main.av": "use util.{twice}\nfn twice(n: int) -> int {\n    n\n}\ntwice(1)\n", "/w/src/util/m.av": twice() },
-                         ["/w/src/main.av", "/w/src/util/m.av"], "`twice` is imported, but this module (`main.av`) already has it")
+            refuses_once(
+                {
+                    "/w/src/main.av": "use util.{twice}\nfn twice(n: int) -> int {\n    n\n}\ntwice(1)\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/util/m.av"],
+                "`twice` is imported, but this module (`main.av`) already has it",
+            )
         }
         then "the same item listed twice in one use refuses" {
-            refuses_once({ "/w/src/main.av": "use util.{twice, twice}\ntwice(1)\n", "/w/src/util/m.av": twice() },
-                         ["/w/src/main.av", "/w/src/util/m.av"], "`twice` is listed twice")
+            refuses_once(
+                {
+                    "/w/src/main.av": "use util.{twice, twice}\ntwice(1)\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/util/m.av"],
+                "`twice` is listed twice",
+            )
         }
         then "the same name from two modules refuses" {
-            refuses_once({ "/w/src/main.av": "use x.{f}\nuse y.{f}\nf()\n", "/w/src/x/a.av": "export fn f() -> int {\n    1\n}\n", "/w/src/y/b.av": "export fn f() -> int {\n    2\n}\n" },
-                         ["/w/src/main.av", "/w/src/x/a.av", "/w/src/y/b.av"], "`f` is imported, but `x` already has it")
+            refuses_once(
+                {
+                    "/w/src/main.av": "use x.{f}\nuse y.{f}\nf()\n",
+                    "/w/src/x/a.av": "export fn f() -> int {\n    1\n}\n",
+                    "/w/src/y/b.av": "export fn f() -> int {\n    2\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/x/a.av", "/w/src/y/b.av"],
+                "`f` is imported, but `x` already has it",
+            )
         }
         then "importing a declaration already visible as a sibling is redundant, not a clash" {
-            runs({ "/w/src/main.av": "use solo.{only}\nonly(4)\n", "/w/src/solo.av": "export fn only(n: int) -> int {\n    n\n}\n" }, ["/w/src/main.av", "/w/src/solo.av"]) == "4"
+            runs(
+                {
+                    "/w/src/main.av": "use solo.{only}\nonly(4)\n",
+                    "/w/src/solo.av": "export fn only(n: int) -> int {\n    n\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/solo.av"],
+            ) == "4"
         }
         then "a directory and a file of one name refuse together" {
-            refuses_once({ "/w/src/main.av": "use util.{twice}\ntwice(1)\n", "/w/src/util.av": twice(), "/w/src/util/m.av": twice() },
-                         ["/w/src/main.av", "/w/src/util.av", "/w/src/util/m.av"], "`util` is both a directory and a file under the root")
+            refuses_once(
+                {
+                    "/w/src/main.av": "use util.{twice}\ntwice(1)\n",
+                    "/w/src/util.av": twice(),
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/util.av", "/w/src/util/m.av"],
+                "`util` is both a directory and a file under the root",
+            )
         }
     }
     given "export, misused" {
         then "on a let" {
-            refuses_once({ "/w/src/main.av": "export let x = 1\nx\n" }, ["/w/src/main.av"], "`export` marks a fn, type, enum or trait — not this statement")
+            refuses_once(
+                {"/w/src/main.av": "export let x = 1\nx\n"},
+                ["/w/src/main.av"],
+                "`export` marks a fn, type, enum or trait — not this statement",
+            )
         }
         then "on an impl — its methods travel with the type" {
-            refuses_once({ "/w/src/main.av": "type P = { x: int }\nexport impl P {\n    fn get() -> int {\n        self.x\n    }\n}\nP { x: 3 }.get()\n" }, ["/w/src/main.av"],
-                         "an impl is not exported — its methods travel with their type")
+            refuses_once(
+                {
+                    "/w/src/main.av": "type P = { x: int }\nexport impl P {\n    fn get() -> int {\n        self.x\n    }\n}\nP { x: 3 }.get()\n",
+                },
+                ["/w/src/main.av"],
+                "an impl is not exported — its methods travel with their type",
+            )
         }
         then "on a use — the re-export waits for 15c" {
-            refuses_once({ "/w/src/main.av": "export use util.{twice}\ntwice(1)\n", "/w/src/util/m.av": twice() }, ["/w/src/main.av", "/w/src/util/m.av"], "`export use` — a re-export — arrives with a later slice")
+            refuses_once(
+                {
+                    "/w/src/main.av": "export use util.{twice}\ntwice(1)\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/util/m.av"],
+                "`export use` — a re-export — arrives with a later slice",
+            )
         }
         then "written twice" {
-            refuses_once({ "/w/src/main.av": "export export fn f() -> int {\n    1\n}\nf()\n" }, ["/w/src/main.av"], "`export` written twice")
+            refuses_once(
+                {"/w/src/main.av": "export export fn f() -> int {\n    1\n}\nf()\n"},
+                ["/w/src/main.av"],
+                "`export` written twice",
+            )
         }
     }
     given "use, misplaced" {
         then "inside a fn body" {
-            refuses_once({ "/w/src/main.av": "fn one() -> int {\n    use util.{twice}\n    1\n}\none()\n", "/w/src/util/m.av": twice() }, ["/w/src/main.av", "/w/src/util/m.av"], "use lines live at the top level")
+            refuses_once(
+                {
+                    "/w/src/main.av": "fn one() -> int {\n    use util.{twice}\n    1\n}\none()\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/util/m.av"],
+                "use lines live at the top level",
+            )
         }
         then "in a file outside any package" {
             let a = analyze_source("use util.{twice}\n1\n")
-            a.diagnostics.length == 1 && a.report().contains("this file is not in a package — `use` needs a root")
+            a.diagnostics.length == 1 &&
+                a.report().contains("this file is not in a package — `use` needs a root")
         }
     }
     given "impls across the line" {
         then "a sibling module's type takes a method — one package, one owner" {
-            runs({ "/w/src/main.av": "use util.{Pair}\nimpl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\nPair { a: 1, b: 2 }.sum()\n", "/w/src/util/p.av": pair() },
-                 ["/w/src/main.av", "/w/src/util/p.av"]) == "3"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{Pair}\nimpl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\nPair { a: 1, b: 2 }.sum()\n",
+                    "/w/src/util/p.av": pair(),
+                },
+                ["/w/src/main.av", "/w/src/util/p.av"],
+            ) == "3"
         }
         then "an impl of a dependency's type is an orphan — and its body does not crash the walk" {
-            refuses_once(vendored("impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@acme.util`, where `Pair` is declared")
+            refuses_once(
+                vendored(
+                    "impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n1\n",
+                ),
+                vendored_names(),
+                "`impl Pair` belongs in package `@acme.util`, where `Pair` is declared",
+            )
         }
         then "an orphan's method reading a param does not crash the walk either" {
-            refuses_once(vendored("impl Pair {\n    fn plus(n: int) -> int {\n        self.a + n\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@acme.util`")
+            refuses_once(
+                vendored(
+                    "impl Pair {\n    fn plus(n: int) -> int {\n        self.a + n\n    }\n}\n1\n",
+                ),
+                vendored_names(),
+                "`impl Pair` belongs in package `@acme.util`",
+            )
         }
         then "an orphan's method, called, speaks the orphan alone" {
-            refuses_once(vendored("impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\nPair { a: 1, b: 2 }.sum()\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@acme.util`")
+            refuses_once(
+                vendored(
+                    "impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\nPair { a: 1, b: 2 }.sum()\n",
+                ),
+                vendored_names(),
+                "`impl Pair` belongs in package `@acme.util`",
+            )
         }
         then "a dependency's type takes a LOCAL trait's methods" {
-            runs(vendored("trait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n"), vendored_names()) == "pair"
+            runs(
+                vendored(
+                    "trait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n",
+                ),
+                vendored_names(),
+            ) == "pair"
         }
         then "a dependency's trait for a dependency's type is an orphan — the impl named as written" {
-            refuses_once(vendored_show("impl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Show for Pair` belongs in package `@acme.util`, where `Pair` is declared")
+            refuses_once(
+                vendored_show(
+                    "impl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\n1\n",
+                ),
+                vendored_names(),
+                "`impl Show for Pair` belongs in package `@acme.util`, where `Pair` is declared",
+            )
         }
         then "a local trait may be implemented for a foreign type" {
-            runs({ "/w/src/main.av": "use util.{Pair}\ntrait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n", "/w/src/util/p.av": pair() },
-                 ["/w/src/main.av", "/w/src/util/p.av"]) == "pair"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{Pair}\ntrait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n",
+                    "/w/src/util/p.av": pair(),
+                },
+                ["/w/src/main.av", "/w/src/util/p.av"],
+            ) == "pair"
         }
         then "a method declared beside its type in another file dispatches" {
-            runs({ "/w/src/main.av": "use util.{Pair}\nPair { a: 1, b: 2 }.sum()\n", "/w/src/util/p.av": "${pair()}impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n" },
-                 ["/w/src/main.av", "/w/src/util/p.av"]) == "3"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{Pair}\nPair { a: 1, b: 2 }.sum()\n",
+                    "/w/src/util/p.av": "${pair()}impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/util/p.av"],
+            ) == "3"
         }
         then "a foreign trait, implemented locally, reaches through dyn" {
-            runs({ "/w/src/main.av": "use util.{Show}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string {\n        \"p\"\n    }\n}\nlet d: dyn Show = P { x: 1 }\nd.show()\n", "/w/src/util/t.av": "export trait Show {\n    fn show() -> string\n}\n" },
-                 ["/w/src/main.av", "/w/src/util/t.av"]) == "p"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{Show}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string {\n        \"p\"\n    }\n}\nlet d: dyn Show = P { x: 1 }\nd.show()\n",
+                    "/w/src/util/t.av": "export trait Show {\n    fn show() -> string\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/util/t.av"],
+            ) == "p"
         }
         then "two modules may each declare a type of one name with one method — the symbols differ" {
-            runs({ "/w/src/main.av": "use x.{make_a}\nuse y.{make_b}\nmake_a().v() + make_b().v()\n",
-                   "/w/src/x/a.av": "export type P = { n: int }\nimpl P {\n    fn v() -> int {\n        self.n\n    }\n}\nexport fn make_a() -> P {\n    P { n: 1 }\n}\n",
-                   "/w/src/y/b.av": "export type P = { n: int }\nimpl P {\n    fn v() -> int {\n        self.n * 10\n    }\n}\nexport fn make_b() -> P {\n    P { n: 2 }\n}\n" },
-                 ["/w/src/main.av", "/w/src/x/a.av", "/w/src/y/b.av"]) == "21"
+            runs(
+                {
+                    "/w/src/main.av": "use x.{make_a}\nuse y.{make_b}\nmake_a().v() + make_b().v()\n",
+                    "/w/src/x/a.av": "export type P = { n: int }\nimpl P {\n    fn v() -> int {\n        self.n\n    }\n}\nexport fn make_a() -> P {\n    P { n: 1 }\n}\n",
+                    "/w/src/y/b.av": "export type P = { n: int }\nimpl P {\n    fn v() -> int {\n        self.n * 10\n    }\n}\nexport fn make_b() -> P {\n    P { n: 2 }\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/x/a.av", "/w/src/y/b.av"],
+            ) == "21"
         }
     }
     given "crossings that must simply work" {
         then "mutual recursion across two files" {
-            runs({ "/w/src/main.av": "use a.{fa}\nfa(3)\n", "/w/src/a/a.av": "use b.{fb}\nexport fn fa(n: int) -> int {\n    if n > 0 { fb(n - 1) } else { 0 }\n}\n", "/w/src/b/b.av": "use a.{fa}\nexport fn fb(n: int) -> int {\n    fa(n) + 10\n}\n" },
-                 ["/w/src/main.av", "/w/src/a/a.av", "/w/src/b/b.av"]) == "30"
+            runs(
+                {
+                    "/w/src/main.av": "use a.{fa}\nfa(3)\n",
+                    "/w/src/a/a.av": "use b.{fb}\nexport fn fa(n: int) -> int {\n    if n > 0 { fb(n - 1) } else { 0 }\n}\n",
+                    "/w/src/b/b.av": "use a.{fa}\nexport fn fb(n: int) -> int {\n    fa(n) + 10\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/a/a.av", "/w/src/b/b.av"],
+            ) == "30"
         }
         then "a foreign generic takes a lambda" {
-            runs({ "/w/src/main.av": "use util.{apply}\napply(3, (n: int) -> n * 7)\n", "/w/src/util/g.av": "export fn apply<T>(x: T, f: fn(T) -> T) -> T {\n    f(x)\n}\n" }, ["/w/src/main.av", "/w/src/util/g.av"]) == "21"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{apply}\napply(3, (n: int) -> n * 7)\n",
+                    "/w/src/util/g.av": "export fn apply<T>(x: T, f: fn(T) -> T) -> T {\n    f(x)\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/util/g.av"],
+            ) == "21"
         }
         then "strings cross the line and come back owned" {
-            runs({ "/w/src/main.av": "use util.{greet, rep}\nlet s = greet(\"avra\")\n\"\${rep(s, 2)}!\".length\n", "/w/src/util/s.av": "export fn greet(name: string) -> string {\n    \"hi \${name}\"\n}\nexport fn rep(s: string, n: int) -> string {\n    if n == 0 { \"\" } else { \"\${s}\${rep(s, n - 1)}\" }\n}\n" },
-                 ["/w/src/main.av", "/w/src/util/s.av"]) == "15"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{greet, rep}\nlet s = greet(\"avra\")\n\"\${rep(s, 2)}!\".length\n",
+                    "/w/src/util/s.av": "export fn greet(name: string) -> string {\n    \"hi \${name}\"\n}\nexport fn rep(s: string, n: int) -> string {\n    if n == 0 { \"\" } else { \"\${s}\${rep(s, n - 1)}\" }\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/util/s.av"],
+            ) == "15"
         }
     }
     given "a field default is a body of its module" {
         then "a foreign record's defaults fill a literal here — an int and a managed string" {
-            runs({ "/w/src/main.av": "use util.{P}\nlet p = P {}\np.x * 100 + p.tag.length\n", "/w/src/util/shapes.av": "export type P = { x: int = 3, tag: string = \"t-\${1 + 2}\" }\n" },
-                 ["/w/src/main.av", "/w/src/util/shapes.av"]) == "303"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{P}\nlet p = P {}\np.x * 100 + p.tag.length\n",
+                    "/w/src/util/shapes.av": "export type P = { x: int = 3, tag: string = \"t-\${1 + 2}\" }\n",
+                },
+                ["/w/src/main.av", "/w/src/util/shapes.av"],
+            ) == "303"
         }
         then "a default may call its module's PRIVATE fn — the literal's file never sees the name" {
-            runs({ "/w/src/main.av": "use util.{Q}\nQ {}.x\n", "/w/src/util/shapes.av": "fn twice(n: int) -> int {\n    n * 2\n}\nexport type Q = { x: int = twice(21) }\n" },
-                 ["/w/src/main.av", "/w/src/util/shapes.av"]) == "42"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{Q}\nQ {}.x\n",
+                    "/w/src/util/shapes.av": "fn twice(n: int) -> int {\n    n * 2\n}\nexport type Q = { x: int = twice(21) }\n",
+                },
+                ["/w/src/main.av", "/w/src/util/shapes.av"],
+            ) == "42"
         }
         then "a generic record's default instantiates under the literal's arguments" {
-            runs({ "/w/src/main.av": "use util.{Pair}\nlet p = Pair { a: 1 }\np.rest.length + 5\n", "/w/src/util/shapes.av": "export type Pair<T> = { a: T, rest: List<T> = [] }\n" },
-                 ["/w/src/main.av", "/w/src/util/shapes.av"]) == "5"
+            runs(
+                {
+                    "/w/src/main.av": "use util.{Pair}\nlet p = Pair { a: 1 }\np.rest.length + 5\n",
+                    "/w/src/util/shapes.av": "export type Pair<T> = { a: T, rest: List<T> = [] }\n",
+                },
+                ["/w/src/main.av", "/w/src/util/shapes.av"],
+            ) == "5"
         }
         then "a default reading its file's top-level binding refuses in ITS file, not the literal's" {
-            let ws = package({ "/w/src/main.av": "use util.{Q}\nQ {}.y\n", "/w/src/util/shapes.av": "let k = 3\nexport type Q = { y: int = k }\n" }, ["/w/src/main.av", "/w/src/util/shapes.av"])
+            let ws = package(
+                {
+                    "/w/src/main.av": "use util.{Q}\nQ {}.y\n",
+                    "/w/src/util/shapes.av": "let k = 3\nexport type Q = { y: int = k }\n",
+                },
+                ["/w/src/main.av", "/w/src/util/shapes.av"],
+            )
             let shapes = ws.analyze_file("/w/src/util/shapes.av")
             ws.analyze_file("/w/src/main.av").clean() &&
-                shapes.diagnostics.length == 1 && shapes.report().contains("`k` is a run-time binding of the top level")
+                shapes.diagnostics.length == 1 &&
+                shapes.report().contains("`k` is a run-time binding of the top level")
         }
     }
     given "a type's methods are one namespace across its module's files" {
         then "the same method in two files of one module clashes at the LATER file, only" {
-            let ws = package({ "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show() -> int {\n        self.x\n    }\n}\n", "/w/src/util/b.av": "impl P {\n    fn show() -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"])
+            let ws = package(
+                {
+                    "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n",
+                    "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show() -> int {\n        self.x\n    }\n}\n",
+                    "/w/src/util/b.av": "impl P {\n    fn show() -> int {\n        self.x + 1\n    }\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"],
+            )
             let later = ws.analyze_file("/w/src/util/b.av")
             ws.analyze_file("/w/src/util/a.av").clean() &&
-                later.diagnostics.length == 1 && later.report().contains("`P.show` is declared twice")
+                later.diagnostics.length == 1 &&
+                later.report().contains("`P.show` is declared twice")
         }
     }
 }

@@ -1,0 +1,37 @@
+// A Db is one identity: a copy — a binding or a record's field, read
+// or written from either side — holds the same rows as the original.
+use @std.relation.{relation}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Note = { @index tag: string }
+
+type Holder = { db: Db, n: int }
+
+fn tagged(db: Db, tag: string) -> int { Note.by_tag(db, tag).length }
+
+fn plain() -> string {
+    let a = new_db()
+    let b = a
+    let _ = Note.insert(b, tag: "x")
+    "${Note.all(a).length}"
+}
+
+fn held() -> string {
+    let h1 = Holder { db: new_db(), n: 1 }
+    mut h2 = h1
+    h2.n = 2
+    let _ = Note.insert(h2.db, tag: "x")
+    let first = tagged(h1.db, "x")
+    let _ = Note.insert(h1.db, tag: "x")
+    "${Note.all(h1.db).length} ${Note.all(h2.db).length} ${first} ${tagged(h2.db, "x")}"
+}
+
+fn back() -> string {
+    let a = new_db()
+    let b = a
+    let _ = Note.insert(a, tag: "y")
+    "${Note.all(b).length}"
+}
+
+"${plain()} | ${held()} | ${back()}"

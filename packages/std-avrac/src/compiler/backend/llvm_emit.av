@@ -1,7 +1,7 @@
 //! The instruction emitter: `impl Emit`, one arm per IR instruction.
 //! The module/declaration/entry machinery lives in llvm.av.
 use core.{Ins, Reg, BinOp, UnOp, TypeId, RtKind, RtSig}
-use features.{nothing}
+use features.{nothing, absent_tag}
 
 impl Emit {
     /// A register's LLVM type.
@@ -18,12 +18,24 @@ impl Emit {
         for j, a in args {
             avra_llvm_type_array_set(ptys, j, ll_type_of(self.lc, self.types, self.tys[a.index]))
         }
-        let fty = avra_llvm_function_type(ll_type_of(self.lc, self.types, self.tys[d.index]), ptys, args.length, 0)
+        let fty = avra_llvm_function_type(
+            ll_type_of(self.lc, self.types, self.tys[d.index]),
+            ptys,
+            args.length,
+            0,
+        )
         avra_llvm_type_array_free(ptys)
         let vargs = avra_llvm_value_array_new(args.length)
         for j, a in args {
-            avra_llvm_value_array_set(vargs, j,
-                avra_llvm_cast_to_type(self.b, self.vals[a.index], ll_type_of(self.lc, self.types, self.tys[a.index])))
+            avra_llvm_value_array_set(
+                vargs,
+                j,
+                avra_llvm_cast_to_type(
+                    self.b,
+                    self.vals[a.index],
+                    ll_type_of(self.lc, self.types, self.tys[a.index]),
+                ),
+            )
         }
         let fp = avra_llvm_cast_to_type(self.b, self.vals[f.index], avra_llvm_pointer_type(self.lc))
         avra_llvm_build_call(self.b, fty, fp, vargs, args.length, "")
@@ -34,6 +46,16 @@ impl Emit {
         let arr = avra_llvm_value_array_new(args.length)
         for i, a in args { avra_llvm_value_array_set(arr, i, a) }
         avra_llvm_build_call(self.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
+    }
+
+    /// The slot's first write: settle the keyed table (unchanged —
+    /// `avra_once_slot_commit` calls straight through to
+    /// `avra_once_set`) and this fn's own global together, so every
+    /// `OnceRead` after this one sees whichever value won.
+    fn once_committed(sym: string, value: Reg) {
+        let slot = avra_llvm_once_slot(self.m, once_slot_name(sym))
+        let key = avra_llvm_build_text(self.b, sym.bytes(), sym.length, ".once_key")
+        let _ = self.call("avra_once_slot_commit", [key, self.vals[value.index], slot])
     }
 
     fn emit_ins(i: Ins) {
@@ -47,11 +69,28 @@ impl Emit {
             .CallRtVoid(callee, args) -> self.void_rt_call(callee, args),
             .CallRt(dst, callee, args) -> self.define(self.call_rt_value(dst, callee, args)),
             .Pack(dst, elems) -> self.define(self.pack_value(dst, elems)),
-            .Extract(_, src, at) -> self.define(self.extract_value(src, at)),
+            .Extract(dst, src, at) -> self
+                .define(avra_llvm_cast_to_type(self.b, self.extract_value(src, at), self.reg_type(dst))),
             .Call(_, callee, args) -> self.define(self.call(mangled(callee), [self.vals[a.index] for a in args])),
-            .FnAddr(_, sym) -> self.define(avra_llvm_cast_to_type(self.b,
-                avra_llvm_get_named_function(self.m, mangled(sym)), avra_llvm_int64_type(self.lc))),
+            .FnAddr(_, sym) -> self
+                .define(
+                    avra_llvm_cast_to_type(
+                        self.b,
+                        avra_llvm_get_named_function(self.m, mangled(sym)),
+                        avra_llvm_int64_type(self.lc),
+                    ),
+                ),
             .StaticAddr(_, sym) -> self.define(avra_llvm_global_payload(self.m, mangled(sym))),
+            .OnceRead(dst, sym) -> self
+                .define(
+                    avra_llvm_build_load(
+                        self.b,
+                        self.reg_type(dst),
+                        avra_llvm_once_slot(self.m, once_slot_name(sym)),
+                        "once",
+                    ),
+                ),
+            .OnceCommit(sym, value) -> self.once_committed(sym, value),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
             .Release(r) -> self.released(r),
             .Retain(r) -> self.retained(r),
@@ -62,8 +101,9 @@ impl Emit {
             .SwitchStart(sel, cases) -> self.switch_start(sel, cases),
             .ArmEnd(gives) -> self.arm_end(gives),
             .RegionEnd(dst, gives) -> self.region_end(dst, gives),
-            .Alloca(dst) -> self.define(avra_llvm_build_alloca(self.b, self.reg_type(dst), "slot")),
-            .Load(dst, slot) -> self.define(avra_llvm_build_load(self.b, self.reg_type(dst), self.vals[slot.index], "ld")),
+            .Alloca(dst) -> self.allocated(dst),
+            .Load(dst, slot) -> self
+                .define(avra_llvm_build_load(self.b, self.reg_type(dst), self.vals[slot.index], "ld")),
             .Store(slot, src) -> self.stored(slot, src),
             .LoopStart -> self.loop_start(),
             .LoopCond(c) -> self.loop_cond(c),
@@ -83,27 +123,41 @@ impl Emit {
         avra_llvm_const_int(avra_llvm_int64_type(self.lc), v, 1)
     }
 
-    /// Whether a register holds a FLAT record — one that IS its field.
-    fn flat_value(r: Reg) -> bool {
-        self.types.is_flat(self.tys[r.index])
+    /// Whether a register holds a value with no LLVM aggregate at
+    /// all: a FLAT record of one field, which IS its field, or a
+    /// nullable WORD ENUM, whose own tag doubles as the absent
+    /// sentinel — one register either way.
+    fn bare_value(r: Reg) -> bool {
+        let ty = self.tys[r.index]
+        self.types.is_flat(ty) && !self.types.is_wide(ty) || self.word_opt(ty)
+    }
+
+    /// A nullable WORD ENUM, by its own shape — never reduced through
+    /// `machine_type`, which would already have flattened it away.
+    fn word_opt(ty: TypeId) -> bool {
+        match self.types.shape_of(ty) {
+            .Opt(inner) -> self.types.is_word_enum(inner),
+            rest -> false,
+        }
     }
 
     /// One element out of an aggregate — or the value itself, when the
-    /// aggregate is a FLAT record and IS that element.
+    /// register rides BARE.
     fn extract_value(src: Reg, at: int) -> ptr {
-        if self.flat_value(src) { return self.vals[src.index] }
+        if self.bare_value(src) { return self.vals[src.index] }
         avra_llvm_build_extract_value(self.b, self.vals[src.index], at, "x")
     }
 
     /// A packed value: element by element into an undef aggregate —
     /// registers all the way, which is what lets SROA see through it.
     fn pack_value(dst: Reg, elems: List<Reg>) -> ptr {
-        // A FLAT record IS its one field — the pack is the value itself.
-        if self.flat_value(dst) { return self.vals[elems[0].index] }
+        // A BARE register IS its one element — the pack is the value itself.
+        if self.bare_value(dst) { return avra_llvm_cast_to_type(self.b, self.vals[elems[0].index], self.reg_type(dst)) }
         mut agg = avra_llvm_get_undef(self.reg_type(dst))
-        // LICENSED I4: the running aggregate, not a scan
+        let valued = self.types.valued_carrier(self.tys[dst.index])
         for j, r in elems {
-            agg = avra_llvm_build_insert_value(self.b, agg, self.vals[r.index], j, "pack")
+            let part = if valued { self.worded(r, self.vals[r.index]) } else { self.vals[r.index] }
+            agg = avra_llvm_build_insert_value(self.b, agg, part, j, "pack")
         }
         agg
     }
@@ -152,8 +206,7 @@ impl Emit {
             .Ge -> avra_llvm_build_fcmp(self.b, 3, a, b, "fcmp"),
             .Lt -> avra_llvm_build_fcmp(self.b, 4, a, b, "fcmp"),
             .Le -> avra_llvm_build_fcmp(self.b, 5, a, b, "fcmp"),
-            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
-                self.wrecked(int_only_on_floats, a),
+            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> self.wrecked(int_only_on_floats, a),
             .And or .Or -> self.wrecked(lazy_in_eager, a),
         }
     }
@@ -186,9 +239,7 @@ impl Emit {
     }
 
     fn un_value(op: UnOp, v: ptr) -> ptr {
-        match op {
-            .Not -> avra_llvm_build_not(self.b, v, "not"),
-        }
+        match op { .Not -> avra_llvm_build_not(self.b, v, "not") }
     }
 
     /// A runtime call, generic over every callee declare_runtime names.
@@ -257,13 +308,63 @@ impl Emit {
 
     /// A callee's row: the runtime's, or one of the program's externs.
     fn callee_sig(callee: string) -> RtSig? {
-        // LICENSED I18: two registries asked in turn — the second answers when the first has no row
         self.rt.get(callee) ?? self.externs.find(it.name == callee)
     }
 
     fn void_rt_call(callee: string, args: List<Reg>) {
+        if self.settled_valued(callee, args) { return }
         let _ = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
+    }
+
+    /// A VALUE ENUM'S CELL is its tag and word, never one pointer: its
+    /// release counts the word down by tag, and both a release and a
+    /// forget leave the cell holding the absent tag. Whether the row
+    /// did this, answered for the cell rows alone.
+    fn settled_valued(callee: string, args: List<Reg>) -> bool {
+        let sig? = self.callee_sig(callee) else { return false }
+        let slot? = args.first() else { return false }
+        if !self.types.valued_carrier(self.tys[slot.index]) { return false }
+        match sig.host {
+            .CellRelease -> {
+                let held = avra_llvm_build_load(
+                    self.b,
+                    self.reg_type(slot),
+                    self.vals[slot.index],
+                    "held",
+                )
+                self.counted_by_tag(tagged_release, held, self.tys[slot.index])
+            },
+            .CellForget -> nothing(),
+            rest -> { return false },
+        }
+        let _ = avra_llvm_build_store(self.b, self.absent_valued(slot), self.vals[slot.index])
+        true
+    }
+
+    /// A FRESH CELL HOLDS NOTHING, as the evaluator's does: the memory
+    /// pass settles a cell before its first store, so a value enum's
+    /// cell starts at the absent tag — never stack garbage its settle
+    /// would release by tag. A pointer's cell starts null at the
+    /// alloca itself.
+    fn allocated(dst: Reg) {
+        self.define(avra_llvm_build_alloca(self.b, self.reg_type(dst), "slot"))
+        if self.types.valued_carrier(self.tys[dst.index]) {
+            let _ = avra_llvm_build_store(self.b, self.absent_valued(dst), self.vals[dst.index])
+        }
+    }
+
+    /// The absent tag and no word, as a cell of `slot`'s type holds them.
+    fn absent_valued(slot: Reg) -> ptr {
+        let i64 = avra_llvm_int64_type(self.lc)
+        let tagged = avra_llvm_build_insert_value(
+            self.b,
+            avra_llvm_get_undef(self.reg_type(slot)),
+            avra_llvm_const_int(i64, absent_tag, 1),
+            0,
+            "absent",
+        )
+        avra_llvm_build_insert_value(self.b, tagged, avra_llvm_const_int(i64, 0, 0), 1, "absent")
     }
 
     /// A NARROW INOUT CELL IS NORMALISED AFTER THE CALL. An Avra cell
@@ -303,10 +404,17 @@ impl Emit {
         if signed == null { return }
         let wide = avra_llvm_int64_type(self.lc)
         let cell = self.vals[slot.index]
-        let low = avra_llvm_build_trunc(self.b, avra_llvm_build_load(self.b, wide, cell, "cell"),
-                                        avra_llvm_int32_type(self.lc), "low")
-        let full = if signed! { avra_llvm_build_sext(self.b, low, wide, "signed") }
-                   else { avra_llvm_build_zext(self.b, low, wide, "unsigned") }
+        let low = avra_llvm_build_trunc(
+            self.b,
+            avra_llvm_build_load(self.b, wide, cell, "cell"),
+            avra_llvm_int32_type(self.lc),
+            "low",
+        )
+        let full = if signed! {
+            avra_llvm_build_sext(self.b, low, wide, "signed")
+        } else {
+            avra_llvm_build_zext(self.b, low, wide, "unsigned")
+        }
         let _ = avra_llvm_build_store(self.b, full, cell)
     }
 
@@ -327,7 +435,7 @@ impl Emit {
     /// slot casts down.
     fn rt_args(callee: string, args: List<Reg>) -> List<ptr> {
         mut out: List<ptr> = []
-        // LICENSED I3: the coercion needs the param INDEX; comprehensions
+        // LICENSED loops.push_loop: the coercion needs the param INDEX; comprehensions
         // cannot destructure enumerate
         for j, r in args { out.push(self.rt_arg(callee, j, r)) }
         out
@@ -386,10 +494,7 @@ impl Emit {
         match self.types.shape_of(self.tys[r.index]) {
             .Str -> true,
             .Bytes -> self.rt.get(callee) != null,
-            .Int or .Float or .Bool or .Ptr or .Struct(_, _) or .Enum(_, _)
-                or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _)
-                or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap
-                or .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
+            .Int or .Float or .Bool or .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Union(_) or .Error -> false,
         }
     }
 
@@ -410,7 +515,13 @@ impl Emit {
     fn unworded(form: SlotForm, raw: ptr) -> ptr {
         match form {
             .Address -> avra_llvm_build_int_to_ptr(self.b, raw, avra_llvm_pointer_type(self.lc), "boxed"),
-            .Widened -> avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b"),
+            .Widened -> avra_llvm_build_icmp(
+                self.b,
+                33,
+                raw,
+                avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0),
+                "b",
+            ),
             .Reinterpreted -> avra_llvm_build_bitcast(self.b, raw, avra_llvm_double_type(self.lc), "unslotted"),
             .Word -> raw,
         }
@@ -429,19 +540,45 @@ impl Emit {
             .Int or .Error or .Void or .TypeName(_, _) or .Var(_, _, _) -> SlotForm.Word,
             // a nullable is two machine forms: the niche IS the box's
             // pointer, a scalar pair is a register pair no slot holds
-            .Opt(inner) -> if self.types.opt_rides_pointer(inner) { SlotForm.Address } else { SlotForm.Word },
-            .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _)
-                or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList
-                or .Map(_, _) or .EmptyMap -> SlotForm.Address,
+            .Opt(inner) if !self.types.opt_rides_pointer(inner) -> SlotForm.Word,
+            .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Opt(_) or .Map(_, _) or .EmptyMap or .Union(_) -> SlotForm.Address,
         }
     }
 
     fn released(r: Reg) {
+        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count(tagged_release, r) }
         let _ = self.call("avra_rc_release", [self.counted(self.vals[r.index], self.tys[r.index])])
     }
 
     fn retained(r: Reg) {
+        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count(tagged_retain, r) }
         let _ = self.call("avra_rc_retain", [self.counted(self.vals[r.index], self.tys[r.index])])
+    }
+
+    /// A value enum's count: its word, counted by the row only when its
+    /// tag's variant carries a pointer.
+    fn tagged_count(row: string, r: Reg) {
+        self.counted_by_tag(row, self.vals[r.index], self.tys[r.index])
+    }
+
+    /// A value enum's word counted by `row` when its tag's variant
+    /// carries a pointer.
+    fn counted_by_tag(row: string, v: ptr, ty: TypeId) {
+        let tag = avra_llvm_build_extract_value(self.b, v, 0, "tag")
+        let word = avra_llvm_build_extract_value(self.b, v, 1, "word")
+        let _ = self
+            .call(
+                row,
+                [
+                    word,
+                    tag,
+                    avra_llvm_const_int(
+                        avra_llvm_int64_type(self.lc),
+                        self.types.counted_mask(ty),
+                        0,
+                    ),
+                ],
+            )
     }
 
     /// The pointer a count lands on: the value itself, or — for a
@@ -470,7 +607,10 @@ impl Emit {
     /// A process code wears the answer type the fn was declared with:
     /// C's `int` at the entry, the IR's `int` in a program body.
     fn ret_code(code: int) {
-        let _ = avra_llvm_build_ret(self.b, avra_llvm_const_int(avra_llvm_return_type_of(self.fn_val), code, 0))
+        let _ = avra_llvm_build_ret(
+            self.b,
+            avra_llvm_const_int(avra_llvm_return_type_of(self.fn_val), code, 0),
+        )
     }
 
     fn stored(slot: Reg, src: Reg) {
@@ -519,9 +659,15 @@ impl Emit {
     /// machine indexes, it does not walk.
     fn switch_start(sel: Reg, cases: List<int>) {
         // One block per case, plus the default's — the last arm.
-        let arms = [avra_llvm_append_basic_block(self.lc, self.fn_val, "arm") for c in cases].concat([avra_llvm_append_basic_block(self.lc, self.fn_val, "arm")])
+        let arms = [avra_llvm_append_basic_block(self.lc, self.fn_val, "arm") for c in cases]
+            .concat([avra_llvm_append_basic_block(self.lc, self.fn_val, "arm")])
         let merge_bb = avra_llvm_append_basic_block(self.lc, self.fn_val, "endswitch")
-        let sw = avra_llvm_build_switch(self.b, self.vals[sel.index], arms[cases.length], cases.length)
+        let sw = avra_llvm_build_switch(
+            self.b,
+            self.vals[sel.index],
+            arms[cases.length],
+            cases.length,
+        )
         let i64t = avra_llvm_int64_type(self.lc)
         for j, v in cases {
             avra_llvm_add_case(sw, avra_llvm_const_int(i64t, v, 1), arms[j])
@@ -533,7 +679,7 @@ impl Emit {
     /// The region stack's push — arm 0 is already being built.
     fn open_region(arms: List<ptr>, merge_bb: ptr) {
         let r = Region { arms: arms, next: 1, merge_bb: merge_bb, ended: [], gives: [] }
-        // LICENSED I15: a region STACK across fns, not a bracket body
+        // LICENSED compiler.bracket_ritual: a region STACK across fns, not a bracket body
         self.frames.push(r)
     }
 
@@ -545,10 +691,8 @@ impl Emit {
         let here = avra_llvm_get_insert_block(self.b)
         let _ = avra_llvm_build_br(self.b, f.merge_bb)
         avra_llvm_position_at_end(self.b, f.arms[f.next])
-        let advanced = f with {
-            ended: f.ended.concat([here]), gives: f.gives.concat([gives]), next: f.next + 1,
-        }
-        // LICENSED I15: a region STACK across fns, not a bracket body
+        let advanced = f with { ended: f.ended.concat([here]), gives: f.gives.concat([gives]), next: f.next + 1 }
+        // LICENSED compiler.bracket_ritual: a region STACK across fns, not a bracket body
         self.frames.push(advanced)
     }
 
@@ -566,7 +710,6 @@ impl Emit {
     }
 }
 
-/// `&&`/`||` are LAZY REGIONS — lowering diverts them before any
-/// `Bin` is emitted, so one reaching an eager table is the
-/// compiler's own defect. ONE definition for the whole `language`
-/// module, so the two engines cannot word it differently.
+/// The rows that count a value enum's word by its tag.
+const tagged_retain: string = "avra_rc_retain_tagged"
+const tagged_release: string = "avra_rc_release_tagged"

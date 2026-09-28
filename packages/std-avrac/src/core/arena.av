@@ -2,21 +2,24 @@
 //! shape every node arena shares. Callers wrap the raw index in their
 //! typed id.
 
-export type Arena<N> = { nodes: List<N>, spans: List<Span?> }
+export type Arena<N> = { nodes: Cell<List<N>>, spans: Cell<List<Span?>> }
 
 export fn new_arena<N>() -> Arena<N> {
-    Arena { nodes: [], spans: [] }
+    Arena { nodes: list_cell<N>(), spans: list_cell<Span?>() }
 }
 
-impl Arena<N> {
+impl Arena {
     /// Append a node and its span; the new raw index.
     fn add(n: N, span: Span?) -> int {
         self.nodes.push(n)
         self.spans.push(span)
-        self.nodes.length - 1
+        self.nodes.get().length - 1
     }
 
-    fn node_at(i: int) -> N { self.nodes[i] }
-    fn span_at(i: int) -> Span? { if i >= 0 && i < self.spans.length { self.spans[i] } else { null } }
-    fn count() -> int { self.nodes.length }
+    fn node_at(i: int) -> N { self.nodes.get()[i] }
+    fn span_at(i: int) -> Span? {
+        let spans = self.spans.get()
+        if i >= 0 && i < spans.length { spans[i] } else { null }
+    }
+    fn count() -> int { self.nodes.get().length }
 }

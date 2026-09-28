@@ -16,7 +16,8 @@
 //! the compiler accepting what the class says it must refuse — is a
 //! missing law and makes the case RED, never a pinned expectation.
 use core.{joined, flatten, quoted_text, distinct}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, TokenKind, term_kind}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
+use grammar.{TokenKind, term_kind}
 use compiler.{analyze_source}
 
 /// The class a case belongs to.
@@ -34,10 +35,7 @@ export fn survivors_of(g: Generated) -> List<Attack> {
 /// that asserts stability. A survivor is one of these the compiler
 /// accepts.
 fn is_mutant(c: AttackClass) -> bool {
-    match c {
-        .Degenerate -> false,
-        .Malformed or .Keyword -> true,
-    }
+    match c { .Degenerate -> false, .Malformed or .Keyword -> true }
 }
 
 fn accepts(src: string) -> bool {
@@ -106,9 +104,9 @@ fn degenerate(g: Grammar, r: Rule, s: Seq) -> List<Attack> {
     flatten([reps_attacks(g, s, r.name, base, rep) for rep in repeats_of(s, [])])
 }
 
-fn reps_attacks(g: Grammar, s: Seq, rule: string, base: string, rep: Repeat) -> List<Attack> {
+fn reps_attacks(g: Grammar, s: Seq, rname: string, base: string, rep: Repeat) -> List<Attack> {
     let counts = if rep.many { [Count.None, Count.Many] } else { [Count.None] }
-    [Attack { class: AttackClass.Degenerate, source: varying(g, s, rule, rep.path, c), base: base } for c in counts]
+    [Attack { class: AttackClass.Degenerate, source: varying(g, s, rname, rep.path, c), base: base } for c in counts]
 }
 
 /// A repeated item and whether its many-copy is self-contained.
@@ -118,7 +116,7 @@ type Repeat = { path: List<int>, many: bool }
 fn many_ok(m: Item) -> bool {
     match m.prim {
         .Group(inner) -> !inner.branches.any(is_separator),
-        .Ref(_) or .Lit(_) or .Named(_) -> true,
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> true,
     }
 }
 
@@ -126,12 +124,12 @@ fn is_separator(s: Seq) -> bool {
     if s.items.length != 1 { return false }
     match s.items[0].prim {
         .Named(term) -> term == "BREAK",
-        .Ref(_) or .Lit(_) or .Group(_) -> false,
+        .Ref(_) or .Lit(_) or .Group(_) or .NotChar(_) -> false,
     }
 }
 
-fn varying(g: Grammar, s: Seq, rule: string, path: List<int>, count: Count) -> string {
-    seq_sample(g, s, [rule], Vary { path: path, count: count }, [])
+fn varying(g: Grammar, s: Seq, rname: string, path: List<int>, count: Count) -> string {
+    seq_sample(g, s, [rname], Vary { path: path, count: count }, [])
 }
 
 /// The malformed class: a required token deleted, duplicated, or
@@ -195,7 +193,6 @@ fn swap_mutants(toks: List<string>) -> List<string> {
     [join_swap(toks, j) for j in 0..toks.length - 1 if toks[j] != toks[j + 1]]
 }
 
-
 // ── The sample ─────────────────────────────────────────────────────
 // A rule's first branch, spelled once: literals as written, a terminal
 // as its canonical token, a reference recursed (a cycle answers a
@@ -213,7 +210,10 @@ fn rule_sample(g: Grammar, name: string, seen: List<string>, vary: Vary?, path: 
 }
 
 fn seq_sample(g: Grammar, s: Seq, seen: List<string>, vary: Vary?, path: List<int>) -> string {
-    joined([item_sample(g, m, seen, vary, path.concat([j])) for j, m in s.items if !sample_empty(vary, path.concat([j]))], " ")
+    joined(
+        [item_sample(g, m, seen, vary, path.concat([j])) for j, m in s.items if !sample_empty(vary, path.concat([j]))],
+        " ",
+    )
 }
 
 /// Whether an item is spelled at all — a varied `None` drops it, so
@@ -224,11 +224,7 @@ fn sample_empty(vary: Vary?, path: List<int>) -> bool {
 
 fn item_sample(g: Grammar, m: Item, seen: List<string>, vary: Vary?, path: List<int>) -> string {
     let base = prim_sample(g, m.prim, seen, vary, path)
-    match count_for(vary, path) {
-        .None -> "",
-        .One -> base,
-        .Many -> "${base} ${base}",
-    }
+    match count_for(vary, path) { .None -> "", .One -> base, .Many -> "${base} ${base}" }
 }
 
 /// The repetition count this item wears: the varied one when it is the
@@ -253,6 +249,9 @@ fn prim_sample(g: Grammar, p: Prim, seen: List<string>, vary: Vary?, path: List<
         // expanded text.
         .Ref(name) -> if seen.contains(name) { "x" } else { rule_sample(g, name, seen.concat([name]), null, []) },
         .Group(inner) -> alt_sample(g, inner, seen, vary, path),
+        // A lexicon's own atom never reaches a parsing grammar's attack
+        // sample — a placeholder character, never asked to be exact.
+        .NotChar(_) -> "x",
     }
 }
 
@@ -269,16 +268,13 @@ fn repeat_in_item(m: Item, path: List<int>) -> List<Repeat> {
 
 fn group_repeats(p: Prim, path: List<int>) -> List<Repeat> {
     match p {
-        .Group(inner) -> if inner.branches.is_empty() { [] } else { repeats_of(inner.branches[0], path) },
-        .Ref(_) or .Lit(_) or .Named(_) -> [],
+        .Group(inner) if !inner.branches.is_empty() -> repeats_of(inner.branches[0], path),
+        .Group(_) or .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> [],
     }
 }
 
 fn repeats(r: Rep) -> bool {
-    match r {
-        .Star or .Plus -> true,
-        .One or .Opt -> false,
-    }
+    match r { .Star or .Plus -> true, .One or .Opt -> false }
 }
 
 /// A terminal's canonical token — through the grammar's OWN registry,
@@ -294,17 +290,17 @@ fn sample_of(k: TokenKind) -> string {
         .Name -> "x",
         .Num -> "1",
         .Str -> "\"s\"",
-        .IStrBegin -> "\"$" + "{",
+        .IStrBegin -> "\"\$" + "{",
         .IStrMid -> "}",
         .IStrEnd -> "}\"",
         .Op -> "?",
         .Break -> "\n",
         .Eof -> "",
         .Pkg -> "@std",
-        .Hole -> "$" + "{x}",
-        .HoleBegin -> "$" + "{",
+        .Hole -> "\$" + "{x}",
+        .HoleBegin -> "\$" + "{",
         .HoleEnd -> "}",
-        .Block or .Body -> "",
+        .Block or .Body or .Component -> "",
     }
 }
 
@@ -333,7 +329,6 @@ fn swapped(t: string, j: int, at: int, xs: List<string>) -> string {
     t
 }
 
-
 // ── The committed file ─────────────────────────────────────────────
 // THE FIXTURE IS GENERATED, so a case's law is its test body. The
 // laws live in `attack_case`; a TRAP is not a verdict — the case dies
@@ -343,40 +338,59 @@ fn swapped(t: string, j: int, at: int, xs: List<string>) -> string {
 /// The `<feature>_adversarial_test.av` a command writes, whole.
 export fn attack_test_source(feature: string, g: Generated) -> string {
     let cases = g.cases
-    joined([
-        "// GENERATED by `avra attack ${feature}` — the mechanical",
-        "// classes from the feature's rule and the model. A SEMANTIC",
-        "// attack belongs in the feature's hand-written test.",
-        "// cap: ${g.cap} case(s), ${g.dropped} dropped.",
-        "use @std.avrac.compiler.{analyze_source}",
-        "use @std.avrac.diagnostics.{Diag}",
-        "",
-        "/// The SHAPE parses — a canonical sample spells `x` where a name",
-        "/// belongs, so a TYPE error is expected and a PARSE error is not.",
-        "fn parses(src: string) -> bool {",
-        "    !analyze_source(src).diagnostics.any(parse_error)",
-        "}",
-        "",
-        "fn parse_error(d: Diag) -> bool {",
-        "    d.kind.starts_with(\"parse.\")",
-        "}",
-        "",
-        "/// The compiler REACHES A VERDICT on a malformed surface — a",
-        "/// deletion can yield a valid program, so this law is tolerance,",
-        "/// not refusal; a trap is not a verdict and dies in the call.",
-        "fn tolerates(src: string) -> bool {",
-        "    let reached = analyze_source(src).diagnostics.length",
-        "    reached >= 0",
-        "}",
-        "",
-        "spec \"features/${feature} adversarial — mechanical\" {",
-    ].concat(case_blocks(cases)).concat(["}"]), "\n")
+    joined(
+        [
+            "// GENERATED by `avra attack ${feature}` — the mechanical",
+            "// classes from the feature's rule and the model. A SEMANTIC",
+            "// attack belongs in the feature's hand-written test.",
+            "// cap: ${g.cap} case(s), ${g.dropped} dropped.",
+            "use @std.avrac.compiler.{analyze_source}",
+            "use @std.avrac.diagnostics.{Diag}",
+            "",
+            "/// The SHAPE parses — a canonical sample spells `x` where a name",
+            "/// belongs, so a TYPE error is expected and a PARSE error is not.",
+            "fn parses(src: string) -> bool {",
+            "    !analyze_source(src).diagnostics.any(parse_error)",
+            "}",
+            "",
+            "fn parse_error(d: Diag) -> bool {",
+            "    d.kind.starts_with(\"parse.\")",
+            "}",
+            "",
+            "/// The compiler REACHES A VERDICT on a malformed surface — a",
+            "/// deletion can yield a valid program, so this law is tolerance,",
+            "/// not refusal; a trap is not a verdict and dies in the call.",
+            "fn tolerates(src: string) -> bool {",
+            "    let reached = analyze_source(src).diagnostics.length",
+            "    reached >= 0",
+            "}",
+            "",
+            "spec \"features/${feature} adversarial — mechanical\" {",
+        ]
+            .concat(case_blocks(cases))
+            .concat(["}"]),
+        "\n",
+    )
 }
 
 fn case_blocks(cases: List<Attack>) -> List<string> {
-    [given_block(AttackClass.Degenerate, "degenerate shapes — a valid surface, and must stay valid", cases),
-     given_block(AttackClass.Malformed, "malformed surface (delete, duplicate, swap) — must be diagnosed", cases),
-     given_block(AttackClass.Keyword, "keyword-replace — must be diagnosed or a valid program", cases)]
+    [
+        given_block(
+            AttackClass.Degenerate,
+            "degenerate shapes — a valid surface, and must stay valid",
+            cases,
+        ),
+        given_block(
+            AttackClass.Malformed,
+            "malformed surface (delete, duplicate, swap) — must be diagnosed",
+            cases,
+        ),
+        given_block(
+            AttackClass.Keyword,
+            "keyword-replace — must be diagnosed or a valid program",
+            cases,
+        ),
+    ]
 }
 
 /// Whether a case belongs to the class a block renders — a `match`,

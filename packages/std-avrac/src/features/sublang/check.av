@@ -3,7 +3,8 @@
 //! its own module with the action's arity — before any user exists.
 use core.{ExprId, StmtId, TypeId, DeclId, flatten}
 use features.{TypeCx, FnSig}
-use grammar.{parse_grammar, ready, Grammar, Build, Diagnostic}
+use @std.grammar.{ready, Grammar, Build, Diagnostic}
+use grammar.{parse_grammar, avra_known_terminals}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
@@ -18,13 +19,13 @@ fn check_syntax(mut cx: TypeCx, s: StmtId) {
     let at = cx.stmt_loc(s)
     if gp.built == null { return cx.emit(unparsed(at, parts.name, first_defect(gp.diagnostics))) }
     let g = gp.built!
-    for d in ready(g).defects { cx.emit(refusal("type.syntax_action", at, d.message, "in this grammar", null)) }
+    for d in ready(g, avra_known_terminals()).defects { cx.emit(refusal("type.syntax_action", at, d.message, "in this grammar", null)) }
     for a in actions_of(g) {
         let found: DeclId? = cx.names.names.fn_decl(a.name)
         if found == null {
             cx.emit(no_action(at, parts.name, a.name))
         } else {
-            let sig: FnSig? = (cx.view.decls.sig(found!))?.fn_sig()
+            let sig: FnSig? = cx.view.decls.sig(found!)?.fn_sig()
             if sig != null && sig!.params.length != a.arity { cx.emit(wrong_arity(at, a.name, sig!.params.length, a.arity)) }
         }
     }
@@ -54,13 +55,31 @@ fn first_defect(ds: List<Diagnostic>) -> string {
 // ── voices ──
 
 fn unparsed(at: Loc?, word: string, defect: string) -> Diag {
-    refusal("type.syntax_action", at, "`grammar ${word}` does not parse: ${defect}", "this grammar", "the notation is the grammar DSL's — rules, `|` alternatives, `x:ITEM` captures, `-> action(x)`")
+    refusal(
+        "type.syntax_action",
+        at,
+        "`grammar ${word}` does not parse: ${defect}",
+        "this grammar",
+        "the notation is the grammar DSL's — rules, `|` alternatives, `x:ITEM` captures, `-> action(x)`",
+    )
 }
 
 fn no_action(at: Loc?, word: string, name: string) -> Diag {
-    refusal("type.syntax_action", at, "`grammar ${word}` names an action `${name}`, and this module declares no fn `${name}`", "this grammar", "declare `fn ${name}(…)` in this module — an action is one of its own fns")
+    refusal(
+        "type.syntax_action",
+        at,
+        "`grammar ${word}` names an action `${name}`, and this module declares no fn `${name}`",
+        "this grammar",
+        "declare `fn ${name}(…)` in this module — an action is one of its own fns",
+    )
 }
 
 fn wrong_arity(at: Loc?, name: string, takes: int, handed: int) -> Diag {
-    refusal("type.syntax_action", at, "action `${name}` hands ${handed} captures, and `fn ${name}` takes ${takes}", "this grammar", "capture as many as the fn takes")
+    refusal(
+        "type.syntax_action",
+        at,
+        "action `${name}` hands ${handed} captures, and `fn ${name}` takes ${takes}",
+        "this grammar",
+        "capture as many as the fn takes",
+    )
 }

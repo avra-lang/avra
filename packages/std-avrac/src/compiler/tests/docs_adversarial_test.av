@@ -2,49 +2,77 @@
 // not drift. Each row is an attack the red team ran against the
 // lexer's anchor and the source projection.
 use @std.avrac.testing.{projected}
+use @std.avrac.compiler.{parse_source}
 
 spec "docs — the declaration-leading `///` surface" {
     given "what detaches a group" {
         then "an ordinary comment between a doc group and its declaration is kept in order, and does not detach it" {
             projected("/// kept\n// note\nfn a() -> int { 1 }") == "/// kept\n// note\nfn a() -> int {\n    1\n}"
         }
-        then "a blank line detaches a doc group and survives as the author's blank" {
-            projected("/// lost\n\nfn a() -> int { 1 }") == "\nfn a() -> int {\n    1\n}"
+        then "a blank line detaches a doc group; it survives as a remark, the blank survives beside it" {
+            projected("/// lost\n\nfn a() -> int { 1 }") == "/// lost\n\nfn a() -> int {\n    1\n}"
         }
-        then "an orphan before a closing brace cannot drift to the next declaration" {
-            !projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }").contains("lost")
+        then "an orphan before a closing brace becomes a remark there, and cannot drift to the next declaration" {
+            projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }") == "fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int {\n    2\n}"
         }
-        then "a trailing doc cannot attach" {
-            !projected("let x = 1 /// lost\nlet y = 2\nx + y").contains("lost")
+        then "a trailing `///` is a same-line remark, not a doc" {
+            projected("let x = 1 /// lost\nlet y = 2\nx + y") == "let x = 1 /// lost\nlet y = 2\nx + y"
         }
     }
-
     given "docs that no table holds" {
-        // A variant's or a field's `///` has no table — it is not a
-        // declaration-leading doc, and the printer walks statements.
-        // A module's `//!` is a plain remark, so it survives through
-        // the trivia cursor. ROADMAP records the missing tables.
-        then "a module's `//!` survives as a remark, and a variant's or field's `///` is still dropped" {
+
+        // A variant's or a field's `///` has no table of its own — it
+        // is not a declaration-leading doc, so it is not documentation
+        // of the thing it precedes. Orphaned like any other `///` that
+        // never reaches a declaration, it becomes an ordinary remark
+        // and the printer replays it in place, same as a module's
+        // `//!` always has. ROADMAP records the missing doc tables.
+        then "a module's `//!`, a variant's and a field's `///` all survive as remarks" {
             projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" &&
-                !projected("type S = {\n    /// lost\n    v: int,\n}").contains("lost") &&
-                !projected("enum E {\n    /// lost\n    A,\n}").contains("lost")
+                projected("type S = {\n    /// lost\n    v: int,\n}") == "type S = {\n    /// lost\n    v: int,\n}" &&
+                projected("enum E {\n    /// lost\n    A,\n}") == "enum E {\n    /// lost\n    A\n}"
         }
     }
-
     given "where a group lands" {
+
         then "a doc lands on the nested declaration it precedes, not its owner" {
-            projected("fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()") ==
-                "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
+            projected(
+                "fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()",
+            ) == "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
         }
         then "a doc on the first declaration cannot bleed onto the second" {
-            projected("/// one\nfn a() -> int { 1 }\nfn b() -> int { 2 }") ==
-                "/// one\nfn a() -> int {\n    1\n}\nfn b() -> int {\n    2\n}"
+            projected("/// one\nfn a() -> int { 1 }\nfn b() -> int { 2 }") == "/// one\nfn a() -> int {\n    1\n}\nfn b() -> int {\n    2\n}"
         }
         then "a doc survives each declaration prefix the lexer accepts" {
-            let out = projected("/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }")
+            let out = projected(
+                "/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }",
+            )
             out.contains("/// k\nconst K: int = 3") &&
                 out.contains("/// e\nextern fn puts(s: string) -> int") &&
                 out.contains("/// o\nonce fn seed() -> string")
+        }
+    }
+    given "a mark on a declared member" {
+
+        // `@m` before a variant is a MARK (features/annotations/mod.av:
+        // "a mark is data where an annotation is a call") — the lexer
+        // cannot tell it from an ANNOTATION wrapping a real declaration,
+        // since both are one `@word` token. A `///` group anchored on
+        // one is kept as a remark, exactly as an unmarked variant's is:
+        // the mark looking like a declaration prefix must not let its
+        // doc drift onto whatever statement happens to follow.
+        then "an annotated variant's `///` round-trips as a remark, not a dropped doc" {
+            projected("enum E {\n    /// doc a\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}") == "enum E {\n    /// doc a\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}"
+        }
+        then "an annotated variant's `///` does not fold into the next real declaration's identity" {
+            let with_enum = parse_source(
+                "enum E {\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}\n\n/// real doc\nfn f() {}\n",
+            )
+            let alone = parse_source("/// real doc\nfn f() {}\n")
+            let f = with_enum.stmts.last()!
+            let g = alone.stmts.last()!
+            (with_enum.store.doc_comment(f) ?? []).join("\n") == "real doc" &&
+                with_enum.store.stmt_fingerprint(f) == alone.store.stmt_fingerprint(g)
         }
     }
 }

@@ -1,0 +1,659 @@
+//! `collect`'s own laws (docs/2026_09_22_COLLECTIONS.md §4), proved
+//! against a program importing one test component (`widget`) — each
+//! refusal fired ALONE, on an otherwise-honest declaration, so the
+//! count pins which law spoke. A collect's kind is a component's
+//! own name, so a scratch (lone) source — with no import graph —
+//! answers `UnknownKind` for any word at all; these run through
+//! `provided()` instead, the one door that gives a scratch program a
+//! real component to name.
+use @std.avrac.testing.{
+    refused_in,
+    shown,
+    provided,
+    answered,
+    vendored_meta,
+    vendored_meta_paths,
+    Module,
+}
+use @std.avrac.compiler.{Program, new_workspace, avra}
+use @std.avrac.compiler.host.{memory_host}
+
+fn ui() -> string {
+    "export component widget {\n    run: fn(int) -> int?\n}\n"
+}
+
+fn built(main: string) -> Program {
+    provided("use @x.c.{widget}\n" + main, ui())
+}
+
+/// A trivial marker annotation, needed by every `@name`-kind test:
+/// `@std/meta`'s own `Named` is the only receiver a scratch program
+/// can name (`Fn`/`Type` narrow to what `declared_kind` answers, and
+/// `Named` takes every declaration alike), so this is the one fn
+/// every `@tag(...)` site below crosses.
+fn tag_decl() -> string {
+    "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n"
+}
+
+/// The ORM's own two annotations: `@model_shape` and `@model` are
+/// separate marks a type may wear independently — pairing them is
+/// the ORM's OWN law, never `collect`'s. `model`'s receiver is
+/// `Type`, not `Named`: it is what lets `it` cross WHOLE.
+fn orm_decl() -> string {
+    "use @std.meta.{Type}\nfn model_shape(what: Type) -> void {}\nfn model(what: Type) -> void {}\n"
+}
+
+fn ui2() -> string {
+    "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
+}
+
+fn built2(main: string) -> Program {
+    provided("use @x.c.{widget, gadget}\n" + main, ui2())
+}
+
+/// A second dependency package, `@y/d`, whose `orphan` module (never
+/// `d.av` itself) instances `widget` — `app` names `@y/d` as a
+/// dependency regardless, so this is a witness of FILE reachability,
+/// never of PACKAGE linkage.
+fn cross_package(import_orphan: bool) -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+            "/w/src/main.av": "use @x.c.{widget}\n" +
+                if import_orphan { "use @y.d.orphan.{marker}\n" } else { "" } +
+                "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nxs.length",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+            "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+            "/w/vendor/d/src/d.av": "export const marker0: int = 0\n",
+            "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport const marker: int = 1\nexport widget orphaned { n -> null }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/c/avra.toml",
+        "/w/vendor/c/src/c.av",
+        "/w/vendor/d/avra.toml",
+        "/w/vendor/d/src/d.av",
+        "/w/vendor/d/src/orphan/orphan.av",
+    ]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// A DEPENDENCY's own `collect in package`, its one member in a module
+/// nothing ever imports. `package` means every file of the package —
+/// as it does for the root, whose files are all analyzed — never the
+/// files something else happened to reach.
+fn package_scope_in_dependency() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+            "/w/src/main.av": "use @y.d.{count}\ncount()",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+            "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+            "/w/vendor/d/src/d.av": "use @x.c.{widget}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in package as Entry { name: it.name } by it.name\nexport fn count() -> int { xs.length }\n",
+            "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport widget orphaned { n -> null }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/c/avra.toml",
+        "/w/vendor/c/src/c.av",
+        "/w/vendor/d/avra.toml",
+        "/w/vendor/d/src/d.av",
+        "/w/vendor/d/src/orphan/orphan.av",
+    ]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
+/// (§4.4): `@acme/parts` is always reached (`app` imports its
+/// `Widget`) and carries both an exported `Widget` and a PRIVATE
+/// `Secret`, both `@tag`ged — `Secret` must never join, reached or
+/// not, since it is neither the collect's own package nor exported.
+/// `@acme/extra`'s exported `Orphan` joins only once `app` reaches it
+/// at all — file reachability, same as `cross_package`'s `orphan`.
+fn annotated_cross_package(import_extra: bool) -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/parts\" = { path = \"vendor/parts\" }\n\"@acme/extra\" = { path = \"vendor/extra\" }\n",
+            "/w/src/main.av": "use @acme.parts.{Widget}\n" +
+                if import_extra { "use @acme.extra.{Orphan}\n" } else { "" } +
+                "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\nxs.length",
+            "/w/vendor/parts/avra.toml": "[package]\nname = \"@acme/parts\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/parts/src/parts.av": tag_decl() +
+                "@tag(\"widget\")\nexport type Widget = { label: string }\n@tag(\"secret\")\ntype Secret = { label: string }\n",
+            "/w/vendor/extra/avra.toml": "[package]\nname = \"@acme/extra\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/extra/src/extra.av": tag_decl() + "@tag(\"ghost\")\nexport type Orphan = { label: string }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/parts/avra.toml",
+        "/w/vendor/parts/src/parts.av",
+        "/w/vendor/extra/avra.toml",
+        "/w/vendor/extra/src/extra.av",
+    ]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// `annotated_cross_package`'s ORM twin: the same shape — a reached
+/// `@acme/parts` carrying an exported `User` and a private `Secret`,
+/// an unreached-until-asked `@acme/extra` carrying an exported
+/// `Gadget` — but `it` crosses WHOLE as `@std/meta`'s `Type`, the
+/// ORM's own program.
+fn orm_cross_package(import_extra: bool) -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/parts\" = { path = \"vendor/parts\" }\n\"@acme/extra\" = { path = \"vendor/extra\" }\n",
+            "/w/src/main.av": "use @acme.parts.{User}\n" +
+                if import_extra { "use @acme.extra.{Gadget}\n" } else { "" } +
+                "use @std.meta.{Type}\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in closure as ModelEntry { model: it, name: it.name } by it.name\n[m.name + \":\" + \"\${m.model.fields.length}\" for m in models].join(\" \")",
+            "/w/vendor/parts/avra.toml": "[package]\nname = \"@acme/parts\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/parts/src/parts.av": orm_decl() +
+                "@model\nexport type User = { id: int, name: string }\n@model\ntype Secret = { note: string }\n",
+            "/w/vendor/extra/avra.toml": "[package]\nname = \"@acme/extra\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/extra/src/extra.av": orm_decl() + "@model\nexport type Gadget = { label: string }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/parts/avra.toml",
+        "/w/vendor/parts/src/parts.av",
+        "/w/vendor/extra/avra.toml",
+        "/w/vendor/extra/src/extra.av",
+    ]
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+spec "collect's own laws" {
+    given "the order law" {
+        then "a collect with no `by` refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name }\n1",
+                ),
+                "a collection declares its order",
+            )
+        }
+        then "a collect WITH `by` does not refuse for order" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "a collection declares its order",
+            )
+        }
+    }
+    given "the kind law" {
+        then "an unknown declaration kind refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "is not a declaration kind",
+            )
+        }
+    }
+    given "the scope law" {
+        then "an unknown scope word refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in everywhere as Entry { name: it.name } by it.name\n1",
+                ),
+                "is not a collect scope",
+            )
+        }
+    }
+    given "the projection law" {
+        then "a projected type that disagrees with the declared element refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = widget in closure as Other { name: it.name } by it.name\n1",
+                ),
+                "disagrees with the declared element",
+            )
+        }
+        then "a field the projection leaves unfilled refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string, module: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "not each filled exactly once",
+            )
+        }
+        then "a field the declared type does not have refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, extra: it.module } by it.name\n1",
+                ),
+                "not each filled exactly once",
+            )
+        }
+    }
+    given "the field vocabulary law" {
+        // A `.Component` kind now answers ANY single segment (its own
+        // field, read at lowering — `component_field_reg`,
+        // compiler/lower/lower.av) — the grammar itself caps a
+        // projection's path at one segment, so there is no written
+        // form left that names a path outside a component kind's
+        // vocabulary; a name that is not a real field is `field_named`'s
+        // DEFECT at lowering, not a type-time refusal.
+        then "a component's own field, not one of the generic four, still projects" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string, ran: fn(int) -> int? }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name",
+                ),
+                "is not a field this kind's declarations answer",
+            )
+        }
+    }
+    given "the closure-fold law (§4.1)" {
+        // NOT PROVABLE HERE: `provided()` always gives its program an
+        // entry (`src/main.av`), so `Decls.is_program()` reads true —
+        // the law's own gate — for every program this harness can
+        // build. Proving the LIBRARY half needs a package with no
+        // entry at all, which `provided()` does not offer yet.
+        then "reading it at run time, from a fn, is fine" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1",
+                ),
+                "is closed only when a program links",
+            )
+        }
+    }
+    given "the self-read cycle law (§4.2)" {
+        // A member reading its own collection while compiling: a
+        // cycle, since the collection's value IS this member's own
+        // synthesis. `consts/check.av`'s `self_collect_read` keys it
+        // off `NodeStore.instance_of` (the instance's own component
+        // word) matching the referenced collect's `CollectKind`
+        // word — general over every `.Component` kind, `widget`
+        // among them, not a `rule` special case.
+        then "an instance reading the collection it is itself gathered into refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n1",
+                ),
+                "`cyclic` is collected into `xs`",
+            )
+        }
+        then "a different collect of the same kind is STILL a self-read — every collect of that word gathers this instance too" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\ncollect ys: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget reads_ys { n -> if ys.length > n { n } else { null } }\n1",
+                ),
+                "`reads_ys` is collected into `ys`",
+            )
+        }
+        then "an instance reading a DIFFERENT kind's collection is fine — no cycle" {
+            !refused_in(
+                built2(
+                    "type Entry = { name: string }\ncollect zs: List<Entry> = gadget in closure as Entry { name: it.name } by it.name\nexport widget reads_gadgets { n -> if zs.length > n { n } else { null } }\n1",
+                ),
+                "collected into",
+            )
+        }
+        then "an ordinary const naming no component reads any collect clean" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1",
+                ),
+                "collected into",
+            )
+        }
+    }
+    given "collected means reachable (docs/2026_09_22_COLLECTIONS.md §5)" {
+        // A CROSS-PACKAGE witness: `@y/d`'s `orphan` module (a
+        // second file, never `d.av`'s own) instances a `widget` —
+        // gathered under `closure` scope only once `app` actually
+        // imports something from it. `@y/d` is a real dependency
+        // package either way (app's own avra.toml names it), so this
+        // is never about LINKING the package — only about reaching
+        // the one FILE the instance sits in.
+        then "an unimported module's instance is not collected" {
+            cross_package(false) == "0"
+        }
+        then "importing that module's own name collects its instance" {
+            cross_package(true) == "1"
+        }
+        then "a dependency's `in package` collect gathers a module nothing imports" {
+            package_scope_in_dependency() == "1"
+        }
+    }
+    given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
+        // `@tag` in the kind slot is `CollectKind.Annotated`, never
+        // resolved against the component list — every declaration
+        // wearing `@tag`, of any DeclKind (`type` here, unlike
+        // `.Component`'s always-a-const instances), gathered by the
+        // written name alone. `it.mark` answers the MATCHED
+        // annotation's own name and its literal arguments.
+        then "every declaration wearing the annotation is gathered, `it.mark` reads its name and args" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"widget\")\nexport type Widget = { label: string }\n@tag(\"gadget\")\nexport type Gadget = { label: string }\ntype MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect models: List<Entry> = @tag in self as Entry { name: it.name, mark: it.mark } by it.name\n[e.name + \":\" + e.mark.name + \"(\" + e.mark.args.join(\",\") + \")\" for e in models].join(\" \")",
+                    ui(),
+                ),
+            ) == "Gadget:tag(gadget) Widget:tag(widget)"
+        }
+        then "a bare word still resolves against the component list, never against annotations" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "is not a declaration kind",
+            )
+        }
+        then "a path past `mark` on an `.Annotated` kind refuses — it has no instance value to read a field off" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"widget\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n1",
+                    ui(),
+                ),
+                "is not a field this kind's declarations answer",
+            )
+        }
+    }
+    given "the self-read cycle law (§4.2), over an `.Annotated` kind" {
+        // The same cycle `.Component` refuses, keyed off every
+        // `@name` the reading declaration itself wears
+        // (`self_collect_words`, features/consts/check.av) rather
+        // than `NodeStore.instance_of` — an annotated member need
+        // not be a component instance at all.
+        then "a const wearing the annotation the collect gathers by, reading that collect, refuses" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\n@tag(\"cyclic\")\nexport const cyclic: int = xs.length\n1",
+                    ui(),
+                ),
+                "`cyclic` is collected into `xs`",
+            )
+        }
+        then "a const wearing a DIFFERENT annotation reads the collect clean — no cycle" {
+            !refused_in(
+                provided(
+                    tag_decl() +
+                        "use @std.meta.{Named}\nfn other(what: Named) -> void {}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\n@other\nexport const reads_xs: int = xs.length\n1",
+                    ui(),
+                ),
+                "collected into",
+            )
+        }
+    }
+    given "the export law across packages (§4.4)" {
+        // `Secret` is private and lives in a DIFFERENT package than
+        // the collect's own file — it must never join, reached or
+        // not; `Widget` (exported, same foreign package) always
+        // does; `Orphan` (exported, a SEPARATE package) joins only
+        // once `app` reaches it at all, `cross_package`'s law again.
+        then "an exported declaration in a reached foreign package joins, a private one there does not" {
+            annotated_cross_package(false) == "1"
+        }
+        then "reaching the second package too admits its own exported declaration as well" {
+            annotated_cross_package(true) == "2"
+        }
+    }
+    given "the ORM's exact shape — `it` as the whole `@std/meta` `Type` value" {
+        // `type ModelEntry = { model: Type, name: string }` / `as
+        // ModelEntry { model: it, name: it.name }`: a bare `it` whose
+        // SEAT names `@std/meta`'s `Type` crosses the WHOLE
+        // declaration (fields, variants, at, doc, annotations) —
+        // `Decls.takes_a_decl`, the same door an annotation's own
+        // receiver crosses through — never the fn-value door `run:
+        // it` uses for a component's own field.
+        then "`it` carries the type's own fields and name, `it.name` orders `by`" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model\nexport type User = { id: int, name: string }\n@model\nexport type Gadget = { label: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\n[m.name + \":\" + m.model.name + \":\" + \"\${m.model.fields.length}\" for m in models].join(\" \")",
+                    ui(),
+                ),
+            ) == "Gadget:Gadget:1 User:User:2"
+        }
+        // Matching is EXACT — pairing `@model_shape` with `@model` is
+        // the ORM's own law, never `collect`'s.
+        then "a type wearing both `@model_shape` and `@model` is collected" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model_shape\n@model\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a type wearing only `@model_shape` is NOT collected" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model_shape\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length",
+                    ui(),
+                ),
+            ) == "0"
+        }
+        then "a type wearing only `@model`, with no `@model_shape`, IS collected" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        // Closure across packages, exported only (§4.4) — with `it`
+        // crossing WHOLE.
+        then "an exported model in a reached foreign package joins, a private one there does not" {
+            orm_cross_package(false) == "User:2"
+        }
+        then "reaching the second package too admits its own exported model as well" {
+            orm_cross_package(true) == "Gadget:1 User:2"
+        }
+    }
+    given "the `it`/`by` words" {
+        then "an ordinary `it` still means the pronoun, unreserved by the new grammar" {
+            shown("[1, 2, 3].any(it > 1)") == "true"
+        }
+        then "an ordinary `by` still names an identifier, unreserved by the new grammar" {
+            shown("fn f(by: int) -> int { by + 1 }\nf(2)") == "3"
+        }
+    }
+    given "collect enum (docs/2026_09_22_COLLECTIONS.md's step 4)" {
+        // The kind/scope/order laws are `collect`'s own — `check_collect_enum`
+        // (features/collects/check.av) calls the same `checked_kind`/
+        // `checked_scope`/`order_required` a value collect does.
+        then "an unknown declaration kind refuses" {
+            refused_in(
+                built("collect enum X = spell in closure by it.name\n1"),
+                "is not a declaration kind",
+            )
+        }
+        then "an unknown scope refuses" {
+            refused_in(
+                built("collect enum X = widget in everywhere by it.name\n1"),
+                "is not a collect scope",
+            )
+        }
+        then "no `by` refuses — order is declared, same as a value collect" {
+            refused_in(
+                built("collect enum X = widget in closure\n1"),
+                "a collection declares its order",
+            )
+        }
+        then "every gathered member is one payload-free variant, named by its own declaration name, in `by` order" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        "\"\${describe(Command.build)} \${describe(Command.init)} \${Command.build.ordinal} \${Command.init.ordinal}\"",
+                    ui(),
+                ),
+            ) == "build init 0 1"
+        }
+        then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
+            answered(
+                provided(
+                    "type Holder = { c: Command }\n" +
+                        "fn label(h: Holder) -> string { match h.c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "label(Holder { c: Command.build })",
+                    ui(),
+                ),
+            ) == "build"
+        }
+        then "adding a member the match does not handle refuses — a new member breaks every match, on purpose" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n@tag(\"z\")\nfn clean() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        "describe(Command.build)",
+                    ui(),
+                ),
+                "must handle",
+            )
+        }
+        then "two members that would name the same variant refuse, naming the collect and the variant" {
+            refused_in(
+                provided(
+                    tag_decl() + "collect enum Command = @tag in package by it.name\n1",
+                    ui(),
+                    modules: [
+                        Module { name: "a", text: tag_decl() + "@tag(\"one\")\nfn run() {}\n" },
+                        Module { name: "b", text: tag_decl() + "@tag(\"two\")\nfn run() {}\n" },
+                    ],
+                ),
+                "`Command` declares `run` more than once",
+            )
+        }
+        // NOT a claim that `package` scope needs no import on real disk —
+        // it does (a file nothing reaches is tree-shaken out, law 7); this
+        // harness's `memory_host` admits every given module regardless,
+        // so what this proves is narrower: once two modules ARE part of
+        // the program, `in package` gathers across the module boundary
+        // with no `use` between them, which `in self` could not.
+        then "a member in another module, already part of the program, joins under `in package` with no `use` between the two" {
+            answered(
+                provided(
+                    "collect enum Command = @tag in package by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .other -> \"other\" } }\n" +
+                        "describe(Command.build) + \" \" + describe(Command.other)",
+                    ui(),
+                    modules: [
+                        Module { name: "a", text: tag_decl() + "@tag(\"x\")\nfn build() {}\n" },
+                        Module { name: "b", text: tag_decl() + "@tag(\"y\")\nfn other() {}\n" },
+                    ],
+                ),
+            ) == "build other"
+        }
+    }
+    given "a malformed declaration names the missing part" {
+        then "a missing `=` names the `=`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `=` after a collect's type",
+            )
+        }
+        then "a missing `in` names the scope" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `in` and a scope",
+            )
+        }
+        then "a missing `as` names the projection" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `as` and the projected type",
+            )
+        }
+        then "a missing `{` names the projection's fields" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry name: it.name } by it.name\n1",
+                ),
+                "expected `{` to open the projection",
+            )
+        }
+        then "a field without its `:` names the `:`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name it.name } by it.name\n1",
+                ),
+                "expected `:` after a projection field's name",
+            )
+        }
+        then "a missing `}` names the `}`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name by it.name\n1",
+                ),
+                "expected `}` to close the projection",
+            )
+        }
+        then "a stray word inside the projection speaks once" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name extra } by it.name\n1",
+                ),
+                "expected `}` to close the projection",
+            )
+        }
+        then "a word after the order names the line's end" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name extra\n1",
+                ),
+                "expected the line to end after the collect",
+            )
+        }
+        then "a nameless `collect enum` names the name" {
+            refused_in(
+                built("collect enum = widget in closure by it.name\n1"),
+                "expected the collected enum's name",
+            )
+        }
+        then "a `collect enum` missing `=` names it" {
+            refused_in(
+                built("collect enum K widget in closure by it.name\n1"),
+                "expected `=` after the collected enum's name",
+            )
+        }
+        then "a `collect enum` missing `in` names the scope" {
+            refused_in(
+                built("collect enum K = widget closure by it.name\n1"),
+                "expected `in` and a scope",
+            )
+        }
+        then "a word after a `collect enum`'s order names the line's end" {
+            refused_in(
+                built("collect enum K = widget in closure by it.name extra\n1"),
+                "expected the line to end after the collect",
+            )
+        }
+        then "a `collect { … }` expression still parses as one" {
+            !refused_in(built("fn f() -> List<int> { collect { 1 } }\nf().length"), "expected")
+        }
+    }
+}

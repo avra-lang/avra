@@ -1,0 +1,80 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+
+/// A repeated comma list inside a `grammar { }` block with no
+/// trailing-comma option: CLAUDE.md's grammar law, `( "," x )*` ends
+/// `","?` before its closer, in every rule. A list that refuses the
+/// comma is a defect, not a style.
+///
+/// THE FACT IS THE STRING ITSELF: `grammar { "…" }` desugars whole,
+/// at parse time, into the SAME `Grammar`/`Rule`/`Alt`/… constructors
+/// a hand-written one calls (`features/grammar_lit/builders.av`), so
+/// nothing survives in the parsed program for a quote pattern to
+/// walk — the DSL is not a sublanguage this pass sees structurally.
+/// What DOES survive is the raw text itself, marked onto the
+/// resulting expression (`store.grammar_lit_of`, core/store.av) for
+/// exactly this reason; the check reads THAT, scoped to the one
+/// expression the mark names, never the whole file's text.
+///
+/// NO REWRITE: the fix edits raw DSL text nested inside a string
+/// literal, which needs its own re-escaping — a human editing the
+/// grammar block directly is the honest fix.
+@keeps("fn f() -> int { 1 }")
+export rule comma_list_open { quote { ${lit} } if !open_comma_lines(lit).is_empty() -> comma_list_open_found(lit) }
+
+fn open_comma_lines(lit: Code) -> List<string> {
+    let text? = grammar_text(lit) else { return [] }
+    [l for l in text.split("\n") if has_open_comma_list(l)]
+}
+
+fn grammar_text(lit: Code) -> string? {
+    match lit.at {
+        .Expr(id) -> lit.of.view.store.grammar_lit_of(id),
+        .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+    }
+}
+
+/// Whether `line` opens a `( "," x )*` group that never offers the
+/// trailing comma before its closer.
+fn has_open_comma_list(line: string) -> bool {
+    let needle = "( \",\""
+    if line.length < needle.length { return false }
+    [i for i in 0..line.length - needle.length + 1 if line.substring(i, i + needle.length) == needle]
+        .any((at) -> comma_list_left_open(line, at))
+}
+
+fn comma_list_left_open(line: string, at: int) -> bool {
+    let close? = matching_close(line, at) else { return false }
+    if close + 1 >= line.length || line.char_code(close + 1) != 42 { return false }
+    !line.substring(close + 2, line.length).trim().starts_with("\",\"?")
+}
+
+/// The index of the `)` that closes the `(` at `at`, by depth —
+/// absent when the line's own parens never balance.
+fn matching_close(line: string, at: int) -> int? {
+    mut depth = 0
+    mut i = at
+    while i < line.length {
+        let c = line.char_code(i)
+        if c == 40 { depth = depth + 1 }
+        if c == 41 {
+            depth = depth - 1
+            if depth == 0 { return i }
+        }
+        i = i + 1
+    }
+    null
+}
+
+fn comma_list_open_found(lit: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "a repeated comma list with no trailing-comma option in this grammar — `( \",\" x )*` should end `\",\"?` before its closer",
+                "this grammar",
+                null,
+            ),
+        )
+}

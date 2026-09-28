@@ -13,6 +13,30 @@ export type Span = { lo: int, hi: int }
 /// One field line as two spans; the name compares in place.
 export type Field = { name: Span, value: Span }
 
+/// A head's fields as four offsets each — name lo, name hi, value lo,
+/// value hi — in one list: a head costs one allocation however many
+/// fields it carries. `field` reads one back as spans.
+export type Fields = List<int>
+
+impl Fields {
+    /// How many fields.
+    fn count() -> int { self.of.length / 4 }
+
+    fn name_at(i: int) -> Span { Span { lo: self.of[4 * i], hi: self.of[4 * i + 1] } }
+
+    fn value_at(i: int) -> Span { Span { lo: self.of[4 * i + 2], hi: self.of[4 * i + 3] } }
+
+    fn field(i: int) -> Field { Field { name: self.name_at(i), value: self.value_at(i) } }
+
+    /// The first field named `wanted`, ASCII-folded, by index — or -1.
+    fn named(buf: Bytes, wanted: Bytes) -> int {
+        for i in 0..self.count() {
+            if buf.ieq_at(self.of[4 * i], self.of[4 * i + 1], wanted) { return i }
+        }
+        -1
+    }
+}
+
 /// The nine methods RFC 9110 registers, and `Other` for a token this
 /// framer read and does not name — a method is extensible, so an
 /// unknown one is well formed and not a refusal.
@@ -36,7 +60,7 @@ export type Head = {
     verb: Span,
     target: Span,
     minor: int,
-    fields: List<Field>,
+    fields: Fields,
     body: Body,
     keep_alive: bool,
     expects_continue: bool,
@@ -90,24 +114,20 @@ export fn status_of(why: Refusal) -> int {
         .BodyLength -> 413,
         .Coding -> 501,
         .Expectation -> 417,
-        .LineEnd or .RequestLine or .Version or .Target or .FieldName or .FieldValue or .Host
-            or .ContentLength or .TransferEncoding or .OldChunked or .Chunk -> 400,
+        .LineEnd or .RequestLine or .Version or .Target or .FieldName or .FieldValue or .Host or .ContentLength or .TransferEncoding or .OldChunked or .Chunk -> 400,
     }
 }
 
 // ── The class tables, built once ────────────────────────────────
-
-/// A byte named by its character.
-fn byte(s: string) -> int { s.char_code(0) }
 
 /// A 256-entry class table: one byte per octet, 1 where the
 /// predicate admits it. `run` walks a span in one call against one of
 /// these, so a scan asks where a class ENDS and never what each byte
 /// is.
 export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(i) { 1 } else { 0 } for i in 0..256].bytes()! }
-fn is_digit(c: int) -> bool { c >= byte("0") && c <= byte("9") }
-fn is_alpha(c: int) -> bool { (c >= byte("A") && c <= byte("Z")) || (c >= byte("a") && c <= byte("z")) }
-fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
+fn is_digit(c: int) -> bool { c >= "0".char_code() && c <= "9".char_code() }
+fn is_alpha(c: int) -> bool { c >= "A".char_code() && c <= "Z".char_code() || c >= "a".char_code() && c <= "z".char_code() }
+fn is_mark(c: int) -> bool { marks.index_of([c].bytes()!, 0) >= 0 }
 /// What octet a TOKEN may carry (RFC 9110 §5.6.2) — a method, a field
 /// name. Exported for the reason `is_target` is: a WRITER that must
 /// not emit what this framer would refuse composes the law rather
@@ -115,35 +135,35 @@ fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
 export fn is_tchar(c: int) -> bool { is_digit(c) || is_alpha(c) || is_mark(c) }
 /// What octet a FIELD VALUE may carry — visible ASCII and HTAB, and
 /// so neither a CR, an LF, nor a NUL.
-export fn is_vchar(c: int) -> bool { c == byte("\t") || (c >= byte(" ") && c <= byte("~")) }
+export fn is_vchar(c: int) -> bool { c == "\t".char_code() || c >= " ".char_code() && c <= "~".char_code() }
 /// What octet a request target may carry (RFC 9112 §3.2): visible
 /// ASCII, plus `obs-text`. The law lives here so a consumer that
 /// narrows it — the path, which is a target minus `?` — composes
 /// rather than copies.
-export fn is_target(c: int) -> bool { (c >= byte("!") && c <= byte("~")) || c >= 128 }
+export fn is_target(c: int) -> bool { c >= "!".char_code() && c <= "~".char_code() || c >= 128 }
 
-once fn marks() -> Bytes { "!#$%&'*+-.^_`|~".bytes() }
-once fn tchar() -> Bytes { admits(is_tchar) }
-once fn vchar() -> Bytes { admits(is_vchar) }
-once fn target_char() -> Bytes { admits(is_target) }
-once fn digit() -> Bytes { admits(is_digit) }
-once fn ows() -> Bytes { admits(is_ows) }
+const marks: Bytes = "!#\$%&'*+-.^_`|~".bytes()
+const tchar: Bytes = admits(is_tchar)
+const vchar: Bytes = admits(is_vchar)
+const target_char: Bytes = admits(is_target)
+const digit: Bytes = admits(is_digit)
+const ows: Bytes = admits(is_ows)
 
-once fn crlf() -> Bytes { "\r\n".bytes() }
-once fn blank_line() -> Bytes { "\r\n\r\n".bytes() }
-once fn http_slash() -> Bytes { "HTTP/".bytes() }
-once fn verbs() -> List<Bytes> { [w.bytes() for w in ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "CONNECT", "TRACE"]] }
-once fn content_length() -> Bytes { "content-length".bytes() }
-once fn transfer_encoding() -> Bytes { "transfer-encoding".bytes() }
-once fn host() -> Bytes { "host".bytes() }
-once fn connection() -> Bytes { "connection".bytes() }
-once fn expect() -> Bytes { "expect".bytes() }
-once fn chunked() -> Bytes { "chunked".bytes() }
-once fn close() -> Bytes { "close".bytes() }
-once fn keep_alive() -> Bytes { "keep-alive".bytes() }
-once fn continue_100() -> Bytes { "100-continue".bytes() }
+const crlf: Bytes = "\r\n".bytes()
+const blank_line: Bytes = "\r\n\r\n".bytes()
+const http_slash: Bytes = "HTTP/".bytes()
+const verbs: List<Bytes> = [w.bytes() for w in ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "CONNECT", "TRACE"]]
+const content_length: Bytes = "content-length".bytes()
+const transfer_encoding: Bytes = "transfer-encoding".bytes()
+const host: Bytes = "host".bytes()
+const connection: Bytes = "connection".bytes()
+const expect: Bytes = "expect".bytes()
+const chunked: Bytes = "chunked".bytes()
+const close: Bytes = "close".bytes()
+const keep_alive: Bytes = "keep-alive".bytes()
+const continue_100: Bytes = "100-continue".bytes()
 
-fn is_ows(c: int) -> bool { c == byte(" ") || c == byte("\t") }
+fn is_ows(c: int) -> bool { c == " ".char_code() || c == "\t".char_code() }
 
 // ── The head ────────────────────────────────────────────────────
 
@@ -152,7 +172,7 @@ fn is_ows(c: int) -> bool { c == byte(" ") || c == byte("\t") }
 /// each read costs one scan of its new bytes and nothing more.
 export fn framed(buf: Bytes, from: int, scanned: int, limits: Limits) -> Framed {
     let start = past_one_empty_line(buf, from)
-    let mark = buf.index_of(blank_line(), if scanned - 3 > start { scanned - 3 } else { start })
+    let mark = buf.index_of(blank_line, if scanned - 3 > start { scanned - 3 } else { start })
     if mark < 0 { return unfinished(buf, start, limits) }
     if mark + 4 - start > limits.head { return .Refused(.HeadLength) }
     if !crlf_only(buf, start, mark) { return .Refused(.LineEnd) }
@@ -163,7 +183,7 @@ export fn framed(buf: Bytes, from: int, scanned: int, limits: Limits) -> Framed 
 /// bare line end, the request line's bound before any line has ended,
 /// the head's bound after.
 fn unfinished(buf: Bytes, start: int, limits: Limits) -> Framed {
-    let first_end = buf.index_of(crlf(), start)
+    let first_end = buf.index_of(crlf, start)
     when {
         !crlf_only(buf, start, buf.length - 1) -> .Refused(.LineEnd)
         first_end < 0 && buf.length - start > limits.line -> .Refused(.LineLength)
@@ -176,15 +196,15 @@ fn unfinished(buf: Bytes, start: int, limits: Limits) -> Framed {
 /// a bare one is refused before anything is parsed (RFC 9112 §2.2).
 /// The last byte of a torn buffer is left for the next read.
 fn crlf_only(buf: Bytes, lo: int, hi: int) -> bool {
-    let carriage = cr()
-    let feed = lf()
+    let carriage = cr
+    let feed = lf
     mut at = lo
     while at < hi {
         let cr = bounded(buf.index_of(carriage, at), hi)
         let lf = bounded(buf.index_of(feed, at), hi)
         if cr < 0 && lf < 0 { return true }
-        if cr >= 0 && (cr + 1 >= buf.length || buf.at(cr + 1) != byte("\n")) { return false }
-        if lf >= 0 && (lf == 0 || buf.at(lf - 1) != byte("\r")) { return false }
+        if cr >= 0 && (cr + 1 >= buf.length || buf.at(cr + 1) != "\n".char_code()) { return false }
+        if lf >= 0 && (lf == 0 || buf.at(lf - 1) != "\r".char_code()) { return false }
         at = if cr >= 0 && (lf < 0 || cr < lf) { cr + 2 } else { lf + 1 }
     }
     true
@@ -193,43 +213,56 @@ fn crlf_only(buf: Bytes, lo: int, hi: int) -> bool {
 /// An index below `hi`, or -1.
 fn bounded(i: int, hi: int) -> int { if i < hi { i } else { -1 } }
 
-once fn cr() -> Bytes { "\r".bytes() }
-once fn lf() -> Bytes { "\n".bytes() }
-once fn hash() -> Bytes { "#".bytes() }
-once fn comma_mark() -> Bytes { ",".bytes() }
+const cr: Bytes = "\r".bytes()
+const lf: Bytes = "\n".bytes()
+const hash: Bytes = "#".bytes()
+const comma_mark: Bytes = ",".bytes()
 
 /// One empty line before the request line is ignored (RFC 9112 §2.2).
 fn past_one_empty_line(buf: Bytes, from: int) -> int {
-    if from + 2 <= buf.length && buf.eq_at(from, from + 2, crlf()) { from + 2 } else { from }
+    if from + 2 <= buf.length && buf.eq_at(from, from + 2, crlf) { from + 2 } else { from }
 }
 
-/// The request line, read: the method, its target and the version's
-/// minor digit.
-type Line = { method: Method, verb: Span, target: Span, minor: int }
-
+/// The request line — the method, its target and the version's minor
+/// digit — then its fields, then the head settled.
 fn request_line(buf: Bytes, start: int, mark: int, limits: Limits) -> Framed {
-    let verb_end = buf.run(start, tchar())
-    if verb_end == start || buf.at(verb_end) != byte(" ") { return .Refused(.RequestLine) }
+    let verb_end = buf.run(start, tchar)
+    if verb_end == start || buf.at(verb_end) != " ".char_code() { return .Refused(.RequestLine) }
     let t_lo = verb_end + 1
-    let t_end = buf.run(t_lo, target_char())
+    let t_end = buf.run(t_lo, target_char)
     // the head's line ends were judged whole before this ran, so a
     // target stopping at a CR is a line of two words, not a torn end
-    if t_end == t_lo || buf.at(t_end) != byte(" ") { return .Refused(.RequestLine) }
+    if t_end == t_lo || buf.at(t_end) != " ".char_code() { return .Refused(.RequestLine) }
     let v_lo = t_end + 1
-    let eol = buf.index_of(crlf(), v_lo)
+    let eol = buf.index_of(crlf, v_lo)
     if eol - start > limits.line { return .Refused(.LineLength) }
     if !versioned(buf, v_lo, eol) { return .Refused(.Version) }
-    if buf.at(v_lo + 5) != byte("1") { return .Refused(.Major) }
+    if buf.at(v_lo + 5) != "1".char_code() { return .Refused(.Major) }
     let method = method_of(buf, start, verb_end)
     if !target_form_fits(buf, method, t_lo, t_end) { return .Refused(.Target) }
-    let line = Line { method: method, verb: Span { lo: start, hi: verb_end }, target: Span { lo: t_lo, hi: t_end }, minor: buf.at(v_lo + 7) - byte("0") }
-    fields(buf, eol + 2, mark, line, limits)
+    mut fs: List<int> = []
+    let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
+    if why != null { return .Refused(why!) }
+    settled(
+        buf,
+        method,
+        Span { lo: start, hi: verb_end },
+        Span { lo: t_lo, hi: t_end },
+        buf.at(v_lo + 7) - "0".char_code(),
+        Fields(fs),
+        mark + 4,
+        limits,
+    )
 }
 
 /// `HTTP/` then one digit, a point, one digit, and nothing else before
 /// the line ends (RFC 9112 §2.3).
 fn versioned(buf: Bytes, at: int, eol: int) -> bool {
-    eol - at == 8 && buf.eq_at(at, at + 5, http_slash()) && is_digit(buf.at(at + 5)) && buf.at(at + 6) == byte(".") && is_digit(buf.at(at + 7))
+    eol - at == 8 &&
+        buf.eq_at(at, at + 5, http_slash) &&
+        is_digit(buf.at(at + 5)) &&
+        buf.at(at + 6) == ".".char_code() &&
+        is_digit(buf.at(at + 7))
 }
 
 /// The target's form belongs to its method (RFC 9112 §3.2): origin-form
@@ -238,7 +271,7 @@ fn versioned(buf: Bytes, at: int, eol: int) -> bool {
 /// refuses, and the catch-all is the honest direction: a form the RFC
 /// grows is a form, and this law admits it.
 fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
-    if bounded(buf.index_of(hash(), lo), hi) >= 0 { return false }
+    if bounded(buf.index_of(hash, lo), hi) >= 0 { return false }
     !(target_form(buf, method, lo, hi) is .Other)
 }
 
@@ -255,8 +288,8 @@ fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
 export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetForm {
     when {
         method == Method.Connect -> connect_form(buf, lo)
-        buf.at(lo) == byte("/") -> .Origin
-        buf.eq_at(lo, hi, star()) -> asterisk_form(method)
+        buf.at(lo) == "/".char_code() -> .Origin
+        buf.eq_at(lo, hi, star) -> asterisk_form(method)
         schemed(buf, lo, hi) -> .Absolute
         _ -> .Other
     }
@@ -264,7 +297,7 @@ export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetFor
 
 /// CONNECT's target is an AUTHORITY and never a path (RFC 9112 §3.2.3).
 fn connect_form(buf: Bytes, lo: int) -> TargetForm {
-    if buf.at(lo) == byte("/") { return .Other }
+    if buf.at(lo) == "/".char_code() { return .Other }
     .Authority
 }
 
@@ -278,20 +311,20 @@ fn asterisk_form(method: Method) -> TargetForm {
 /// Whether a scheme opens this target — `://` inside it and not at
 /// its very start.
 fn schemed(buf: Bytes, lo: int, hi: int) -> bool {
-    let at = buf.index_of(scheme_end(), lo)
+    let at = buf.index_of(scheme_end, lo)
     at > lo && at < hi
 }
 
 /// What separates an absolute-form target's scheme from its
 /// authority — the octets `path()` splits on, so the reader and the
 /// framer agree on where a scheme ends.
-export once fn scheme_end() -> Bytes { "://".bytes() }
-once fn star() -> Bytes { "*".bytes() }
+export const scheme_end: Bytes = "://".bytes()
+const star: Bytes = "*".bytes()
 
 /// The method by its bytes — one compare per verb, length first as
 /// the compare does, and nothing built per head.
 fn method_of(buf: Bytes, lo: int, hi: int) -> Method {
-    let v = verbs()
+    let v = verbs
     when {
         buf.eq_at(lo, hi, v[0]) -> .Get
         buf.eq_at(lo, hi, v[1]) -> .Head
@@ -306,56 +339,41 @@ fn method_of(buf: Bytes, lo: int, hi: int) -> Method {
     }
 }
 
-/// The request's fields walked, then its head settled.
-fn fields(buf: Bytes, from: int, mark: int, line: Line, limits: Limits) -> Framed {
-    match field_lines(buf, from, mark, limits) {
-        .Bad(why) -> .Refused(why),
-        .All(fs) -> settled(buf, line, fs, mark + 4, limits),
-    }
-}
-
-enum Fields {
-    All(fs: List<Field>)
-    Bad(why: Refusal)
-}
-
 /// Every field line from `from` up to the blank line at `mark`, each
-/// as two spans — the walk a request and a reply share.
-fn field_lines(buf: Bytes, from: int, mark: int, limits: Limits) -> Fields {
-    mut out: List<Field> = []
+/// as its four offsets onto `out` — the walk a request and a reply
+/// share — or the law a line broke.
+fn field_lines(buf: Bytes, from: int, mark: int, limits: Limits, mut out: List<int>) -> Refusal? {
     mut at = from
     while at < mark {
-        if out.length == limits.fields { return .Bad(.FieldCount) }
-        let eol = buf.index_of(crlf(), at)
-        match field_line(buf, at, eol, limits) {
-            .Bad(why) -> { return .Bad(why) },
-            .Line(f) -> { out.push(f) },
-        }
+        if out.length == 4 * limits.fields { return .FieldCount }
+        let eol = buf.index_of(crlf, at)
+        let why: Refusal? = field_line(buf, at, eol, limits, out)
+        if why != null { return why }
         at = eol + 2
     }
-    .All(out)
-}
-
-enum FieldLine {
-    Line(f: Field)
-    Bad(why: Refusal)
+    null
 }
 
 /// One field line, `at` up to its CRLF at `eol`: a token, the colon
-/// against it, OWS, a value of visible ASCII, OWS.
-fn field_line(buf: Bytes, at: int, eol: int, limits: Limits) -> FieldLine {
-    let n_end = buf.run(at, tchar())
-    if n_end == at || buf.at(n_end) != byte(":") { return .Bad(.FieldName) }
+/// against it, OWS, a value of visible ASCII, OWS — its offsets onto
+/// `out`, or the law it broke.
+fn field_line(buf: Bytes, at: int, eol: int, limits: Limits, mut out: List<int>) -> Refusal? {
+    let n_end = buf.run(at, tchar)
+    if n_end == at || buf.at(n_end) != ":".char_code() { return .FieldName }
     let v_lo = past_ows(buf, n_end + 1)
-    if buf.run(v_lo, vchar()) != eol { return .Bad(.FieldValue) }
-    if eol - at > limits.field { return .Bad(.FieldLength) }
-    .Line(Field { name: Span { lo: at, hi: n_end }, value: Span { lo: v_lo, hi: before_ows(buf, v_lo, eol) } })
+    if buf.run(v_lo, vchar) != eol { return .FieldValue }
+    if eol - at > limits.field { return .FieldLength }
+    out.push(at)
+    out.push(n_end)
+    out.push(v_lo)
+    out.push(before_ows(buf, v_lo, eol))
+    null
 }
 
 /// The first non-OWS position at or after `at` — one class-table
 /// scan, so a run of a thousand spaces costs one call, not a frame each.
 fn past_ows(buf: Bytes, at: int) -> int {
-    buf.run(at, ows())
+    buf.run(at, ows)
 }
 
 /// The end of the value once trailing OWS is dropped — a walk, never
@@ -368,16 +386,19 @@ fn before_ows(buf: Bytes, lo: int, hi: int) -> int {
 
 // ── The framing fields (RFC 9112 §6, 9110 §7.2, §10.1.1) ────────
 
-/// What the framing fields say, folded one field at a time; `length`
-/// means something once `lengths` counts a Content-Length line, and
-/// `why` is the first law broken.
+/// What the framing fields say, folded one field at a time — a VALUE
+/// RECORD, every field a scalar, so a request costs no allocation to
+/// fold its fields into. `length` means something once `lengths`
+/// counts a Content-Length line; `why` is the first law broken, or
+/// absent — a nullable WORD ENUM spends its own spare tag, so this
+/// stays a register too.
 type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codings: bool = false, hosts: int = 0, close: bool = false, keep: bool = false, expects: bool = false, why: Refusal? = null }
 
 /// EVERY FRAMING FIELD READ, folded one at a time — the walk a
 /// request and a reply share.
-fn framing_of(buf: Bytes, fields: List<Field>) -> Framing {
+fn framing_of(buf: Bytes, fields: Fields) -> Framing {
     mut fr = Framing {}
-    for f in fields { fr = noted(buf, f, fr) }
+    for i in 0..fields.count() { fr = noted(buf, fields.name_at(i), fields.value_at(i), fr) }
     fr
 }
 
@@ -407,84 +428,101 @@ fn persists(fr: Framing, minor: int) -> bool {
 
 /// The head, once the framing fields have been read and their laws
 /// kept: the body's delimiting, persistence, and the expectation.
-fn settled(buf: Bytes, line: Line, fields: List<Field>, end: int, limits: Limits) -> Framed {
+fn settled(
+    buf: Bytes,
+    method: Method,
+    verb: Span,
+    target: Span,
+    minor: int,
+    fields: Fields,
+    end: int,
+    limits: Limits,
+) -> Framed {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
-    if fr.hosts > 1 || (line.minor == 1 && fr.hosts == 0) { return .Refused(.Host) }
-    if fr.chunked && line.minor == 0 { return .Refused(.OldChunked) }
+    if fr.hosts > 1 || minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
+    if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
     if broken != null { return .Refused(broken!) }
-    let body: Body = when { fr.chunked -> .Chunked, fr.lengths > 0 -> .Length(fr.length), _ -> .None }
-    .Complete(Head {
-        method: line.method,
-        verb: line.verb,
-        target: line.target,
-        minor: line.minor,
-        fields: fields,
-        body: body,
-        keep_alive: persists(fr, line.minor),
-        expects_continue: fr.expects && line.minor == 1,
-        end: end,
-    })
+    let body: Body = when {
+        fr.chunked -> .Chunked
+        fr.lengths > 0 -> .Length(fr.length)
+        _ -> .None
+    }
+    .Complete(
+        Head {
+            method: method,
+            verb: verb,
+            target: target,
+            minor: minor,
+            fields: fields,
+            body: body,
+            keep_alive: persists(fr, minor),
+            expects_continue: fr.expects && minor == 1,
+            end: end,
+        },
+    )
 }
 
-/// One field's contribution to the framing — a copy with the change.
-fn noted(buf: Bytes, f: Field, fr: Framing) -> Framing {
+/// One field's contribution to the framing, folded into it — a value
+/// in, the value it becomes out, never a write through a seat: that
+/// is what keeps `Framing` a register, not a box.
+fn noted(buf: Bytes, n: Span, v: Span, fr: Framing) -> Framing {
     if fr.why != null { return fr }
-    let n = f.name
     when {
-        buf.ieq_at(n.lo, n.hi, content_length()) -> with_length(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, transfer_encoding()) -> with_codings(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, host()) -> with_host(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, connection()) -> with_connection(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, expect()) -> with_expectation(buf, f.value, fr)
+        buf.ieq_at(n.lo, n.hi, content_length) -> took_length(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, transfer_encoding) -> took_codings(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, host) -> took_host(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, connection) -> took_connection(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, expect) -> took_expectation(buf, v, fr)
         _ -> fr
     }
 }
 
+/// The framing refused by the law `why` names.
+fn broke(fr: Framing, why: Refusal) -> Framing { fr with { why: why } }
+
 /// A second Content-Length is refused even when it agrees — the
 /// permission to merge equal values is a MAY, and this is a server.
-fn with_length(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    let n: int? = decimal(buf, v)
-    if n == null || fr.lengths > 0 { return fr with { why: .ContentLength } }
-    fr with { length: n!, lengths: 1 }
+fn took_length(buf: Bytes, v: Span, fr: Framing) -> Framing {
+    let n? = decimal(buf, v) else { return broke(fr, .ContentLength) }
+    if fr.lengths > 0 { return broke(fr, .ContentLength) }
+    fr with { length: n, lengths: 1 }
 }
 
 /// `chunked` alone frames; other codings before a final `chunked`
 /// are not implemented; `chunked` anywhere else is a smuggling shape.
-fn with_codings(buf: Bytes, v: Span, fr: Framing) -> Framing {
+fn took_codings(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let ts = tokens(buf, v)
-    if ts.is_empty() { return fr with { why: .TransferEncoding } }
+    if ts.is_empty() { return broke(fr, .TransferEncoding) }
     let last = ts.last()!
-    let final_chunked = buf.ieq_at(last.lo, last.hi, chunked())
-    let earlier_chunked = ts.slice(0, ts.length - 1).any((t) -> buf.ieq_at(t.lo, t.hi, chunked()))
-    if !final_chunked && !earlier_chunked { return fr with { why: .Coding } }
-    if !final_chunked || earlier_chunked { return fr with { why: .TransferEncoding } }
+    let final_chunked = buf.ieq_at(last.lo, last.hi, chunked)
+    let earlier_chunked = ts.slice(0, ts.length - 1).any((t) -> buf.ieq_at(t.lo, t.hi, chunked))
+    if !final_chunked && !earlier_chunked { return broke(fr, .Coding) }
+    if !final_chunked || earlier_chunked { return broke(fr, .TransferEncoding) }
     fr with { chunked: true, codings: ts.length > 1 }
 }
 
-fn with_host(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    if v.hi == v.lo || buf.run(v.lo, target_char()) != v.hi { return fr with { why: .Host } }
+fn took_host(buf: Bytes, v: Span, fr: Framing) -> Framing {
+    if v.hi == v.lo || buf.run(v.lo, target_char) != v.hi { return broke(fr, .Host) }
     fr with { hosts: fr.hosts + 1 }
 }
 
-fn with_connection(buf: Bytes, v: Span, fr: Framing) -> Framing {
+fn took_connection(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let ts = tokens(buf, v)
-    fr with {
-        close: fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close())),
-        keep: fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive())),
-    }
+    fr with { close: fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close)), keep: fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive)) }
 }
 
-fn with_expectation(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    if buf.ieq_at(v.lo, v.hi, continue_100()) { fr with { expects: true } } else { fr with { why: .Expectation } }
+fn took_expectation(buf: Bytes, v: Span, fr: Framing) -> Framing {
+    if buf.ieq_at(v.lo, v.hi, continue_100) { return fr with { expects: true } }
+    broke(fr, .Expectation)
 }
 
 /// `1*DIGIT`, at most eighteen of them, as a number — or null.
 fn decimal(buf: Bytes, v: Span) -> int? {
-    if v.hi == v.lo || v.hi - v.lo > 18 || buf.run(v.lo, digit()) != v.hi { return null }
+    if v.hi == v.lo || v.hi - v.lo > 18 || buf.run(v.lo, digit) != v.hi { return null }
     mut n = 0
-    for i in v.lo..v.hi { n = n * 10 + buf.at(i) - byte("0") }
+    for i in v.lo..v.hi { n = n * 10 + buf.at(i) - "0".char_code() }
     n
 }
 
@@ -494,7 +532,7 @@ fn tokens(buf: Bytes, v: Span) -> List<Span> {
     mut out: List<Span> = []
     mut at = v.lo
     while at <= v.hi {
-        let comma_at = bounded(buf.index_of(comma_mark(), at), v.hi)
+        let comma_at = bounded(buf.index_of(comma_mark, at), v.hi)
         let cut = if comma_at < 0 { v.hi } else { comma_at }
         let lo = past_ows(buf, at)
         let hi = before_ows(buf, lo, cut)
@@ -508,7 +546,7 @@ fn tokens(buf: Bytes, v: Span) -> List<Span> {
 
 /// A framed reply. Spans index the buffer it was framed from; `end`
 /// is the first byte past the blank line.
-export type Reply = { status: int, minor: int, fields: List<Field>, body: ReplyBody, keep_alive: bool, end: int }
+export type Reply = { status: int, minor: int, fields: Fields, body: ReplyBody, keep_alive: bool, end: int }
 
 /// How a reply's body is delimited: not at all, by a length, by
 /// chunks, or by the connection's close (RFC 9112 §6.3).
@@ -524,7 +562,7 @@ export enum FramedReply {
 /// The reply at `from` to a request made with `asked`, or why not.
 /// `scanned` is as `framed`'s.
 export fn framed_reply(buf: Bytes, from: int, scanned: int, limits: Limits, asked: Method) -> FramedReply {
-    let mark = buf.index_of(blank_line(), if scanned - 3 > from { scanned - 3 } else { from })
+    let mark = buf.index_of(blank_line, if scanned - 3 > from { scanned - 3 } else { from })
     if mark < 0 { return reply_unfinished(buf, from, limits) }
     if mark + 4 - from > limits.head { return .Refused(.HeadLength) }
     if !crlf_only(buf, from, mark) { return .Refused(.LineEnd) }
@@ -542,25 +580,47 @@ fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
 /// request line's, the status three digits, the reason anything
 /// visible.
 fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) -> FramedReply {
-    let eol = buf.index_of(crlf(), from)
+    let eol = buf.index_of(crlf, from)
     if eol - from > limits.line { return .Refused(.LineLength) }
-    if eol - from < 12 || buf.at(from + 8) != byte(" ") || (buf.at(from + 12) != byte(" ") && eol != from + 12) { return .Refused(.RequestLine) }
-    if !versioned(buf, from, from + 8) { return .Refused(.Version) }
-    if buf.at(from + 5) != byte("1") { return .Refused(.Major) }
-    if buf.run(from + 9, digit()) != from + 12 { return .Refused(.RequestLine) }
-    let reason_lo = if eol == from + 12 { eol } else { from + 13 }
-    if buf.run(reason_lo, vchar()) != eol { return .Refused(.RequestLine) }
-    let status = (buf.at(from + 9) - byte("0")) * 100 + (buf.at(from + 10) - byte("0")) * 10 + buf.at(from + 11) - byte("0")
-    match field_lines(buf, eol + 2, mark, limits) {
-        .Bad(why) -> .Refused(why),
-        .All(fs) -> settled_reply(buf, status, buf.at(from + 7) - byte("0"), fs, mark + 4, limits, asked),
+    if eol - from < 12 ||
+        buf.at(from + 8) != " ".char_code() ||
+        buf.at(from + 12) != " ".char_code() && eol != from + 12 {
+        return .Refused(.RequestLine)
     }
+    if !versioned(buf, from, from + 8) { return .Refused(.Version) }
+    if buf.at(from + 5) != "1".char_code() { return .Refused(.Major) }
+    if buf.run(from + 9, digit) != from + 12 { return .Refused(.RequestLine) }
+    let reason_lo = if eol == from + 12 { eol } else { from + 13 }
+    if buf.run(reason_lo, vchar) != eol { return .Refused(.RequestLine) }
+    let status = (buf.at(from + 9) - "0".char_code()) * 100 +
+        (buf.at(from + 10) - "0".char_code()) * 10 +
+        buf.at(from + 11) - "0".char_code()
+    mut fs: List<int> = []
+    let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
+    if why != null { return .Refused(why!) }
+    settled_reply(
+        buf,
+        status,
+        buf.at(from + 7) - "0".char_code(),
+        Fields(fs),
+        mark + 4,
+        limits,
+        asked,
+    )
 }
 
 /// A reply's body is delimited by its status and the request's method
 /// before any field (RFC 9112 §6.3): none for a HEAD's answer, a 1xx,
 /// a 204 or a 304; then chunks; then a length; then the close.
-fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: int, limits: Limits, asked: Method) -> FramedReply {
+fn settled_reply(
+    buf: Bytes,
+    status: int,
+    minor: int,
+    fields: Fields,
+    end: int,
+    limits: Limits,
+    asked: Method,
+) -> FramedReply {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
@@ -573,7 +633,16 @@ fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: 
         fr.lengths > 0 -> .Length(fr.length)
         _ -> .UntilClose
     }
-    .Complete(Reply { status: status, minor: minor, fields: fields, body: body, keep_alive: persists(fr, minor) && !(body is .UntilClose), end: end })
+    .Complete(
+        Reply {
+            status: status,
+            minor: minor,
+            fields: fields,
+            body: body,
+            keep_alive: persists(fr, minor) && !(body is .UntilClose),
+            end: end,
+        },
+    )
 }
 
 // ── The chunked body (RFC 9112 §7.1) ────────────────────────────
@@ -637,7 +706,7 @@ fn stepped(c: Chunker, buf: Bytes, limits: Limits) -> Step {
 }
 
 fn size_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
-    let size_end = buf.run(c.at, hexdigit())
+    let size_end = buf.run(c.at, hexdigit)
     if size_end - c.at > 16 { return .Refused(.Chunk) }
     if size_end == buf.length { return .Wait(c) }
     if size_end == c.at { return .Refused(.Chunk) }
@@ -652,32 +721,35 @@ fn size_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
 
 fn data_step(c: Chunker, n: int, buf: Bytes) -> Step {
     if c.at + n + 2 > buf.length { return .Wait(c) }
-    if !buf.eq_at(c.at + n, c.at + n + 2, crlf()) { return .Refused(.Chunk) }
-    .Again(c with { at: c.at + n + 2, phase: Phase.Size, total: c.total + n, parts: c.parts.concat([buf.slice(c.at, c.at + n)]) })
+    if !buf.eq_at(c.at + n, c.at + n + 2, crlf) { return .Refused(.Chunk) }
+    .Again(
+        c with { at: c.at + n + 2, phase: Phase.Size, total: c.total + n, parts: c.parts.concat([buf.slice(c.at, c.at + n)]) },
+    )
 }
 
 fn trailer_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
     if c.at + 2 > buf.length { return .Wait(c) }
-    if buf.eq_at(c.at, c.at + 2, crlf()) { return .Done(c.parts.bytes(), c.at + 2) }
+    if buf.eq_at(c.at, c.at + 2, crlf) { return .Done(c.parts.bytes(), c.at + 2) }
     if c.trailers == limits.trailers { return .Refused(.Chunk) }
-    let eol = buf.index_of(crlf(), c.at)
+    let eol = buf.index_of(crlf, c.at)
     if eol < 0 { return if crlf_only(buf, c.at, buf.length - 1) { .Wait(c) } else { .Refused(.LineEnd) } }
     if !crlf_only(buf, c.at, eol) { return .Refused(.LineEnd) }
-    match field_line(buf, c.at, eol, limits) {
-        .Bad(why) -> .Refused(why),
-        .Line(_) -> .Again(c with { at: eol + 2, trailers: c.trailers + 1 }),
-    }
+    // a trailer is judged by the field law and dropped
+    mut dropped: List<int> = []
+    let why: Refusal? = field_line(buf, c.at, eol, limits, dropped)
+    if why != null { return .Refused(why!) }
+    .Again(c with { at: eol + 2, trailers: c.trailers + 1 })
 }
 
 /// Where the size line's CRLF begins, past an extension: -1 when the
 /// line has not fully arrived, -2 when it is malformed or too long.
 fn size_line_end(buf: Bytes, at: int, limits: Limits) -> int {
-    let ext_end = if at < buf.length && buf.at(at) == byte(";") { buf.run(at, vchar()) } else { at }
+    let ext_end = if at < buf.length && buf.at(at) == ";".char_code() { buf.run(at, vchar) } else { at }
     if ext_end - at > limits.ext { return -2 }
     if ext_end == buf.length { return -1 }
-    if buf.at(ext_end) != byte("\r") { return -2 }
+    if buf.at(ext_end) != "\r".char_code() { return -2 }
     if ext_end + 1 == buf.length { return -1 }
-    if buf.at(ext_end + 1) != byte("\n") { -2 } else { ext_end }
+    if buf.at(ext_end + 1) != "\n".char_code() { -2 } else { ext_end }
 }
 
 /// ONE HEX DIGIT'S VALUE, or absence when the octet is not one — the
@@ -685,14 +757,14 @@ fn size_line_end(buf: Bytes, at: int, limits: Limits) -> int {
 /// percent-escape; spelled twice, a lenient reader and a strict one
 /// would disagree about the same two octets.
 export fn hex_of(c: int) -> int? {
-    if is_digit(c) { return c - byte("0") }
-    if c >= byte("A") && c <= byte("F") { return c - byte("A") + 10 }
-    if c >= byte("a") && c <= byte("f") { return c - byte("a") + 10 }
+    if is_digit(c) { return c - "0".char_code() }
+    if c >= "A".char_code() && c <= "F".char_code() { return c - "A".char_code() + 10 }
+    if c >= "a".char_code() && c <= "f".char_code() { return c - "a".char_code() + 10 }
     null
 }
 
 fn is_hex(c: int) -> bool { hex_of(c) != null }
-once fn hexdigit() -> Bytes { admits(is_hex) }
+const hexdigit: Bytes = admits(is_hex)
 
 /// The value of 1..15 hex digits — under 2^60, so it fits a signed
 /// word; a sixteenth digit is past any body bound before it is read.

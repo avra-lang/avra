@@ -211,9 +211,18 @@ impl Error for ProcessError {
             .Failed(e, o) -> info("process.failed", "the child exited ${exit_text(e)}: ${first_line(o.stderr)}"),
             .TimedOut(after, _) -> info("process.timed_out", "the child was stopped after ${after}ms"),
             .TooMuch(s, cap, _) -> info("process.too_much", "${stream_text(s)} exceeded the capture cap of ${cap} bytes"),
-            .Unplaceable(w, p) -> info("process.unplaceable", "`${w}` begins with `-` and `${p}` declares no end of options"),
-            .Holed(_, at) -> info("process.holed", "a word holding a NUL is two words — the host reads to byte ${at} and no further"),
-            .NotReady(waited, _) -> info("process.not_ready", "the child gave no sign of readiness in ${waited}ms and was stopped"),
+            .Unplaceable(w, p) -> info(
+                "process.unplaceable",
+                "`${w}` begins with `-` and `${p}` declares no end of options",
+            ),
+            .Holed(_, at) -> info(
+                "process.holed",
+                "a word holding a NUL is two words — the host reads to byte ${at} and no further",
+            ),
+            .NotReady(waited, _) -> info(
+                "process.not_ready",
+                "the child gave no sign of readiness in ${waited}ms and was stopped",
+            ),
             .StageFailed(i, e, _) -> info("process.stage_failed", "pipeline stage ${i + 1} exited ${exit_text(e)}"),
             .Unscripted(p, a) -> info("process.unscripted", "no script answers `${p} ${a}`"),
             .Empty(what) -> info("process.empty", "${what} has nothing to run"),
@@ -254,10 +263,7 @@ fn first_line(s: string) -> string {
 }
 
 fn stream_text(s: Stream) -> string {
-    match s {
-        .Stdout -> "stdout",
-        .Stderr -> "stderr",
-    }
+    match s { .Stdout -> "stdout", .Stderr -> "stderr" }
 }
 
 // ── Minting ─────────────────────────────────────────────────────
@@ -291,7 +297,8 @@ export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessErr
 /// same split as @std/io's environment predicate.
 fn which(name: string, path: string) -> string {
     if name.contains("/") { return if avra_proc_executable(name) == 0 { name } else { "" } }
-    let hit: string? = [candidate(d, name) for d in path.split(":") if d.starts_with("/")].find(avra_proc_executable(it) == 0)
+    let hit: string? = [candidate(d, name) for d in path.split(":") if d.starts_with("/")]
+        .find(avra_proc_executable(it) == 0)
     hit ?? ""
 }
 
@@ -334,13 +341,40 @@ fn terminator_of(name: string) -> string? {
 /// stripped), HOME, TMPDIR and TERM when set, `LANG=C`, `LC_ALL=C`,
 /// `NO_COLOR=1` so parsed output is stable.
 export fn minimal() -> Env {
-    Env.Only(present(["HOME", "TMPDIR", "TERM"]).concat([pair("PATH", search_path()), pair("LANG", "C"), pair("LC_ALL", "C"), pair("NO_COLOR", "1")]))
+    Env
+        .Only(
+            present(["HOME", "TMPDIR", "TERM"])
+                .concat(
+                    [
+                        pair("PATH", search_path()),
+                        pair("LANG", "C"),
+                        pair("LC_ALL", "C"),
+                        pair("NO_COLOR", "1"),
+                    ],
+                ),
+        )
 }
 
 /// The developer's base: `minimal` plus the homes, proxies and agents a
 /// toolchain reaches for.
 export fn developer() -> Env {
-    minimal().passing(["USER", "LOGNAME", "SHELL", "SSH_AUTH_SOCK", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "CARGO_HOME", "RUSTUP_HOME", "GOPATH", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"])
+    minimal()
+        .passing(
+            [
+                "USER",
+                "LOGNAME",
+                "SHELL",
+                "SSH_AUTH_SOCK",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "NO_PROXY",
+                "CARGO_HOME",
+                "RUSTUP_HOME",
+                "GOPATH",
+                "XDG_CONFIG_HOME",
+                "XDG_CACHE_HOME",
+            ],
+        )
 }
 
 fn pair(name: string, value: string) -> EnvPair {
@@ -379,17 +413,11 @@ impl Env {
     }
     /// The names alone.
     fn names() -> List<string> {
-        match self {
-            .Only(pairs) -> [p.name for p in pairs],
-            .Inherit -> [],
-        }
+        match self { .Only(pairs) -> [p.name for p in pairs], .Inherit -> [] }
     }
     /// The pairs as the host takes them, `NAME=value`.
     fn words() -> List<string> {
-        match self {
-            .Only(pairs) -> ["${p.name}=${p.value}" for p in pairs],
-            .Inherit -> [],
-        }
+        match self { .Only(pairs) -> ["${p.name}=${p.value}" for p in pairs], .Inherit -> [] }
     }
     /// One variable's value, when the child would see it — `null` when
     /// the pair set holds no such name. Under `.Inherit` an unset name
@@ -480,7 +508,7 @@ impl Command {
     /// only when the child never ran, timed out, or outgrew its cap.
     fn outcome() -> Result<Outcome, ProcessError> {
         let began = now_ms()
-        mut s = launched(self, 0 - 1)?
+        let s = launched(self, 0 - 1)?
         let done = pumped(s, self.drain_grace.ms)
         let word = avra_proc_reap(done.h)
         let _ = avra_proc_close(done.h)
@@ -523,11 +551,7 @@ fn stdin_bytes(s: Stdin) -> Bytes {
 }
 
 fn stdin_text(s: Stdin) -> string {
-    match s {
-        .Text(t) -> t,
-        .Lines(xs) -> lines_text(xs),
-        .Closed or .Inherit or .Open -> "",
-    }
+    match s { .Text(t) -> t, .Lines(xs) -> lines_text(xs), .Closed or .Inherit or .Open -> "" }
 }
 
 fn lines_text(xs: List<string>) -> string {
@@ -545,7 +569,7 @@ fn timeout_ms(d: Duration?) -> int {
 }
 
 fn has_bit(word: int, bit: int) -> bool {
-    (word / bit) % 2 == 1
+    word / bit % 2 == 1
 }
 
 /// The status word decoded once: the tag above (1 exited, 2 signalled),
@@ -553,7 +577,7 @@ fn has_bit(word: int, bit: int) -> bool {
 fn exit_of(word: int) -> Exit {
     let tag = word / tag_base
     let payload = word - tag * tag_base
-    if tag == 2 { return Exit.Signal(payload % 256, (payload / 256) % 2 == 1) }
+    if tag == 2 { return Exit.Signal(payload % 256, payload / 256 % 2 == 1) }
     if payload == 0 { return Exit.Clean }
     Exit.Code(payload)
 }
@@ -601,10 +625,10 @@ export type Child = { stage: Stage, command: Command, out: string = "", err: str
 impl Command {
     /// The child started and READY by the sign asked for — or stopped
     /// and refused with what it said so far. `Started` is the pid alone.
-    fn start(ready: Ready, within: Duration) -> Result<Child, ProcessError> {
+    fn start(ready: Ready, limit: Duration) -> Result<Child, ProcessError> {
         let s = launched(self, 0 - 1)?
         mut child = Child { stage: s, command: self }
-        child.until_ready(ready, within)?
+        child.until_ready(ready, limit)?
         child
     }
 }
@@ -632,9 +656,11 @@ impl Child {
     fn ended_with(began: int) -> Outcome {
         let word = avra_proc_reap(self.stage.h)
         let _ = avra_proc_close(self.stage.h)
-        let o = Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
-                          out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
-                          took_ms: now_ms() - began }
+        let o = Outcome {
+            exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+            out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
+            took_ms: now_ms() - began,
+        }
         self.out = ""
         self.err = ""
         self.ended = o
@@ -643,16 +669,16 @@ impl Child {
 
     /// Ticks until the sign shows, the child dies first, or the window
     /// closes — the last two stop the child and refuse.
-    fn until_ready(ready: Ready, within: Duration) -> Result<int, ProcessError> {
+    fn until_ready(ready: Ready, limit: Duration) -> Result<int, ProcessError> {
         if ready is .Started { return 0 }
         let began = now_ms()
-        let deadline = began + within.ms
+        let deadline = began + limit.ms
         mut waited = 0
         while true {
             let gone = self.pump(100)
             if self.satisfied(ready) { return now_ms() - began }
             waited = now_ms() - began
-            if (gone && !(ready is .Exit)) || now_ms() >= deadline {
+            if gone && !(ready is .Exit) || now_ms() >= deadline {
                 let partial = Output { stdout: self.out, stderr: self.err, truncated: false }
                 self.stop()
                 fail ProcessError.NotReady(waited, partial)
@@ -685,13 +711,13 @@ impl Child {
         let _ = avra_proc_shut(self.stage.h, 0)
     }
 
-    /// The next line the child says on stdout, waiting up to `within` —
+    /// The next line the child says on stdout, waiting up to `limit` —
     /// absent when the window closes with no complete line, or the child
     /// is done and said nothing more. A last line without its newline is
     /// answered once the child is gone.
-    fn read_line(within: Duration) -> string? {
+    fn read_line(limit: Duration) -> string? {
         if self.ended != null { return null }
-        let deadline = now_ms() + within.ms
+        let deadline = now_ms() + limit.ms
         while true {
             let cut = self.out.index_of("\n")
             if cut >= 0 {
@@ -712,10 +738,10 @@ impl Child {
 
     /// The child seen out: pumped to its end, or stopped at the deadline
     /// with what it said so far. The handle is released either way.
-    fn wait(within: Duration?) -> Result<Outcome, ProcessError> {
+    fn wait(limit: Duration?) -> Result<Outcome, ProcessError> {
         if self.ended != null { return self.ended! }
         let began = now_ms()
-        let deadline = timeout_ms(within)
+        let deadline = timeout_ms(limit)
         mut gone = self.pump(0)
         while !gone && (deadline < 0 || now_ms() - began < deadline) {
             gone = self.pump(100)
@@ -763,16 +789,16 @@ impl Child {
 
 /// A probe command's verdict as readiness: clean is up.
 fn probe_clean(probe: Command) -> bool {
-    match probe.outcome() {
-        .Ok(o) -> o.exit is .Clean,
-        .Err(_) -> false,
-    }
+    match probe.outcome() { .Ok(o) -> o.exit is .Clean, .Err(_) -> false }
 }
 
 /// The bracket: the child up and ready around `body`, and stopped when
 /// it returns — however it returns. What `body` answered is the answer.
-export fn serving<T>(c: Command, ready: Ready, within: Duration, body: fn() -> T) -> Result<T, ProcessError> {
-    mut child = c.start(ready, within)?
+export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T) -> Result<
+    T,
+    ProcessError,
+> {
+    mut child = c.start(ready, limit)?
     let answer = body()
     child.stop()
     answer
@@ -868,7 +894,16 @@ fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     let h = avra_proc_spawn(token, c.tool.path, c.cwd ?? "", c.flags(), upstream)
     if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
     let t = timeout_ms(c.timeout)
-    fed_first(Stage { h: h, deadline: if t < 0 { 0 - 1 } else { now_ms() + t }, feed: stdin_bytes(c.stdin), cap: c.max_capture }, c, upstream)
+    fed_first(
+        Stage {
+            h: h,
+            deadline: if t < 0 { 0 - 1 } else { now_ms() + t },
+            feed: stdin_bytes(c.stdin),
+            cap: c.max_capture,
+        },
+        c,
+        upstream,
+    )
 }
 
 /// An inherited environment stages no variables — the child takes the
@@ -1064,7 +1099,11 @@ fn still_held(s: Stage) -> bool {
 
 /// What a stage has captured, both streams gathered once.
 fn gathered(s: Stage) -> Output {
-    Output { stdout: s.out.bytes().text() ?? "", stderr: s.err.bytes().text() ?? "", truncated: s.truncated }
+    Output {
+        stdout: s.out.bytes().text() ?? "",
+        stderr: s.err.bytes().text() ?? "",
+        truncated: s.truncated,
+    }
 }
 
 /// Past its deadline and still running.
@@ -1079,17 +1118,14 @@ fn capped(s: Stage) -> bool {
 /// The bound a stage broke, as the error a driver fails with.
 fn broken(c: Command, s: Stage) -> ProcessError {
     if s.timed { return ProcessError.TimedOut(timeout_ms(c.timeout), gathered(s)) }
-    ProcessError.TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
+    ProcessError
+        .TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
 }
 
 /// A stage's death by SIGPIPE — as a signal, or as the shell's
 /// 128-plus-signal code, which is how a wrapper reports it.
 fn is_sigpipe(e: Exit) -> bool {
-    match e {
-        .Clean -> false,
-        .Code(n) -> n == 128 + sigpipe,
-        .Signal(s, _) -> s == sigpipe,
-    }
+    match e { .Clean -> false, .Code(n) -> n == 128 + sigpipe, .Signal(s, _) -> s == sigpipe }
 }
 
 /// A finished stage's outcome; the handle is released. A status the
@@ -1097,7 +1133,11 @@ fn is_sigpipe(e: Exit) -> bool {
 fn collected(s: Stage, began: int) -> Outcome {
     let word = avra_proc_reap(s.h)
     let _ = avra_proc_close(s.h)
-    Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
+    Outcome {
+        exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+        out: gathered(s),
+        took_ms: now_ms() - began,
+    }
 }
 
 /// Every stage still running killed with its tree and released.
@@ -1159,7 +1199,6 @@ impl Pipeline {
                 },
             }
         }
-        // LICENSED I4: the first failure over pump TURNS — a fold in time, not a scan of a list
         mut failure: ProcessError? = null
         mut pending = live.length
         while pending > 0 {
@@ -1274,7 +1313,6 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
             next = next + 1
             next_at = now_ms() + stagger.ms
         }
-        // LICENSED I4: the first stage to finish over pump TURNS — a fold in time, not a scan of a list
         mut winner: Outcome? = null
         mut grown: List<Stage> = []
         mut waited = false
@@ -1312,7 +1350,7 @@ export fn run_through(r: dyn Runner, c: Command) -> Result<Output, ProcessError>
     judged(c, r.outcome(c)?)
 }
 
-type HostRunner = { }
+type HostRunner = {}
 
 impl Runner for HostRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
@@ -1322,7 +1360,7 @@ impl Runner for HostRunner {
 
 /// The host: children really run.
 export fn host() -> dyn Runner {
-    let r: dyn Runner = HostRunner { }
+    let r: dyn Runner = HostRunner {}
     r
 }
 
@@ -1340,7 +1378,11 @@ impl Runner for ScriptedRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
         let spelled = c.args.join(" ")
         let hit? = self.rows.find(answers(it, c.tool.name, spelled)) else { fail ProcessError.Unscripted(c.tool.name, spelled) }
-        Outcome { exit: hit.exit, out: Output { stdout: hit.stdout, stderr: hit.stderr, truncated: false }, took_ms: 0 }
+        Outcome {
+            exit: hit.exit,
+            out: Output { stdout: hit.stdout, stderr: hit.stderr, truncated: false },
+            took_ms: 0,
+        }
     }
 }
 
@@ -1351,18 +1393,22 @@ export fn scripted(rows: List<Script>) -> dyn Runner {
     r
 }
 
-type PlanRunner = { }
+type PlanRunner = {}
 
 impl Runner for PlanRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
         avra_puts("would run: ${c.tool.path} ${c.args.join(" ")}")
-        Outcome { exit: Exit.Clean, out: Output { stdout: "", stderr: "", truncated: false }, took_ms: 0 }
+        Outcome {
+            exit: Exit.Clean,
+            out: Output { stdout: "", stderr: "", truncated: false },
+            took_ms: 0,
+        }
     }
 }
 
 /// The dry run: every command is printed and answered clean.
 export fn plan() -> dyn Runner {
-    let r: dyn Runner = PlanRunner { }
+    let r: dyn Runner = PlanRunner {}
     r
 }
 
@@ -1377,9 +1423,5 @@ export fn exit(v: Exit) {
 /// An exit as the process status a shell would see: the code, or
 /// 128 plus the signal.
 export fn status_of(v: Exit) -> int {
-    match v {
-        .Clean -> 0,
-        .Code(n) -> n,
-        .Signal(s, _) -> 128 + s,
-    }
+    match v { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 128 + s }
 }

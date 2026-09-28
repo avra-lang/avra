@@ -2,6 +2,7 @@
 //! input value: everything downstream of "here is a program" takes
 //! this, never a loose (name, text) pair. Spans stay byte offsets
 //! everywhere; line and column exist only in a rendering's output.
+use @std.errors.{Edit, Loc}
 
 export type SourceFile = { file: string, text: string, line_starts: List<int> }
 
@@ -35,7 +36,9 @@ impl SourceFile {
     /// real position: a span may close there.
     fn linecol(offset: int) -> LineCol {
         if offset < 0 || offset > self.text.length {
-            avra_trap("a span reaches outside its own text — offset ${offset} of ${self.text.length} in ${self.file}")
+            avra_trap(
+                "a span reaches outside its own text — offset ${offset} of ${self.text.length} in ${self.file}",
+            )
         }
         mut line = 0
         for i, start in self.line_starts {
@@ -54,4 +57,59 @@ impl SourceFile {
         }
         self.text.substring(lo, hi)
     }
+}
+
+/// LOSSLESS BY CONSTRUCTION: every edit's span replaced by its own
+/// replacement, EVERY OTHER BYTE UNTOUCHED. Applied LAST-TO-FIRST
+/// (highest offset first) so an earlier edit's offsets never move
+/// under a later one — the caller need not sort. Absence for edits
+/// that OVERLAP (two rewrites over the same code, or one span inside
+/// another) or that reach outside the text: a splice that cannot say
+/// what it touched is refused, not guessed at.
+export fn spliced(text: string, edits: List<Edit>) -> string? {
+    if !edits_in_bounds(text, edits) || !edits_disjoint(edits) { return null }
+    mut out = text
+    for e in sorted_by_lo_desc(edits) { out = out.substring(0, e.loc.lo) + e.replacement + out.substring(e.loc.hi, out.length) }
+    out
+}
+
+fn edits_in_bounds(text: string, edits: List<Edit>) -> bool {
+    edits.all(it.loc.lo >= 0 && it.loc.lo <= it.loc.hi && it.loc.hi <= text.length)
+}
+
+/// Whether any two edits' spans touch or cross — a span that ends
+/// exactly where the next begins is fine (`hi == lo`), splicing
+/// cleanly adjacent.
+fn edits_disjoint(edits: List<Edit>) -> bool {
+    for i, a in edits {
+        for j, b in edits {
+            if i != j && overlapping(a.loc, b.loc) { return false }
+        }
+    }
+    true
+}
+
+fn overlapping(a: Loc, b: Loc) -> bool {
+    a.lo < b.hi && b.lo < a.hi
+}
+
+/// `edits`, highest `loc.lo` first — a small list (a file's own
+/// findings), so a repeated max scan costs nothing worth avoiding.
+fn sorted_by_lo_desc(edits: List<Edit>) -> List<Edit> {
+    mut remaining = edits
+    mut out: List<Edit> = []
+    while !remaining.is_empty() {
+        let m = highest_lo_index(remaining)
+        out.push(remaining[m])
+        remaining = remaining.slice(0, m).concat(remaining.slice(m + 1, remaining.length))
+    }
+    out
+}
+
+fn highest_lo_index(edits: List<Edit>) -> int {
+    mut best = 0
+    for i, e in edits {
+        if e.loc.lo > edits[best].loc.lo { best = i }
+    }
+    best
 }

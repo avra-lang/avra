@@ -7,23 +7,28 @@ use compiler.backend.{render_ir}
 spec "features/loops" {
     given "the counter's TYPE — an int, never an absorbing hole" {
         then "the counter refuses where an int must: it is NOT Error" {
-            refused_with("for i in 0..2 {\n    let s: string = i\n}\n1",
-                         "`s` declares `string`, this is `int`")
+            refused_with(
+                "for i in 0..2 {\n    let s: string = i\n}\n1",
+                "`s` declares `string`, this is `int`",
+            )
         }
         then "the counter WIDENS into a nullable cell like any int" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut t: int? = null\nfor i in 0..3 {\n    t = i\n}\nt ?? 0 - 1") == "2"
         }
     }
     given "while" {
         then "the loop turns until the condition falls" {
-            shown("mut total = 0\nmut i = 1\nwhile i < 5 {\n    total = total + i\n    i = i + 1\n}\ntotal") == "10"
+            shown(
+                "mut total = 0\nmut i = 1\nwhile i < 5 {\n    total = total + i\n    i = i + 1\n}\ntotal",
+            ) == "10"
         }
         then "a while whose condition starts false never turns" {
             shown("mut hits = 0\nwhile 1 < 0 {\n    hits = hits + 1\n}\nhits") == "0"
         }
         then "a loop drives a fn to its answer" {
-            shown("fn sum_to(n: int) -> int {\n    mut total = 0\n    mut i = 1\n    while i < n + 1 {\n        total = total + i\n        i = i + 1\n    }\n    total\n}\nsum_to(10)") == "55"
+            shown(
+                "fn sum_to(n: int) -> int {\n    mut total = 0\n    mut i = 1\n    while i < n + 1 {\n        total = total + i\n        i = i + 1\n    }\n    total\n}\nsum_to(10)",
+            ) == "55"
         }
     }
     given "for" {
@@ -114,20 +119,29 @@ ret 0"""
     }
     given "index pairing — `for i, x in xs`" {
         then "the index counts from zero, beside the element" {
-            shown("let xs = [\"a\", \"bb\"]\nmut t = 0\nfor i, x in xs {\n    t = t + i * 10 + x.length\n}\nt") == "13"
+            shown(
+                "let xs = [\"a\", \"bb\"]\nmut t = 0\nfor i, x in xs {\n    t = t + i * 10 + x.length\n}\nt",
+            ) == "13"
         }
         then "the parenthesised spelling is the same loop" {
             shown("mut t = 0\nfor (j, y) in [10, 20] {\n    t = t + j + y\n}\nt") == "31"
         }
         then "the index is an int and immutable" {
             refused_with("for i, x in [1] {\n    i = 5\n}\n2", "`i` is a loop index") &&
-                refused_with("for i, x in [1] {\n    let s: string = i\n}\n2", "declares `string`, this is `int`")
+                refused_with(
+                    "for i, x in [1] {\n    let s: string = i\n}\n2",
+                    "declares `string`, this is `int`",
+                )
         }
         then "nested loops keep their own indexes" {
-            shown("mut g = 0\nfor i, row in [[1, 2], [3]] {\n    for j, v in row {\n        g = g + i * 10 + j + v\n    }\n}\ng") == "17"
+            shown(
+                "mut g = 0\nfor i, row in [[1, 2], [3]] {\n    for j, v in row {\n        g = g + i * 10 + j + v\n    }\n}\ng",
+            ) == "17"
         }
         then "a lambda captures the index by value" {
-            shown("mut fs: List<fn(int) -> int> = []\nfor i, v in [1, 2, 3] {\n    fs.push(it + i)\n}\nfs[2](100)") == "102"
+            shown(
+                "mut fs: List<fn(int) -> int> = []\nfor i, v in [1, 2, 3] {\n    fs.push(it + i)\n}\nfs[2](100)",
+            ) == "102"
         }
         then "the index name obeys the naming law" {
             refused_with("for fn, x in [1] {\n    2\n}\n2", "`fn` is a keyword")

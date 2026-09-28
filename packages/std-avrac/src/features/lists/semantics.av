@@ -1,67 +1,98 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{Expr, ExprId, TypeId, Reg}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use core.{Expr, ExprId, TypeId, Reg, CompClause, some_list}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Bound}
 use diagnostics.{refusal}
 
-export type ListSemantics = { }
+export type ListSemantics = {}
 
 impl NodeSemantics for ListSemantics {
-    /// A literal's elements are kids; a comprehension's SOURCE and
-    /// range bound are — they resolve outside the binders — while
-    /// its element and filter are heirs, walked under them.
+    /// A literal's elements are kids; a comprehension's FIRST head's
+    /// source and range bound are — they resolve outside every
+    /// binder. Its element is the one HEIR: `heirs` is also the
+    /// expected-type channel's propagation list (`plant_want` hands
+    /// every heir the parent's own want), and only the element wears
+    /// the comprehension's — a later clause's own source, range bound
+    /// or condition answers an unrelated type, so `resolve_comp`/
+    /// `comp_type`/`comp_reg` walk those by hand, under the scope
+    /// each opens, never through this list. A `collect` owns its
+    /// body's walk, as a block owns its own.
     fn kids(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
         match e {
-            .Comp(_, _, _, source, hi, _) -> if hi == null { [source] } else { [source, hi!] },
-            // LICENSED I18: kids() has no failure channel; [] is the right answer for a node that is not a list
-            _ -> (e).elems_of() ?? [],
+            .Comp(_, clauses) -> comp_kids(clauses),
+            // LICENSED compiler.elems_of_defaulted: kids() has no failure channel; [] is the right answer for a node that is not a list
+            _ -> e.elems_of() ?? [],
         }
     }
 
     fn heirs(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Comp(elem, _, _, _, _, cond) -> if cond == null { [elem] } else { [elem, cond!] },
-            _ -> [],
-        }
+        match e { .Comp(elem, _) -> [elem], _ -> [] }
     }
 
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Comp(elem, index, name, _, _, cond) -> resolve_comp(cx, e, elem, index?.of, name.of, cond),
-            _ -> nothing(),
+            .Comp(elem, clauses) -> resolve_comp(cx, e, elem, clauses),
+            .Collect(body) -> cx.walk(body),
+            rest -> nothing(),
         }
     }
 
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Comp(elem, index, _, source, hi, cond) -> comp_type(cx, e, elem, index?.of, source, hi, cond),
-            _ -> literal_type(cx, e),
+            .Comp(elem, clauses) -> comp_type(cx, e, elem, clauses),
+            .Collect(body) -> collect_type(cx, e, body),
+            rest -> literal_type(cx, e),
         }
     }
 
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Comp(elem, index, _, source, hi, cond) -> comp_reg(cx, e, elem, index?.of, source, hi, cond),
-            _ -> literal_reg(cx, e),
+            .Comp(elem, clauses) -> comp_reg(cx, e, elem, clauses),
+            .Collect(body) -> collect_reg(cx, e, body),
+            rest -> literal_reg(cx, e),
         }
     }
 
 }
 
-/// The binders — `index, name` in that order, or the name alone —
-/// hold for the element and the filter, each under its own scope.
-/// A pair names them apart, as the `for` statement's does.
-fn resolve_comp(mut cx: ResolveCx, e: ExprId, elem: ExprId, index: string?, name: string, cond: ExprId?) {
-    if index == name { paired_alike(cx, e, name) }
-    let names = comp_binds(index, name)
-    let binds = cx.bound_at(e, names)
-    cx.arm_scope(binds, elem)
-    if cond != null { cx.arm_scope(binds, cond!) }
+/// The FIRST clause's source (and range bound) alone — the only read
+/// that names no binder of its own, so the generic walk may visit it
+/// outside any scope this node opens.
+fn comp_kids(clauses: List<CompClause>) -> List<ExprId> {
+    let head? = clauses.first() else { return [] }
+    match head { .Head(_, _, source, hi) -> [source].concat(some_list(hi)), .Filter(_) -> [] }
+}
+
+/// Every clause, left to right: a head's own binders — `index, name`
+/// in that order, or the name alone — join the names bound so far and
+/// hold for every clause after it; a filter reads the names bound so
+/// far and adds none. The element reads every head's binders, under
+/// its own scope, once every clause has opened its own.
+fn resolve_comp(mut cx: ResolveCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) {
+    cx.arm_scope(resolve_clauses(cx, e, clauses), elem)
+}
+
+/// Walks every clause after the first head's source (already a KID,
+/// walked outside any scope) under the names its earlier siblings
+/// bound, and answers the full accumulated binder list.
+fn resolve_clauses(mut cx: ResolveCx, e: ExprId, clauses: List<CompClause>) -> List<Bound> {
+    mut binds: List<Bound> = []
+    for j, c in clauses {
+        match c {
+            .Head(index, name, source, hi) -> {
+                if j > 0 { cx.arm_scope(binds, source, hi) }
+                if index?.of == name.of { paired_alike(cx, e, name.of) }
+                binds = binds.concat(cx.bound_at(e, comp_binds(index?.of, name.of)))
+            },
+            .Filter(cond) -> cx.arm_scope(binds, cond),
+        }
+    }
+    binds
 }
 
 /// The binder names in pre-order: the index first when written.
@@ -71,15 +102,24 @@ export fn comp_binds(index: string?, name: string) -> List<string> {
 }
 
 fn paired_alike(mut cx: ResolveCx, e: ExprId, name: string) {
-    cx.emit(refusal("resolve.paired", cx.view.loc_of(e), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
+    cx
+        .emit(
+            refusal(
+                "resolve.paired",
+                cx.view.loc_of(e),
+                "`${name}` names both the index and the element",
+                "bound here",
+                "give the index its own name — `for i, ${name} in …`",
+            ),
+        )
 }
 
 fn literal_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let elems? = (cx.view.store.expr(e)).elems_of() else { return cx.error_type }
+    let elems? = cx.view.store.expr(e).elems_of() else { return cx.error_type }
     list_type(cx, e, elems)
 }
 
 fn literal_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    let elems? = (cx.view.store.expr(e)).elems_of() else { return cx.lower_defect(e, "a list literal without its elements") }
+    let elems? = cx.view.store.expr(e).elems_of() else { return cx.lower_defect(e, "a list literal without its elements") }
     list_reg(cx, e, elems)
 }

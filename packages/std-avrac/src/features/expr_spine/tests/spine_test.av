@@ -24,11 +24,12 @@ spec "features/expr_spine" {
                 .Binary(op, left, right) -> {
                     let inner = match p.store.expr(left) {
                         .Binary(iop, il, ir) -> iop == BinOp.Add &&
-                            p.store.expr(il) is .IntLit && p.store.expr(ir) is .IntLit,
+                            p.store.expr(il) is .IntLit &&
+                            p.store.expr(ir) is .IntLit,
                         _ -> false,
                     }
                     op == BinOp.Sub && inner && p.store.expr(right) is .Ident
-                }
+                },
                 _ -> false,
             }
             p.diagnostics == 0 && p.store.exprs.count() == 5 && tree_ok
@@ -44,17 +45,14 @@ spec "features/expr_spine" {
                 .Binary(_, left, _) -> {
                     let s = p.store.expr_span(left)
                     s?.lo == 0 && s?.hi == 2
-                }
+                },
                 _ -> false,
             }
         }
         then "literal payloads parse as integers" {
             let p = parse_expr("40 + 2")
             match p.store.expr(p.root!) {
-                .Binary(_, left, _) -> match p.store.expr(left) {
-                    .IntLit(v) -> v == 40,
-                    _ -> false,
-                },
+                .Binary(_, left, _) -> match p.store.expr(left) { .IntLit(v) -> v == 40, _ -> false },
                 _ -> false,
             }
         }
@@ -80,10 +78,17 @@ spec "features/expr_spine" {
             refused_with("\"a\" + 1", "`+` needs `string` operands, found `int`")
         }
         then "an enum carrying nothing compares by variant" {
-            shown("enum C {\n    red\n    blue\n}\nfn pick(b: bool) -> C { if b { C.red } else { C.blue } }\n\"" + "\${pick(true) == C.red} " + "\${pick(false) != C.blue}\"") == "true false"
+            shown(
+                "enum C {\n    red\n    blue\n}\nfn pick(b: bool) -> C { if b { C.red } else { C.blue } }\n\"" +
+                    "\${pick(true) == C.red} " +
+                    "\${pick(false) != C.blue}\"",
+            ) == "true false"
         }
         then "an enum carrying a payload still refuses" {
-            refused_with("enum E {\n    a(int)\n    b\n}\nE.b == E.b", "`==` compares scalars for now")
+            refused_with(
+                "enum E {\n    a(int)\n    b\n}\nE.b == E.b",
+                "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+            )
         }
     }
     given "the operator ladder" {
@@ -122,8 +127,7 @@ spec "features/expr_spine" {
         }
         then "`!` wants a bool, in its own words" {
             let a = analyze_source("!5")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`!` negates a `bool`, found `int`")
+            a.diagnostics.length == 1 && a.report().contains("`!` negates a `bool`, found `int`")
         }
         then "`!=` compares matching types, in its own words" {
             let a = analyze_source("1 != \"a\"")

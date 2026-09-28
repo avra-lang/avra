@@ -145,6 +145,21 @@ build/%.o: %.c build/%.sha
 
 -include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS))))
 
+# THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
+# runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
+# then written into backend/llvm_wrapper.c's include, so every module can
+# inline the leaves and the compiler's own digest covers them — a changed
+# leaf retires every cached object. An LLVM without clang carries none,
+# and the leaves stay calls.
+build/avra_hot.bc: runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
+	@mkdir -p build
+	@if [ -x $(LLVM_PREFIX)/bin/clang ]; then $(LLVM_PREFIX)/bin/clang -c -emit-llvm -O2 -fPIC -Iruntime -o $@ runtime/avra_hot.c; else rm -f $@; touch $@; fi
+
+build/avra_hot.inc: build/avra_hot.bc
+	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char avra_hot_bc[] = {' + (','.join(str(b) for b in d) or '0') + '};'); print('static const unsigned long avra_hot_bc_len = %d;' % len(d))" $< > $@
+
+build/llvm_wrapper.o: build/avra_hot.inc
+
 # The library is REBUILT WHOLE from its objects, never updated in
 # place: a member dropped from runtime/ must not linger in it.
 $(RUNTIME_LIB): $(RUNTIME_OBJS)
@@ -157,8 +172,8 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
-        check run ir emit build-native native-check avra suites install sprite sprite-check
+.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -180,6 +195,9 @@ SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 # whole cli, and anything short of six figures is a truncated write
 # reporting success.
 SEED_FLOOR := 100000
+# Every C object the compiler and the packages link, built from its source.
+objects: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+
 seed: $(COMPILER_OBJS)
 	@./avra emit packages/cli > build/seed.ll.new
 	@n=$$(wc -l < build/seed.ll.new | tr -d ' '); \
@@ -209,9 +227,15 @@ recover: $(COMPILER_OBJS)
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
+# Bootstrap hands out GEN-2. A change to lowering or memory reaches a
+# compiler's own body only when a compiler already carrying it compiles
+# that body, so the seed's gen-1 rebuilds once more.
 bootstrap: recover
-	@echo "bootstrap: rebuilding build/avra from source"
+	@echo "bootstrap: gen-1, the source compiled by the seed"
 	@$(MAKE) -s avra
+	@echo "bootstrap: gen-2, the source compiled by gen-1"
+	@$(MAKE) -s avra
+	@echo "bootstrap: build/avra is gen-2"
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
@@ -259,9 +283,11 @@ sweep:
 	@find packages -type d -name build -prune -exec rm -rf {} +
 	@rm -rf build/test_shards
 
-test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites
+# A suite whose package C lives outside the compiler's image evaluates
+# through that package's library, so `test` needs `libs`, as `tested` does.
+test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites libs
 	@for p in $(SUITES); do \
-	  ./avra test $$p || exit 1; \
+	  AVRA_SOUND_CHECK=1 ./avra test $$p || exit 1; \
 	done
 
 # THE OBJECT FOLLOWS THE SOURCE'S CONTENT, NOT ITS TIMESTAMP. make
@@ -300,9 +326,10 @@ FORCE:
 # it; an object whose behaviour changes with a HEADER names that
 # header too, so a stash-and-rebuild inside one second still rebuilds
 # it instead of trusting a mtime.
-build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h
+build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
+build/avra_hot.sha: SHA_SRC := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 build/avra_fiber.sha: SHA_SRC := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
-build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
+build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
 build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 build/%.sha: %.c FORCE
@@ -431,20 +458,51 @@ suites:
 	@python3 tools/suites.py --self-test
 	@python3 tools/suites.py --report
 
-# The idiom bar: the baseline LISTS sites and only ever shrinks —
-# `idioms-accept` prunes what is fixed and can never add. A new
-# violation is written idiomatically or licensed AT the site.
+# The idiom bar is NATIVE now: every idiom the language can state is
+# a `rule` (packages/std-avrac's compiler/idioms.av and each
+# feature's own idioms.av), found by `avra check` itself.
+# `tools/idioms.baseline` lists every currently-accepted site and
+# only ever shrinks — `idioms-accept` prunes what a fix made gone,
+# and no path here can add a line (the file's own header states the
+# law). A new violation is fixed in the code, or a human adds it to
+# the baseline, reviewed at adoption and every time after.
 # THE NAMES THE DOCTRINE CITES RESOLVE — a third of the rot, and it
 # says which third: a count, a line number or an attribution stays
 # invisible to it.
 cited:
 	@python3 tools/cited.py
 
+# DOGFOODING.md's own registry keeps a GENERATED block current
+# against `avra rules --markdown` — a rule's doc changes here or the
+# block does not, and this is what notices.
+dogfooding-rules:
+	@sh tools/dogfooding_rules.sh
+
 idioms:
-	@sh tools/idioms.sh
+	@STATUS=0; CHECKED=0; \
+	for pkg in packages/*/; do \
+	  name=$$(basename "$$pkg"); \
+	  [ -d "$${pkg}src" ] || continue; \
+	  CHECKED=$$((CHECKED + 1)); \
+	  ./build/avra check "packages/$$name" --baseline tools/idioms.baseline || STATUS=1; \
+	done; \
+	if [ $$STATUS -eq 0 ]; then echo "idioms: no new violations — $$CHECKED package(s) checked against tools/idioms.baseline"; fi; \
+	exit $$STATUS
 
 idioms-accept:
-	@sh tools/idioms.sh --accept
+	@for pkg in packages/*/; do \
+	  name=$$(basename "$$pkg"); \
+	  [ -d "$${pkg}src" ] || continue; \
+	  ./build/avra check "packages/$$name" --baseline tools/idioms.baseline --baseline_accept; \
+	done
+
+# The formatter's real receipt: `fmt(x) == x`, byte-exact, over every
+# `.av` file in the tree — never idempotence
+# (docs/2026_09_21_FORMATTER_DESIGN.md). GATED: the tree reports 0
+# differing (avra-8sb5.25.37), so a NEW one is a regression, not a
+# known gap.
+fmt-lossless:
+	@sh tools/fmt_lossless.sh
 
 # The survivor baseline: a mutant `avra attack` accepts is a decision,
 # never a silent pass — a NEW one is refused (tools/attack.baseline).
@@ -460,6 +518,15 @@ vocab:
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
 	@python3 tools/fingerprints.py
+
+# THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
+# compiler/codecs.av's registry runs every pair over its exemplars,
+# decode(encode(x)) compared to x field by field; tools/codecs.py
+# refuses any encoder/decoder-shaped pair in the tree the registry
+# does not name.
+codecs:
+	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
+	@python3 tools/codecs.py
 
 # THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
 # `rt_sigs()` and included last by the runtime, so a body that answers
@@ -591,7 +658,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited attack tested runtime-tests traps witness cache-attacks
+gate: seed-check stems vocab fingerprints codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true

@@ -9,7 +9,7 @@
 //! pushes, cell settlement — nothing here spells a retain).
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
-use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp}
+use core.{ExprId, Reg, Ins, Type, TypeId, BinOp}
 use features.{LowerCx, MethodCall}
 
 // ── The rows' rules ──
@@ -81,7 +81,10 @@ export fn lower_first(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, fal
 export fn lower_last(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, true) }
 
 export fn lower_concat(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.array_concat(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
-export fn lower_slice(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.array_slice(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])) }
+export fn lower_slice(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx
+        .array_slice(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+}
 export fn lower_join(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_join(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
 
 /// `xs.enumerate()` is the list — the paired `for` head does the
@@ -148,10 +151,11 @@ fn found(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let w = cx.opened(mc.subject, s.elem)
     cx.turn_open(w)
     let v = cx.turn_elem(w, cx.turn_index(w))
-    cx.void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
-        cx.emit(Ins.Store(cell, cx.adopted(opt, false, v)))
-        cx.early_exit(w)
-    }
+    cx
+        .void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, v)))
+            cx.early_exit(w)
+        }
     cx.turn_close(w)
     cx.loaded(mc.e, cell)
 }
@@ -166,10 +170,11 @@ fn found_at(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     cx.turn_open(w)
     let here = cx.turn_index(w)
     let v = cx.turn_elem(w, here)
-    cx.void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
-        cx.emit(Ins.Store(cell, cx.adopted(opt, false, here)))
-        cx.early_exit(w)
-    }
+    cx
+        .void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, here)))
+            cx.early_exit(w)
+        }
     cx.turn_close(w)
     cx.loaded(mc.e, cell)
 }
@@ -184,10 +189,11 @@ fn judged(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
     cx.turn_open(w)
     let v = cx.turn_elem(w, cx.turn_index(w))
     let p = turn_call(cx, f, v, bool_ty(cx))
-    cx.void_region(flipping(cx, p, all)) { cx ->
-        store_bool(cx, cell, !all)
-        cx.early_exit(w)
-    }
+    cx
+        .void_region(flipping(cx, p, all)) { cx ->
+            store_bool(cx, cell, !all)
+            cx.early_exit(w)
+        }
     cx.turn_close(w)
     cx.loaded(mc.e, cell)
 }
@@ -200,10 +206,11 @@ fn held(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let w = cx.opened(mc.subject, s.elem)
     cx.turn_open(w)
     let v = cx.turn_elem(w, cx.turn_index(w))
-    cx.void_region(cx.same_value(v, needle, s.elem)) { cx ->
-        store_bool(cx, cell, true)
-        cx.early_exit(w)
-    }
+    cx
+        .void_region(cx.same_value(v, needle, s.elem)) { cx ->
+            store_bool(cx, cell, true)
+            cx.early_exit(w)
+        }
     cx.turn_close(w)
     cx.loaded(mc.e, cell)
 }
@@ -217,10 +224,11 @@ fn position(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     cx.turn_open(w)
     let here = cx.turn_index(w)
     let v = cx.turn_elem(w, here)
-    cx.void_region(cx.same_value(v, needle, s.elem)) { cx ->
-        cx.emit(Ins.Store(cell, here))
-        cx.early_exit(w)
-    }
+    cx
+        .void_region(cx.same_value(v, needle, s.elem)) { cx ->
+            cx.emit(Ins.Store(cell, here))
+            cx.early_exit(w)
+        }
     cx.turn_close(w)
     cx.loaded(mc.e, cell)
 }
@@ -233,13 +241,12 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     let cell = absent_cell(cx, opt)
     let len = cx.measure_of(mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
     let zero = cx.const_int(0)
-    let some = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(some, BinOp.Lt, zero, len))
-    cx.void_region(some) { cx ->
-        let at = if last { decremented(cx, len) } else { zero }
-        let raw = cx.elem_read(xs, at, cx.carried_type(opt))
-        cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
-    }
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Lt, zero, len)) { cx ->
+            let at = if last { decremented(cx, len) } else { zero }
+            let raw = cx.elem_read(xs, at, cx.carried_type(opt))
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+        }
     cx.loaded(mc.e, cell)
 }
 
@@ -252,6 +259,7 @@ fn boxed(mut cx: LowerCx, f: ExprId) -> Box {
 }
 
 /// The fn box asked about this element.
+// LICENSED compiler.raw_mint_emit_call_ptr: minted at the walk's own element type, not the node's — `call_ptr_at` does not fit
 fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
     let r = cx.mint_ty(ret)
     cx.emit(Ins.CallPtr(r, f.fp, [f.f, v]))
@@ -262,9 +270,7 @@ fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
 /// `any` fires ON the predicate; `all` fires on its failure.
 fn flipping(mut cx: LowerCx, p: Reg, all: bool) -> Reg {
     if !all { return p }
-    let np = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Un(np, UnOp.Not, p))
-    np
+    cx.un(p)
 }
 
 /// What `map` answers per element — the result list's own element,
@@ -274,17 +280,14 @@ fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
     elem ?? cx.type_at(e)
 }
 
-fn bool_ty(mut cx: LowerCx) -> TypeId {
+fn bool_ty(cx: LowerCx) -> TypeId {
     cx.type(bool)
 }
 
 // ── The small mints ─────────────────────────────────────────────
 
 fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
-    let one = cx.const_int(1)
-    let r = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(r, BinOp.Sub, n, one))
-    r
+    cx.bin(Type.Int, BinOp.Sub, n, cx.const_int(1))
 }
 
 fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {

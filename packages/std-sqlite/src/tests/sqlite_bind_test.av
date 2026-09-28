@@ -6,8 +6,8 @@
 // `hex(?)` compares the BYTES inside the database and answers an
 // integer, so a value truncated at a NUL fails the comparison instead
 // of passing a length check.
-use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, slots, bind_int, bind_null, bind_real, bind_text, bind_blob, bind_text_unsafely_borrowed, int_at}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt}
 use @std.sqlite.error.{SqlError}
 use @std.text.{from_codepoint, from_codepoints}
 
@@ -31,53 +31,44 @@ fn asked(sql: string, b: Binder) -> string { in_memory((db) -> in_db(db, sql, b)
 
 fn in_db(db: Db, sql: string, b: Binder) -> string {
     let said = prepared(db, sql, b)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn prepared(db: Db, sql: string, b: Binder) -> string {
-    match prepare(db, sql) {
-        .Ok(s) -> filled(s, b),
-        .Err(e) -> e.cause.kind(),
-    }
+    match db.prepare(sql) { .Ok(s) -> filled(s, b), .Err(e) -> e.cause.kind() }
 }
 
 fn filled(s: Stmt, b: Binder) -> string {
     let said = after_bind(s, b)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn after_bind(s: Stmt, b: Binder) -> string {
-    match place(s, b) {
-        .Ok(_) -> bound_first_int(s),
-        .Err(e) -> e.cause.kind(),
-    }
+    match place(s, b) { .Ok(_) -> bound_first_int(s), .Err(e) -> e.cause.kind() }
 }
 
 fn place(s: Stmt, b: Binder) -> Result<int, SqlError> {
-    if b.kind == 1 { return bind_text(s, 1, b.text) }
-    if b.kind == 2 { return bind_blob(s, 1, b.text) }
-    if b.kind == 3 { return bind_int(s, 1, b.number) }
+    if b.kind == 1 { return s.bind_text(1, b.text) }
+    if b.kind == 2 { return s.bind_blob(1, b.text) }
+    if b.kind == 3 { return s.bind_int(1, b.number) }
     // THE BORROWED BIND TAKES THE CALLER'S OCTETS, and the box
     // lives in the Binder for the statement's whole life — which is
     // the promise the verb's name asks for, made visible.
-    if b.kind == 5 { return bind_text_unsafely_borrowed(s, 1, b.octets!) }
-    bind_null(s, 1)
+    if b.kind == 5 { return s.bind_text_unsafely_borrowed(1, b.octets!) }
+    s.bind_null(1)
 }
 
 fn bound_first_int(s: Stmt) -> string {
-    match step(s) {
-        .Ok(more) -> if more { bound_told(int_at(s, 0)) } else { "NO ROW" },
+    match s.step() {
+        .Ok(more) -> if more { bound_told(s.int_at(0)) } else { "NO ROW" },
         .Err(e) -> e.cause.kind(),
     }
 }
 
 fn bound_told(r: Result<int, SqlError>) -> string {
-    match r {
-        .Ok(v) -> "${v}",
-        .Err(e) -> e.cause.kind(),
-    }
+    match r { .Ok(v) -> "${v}", .Err(e) -> e.cause.kind() }
 }
 
 // ── A REAL, on its own path ─────────────────────────────────────
@@ -98,69 +89,51 @@ fn bound_told(r: Result<int, SqlError>) -> string {
 /// one — `LLVM verification failed`, the same defect that holds
 /// `real_at` back. These two convert the day it lands.
 fn with_real(sql: string, v: float) -> string {
-    match memory() {
-        .Ok(db) -> real_in_db(db, sql, v),
-        .Err(e) -> e.cause.kind(),
-    }
+    match Db.memory() { .Ok(db) -> real_in_db(db, sql, v), .Err(e) -> e.cause.kind() }
 }
 
 fn real_in_db(db: Db, sql: string, v: float) -> string {
     let said = real_prepared(db, sql, v)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn real_prepared(db: Db, sql: string, v: float) -> string {
-    match prepare(db, sql) {
-        .Ok(s) -> real_filled(s, v),
-        .Err(e) -> e.cause.kind(),
-    }
+    match db.prepare(sql) { .Ok(s) -> real_filled(s, v), .Err(e) -> e.cause.kind() }
 }
 
 fn real_filled(s: Stmt, v: float) -> string {
     let said = real_after_bind(s, v)
-    let _ = finalize(s)
+    let _ = s.finalize()
     said
 }
 
 fn with_real_at(index: int, sql: string, v: float) -> string {
-    match memory() {
-        .Ok(db) -> real_at_index(db, index, sql, v),
-        .Err(e) -> e.cause.kind(),
-    }
+    match Db.memory() { .Ok(db) -> real_at_index(db, index, sql, v), .Err(e) -> e.cause.kind() }
 }
 
 fn real_at_index(db: Db, index: int, sql: string, v: float) -> string {
     let said = aimed(db, index, sql, v)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn aimed(db: Db, index: int, sql: string, v: float) -> string {
-    match prepare(db, sql) {
-        .Ok(s) -> aimed_bind(s, index, v),
-        .Err(e) -> e.cause.kind(),
-    }
+    match db.prepare(sql) { .Ok(s) -> aimed_bind(s, index, v), .Err(e) -> e.cause.kind() }
 }
 
 fn aimed_bind(s: Stmt, index: int, v: float) -> string {
-    let said = said_of(bind_real(s, index, v))
-    let _ = finalize(s)
+    let said = said_of(s.bind_real(index, v))
+    let _ = s.finalize()
     said
 }
 
 fn said_of(r: Result<int, SqlError>) -> string {
-    match r {
-        .Ok(_) -> "bound",
-        .Err(e) -> e.cause.kind(),
-    }
+    match r { .Ok(_) -> "bound", .Err(e) -> e.cause.kind() }
 }
 
 fn real_after_bind(s: Stmt, v: float) -> string {
-    match bind_real(s, 1, v) {
-        .Ok(_) -> bound_first_int(s),
-        .Err(e) -> e.cause.kind(),
-    }
+    match s.bind_real(1, v) { .Ok(_) -> bound_first_int(s), .Err(e) -> e.cause.kind() }
 }
 
 /// `a`, a NUL, `b` — three bytes no literal can spell, and the exact
@@ -168,8 +141,8 @@ fn real_after_bind(s: Stmt, v: float) -> string {
 fn a_nul_b() -> string { from_codepoints([97, 0, 98]) }
 
 spec "std/sqlite binding" {
-
     given "a value put into a statement and read back by SQL" {
+
         then "an integer arrives unchanged" { with_int("select ?", 42) == "42" }
         then "an integer past 32 bits arrives unchanged" { with_int("select ?", 4294967297) == "4294967297" }
         then "a negative integer arrives negative" { with_int("select ?", 0 - 7) == "-7" }
@@ -177,8 +150,8 @@ spec "std/sqlite binding" {
         then "empty text is text, and its length is zero" { with_text("select length(?)", "") == "0" }
         then "a bound NULL is SQL NULL rather than a missing value" { with_null("select ? is null") == "1" }
     }
-
     given "a real bound, compared where the driver cannot yet read one" {
+
         // The comparison happens INSIDE SQLite over the stored double,
         // so a value that lost bits crossing the wall fails it — where a
         // test that read the number back through the driver would be
@@ -205,8 +178,8 @@ spec "std/sqlite binding" {
         then "slot 1 of a one-slot statement takes it" { with_real_at(1, "select ?1", 3.5) == "bound" }
         then "and slot 2 of that statement is out of the slots" { with_real_at(2, "select ?1", 3.5) == "sqlite.out_of_slots" }
     }
-
     given "a bind names the storage class SQLite will store" {
+
         then "text binds as text" { with_text("select typeof(?) = 'text'", "hi") == "1" }
         then "an integer binds as an integer" { with_int("select typeof(?) = 'integer'", 1) == "1" }
         then "a blob binds as a blob" { with_blob("select typeof(?) = 'blob'", "hi") == "1" }
@@ -216,8 +189,8 @@ spec "std/sqlite binding" {
         then "empty text is text and not null" { with_text("select typeof(?) = 'text'", "") == "1" }
         then "an empty blob is a blob and not null" { with_blob("select typeof(?) = 'blob'", "") == "1" }
     }
-
     given "text holding a NUL, which C would cut short" {
+
         // `hex` compares the BYTES inside the database, so a value bound
         // with a `strlen` length fails this rather than passing a
         // length check. 610062 is 'a', NUL, 'b'.
@@ -226,13 +199,13 @@ spec "std/sqlite binding" {
         then "a NUL-bearing value is not equal to its own prefix" { with_text("select ? = 'a'", a_nul_b()) == "0" }
         then "a lone NUL is one byte, not an empty value" { with_text("select length(cast(? as blob))", from_codepoint(0)) == "1" }
     }
-
     given "bytes bound as a blob" {
+
         then "the bytes arrive exactly" { with_blob("select hex(?) = '610062'", a_nul_b()) == "1" }
         then "a blob keeps its length where text would end at a NUL" { with_blob("select length(?)", a_nul_b()) == "3" }
     }
-
     given "a parameter index outside the statement's slots" {
+
         // Parameters count from 1 and columns from 0, which is the
         // oldest off-by-one in this API — so the driver names it rather
         // than letting SQLITE_RANGE come back as a bare code.
@@ -250,8 +223,8 @@ spec "std/sqlite binding" {
         then "a statement with three slots reports three" { slots_of("select ? + ? + ?") == 3 }
         then "a statement with none reports none" { slots_of("select 1") == 0 }
     }
-
     given "the borrowing bind, which is the named hatch and not a default" {
+
         // `SQLITE_STATIC` asks SQLite not to copy, so the caller's bytes
         // must outlive the statement. The value here is alive across the
         // whole call, which is the only condition under which it is
@@ -266,20 +239,17 @@ fn with_int_at(sql: string, index: int) -> string { in_memory((db) -> at_index(d
 
 fn at_index(db: Db, sql: string, index: int) -> string {
     let said = index_said(db, sql, index)
-    let _ = close(db)
+    let _ = db.close()
     said
 }
 
 fn index_said(db: Db, sql: string, index: int) -> string {
-    match prepare(db, sql) {
-        .Ok(s) -> index_bound(s, index),
-        .Err(e) -> e.cause.kind(),
-    }
+    match db.prepare(sql) { .Ok(s) -> index_bound(s, index), .Err(e) -> e.cause.kind() }
 }
 
 fn index_bound(s: Stmt, index: int) -> string {
-    let said = bound_told(bind_int(s, index, 1))
-    let _ = finalize(s)
+    let said = bound_told(s.bind_int(index, 1))
+    let _ = s.finalize()
     said
 }
 
@@ -287,27 +257,21 @@ fn index_bound(s: Stmt, index: int) -> string {
 /// SPELLED OUT because it answers an `int`, not a `string` — the one
 /// place in this file `in_memory` does not reach.
 fn slots_of(sql: string) -> int {
-    match memory() {
-        .Ok(db) -> counted(db, sql),
-        .Err(_) -> 0 - 1,
-    }
+    match Db.memory() { .Ok(db) -> counted(db, sql), .Err(_) -> 0 - 1 }
 }
 
 fn counted(db: Db, sql: string) -> int {
     let n = slots_said(db, sql)
-    let _ = close(db)
+    let _ = db.close()
     n
 }
 
 fn slots_said(db: Db, sql: string) -> int {
-    match prepare(db, sql) {
-        .Ok(s) -> slots_finalized(s),
-        .Err(_) -> 0 - 1,
-    }
+    match db.prepare(sql) { .Ok(s) -> slots_finalized(s), .Err(_) -> 0 - 1 }
 }
 
 fn slots_finalized(s: Stmt) -> int {
-    let n = slots(s)
-    let _ = finalize(s)
+    let n = s.slots()
+    let _ = s.finalize()
     n
 }

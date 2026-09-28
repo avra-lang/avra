@@ -31,7 +31,17 @@ fn build_dyn_opt_type(b: Builder) -> Result<LangNode, string> {
 
 fn dyn_written(b: Builder, optional: bool) -> Result<LangNode, string> {
     let n = b.token(0)?
-    b.make_type(TypeRef { name: n.text, args: [], optional: optional, dynamic: true, arrow: false, span: b.span })
+    b
+        .make_type(
+            TypeRef {
+                name: n.text,
+                args: [],
+                optional: optional,
+                dynamic: true,
+                arrow: false,
+                span: b.span,
+            },
+        )
 }
 
 /// A written type IS three things: the NAME, what it was applied to,
@@ -40,5 +50,36 @@ fn dyn_written(b: Builder, optional: bool) -> Result<LangNode, string> {
 /// `List<List<int>>` nests with no rule of its own.
 fn written(b: Builder, args: List<TypeRef>, optional: bool) -> Result<LangNode, string> {
     let n = b.token(0)?
-    b.make_type(TypeRef { name: n.text, args: args, optional: optional, dynamic: false, arrow: false, span: b.span })
+    b
+        .make_type(
+            TypeRef {
+                name: n.text,
+                args: args,
+                optional: optional,
+                dynamic: false,
+                arrow: false,
+                span: b.span,
+            },
+        )
+}
+
+/// `A or B or ...` — the first atom plus zero or more trailing ones;
+/// no `or` written answers the lone atom unchanged, so `Result<T, E>`
+/// for a plain `E` parses exactly as it always did.
+fn build_union_type(b: Builder) -> Result<LangNode, string> {
+    let t = b.type_ref(0)?
+    let rest = b.type_refs(1)?
+    if rest.is_empty() { return b.make_type(t) }
+    b
+        .make_type(
+            TypeRef {
+                name: "",
+                args: [],
+                optional: false,
+                dynamic: false,
+                arrow: false,
+                span: b.span,
+                alternatives: [t].concat(rest),
+            },
+        )
 }

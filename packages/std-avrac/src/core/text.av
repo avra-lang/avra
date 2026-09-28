@@ -38,7 +38,6 @@ export type Closest = { name: string, distance: int }
 /// The nearest candidate within distance 2 — never an exact match,
 /// ties to the earliest candidate.
 export fn closest(name: string, candidates: List<string>) -> Closest? {
-    // LICENSED I4: a min-by fold; the subset has no min_by
     mut best: Closest? = null
     for c in candidates {
         let d = edit_distance(name, c)
@@ -67,27 +66,25 @@ export fn counted(n: int, noun: string) -> string {
     "${n} ${noun}${if n == 1 { "" } else { "s" }}"
 }
 
-/// Names in byte order — a host listing made deterministic. A merge sort: the
-/// lists it meets run to thousands.
-export fn sorted_texts(xs: List<string>) -> List<string> {
-    if xs.length < 2 { return [x for x in xs] }
-    let mid = xs.length / 2
-    merged_texts(sorted_texts(xs.slice(0, mid)), sorted_texts(xs.slice(mid, xs.length)))
+/// Names in byte order — a host listing made deterministic.
+export fn sorted_texts(xs: List<string>) -> List<string> { sorted_by(xs, text_before) }
+
+/// Byte order on TUPLES of text: component by component, a shorter
+/// tuple before its own extension. Never a join — `("a.b", "c")` and
+/// `("a", "b.c")` are two keys, not one.
+export fn tuple_before(a: List<string>, b: List<string>) -> bool {
+    for j, x in a {
+        if j >= b.length { return false }
+        if x != b[j] { return text_before(x, b[j]) }
+    }
+    a.length < b.length
 }
 
-/// Two sorted runs as one, the first's names ahead of their equals.
-fn merged_texts(a: List<string>, b: List<string>) -> List<string> {
-    mut out: List<string> = []
-    mut i = 0
-    mut j = 0
-    while i < a.length && j < b.length {
-        if text_before(b[j], a[i]) {
-            out.push(b[j])
-            j = j + 1
-        } else {
-            out.push(a[i])
-            i = i + 1
-        }
-    }
-    out.concat(a.slice(i, a.length)).concat(b.slice(j, b.length))
+/// A joined record's fields, every one kept: an empty line is one empty
+/// field, and an empty last field is a field — `split` drops a trailing
+/// empty segment, which a decoder must never do.
+export fn wire_fields(line: string, sep: string) -> List<string> {
+    if line.is_empty() { return [""] }
+    let parts = line.split(sep)
+    if line.ends_with(sep) { parts.concat([""]) } else { parts }
 }

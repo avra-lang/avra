@@ -35,16 +35,23 @@ spec "compiler/resolve" {
     }
     given "the shadowing chain — the lookup ORDER is the law" {
         then "innermost outward: an inner scope beats a param" {
-            shown("let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { n }\n}\nf(10) + n") == "101"
+            shown(
+                "let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { n }\n}\nf(10) + n",
+            ) == "101"
         }
         then "a param binds when no inner scope speaks" {
             shown("let n = 1\nfn f(n: int) -> int { n }\nf(41) + n") == "42"
         }
         then "the chain ends at the body floor — the top level's bindings are not a rung" {
-            refused_with("let n = 1\nfn f() -> int {\n    n\n}\nf()", "run-time binding of the top level")
+            refused_with(
+                "let n = 1\nfn f() -> int {\n    n\n}\nf()",
+                "run-time binding of the top level",
+            )
         }
         then "each scope's name dies at its exit" {
-            shown("let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { 0 } + n\n}\nf(41)") == "141"
+            shown(
+                "let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { 0 } + n\n}\nf(41)",
+            ) == "141"
         }
     }
     given "unresolved names" {
@@ -75,7 +82,8 @@ spec "compiler/resolve" {
             let far = af.view
             let rf = af.names
             rn.voices.list[0].suggestions[0].confidence == Confidence.Medium &&
-                rf.voices.list[0].suggestions.is_empty() && rf.voices.list[0].help == null
+                rf.voices.list[0].suggestions.is_empty() &&
+                rf.voices.list[0].help == null
         }
     }
     given "reserved words" {
@@ -85,8 +93,7 @@ spec "compiler/resolve" {
         }
         then "binding a grammar keyword refuses — the list derives from the grammar" {
             let r = analyze_source("let while = 1").names
-            r.voices.list.length == 1 &&
-                r.voices.list[0].message == "`while` is a keyword"
+            r.voices.list.length == 1 && r.voices.list[0].message == "`while` is a keyword"
         }
         then "USING one as a value is a keyword, not a missing name" {
             let r = analyze_source("let y = 1\ny + while").names
@@ -104,18 +111,15 @@ spec "compiler/resolve" {
         }
         then "a BUILT-IN type name cannot be redeclared" {
             let r = analyze_source("type int = { x: bool }").names
-            r.voices.list.length == 1 &&
-                r.voices.list[0].message == "`int` is a built-in type"
+            r.voices.list.length == 1 && r.voices.list[0].message == "`int` is a built-in type"
         }
         then "a type CONSTRUCTOR name is protected too" {
             let r = analyze_source("type List = { x: int }").names
-            r.voices.list.length == 1 &&
-                r.voices.list[0].message == "`List` is a built-in type"
+            r.voices.list.length == 1 && r.voices.list[0].message == "`List` is a built-in type"
         }
         then "every built-in name is protected, enums too" {
             let r = analyze_source("enum bool {\n    a\n}").names
-            r.voices.list.length == 1 &&
-                r.voices.list[0].message == "`bool` is a built-in type"
+            r.voices.list.length == 1 && r.voices.list[0].message == "`bool` is a built-in type"
         }
         then "using one is reserved, never a typo hunt" {
             let r = analyze_source("spawn").names
@@ -123,7 +127,7 @@ spec "compiler/resolve" {
         }
         then "the rendering names the future keyword" {
             let lang = avra()
-            let expected = """error[F3002]: `bare` is reserved for a future Avra feature
+            let expected = """error[resolve.reserved]: `bare` is reserved for a future Avra feature
   ╭─[app.av:1:1]
 1 │ let bare = 1
   · ┬
@@ -136,7 +140,7 @@ help: pick another name — `bare` becomes a keyword"""
     given "use before definition, rendered" {
         then "both places show: the use and the definition" {
             let lang = avra()
-            let expected = """error[F3001]: `x` is used before its definition
+            let expected = """error[resolve.use_before_def]: `x` is used before its definition
   ╭─[app.av:1:1]
 1 │ x
   · ┬
@@ -154,13 +158,15 @@ help: move the definition above this use"""
     given "the milestone gate" {
         then "avra check renders the world-class error" {
             let lang = avra()
-            let expected = """error[F3000]: `y` is not defined
+            let expected = """error[resolve.unresolved]: `y` is not defined
   ╭─[app.av:1:13]
 1 │ let x = 1 + y
   ·             ┬
   ·             ╰── not defined anywhere in this program
 ──╯
-help: did you mean `x`?"""
+help: did you mean `x`?
+fix (high): replace `y` with `x`
+  x"""
             lang.check(new_source_file("app.av", "let x = 1 + y")) == expected
         }
     }

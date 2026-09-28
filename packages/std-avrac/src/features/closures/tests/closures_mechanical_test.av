@@ -27,8 +27,18 @@ spec "features/closures adversarial — mechanical" {
     given "degenerate shapes — a valid surface, and must stay valid" {
         then "fn ( const mut x , ) -> x" { parses("fn ( const mut x , ) -> x") == parses("fn ( const mut x , const mut x , ) -> x") }
         then "fn ( const mut x , const mut x , const mut x , ) -> x" { parses("fn ( const mut x , const mut x , const mut x , ) -> x") == parses("fn ( const mut x , const mut x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { parses("( const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") == parses("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { parses("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") == parses("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            parses("( const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") == parses(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            parses(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            ) == parses(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
     }
     given "malformed surface (delete, duplicate, swap) — must be diagnosed" {
         then "( const mut x , const mut x , ) -> x" { tolerates("( const mut x , const mut x , ) -> x") }
@@ -69,125 +79,601 @@ spec "features/closures adversarial — mechanical" {
         then "fn ( const mut x , const mut x ) , -> x" { tolerates("fn ( const mut x , const mut x ) , -> x") }
         then "fn ( const mut x , const mut x , -> ) x" { tolerates("fn ( const mut x , const mut x , -> ) x") }
         then "fn ( const mut x , const mut x , ) x ->" { tolerates("fn ( const mut x , const mut x , ) x ->") }
-        then "const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ->" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ->") }
-        then "( ( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( ( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x x") }
-        then "const ( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("const ( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( mut const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( mut const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const x mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const x mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut : x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut : x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x fn : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x fn : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : ( fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : ( fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn const ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn const ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( mut const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( mut const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const x mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const x mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut , x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut , x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x const , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x const , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , mut const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , mut const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const x mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const x mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut , x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut , x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x ) , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x ) , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , -> ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , -> ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) x -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) x -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> , x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> , x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x const , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x const , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , mut const x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , mut const x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const x mut : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const x mut : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : x fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : x fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn : ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn : ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( fn const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( fn const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const ( mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const ( mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut const x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut const x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x mut , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x mut , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , x const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , x const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const , mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const , mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut const x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut const x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x mut , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x mut , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , x ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , x ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) , -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) , -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> ) x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> ) x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x -> , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x -> , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , x ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , x ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) , -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) , -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> ) x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> ) x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x ->" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x ->") }
+        then "const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ->" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ->",
+            )
+        }
+        then "( ( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( ( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x x",
+            )
+        }
+        then "const ( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "const ( mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( mut const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( mut const x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const x mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const x mut : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut : x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut : x fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x fn : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x fn : ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : ( fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : ( fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn const ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn const ( mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( mut const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( mut const x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const x mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const x mut , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut , x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut , x const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x const , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x const , mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , mut const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , mut const x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const x mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const x mut , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut , x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut , x ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x ) , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x ) , -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , -> ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , -> ) x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) x -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) x -> , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> , x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> , x const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x const , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x const , mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , mut const x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , mut const x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const x mut : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const x mut : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : x fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut : x fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn : ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn : ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( fn const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : ( fn const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const ( mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn const ( mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut const x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( mut const x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x mut , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const x mut , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , x const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut , x const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const , mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x const , mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut const x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , mut const x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x mut , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const x mut , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , x ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut , x ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) , -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x ) , -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> ) x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , -> ) x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x -> , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) x -> , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , x ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> , x ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) , -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x ) , -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> ) x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , -> ) x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x ->" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) x ->",
+            )
+        }
     }
     given "keyword-replace — must be diagnosed or a valid program" {
         then "const ( const mut x , const mut x , ) -> x" { tolerates("const ( const mut x , const mut x , ) -> x") }
@@ -203,45 +689,205 @@ spec "features/closures adversarial — mechanical" {
         then "fn ( const mut x , const mut x , fn -> x" { tolerates("fn ( const mut x , const mut x , fn -> x") }
         then "fn ( const mut x , const mut x , ) fn x" { tolerates("fn ( const mut x , const mut x , ) fn x") }
         then "fn ( const mut x , const mut x , ) -> fn" { tolerates("fn ( const mut x , const mut x , ) -> fn") }
-        then "fn const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("fn const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( fn mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( fn mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const fn x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const fn x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut fn : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut fn : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : const ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : const ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( fn mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( fn mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const fn x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const fn x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut fn , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut fn , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x fn const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x fn const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , fn mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , fn mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const fn x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const fn x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut fn , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut fn , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x fn ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x fn ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , fn -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , fn -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) fn x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) fn x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> fn , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> fn , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x fn const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x fn const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , fn mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , fn mut x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const fn x : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const fn x : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut fn : fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut fn : fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn fn ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn fn ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : const ( const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : const ( const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn const mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn const mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( fn mut x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( fn mut x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const fn x , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const fn x , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut fn , const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut fn , const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x fn const mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x fn const mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , fn mut x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , fn mut x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const fn x , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const fn x , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut fn , ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut fn , ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x fn ) -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x fn ) -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , fn -> x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , fn -> x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) fn x , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) fn x , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> fn , ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> fn , ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x fn ) -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x fn ) -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , fn -> x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , fn -> x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) fn x" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) fn x") }
-        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> fn" { tolerates("( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> fn") }
+        then "fn const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "fn const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( fn mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( fn mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const fn x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const fn x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut fn : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut fn : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x fn fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : const ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : const ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn fn const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( fn mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( fn mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const fn x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const fn x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut fn , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut fn , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x fn const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x fn const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , fn mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , fn mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const fn x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const fn x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut fn , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut fn , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x fn ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x fn ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , fn -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , fn -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) fn x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) fn x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> fn , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> fn , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x fn const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x fn const mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , fn mut x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , fn mut x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const fn x : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const fn x : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut fn : fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut fn : fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn fn ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x fn fn ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : const ( const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : const ( const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn const mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn fn const mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( fn mut x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( fn mut x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const fn x , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const fn x , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut fn , const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut fn , const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x fn const mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x fn const mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , fn mut x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , fn mut x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const fn x , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const fn x , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut fn , ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut fn , ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x fn ) -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x fn ) -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , fn -> x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , fn -> x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) fn x , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) fn x , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> fn , ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> fn , ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x fn ) -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x fn ) -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , fn -> x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , fn -> x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) fn x" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) fn x",
+            )
+        }
+        then "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> fn" {
+            tolerates(
+                "( const mut x : fn ( const mut x , const mut x , ) -> x , const mut x : fn ( const mut x , const mut x , ) -> x , ) -> fn",
+            )
+        }
     }
 }

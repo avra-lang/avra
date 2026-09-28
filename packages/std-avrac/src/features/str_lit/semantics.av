@@ -1,17 +1,14 @@
 //! The strings' NodeSemantics — dispatch one-liners: a literal IS
 //! its value; an interpolation's rule bodies live beside this file,
 //! by concern.
-use core.{Expr, ExprId, TypeId, Reg, Ins}
+use core.{Expr, ExprId, TypeId, Reg}
 use features.{NodeSemantics, TypeCx, LowerCx}
 
-export type StrSemantics = { }
+export type StrSemantics = {}
 
 impl NodeSemantics for StrSemantics {
     fn kids(e: Expr) -> List<ExprId> {
-        match e {
-            .Body(_, _, holes, _) -> holes,
-            _ -> [],
-        }
+        match e { .Body(_, _, holes, _) -> holes, _ -> [] }
     }
 
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -33,8 +30,6 @@ impl NodeSemantics for StrSemantics {
 /// A string literal IS its text; absence would mean the dispatch
 /// lied about this node.
 fn str_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    let t? = (cx.view.store.expr(e)).text_of() else { return cx.lower_defect(e, "a string literal without its text") }
-    let dst = cx.result(e)
-    cx.emit(Ins.ConstStr(dst, t))
-    dst
+    let t? = cx.view.store.expr(e).text_of() else { return cx.lower_defect(e, "a string literal without its text") }
+    cx.const_str_at(e, t)
 }

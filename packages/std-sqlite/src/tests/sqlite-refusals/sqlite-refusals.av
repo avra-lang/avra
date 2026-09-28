@@ -3,8 +3,8 @@
 // this is the program a caller reads to learn what a `SqlError` looks
 // like before they meet one. Native only: the driver is FFI and the
 // evaluator cannot host an extern.
-use @std.sqlite.open.{Db, memory, open, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, run, bind_int, int_at}
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt, run}
 use @std.sqlite.error.{SqlError}
 use @std.sqlite.script.{statements}
 use @std.text.{from_codepoint}
@@ -17,25 +17,19 @@ fn shown(name: string, e: SqlError) -> string { "${name}\n  ${e.cause.kind()}\n 
 
 /// What opening a path answers.
 fn opening(name: string, path: string) -> string {
-    match open(path) {
-        .Ok(db) -> "${name}\n  OPENED${shut(db)}",
-        .Err(e) -> shown(name, e),
-    }
+    match Db.open(path) { .Ok(db) -> "${name}\n  OPENED${shut(db)}", .Err(e) -> shown(name, e) }
 }
 
 fn shut(db: Db) -> string {
-    mut held = db
-    closed_word(close(held))
+    let held = db
+    closed_word(held.close())
 }
 
 fn closed_word(rc: int) -> string { "" }
 
 /// What a statement verb answers, run against a live database.
 fn on(db: Db, name: string, act: fn(Db) -> Result<int, SqlError>) -> string {
-    match act(db) {
-        .Ok(n) -> "${name}\n  OK ${n}",
-        .Err(e) -> shown(name, e),
-    }
+    match act(db) { .Ok(n) -> "${name}\n  OK ${n}", .Err(e) -> shown(name, e) }
 }
 
 fn two_statements(db: Db) -> Result<int, SqlError> { run(db, "select 1; select 2") }
@@ -45,50 +39,50 @@ fn a_syntax_error(db: Db) -> Result<int, SqlError> { run(db, "select from") }
 
 /// Reading text as an integer.
 fn wrong_class(db: Db) -> Result<int, SqlError> {
-    mut s = prepare(db, "select 'apple'")?
+    let s = db.prepare("select 'apple'")?
     let v = first(s)
-    let _ = finalize(s)
+    let _ = s.finalize()
     v
 }
 
 /// A column past the row's width.
 fn past_the_row(db: Db) -> Result<int, SqlError> {
-    mut s = prepare(db, "select 1")?
-    let _ = step(s)?
-    let v = int_at(s, 7)
-    let _ = finalize(s)
+    let s = db.prepare("select 1")?
+    let _ = s.step()?
+    let v = s.int_at(7)
+    let _ = s.finalize()
     v
 }
 
 /// A cell read with NO ROW STANDING — the width is zero there, so one
 /// guard covers both.
 fn before_stepping(db: Db) -> Result<int, SqlError> {
-    mut s = prepare(db, "select 1")?
-    let v = int_at(s, 0)
-    let _ = finalize(s)
+    let s = db.prepare("select 1")?
+    let v = s.int_at(0)
+    let _ = s.finalize()
     v
 }
 
 /// A parameter index outside the statement's slots.
 fn wrong_hole(db: Db) -> Result<int, SqlError> {
-    mut s = prepare(db, "select ?1")?
-    let v = bind_int(s, 4, 1)
-    let _ = finalize(s)
+    let s = db.prepare("select ?1")?
+    let v = s.bind_int(4, 1)
+    let _ = s.finalize()
     v
 }
 
 /// A statement used after it was destroyed.
 fn after_finalize(db: Db) -> Result<int, SqlError> {
-    mut s = prepare(db, "select 1")?
-    let _ = finalize(s)
-    let _ = step(s)?
+    let s = db.prepare("select 1")?
+    let _ = s.finalize()
+    let _ = s.step()?
     0
 }
 
 fn first(s: Stmt) -> Result<int, SqlError> {
-    let more = step(s)?
+    let more = s.step()?
     if !more { return 0 }
-    int_at(s, 0)
+    s.int_at(0)
 }
 
 /// A script whose bytes change meaning at the C boundary.
@@ -100,19 +94,16 @@ fn nul_script() -> string {
 }
 
 fn told() -> string {
-    match memory() {
-        .Ok(db) -> every(db),
-        .Err(e) -> shown("could not open", e),
-    }
+    match Db.memory() { .Ok(db) -> every(db), .Err(e) -> shown("could not open", e) }
 }
 
 fn every(db: Db) -> string {
-    mut d = db
+    let d = db
     let paths = "${opening("an empty path", "")}\n${opening("`:memory:` written as a path", ":memory:")}\n${opening("a `file:` path", "file:/tmp/x.db")}"
     let verbs = "${on(d, "two statements where one is meant", two_statements)}\n${on(d, "text holding no statement", only_a_comment)}\n${on(d, "a row-yielding statement run for a count", rows_thrown_away)}\n${on(d, "SQL the database refuses", a_syntax_error)}"
     let reads = "${on(d, "text read as an integer", wrong_class)}\n${on(d, "a column past the row", past_the_row)}\n${on(d, "a cell read before stepping", before_stepping)}"
     let binds = "${on(d, "a parameter outside the slots", wrong_hole)}\n${on(d, "a statement used after finalize", after_finalize)}"
-    let rc = close(d)
+    let rc = d.close()
     "${paths}\n${verbs}\n${reads}\n${binds}\n${nul_script()}\nclosed ${rc}"
 }
 

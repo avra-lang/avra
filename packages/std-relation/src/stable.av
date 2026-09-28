@@ -1,0 +1,293 @@
+//! STABLE ENCODINGS — a hash and a byte codec that answer from a value's
+//! CONTENT alone: never a dense id, an address, or the process that
+//! built it, so an answer written by one process is checked by the next.
+//!
+//! Every variable-length part carries its own length or count ahead of
+//! it, and every `?` layer its own presence flag: the arity is fixed per
+//! kind, so no two shapes spell the same bytes. The hash mixes at every
+//! step — a mix only at the end keeps every collision a linear fold made
+//! on the way.
+
+/// splitmix64's finalizer: a nonlinear 64-bit mix.
+export fn mix(x: int) -> int {
+    let a = (x ^ shifted(x, 30)) * -4658895280553007687
+    let b = (a ^ shifted(a, 27)) * -7723592293110705685
+    b ^ shifted(b, 31)
+}
+
+/// `z` shifted right by `k` with zeros in from the top — `>>` carries
+/// the sign bit.
+fn shifted(z: int, k: int) -> int {
+    (z >> k) & (1 << 64 - k) - 1
+}
+
+/// A hash under construction — one word, so it rides a register and a
+/// field costs no allocation.
+export type StableHasher = { z: int }
+
+export fn stable_hasher(seed: int) -> StableHasher {
+    StableHasher { z: mix(seed) }
+}
+
+/// A text's own stable hash — the seed a relation's stable name gives
+/// its rows.
+export fn text_hash(s: string) -> int {
+    stable_hasher(0).text(s).finish()
+}
+
+/// A multiset's hash: the wrapping sum of its members' finished hashes —
+/// order-free, and a duplicate counts twice. The empty set is zero.
+export fn set_hash(hashes: List<int>) -> int {
+    mut sum = 0
+    for h in hashes { sum = sum + h }
+    sum
+}
+
+impl StableHasher {
+    fn word(w: int) -> StableHasher { StableHasher { z: mix(self.z ^ w) } }
+
+    fn int(v: int) -> StableHasher { self.word(v) }
+
+    fn bool(v: bool) -> StableHasher { self.word(flag(v)) }
+
+    /// One `?` layer: whether a value is there.
+    fn present(p: bool) -> StableHasher { self.bool(p) }
+
+    /// A list's length, ahead of its elements.
+    fn count(n: int) -> StableHasher { self.word(n) }
+
+    fn text(s: string) -> StableHasher { self.octets(s.bytes()) }
+
+    /// The length first, then every eight octets as one little-endian
+    /// word.
+    fn octets(b: Bytes) -> StableHasher {
+        mut h = self.word(b.length)
+        // LICENSED loops.index_walk: a stride of eight — no element walk says it
+        mut at = 0
+        while at < b.length {
+            h = h.word(word_at(b, at))
+            at = at + 8
+        }
+        h
+    }
+
+    fn finish() -> int { mix(self.z) }
+}
+
+/// Up to eight octets from `at`, little-endian; the length ahead of
+/// them says where a short final word ends.
+fn word_at(b: Bytes, at: int) -> int {
+    mut w = 0
+    for k in 0..8 {
+        if at + k < b.length { w = w | (b.at(at + k) << 8 * k) }
+    }
+    w
+}
+
+/// A `?` layer folded in: its presence, then the value when there is one.
+export fn hashed_opt<T>(h: StableHasher, v: T?, each: fn(StableHasher, T) -> StableHasher) -> StableHasher {
+    match v {
+        x? -> each(h.present(true), x)
+        null -> h.present(false)
+    }
+}
+
+/// A list folded in: its count, then every element in order.
+export fn hashed_list<T>(h: StableHasher, xs: List<T>, each: fn(StableHasher, T) -> StableHasher) -> StableHasher {
+    mut acc = h.count(xs.length)
+    for x in xs { acc = each(acc, x) }
+    acc
+}
+
+fn flag(v: bool) -> int {
+    if v { 1 } else { 0 }
+}
+
+// ── The codec ──
+
+/// A record under construction, as octets. An IDENTITY: every holder
+/// of a writer writes the one record, so no seat needs `mut`.
+export type Writer = { out: Cell<List<int>> }
+
+export fn writer() -> Writer {
+    let out: Cell<List<int>> = Cell.new([])
+    Writer { out: out }
+}
+
+impl Writer {
+    fn byte(v: int) { self.out.push(v & 255) }
+
+    /// Unsigned LEB128 over all 64 bits: seven at a time, low first.
+    fn varint(v: int) {
+        mut rest = v
+        while rest < 0 || rest > 127 {
+            self.byte((rest & 127) | 128)
+            rest = shifted(rest, 7)
+        }
+        self.byte(rest)
+    }
+
+    /// Zigzag, so a small negative is a short varint.
+    fn int(v: int) { self.varint((v << 1) ^ (v >> 63)) }
+
+    fn bool(v: bool) { self.byte(flag(v)) }
+
+    fn present(p: bool) { self.bool(p) }
+
+    fn count(n: int) { self.varint(n) }
+
+    fn text(s: string) { self.octets(s.bytes()) }
+
+    fn octets(b: Bytes) {
+        self.count(b.length)
+        for i in 0..b.length { self.byte(b.at(i)) }
+    }
+
+    fn bytes() -> Bytes { self.out.get().bytes()! }
+}
+
+/// A `?` layer written: its presence, then the value when there is one.
+export fn written_opt<T>(w: Writer, v: T?, each: fn(Writer, T) -> void) {
+    match v {
+        x? -> {
+            w.present(true)
+            each(w, x)
+        }
+        null -> w.present(false)
+    }
+}
+
+/// A list written: its count, then every element in order.
+/// A value written through each of its columns' writers, in order — a
+/// nested record's fixed arity.
+export fn written_all<T>(w: Writer, v: T, columns: List<fn(Writer, T) -> void>) {
+    for each in columns { each(w, v) }
+}
+
+export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
+    w.count(xs.length)
+    for x in xs { each(w, x) }
+}
+
+/// Why a record does not decode. A record that does not decode is
+/// dropped and recomputed, never guessed at.
+export enum CodecFault {
+    Truncated
+    Overlong
+    NotFlag
+    NotText
+    /// octets left after the last field
+    Trailing
+    /// a variant name the enum does not declare
+    NotVariant
+}
+
+impl CodecFault {
+    fn word() -> string {
+        match self {
+            .Truncated -> "truncated",
+            .Overlong -> "overlong",
+            .NotFlag -> "not_flag",
+            .NotText -> "not_text",
+            .Trailing -> "trailing",
+            .NotVariant -> "not_variant",
+        }
+    }
+}
+
+/// A record being read: its octets and the position reached. An
+/// IDENTITY, as a writer is: every holder reads on from one position.
+export type Reader = { b: Bytes, at: Cell<int> }
+
+export fn reader(b: Bytes) -> Reader {
+    Reader { b: b, at: Cell.new(0) }
+}
+
+impl Reader {
+    fn byte() -> Result<int, CodecFault> {
+        let at = self.at.get()
+        if at >= self.b.length { fail CodecFault.Truncated }
+        self.at.set(at + 1)
+        self.b.at(at)
+    }
+
+    /// One value has one encoding: a tenth octet holds only bit 63,
+    /// and no continuation ends in a zero octet.
+    fn varint() -> Result<int, CodecFault> {
+        mut v = 0
+        for k in 0..10 {
+            let o = self.byte()?
+            if k == 9 && o > 1 { fail CodecFault.Overlong }
+            v = v | ((o & 127) << 7 * k)
+            if o < 128 {
+                if k > 0 && o == 0 { fail CodecFault.Overlong }
+                return v
+            }
+        }
+        fail CodecFault.Overlong
+    }
+
+    fn int() -> Result<int, CodecFault> {
+        let z = self.varint()?
+        shifted(z, 1) ^ 0 - (z & 1)
+    }
+
+    fn bool() -> Result<bool, CodecFault> {
+        match self.byte()? { 0 -> false, 1 -> true, rest -> { fail CodecFault.NotFlag } }
+    }
+
+    fn present() -> Result<bool, CodecFault> { self.bool() }
+
+    /// A count, never past what is left to read.
+    fn count() -> Result<int, CodecFault> {
+        let n = self.varint()?
+        if n < 0 || n > self.b.length - self.at.get() { fail CodecFault.Truncated }
+        n
+    }
+
+    fn octets() -> Result<Bytes, CodecFault> {
+        let n = self.count()?
+        let at = self.at.get()
+        self.at.set(at + n)
+        self.b.slice(at, at + n)
+    }
+
+    fn text() -> Result<string, CodecFault> {
+        let s? = (self.octets()?).text() else { fail CodecFault.NotText }
+        s
+    }
+
+    /// A variant read back by its NAME: its place among `names`, the
+    /// enum's variants in declared order.
+    fn variant(names: List<string>) -> Result<int, CodecFault> {
+        let at = names.index_of(self.text()?)
+        if at < 0 { fail CodecFault.NotVariant }
+        at
+    }
+
+    /// Whether every octet has been read.
+    fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A tagged enum's variant, read back by its place among the names.
+export fn tagged<T>(at: Result<int, CodecFault>, variants: List<T>) -> Result<T, CodecFault> {
+    variants[at?]
+}
+
+/// A nullable read back: its presence, then the value when present.
+export fn read_opt<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T?,
+    CodecFault,
+> {
+    if !r.present()? { return .Ok(null) }
+    .Ok(each(r)?)
+}
+
+/// A list read back: its count, then every element in order.
+export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    List<T>,
+    CodecFault,
+> {
+    let n = r.count()?
+    .Ok([each(r)? for i in 0..n])
+}

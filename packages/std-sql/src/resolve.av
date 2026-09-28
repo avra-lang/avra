@@ -1,0 +1,227 @@
+//! Checks a parsed `SqlSelect` against real declared shapes — table
+//! names resolve to a `@std/meta` `Type` (a `@model`'s own shape),
+//! column references resolve to that `Type`'s fields. Structural
+//! only: this file never calls `type_named` itself, and knows
+//! nothing about compiler pass timing — it takes a lookup fn and
+//! walks the AST `parser.av` already builds. Wiring a real
+//! `type_named` in is the `sql {}` sublanguage's job, a separate
+//! slice; a stub lookup exercises everything here in isolation.
+
+use parser.{
+    SqlSelect,
+    SqlExpr,
+    TableRef,
+    FromSource,
+    FromClause,
+    JoinItem,
+    SelectItem,
+    OrderItem,
+    WhenClause,
+    InSource,
+    OverClause,
+}
+use @std.meta.{Type, Field}
+use @std.grammar.{flatten}
+
+/// One column reference found while walking an expression —
+/// `qualifier` is the table alias/name a dotted read named, absent
+/// for a bare column.
+export type ColumnRef = { qualifier: string?, name: string }
+
+/// One resolved `FROM`/`JOIN` source — its own alias (or bare name,
+/// for an unaliased named table) mapped to the real shape behind it.
+export type ResolvedTable = { table_alias: string, shape: Type }
+
+export type ResolveDiag = { message: string }
+
+fn diag(message: string) -> ResolveDiag { ResolveDiag { message: message } }
+
+/// Every column reference reachable from an expression — recurses
+/// into every operand, including a subquery's own tree (which
+/// resolves against ITS OWN scope, never the outer one, so it is
+/// walked separately by `resolve_select`, not folded in here).
+fn column_refs(e: SqlExpr) -> List<ColumnRef> {
+    match e {
+        .Column(qualifier, name) -> [ColumnRef { qualifier: qualifier, name: name }],
+        .Number(text) or .Str(text) or .Hole(text) -> [],
+        .Star -> [],
+        .Not(inner) -> column_refs(inner),
+        .BinOp(op, lhs, rhs) -> column_refs(lhs).concat(column_refs(rhs)),
+        .Call(fn_name, args) -> flatten([column_refs(a) for a in args]),
+        .IsNull(inner, negated) -> column_refs(inner),
+        .Between(inner, lo, hi, negated) -> column_refs(inner).concat(column_refs(lo)).concat(column_refs(hi)),
+        .In(inner, source, negated) -> column_refs(inner).concat(in_source_refs(source)),
+        .Case(operand, whens, else_branch) -> case_refs(operand, whens, else_branch),
+        .Subquery(s) -> [],
+        .Exists(s) -> [],
+        .Over(inner, over) -> column_refs(inner).concat(over_refs(over)),
+    }
+}
+
+fn in_source_refs(source: InSource) -> List<ColumnRef> {
+    match source { .Values(items) -> flatten([column_refs(e) for e in items]), .Subquery(s) -> [] }
+}
+
+fn case_refs(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> List<ColumnRef> {
+    let operand_refs = if operand == null { [] } else { column_refs(operand!) }
+    let when_refs = flatten([column_refs(w.cond).concat(column_refs(w.result)) for w in whens])
+    let else_refs = if else_branch == null { [] } else { column_refs(else_branch!) }
+    operand_refs.concat(when_refs).concat(else_refs)
+}
+
+fn over_refs(over: OverClause) -> List<ColumnRef> {
+    let pb = flatten([column_refs(e) for e in over.partition_by])
+    let ob = flatten([column_refs(o.expr) for o in over.order_by])
+    pb.concat(ob)
+}
+
+/// The subqueries an expression carries — `Subquery`/`Exists`
+/// answer their own `SqlSelect`, each checked against its OWN scope
+/// by a fresh `resolve_select` call, never the enclosing one's.
+fn nested_selects(e: SqlExpr) -> List<SqlSelect> {
+    match e {
+        .Subquery(s) or .Exists(s) -> [s],
+        .Not(inner) -> nested_selects(inner),
+        .BinOp(op, lhs, rhs) -> nested_selects(lhs).concat(nested_selects(rhs)),
+        .Call(fn_name, args) -> flatten([nested_selects(a) for a in args]),
+        .IsNull(inner, negated) -> nested_selects(inner),
+        .Between(inner, lo, hi, negated) -> nested_selects(inner).concat(nested_selects(lo)).concat(nested_selects(hi)),
+        .In(inner, source, negated) -> nested_selects(inner).concat(in_source_selects(source)),
+        .Case(operand, whens, else_branch) -> case_selects(operand, whens, else_branch),
+        .Over(inner, over) -> nested_selects(inner),
+        .Number(text) or .Str(text) or .Hole(text) -> [],
+        .Star -> [],
+        .Column(qualifier, name) -> [],
+    }
+}
+
+fn in_source_selects(source: InSource) -> List<SqlSelect> {
+    match source {
+        .Values(items) -> flatten([nested_selects(e) for e in items]),
+        .Subquery(s) -> [s],
+    }
+}
+
+fn case_selects(operand: SqlExpr?, whens: List<WhenClause>, else_branch: SqlExpr?) -> List<
+    SqlSelect,
+> {
+    let operand_sels = if operand == null { [] } else { nested_selects(operand!) }
+    let when_sels = flatten(
+        [nested_selects(w.cond).concat(nested_selects(w.result)) for w in whens],
+    )
+    let else_sels = if else_branch == null { [] } else { nested_selects(else_branch!) }
+    operand_sels.concat(when_sels).concat(else_sels)
+}
+
+/// `TableRef`'s own display name — a derived table has none of its
+/// own, so it is checked against `lookup` only through its OWN
+/// subquery's fields (`resolve_select` recurses into it separately);
+/// its scope entry is keyed by its alias alone.
+fn table_ref_name(t: TableRef) -> string? {
+    match t.source { .Named(name) -> name, .Derived(sub) -> null }
+}
+
+/// One `FROM`/`JOIN` entry resolved against `lookup` — a named table
+/// answers a diagnostic when `lookup` does not know it; a derived
+/// table's own subquery is resolved by the caller, so it contributes
+/// no diagnostic here even though it has no `Type` of its own to
+/// record under its alias.
+fn resolve_table_ref(t: TableRef, lookup: fn(string) -> Type?) -> ResolveDiag? {
+    match t.source {
+        .Named(name) -> {
+            let shape = lookup(name)
+            if shape == null { diag("no model named `${name}`") } else { null }
+        },
+        .Derived(sub) -> null,
+    }
+}
+
+fn table_ref_shape(t: TableRef, lookup: fn(string) -> Type?) -> Type? {
+    match t.source { .Named(name) -> lookup(name), .Derived(sub) -> null }
+}
+
+fn table_ref_display_alias(t: TableRef) -> string? {
+    if t.as_name != null { return t.as_name }
+    table_ref_name(t)
+}
+
+/// The scope a `FROM` clause introduces — one `ResolvedTable` per
+/// named table that `lookup` actually knows (a derived table, or an
+/// unresolved name, contributes no scope entry — its own diagnostic,
+/// if any, already came from `resolve_table_ref`).
+fn from_scope(f: FromClause, lookup: fn(string) -> Type?) -> List<ResolvedTable> {
+    let refs = [f.first].concat([j.other for j in f.joins])
+    flatten([want_scope(t, lookup) for t in refs])
+}
+
+fn want_scope(t: TableRef, lookup: fn(string) -> Type?) -> List<ResolvedTable> {
+    let shape? = table_ref_shape(t, lookup) else { return [] }
+    let display_alias? = table_ref_display_alias(t) else { return [] }
+    [ResolvedTable { table_alias: display_alias, shape: shape }]
+}
+
+fn from_diags(f: FromClause, lookup: fn(string) -> Type?) -> List<ResolveDiag> {
+    let refs = [f.first].concat([j.other for j in f.joins])
+    flatten([one_diag(resolve_table_ref(t, lookup)) for t in refs])
+}
+
+fn one_diag(d: ResolveDiag?) -> List<ResolveDiag> {
+    if d == null { [] } else { [d!] }
+}
+
+fn has_field(t: ResolvedTable, name: string) -> bool {
+    t.shape.fields.any(it.name == name)
+}
+
+/// Whether `scope` has a field named `name` — over EVERY table when
+/// the reference is bare, over just the named one when qualified.
+fn column_diag(c: ColumnRef, scope: List<ResolvedTable>) -> ResolveDiag? {
+    if c.qualifier != null {
+        let t? = scope.find(it.table_alias == c.qualifier!) else {
+            return diag("`${c.qualifier!}` names no table in this FROM")
+        }
+        if t.shape.fields.any(it.name == c.name) { return null }
+        return diag("`${t.shape.name}` has no field `${c.name}`")
+    }
+    let matches = scope.filter(has_field(it, c.name))
+    when {
+        matches.is_empty() -> diag("no table in this FROM has a field `${c.name}`")
+        matches.length > 1 -> diag(
+            "`${c.name}` is ambiguous — ${matches.length} tables in this FROM have it",
+        )
+        _ -> null
+    }
+}
+
+/// Every expression a `SqlSelect` reads a column through — every
+/// clause a column could appear in, gathered once so `resolve_select`
+/// walks the AST a single time.
+fn select_exprs(s: SqlSelect) -> List<SqlExpr> {
+    let cols = [i.expr for i in s.columns]
+    let where_ = if s.where == null { [] } else { [s.where!] }
+    let having = if s.having == null { [] } else { [s.having!] }
+    let group_by = s.group_by
+    let order_by = [o.expr for o in s.order_by]
+    let joins_on = [j.on for j in s.from.joins]
+    cols.concat(where_).concat(having).concat(group_by).concat(order_by).concat(joins_on)
+}
+
+/// Checks a `SELECT` (recursively, through every subquery and CTE)
+/// against `lookup` — every table name resolves, and every column
+/// reference names a real field on a table in its own scope. A CTE's
+/// own body is checked (against ITS scope), but its NAME is not yet
+/// added to the outer scope — `FROM cte_name` still asks `lookup`,
+/// same as any other table, and answers "no model named" until a
+/// later slice gives a CTE its own shape (inferred from its SELECT
+/// list, which a plain lookup fn cannot answer).
+export fn resolve_select(s: SqlSelect, lookup: fn(string) -> Type?) -> List<ResolveDiag> {
+    let scope = from_scope(s.from, lookup)
+    let exprs = select_exprs(s)
+    let column_diags = flatten(
+        [one_diag(column_diag(c, scope)) for c in flatten([column_refs(e) for e in exprs])],
+    )
+    let nested = flatten([nested_selects(e) for e in exprs])
+    let nested_diags = flatten([resolve_select(sub, lookup) for sub in nested])
+    let cte_diags = flatten([resolve_select(c.query, lookup) for c in s.ctes])
+    from_diags(s.from, lookup).concat(column_diags).concat(nested_diags).concat(cte_diags)
+}

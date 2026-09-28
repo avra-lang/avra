@@ -1,0 +1,129 @@
+//! `@derive(Exact)` — two nodes of one kind, compared by their actual
+//! VALUES, never by a folded hash. `@derive(Identity)`/`@derive(Matchable)`
+//! both answer an int a repeated `${x}` binder can trust as a
+//! PRE-FILTER only: `fp`/`fp_str` are un-keyed rolling hashes
+//! (core/fp.av) and two different subtrees can share one (the same
+//! hazard `same_ins`/`same_ins_list` close for the IR, core/ir.av).
+//! This derive is the verdict behind that filter — the fold `same_ins`
+//! writes BY HAND for `Ins`'s thirty-some variants, generated here
+//! instead because `Expr`/`Stmt`/`Pat` carry many more.
+//!
+//! EVERY FIELD COMPARES BY ITS OWN VALUE. An `ExprId`/`StmtId`/`PatId`
+//! dereferences through the store and recurses (`exact_expr` et al,
+//! mutually generated); a `string` compares with `==`, never
+//! `fp_str`; a payload-free enum (`BinOp`) compares with `==` too. A
+//! compound type neither Expr nor Stmt nor Pat owns (`TypeRef`,
+//! `Param`, `Arm`, `Variant`, `Case`, `FormatPart`, `Projection`, …)
+//! is walked by a hand-written `exact_*` sibling beside that type's
+//! own `*_fp` (nodes.av, store.av) — the same split those folds
+//! already keep between "the derive's own registry" and "a type the
+//! derive defers to."
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, name}
+
+/// The compiler's derive for exact node equality.
+export trait Exact {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            impl NodeStore {
+                fn ${exact_of(t.name)}(a: ${t}, b: ${t}) -> bool {
+                    match a { ${[exact_variant_arm(v) for v in t.variants]} }
+                }
+            }
+        },
+            },
+        ]
+    }
+
+    /// No marks: a payload's type says everything this derive compares.
+    static fn marks(t: MetaType) -> List<string> { [] }
+}
+
+/// One variant's arm: `a`'s fields bind under their own names, `b`'s
+/// under the SAME names suffixed `_b` — two payloads of one variant,
+/// never one payload compared against itself. A DIFFERENT variant on
+/// `b`'s side is a miss, never a defect: the outer match already
+/// spells every variant of `a`, so nothing here forgets one.
+fn exact_variant_arm(v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> match b { .${v} -> true, rest -> false } } }
+    quote { .${v}(${binders_a(v)}) -> match b { .${v}(${binders_b(v)}) -> ${anded(field_eqs(v))}, rest -> false } }
+}
+
+fn binders_a(v: MetaVariant) -> List<string> { [f.name for f in v.fields] }
+
+fn binders_b(v: MetaVariant) -> List<string> { ["${f.name}_b" for f in v.fields] }
+
+fn field_eqs(v: MetaVariant) -> List<Code> { [field_eq(f) for f in v.fields] }
+
+/// HOW A PAYLOAD'S TYPE COMPARES — Identity's own registry
+/// (identity_derive.av's `part`), with every hashed fold answering a
+/// real comparison instead: an id dereferences and recurses, a
+/// `string` and every scalar compare with `==`, a compound type calls
+/// its own hand-written `exact_*` sibling. A type absent here is a
+/// defect at the generated code, exactly as Identity's registry
+/// refuses one.
+fn field_eq(f: Field) -> Code {
+    let a = name(f.name)
+    let b = name("${f.name}_b")
+    match f.ty {
+        "ExprId" -> quote { self.exact_expr(self.expr(${a}), self.expr(${b})) },
+        "StmtId" -> quote { self.exact_stmt(self.stmt(${a}), self.stmt(${b})) },
+        "PatId" -> quote { self.exact_pat(self.pat(${a}), self.pat(${b})) },
+        "ExprId?" -> quote { self.exact_opt_expr(${a}, ${b}) },
+        "List<ExprId>" -> quote { self.exact_expr_ids(${a}, ${b}) },
+        "List<StmtId>" -> quote { self.exact_stmt_ids(${a}, ${b}) },
+        "List<PatId>" -> quote { self.exact_pat_ids(${a}, ${b}) },
+        "List<Arm>" -> quote { self.exact_arms(${a}, ${b}) },
+        "List<CompClause>" -> quote { self.exact_comp_clauses(${a}, ${b}) },
+        "List<Param>" -> quote { self.exact_params(${a}, ${b}) },
+        "List<Variant>" -> quote { self.exact_variants(${a}, ${b}) },
+        "List<Case>" -> quote { self.exact_cases(${a}, ${b}) },
+        "List<FormatPart>" -> quote { exact_format_parts(${a}, ${b}) },
+        "string" -> quote { ${a} == ${b} },
+        "List<string>" -> quote { exact_strs(${a}, ${b}) },
+        "int" or "bool" or "BinOp" -> quote { ${a} == ${b} },
+        "Scoped" or "Plain" or "Nominal" -> quote { ${a}.of == ${b}.of },
+        "Scoped?" or "Plain?" or "Nominal?" -> quote { ${a}?.of == ${b}?.of },
+        "List<Plain>" -> quote { exact_plains(${a}, ${b}) },
+        "List<Scoped>" -> quote { exact_scopeds(${a}, ${b}) },
+        "TypeRef" or "TypeRef?" -> quote { exact_type_ref(${a}, ${b}) },
+        "List<TypeRef>" -> quote { exact_type_refs(${a}, ${b}) },
+        "BodyView" -> quote { self.exact_view(${a}, ${b}) },
+        "CollectKind" -> quote { exact_collect_kind(${a}, ${b}) },
+        "CollectScope" -> quote { exact_collect_scope(${a}, ${b}) },
+        "Projection" -> quote { exact_projection(${a}, ${b}) },
+        _ -> quote { a_payload_type_the_exact_derive_has_no_row_for() },
+    }
+}
+
+/// Every field's comparison, `&&`-ed together — `true` for a variant
+/// the registry never reaches (none do: every arm here came from a
+/// real field).
+fn anded(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { true } }
+    mut acc = parts.first()!
+    for p in parts.slice(1, parts.length) { acc = quote { ${acc} && ${p} } }
+    acc
+}
+
+/// The three arenas this derive knows, lowercased for the method name
+/// it generates — `shape_derive.av`'s `kind_of`, this derive's OWN
+/// copy under its own name: a module's files share one namespace and
+/// `kind_of` is already shape_derive.av's, and a derive's file stands
+/// alone (CLAUDE.md) rather than importing a sibling's.
+fn exact_kind_of(owner: string) -> string {
+    match owner {
+        "Expr" -> "expr",
+        "Stmt" -> "stmt",
+        "Pat" -> "pat",
+        _ -> "a_type_the_exact_derive_does_not_know",
+    }
+}
+
+fn exact_of(owner: string) -> string { "exact_${exact_kind_of(owner)}" }

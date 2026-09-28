@@ -1,0 +1,385 @@
+//! `@std/db` — a record type IS the schema. `@model` reads a
+//! declaration's fields (their names, their shapes, their marks) and
+//! answers the table DDL and the typed CRUD that agree with it —
+//! never a second, hand-kept schema description. It answers both the
+//! generated code AND the declaration's own contract in one `Declared`
+//! value: `made` is the `impl`, `problems` is every way the shape
+//! breaks the model law, spoken at the declaration itself.
+//!
+//!     use @std.db.{model}
+//!     use @std.sqlite.{Db}
+//!
+//!     @model
+//!     type User = {
+//!         id: int = 0
+//!         @unique email: string
+//!         name: string
+//!     }
+//!
+//! Every model's FIRST field is `id: int = 0` — the primary key SQLite
+//! mints, held in the type itself so a found row and an inserted one
+//! are the same shape. `@unique` marks a column's own constraint.
+//!
+//! Stands ALONE with `@std/meta`, per CLAUDE.md's derive-isolation law
+//! — the file that types this trait must not also carry code the
+//! annotated file's own names could shadow.
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Directive,
+    Diagnostic,
+    Declared,
+    Code,
+    Decls,
+    literal,
+    refuse_as_at,
+}
+use @std.errors.{Loc}
+use @std.sqlite.{Db, SqlValue, sql, prepared}
+use @std.sqlite.error.{SqlError}
+use error.{ModelError, UniqueField, or_attributed}
+
+export trait Model {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: generated(t) }]
+    }
+
+    /// The one mark this derive reads: `@unique` on a field.
+    static fn marks(t: Type) -> List<string> { ["unique"] }
+}
+
+/// `@model` — the library's own name for `@derive(Model)`, so the
+/// declaration reads as what it is rather than a trait a reader has
+/// to look up. `made` is the generated `impl`, built even over a
+/// shape `problems` refuses (the `impl` it builds may be one nothing
+/// should call, but it never traps the compiler on a shape it was
+/// never built for) — `problems` is what actually stops the build,
+/// spoken as real diagnostics at the declaration itself.
+export fn model(t: Type) -> Declared {
+    Declared { made: Model.derive(t), problems: shape_problems(t) }
+}
+
+/// `@model`'s contract: every refusal here is a package-namespaced
+/// `Diagnostic` (`@std/db: no_id_field`, ...), in the law's own words.
+fn shape_problems(t: Type) -> List<Diagnostic> {
+    if t.variants.length > 0 { return [enum_not_supported(t)] }
+    if !has_id_field(t) { return [no_id_field(t)] }
+    if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
+    []
+}
+
+// ── The shape a model must have ──────────────────────────────────
+
+/// The FIRST field, required, or `@model` refuses with `no_id_field`.
+fn has_id_field(t: Type) -> bool {
+    !t.fields.is_empty() && t.fields[0].name == "id" && t.fields[0].kind is .Int
+}
+
+/// The widest row this derive can build a constructor for — `row_ctor`
+/// hand-spells one arm per count, the same shape `core/rebuild_derive.av`
+/// already carries for the identical reason (no seat splices a struct
+/// literal's field list); the flagged fifth argument, "the compiler
+/// wants a construct the language lacks," names this site too.
+const MAX_FIELDS: int = 6
+
+/// The same question `shape_problems` answers as diagnostics, asked
+/// here as a bool: `generated` builds NOTHING over a shape this
+/// fails, rather than an `impl` whose every method mistypes against a
+/// shape it was never built for. `shape_problems` is what SPEAKS the
+/// refusal; this is what stops a second, silent, unrelated pile of
+/// errors from speaking over it.
+fn shape_ok(t: Type) -> bool {
+    t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
+}
+
+fn generated(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    quote {
+        impl ${t} {
+            static fn table_name() -> string { ${literal(table_name_of(t))} }
+            static fn create_table_sql() -> string { ${literal(create_table_sql_of(t))} }
+
+            static fn create_table(mut db: Db) -> Result<int, SqlError> {
+                db.run(sql(${literal(claim_registry_sql())}))?
+                let claim = db.first(sql(${literal(claim_select_sql())}, [.Text(${literal(table_name_of(t))})]))?
+                match claim {
+                    null -> {
+                        let _ = db.run(sql(${literal(claim_insert_sql())}, [.Text(${literal(table_name_of(t))}), .Text(${literal(declared_at_of(t))})]))?
+                    }
+                    row? -> {
+                        let claimed_by = row.text(0)?
+                        if claimed_by != ${literal(declared_at_of(t))} {
+                            fail SqlError.defect(${literal(collision_message(t))} + claimed_by)
+                        }
+                    }
+                }
+                db.run(sql(${literal(create_table_sql_of(t))}))
+            }
+
+            fn insert(mut db: Db) -> Result<${t}, ModelError> {
+                mut args: List<SqlValue> = []
+                ${[push_bound(f) for f in non_id_fields(t)]}
+                or_attributed(db.run(sql(${literal(insert_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})?
+                self with { id: db.last_insert_rowid() }
+            }
+
+            static fn find(db: Db, id: int) -> Result<${t}?, SqlError> {
+                let s = prepared(db, sql(${literal(select_by_id_sql_of(t))}, [.Int(id)]))?
+                defer s.reset()
+                if s.step()? { ${row_ctor(t)} } else { null }
+            }
+
+            fn update(mut db: Db) -> Result<int, ModelError> {
+                mut args: List<SqlValue> = []
+                ${[push_bound(f) for f in non_id_fields(t)]}
+                args.push(.Int(self.id))
+                or_attributed(db.run(sql(${literal(update_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
+            }
+
+            fn delete(mut db: Db) -> Result<int, SqlError> {
+                db.run(sql(${literal(delete_sql_of(t))}, [.Int(self.id)]))
+            }
+        }
+    }
+}
+
+// ── `@model`'s refusals — each a `Diagnostic` at the type's own
+// declaration, stating the law broken in its own words, never a
+// generic "`@model` failed:" prefix flattening three different
+// mistakes into one sentence. A KIND IS A BARE WORD, never dotted —
+// `is_kind_word` (core/modules.av) refuses `.` in one, because the
+// package is ALREADY the namespace: `user_kind` prefixes it as
+// `@std/db:enum_not_supported`, so a self-chosen `model.` prefix
+// would only duplicate what the package name already says. ──
+
+fn enum_not_supported(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "enum_not_supported",
+        t.at,
+        "`@model` derives a table from a record's fields — `${t.name}` is an enum, with none",
+        "declare `${t.name}` as a record: `type ${t.name} = { id: int = 0, ... }`",
+    )
+}
+
+fn no_id_field(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "no_id_field",
+        t.at,
+        "every `@model`'s first field is `id: int = 0` — the primary key SQLite mints — and `${t.name}` ${first_field_words(t)}",
+        "add `id: int = 0` as `${t.name}`'s first field",
+    )
+}
+
+fn first_field_words(t: Type) -> string {
+    if t.fields.is_empty() { return "has no fields at all" }
+    "declares `${t.fields[0].name}: ${t.fields[0].ty}` first"
+}
+
+fn too_many_fields(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "too_many_fields",
+        t.at,
+        "`@model` constructs a row from at most ${MAX_FIELDS} fields, and `${t.name}` has ${t.fields.length}",
+        "split `${t.name}` into a model and a related type, or narrow it to ${MAX_FIELDS} fields",
+    )
+}
+
+// ── The DDL, built once from the fields — plain string assembly at
+// derive time, never a quote hole (a run of columns has no expression
+// position to splice into; a string is just a value). ──
+
+/// Every identifier this derive writes into SQL text is double-quoted,
+/// unconditionally — a field or type named after a SQL keyword
+/// (`order`, `group`, `table`) is a real Avra name and must stay one.
+fn quoted(name: string) -> string { "\"${name}\"" }
+
+fn table_name_of(t: Type) -> string { t.name }
+
+fn quoted_table(t: Type) -> string { quoted(table_name_of(t)) }
+
+fn non_id_fields(t: Type) -> List<Field> { t.fields.slice(1, t.fields.length) }
+
+/// Reserved on every table, unconditionally, whether or not this phase
+/// reads it — a monotonic write counter Phase 7's compare-and-set
+/// authority needs on rows that already exist by the time it lands.
+/// Double-underscore-wrapped like `__avra_models__`, so no field an Avra
+/// program can declare will ever collide with it. Hidden: it never
+/// appears on the struct, in `find`'s column list, or anywhere a user
+/// can read or write from Phase 1.
+const VERSION_COLUMN: string = "__avra_version__"
+
+fn create_table_sql_of(t: Type) -> string {
+    let cols = [column_ddl(f) for f in t.fields].concat([version_column_ddl()])
+    "CREATE TABLE IF NOT EXISTS ${quoted_table(t)} (${cols.join(", ")})"
+}
+
+fn version_column_ddl() -> string { "${quoted(VERSION_COLUMN)} INTEGER NOT NULL DEFAULT 1" }
+
+fn column_ddl(f: Field) -> string {
+    if f.name == "id" { return "${quoted(f.name)} INTEGER PRIMARY KEY AUTOINCREMENT" }
+    "${quoted(f.name)} ${sql_type_of(f.kind)}${unique_suffix(f)}"
+}
+
+fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
+
+fn unique_suffix(f: Field) -> string {
+    if is_unique(f) { " UNIQUE" } else { "" }
+}
+
+/// The `@unique` fields' own (name, declaration site) pairs, baked
+/// into `insert`/`update`'s generated body so a constraint violation
+/// resolves back through the schema the moment it happens — never a
+/// second lookup against `t` at run time, which the derive has no
+/// reason to keep around. Hand-spelled per count, the same law and
+/// remedy as `row_ctor`: a list literal has no expression position for
+/// a variable-width splice, and `non_id_fields(t)` is already capped
+/// at `MAX_FIELDS - 1`.
+fn unique_fields_code(t: Type) -> Code {
+    let fs = [f for f in non_id_fields(t) if is_unique(f)]
+    match fs.length {
+        0 -> quote { [] },
+        1 -> quote { [${unique_field_code(fs[0])}] },
+        2 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}] },
+        3 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}] },
+        4 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}] },
+        5 -> quote { [${unique_field_code(fs[0])}, ${unique_field_code(fs[1])}, ${unique_field_code(fs[2])}, ${unique_field_code(fs[3])}, ${unique_field_code(fs[4])}] },
+        rest -> quote { a_model_with_more_than_five_unique_fields_needs_a_wider_list_literal() },
+    }
+}
+
+fn unique_field_code(f: Field) -> Code {
+    quote { UniqueField { name: ${literal(f.name)}, at: ${loc_code(f.at)} } }
+}
+
+fn loc_code(at: Loc?) -> Code {
+    match at {
+        loc? -> quote { Loc { file: ${loc_file_code(loc.file)}, lo: ${loc.lo}, hi: ${loc.hi} } }
+        null -> quote { null }
+    }
+}
+
+fn loc_file_code(file: string?) -> Code {
+    match file {
+        f? -> quote { ${literal(f)} }
+        null -> quote { null }
+    }
+}
+
+fn sql_type_of(k: Kind) -> string {
+    match k {
+        .Int or .Bool -> "INTEGER",
+        .Float -> "REAL",
+        .Str -> "TEXT",
+        rest -> "a_model_field_kind_this_derive_has_no_sql_type_for",
+    }
+}
+
+/// A model with no field besides `id` has nothing to name in a column
+/// list SQLite will accept — `INSERT INTO t () VALUES ()` is a syntax
+/// error, so the zero-column case is its own, still-honest SQL.
+fn insert_sql_of(t: Type) -> string {
+    let fs = non_id_fields(t)
+    if fs.is_empty() { return "INSERT INTO ${quoted_table(t)} DEFAULT VALUES" }
+    let names = [quoted(f.name) for f in fs].join(", ")
+    let marks = ["?" for f in fs].join(", ")
+    "INSERT INTO ${quoted_table(t)} (${names}) VALUES (${marks})"
+}
+
+fn select_by_id_sql_of(t: Type) -> string {
+    let names = [quoted(f.name) for f in t.fields].join(", ")
+    "SELECT ${names} FROM ${quoted_table(t)} WHERE ${quoted("id")} = ?"
+}
+
+/// The version bump is always in `SET`, so a column-free model still
+/// gets a syntactically valid `UPDATE` with no special case — unlike
+/// `insert_sql_of`, which has no such column to fall back on.
+fn update_sql_of(t: Type) -> string {
+    let sets = [set_clause(f) for f in non_id_fields(t)].concat([version_bump_clause()]).join(", ")
+    "UPDATE ${quoted_table(t)} SET ${sets} WHERE ${quoted("id")} = ?"
+}
+
+fn set_clause(f: Field) -> string { "${quoted(f.name)} = ?" }
+
+fn version_bump_clause() -> string { "${quoted(VERSION_COLUMN)} = ${quoted(VERSION_COLUMN)} + 1" }
+
+fn delete_sql_of(t: Type) -> string {
+    "DELETE FROM ${quoted_table(t)} WHERE ${quoted("id")} = ?"
+}
+
+// ── The table-name claim registry — TWO different @model types
+// sharing a bare name (across modules, no language law stops it) will
+// otherwise write into ONE physical table with no error at all if
+// their shapes ever happen to line up. `create_table` claims its name
+// here before ever touching the real table, naming the exact file
+// that claimed it first, the moment a second claimant disagrees. ──
+
+fn claim_registry_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT)"
+}
+
+fn claim_select_sql() -> string {
+    "SELECT \"declared_at\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
+}
+
+fn claim_insert_sql() -> string {
+    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\") VALUES (?, ?)"
+}
+
+/// The declaring type's own file, its one honest fully-qualified name
+/// — `@std/meta` hands a `Type` no module or package field, but every
+/// declaration's `Loc` names the file it stands in, and two DIFFERENT
+/// files are the only thing a bare type name can never make equal.
+fn declared_at_of(t: Type) -> string { t.at?.file ?? "?" }
+
+fn collision_message(t: Type) -> string {
+    "table \"${table_name_of(t)}\" is already claimed by a @model declared at "
+}
+
+// ── Binding a field OUT (a value crossing to SQLite) and reading one
+// IN (a column crossing back) — one exhaustive dispatch each way. ──
+
+fn bound(f: Field) -> Code {
+    match f.kind {
+        .Int -> quote { .Int(self.${f.name}) },
+        .Bool -> quote { .Int(if self.${f.name} { 1 } else { 0 }) },
+        .Float -> quote { .Real(self.${f.name}) },
+        .Str -> quote { .Text(self.${f.name}) },
+        rest -> quote { a_model_field_kind_this_derive_does_not_bind_yet() },
+    }
+}
+
+fn push_bound(f: Field) -> Code {
+    quote { args.push(${bound(f)}) }
+}
+
+/// A column read straight off the STANDING statement — never through
+/// `Row`/`SqlValue`, which `first_as` (std-sqlite's `sql.av`) is what
+/// buys this: a found row costs no values list, no per-cell box, and
+/// no `Row` record, only the scalars the struct literal actually holds.
+fn read_at(f: Field, i: int) -> Code {
+    match f.kind {
+        .Int -> quote { s.int_at(${i})? },
+        .Bool -> quote { s.int_at(${i})? != 0 },
+        .Float -> quote { s.real_at(${i})? },
+        .Str -> quote { s.text_at(${i})? },
+        rest -> quote { a_model_field_kind_this_derive_does_not_read_yet() },
+    }
+}
+
+/// The one place a struct literal's field list needs its whole arity
+/// known at the file's OWN parse time — hand-spelled per count, same
+/// law and same remedy as `core/rebuild_derive.av`'s constructor arms.
+/// Wired into `find`, above.
+fn row_ctor(t: Type) -> Code {
+    let fs = t.fields
+    match fs.length {
+        1 -> quote { ${t} { ${fs[0].name}: ${read_at(fs[0], 0)} } },
+        2 -> quote { ${t} { ${fs[0].name}: ${read_at(fs[0], 0)}, ${fs[1].name}: ${read_at(fs[1], 1)} } },
+        3 -> quote { ${t} { ${fs[0].name}: ${read_at(fs[0], 0)}, ${fs[1].name}: ${read_at(fs[1], 1)}, ${fs[2].name}: ${read_at(fs[2], 2)} } },
+        4 -> quote { ${t} { ${fs[0].name}: ${read_at(fs[0], 0)}, ${fs[1].name}: ${read_at(fs[1], 1)}, ${fs[2].name}: ${read_at(fs[2], 2)}, ${fs[3].name}: ${read_at(fs[3], 3)} } },
+        5 -> quote { ${t} { ${fs[0].name}: ${read_at(fs[0], 0)}, ${fs[1].name}: ${read_at(fs[1], 1)}, ${fs[2].name}: ${read_at(fs[2], 2)}, ${fs[3].name}: ${read_at(fs[3], 3)}, ${fs[4].name}: ${read_at(fs[4], 4)} } },
+        6 -> quote { ${t} { ${fs[0].name}: ${read_at(fs[0], 0)}, ${fs[1].name}: ${read_at(fs[1], 1)}, ${fs[2].name}: ${read_at(fs[2], 2)}, ${fs[3].name}: ${read_at(fs[3], 3)}, ${fs[4].name}: ${read_at(fs[4], 4)}, ${fs[5].name}: ${read_at(fs[5], 5)} } },
+        rest -> quote { a_model_with_more_than_six_fields_needs_a_wider_row_constructor() },
+    }
+}

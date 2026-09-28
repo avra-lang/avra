@@ -1,19 +1,87 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, found_at, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
+use core.{
+    NodeStore,
+    found_at,
+    Expr,
+    Stmt,
+    ExprId,
+    StmtId,
+    Span,
+    TypeRef,
+    named_ref,
+    want,
+    Param,
+    Pat,
+    PatId,
+    Arm,
+    Case,
+    Mark,
+    CompClause,
+    flatten,
+    some_list,
+    SeatMark,
+    plain_mark,
+    Scoped,
+}
 use @std.meta.{Field}
-use grammar.{Captured, Token, Ready}
-
+use @std.grammar.{Captured, Ready}
+use grammar.{Token}
 /// One build call's world: the store, the captured arguments in
 /// grammar order, the engine-attributed span of the branch that
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [], payloads: List<Field> = [] }
+export type Builder = { store: NodeStore, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [] }
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
 export type BlockGrammar = { word: string, ready: Ready, origin: string }
+
+/// An imported component: its word, how an instance of it stands in
+/// place, and the store and file its provider parsed it in.
+export type ComponentWord = { word: string, declared: string, form: Instancing, store: NodeStore, origin: string }
+
+/// How an instance stands in place: by its TEMPLATE, as a literal of
+/// its RECORD, or REFUSED in the library's words, spoken at the
+/// instance.
+export enum Instancing {
+    Template(template: Template)
+    Record(record: Record)
+    Refused(why: string)
+}
+
+/// A component with no `expand`: its instance is a literal of the
+/// record. The head's fields in order, the fields an instance's
+/// statements may fill as children — its `List` fields beside the
+/// head — whether a `name` field takes a named instance's name, and
+/// whether a `check` judges each instance at compile time, and the
+/// field a body written as a fn fills — the record's one fn field,
+/// and whether ITS ANSWER is nullable, which decides whether an ARMS
+/// body written over it takes an implicit `_ -> null` tail.
+export type Record = { head: List<string>, slots: List<ChildSlot>, named: bool, checks: bool, fn_field: string? = null, fn_optional: bool = false }
+
+/// A `List` field children fill, and the name its elements are
+/// written with — a child instance of that component lands here.
+export type ChildSlot = { name: string, of: string, gathers: bool = true }
+
+/// An `expand` of ONE `quote`: the head's fields in order, the field
+/// the block fills, the field each hole reads, the quote's statements,
+/// and the head fields that are PATTERNS (`Format`) — each read as its
+/// text where a value stands and as its record where a type does.
+export type Template = { head: List<string>, block: string, reads: List<string>, stmts: List<StmtId>, formats: List<string> = [] }
+
+/// A named instance a record's body may list by its name alone: the
+/// name, and the component it instances.
+export type Instanced = { name: string, declared: string }
+
+/// The words a file's imports open blocks with — named grammars and
+/// components — and the named instances its bodies may list.
+export type BlockWords = { grammars: List<BlockGrammar> = [], components: List<ComponentWord> = [], instances: List<Instanced> = [] }
+
+impl BlockWords {
+    fn is_empty() -> bool { self.grammars.is_empty() && self.components.is_empty() }
+}
 
 impl Builder {
     /// The token argument at `i`.
@@ -96,7 +164,9 @@ impl Builder {
     /// The repeated capture at `i`, as expression ids.
     fn exprs(i: int) -> Result<List<ExprId>, string> {
         let items = list_at(self.args, i)
-        .Ok([want(expr_id_at(items, j), "an expression in a repeated capture")? for j in 0..items.length])
+        .Ok(
+            [want(expr_id_at(items, j), "an expression in a repeated capture")? for j in 0..items.length],
+        )
     }
 
     /// The repeated capture at `i`, as statement ids. A recovery hole
@@ -104,13 +174,7 @@ impl Builder {
     /// level — every body survives bad input visibly.
     fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
-        mut out: List<StmtId> = []
-        // LICENSED I3: the body allocates through `self.store`, which a comprehension element does not
-        for j in 0..items.length {
-            let sid: StmtId? = stmt_id_at(items, j)
-            out.push(sid ?? self.store.alloc_stmt(Stmt.Error, null))
-        }
-        .Ok(out)
+        .Ok([stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length])
     }
 
     /// A new pattern node, spanning the matched branch.
@@ -118,9 +182,14 @@ impl Builder {
         .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
     }
 
-    /// One match arm, as data.
-    fn make_arm(pats: List<PatId>, value: ExprId) -> Result<LangNode, string> {
-        .Ok(LangNode.NArm(Arm { pats: pats, value: value }))
+    /// One match arm, as data — `guard` null for an unguarded one.
+    fn make_arm(pats: List<PatId>, value: ExprId, guard: ExprId?) -> Result<LangNode, string> {
+        .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
+    }
+
+    /// One comprehension clause, as data.
+    fn make_comp_clause(c: CompClause) -> Result<LangNode, string> {
+        .Ok(LangNode.NCompClause(c))
     }
 
     /// A new expression node, spanning the matched branch.
@@ -149,6 +218,13 @@ impl Builder {
         .Ok(LangNode.NExpr(id))
     }
 
+    /// An already-allocated statement as this build's result — for a
+    /// builder that marks the statement between allocating it and
+    /// answering it.
+    fn wrap_stmt(id: StmtId) -> Result<LangNode, string> {
+        .Ok(LangNode.NStmt(id))
+    }
+
     /// A head WIDENED by its trailing blocks — each marked as one,
     /// the call given them as its last arguments through the call
     /// protocol. A head that is no call refuses in the block's words.
@@ -156,7 +232,11 @@ impl Builder {
         if blocks.is_empty() { return .Ok(h) }
         for k in blocks { self.store.mark_trailing(k) }
         let widened: Expr? = self.store.called_with(h, blocks)
-        if widened == null { return .Err("a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read") }
+        if widened == null {
+            return .Err(
+                "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read",
+            )
+        }
         .Ok(self.expr_node(widened!))
     }
 
@@ -191,98 +271,85 @@ impl Builder {
 }
 
 // ── Capture extractors behind the methods. All take the argument LIST
-// plus an index: a Captured<LangNode> passed by itself as a fn
+// plus an index: a Captured<Token, LangNode> passed by itself as a fn
 // argument misreads in the callee (see the subset note), while
 // list-carried values stay intact. ──
 
 /// The expression id at `args[i]`, when that capture is one.
-export fn expr_id_at(args: List<Captured<LangNode>>, i: int) -> ExprId? {
-    match args[i] {
-        .Node(.NExpr(id)) -> id,
-        _ -> null,
-    }
+export fn expr_id_at(args: List<Captured<Token, LangNode>>, i: int) -> ExprId? {
+    match args[i] { .Node(.NExpr(id)) -> id, _ -> null }
 }
 
 /// The statement id at `args[i]`, when that capture is one.
-export fn stmt_id_at(args: List<Captured<LangNode>>, i: int) -> StmtId? {
-    match args[i] {
-        .Node(.NStmt(id)) -> id,
-        _ -> null,
-    }
+export fn stmt_id_at(args: List<Captured<Token, LangNode>>, i: int) -> StmtId? {
+    match args[i] { .Node(.NStmt(id)) -> id, _ -> null }
 }
 
 /// The written type at `args[i]`, when that capture is one.
-export fn type_ref_at(args: List<Captured<LangNode>>, i: int) -> TypeRef? {
-    match args[i] {
-        .Node(.NType(t)) -> t,
-        _ -> null,
-    }
+export fn type_ref_at(args: List<Captured<Token, LangNode>>, i: int) -> TypeRef? {
+    match args[i] { .Node(.NType(t)) -> t, _ -> null }
 }
 
 /// The answer a fn declares by writing none: `void`.
 export const void_ref: TypeRef = named_ref("void")
 
 /// The pattern at `args[i]`, when that capture is one.
-export fn pat_id_at(args: List<Captured<LangNode>>, i: int) -> PatId? {
-    match args[i] {
-        .Node(.NPat(id)) -> id,
-        _ -> null,
-    }
+export fn pat_id_at(args: List<Captured<Token, LangNode>>, i: int) -> PatId? {
+    match args[i] { .Node(.NPat(id)) -> id, _ -> null }
 }
 
 /// The repeated pattern capture at `args[i]`, as pattern ids.
-export fn pat_ids_at(args: List<Captured<LangNode>>, i: int) -> List<PatId> {
+export fn pat_ids_at(args: List<Captured<Token, LangNode>>, i: int) -> List<PatId> {
     let items = list_at(args, i)
     flatten([some_list(pat_id_at(items, j)) for j in 0..items.length])
 }
 
 /// The repeated mark capture at `args[i]`, as marks — in source
 /// order, across every member the rule matched.
-export fn marks_at(args: List<Captured<LangNode>>, i: int) -> List<Mark> {
+export fn marks_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Mark> {
     let items = list_at(args, i)
     flatten([some_list(mark_of(items, j)) for j in 0..items.length])
 }
 
-fn mark_of(args: List<Captured<LangNode>>, i: int) -> Mark? {
-    match args[i] {
-        .Node(.NMark(m)) -> m,
-        _ -> null,
-    }
+fn mark_of(args: List<Captured<Token, LangNode>>, i: int) -> Mark? {
+    match args[i] { .Node(.NMark(m)) -> m, _ -> null }
 }
 
 /// The repeated arm capture at `args[i]`, as arms.
-export fn arms_at(args: List<Captured<LangNode>>, i: int) -> List<Arm> {
+export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
     flatten([some_list(arm_at(items, j)) for j in 0..items.length])
 }
 
 /// The repeated case capture at `args[i]`, flattened — a `given`
 /// group's cases and a lone `then`'s alike.
-export fn cases_at(args: List<Captured<LangNode>>, i: int) -> List<Case> {
+export fn cases_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Case> {
     let items = list_at(args, i)
     flatten([cases_of(items, j) for j in 0..items.length])
 }
 
-fn cases_of(args: List<Captured<LangNode>>, i: int) -> List<Case> {
-    match args[i] {
-        .Node(.NCases(cs)) -> cs,
-        _ -> [],
-    }
+fn cases_of(args: List<Captured<Token, LangNode>>, i: int) -> List<Case> {
+    match args[i] { .Node(.NCases(cs)) -> cs, _ -> [] }
 }
 
-fn arm_at(args: List<Captured<LangNode>>, i: int) -> Arm? {
-    match args[i] {
-        .Node(.NArm(a)) -> a,
-        _ -> null,
-    }
+fn arm_at(args: List<Captured<Token, LangNode>>, i: int) -> Arm? {
+    match args[i] { .Node(.NArm(a)) -> a, _ -> null }
+}
+
+/// The comprehension clause at `args[i]`, when that capture is one.
+export fn comp_clause_at(args: List<Captured<Token, LangNode>>, i: int) -> CompClause? {
+    match args[i] { .Node(.NCompClause(c)) -> c, _ -> null }
+}
+
+/// The repeated comprehension clause capture at `args[i]`, as clauses.
+export fn comp_clauses_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CompClause> {
+    let items = list_at(args, i)
+    flatten([some_list(comp_clause_at(items, j)) for j in 0..items.length])
 }
 
 /// The token at `args[i]`, when that capture is one.
-export fn token_at(args: List<Captured<LangNode>>, i: int) -> Token? {
-    match args[i] {
-        .Terminal(t) -> t,
-        _ -> null,
-    }
+export fn token_at(args: List<Captured<Token, LangNode>>, i: int) -> Token? {
+    match args[i] { .Terminal(t) -> t, _ -> null }
 }
 
 /// AN OPTIONAL BINDER: the token's text as a scope-keying name,
@@ -295,7 +362,7 @@ export fn scoped_at(t: Token?) -> Scoped? {
 
 /// List delivery for the repeated capture at `args[i]` (scalar and
 /// absent normalize).
-export fn list_at(args: List<Captured<LangNode>>, i: int) -> List<Captured<LangNode>> {
+export fn list_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Captured<Token, LangNode>> {
     match args[i] {
         .Many(xs) -> xs,
         .Absent -> [],
@@ -317,7 +384,9 @@ export fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
 /// anchor's annotation, when one was written inside its window —
 /// the third user made this the shared law (fns, trait sigs,
 /// lambdas).
-export fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
+export fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<
+    TypeRef?,
+> {
     [one_between(optional, a.span.lo, window_end(anchors, j, ends)) for j, a in anchors]
 }
 
@@ -358,7 +427,7 @@ export fn type_lo(t: TypeRef) -> int {
 
 /// The marks whose `@` stands strictly inside a window.
 fn marks_inside(marks: List<Mark>, after: int, before: int) -> List<Mark> {
-    [m for m in marks if m.span != null && within(m.span!.lo, after, before)]
+    [m for m in marks if m.span != null && between(m.span!.lo, after, before)]
 }
 
 export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
@@ -372,7 +441,7 @@ export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) 
 
 /// The one optional token written between two anchors, or "".
 fn token_between(tokens: List<Token>, after: int, before: int) -> string {
-    let hit? = tokens.find(within(it.span.lo, after, before)) else { return "" }
+    let hit? = tokens.find(between(it.span.lo, after, before)) else { return "" }
     hit.text
 }
 
@@ -380,12 +449,35 @@ impl Builder {
     /// Field names, their types, and the DEFAULTS some carry, zipped —
     /// captures arrive per slot, so a default finds its field by
     /// POSITION: the last name that starts before it.
-    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>, marks: List<Mark>) -> Result<List<Param>, string> {
-        if fs.length != ft.length {
+    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>, marks: List<Mark>) -> Result<
+        List<Param>,
+        string,
+    > {
+        let typed = [self.type_after(fs, ft, j) for j, f in fs]
+        if [t for t in typed if t != null].length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
-        let w = MarkWindows { anchors: [f.span.lo for f in fs], marks: marks, from: self.span?.lo ?? 0 }
-        .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), promises: plain_mark, span: f.span, marks: w.at(f.span.lo) } for j, f in fs])
+        let w = MarkWindows {
+            anchors: [f.span.lo for f in fs],
+            marks: marks,
+            from: self.span?.lo ?? 0,
+        }
+        .Ok(
+            [Param {
+                name: Scoped(f.text),
+                ty: typed[j],
+                default: self.default_before(fs, fds, j),
+                promises: plain_mark,
+                id: self.store.alloc_param_id(f.span),
+                marks: w.at(f.span.lo),
+            } for j, f in fs],
+        )
+    }
+
+    /// Seats with the defaults some carry — a default finds its seat
+    /// by POSITION, as a field's does.
+    fn defaulted(ps: List<Token>, seats: List<Param>, pds: List<ExprId>) -> List<Param> {
+        [p with { default: self.default_before(ps, pds, j) } for j, p in seats]
     }
 
     /// The default whose position falls between field `j`'s name and
@@ -396,30 +488,86 @@ impl Builder {
         fds.find((d) -> self.starts_between(d, lo, hi))
     }
 
+    /// The written type between field `j`'s name and the next field's
+    /// — null for a hole standing as the whole field.
+    fn type_after(fs: List<Token>, ft: List<TypeRef>, j: int) -> TypeRef? {
+        let lo = fs[j].span.lo
+        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
+        ft.find((t) -> t.span != null && between(t.span!.lo, lo, hi))
+    }
+
+    /// The value between field `j`'s name and the next field's — null
+    /// for a hole standing as the whole field.
+    fn value_after(vn: List<Token>, ve: List<ExprId>, j: int) -> ExprId? {
+        let lo = vn[j].span.lo
+        let hi: int = if j + 1 < vn.length { vn[j + 1].span.lo } else { 1000000000 }
+        ve.find((e) -> self.starts_between(e, lo, hi))
+    }
+
     fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
         let sp: Span? = self.store.expr_span(e)
-        sp != null && within(sp!.lo, lo, hi)
+        sp != null && between(sp!.lo, lo, hi)
     }
 }
 
+/// An entry's name as written: a hole SPREAD by `..` keeps the `..`,
+/// which is how a template tells a run of entries from a name hole.
+export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> string {
+    if spreads.any((s: Token) -> spread_before(s, f, all)) { "..${f.text}" } else { f.text }
+}
+
+/// Whether `..` stands directly before entry `f` — after every entry
+/// written before it.
+fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
+    s.span.lo < f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
+}
+
+/// Fields or seats renamed as written, a spread run keeping its `..`.
+export fn spread_named(entries: List<Param>, names: List<Token>, spreads: List<Token>) -> List<
+    Param,
+> {
+    [p with { name: Scoped(spread_name(names[j], spreads, names)) } for j, p in entries]
+}
+
 /// Strictly inside the window `after..before`.
-export fn within(at: int, after: int, before: int) -> bool {
+export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
 }
 
 /// Parameter seats from two parallel captures — the names and the
 /// types they aligned to — with no defaults: what every fn-shaped
 /// declaration zips.
-export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(ps, tys, [], [], 0)
+export fn seats(store: NodeStore, ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
+    marked_seats(store, ps, tys, [], [], 0)
 }
 
 /// Seats with their marks: a `mut` or `const` token between the
 /// previous name (or `from`, before the first) and a name marks that
 /// seat. ONE window law, so every param list — a fn's, a method's, a
 /// lambda's, a fn type's — reads the same marks the same way.
-export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, muts: List<Token>, consts: List<Token>, from: int) -> List<Param> {
-    [Param { name: Scoped(p.text), ty: tys[j], default: null, promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
+export fn marked_seats(
+    store: NodeStore,
+    ps: List<Token>,
+    tys: List<TypeRef?>,
+    muts: List<Token>,
+    consts: List<Token>,
+    from: int,
+) -> List<Param> {
+    [Param {
+        name: Scoped(p.text),
+        ty: tys[j],
+        default: null,
+        promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
+        id: store.alloc_param_id(p.span),
+    } for j, p in ps]
+}
+
+/// Seats marked `isolated` by the tokens in their windows — the same
+/// window law `marked_seats` reads.
+export fn isolating(seats: List<Param>, ps: List<Token>, isos: List<Token>, from: int) -> List<
+    Param,
+> {
+    [s with { promises: s.promises with { unshared: isos.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) } } for j, s in seats]
 }
 
 /// One seat's contract: the `mut` and `const` tokens written in its
@@ -437,7 +585,7 @@ fn seat_since(ps: List<Token>, j: int, from: int) -> int {
 }
 
 fn mark_within(t: Token, after: int, before: int) -> bool {
-    within(t.span.lo, after, before)
+    between(t.span.lo, after, before)
 }
 
 /// A build asked for a payload its variant does not declare.

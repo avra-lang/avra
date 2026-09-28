@@ -2,7 +2,24 @@
 // can grow: degenerate shapes, every wrong value in every slot, the
 // two engines, ownership, and refusal quality. Each case names the
 // attack; the fixtures are the shell and a hand-built tool.
-use @std.process.{Tool, tool, tool_from_env, cmd, Command, Pipeline, Stdin, Ready, Env, EnvPair, Output, ProcessError, minimal, exit_text, parallel, race}
+use @std.process.{
+    Tool,
+    tool,
+    tool_from_env,
+    cmd,
+    Command,
+    Pipeline,
+    Stdin,
+    Ready,
+    Env,
+    EnvPair,
+    Output,
+    ProcessError,
+    minimal,
+    exit_text,
+    parallel,
+    race,
+}
 use @std.time.{ms, secs, now_ms}
 use @std.text.{from_codepoint}
 
@@ -28,10 +45,7 @@ fn holed_tool() -> Tool {
 
 /// A refusal's own words.
 fn said(r: Result<string, ProcessError>) -> string {
-    match r {
-        .Ok(s) -> s,
-        .Err(e) -> e.describe().message,
-    }
+    match r { .Ok(s) -> s, .Err(e) -> e.describe().message }
 }
 
 fn kind(e: ProcessError) -> string {
@@ -54,10 +68,7 @@ fn kind(e: ProcessError) -> string {
 }
 
 fn shown(r: Result<string, ProcessError>) -> string {
-    match r {
-        .Ok(s) -> s,
-        .Err(e) -> kind(e),
-    }
+    match r { .Ok(s) -> s, .Err(e) -> kind(e) }
 }
 
 fn text(c: Command) -> Result<string, ProcessError> {
@@ -86,7 +97,7 @@ fn file_as_cwd() -> Result<string, ProcessError> {
 }
 
 fn split_env_name() -> Result<string, ProcessError> {
-    text(shell("echo $A")? with { env: minimal().with_var("A=B", "x") })
+    text(shell("echo \$A")? with { env: minimal().with_var("A=B", "x") })
 }
 
 fn empty_env_name() -> Result<string, ProcessError> {
@@ -102,27 +113,18 @@ fn named(n: string, v: string) -> Result<Output, ProcessError> {
 }
 
 fn env_said(r: Result<Output, ProcessError>) -> string {
-    match r {
-        .Ok(_) -> "ok",
-        .Err(e) -> e.describe().kind.replace("process.", ""),
-    }
+    match r { .Ok(_) -> "ok", .Err(e) -> e.describe().kind.replace("process.", "") }
 }
 
 fn captured_over(cap: int) -> int {
-    match flooded(cap) {
-        .Ok(n) -> n,
-        .Err(_) -> 0 - 1,
-    }
+    match flooded(cap) { .Ok(n) -> n, .Err(_) -> 0 - 1 }
 }
 
 fn flooded(cap: int) -> Result<int, ProcessError> {
     let c = shell("yes")? with { timeout: secs(5), max_capture: cap }
     match c.run() {
         .Ok(o) -> o.stdout.length,
-        .Err(e) -> match e {
-            .TooMuch(s, n, part) -> part.stdout.length,
-            rest -> { fail e }
-        },
+        .Err(e) -> match e { .TooMuch(s, n, part) -> part.stdout.length, rest -> { fail e } },
     }
 }
 
@@ -157,7 +159,7 @@ fn grandchild_is_stopped() -> Result<string, ProcessError> {
     // the child prints its grandchild's pid and exits; the grandchild
     // holds our pipe past the grace, so the run is truncated — and the
     // grandchild is stopped with the group, never left behind
-    let o = shell("sleep 5 & echo $!")? with { drain_grace: ms(200) }
+    let o = shell("sleep 5 & echo \$!")? with { drain_grace: ms(200) }
     let out = o.run()?
     let pid = out.stdout.trim()
     let probe = text(shell("kill -0 ${pid} 2>/dev/null && echo alive || echo dead")?)?
@@ -212,17 +214,17 @@ fn many() -> Result<string, ProcessError> {
 /// and the `${…}` spelling would have handed over "decoy" instead.
 fn shadowed_var() -> Result<string, ProcessError> {
     let AVRA_PROBE = "decoy"
-    let c = shell("echo $AVRA_PROBE")? with { env: minimal().with_var("AVRA_PROBE", "seen") }
+    let c = shell("echo \$AVRA_PROBE")? with { env: minimal().with_var("AVRA_PROBE", "seen") }
     "${(c.run()?).stdout.trim()}${AVRA_PROBE.replace("decoy", "")}"
 }
 
 fn hostile_words() -> Result<string, ProcessError> {
     let echo = tool("echo")?
-    (cmd(echo, ["b c", "d\"e", "$HOME", "; rm -rf /", "--flag", "`id`"]).run()?).stdout.trim()
+    (cmd(echo, ["b c", "d\"e", "\$HOME", "; rm -rf /", "--flag", "`id`"]).run()?).stdout.trim()
 }
 
 fn inherited_home() -> Result<string, ProcessError> {
-    let c = shell("echo $HOME")? with { env: Env.Inherit }
+    let c = shell("echo \$HOME")? with { env: Env.Inherit }
     (c.run()?).stdout.trim()
 }
 
@@ -236,10 +238,7 @@ fn three_thousand_words() -> Result<string, ProcessError> {
 
 fn failed_message() -> string {
     match shell("echo one >&2; echo two >&2; exit 4") {
-        .Ok(c) -> match c.run() {
-            .Ok(_) -> "ran",
-            .Err(e) -> e.describe().message,
-        },
+        .Ok(c) -> match c.run() { .Ok(_) -> "ran", .Err(e) -> e.describe().message },
         .Err(_) -> "no shell",
     }
 }
@@ -390,21 +389,27 @@ fn cpu_of_hup_alive(secs: int) -> Result<int, ProcessError> {
 /// that reads a stage's own reap as "the capture is whole" misses a
 /// word still arriving after it.
 fn parallel_grandchild_word() -> Result<string, ProcessError> {
-    let outs = parallel([
-        shell("echo p1")?,
-        (shell("echo p2; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) }),
-        shell("echo p3")?,
-    ], 3)?
+    let outs = parallel(
+        [
+            shell("echo p1")?,
+            shell("echo p2; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) },
+            shell("echo p3")?,
+        ],
+        3,
+    )?
     [o.out.stdout.replace("\n", "/").trim() for o in outs].join("+")
 }
 
 /// The same shape through `race`: the winner is the stage with the
 /// grandchild, and its word must still land.
 fn race_grandchild_word() -> Result<string, ProcessError> {
-    let r = race([
-        (shell("echo winner; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) }),
-        shell("sleep 5")?,
-    ], ms(0))?
+    let r = race(
+        [
+            shell("echo winner; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) },
+            shell("sleep 5")?,
+        ],
+        ms(0),
+    )?
     r.out.stdout.replace("\n", "/").trim()
 }
 
@@ -412,9 +417,7 @@ fn race_grandchild_word() -> Result<string, ProcessError> {
 /// expires, the tree is killed, and the capture is TRUNCATED — never a
 /// silent short answer with nothing to tell the caller apart.
 fn parallel_grandchild_never_exits() -> Result<string, ProcessError> {
-    let outs = parallel([
-        (shell("echo a; sleep 30 &")? with { drain_grace: ms(200) }),
-    ], 1)?
+    let outs = parallel([shell("echo a; sleep 30 &")? with { drain_grace: ms(200) }], 1)?
     "${outs[0].out.truncated}/${outs[0].out.stdout.trim()}"
 }
 
@@ -423,12 +426,12 @@ fn parallel_grandchild_never_exits() -> Result<string, ProcessError> {
 /// so this returns fast despite a five-second grace on the command.
 fn parallel_capped_pays_no_grace() -> Result<int, ProcessError> {
     let began = now_ms()
-    match parallel([
-        (shell("yes | head -c 200000; (sleep 0.2; echo late) &")? with { max_capture: 1000, drain_grace: secs(5) }),
-    ], 1) {
-        .Ok(_) -> .Err(ProcessError.Empty("expected TooMuch")),
-        .Err(_) -> .Ok(now_ms() - began),
-    }
+    match parallel(
+        [
+            shell("yes | head -c 200000; (sleep 0.2; echo late) &")? with { max_capture: 1000, drain_grace: secs(5) },
+        ],
+        1,
+    ) { .Ok(_) -> .Err(ProcessError.Empty("expected TooMuch")), .Err(_) -> .Ok(now_ms() - began) }
 }
 
 spec "std/process adversarial" {
@@ -449,10 +452,7 @@ spec "std/process adversarial" {
             shown(text(cmd(dashed(), ["x"]) with { env: minimal().with_var("K", "a${nul()}b") })) == "holed:3"
         }
         then "`tool` refuses a NUL in the name before it searches" {
-            match tool("ec${nul()}ho") {
-                .Ok(_) -> false,
-                .Err(e) -> kind(e) == "holed:2",
-            }
+            match tool("ec${nul()}ho") { .Ok(_) -> false, .Err(e) -> kind(e) == "holed:2" }
         }
         then "`tool_from_env` refuses a holed variable rather than reading another one" {
             match tool_from_env("PA${nul()}TH", "sh") {
@@ -576,7 +576,12 @@ spec "std/process adversarial" {
             "${shown(hand_built("/no/such"))} ${shown(hand_built("/etc/hosts"))} ${shown(hand_built("/"))} ${shown(hand_built(""))}" == "not_found:hand denied:hand denied:hand not_found:hand"
         }
         then "a short flag attaches its value; a long one fuses with `=`" {
-            cmd(dashed(), []).flag("-o", "x").flag("--depth", "1").flag("-fplugin", "p").args.join(" ") == "-ox --depth=1 -fplugin=p"
+            cmd(dashed(), [])
+                .flag("-o", "x")
+                .flag("--depth", "1")
+                .flag("-fplugin", "p")
+                .args
+                .join(" ") == "-ox --depth=1 -fplugin=p"
         }
         then "an empty path stays empty instead of naming the directory" {
             cmd(dashed(), []).path("").args.join("|") == ""
@@ -621,7 +626,7 @@ spec "std/process adversarial" {
     }
     given "the words are data" {
         then "shell metacharacters in words reach the child as themselves" {
-            shown(hostile_words()) == "b c d\"e $HOME ; rm -rf / --flag `id`"
+            shown(hostile_words()) == "b c d\"e \$HOME ; rm -rf / --flag `id`"
         }
         // A SHELL VARIABLE IS SPELLED `$NAME`, NEVER `${NAME}`, and the
         // difference is silent. `"${HOME}"` is Avra's interpolation: with
@@ -631,12 +636,12 @@ spec "std/process adversarial" {
         // diagnostics. So the loud half protects a writer only while no
         // local shares the name, and a command line is exactly where
         // HOME, PATH and USER are likely to be locals too.
-        then "a same-named local does not reach the child — the `$NAME` spelling is the shell's" {
+        then "a same-named local does not reach the child — the `\$NAME` spelling is the shell's" {
             shown(shadowed_var()) == "seen"
         }
     }
-
     given "a grace with nothing left to watch — the wait is a wait, never a spin" {
+
         // A CHILD THAT IS GONE AND DRAINED LEAVES NOTHING TO POLL, and
         // the driver still waits the grace out (a grandchild may hold
         // the pipes). `avra_proc_ready` slept only while the child was
@@ -679,8 +684,8 @@ spec "std/process adversarial" {
             (quick_with_grace(2000) catch 9999) < 500
         }
     }
-
     given "one stream hung up while the child lives — the wait is a wait, never a spin" {
+
         // STDERR CLOSES AT ONCE and the child sleeps on unwritten. POLLHUP
         // is sticky, so a row that leaves a hung-up descriptor in its
         // poll set answers every later call at once regardless of the
@@ -698,8 +703,8 @@ spec "std/process adversarial" {
             (cpu_of_hup_alive(1) catch 9999) < 100
         }
     }
-
     given "a grandchild holding the pipe, one door out — a collector that declares on stop" {
+
         then "parallel pays the grace, and a sibling's word is not lost" {
             shown(parallel_grandchild_word()) == "p1/+p2/said/+p3/"
         }

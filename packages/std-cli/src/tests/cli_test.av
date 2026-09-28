@@ -1,8 +1,20 @@
-// A command line as data, vertically: a spec declares, `parse` reads a
+// A command line as data, vertically: components declare, `parse` reads a
 // word list into a `CliResult` or a `CliError` in its own words, help
 // renders from the declarations alone, and the accessors answer by
 // bare name.
-use @std.cli.{App, Subcommand, Runnable, CommandSpec, FlagDef, OptionDef, ArgDef, CliResult, CliError, parse, app_help, command_help}
+use @std.cli.{
+    cli,
+    command,
+    flag,
+    option,
+    arg,
+    Runnable,
+    CliResult,
+    CliError,
+    parse,
+    app_help,
+    command_help,
+}
 
 /// A command that answers a fixed code — the behaviour half, inert.
 type Answers = { code: int }
@@ -13,56 +25,71 @@ impl Runnable for Answers {
     }
 }
 
-fn sub(meta: CommandSpec, code: int) -> Subcommand {
-    let body: Answers = Answers { code: code }
-    Subcommand { meta: meta, body: body }
-}
-
 /// `check <file>` with `--time`/`-t` and `--level <n>` (default 1).
-fn check_spec() -> CommandSpec {
-    CommandSpec {
-        name: "check",
-        description: "Analyze a program and report",
-        hidden: false,
-        flags: [FlagDef { name: "--time", short: "-t", description: "print phase timings", aliases: ["--timings"] }],
-        args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
-        options: [OptionDef { name: "--level", short: "-l", description: "how hard to look", default_val: "1" }],
+fn check_spec() -> command {
+    command {
+        name: "check"
+        description: "Analyze a program and report"
+        flag time {
+            short: "-t"
+            description: "print phase timings"
+            aliases: ["--timings"]
+        }
+        // `level` is reserved, so the option is named by its setting
+        option {
+            name: "level"
+            short: "-l"
+            description: "how hard to look"
+            default: "1"
+        }
+        arg file {
+            description: "the source file"
+            required: true
+        }
+        run: Answers { code: 0 }
     }
 }
 
 /// `test [files...]` — an optional variadic.
-fn test_spec() -> CommandSpec {
-    CommandSpec {
-        name: "test",
-        description: "Run spec cases",
-        hidden: false,
-        flags: [],
-        args: [ArgDef { name: "files", description: "the spec files", required: false, variadic: true }],
-        options: [],
+fn test_spec() -> command {
+    command {
+        name: "test"
+        description: "Run spec cases"
+        arg files {
+            description: "the spec files"
+            variadic: true
+        }
+        run: Answers { code: 3 }
     }
 }
 
 /// `relink <plan>` — hidden from the app's list.
-fn hidden_spec() -> CommandSpec {
-    CommandSpec {
-        name: "relink",
-        description: "Link and run a plan (internal)",
-        hidden: true,
-        flags: [],
-        args: [ArgDef { name: "plan", description: "the link plan", required: true, variadic: false }],
-        options: [],
+fn hidden_spec() -> command {
+    command {
+        name: "relink"
+        description: "Link and run a plan (internal)"
+        hidden: true
+        arg plan {
+            description: "the link plan"
+            required: true
+        }
+        run: Answers { code: 0 }
     }
 }
 
-fn app() -> App {
-    App { name: "tool", description: "A tool", version: "1.2.3", commands: [sub(check_spec(), 0), sub(test_spec(), 3), sub(hidden_spec(), 0)] }
+fn app() -> cli {
+    cli {
+        name: "tool"
+        description: "A tool"
+        version: "1.2.3"
+        check_spec()
+        test_spec()
+        hidden_spec()
+    }
 }
 
 fn said(r: Result<CliResult, CliError>) -> string {
-    match r {
-        .Ok(p) -> "ok:${p.command}",
-        .Err(e) -> e.describe().message,
-    }
+    match r { .Ok(p) -> "ok:${p.command}", .Err(e) -> e.describe().message }
 }
 
 fn parsed(words: List<string>) -> CliResult {
@@ -76,18 +103,22 @@ spec "std/cli" {
             p.command == "check" && p.arg("file") == "main.av"
         }
         then "a flag by its long name, its short name, or an alias — asked for bare" {
-            parsed(["check", "--time", "m.av"]).has_flag("time") && parsed(["check", "-t", "m.av"]).has_flag("time") &&
-                parsed(["check", "--timings", "m.av"]).has_flag("time") && !parsed(["check", "m.av"]).has_flag("time")
+            parsed(["check", "--time", "m.av"]).has_flag("time") &&
+                parsed(["check", "-t", "m.av"]).has_flag("time") &&
+                parsed(["check", "--timings", "m.av"]).has_flag("time") &&
+                !parsed(["check", "m.av"]).has_flag("time")
         }
         then "a flag asked for with its dashes answers the same" {
             parsed(["check", "--time", "m.av"]).has_flag("--time")
         }
         then "an option's value, in the next word or after `=`, long or short" {
-            parsed(["check", "--level", "3", "m.av"]).option("level") == "3" && parsed(["check", "--level=4", "m.av"]).option("level") == "4" &&
+            parsed(["check", "--level", "3", "m.av"]).option("level") == "3" &&
+                parsed(["check", "--level=4", "m.av"]).option("level") == "4" &&
                 parsed(["check", "-l", "5", "m.av"]).option("level") == "5"
         }
         then "an omitted option wears its default; an undeclared one is empty" {
-            parsed(["check", "m.av"]).option("level") == "1" && parsed(["check", "m.av"]).option("depth") == ""
+            parsed(["check", "m.av"]).option("level") == "1" &&
+                parsed(["check", "m.av"]).option("depth") == ""
         }
         then "flags and positionals interleave freely" {
             let p = parsed(["check", "m.av", "--time", "--level", "2"])
@@ -120,10 +151,7 @@ spec "std/cli" {
         then "a refusal is a value: the variant carries the command and the word" {
             match parse(app(), ["check", "a.av", "b.av"]) {
                 .Ok(_) -> false,
-                .Err(e) -> match e {
-                    .ExtraArg(c, t) -> c == "check" && t == "b.av",
-                    rest -> false,
-                },
+                .Err(e) -> match e { .ExtraArg(c, t) -> c == "check" && t == "b.av", rest -> false },
             }
         }
     }

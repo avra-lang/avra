@@ -3,8 +3,25 @@
 //! (`FileView`), and the pass values that are pure data with the
 //! verbs that read and write their own columns. The reads that
 //! cross values, and the contexts' forwarders, live in contexts.av.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, Span, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, dst_of, rt_sig_of}
-use core.{SeatMark, SideTable, side_table, side_table_of}
+use core.{
+    FileId,
+    DeclId,
+    StmtId,
+    ExprId,
+    TypeId,
+    PatId,
+    Type,
+    Span,
+    NodeStore,
+    TypeRegistry,
+    Binding,
+    Param,
+    Reg,
+    Ins,
+    dst_of,
+    rt_sig_of,
+}
+use core.{SeatMark, SideTable, side_table, side_table_of, ParamId}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -27,20 +44,62 @@ impl FileView {
     /// forwards here. A GENERATED node is homed: a template's run
     /// points into the file that wrote the quote, a hole's at the
     /// annotation that asked for the code.
-    fn loc_of(e: ExprId) -> Loc? { self.decls.homed(self.file, self.origin_of(e), self.decls.generation_of(self.file, e), self.store.expr_span(e)) }
+    fn loc_of(e: ExprId) -> Loc? {
+        self
+            .decls
+            .homed(
+                self.file,
+                self.spanned_of(e),
+                self.decls.generation_of(self.file, e),
+                self.store.expr_span(e),
+            )
+    }
 
-    fn pat_loc(p: PatId) -> Loc? { self.decls.homed(self.file, self.origin_of_pat(p), self.decls.generation_of_pat(self.file, p), self.store.pat_span(p)) }
+    fn pat_loc(p: PatId) -> Loc? {
+        self
+            .decls
+            .homed(
+                self.file,
+                self.spanned_of_pat(p),
+                self.decls.generation_of_pat(self.file, p),
+                self.store.pat_span(p),
+            )
+    }
 
-    fn stmt_loc(s: StmtId) -> Loc? { self.decls.homed(self.file, self.origin_of_stmt(s), self.decls.generation_of_stmt(self.file, s), self.store.stmt_span(s)) }
+    fn stmt_loc(s: StmtId) -> Loc? {
+        self
+            .decls
+            .homed(
+                self.file,
+                self.spanned_of_stmt(s),
+                self.decls.generation_of_stmt(self.file, s),
+                self.store.stmt_span(s),
+            )
+    }
 
-    /// The file a generated node was WRITTEN in, when it is another
-    /// than this one — a template's own node. Null for a written node
-    /// and for one whose name came through a hole: both resolve here.
+    /// The file a generated node's own NAME resolves in, when it is
+    /// another than this one — a template's own node. Null for a
+    /// written node and for one whose name came through a hole: both
+    /// resolve here. NEVER for span-homing — `spanned_of` answers
+    /// that, since a holed node's span still indexes its template.
     fn origin_of(e: ExprId) -> FileId? { self.decls.origin_of_expr(self.file, e) }
 
     fn origin_of_stmt(s: StmtId) -> FileId? { self.decls.origin_of_stmt(self.file, s) }
 
     fn origin_of_pat(p: PatId) -> FileId? { self.decls.origin_of_pat(self.file, p) }
+
+    /// Whether a seat's name came through a hole.
+    fn holed_param(p: ParamId) -> bool { self.decls.holed_param(self.file, p) }
+
+    /// The file whose TEXT a generated node's span indexes — a
+    /// written node's template, and a HOLED node's too: its name may
+    /// resolve here, but `Rebuilder` never rewrites its span, so its
+    /// offset is still the template's.
+    fn spanned_of(e: ExprId) -> FileId? { self.decls.spanned_expr_of(self.file, e) }
+
+    fn spanned_of_stmt(s: StmtId) -> FileId? { self.decls.spanned_stmt_of(self.file, s) }
+
+    fn spanned_of_pat(p: PatId) -> FileId? { self.decls.spanned_pat_of(self.file, p) }
 
     /// The module this file belongs to.
     fn module() -> string { self.decls.module_name(self.decls.file(self.file).module_id) }
@@ -65,7 +124,8 @@ export fn new_name_facts(exprs: int, names: Namespace) -> NameFacts {
         captures: side_table<Cap?>("captures", 0, exprs, null),
         mut_reads: side_table("mut_reads", 0, exprs, false),
         settled_reads: side_table("settled_reads", 0, exprs, false),
-        names: names, voices: no_voices(),
+        names: names,
+        voices: no_voices(),
     }
 }
 
@@ -124,13 +184,34 @@ export type TypeFacts = {
     scopes: SideTable<ParamScope?>,
     pattern_types: SideTable<List<TypeId>>,
     binding_types: SideTable<TypeId?>,
+    // a plain `let`'s declaring statement, marked when it is a
+    // writing method's non-`mut` receiver — its seed is boxed into
+    // a cell, thawed, the same way a `mut` local's is
+    boxed_locals: SideTable<bool>,
     // a use whose declaration's warnings were already spoken — one
     // voice per use, however often the node is typed
     warned: SideTable<bool>,
-    // a place written through a bare `mut` local copied from a place —
-    // a writing call's receiver, a `mut` seat's argument (F2096,
-    // `alias_copy_law`) — lowering reads it unique
+    // a place written through a bare `mut` local — one copied from a
+    // place, or a path rooted at one — a writing call's receiver, a
+    // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
     alias_copies: SideTable<bool>,
+    thaws: SideTable<bool>,
+    // a writing method's receiver with no cell behind it (a
+    // parameter, or a value with no binding), thawed once at the call
+    plain_thaws: SideTable<bool>,
+    // a value a `collect` keeps — checking's one answer, lowering's one read
+    gathered: SideTable<bool>,
+    // each `collect`'s kept values, so a re-typed one never re-walks its body
+    collections: SideTable<List<ExprId>?>,
+    // a lambda that takes its seat's record by FIELD NAME — checking's
+    // one answer, lowering's one read
+    offers: SideTable<bool>,
+    // a kept LIST a `collect` spreads, element by element
+    spreads: SideTable<bool>,
+    // a trailing-arms-sugar Match left with an uncovered variant
+    // under a nullable seat — checking's one answer, lowering's one
+    // read: the missing case answers `null`
+    null_tails: SideTable<bool>,
     voices: Voices,
 }
 
@@ -153,10 +234,18 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         hungry: side_table("hungry", lo, hi, false),
         warned: side_table("warned", lo, hi, false),
         alias_copies: side_table("alias_copies", lo, hi, false),
+        thaws: side_table("thaws", lo, hi, false),
+        plain_thaws: side_table("plain_thaws", lo, hi, false),
+        gathered: side_table("gathered", lo, hi, false),
+        collections: side_table<List<ExprId>?>("collections", lo, hi, null),
+        offers: side_table("offers", lo, hi, false),
+        spreads: side_table("spreads", lo, hi, false),
+        null_tails: side_table("null_tails", lo, hi, false),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
         binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
+        boxed_locals: side_table("boxed_locals", 0, stmts, false),
         voices: no_voices(),
     }
 }
@@ -256,13 +345,66 @@ impl TypeFacts {
         self.warned.set(e.index, true)
     }
 
-    /// Whether this place is written through a bare `mut` local copied
-    /// from a place — checking's one answer, lowering's one read; the
-    /// derivation lives at `alias_copy_law` alone.
+    /// Whether this place is written through a bare `mut` local that
+    /// must not share — checking's one answer, lowering's one read; the
+    /// derivation lives at `copy_laws` alone.
     fn wants_alias_copy(e: ExprId) -> bool { self.alias_copies.get(e.index) }
 
     fn mark_alias_copy(e: ExprId) {
         self.alias_copies.set(e.index, true)
+    }
+
+    /// Whether this place is a bare `mut` local seeded fresh, written
+    /// whole: opened only when its box is the binary's own data.
+    fn wants_thaw(e: ExprId) -> bool { self.thaws.get(e.index) }
+
+    fn mark_thaw(e: ExprId) {
+        self.thaws.set(e.index, true)
+    }
+
+    /// Whether this writing method's receiver was thawed at the
+    /// call, with no cell behind it.
+    fn wants_plain_thaw(e: ExprId) -> bool { self.plain_thaws.get(e.index) }
+
+    fn mark_plain_thaw(e: ExprId) {
+        self.plain_thaws.set(e.index, true)
+    }
+
+    /// Whether a `collect` keeps this discarded value.
+    fn keeps(e: ExprId) -> bool { self.gathered.get(e.index) }
+
+    fn mark_kept(e: ExprId) {
+        self.gathered.set(e.index, true)
+    }
+
+    /// Whether a `collect` spreads this kept list — checking's one
+    /// answer, lowering's one read.
+    fn spreads_at(e: ExprId) -> bool { self.spreads.get(e.index) }
+
+    fn spread(e: ExprId, spreads: bool) {
+        self.spreads.set(e.index, spreads)
+    }
+
+    /// Whether a sugar match's uncovered variants answer `null` —
+    /// checking's one answer, lowering's one read.
+    fn has_null_tail(e: ExprId) -> bool { self.null_tails.get(e.index) }
+
+    fn mark_null_tail(e: ExprId) {
+        self.null_tails.set(e.index, true)
+    }
+
+    /// Whether a lambda takes its seat's record by field name.
+    fn takes_by_name(lam: ExprId) -> bool { self.offers.get(lam.index) }
+
+    fn offer(lam: ExprId) {
+        self.offers.set(lam.index, true)
+    }
+
+    /// What a `collect` kept, once its body has been walked.
+    fn collection(e: ExprId) -> List<ExprId>? { self.collections.get(e.index) }
+
+    fn collected(e: ExprId, values: List<ExprId>) {
+        self.collections.set(e.index, values)
     }
 
     /// Another body's facts laid into this table over its range,
@@ -274,7 +416,7 @@ impl TypeFacts {
         // EACH COLUMN THROUGH ITS FIELD: a fn handed the table could
         // only fill a copy, and the fold runs once per body. The
         // OFFSET is the tables' own — each window knows where it sits.
-        // LICENSED I3: twelve named columns, one lay each
+        // LICENSED loops.push_loop: seventeen named columns, one lay each
         self.of_expr.lay(other.of_expr)
         self.widens.lay(other.widens)
         self.narrows.lay(other.narrows)
@@ -286,10 +428,25 @@ impl TypeFacts {
         self.wants.lay(other.wants)
         self.pattern_types.lay(other.pattern_types)
         self.alias_copies.lay(other.alias_copies)
+        self.thaws.lay(other.thaws)
+        self.plain_thaws.lay(other.plain_thaws)
+        self.gathered.lay(other.gathered)
+        self.collections.lay(other.collections)
+        self.offers.lay(other.offers)
+        self.spreads.lay(other.spreads)
+        self.null_tails.lay(other.null_tails)
         self.binding_types.lay_named(other.binding_types, is_typed)
+        // a WHOLE-FILE column: a named lay, never plain, keeps one
+        // declaration's `true` from being stomped by another's
+        // untouched `false` — the same law `binding_types` pays
+        self.boxed_locals.lay_named(other.boxed_locals, marked_boxed)
     }
 
     fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
+
+    fn wants_boxed_local(s: StmtId) -> bool { self.boxed_locals.get(s.index) }
+
+    fn mark_boxed_local(s: StmtId) { self.boxed_locals.set(s.index, true) }
 
     fn seat_lambda(lam: ExprId, tys: List<TypeId>, marks: List<SeatMark>) {
         self.lambda_params.set(lam.index, tys)
@@ -325,12 +482,24 @@ impl Decls {
 
 /// A body's instruction list under construction: registers mint in
 /// instruction order, `give` is the mint-order law, and a runtime
-/// callee must have its row in the registry.
-export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices, externs: List<string> }
+/// callee must have its row in the registry. `decls` rides along for
+/// one reason: `mint_ty` is the ONE place a type is fixed to a
+/// register (every `mint_shape`/`result`/`mint_like` reaches it), so
+/// it is the one place to force a struct or enum's own declaration
+/// before anything downstream — the interpreter's `bare_reg` and
+/// `const_int_val` included — reads that register's layout.
+export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices, externs: List<string>, decls: Decls }
 
 /// An emitter over a program whose externs it may call by name.
-export fn new_emitter(externs: List<string>) -> Emitter {
-    Emitter { ins: [], reg_types: [], defined: [], voices: no_voices(), externs: externs }
+export fn new_emitter(externs: List<string>, decls: Decls) -> Emitter {
+    Emitter {
+        ins: [],
+        reg_types: [],
+        defined: [],
+        voices: no_voices(),
+        externs: externs,
+        decls: decls,
+    }
 }
 
 impl Emitter {
@@ -339,6 +508,7 @@ impl Emitter {
     fn defect(what: string) { self.record("defect: ${what}") }
 
     fn mint_ty(ty: TypeId) -> Reg {
+        self.decls.declared_first(ty)
         self.reg_types.push(ty)
         Reg { index: self.reg_types.length - 1 }
     }
@@ -355,15 +525,7 @@ impl Emitter {
         // registry validates it; the arms make that unavoidable.
         let callee: string? = match i {
             .CallRt(_, c, _) or .CallRtVoid(c, _) -> c,
-            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _)
-                or .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _)
-                or .FnAddr(_, _) or .StaticAddr(_, _) or .CallPtr(_, _, _)
-                or .Pack(_, _) or .Extract(_, _, _)
-                or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_)
-                or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _)
-                or .Alloca(_) or .Load(_, _) or .Store(_, _)
-                or .LoopStart or .LoopCond(_) or .LoopEnd
-                or .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or .Ret(_) -> null,
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .CallPtr(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or .Ret(_) -> null,
         }
         if callee != null && self.unknown_callee(callee!) {
             self.defect("unknown runtime callee `${callee!}` — add its row to runtime_api.av")
@@ -375,16 +537,19 @@ impl Emitter {
     fn defined_in_order(i: Ins) {
         let dst? = dst_of(i) else { return }
         let expected = self.defined.length
-        // LICENSED I9: REGISTER identity — a mint index, not a type
+        // LICENSED structs.index_compared: REGISTER identity — a mint index, not a type
         if dst.index != expected {
-            self.defect("register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)")
+            self
+                .defect(
+                    "register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)",
+                )
         }
         self.defined.push(dst)
     }
 
     /// The params are registers 0..N-1, defined before any instruction.
     fn seeded() {
-        // LICENSED I3: the register IS its index
+        // LICENSED loops.push_loop: the register IS its index
         for j in 0..self.reg_types.length { self.defined.push(Reg { index: j }) }
     }
 
@@ -449,6 +614,7 @@ impl BodyRegs {
 /// A column's fold reads only what the body actually recorded.
 fn is_typed(t: TypeId?) -> bool { t != null }
 fn is_hungry(h: bool) -> bool { h }
+fn marked_boxed(b: bool) -> bool { b }
 
 /// `n` empty type lists — spelled without the generic fill: a test
 /// shard instantiating a list-writing generic at a list-of-lists

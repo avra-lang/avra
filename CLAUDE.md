@@ -64,17 +64,18 @@ the body exists, answer:
    fear of traps is how ugly-but-safe drafts happen, and every
    probe result gets recorded so the fear shrinks.
 
-DOGFOODING.md is the full rulebook; `make idioms` FAILS the gate on
-any NEW violation — the baseline lists sites, never counts, and no
-tool path can add to it. Two honest exits: write the idiomatic
-form, or annotate `// LICENSED I<n>: reason` AT the site. Debt is
-zero; keep it there. A new idiom lands in DOGFOODING's registry AT
-DISCOVERY **with its matcher** (or an UNRATCHETED reason — the tool
-refuses a registry entry that has neither), under the NEXT FREE
-NUMBER: two lanes numbered a new idiom the same day, both landed
-I33, and the duplicate key silently dropped the earlier rule while
-`make idioms` kept reporting success. The tool now reads its own
-source and refuses a repeated number.
+DOGFOODING.md is the full rulebook; `avra check --baseline
+tools/idioms.baseline` FAILS on any NEW site — the baseline lists
+sites, never counts, and no tool path can add to it (`make idioms`
+runs every package, `make idioms-accept` prunes what a fix made
+gone). Every idiom the language can state is a `rule` declaration,
+found by `avra check` itself, and the gate counts a RULE's finding
+only — `type.alias_copy` wears the same `warning[kind]` shape and is
+the compiler's own law, never a rule, so the gate reads the rule
+table (`avra rules --json`), never a kind-string shape. Accepted
+debt lives in the baseline alone, reviewed at adoption and every
+time after. A new idiom lands in DOGFOODING's registry AT DISCOVERY,
+named by its rule — `<module>.<rule>`, never a number.
 
 ## Style
 
@@ -92,7 +93,7 @@ source and refuses a repeated number.
   `put(m, …)`, the backend's `define(em, …)`) are methods now, and
   so are the pass contexts' whole vocabularies (`cx.accepts(e,
   want)`, `cx.open_region(c)`, `ws.sig(d)` — 320 verbs, one sweep);
-  I39 refuses a new free verb in the pass's own files. A PASS ENTRY
+  style.free_state_verb refuses a new free verb in the pass's own files. A PASS ENTRY
   POINT (`lower(a: Analysis)`, `memory(l: Lowered)`) keeps the one
   standard signature and is not a verb.
 - A long fn splits at its PHASE boundaries into named helpers, each
@@ -103,8 +104,8 @@ source and refuses a repeated number.
 - A LAW never assembles PROSE: every refusal is a NAMED VOICE fn
   (its whole body the one `spoken`/`emit`), in a voices section at
   the file's tail or shared where features share words. Rule
-  bodies read as guard + verb (I28; enums/check.av is the
-  exemplar).
+  bodies read as guard + verb (rule.compiler.refusal_assembled;
+  enums/check.av is the exemplar).
   AND A VOICE STATES THE LAW, NOT THE SYMPTOM. "a pointer's only
   constant is null" is the rule; "both engines read it as null" was
   the observation that happened to hold the day it was written. A
@@ -142,9 +143,9 @@ change that hit it. Request your own features: the backlog feeds the
 spec. The same discipline runs one level down: a PATTERN discovered
 while writing (a beautiful form, a smell, a licensed exception) is
 an IDIOM — it lands in DOGFOODING.md's registry at discovery, and
-the greppable ones grow ratchet rules in tools/idioms.py (the
-`tools/idioms.sh` shim runs it). The registry is the idiom
-engine's spec, written by dogfooding.
+the greppable ones become `rule` declarations `avra check` finds
+directly (compiler/idioms.av, or a feature's own idioms.av). The
+registry is the idiom engine's spec, written by dogfooding.
 
 ## Rules
 
@@ -162,7 +163,7 @@ engine's spec, written by dogfooding.
   silently forgets the next variant (`let_name` dropped For's
   counter exactly so; `type_decl_name` would have swallowed the next
   type-declaring statement). Registries spell every arm — `or`-runs
-  keep that affordable. Ratcheted as I22 AND held by the compiler:
+  keep that affordable. Ratcheted as style.registry_catchall AND held by the compiler:
   F2040 counts the ANSWERING ARMS over the declared enum and names
   the variants a hole would forget. The license is a SPELLING, not a
   comment — `rest ->` says the remainder is deliberate, and both the
@@ -270,6 +271,13 @@ engine's spec, written by dogfooding.
   a guard right beside it. There is one reader now (`seat_type`),
   and the refusal was already spoken before the body ran, which is
   what makes Error the honest answer rather than a defect voice.
+- A COPIED TEMPLATE'S SPANS ARE ITS ORIGIN FILE'S OFFSETS — so its
+  errors point home — and any pass that reads a span as THIS file's
+  offset must ask `store.spanned_elsewhere(e)` first. `range_bodies`
+  did not, and `within`'s copied nodes landed in whatever `client.av`
+  declared at `time.av`'s offsets (a write through `self` blamed on
+  `describe`). A sublanguage's nodes are foreign too but spanned HERE
+  (shifted into the block); `ForeignRange.spanned_home` tells them apart.
 - A READ WEARS THE TYPE OF WHAT IS READ, never the type of the node
   doing the reading. This bit THREE times in one slice: a captured
   callee took the CALL's type (a call's type is its answer, never its
@@ -301,8 +309,13 @@ engine's spec, written by dogfooding.
   program allocates it with `box_alloc`/`str_owned`, or
   `str_static` when the program must never own it — never a bare
   `malloc` or a C literal. The tag is the belt (`hdr` refuses a
-  header without it, and an unaligned or sub-image address before
-  reading anything); the law is the braces.
+  header without it, and an unaligned or null-page address before
+  reading anything); the law is the braces. THE FLOOR IS THE NULL
+  PAGE, NEVER THE IMAGE BASE: a 4 GB floor held only while the loader
+  put everything high, so under valgrind (and any non-PIE image)
+  every box read as foreign — nothing counted, nothing freed, every
+  constant copied — and the first Linux profile reported that as the
+  program.
 - A CELL WEARS ITS BINDING'S DECLARED TYPE, never its first value's,
   and A STORE SETTLES BY THE CELL'S TYPE, never the value's. `mut x:
   T? = null` seeded a cell in the null's own type (the widen from
@@ -330,7 +343,7 @@ engine's spec, written by dogfooding.
   every std package admitted after the copy, and a compiler built by a
   compiler that copies read `@std.meta`'s own `Kind` as undefined (522
   errors). MINT AN IDENTITY IN THE BINDING THAT WRITES IT (`mut ws =
-  build_workspace(path)`), and read F2096 as naming exactly this.
+  build_workspace(path)`), and read F2106 as naming exactly this.
   features/tests/borrow_identity is the one-generation witness. AND
   THE SWEEP THAT ACQUITTED THE TREE READ ONE PACKAGE: five lanes paid
   "the 15 sites" of `check packages/std-avrac`, and the two that broke
@@ -338,7 +351,7 @@ engine's spec, written by dogfooding.
 - A READ-MODIFY-WRITE THROUGH `get` IS A COPY, AND THE COPY IS WHOLE.
   `mut t = c.get()`, a write through `t`, `c.set(t)` is correct under
   spec 11.5 and COPIES what the cell holds on every turn — `get`
-  answers a copy (the owner's Q2(a)), and F2096 names the local. When
+  answers a copy (the owner's Q2(a)), and F2106 names the local. When
   the loop is hot the copy is quadratic: the memo's settle did it per
   query until `Table` became ONE SHARED SLOT (a `Cell` of rows, an
   in-place `keep`). Write in place through the holder's own verbs —
@@ -497,13 +510,17 @@ engine's spec, written by dogfooding.
   freed memory, and the next reader segfaults (the once cache, first
   draft).
 - A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ. `type Name =
-  Shape` is ALWAYS a DISTINCT type — there is no alias form, and that
-  is the point (P9). A seat (a parameter, a field, an annotation, an
+  Shape` is ALWAYS a DISTINCT type, and that is the point (P9) — over
+  a fn shape as over any other. `alias Name<T> = Shape` is the OTHER
+  spelling, never a mode of `type`: the same type under a shorter
+  name, so it fills and is filled by its shape. `type` makes a new
+  type; `alias` names an existing one. A seat (a parameter, a field, an annotation, an
   argument, an operand) judges the NAME; a read (a property, a
   method, an index, a `for` head, an interpolation hole, a LITERAL
   PATTERN, printing) judges the SHAPE — `match id { 5 -> … }` over a
   `UserId` compares the number, exactly as `id == 5` does. The two doors are spelled: `shape_at`/`shape_of`
-  keep the name, `seen_at`/`seen_shape` see through it (I42). A
+  keep the name, `seen_at`/`seen_shape` see through it
+  (style.seen_shape_vs_seat_shape). A
   LITERAL fills a named seat directly (`let rows: Rows = [1, 2]`,
   `let id: UserId = 5`) because a literal has no type of its own
   until a want lands on it; nothing COMPUTED wears a name it was not
@@ -928,8 +945,8 @@ engine's spec, written by dogfooding.
   When a computation is keyed AND its artifact is NAMED, derive both
   from ONE value (`settled_symbol`); two spellings of the identity a
   cache depends on is a wrong answer waiting for a second caller.
-- Every diagnostic names a registered kind (its F-code is the
-  registry's projection), carries help or a structured fix where
+- Every diagnostic names a registered kind — its own identity,
+  unique by construction — carries help or a structured fix where
   expressible, and has a golden rendering test.
   AND THE RENDERER NEVER DROPS A LABEL: a voice with NO PLACE still
   renders its label. A label is what the diagnostic SAYS; a Loc is
@@ -979,7 +996,9 @@ engine's spec, written by dogfooding.
   lint's noise AND before trusting a quiet tree: a lint that counts
   the wrong thing and a law nobody has paid look identical from the
   warning count alone, and only the true-positive rate tells them
-  apart.
+  apart. PAYING IT WAS THE PROOF: turning the compiler's identities
+  into Cells took std-avrac from 165 sites to 4 and the cli from 60 to
+  1 (deduped by file:line), and nothing that fired was a false alarm.
 - Map iteration order never reaches output — iterate an ordered
   source. AND A MAP CANNOT BE ITERATED AT ALL: `for k in m` is F2000
   "`for … in` walks a `List`, this is `Map<K, V>`" and `.keys()` is
@@ -1068,6 +1087,16 @@ engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
+- A NODE VARIANT IS APPENDED, NEVER INSERTED. A `rule`'s pattern is
+  baked into the compiler as constants by the compiler that BUILDS it,
+  and its `shallow` fold names each node kind by its POSITION in
+  `Expr`/`Stmt`/`Pat` (`@derive(Matchable)`). Insert a variant mid-enum
+  and every later one moves: the product's baked shapes carry the old
+  positions while it computes the new ones, `match_node` trusts two
+  equal shallows to share an arity, and the product traps checking its
+  own tree ("index 0 is out of bounds (length 0)" in `match_kids`,
+  under `rule_candidates`) — the generation law with a derive as the
+  carrier. `Collect` hit it and moved to the end.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
@@ -1278,12 +1307,31 @@ engine's spec, written by dogfooding.
   method (`cx.<name>(sh, args)`, `features/rt.av`, from
   `core/rt_namespace.av`'s projection of `rt_sigs()`) calls through
   one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
-  them is I56's own refusal, and a misspelled or wrong-arity call
+  them is style.raw_rt_call's own refusal, and a misspelled or wrong-arity call
   through the generated method is the ordinary "no method"/method-
-  arity refusal (F2030) at typing, for free. Two
-  engines read one instruction stream by construction; I33 ratchets
-  the raw brackets, I39 the free verbs, I56 the raw runtime-call
-  string, and the vocabulary grows with the next shared shape.
+  arity refusal (F2030) at typing, for free. EVERY OTHER VALUE-
+  PRODUCING SHAPE mints and emits in ONE call too, the same
+  `verb(sh, …)`/`verb_at(e, …)` split as `call`/`call_at` — a fixed
+  shape (or an explicit `TypeId`) beside a node's own answer type:
+  `bin`/`bin_at`, `un`/`un_at`, `pack` (a `TypeId` always, no site
+  needs the node's), `call_decl`/`call_decl_at` (a declared fn's own
+  symbol — never a runtime row, that is `call`), `call_ptr_at` (a
+  call THROUGH a register holding code), and the literal twins
+  `const_int_at`/`const_bool_at`/`const_str_at` beside the fixed-shape
+  three — a source LITERAL's own node may carry a NAMED seat's type
+  (a literal fills a named seat directly), never the raw scalar the
+  fixed forms mint at, so a literal's defining register needs the
+  node-tied verb. A raw `let dst = cx.mint_shape(sh); cx.emit(Ins.…
+  (dst, …))` outside `emit.av` is style.raw_mint_emit's refusal; a shape with only
+  ONE call site (`FnAddr`, `ConstFloat`, a bare uninitialized
+  `Alloca`) has no covering verb and stays a two-statement pair, and
+  a site whose one register answers several branches — a mint shared
+  across match arms, a mint at neither a fixed shape nor a node's own
+  type — is licensed at the site. Two
+  engines read one instruction stream by construction; style.raw_region ratchets
+  the raw brackets, style.free_state_verb the free verbs, style.raw_rt_call the raw runtime-call
+  string, style.raw_mint_emit the raw mint-then-emit split, and the vocabulary grows
+  with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
   `@derive(X)` over a declaration in file A types the file that
@@ -1304,7 +1352,7 @@ engine's spec, written by dogfooding.
   `cx.type(Map<string, want>)` — a type literal, the type in its own
   spelling folded ONCE by its receiver's `interned` (core/types.av's
   `TypeLit`); a name that spells no shape is a HOLE, the `TypeId`
-  binding it names. `intern(Type.Opt(intern(Type.Str)))` is I40. The
+  binding it names. `intern(Type.Opt(intern(Type.Str)))` is style.interned_by_hand. The
   receiver is any value with `interned`: the registry, TypeCx,
   LowerCx, Decls. A declared type has no spelling — bind its id and
   name the binding.
@@ -1348,11 +1396,18 @@ engine's spec, written by dogfooding.
   only, and only when that statement IS an expression, and
   an interpolation hole prints scalars and strings only — a list
   is shown through `join`, an index or `length`.
+  A program whose proof is a TRAP gets `<name>.refuses` (the voice it
+  must speak) instead of `.expected`; `avra test` runs it as a CHILD
+  in both engines and passes it only on exit 2 with that voice on
+  stderr. Either marker makes its file a PROGRAM, not a module file:
+  the entry's law (`lower.entry_only`) never refuses its statements,
+  so `avra run`/`build` on one program test works beside its siblings
+  (`Workspace.is_program`, suite.av — discovery reads the same markers).
 
 - The CLI: each subcommand is ONE file in
-  `packages/cli/src/commands/`, exporting
-  `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
-  the list — and hands a HAND-OFF's words (the stage word, then the
+  `packages/cli/src/commands/`, exporting `command <name> { … }` —
+  an `@std/cli` component instance, a declaration imported by name —
+  and `cli/src/main.av` only composes them in `cli avra { … }` — and hands a HAND-OFF's words (the stage word, then the
   link plans) to `cli/src/stage.av` before the app reads them: the
   suite's light phase is a re-exec, never a command, so no name
   reaches it. A new command is a new file plus one line. A command
@@ -1360,36 +1415,30 @@ engine's spec, written by dogfooding.
   (commands/phase.av): the act is a NAMED fn answering
   `Result<int, string>` — its exit code, or the report `phased`
   prints as exit 1 — and says only what its phase does.
-- A BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE
-  COPIES. `mut xs = a.b.list` then `xs.push(v)` writes through every
-  holder of `a.b`; `a.b.list.push(v)` opens `a.b` unique and COPIES
-  it when another reference holds it, so the push lands in a copy
-  the other holder never sees (the lowering's worklist lost every
-  lift so, `toml$l1040` undeclared). A receiver's direct field and a
-  method call on a nested path write through; only a VOCABULARY
-  write (`push`, `set`, `pop`) on a nested struct copies. Converting
-  a borrow to a path write is a change of meaning exactly where the
-  intermediate is shared: make it unique (a value built in place and
-  handed back — the worklist per body) or keep the borrow and name
-  the sharing. Probed 2026-09-05, both engines agree.
-  THE PERFORMANCE RATIONALE IS GONE as of S3b: liveness reaches the
-  OWNED TWIN choice too, so a path write no longer finds its own
-  read's +1 and no longer clones — sweeping 34 borrow sites to direct
-  writes measured FREE (6.87s against 6.90s, inside the noise) and
-  all 17 I34 licenses retired. SO A BORROW IS WRITTEN FOR ITS
-  ALIASING AND NEVER FOR SPEED. The mechanism survives because nine
-  sites still need the aliasing — deleting it emptied the declaration
-  tables, since a borrow that becomes a copy pushes into the copy —
-  and that same aliasing is H3's silent channel: a write through a
-  borrowed local still reports nothing at all.
-  RETRACTED BY MEASUREMENT (2026-09-22, both engines, at bf39cfb's
-  base): `mut xs = a.b.list` then `xs.push(v)` does NOT reach `a.b` —
-  a bare `mut` local read from a place is a COPY (spec 11.5,
-  avra-2y5c.5) and F2096 says so at the write. What survives is the
-  entry's other half: a writing METHOD on a nested PATH whose root is
-  no copy writes through a shared intermediate (a pushed element
-  written through its fresh list — pinned MEASURED in
-  features/impls/tests/alias_copy_adversarial_test.av).
+- THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS: "changes through
+  `self` or a `mut` parameter reach the caller; changes to a local stay
+  local." A writing call on a PATH opens every box BELOW the root
+  unique (`path_copy_law`, the alias-copy fact `reg_of` reads), so an
+  element another value also holds never sees the write, whatever the
+  root. The root decides only whether the ROOT itself is written
+  through: `self` and a `mut` seat are (the seat law — Swift's
+  `mutating`/`inout`, Rust's `&mut`); a `mut` LOCAL is opened with the
+  rest, and F2106 says so once per local. A FRESH seed is written in
+  place (an identity its hooks capture stays one) unless its box is the
+  binary's own data — a constant literal is — which `avra_cell_thawed`
+  copies first. An unwrap is a step on the
+  path (`h.r!.add(1)`), never a target itself. A local READ FROM a
+  place is a copy already (spec 11.5). AN IDENTITY IS A `Cell`, NEVER A
+  PATH: the compiler's shared structures (TypeRegistry, NodeStore and
+  its arenas, Decls, Workspace) hold every table behind a Cell (core
+  names `Cell` like any file; `list_cell`/`map_cell` seed one), so
+  their writes are in-place Cell writes that no path opens — before
+  that, opening `self.store.alloc_stmt(…)`'s path forked the executor's
+  arena and the second generation trapped. A `mut fn` in a recursion
+  cycle is judged writing by its CONTRACT, so a stale `mut` keeps every
+  caller writing; F2050 names it. Witnesses: features/tests/
+  borrow_root_path and features/impls/tests/alias_copy_adversarial_test.av,
+  eval == native.
 - THE CONDITION RUNS EVERY TURN: the memory pass settles what a
   `while` condition mints at each `LoopCond`, inside the loop. A
   release placed after the loop settles one turn's debts for all of
@@ -1537,6 +1586,16 @@ Syntax the grammar lacks:
   to a match — the block goes in the parentheses), and `(f(a)) { … }`
   widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
   applies the answer.
+- A SEAT DEFAULT (`fn f(a: int, n: int = 1)`) lands on a `fn`, `mut
+  fn` and `static fn` seat and NOWHERE ELSE: `extern fn g(a: int = 1)`
+  and a trait's `fn m(a: int = 1)` are F0100 at the `=` ("expected
+  `)`" / "expected `}`"), a lambda's `(a: int = 1) -> a` is "expected
+  `)` to close the group", and none of them says a default is what
+  it refused. A NAMED argument skips any defaulted seat (`f(1, c:
+  9)`), and a default reads no param beside it — `b: int =
+  a` is F3000 "`a` is not defined". A fn VALUE of a defaulted fn
+  wears every seat, so `let f = add` then `f(1)` is the ordinary
+  arity refusal — its seats carry no names either (F2105).
 - A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
   = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
   pinned call is a CALL, so it wants arguments. The BARE spelling
@@ -1559,7 +1618,7 @@ Syntax the grammar lacks:
   "pick another name", while `let _ = g()` and `.Bind(_)` are the
   ordinary spellings. A parameter a SEAT owns and the body never reads
   is `_q` — a leading underscore is a name, it compiles, and the idiom
-  bar has always read that prefix as "unread by contract" (I23).
+  bar has always read that prefix as "unread by contract" (style.dead_parameter).
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
   keys are strings, not `int`", help "other key types are recorded".
   It kills the obvious trie-node shape; key by the text.
@@ -1570,11 +1629,6 @@ Syntax the grammar lacks:
   `xs.concat(ys)` is the spelling.
 - `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
   > 0)` compiles — which retires the double negative `![…].any(!it)`.
-- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in ps for b in
-  qs]` is F0100 "expected `]` to close the comprehension" AT the
-  second `for`. The let's own binding still reads UNDEFINED at its use
-  site (F3000) behind it, but the comprehension is named FIRST now. A
-  nested sweep is a named helper per outer element.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
@@ -1669,17 +1723,34 @@ Wants the typer does not carry yet:
   says which". Under a TYPED LET the body hears the answer (bare
   variants, a free Var, a `dyn` box all read it); a NAMED fn in the
   seat works everywhere, `?` on the field's call included.
-- A `dyn` want does not reach into arms or branches: `match k { 0
-  -> P { … }, _ -> Q { … } }` under `-> dyn Show`: F2013 "a
-  `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
-  twin: F2000 "an `if`'s branches disagree: `P` vs `Q`". Box each
-  under `let x: dyn Show = …` and select among the lets. A CALL's
-  seat DOES reach now — `refused(p)` with `fn refused(e: dyn Error)`
-  and a `ProcessError` in hand checks and dispatches (probed at
-  `8519ae9`, answering `proc 2`); that clause is retired.
+- A `dyn` want reaches into `match` ARMS now, not yet into `if`
+  BRANCHES — RETRACTED for match, re-probed 2026-09-24 (twice,
+  independently, both engines): `match k { 0 -> P { … }, _ -> Q { …
+  } }` under `-> dyn Show`, and a concrete arm beside a `null` arm
+  under `-> dyn Show?`, both compile and run, eval == native. The
+  `if` twin still refuses exactly as before: F2000 "an `if`'s
+  branches disagree: `P` vs `Q`" — box it under `let x: dyn Show =
+  …` and select among the lets. A CALL's seat DOES reach now too —
+  `refused(p)` with `fn refused(e: dyn Error)` and a `ProcessError`
+  in hand checks and dispatches (probed at `8519ae9`, answering
+  `proc 2`); that clause is retired. Found live (not by re-probing
+  this entry on a hunch) while writing `std-errors`' `Traced<E>`:
+  `cause() -> dyn Error? { match self { .A(x) -> x, .B(y) -> y } }`
+  over two different concrete Error types compiled clean.
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
   "`Box` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
+  NOT EVERY GENERIC TYPE WANTS THIS, though — `@std/errors`'
+  `Traced<E>` (the `? context` propagation carrier) LOOKS like an
+  instance and is not: its `cause()` deliberately answers the
+  concrete `E` it holds, and a trait member's answer is fixed by
+  its signature (`Error.cause() -> dyn Error?`), so no `impl Error`
+  could ever return the narrower type — lifting F2031 would not
+  change this. `cause`/`context`/`trace` stay `Traced<E>`'s own
+  inherent methods for that reason, permanently, not as a workaround
+  (found while writing avra-8sb5.40.1; the real want it surfaced is
+  a bound on the type's OWN parameter, `type Traced<E: Error>` —
+  ROADMAP's sugar backlog, not this entry).
 - A BOUND LANDS ON A FREE FN'S PARAMETERS AND NOWHERE ELSE, so a
   GENERIC TYPE CANNOT READ ITS KEY. `type T<K: Tr, V> = { … }` and
   `impl T<K: Tr, V> {` are both F0100 AT the `<` ("expected `=`" /
@@ -1720,11 +1791,19 @@ Wants the typer does not carry yet:
 - `join` over a list that is not text: `[1, 2].join(",")` is F2005
   "`join` reads a list of text, this one holds `int`" — map to text
   first.
-- `==` between lists, `contains`/`index_of` over structs or enums:
-  F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
-  value — scalars and text for now, this list holds `K`" (a nullable
-  of either scans through presence) — spell
-  the scan (`xs.any(same(it))`). ENUMS SPLIT ON THE PAYLOAD, which
+- `==`/`!=`, `contains`/`index_of` and a literal pattern share ONE
+  equality: a scalar, text, a tagged enum, or a record of ONE such
+  field, compared by that field (a one-field record inside one
+  compares through), so `Id { n: 1 } == Id { n: 1 }` answers true
+  and `[a, c].contains(b)` finds it. Everything else refuses:
+  a record of two fields is F2000 "`==` compares by value — a
+  scalar, text, a tagged enum, or a record of one such field" with
+  help "compare a field instead"; two different one-field types, or
+  one against its own field's scalar, is "`==` compares matching
+  types, found `Id` and `Other`"; the list scan is F2005 "`contains`
+  scans by value — … — and this list holds `Pair`" (a nullable of
+  a comparable type scans through presence) — spell the scan
+  (`xs.any(same(it))`). Probed at d11ea0f. ENUMS SPLIT ON THE PAYLOAD, which
   nobody had written down: a payload-FREE enum compares fine
   (`.Timeout == .Refused` answers false), and one CARRYING a payload
   is F2000 with the help "match on it instead — only an enum carrying
@@ -1750,12 +1829,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   answering `1 0 0`. Worth stating because the sentence above sends a
   reader at a defensive two-arm match for a shape that needs none —
   which is the trap-fear the probe discipline exists to shrink.
-- A struct-literal FIELD seat does not plant a want on its value
-  (the value is walked before the field's want exists): a
-  comprehension there types on its own, so `Pins { slots: [b ??
-  args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
-  "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
-  typed let plants it.
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
@@ -1773,7 +1846,7 @@ Runtime facts, ours to ratify:
   nullable.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
-  turn, and I27 retired with the strlen it ratcheted. WITH ONE
+  turn, and style.restrlen_loop retired with the strlen it ratcheted. WITH ONE
   CAVEAT, NOW PAID: `str_len` read `(h && h->len) ? h->len :
   strlen(s)`, so an EMPTY box failed the truthiness test, discarded
   its own header and answered from a terminator instead. That was
@@ -2370,8 +2443,9 @@ Runtime facts, ours to ratify:
   the law is evergreen, the example has a date on it.
   AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST AS FIRST
   WRITTEN: there is no `ACCEPTED` table in `tools/idioms.py`. What the
-  tree holds is main's `CLEAN` table — the accept surface for I20,
-  I21, I23 and I48 — and the `COUNTS` list beside `COUNTED`, one
+  tree holds is main's `CLEAN` table — the accept surface for
+  style.refusal_uncounted_contains, style.unmutated_mut,
+  style.dead_parameter and style.bool_comprehension — and the `COUNTS` list beside `COUNTED`, one
   matcher's worth of the accept surface; both are self-tested, and
   every other matcher's accept surface is still unexercised. Do not
   read this entry as saying every matcher's accept surface is guarded.

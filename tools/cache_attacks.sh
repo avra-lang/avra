@@ -143,6 +143,18 @@ mut bt = tick()
 bump(bt)
 println("b ${bt.n} '
 ed $R/b/src/main.av "use @rt.lib.{two, pick}" "use @rt.lib.{two, pick, Tick, tick}"; S "a seal arrives from a file that does not declare the record" b
+# A HELD CALLEE'S CONSUMED SEAT (R3): wrapped(s) packs s into a fresh list it
+# answers — the callee never retains it itself, so the CALLER must hand s
+# over already retained. (.66 hole 3: a held callee's record never carried
+# `consumed`, so a fresh caller reading it back defaulted every seat plain,
+# skipped the retain, and s's second use read what the callee's own,
+# never-happened release should have kept alive.)
+printf 'export fn wrapped(s: string) -> List<string> { [s] }\n' >> $R/lib/src/leaf.av
+ed $R/b/src/main.av "use @rt.lib.{two, pick, Tick, tick}" "use @rt.lib.{two, pick, Tick, tick, wrapped}"
+ed $R/b/src/main.av 'println("b ${bt.n} ${two()} ${pick("x", "y", true)}")' 'let s = "s-${bt.n}"
+let w = wrapped(s)
+println("b ${bt.n} ${two()} ${pick("x", "y", true)} ${s} ${w[0]}")'
+S "a held callee's consumed seat: the caller retains s before wrapped(s) takes it" b
 ed $R/a/src/main.av 'println("a ' 'println("a. ';                   S "a, whose objects read it flat" a
 printf 'export fn extra() -> int { 40 }\n' > $R/lib/src/extra.av
 ed $R/lib/src/lib.av "one(1) +" "one(1) + extra() +";          S "file added" a
@@ -164,6 +176,27 @@ S "a type inserted above Word/Ratio/Tick/Line: a's held wire must not read the n
 ed $R/lib/src/words.av 'export enum Sizing { Fixed, Auto }
 export type Word = { text: string }' 'export type Word = { text: string }'
 S "and back" a
+# A GENERIC REACHED WITH NO SUBSTITUTION IS STILL AN INSTANTIATION, and the caller's.
+# `st` holds @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
+# `stores<R>` with R pinned by nothing but the answer, from a home `st` never lowered.
+# The held generic's stub and that roaming instance share one NAME, declared once:
+# signatures that disagreed would be an "invalid redefinition" at emit, not at link.
+mkdir -p $R/st/src $R/rel/src
+printf '[package]\nname = "rt-st"\nversion = "0.1.0"\n' > $R/st/avra.toml
+printf '[package]\nname = "rt-rel"\nversion = "0.1.0"\n' > $R/rel/avra.toml
+printf 'use @std.relation.stable.{stable_hasher}\nprintln("st ${stable_hasher(1).finish() != 0}")\n' > $R/st/src/main.av
+cat > $R/rel/src/main.av <<'AV'
+use @std.relation.{relation}
+use @std.relation.db.{new_db}
+@relation
+type Todo = { id: int, @index owner: string }
+let db = new_db()
+let _ = Todo.insert(db, owner: "a")
+println("rel ${Todo.all(db).length}")
+AV
+S "a program holds @std/relation, reaching only stable.av" st
+S "a @relation's generic, reached with no substitution, from a home never lowered" rel
+
 # THE SUITE THROUGH THE SAME STORE: a verdict must follow a body a held test calls
 mkdir -p $R/t/src/tests/shown
 cat > $R/t/avra.toml <<'TOML'
@@ -201,6 +234,38 @@ ed $R/t/src/tests/lib_test.av "three() == 3" "three() == 3 && true"; T "a case's
 steps=$((steps+1)); out=$(./avra test --time $R/t/src/tests/lib_test.av 2>&1); st=$?
 case "$out" in *"held 0/"*|*"cache hit"*) ;; *"held "*) holds=$((holds+1)) ;; esac
 if [ "$st" -eq 0 ]; then [ -n "${VERBOSE:-}" ] && echo "ok    one file's cases under a whole hold [t]"; else fails=$((fails+1)); echo "FAIL  one file's cases under a whole hold [t]: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
+
+# A HELD ENUM'S PAYLOAD NAMES A SIBLING STRUCT: filling it asks that struct's
+# signature, which asks its own file's VISIBLE namespace — this module's, already
+# open while the sibling that carries it is being minted from the same record. A
+# re-entry here must be a smaller view, never a trap (avra-8sb5.25.52/.54: a stale
+# hold once traps "memo family N reused missing key M", and once silently drops a
+# native rule finding for a file the mixed hold never re-examines).
+mkdir -p $R/cyc/src
+cat > $R/cyc/avra.toml <<'TOML'
+[package]
+name = "rt-cyc"
+version = "0.1.0"
+TOML
+cat > $R/cyc/src/cyc_b.av <<'AV'
+export type CycB = { n: int }
+AV
+cat > $R/cyc/src/cyc_a.av <<'AV'
+export enum CycA { Payload(v: CycB) }
+export fn cyc_n(c: CycA) -> int { match c { .Payload(v) -> v.n } }
+AV
+cat > $R/cyc/src/main.av <<'AV'
+println("cyc ${cyc_n(CycA.Payload(CycB { n: 9 }))}")
+AV
+C() { # C <label> <want: ok|trap>
+    steps=$((steps+1)); out=$(./avra check $R/cyc 2>&1); st=$?
+    got=ok; [ "$st" -ne 0 ] && got=trap
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [cyc] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [cyc] wanted $2, got $got: $(printf '%s' "$out" | grep -vE '^watch:' | tail -3 | tr '\n' ' ')"; fi
+}
+C "cold cyc" ok
+C "no-op cyc" ok
+ed $R/cyc/src/cyc_b.av "CycB = { n: int }" "CycB = { n: int, m: int = 0 }"
+C "cyc_b moves alone — cyc_a stays held, its enum payload re-enters cyc_b's own visible namespace mid-mint" ok
 
 # A NAME A HELD FILE REACHES WITHOUT AN IMPORT LEAVES ITS MODULE: the file did not
 # move and is refused all the same — a hold that kept it would hide the refusal
@@ -262,6 +327,103 @@ for app in a b c; do
     rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  check [$app] speaks otherwise under the hold"; }
 done
+
+# `--verify-held` OVER A WARM `a`: every held declaration this build just kept
+# decodes back to what a fresh reading of the same file produces, and a run
+# that compared nothing is a failure, never a clean pass.
+steps=$((steps+1)); ./avra check $R/a >/dev/null 2>&1
+vh=$(./avra check $R/a --verify-held 2>&1 | grep -v '^watch:')
+case "$vh" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over a compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over a -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over a: $(printf '%s' "$vh" | tail -5 | tr '\n' ' ')" ;;
+esac
+
+# A CALLER'S CONST FOLLOWS ITS CALLEE'S BODY EVEN WHEN THE CALLER'S OWN FILE IS
+# HELD, NEVER THE ENTRY: `hcl/src/lib.av` declares `const M` and is a library
+# file, so it is never forced fresh by the entry law — `a`'s own held consts
+# above (TWICE, FAR) all live in the entry and never exercise this. Editing
+# only `seed()`'s body, in a sibling file `lib.av` never touches, must still
+# move `M`: `avra run` holds nothing, so a native/eval split here means a
+# stale held object, not a mistyped fixture (avra-8sb5.57.85).
+mkdir -p $R/hcl/src $R/hc/src
+printf '[package]\nname = "@rt/hcl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-hcl"\npath = "src/lib.av"\n' > $R/hcl/avra.toml
+printf 'export fn seed() -> int { 41 }\n' > $R/hcl/src/seed.av
+printf 'export const M: int = seed()\n' > $R/hcl/src/lib.av
+printf '[package]\nname = "rt-hc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/hcl" = { path = "../hcl" }\n' > $R/hc/avra.toml
+printf 'use @rt.hcl.{M}\nprintln("hc ${M}")\n' > $R/hc/src/main.av
+S "cold hc: a const in a non-entry file settles from a callee" hc
+got=$($R/hc/src/main 2>&1)
+[ "$got" = "hc 41" ] || { fails=$((fails+1)); echo "FAIL  cold hc printed '$got', wanted 'hc 41'"; }
+ed $R/hcl/src/seed.av "{ 41 }" "{ 42 }"
+S "hc: the callee's body moves, the held caller's const must follow" hc
+got=$($R/hc/src/main 2>&1)
+[ "$got" = "hc 42" ] || { fails=$((fails+1)); echo "FAIL  warm hc printed '$got', wanted 'hc 42' — a held const did not follow its callee's body"; }
+vh_hc=$(./avra check $R/hc --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_hc" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over hc compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over hc -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
+esac
+
+# `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
+# Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
+# — a held file with no OTHER declaration worth diffing would pass this suite
+# clean while the one fact an impl carries went unchecked. `vtlib/src/lib.av` is
+# held both times (never the entry); the impl lands in it exactly once, so the
+# SAME run's before/after declaration count proves it joined what was compared,
+# never just an absolute total that a run examining nothing could still print.
+mkdir -p $R/vtlib/src $R/vt/src
+cat > $R/vtlib/avra.toml <<'TOML'
+[package]
+name = "@rt/vtlib"
+version = "0.1.0"
+
+[lib]
+name = "rt-vtlib"
+path = "src/lib.av"
+TOML
+printf '[package]\nname = "rt-vt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/vtlib" = { path = "../vtlib" }\n' > $R/vt/avra.toml
+cat > $R/vtlib/src/lib.av <<'AV'
+export trait Shape { fn area() -> int }
+export type Sq = { s: int }
+AV
+printf 'use @rt.vtlib.{Sq}\nprintln("vt ${Sq { s: 3 }.s}")\n' > $R/vt/src/main.av
+S "cold vt: a trait/type pair, no impl yet" vt
+vh_vt0=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+n_vt0=$(printf '%s' "$vh_vt0" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
+steps=$((steps+1))
+case "$vh_vt0" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl) compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (no impl) -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl): $(printf '%s' "$vh_vt0" | tail -5 | tr '\n' ' ')" ;;
+esac
+ed $R/vtlib/src/lib.av 'export type Sq = { s: int }' 'export type Sq = { s: int }
+impl Shape for Sq { fn area() -> int { self.s * self.s } }'
+ed $R/vt/src/main.av 'use @rt.vtlib.{Sq}
+println("vt ${Sq { s: 3 }.s}")' 'use @rt.vtlib.{Shape, Sq}
+let sh: dyn Shape = Sq { s: 3 }
+println("vt ${sh.area()}")'
+S "vt: the impl lands in the same held file — a held impl is now present" vt
+vh_vt1=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+n_vt1=$(printf '%s' "$vh_vt1" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
+steps=$((steps+1))
+case "$vh_vt1" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl) compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (with impl) -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl): $(printf '%s' "$vh_vt1" | tail -5 | tr '\n' ' ')" ;;
+esac
+# THE DELTA IS THE PROOF: +2 is the impl block's own declaration and its one
+# method, measured (avra-8sb5.57.86) against this exact fixture shape — a run
+# that walked the file but skipped the impl (a kind filter dropping it, say)
+# would still pass every case above while this alone catches it.
+steps=$((steps+1))
+if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
+    fails=$((fails+1))
+    echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
+fi
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

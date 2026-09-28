@@ -6,8 +6,21 @@
 //! plus its imports; an import of a name already visible clashes —
 //! unless it is the very declaration, which is redundant, not wrong.
 //! Fns and types are namespaces apart, as the language keeps them.
-use core.{DeclId, FileId, DeclKind, same_decl, same_file, text_before, inserted, qtrace}
+use core.{
+    DeclId,
+    FileId,
+    DeclKind,
+    same_decl,
+    same_file,
+    text_before,
+    inserted,
+    qtrace,
+    map_cell,
+    list_cell,
+    flatten,
+}
 use diagnostics.{Diag, refusal, Voices, no_voices}
+use query.{traced}
 use @std.errors.{Loc}
 
 /// A file's namespace: the bindings, the names in declaration order
@@ -21,6 +34,39 @@ export type BoundNames = {
     type_names: List<string>,
 }
 
+/// Which of a namespace's three tables a name was asked of.
+export enum NameKind { Fn, Type, Syntax }
+
+/// A kind's own word, the spelling a durable witness names it by.
+export fn name_kind_word(k: NameKind) -> string {
+    match k { .Fn -> "fn", .Type -> "type", .Syntax -> "syntax" }
+}
+
+/// `name_kind_word`'s inverse.
+export fn name_kind_of(word: string) -> NameKind? {
+    [NameKind.Fn, NameKind.Type, NameKind.Syntax].find((k: NameKind) -> name_kind_word(k) == word)
+}
+
+/// One name a namespace was asked: what, the name, and the declaration
+/// that answered it — none when nothing did, which is a read too: an
+/// absent name resolves differently the day a file defines it.
+export type NameRead = { kind: NameKind, name: string, answer: DeclId? }
+
+/// What a namespace was asked, kept only while a durable witness is being
+/// made (`on`). `suggested` holds once the name lists were read to
+/// suggest — then the WHOLE scope is a dependency, since a suggestion
+/// reads every name.
+export type NameReads = {
+    on: bool,
+    asked: Cell<Map<string, bool>>,
+    found: Cell<List<NameRead>>,
+    suggested: Cell<bool>,
+}
+
+export fn new_reads(on: bool) -> NameReads {
+    NameReads { on: on, asked: map_cell(), found: list_cell(), suggested: Cell.new(false) }
+}
+
 export type Namespace = {
     // The module's winners are shared by every file. These fields hold
     // only imports, prelude exports, and builtins added for this file.
@@ -32,35 +78,70 @@ export type Namespace = {
     fn_names: List<string>,
     type_names: List<string>,
     voices: Voices,
+    reads: NameReads,
 }
 
 impl Namespace {
     fn fn_decl(name: string) -> DeclId? {
         let local: DeclId? = self.fns.get(name)
-        if local != null || self.base == null { return local }
-        self.base!.fns.get(name)
+        let answer: DeclId? = if local != null || self.base == null { local } else { self.base!.fns.get(name) }
+        self.noted(NameKind.Fn, name, answer)
+        answer
     }
 
     fn type_decl(name: string) -> DeclId? {
         let local: DeclId? = self.types.get(name)
-        if local != null || self.base == null { return local }
-        self.base!.types.get(name)
+        let answer: DeclId? = if local != null || self.base == null { local } else { self.base!.types.get(name) }
+        self.noted(NameKind.Type, name, answer)
+        answer
     }
 
     fn syntax_decl(name: string) -> DeclId? {
         let local: DeclId? = self.syntaxes.get(name)
-        if local != null || self.base == null { return local }
-        self.base!.syntaxes.get(name)
+        let answer: DeclId? = if local != null || self.base == null { local } else { self.base!.syntaxes.get(name) }
+        self.noted(NameKind.Syntax, name, answer)
+        answer
+    }
+
+    /// Keeps one ask for a durable witness, a name once.
+    fn noted(kind: NameKind, name: string, answer: DeclId?) {
+        if !self.reads.on { return }
+        let key = "${name_kind_word(kind)}\n${name}"
+        if self.reads.asked.get().get(key) != null { return }
+        self.reads.asked.put(key, true)
+        self.reads.found.push(NameRead { kind: kind, name: name, answer: answer })
+    }
+
+    /// Reading the name lists is reading every name in scope.
+    fn suggested() {
+        if self.reads.on { self.reads.suggested.set(true) }
     }
 
     fn fn_suggestions() -> List<string> {
+        self.suggested()
         if self.base == null { return self.fn_names }
         self.base!.fn_names.concat(self.fn_names)
     }
 
     fn type_suggestions() -> List<string> {
+        self.suggested()
         if self.base == null { return self.type_names }
         self.base!.type_names.concat(self.type_names)
+    }
+
+    /// Every name in scope, of all three tables — what a suggestion can
+    /// read, and so what an absent name depends on.
+    fn scope_words() -> List<string> {
+        flatten(
+            [
+                self.fn_names,
+                self.type_names,
+                self.syntax_names,
+                self.base?.fn_names ?? [],
+                self.base?.type_names ?? [],
+                self.base?.syntax_names ?? [],
+            ],
+        )
     }
 
     /// Whether either namespace holds the name.
@@ -70,7 +151,17 @@ impl Namespace {
 }
 
 export fn no_names() -> Namespace {
-    Namespace { base: null, fns: {}, types: {}, syntaxes: {}, syntax_names: [], fn_names: [], type_names: [], voices: no_voices() }
+    Namespace {
+        base: null,
+        fns: {},
+        types: {},
+        syntaxes: {},
+        syntax_names: [],
+        fn_names: [],
+        type_names: [],
+        voices: no_voices(),
+        reads: new_reads(false),
+    }
 }
 
 /// A module's names, bound once: the declarations that won, in
@@ -81,7 +172,7 @@ export type Clash = { file: FileId, diag: Diag }
 
 /// One imported declaration: what, where the `use` stands, and the
 /// module it came from.
-export type Import = { decl: DeclId, at: Loc?, alias: string }
+export type Import = { decl: DeclId, at: Loc?, renamed: string }
 
 impl Decls {
     /// A module's declarations bound, in the order given. `shown`
@@ -90,16 +181,31 @@ impl Decls {
         mut b = self.binder(shown)
         for d in ordered { b.declare(d) }
         let names = b.names
-        ModuleNames { bound: b.bound, clashes: b.clashes, base: BoundNames {
-            fns: names.fns, types: names.types, syntaxes: names.syntaxes,
-            fn_names: names.fn_names, type_names: names.type_names, syntax_names: names.syntax_names,
-        } }
+        ModuleNames {
+            bound: b.bound,
+            clashes: b.clashes,
+            base: BoundNames {
+                fns: names.fns,
+                types: names.types,
+                syntaxes: names.syntaxes,
+                fn_names: names.fn_names,
+                type_names: names.type_names,
+                syntax_names: names.syntax_names,
+            },
+        }
     }
 
     /// A file adds imports, prelude exports, and builtins over its
     /// module's shared winners. The module's clashes remain filed at
     /// the declaration in this file that lost.
-    fn file_names(file: FileId, module: ModuleNames, imports: List<Import>, prelude: List<Import>, shown: fn(string) -> string) -> Namespace {
+    fn file_names(
+        file: FileId,
+        module: ModuleNames,
+        imports: List<Import>,
+        prelude: List<Import>,
+        shown: fn(string) -> string,
+        recording: bool,
+    ) -> Namespace {
         mut fns: Map<string, DeclId> = {}
         mut types: Map<string, DeclId> = {}
         mut syntaxes: Map<string, DeclId> = {}
@@ -109,27 +215,27 @@ impl Decls {
         mut spoken: List<Diag> = []
         for i in imports {
             let x = self.decl(i.decl)
-            let name = if i.alias.is_empty() { x.name } else { i.alias }
+            let name = if i.renamed.is_empty() { x.name } else { i.renamed }
             let mine: DeclId? = match x.kind {
-                .Fn or .Const -> fns.get(name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(name),
+                .Fn or .Const or .Collect -> fns.get(name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> types.get(name),
                 .Syntax -> syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             let shared: DeclId? = match x.kind {
-                .Fn or .Const -> module.base.fns.get(name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> module.base.types.get(name),
+                .Fn or .Const or .Collect -> module.base.fns.get(name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> module.base.types.get(name),
                 .Syntax -> module.base.syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             let prior: DeclId? = mine ?? shared
             if prior == null {
                 match x.kind {
-                    .Fn or .Const -> {
+                    .Fn or .Const or .Collect -> {
                         fns.set(name, i.decl)
                         fn_names.push(name)
                     },
-                    .Record or .Named or .Enum or .Trait or .Builtin -> {
+                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> {
                         types.set(name, i.decl)
                         type_names.push(name)
                     },
@@ -139,25 +245,24 @@ impl Decls {
                     },
                     .Method or .Default or .Impl or .Main or .Case -> not_bound(),
                 }
-            } else {
-                if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
-            }
+            } else if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
         }
-        for i in prelude.concat([Import { decl: d, at: null, alias: "" } for d in self.builtin_decls()]) {
+        for i in prelude
+            .concat([Import { decl: d, at: null, renamed: "" } for d in self.builtin_decls()]) {
             let x = self.decl(i.decl)
             let prior: DeclId? = match x.kind {
-                .Fn or .Const -> fns.get(x.name) ?? module.base.fns.get(x.name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(x.name) ?? module.base.types.get(x.name),
+                .Fn or .Const or .Collect -> fns.get(x.name) ?? module.base.fns.get(x.name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> types.get(x.name) ?? module.base.types.get(x.name),
                 .Syntax -> syntaxes.get(x.name) ?? module.base.syntaxes.get(x.name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             if prior == null {
                 match x.kind {
-                    .Fn or .Const -> {
+                    .Fn or .Const or .Collect -> {
                         fns.set(x.name, i.decl)
                         fn_names.push(x.name)
                     },
-                    .Record or .Named or .Enum or .Trait or .Builtin -> {
+                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> {
                         types.set(x.name, i.decl)
                         type_names.push(x.name)
                     },
@@ -170,7 +275,17 @@ impl Decls {
             }
         }
         let own = [c.diag for c in module.clashes if in_file(c, file)]
-        Namespace { base: module.base, fns: fns, types: types, syntaxes: syntaxes, syntax_names: syntax_names, fn_names: fn_names, type_names: type_names, voices: Voices { list: own.concat(spoken) } }
+        Namespace {
+            base: module.base,
+            fns: fns,
+            types: types,
+            syntaxes: syntaxes,
+            syntax_names: syntax_names,
+            fn_names: fn_names,
+            type_names: type_names,
+            voices: Voices { list: own.concat(spoken) },
+            reads: new_reads(recording),
+        }
     }
 
     /// Who holds a name already: this module (by file), or a module.
@@ -199,7 +314,7 @@ impl Binder {
     /// LATER declaration, filed under its file.
     fn declare(d: DeclId) {
         let x = self.decls.decl(d)
-        qtrace("Q\tdeclare\t${x.name}\t${self.decls.file(x.file).path}\n")
+        if traced() { qtrace("Q\tdeclare\t${x.name}\t${self.decls.file(x.file).path}\n") }
         let prior: DeclId? = self.held(x.kind, x.name)
         if prior == null {
             self.bind(x.kind, x.name, d)
@@ -239,7 +354,7 @@ impl Binder {
         let x = self.decls.decl(i.decl)
         // A `use` item's ALIAS is the name it binds under; the empty
         // alias is the declaration's own name.
-        let name = if i.alias.is_empty() { x.name } else { i.alias }
+        let name = if i.renamed.is_empty() { x.name } else { i.renamed }
         let prior? = self.held(x.kind, name) else { return self.bind(x.kind, name, i.decl) }
         if same_decl(prior, i.decl) { return }
         self.speak(import_clash(i.at, name, self.holder(prior, file)))
@@ -258,8 +373,8 @@ impl Binder {
         let as_fn: DeclId? = self.names.fns.get(name)
         let as_type: DeclId? = self.names.types.get(name)
         match kind {
-            .Fn or .Const -> as_fn,
-            .Record or .Named or .Enum or .Trait or .Builtin -> as_type,
+            .Fn or .Const or .Collect -> as_fn,
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> as_type,
             .Syntax -> self.names.syntaxes.get(name),
             .Method or .Default or .Impl or .Main or .Case -> null,
         }
@@ -267,8 +382,8 @@ impl Binder {
 
     fn bind(kind: DeclKind, name: string, d: DeclId) {
         match kind {
-            .Fn or .Const -> self.bind_fn(name, d),
-            .Record or .Named or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
+            .Fn or .Const or .Collect -> self.bind_fn(name, d),
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> self.bind_type(name, d),
             .Syntax -> self.bind_syntax(name, d),
             .Method or .Default or .Impl or .Main or .Case -> not_bound(),
         }
@@ -293,8 +408,7 @@ impl Binder {
 }
 
 /// A member, an impl and a Main never enter a namespace.
-fn not_bound() {
-}
+fn not_bound() {}
 
 // ── voices ──
 
@@ -344,21 +458,50 @@ impl Decls {
 }
 
 fn method_taken(at: Loc?, target: string, name: string) -> Diag {
-    refusal("type.impl", at, "`${target}.${name}` is declared twice", "declared again here", "one `impl` block owns each method name — rename or merge")
+    refusal(
+        "type.impl",
+        at,
+        "`${target}.${name}` is declared twice",
+        "declared again here",
+        "one `impl` block owns each method name — rename or merge",
+    )
 }
 
 fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
     match kind {
-        .Fn or .Const -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
-        .Record or .Named or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin ->
-            refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
+        .Fn or .Const or .Collect -> refusal(
+            "resolve.duplicate_fn",
+            at,
+            "`${name}` is defined more than once",
+            "redefined here",
+            "rename one of them",
+        ),
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin or .CollectEnum -> refusal(
+            "resolve.duplicate_type",
+            at,
+            "`${name}` is declared more than once",
+            "redeclared here",
+            "rename one of them",
+        ),
     }
 }
 
 fn declared_twice(at: Loc?, name: string, other: string) -> Diag {
-    refusal("resolve.duplicate_in_module", at, "`${name}` is declared twice in this module — here and in `${other}`", "declared here", "a module's files share one namespace — rename one, or move it to another module")
+    refusal(
+        "resolve.duplicate_in_module",
+        at,
+        "`${name}` is declared twice in this module — here and in `${other}`",
+        "declared here",
+        "a module's files share one namespace — rename one, or move it to another module",
+    )
 }
 
 fn import_clash(at: Loc?, item: string, holder: string) -> Diag {
-    refusal("resolve.import_clash", at, "`${item}` is imported, but ${holder} already has it", "in this use", "drop the import, or rename the local declaration")
+    refusal(
+        "resolve.import_clash",
+        at,
+        "`${item}` is imported, but ${holder} already has it",
+        "in this use",
+        "drop the import, or rename the local declaration",
+    )
 }

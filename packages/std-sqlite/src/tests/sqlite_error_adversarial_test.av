@@ -1,16 +1,16 @@
 // The red team's record for the failure value. Nothing here found a
 // wrong answer — the registry survived every boundary — so this file is
 // the proof of that rather than a repair, and it holds the boundaries
-// so the next change to `cause_of` has to keep them.
+// so the next change to `Cause.of` has to keep them.
 //
 // The one thing it does pin is a DEPARTURE: §4.2's `retryable` makes
 // `SQLITE_LOCKED` retryable, and a retry loop there waits on a lock its
 // own connection holds — a hang, not a slow error (T49). The two cases
 // under "the retry decision" are what would notice if it were undone.
-use @std.sqlite.error.{Cause, Storage, Violation, Waiting, Denial, cause_of}
+use @std.sqlite.error.{Cause, Storage, Violation, Waiting, Denial}
 
-fn kind_at(ext: int) -> string { cause_of(ext).kind() }
-fn retry_at(ext: int) -> bool { cause_of(ext).retryable() }
+fn kind_at(ext: int) -> string { Cause.of(ext).kind() }
+fn retry_at(ext: int) -> bool { Cause.of(ext).retryable() }
 
 /// Every arm of the registry, once, with a payload where it takes one.
 /// A new variant that nobody adds here still compiles — but every
@@ -61,8 +61,8 @@ fn distinct_constraints() -> int {
 }
 
 spec "std/sqlite error adversarial" {
-
     given "every arm of the registry" {
+
         then "all twenty-eight are here" { every_cause().length == 28 }
         then "every one names a kind" { empty_kinds().length == 0 }
         then "every kind is under the package's own prefix" { unprefixed().length == 0 }
@@ -70,8 +70,8 @@ spec "std/sqlite error adversarial" {
         // both spell every arm. A third dispatch is what would rot.
         then "exactly one arm is retryable in this set" { retryables().length == 1 }
     }
-
     given "the retry decision, which is the only thing `Waiting` is for" {
+
         then "a plain busy may clear" { retry_at(5) }
         then "a busy recovery may clear" { retry_at(261) }
         then "a busy timeout may clear" { retry_at(773) }
@@ -89,14 +89,14 @@ spec "std/sqlite error adversarial" {
         // on that we can observe, so a hard error beats a spin.
         then "a shared-cache LOCKED is not retried either" { !retry_at(262) }
         then "and it too is classified as a busy" { kind_at(262) == "sqlite.busy" }
-        // `cause_of` drops the detail, so the two cannot be told apart
+        // `Cause.of` drops the detail, so the two cannot be told apart
         // from the cause alone — the extended code is what keeps them
         // distinct, and it rides in `SqlError.extended`.
         then "the cause alone cannot tell 6 from 262" { kind_at(6) == kind_at(262) }
         then "which is why the extended code is carried beside it" { 6 != 262 }
     }
-
     given "extended codes at every boundary" {
+
         then "zero" { kind_at(0) == "sqlite.other" }
         then "the last value with no high byte" { kind_at(255) == "sqlite.other" }
         then "the first with one" { kind_at(256) == "sqlite.other" }
@@ -109,8 +109,8 @@ spec "std/sqlite error adversarial" {
         then "a very large code" { kind_at(2147483647) == "sqlite.other" }
         then "none of those is retryable" { !retry_at(0) && !retry_at(4294967295) }
     }
-
     given "details that do not exist, in every family that has them" {
+
         // A detail SQLite has not defined must fall to the family's own
         // plain form, never off the end of the registry.
         then "a constraint detail past the twelve" { kind_at(19 + 13 * 256) == "sqlite.constraint.plain" }
@@ -120,8 +120,8 @@ spec "std/sqlite error adversarial" {
         then "an io detail past the thirty-six is still an io" { kind_at(10 + 999 * 256) == "sqlite.io" }
         then "and a plain busy detail is not retried differently" { retry_at(5 + 99 * 256) }
     }
-
     given "the twelve constraint details are twelve different sentences" {
+
         // "email already taken" and "no such author" are different
         // things to say, which is the whole value of the arm.
         then "fourteen asked, thirteen distinct answers" { distinct_constraints() == 13 }

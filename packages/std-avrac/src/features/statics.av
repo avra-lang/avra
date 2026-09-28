@@ -25,10 +25,11 @@ impl StaticBuild {
             .List(inner) -> self.list_slot(v, heap, inner),
             .Map(_, value) -> self.table_slot(v, heap, value),
             .Struct(_, _) -> self.record_slot(v, heap, ty),
-            .Enum(_, _) or .Res(_, _) -> self.variant_slot(v, heap, ty),
+            .Enum(_, _) -> if self.decls.types.is_flat(ty) { self.flat_variant_slot(v) } else { self.variant_slot(v, heap, ty) },
+            .Res(_, _) -> self.variant_slot(v, heap, ty),
             .App(_, _, _) -> if self.decls.fields_of_type(ty) != null { self.record_slot(v, heap, ty) } else { self.variant_slot(v, heap, ty) },
-            .Ptr or .Bytes or .Cell(_) or .Task(_) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
-                or .Null or .EmptyList or .Error or .Void or .EmptyMap -> null,
+            .Bytes -> self.octets_slot(v),
+            .Ptr or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Union(_) -> null,
         }
     }
 
@@ -40,10 +41,22 @@ impl StaticBuild {
         // the NICHE first: a flat record that RIDES a pointer is its
         // own absence, and only a flat WORD needs the one-slot box
         if v is .Gone { return Slot.Absent }
+        // a value enum's absence crosses a slot as the null pointer
+        if self.decls.types.is_valued(self.decls.types.machine_type(inner)) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
+        // a WORD ENUM's absence is the spare tag — no box, its own
+        // tag slot doubles as the sentinel
+        if self.decls.types.is_word_enum(inner) { return if v is .Absent { Slot.Int(absent_tag) } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.rides_pointer(inner) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.is_flat(inner) { return if v is .Absent { Slot.Null } else { self.array_slot(heap.slots(v), heap, [inner]) } }
         if v is .Absent { return Slot.Absent }
         self.slot_of(v, heap, inner)
+    }
+
+    /// Octets: a box of their own, laid out as the binary's.
+    mut fn octets_slot(v: MetaVal) -> Slot? {
+        let xs? = match v { .Octets(xs) -> xs, rest -> null } else { return null }
+        let b? = xs.bytes() else { return null }
+        self.pushed(StaticBox.Octets(b))
     }
 
     /// A list: its elements, each under the one element type.
@@ -52,14 +65,55 @@ impl StaticBuild {
         self.array_slot(slots, heap, filled<TypeId>(slots.length, inner))
     }
 
-    /// A record: a flat one IS its field; a boxed one is its fields in
-    /// declaration order.
+    /// A record: a flat one of one field IS its field; any other is its
+    /// fields in declaration order — a value record's box is the one it
+    /// crosses every row in.
     mut fn record_slot(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Slot? {
         // a FLAT record IS its field, whether a record declared it or
         // a NAME stands over it — the registry answers for both
-        if self.decls.types.is_flat(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
+        if self.decls.types.is_flat(ty) && !self.decls.types.is_wide(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
         let sig? = self.decls.fields_of_type(ty) else { return null }
-        self.array_slot(heap.slots(v), heap, sig.types)
+        let cells? = self.fields_of(heap.slots(v), heap, sig.types) else { return null }
+        self.pushed(StaticBox.Slots(cells))
+    }
+
+    /// A variant of an enum whose variants carry nothing: its tag, a
+    /// word — the shape it crosses as.
+    fn flat_variant_slot(v: MetaVal) -> Slot? {
+        match v { .Int(n) -> Slot.Int(n), rest -> null }
+    }
+
+    /// A box's cells from its FIELDS' values, in order — a value record's
+    /// fields, and a value enum's tag and word, laid inline.
+    mut fn fields_of(slots: List<MetaVal>, heap: MetaHeap, fields: List<TypeId>) -> List<Slot>? {
+        mut cells: List<Slot> = []
+        mut at = 0
+        for f in fields {
+            let w = self.decls.types.slot_width(f)
+            if at + w > slots.length { return null }
+            let laid? = self.field_cells(slots.slice(at, at + w), heap, f) else { return null }
+            // LICENSED loops.push_loop: a field's cells, a few at a time
+            for c in laid { cells.push(c) }
+            at = at + w
+        }
+        if at != slots.length { return null }
+        cells
+    }
+
+    /// One field's cells: a value enum's tag and the word its variant
+    /// carries, a value record's fields, or the field's one slot.
+    mut fn field_cells(xs: List<MetaVal>, heap: MetaHeap, f: TypeId) -> List<Slot>? {
+        if self.decls.types.valued_carrier(f) {
+            let tag? = self.slot_of(xs[0], heap, self.decls.types.type(int)) else { return null }
+            let word? = self.word_slot(xs[1], heap, f, tag) else { return null }
+            return [tag, word]
+        }
+        if self.decls.types.lays_inline(f) {
+            return self
+                .slots_of(xs, heap, self.decls.types.flat_fields(self.decls.types.machine_type(f)))
+        }
+        let c? = self.slot_of(xs[0], heap, f) else { return null }
+        [c]
     }
 
     /// A variant: its tag at slot 0, its payloads after — the tagged
@@ -71,7 +125,7 @@ impl StaticBuild {
         let sig = held!
         let tag? = match slots[0] { .Int(n) -> n, rest -> null } else { return null }
         if tag < 0 || tag >= sig.payloads.length { return null }
-        let payloads? = self.slots_of(slots.slice(1, slots.length), heap, sig.payloads[tag]) else { return null }
+        let payloads? = self.fields_of(slots.slice(1, slots.length), heap, sig.payloads[tag]) else { return null }
         self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(payloads)))
     }
 
@@ -100,6 +154,17 @@ impl StaticBuild {
             cells.push(c)
         }
         cells
+    }
+
+    /// A value enum's WORD slot: what the variant its tag names carries,
+    /// or a zero word for one carrying nothing and for the absent tag.
+    mut fn word_slot(x: MetaVal, heap: MetaHeap, ty: TypeId, tag_cell: Slot) -> Slot? {
+        let tag? = match tag_cell { .Int(n) -> n, rest -> null } else { return null }
+        let m = self.decls.types.machine_type(ty)
+        let e = self.decls.types.carried(m) ?? m
+        let sig? = self.decls.variants_of_type(self.decls.types.machine_type(e)) else { return null }
+        if tag < 0 || tag >= sig.payloads.length || sig.payloads[tag].is_empty() { return Slot.Int(0) }
+        self.slot_of(x, heap, sig.payloads[tag][0])
     }
 
     /// One more box, child-first: its address is its index.

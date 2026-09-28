@@ -17,13 +17,24 @@
 /// the compiler cannot place is SPOKEN and never spliced quietly.
 export enum Filled {
     Expr(e: ExprId)
+    Exprs(es: List<ExprId>)
     Name(text: string)
     Names(texts: List<string>)
     Type(t: TypeRef)
     Stmts(ss: List<StmtId>)
     Arms(arms: List<Arm>)
+    Params(ps: List<Param>)
+    Inits(inits: Inits)
     Unplaceable(why: string)
 }
+
+/// A literal whose run was refused: no fields, and nothing more to say.
+export fn spoiled_inits() -> Inits { Inits { names: [], values: [], spoiled: true } }
+
+/// A record literal's fields: each name beside its value, in order —
+/// `spoiled` when a run among them was refused, so the literal says no
+/// more.
+export type Inits = { names: List<Plain>, values: List<ExprId>, spoiled: bool = false }
 
 /// A hole no seat can hold: which hole, and the words for it.
 export type Unplaced = { hole: int, why: string }
@@ -42,6 +53,11 @@ export type Rebuilder = {
     verbatim: bool,
     // classified: each hole's kind by its index
     kinds: List<HoleKind>,
+    // whether each hole was written `${..name}` — a RUN, by its
+    // index; the mark rides the hole's own FILL expression
+    // (`q.holes[k]`), never the placeholder standing in its seat, so
+    // it is read once here and carried by index from then on
+    runs: List<bool>,
     // minted: the nodes that wear the TEMPLATE's origin — every node
     // but one whose binder or read came through a hole
     made_exprs: List<ExprId>,
@@ -51,6 +67,19 @@ export type Rebuilder = {
     made_from: List<ExprId>,
     made_stmts: List<StmtId>,
     made_pats: List<PatId>,
+    // HOLED nodes: their own binder or read resolves where the code
+    // lands (never wearing the template's origin, `made_exprs`'s own
+    // rule), but their SPAN is still the template's own offset — a
+    // node minted here is never rewritten to point at the splice
+    // site. `note_spanned` marks these separately from `made_exprs`
+    // so an error about one is homed at the template without also
+    // resolving its name there.
+    holed_exprs: List<ExprId>,
+    holed_stmts: List<StmtId>,
+    holed_pats: List<PatId>,
+    // a seat or lambda param whose NAME came through a hole: a binder
+    // with no node of its own, keyed by its ParamId
+    holed_params: List<ParamId>,
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
@@ -62,22 +91,76 @@ export type Rebuilder = {
     holed: List<bool>,
 }
 
-/// A classifying walk over a store's quote body of `count` holes.
-export fn classifier(store: NodeStore, count: int) -> Rebuilder {
-    Rebuilder { src: store, dst: store, fills: [], copying: false, verbatim: false, kinds: [HoleKind.Name for i in 0..count], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], unplaceable: [], holed: [] }
+/// A classifying walk over a store's quote body, `runs` the run mark
+/// of each hole by index (`store.is_run_hole` over its fill
+/// expression).
+export fn classifier(store: NodeStore, runs: List<bool>) -> Rebuilder {
+    Rebuilder {
+        src: store,
+        dst: store,
+        fills: [],
+        copying: false,
+        verbatim: false,
+        kinds: [HoleKind.Name for r in runs],
+        runs: runs,
+        made_exprs: [],
+        made_from: [],
+        made_stmts: [],
+        made_pats: [],
+        holed_exprs: [],
+        holed_stmts: [],
+        holed_pats: [],
+        holed_params: [],
+        misfits: [],
+        unplaceable: [],
+        holed: [],
+    }
 }
 
-/// A copying walk from `src` into `dst`, the holes filled.
-export fn copier(src: NodeStore, dst: NodeStore, fills: List<fn(HoleKind) -> Filled>) -> Rebuilder {
-    Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: [], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], unplaceable: [], holed: [] }
+/// A copying walk from `src` into `dst`, the holes filled — `runs`
+/// the run mark of each hole by index, read from `src` the same way
+/// `classifier` read it.
+export fn copier(
+    src: NodeStore,
+    dst: NodeStore,
+    fills: List<fn(HoleKind) -> Filled>,
+    runs: List<bool>,
+) -> Rebuilder {
+    Rebuilder {
+        src: src,
+        dst: dst,
+        fills: fills,
+        copying: true,
+        verbatim: false,
+        kinds: [],
+        runs: runs,
+        made_exprs: [],
+        made_from: [],
+        made_stmts: [],
+        made_pats: [],
+        holed_exprs: [],
+        holed_stmts: [],
+        holed_pats: [],
+        holed_params: [],
+        misfits: [],
+        unplaceable: [],
+        holed: [],
+    }
+}
+
+/// A hole's fill expressions run marks, by index — the currency
+/// `classifier` and `copier` both take.
+export fn hole_runs(store: NodeStore, e: ExprId) -> List<bool> {
+    let bp? = store.expr(e).body_of() else { return [] }
+    [store.is_run_hole(h) for h in bp.holes]
 }
 
 /// A quote's holes classified — the kind of each, by its index.
 export fn hole_kinds(store: NodeStore, e: ExprId) -> List<HoleKind> {
-    let bp? = (store.expr(e)).body_of() else { return [] }
+    let bp? = store.expr(e).body_of() else { return [] }
     match bp.view {
         .Verbatim(ss, arms) -> {
-            mut rb = classifier(store, bp.holes.length)
+            mut rb = classifier(store, hole_runs(store, e))
             let _ = rb.stmts(ss)
             let _ = rb.arms(arms)
             rb.kinds
@@ -89,7 +172,7 @@ export fn hole_kinds(store: NodeStore, e: ExprId) -> List<HoleKind> {
 
 /// What a quote's body PARSED as.
 export fn quote_kind(store: NodeStore, e: ExprId) -> QuoteKind {
-    let bp? = (store.expr(e)).body_of() else { return QuoteKind.Stmts }
+    let bp? = store.expr(e).body_of() else { return QuoteKind.Stmts }
     match bp.view {
         .Verbatim(ss, arms) -> {
             if !arms.is_empty() { return QuoteKind.Arms }
@@ -126,7 +209,20 @@ impl Rebuilder {
         self.expr(e!)
     }
 
-    mut fn exprs(es: List<ExprId>) -> List<ExprId> { [self.expr(e) for e in es] }
+    mut fn exprs(es: List<ExprId>) -> List<ExprId> { flatten([self.expr_seat(e) for e in es]) }
+
+    /// One element of a `List<ExprId>` seat — a call's arguments, a
+    /// list literal's elements: a lone `${..name}` there splices a
+    /// whole span, every other element fills singly.
+    mut fn expr_seat(e: ExprId) -> List<ExprId> {
+        let k: int? = self.run_hole(e)
+        if k != null {
+            self.classify(k!, HoleKind.Run)
+            if !self.copying { return [e] }
+            return self.fill_exprs(k!)
+        }
+        [self.expr(e)]
+    }
 
     mut fn stmts(ss: List<StmtId>) -> List<StmtId> { flatten([self.stmt(s) for s in ss]) }
 
@@ -159,7 +255,7 @@ impl Rebuilder {
         let k? = self.lone_hole(self.src.bind_name(p)) else { return [self.pat(p)] }
         self.classify(k, HoleKind.Binder)
         if !self.copying { return [p] }
-        [self.dst.alloc_pat(Pat.Bind(Scoped(n)), null) for n in self.fill_names(k)]
+        [self.dst.alloc_pat(Pat.Bind(Scoped(n))) for n in self.fill_names(k)]
     }
 
     /// One pattern: a lone binder hole fills with its first name.
@@ -168,14 +264,14 @@ impl Rebuilder {
         if k != null {
             self.classify(k!, HoleKind.Binder)
             if !self.copying { return p }
-            return self.dst.alloc_pat(Pat.Bind(Scoped(self.fill_name(k!))), null)
+            return self.dst.alloc_pat(Pat.Bind(Scoped(self.fill_name(k!))))
         }
         self.holed.push(false)
         let rebuilt = self.src.pat(p).rebuilt(self)
         let holed = self.holed.pop()
         if !self.copying { return p }
         let id = self.dst.alloc_pat(rebuilt, self.src.pat_span(p))
-        if !holed { self.made_pats.push(id) }
+        if holed { self.holed_pats.push(id) } else { self.made_pats.push(id) }
         id
     }
 
@@ -190,7 +286,13 @@ impl Rebuilder {
             if !self.copying { return [a] }
             return self.fill_arms(k!)
         }
-        [Arm { pats: [self.pat(p) for p in a.pats], value: self.expr(a.value) }]
+        [
+            Arm {
+                pats: [self.pat(p) for p in a.pats],
+                guard: self.expr_opt(a.guard),
+                value: self.expr(a.value),
+            },
+        ]
     }
 
     fn arm_hole(a: Arm) -> int? {
@@ -208,10 +310,10 @@ impl Rebuilder {
             self.classify(k!, HoleKind.Type)
             if !self.copying { return t }
             let f = self.fill_type(k!)
-            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span } }
-            return t with { name: f.name, args: self.trefs(t.args) }
+            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span, spliced: true } }
+            return t with { name: f.name, args: self.trefs(t.args), spliced: true }
         }
-        t with { name: self.rewritten(t.name), args: self.trefs(t.args) }
+        t with { name: self.rewritten(t.name), args: self.trefs(t.args), alternatives: self.trefs(t.alternatives), spliced: t.spliced || hole_name(t.name) != null }
     }
 
     mut fn trefs(ts: List<TypeRef>) -> List<TypeRef> { [self.tref(t) for t in ts] }
@@ -223,7 +325,11 @@ impl Rebuilder {
 
     /// A type's NAME where no written type stands (an impl target).
     mut fn type_name(text: Nominal) -> Nominal {
-        let k? = self.lone_hole(text.of) else { return Nominal(self.rewritten(text.of)) }
+        let k? = self.lone_hole(text.of) else {
+            // a woven name is read where the code lands, as a scoped one is
+            if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+            return Nominal(self.rewritten(text.of))
+        }
         self.classify(k, HoleKind.Type)
         if !self.copying { return text }
         Nominal(self.fill_type(k).name)
@@ -275,12 +381,63 @@ impl Rebuilder {
 
     /// A RECONSTRUCTION NAMES WHAT CHANGES — the rest rides. Spelling
     /// every field drops the next one silently, and a field with a
-    /// DEFAULT drops without even a compile error.
+    /// DEFAULT drops without even a compile error. `id` rides through
+    /// a CLASSIFY pass (nothing mints there), but a COPY mints its
+    /// own — `src`'s id names a slot in `src`'s own span table, which
+    /// `dst` does not share, so carrying it unchanged would read
+    /// another store's table by a foreign index the day the two
+    /// diverge in length.
     mut fn param(p: Param) -> Param {
-        p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
+        let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
+        if !self.copying { return rebuilt }
+        let id = self.dst.alloc_param_id(self.src.param_id_span(p.id))
+        if !self.verbatim && hole_name(p.name.of) != null { self.holed_params.push(id) }
+        rebuilt with { id: id }
     }
 
-    mut fn params(ps: List<Param>) -> List<Param> { [self.param(p) for p in ps] }
+    mut fn params(ps: List<Param>) -> List<Param> { flatten([self.param_seat(p) for p in ps]) }
+
+    /// A field or parameter seat: a lone hole standing as the whole
+    /// entry — a name with no type written — fills with entries.
+    mut fn param_seat(p: Param) -> List<Param> {
+        let k: int? = self.param_hole(p)
+        if k != null {
+            self.classify(k!, HoleKind.Fields)
+            if !self.copying { return [p] }
+            return self.fill_params(k!)
+        }
+        [self.param(p)]
+    }
+
+    fn param_hole(p: Param) -> int? { self.spread_hole(p.name.of) }
+
+    /// A record literal's fields, each name with its value: a lone hole
+    /// standing as a whole field — its name and its value the same
+    /// hole — fills with fields.
+    mut fn inits(names: List<Plain>, values: List<ExprId>) -> Inits {
+        let parts = [self.init_seat(n, values[j]) for j, n in names]
+        Inits {
+            names: flatten([i.names for i in parts]),
+            values: flatten([i.values for i in parts]),
+            spoiled: parts.any(it.spoiled),
+        }
+    }
+
+    mut fn init_seat(n: Plain, v: ExprId) -> Inits {
+        let k: int? = self.init_hole(n, v)
+        if k != null {
+            self.classify(k!, HoleKind.Inits)
+            if !self.copying { return Inits { names: [n], values: [v] } }
+            return self.fill_inits(k!)
+        }
+        Inits { names: [self.plain_name(n)], values: [self.expr(v)] }
+    }
+
+    fn init_hole(n: Plain, v: ExprId) -> int? {
+        let k: int? = self.spread_hole(n.of)
+        if k == null || self.lone_hole(self.src.ident_name(v)) != k { return null }
+        k
+    }
 
     mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
 
@@ -293,6 +450,21 @@ impl Rebuilder {
     }
 
     mut fn cases(cs: List<Case>) -> List<Case> { [self.case(c) for c in cs] }
+
+    mut fn comp_clauses(clauses: List<CompClause>) -> List<CompClause> { [self.comp_clause(c) for c in clauses] }
+
+    mut fn comp_clause(c: CompClause) -> CompClause {
+        match c {
+            .Head(index, name, source, hi) -> CompClause
+                .Head(
+                    self.scoped_name_opt(index),
+                    self.scoped_name(name),
+                    self.expr(source),
+                    self.expr_opt(hi),
+                ),
+            .Filter(cond) -> CompClause.Filter(self.expr(cond)),
+        }
+    }
 
     // ── the view payload ──
     // A body's PARSED form and EXPANSION ride the node as its `view`
@@ -309,6 +481,10 @@ impl Rebuilder {
                 self.made_from = self.made_from.concat(sub.made_from)
                 self.made_stmts = self.made_stmts.concat(sub.made_stmts)
                 self.made_pats = self.made_pats.concat(sub.made_pats)
+                self.holed_exprs = self.holed_exprs.concat(sub.holed_exprs)
+                self.holed_stmts = self.holed_stmts.concat(sub.holed_stmts)
+                self.holed_pats = self.holed_pats.concat(sub.holed_pats)
+                self.holed_params = self.holed_params.concat(sub.holed_params)
                 copied
             },
             .Expanded(expansion) -> BodyView.Expanded(self.expr(expansion)),
@@ -330,13 +506,23 @@ impl Rebuilder {
         if self.src.is_trailing(e) { self.dst.mark_trailing(id) }
         if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
+        if self.src.is_raw_string(e) { self.dst.mark_raw_string(id) }
+        if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
+        let gl: string? = self.src.grammar_lit_of(e)
+        if gl != null { self.dst.mark_grammar_lit(id, gl!) }
+        let tbl: TableSpec? = self.src.table_of(e)
+        if tbl != null { self.dst.mark_table(id, tbl!) }
+        let wc: int? = self.src.written_close(e)
+        if wc != null { self.dst.mark_written_close(id, wc!) }
         let bp: BodyParts? = x.body_of()
         if bp != null {
             let b = bp!
             if b.word == "quote" { self.dst.mark_quote_at(id) }
             if b.word != "quote" && b.word != "text" { self.dst.mark_sublang(id, self.src.body_start(e)) }
         }
-        if !holed {
+        if holed {
+            self.holed_exprs.push(id)
+        } else {
             self.made_exprs.push(id)
             self.made_from.push(e)
         }
@@ -349,10 +535,16 @@ impl Rebuilder {
         if self.src.is_mutating(s) { self.dst.mark_mutating(id) }
         if self.src.is_once(s) { self.dst.mark_once(id) }
         if self.src.is_static(s) { self.dst.mark_static(id) }
+        let g: GrammarSpec? = self.src.grammar_of(s)
+        if g != null { self.dst.mark_grammar(id, g!) }
+        let of: string? = self.src.instance_of(s)
+        if of != null { self.dst.mark_component_inst(id, of!) }
+        let itp: ImplTypeParams? = self.src.impl_tparams_of(s)
+        if itp != null { self.dst.mark_impl_tparams(id, itp!.of, itp!.target) }
         let docs: List<string>? = self.src.doc_comment(s)
         if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }
         for a in annotations { self.dst.annotate(id, a) }
-        if !holed { self.made_stmts.push(id) }
+        if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
         id
     }
 
@@ -364,6 +556,25 @@ impl Rebuilder {
         let hole: HoleName? = hole_name(text!)
         if hole == null || !hole!.lone() { return null }
         hole!.holes[0]
+    }
+
+    /// The index of a hole SPREAD as a whole entry — `..${k}`, nothing
+    /// else around it — or null.
+    fn spread_hole(text: string) -> int? {
+        if self.verbatim { return null }
+        let hole? = hole_name(text) else { return null }
+        if hole.holes.length != 1 || hole.parts[0] != ".." || !hole.parts[1].is_empty() { return null }
+        hole.holes[0]
+    }
+
+    /// The index of a lone hole standing as this expression, marked
+    /// `${..name}` — `lone_hole`'s twin, gated on the run mark, for a
+    /// seat among a `List<ExprId>`. The mark rides the hole's FILL
+    /// expression (`self.runs`, by index), never the placeholder `e`
+    /// stands in for here.
+    fn run_hole(e: ExprId) -> int? {
+        let k? = self.lone_hole(self.src.ident_name(e)) else { return null }
+        if self.runs[k] { k } else { null }
     }
 
     mut fn classify(k: int, kind: HoleKind) {
@@ -391,11 +602,27 @@ impl Rebuilder {
             .Expr(e) -> e,
             .Unplaceable(why) -> {
                 self.unplaced(k, why)
-                self.dst.alloc_expr(Expr.Error, null)
+                self.dst.alloc_expr(Expr.Error)
             },
-            .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
-                self.dst.alloc_expr(Expr.Error, null)
+                self.dst.alloc_expr(Expr.Error)
+            },
+        }
+    }
+
+    /// A run seat: a lone `${..name}` hole splices a whole span of
+    /// expressions.
+    mut fn fill_exprs(k: int) -> List<ExprId> {
+        match self.filled(k, HoleKind.Run) {
+            .Exprs(es) -> es,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
+            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+                self.misfits.push(k)
+                []
             },
         }
     }
@@ -406,7 +633,7 @@ impl Rebuilder {
             .Type(t) -> t.name,
             .Names(ts) -> ts.first() ?? "",
             .Unplaceable(why) -> self.unplaced_name(k, why),
-            .Expr(_) or .Stmts(_) or .Arms(_) -> self.misfit(k),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.misfit(k),
         }
     }
 
@@ -416,7 +643,7 @@ impl Rebuilder {
             .Name(t) -> [t],
             .Type(t) -> [t.name],
             .Unplaceable(why) -> [self.unplaced_name(k, why)],
-            .Expr(_) or .Stmts(_) or .Arms(_) -> [self.misfit(k)],
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.misfit(k)],
         }
     }
 
@@ -425,19 +652,19 @@ impl Rebuilder {
             .Type(t) -> t,
             .Name(t) -> named_ref(t),
             .Unplaceable(why) -> named_ref(self.unplaced_name(k, why)),
-            .Names(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> named_ref(self.misfit(k)),
+            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> named_ref(self.misfit(k)),
         }
     }
 
     mut fn fill_stmts(k: int) -> List<StmtId> {
         match self.filled(k, HoleKind.Statement) {
             .Stmts(ss) -> ss,
-            .Expr(e) -> [self.dst.alloc_stmt(Stmt.ExprStmt(e), null)],
+            .Expr(e) -> [self.dst.alloc_stmt(Stmt.ExprStmt(e))],
             .Unplaceable(why) -> {
                 self.unplaced(k, why)
                 []
             },
-            .Name(_) or .Names(_) or .Type(_) or .Arms(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -451,9 +678,37 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
                 []
+            },
+        }
+    }
+
+    mut fn fill_params(k: int) -> List<Param> {
+        match self.filled(k, HoleKind.Fields) {
+            .Params(ps) -> ps,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Inits(_) -> {
+                self.misfits.push(k)
+                []
+            },
+        }
+    }
+
+    mut fn fill_inits(k: int) -> Inits {
+        match self.filled(k, HoleKind.Inits) {
+            .Inits(i) -> i,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                spoiled_inits()
+            },
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) -> {
+                self.misfits.push(k)
+                spoiled_inits()
             },
         }
     }

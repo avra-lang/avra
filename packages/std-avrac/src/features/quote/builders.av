@@ -5,7 +5,7 @@ use core.{Expr, Pat, Arm, StmtId, Scoped, BodyView}
 use features.{LangNode, Builder, arms_at, zip_defect_of}
 use grammar.{runs}
 
-fn build_quote(mut b: Builder) -> Result<LangNode, string> {
+fn build_quote(b: Builder) -> Result<LangNode, string> {
     let open = b.token(0)?
     let arms = arms_at(b.args, 1)
     let stmts = b.stmts(2)?
@@ -17,21 +17,53 @@ fn build_quote(mut b: Builder) -> Result<LangNode, string> {
     if ends.length != holes.length { return .Err(zip_defect_of("quote holes")) }
     let parts = runs(b.text, open.span.hi, close.span.lo, begins, ends)
     if !arms.is_empty() && !stmts.all((s: StmtId) -> b.store.hole_stmt(s) != null) { return .Err("a quote holds arms or statements, not both") }
-    let body_stmts = if arms.is_empty() { stmts } else { [] }
+    let body_stmts = if arms.is_empty() { b.store.answered(stmts) } else { [] }
     let body_arms = if arms.is_empty() { [] } else { merged(b, arms, stmts) }
-    let e = b.store.alloc_expr(Expr.Body("quote", parts, holes, BodyView.Verbatim(body_stmts, body_arms)), b.span)
+    // A HOLE'S TOKENS ARE DEFERRED to after `close` in the stream (the
+    // lexer's own scheme — grammar/lexer.av), so `b.span` (the branch's
+    // consumed range, `entry` token to `cursor - 1`) covers only up to
+    // the LAST hole when one exists: a `${…}` sits textually INSIDE the
+    // quote, but lexically AFTER it. `open`/`close` are read straight
+    // off the source and stay in text order regardless.
+    let e = b
+        .store
+        .alloc_expr(
+            Expr.Body("quote", parts, holes, BodyView.Verbatim(body_stmts, body_arms)),
+            open.span.cover(close.span),
+        )
     b.store.mark_quote_at(e)
     .Ok(LangNode.NExpr(e))
 }
 
+/// The same body shape, wrapped as a PATTERN instead of a value: its
+/// holes bind, they never splice.
+fn build_quote_pat(b: Builder) -> Result<LangNode, string> {
+    let built = build_quote(b)?
+    match built {
+        .NExpr(e) -> b.make_pat(Pat.Quote(e)),
+        rest -> .Err("a quote pattern's own builder produced no expression"),
+    }
+}
+
+/// `${..name}`'s deferred content: the same bare-name shape as an
+/// ordinary hole (`ident`, expr_spine/builders.av), marked as a RUN —
+/// a lone hole's later reads never re-inspect the `..`, only this
+/// mark.
+fn build_run_hole(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let e = b.expr_node(Expr.Ident(Scoped(n.text)))
+    b.store.mark_run_hole(e)
+    b.wrap_expr(e)
+}
+
 /// Arms and lone hole statements in source order — each hole
 /// statement an arm whose pattern and value are the one hole.
-fn merged(mut b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
+fn merged(b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
     mut out: List<Arm> = []
     mut i = 0
     mut j = 0
     while i < arms.length || j < stmts.length {
-        if j >= stmts.length || (i < arms.length && arm_start(b, arms[i]) <= stmt_start(b, stmts[j])) {
+        if j >= stmts.length || i < arms.length && arm_start(b, arms[i]) <= stmt_start(b, stmts[j]) {
             out.push(arms[i])
             i = i + 1
         } else {
@@ -42,11 +74,11 @@ fn merged(mut b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
     out
 }
 
-fn arm_start(b: Builder, a: Arm) -> int { (b.store.pat_span(a.pats[0]))?.lo ?? 0 }
+fn arm_start(b: Builder, a: Arm) -> int { b.store.pat_span(a.pats[0])?.lo ?? 0 }
 
-fn stmt_start(b: Builder, s: StmtId) -> int { (b.store.stmt_span(s))?.lo ?? 0 }
+fn stmt_start(b: Builder, s: StmtId) -> int { b.store.stmt_span(s)?.lo ?? 0 }
 
-fn hole_arm(mut b: Builder, s: StmtId) -> Arm {
+fn hole_arm(b: Builder, s: StmtId) -> Arm {
     let value = b.store.answer_of(s)!
     let name = b.store.ident_name(value) ?? ""
     Arm { pats: [b.store.alloc_pat(Pat.Bind(Scoped(name)), b.store.stmt_span(s))], value: value }

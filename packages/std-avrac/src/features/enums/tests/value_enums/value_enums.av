@@ -1,0 +1,116 @@
+// A VALUE ENUM IS ITS TAG AND ONE WORD, in registers: every variant
+// carries at most one int or pointer. Each shape stores one where a box
+// used to hold it — a list cell, a record field laid inline, a map, a
+// Cell, a payload, a const — reads it back, and writes it again; the
+// pointer a variant carries is counted by its tag, so what it holds
+// lives exactly as long as the value.
+type Head = { name: string, n: int }
+enum Body { None, Chunked, Length(int) }
+enum Framed { Partial, Complete(Head), Refused(int) }
+enum Word { A, B(int), C(string), D(List<int>) }
+enum Outer { Plain, Holding(Framed, int) }
+enum Tree { Leaf, Node(Tree) }
+type Req = { method: string, body: Body, last: Framed, maybe: Framed?, n: int }
+
+const fixed: Req = Req {
+    method: "GET",
+    body: Body.Length(9),
+    last: Framed.Refused(7),
+    maybe: null,
+    n: 1,
+}
+
+fn head(i: int) -> Head { Head { name: "h${i}", n: i } }
+
+fn made(i: int) -> Framed {
+    when {
+        i % 3 == 0 -> .Partial
+        i % 3 == 1 -> .Complete(head(i))
+        _ -> .Refused(400 + i)
+    }
+}
+
+fn word(i: int) -> Word {
+    when {
+        i % 4 == 0 -> .A
+        i % 4 == 1 -> .B(i)
+        i % 4 == 2 -> .C("c${i}")
+        _ -> .D([i, i])
+    }
+}
+
+fn shown(f: Framed) -> string {
+    match f { .Partial -> "p", .Complete(h) -> h.name, .Refused(c) -> "r${c}" }
+}
+
+fn worded(w: Word) -> string {
+    match w { .A -> "a", .B(n) -> "b${n}", .C(s) -> s, .D(xs) -> "d${xs.length}" }
+}
+
+fn body(b: Body) -> string {
+    match b { .None -> "none", .Chunked -> "chunked", .Length(n) -> "len${n}" }
+}
+
+fn outer(o: Outer) -> string {
+    match o { .Plain -> "plain", .Holding(f, k) -> "${shown(f)}+${k}" }
+}
+
+fn depth(t: Tree) -> int {
+    match t { .Leaf -> 0, .Node(inner) -> 1 + depth(inner) }
+}
+
+/// A variant found inside a loop, answered from within it.
+fn first_complete(fs: List<Framed>) -> string {
+    for f in fs {
+        match f { .Complete(h) -> { return h.name }, .Partial or .Refused(_) -> nothing() }
+    }
+    "none"
+}
+
+fn nothing() {}
+
+/// Absence is a tag no variant has.
+fn maybe(i: int) -> Framed? {
+    if i < 0 { return null }
+    made(i)
+}
+
+/// Each turn's records, written field by field and copied with `with`.
+fn records() -> string {
+    mut out: List<string> = []
+    mut reqs: List<Req> = []
+    for i in 0..4 {
+        mut r = Req {
+            method: "m${i}",
+            body: if i % 2 == 0 { Body.None } else { Body.Length(i) },
+            last: Framed.Complete(head(i)),
+            maybe: null,
+            n: i,
+        }
+        r.last = if i == 2 { Framed.Refused(i) } else { Framed.Complete(head(i + 10)) }
+        r.maybe = Framed.Complete(head(i + 20))
+        let r2 = r with { body: Body.Chunked }
+        out
+            .push(
+                "${body(r.body)}/${body(r2.body)}/${shown(r.last)}/${shown(r.maybe ?? Framed.Partial)}",
+            )
+        reqs.push(r)
+    }
+    out.push([shown(r.last) for r in reqs].join(","))
+    out.join(" ")
+}
+
+/// Every seat a box used to be: a list, a map, a Cell, a payload.
+fn seats() -> string {
+    mut kept: List<Framed> = []
+    for i in 0..6 { kept.push(made(i)) }
+    let words = [word(i) for i in 0..6]
+    let m: Map<string, Framed> = {"x": made(7)}
+    let c = Cell.new(made(10))
+    c.set(made(11))
+    mut acc = made(0)
+    for i in 0..5 { acc = made(i) }
+    "${first_complete(kept)} ${[worded(w) for w in words].join(",")} ${shown(m.get("x") ?? Framed.Partial)} ${shown(c.get())} ${shown(acc)} ${shown(kept[1])}"
+}
+
+"${records()} | ${seats()} | ${outer(Outer.Holding(made(4), 3))} ${outer(Outer.Plain)} | ${body(fixed.body)} ${shown(fixed.last)} ${shown(fixed.maybe ?? Framed.Partial)} | ${shown(maybe(-1) ?? Framed.Partial)} ${shown(maybe(1) ?? Framed.Partial)} | ${depth(Tree.Node(Tree.Node(Tree.Leaf)))}"

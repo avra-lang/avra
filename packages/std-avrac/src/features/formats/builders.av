@@ -5,11 +5,25 @@
 //! head and parts has no node to carry; the two LAWS over the holes
 //! are re-derived from the node and spoken by typing, where they
 //! carry a span and a code.
-use core.{Expr, Pat, Stmt, Param, Scoped, GrammarSpec, named_ref, binds, bound_names, plain_mark}
+use core.{
+    Expr,
+    Pat,
+    Stmt,
+    StmtId,
+    Param,
+    Scoped,
+    Span,
+    NodeStore,
+    GrammarSpec,
+    Hole,
+    named_ref,
+    binds,
+    plain_mark,
+}
 use features.{LangNode, Builder}
-use features.formats.{read_format, has_holes, Format, Fault}
+use features.formats.{read_format, has_holes, Format, Fault, reads_of, read_type_name}
 
-fn build_format_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_format_pat(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let f = read_format(t.text)
     let text: string? = refusal_of(f.fault)
@@ -34,30 +48,49 @@ fn refusal_of(fault: Fault?) -> string? {
 /// declared once so the shape and the text it reads cannot drift.
 /// Every fault refuses here: a declaration's format is known whole at
 /// build time, so there is no later place that knows more.
-fn build_grammar_decl(mut b: Builder) -> Result<LangNode, string> {
+fn build_grammar_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let t = b.token(1)?
-    let f = read_format(t.text)
-    let broken: string? = undeclarable(f, n.text)
-    if broken != null { return .Err(broken!) }
-    let s = b.store.alloc_stmt(Stmt.StructDecl(Scoped(n.text), [], [field_of(name) for name in bound_names(f.parts)]), b.span)
-    b.store.mark_grammar(s, GrammarSpec { head: f.head, parts: f.parts })
-    .Ok(LangNode.NStmt(s))
+    .Ok(LangNode.NStmt(b.store.declared_format(n.text, t.text, b.span, true)?))
+}
+
+impl NodeStore {
+    /// A `grammar` declaration from a format's text: the record its
+    /// holes bind, marked as the grammar that reads it — the ONE
+    /// minting, for a written declaration and an instance's pattern
+    /// alike. A MINTED pattern may bind nothing (`get "/health"`), its
+    /// record then empty; a WRITTEN one names what its holes bind.
+    fn declared_format(name: string, text: string, span: Span?, written: bool) -> Result<
+        StmtId,
+        string,
+    > {
+        let f = read_format(text)
+        let broken: string? = undeclarable(f, name, written)
+        if broken != null { return .Err(broken!) }
+        let s = self
+            .alloc_stmt(
+                Stmt
+                    .StructDecl(Scoped(name), [], [self.field_of(p.hole) for p in f.parts if binds(p.hole)]),
+                span,
+            )
+        self.mark_grammar(s, GrammarSpec { head: f.head, parts: f.parts })
+        .Ok(s)
+    }
 }
 
 /// Why a format names no record — the FIRST law it breaks. A
 /// declaration keeps no format node, so every law speaks here; a
 /// pattern hears the last two at check time from its own node.
-fn undeclarable(f: Format, name: string) -> string? {
+fn undeclarable(f: Format, name: string, written: bool) -> string? {
     let malformed: string? = refusal_of(f.fault)
     if malformed != null { return malformed }
     let unscannable: string? = adjacent_words(f.fault, name)
     if unscannable != null { return unscannable }
-    if !has_holes(f) { return "`grammar ${name}` has no holes — a grammar names the fields its holes bind, and this format binds none" }
+    if written && !has_holes(f) { return "`grammar ${name}` has no holes — a grammar names the fields its holes bind, and this format binds none" }
     let anonymous = f.parts.find(!binds(it.hole))
     if anonymous != null { return "`grammar ${name}` has a hole that binds nothing — every hole of a grammar names a field" }
-    let typed = f.parts.find(it.hole.ty != null)
-    if typed != null { return "`grammar ${name}` has a hole that parses its span, and nothing reads text as `${typed!.hole.ty!.name}` yet" }
+    let unread = f.parts.find(reads_of(it.hole) == null)
+    if unread != null { return "`grammar ${name}` reads `{${unread!.hole.name}}` as `${unread!.hole.ty!.name}`, and a hole reads text as `string` or `int`" }
     null
 }
 
@@ -70,9 +103,17 @@ fn adjacent_words(fault: Fault?, name: string) -> string? {
     }
 }
 
-/// One capture as a record field: its name, and the span it takes.
-fn field_of(name: string) -> Param {
-    Param { name: Scoped(name), ty: named_ref("string"), default: null, promises: plain_mark }
+impl NodeStore {
+    /// One capture as a record field: its name, and the type it reads
+    /// its span as.
+    fn field_of(h: Hole) -> Param {
+        Param {
+            name: Scoped(h.name),
+            ty: named_ref(read_type_name(reads_of(h)!)),
+            default: null,
+            promises: plain_mark,
+            id: self.alloc_param_id(null),
+        }
+    }
 }
-
 

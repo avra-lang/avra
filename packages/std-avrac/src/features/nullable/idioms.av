@@ -1,0 +1,172 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use features.{Code, Fix, rule, said}
+use @std.meta.{name}
+
+/// A null test that picks the value or a default is `??`.
+///
+/// Written over the EXPRESSION `if` (`Expr.If`), where this idiom's
+/// real targets live anyway — an arm's value, a `let`'s. A quote
+/// body's own tail takes the same tail law a block's does, so a
+/// both-branches-answering `if`/`else` as the pattern's whole body
+/// is already `Expr.If` — no parentheses needed to force it.
+@fixes("let v = if x == null { 0 } else { x! }", "x ?? 0")
+@keeps("let v = if next() == null { 0 } else { next()! }")
+export rule if_null_ternary { quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} } }
+
+/// `let x = E` guarded by an immediate absence-exit — `let x? = E
+/// else { … }` — with every later `x!` in the block reading `x`
+/// bare. A `mut` never matches: the pattern's own `let` name-seat
+/// sees only a `let`'s binder, a different node kind entirely.
+@fixes("{\n    let held = get()\n    if held == null { return null }\n    take(held!)\n}", "{\n    let held? = get() else { return null }\n    take(held)\n}")
+@keeps("{\n    mut held = get()\n    if held == null { return null }\n    use(held!)\n}")
+@keeps("{\n    let held = get()\n    if held == null { return null }\n    take(held)\n}")
+export rule let_else_guard {
+    quote {
+        {
+            ${..head}
+            let ${x} = ${e}
+            if ${y} == null { ${..guard} }
+            ${..rest}
+        }
+    } if x == y.text() && absence_exit(guard) && forces(rest, x) -> let_else_guard_fix(head, x, e, guard, rest),
+}
+
+/// The guard body is one bare early-exit — `return`/`fail` — nothing
+/// this rule's rewrite would need to preserve past the `else`.
+fn absence_exit(guard: List<Code>) -> bool {
+    guard.length == 1 &&
+        (guard[0].text().starts_with("return") || guard[0].text().starts_with("fail"))
+}
+
+/// Whether `name!` appears anywhere in `rest` — the force-unwrap a
+/// `let x? = E else { … }` would make bare.
+fn forces(rest: List<Code>, name: string) -> bool {
+    rest.any(it.text().contains(name + "!"))
+}
+
+/// The rewrite: the matched root is the OUTER BLOCK, and a
+/// `Fix.Rewrite`'s payload is always ONE `@std.meta.Code` expression
+/// — no seat for a `Stmts` run at a block's own tail (a hole there
+/// reads as the block's VALUE, not a statement list) — so the whole
+/// replacement crosses through `@std/meta`'s raw-text door instead of
+/// `quote{}`'s grammar: `head` and `guard` re-spliced verbatim,
+/// `rest` the same except every bare `${x}!` in it reads `${x}` now
+/// that the `let`-else has already unwrapped it.
+fn let_else_guard_fix(head: List<Code>, x: string, e: Code, guard: List<Code>, rest: List<Code>) -> Fix {
+    let head_text = joined([c.text() for c in head])
+    let guard_text = joined([c.text() for c in guard])
+    let rest_text = joined([unforced(r.text(), x) for r in rest])
+    Fix
+        .Rewrite(
+            name(
+                "{\n" +
+                    head_text +
+                    "let " +
+                    x +
+                    "? = " +
+                    e.text() +
+                    " else {\n" +
+                    guard_text +
+                    "}\n" +
+                    rest_text +
+                    "}",
+            ),
+        )
+}
+
+/// `lines`, one per source line — "" for an empty run, never a
+/// dangling separator.
+fn joined(lines: List<string>) -> string {
+    if lines.is_empty() { "" } else { lines.join("\n") + "\n" }
+}
+
+/// `${name}!` read bare — a token-level splice: only a STANDALONE
+/// `name` immediately followed by `!` (never `!=`, never a `.name!`
+/// FIELD force on some other subject, never part of a longer
+/// identifier) is touched, so a coincidental field or local sharing
+/// the bound name is left alone.
+fn unforced(text: string, name: string) -> string {
+    let needle = name + "!"
+    mut out = ""
+    mut i = 0
+    while i < text.length {
+        let hi = if i + needle.length > text.length { text.length } else { i + needle.length }
+        let after_eq = hi < text.length && text.char_code(hi) == 61
+        if text.substring(i, hi) == needle && ident_boundary(text, i) && !after_eq {
+            out = out + name
+            i = hi
+        } else {
+            out = out + text.substring(i, i + 1)
+            i = i + 1
+        }
+    }
+    out
+}
+
+/// Whether `text[i]` starts a fresh identifier — the character just
+/// before is neither part of one nor the `.` that would make this a
+/// FIELD read on some other subject rather than the bound local.
+fn ident_boundary(text: string, i: int) -> bool {
+    i == 0 || !is_ident_char(text.char_code(i - 1)) && text.char_code(i - 1) != 46
+}
+
+fn is_ident_char(c: int) -> bool {
+    c == 95 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122
+}
+
+/// A `mut` local seeded `null` with an explicit nullable type — is
+/// this scan a `find`/`index_of`? No hole binds the TYPE (a quote
+/// pattern has none in type position yet, avra-8sb5.25.10): a
+/// bare-hole root guarded `lit.is_nullable_flag_mut()` reads it off
+/// the declaration structurally instead.
+///
+/// NO REWRITE: the rule's own VOICE asks a question ("is this scan a
+/// find/index_of?") rather than stating a fact, because the answer is
+/// not always yes — a `mut best: T? = null` flag can equally be
+/// tracking "the last match", "the one seen twice", or any other fold
+/// a `find`/`index_of` does not express. Which it is lives in the
+/// LOOP that later sets it, outside this declaration's own span, and
+/// only a reader can tell.
+@keeps("mut best: Thing = other()")
+@keeps("mut best: Thing? = other()")
+@keeps("mut n = 0")
+export rule nullable_flag_local { quote { ${lit} } if lit.is_nullable_flag_mut() -> nullable_flag_found(lit) }
+
+fn nullable_flag_found(lit: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "a nullable flag local — is this scan a find/index_of?",
+                "this local",
+                null,
+            ),
+        )
+}
+
+/// A `let` LOCAL forced open (`!`) three or more times within its own
+/// declaration — a value the code already knows it has, insisted on
+/// again and again instead of guarded once. A `mut` never matches
+/// (`forces()`'s own law): it changes every turn, so there is no one
+/// value to bind.
+///
+/// NO REWRITE: the fix guards once and reads the bare name at every
+/// later force — a judgement call about WHERE to guard (the
+/// declaration itself, an early exit right after it, or the first
+/// read) that this pattern's one bound local cannot make on its own.
+@keeps("fn f() {\n    let held = get()\n    take(held!)\n}")
+@keeps("fn f() {\n    mut held = get()\n    use(held!)\n    use(held!)\n    use(held!)\n}")
+export rule repeated_unwrap { quote { ${lit} } if lit.is_repeatedly_forced() -> repeated_unwrap_found(lit) }
+
+fn repeated_unwrap_found(lit: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "forced open three or more times in its own declaration — guard once, bind once, and read the name",
+                "this local",
+                null,
+            ),
+        )
+}

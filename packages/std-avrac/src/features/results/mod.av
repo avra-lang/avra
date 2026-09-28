@@ -10,7 +10,7 @@
 //! rides the ladder's loosest layer and whose meaning lives here,
 //! in check.av and lower.av.
 use features.{LanguageFeature, BuilderRow, TypeRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn results() -> LanguageFeature {
@@ -19,23 +19,21 @@ export fn results() -> LanguageFeature {
         "fail_stmt" | build_fail
     }
     let codes = table<DiagCode> {
-        kind          | id      | summary
-        "type.fail"   | "F2028" | "`fail` raises on a Result fn's failure channel"
-        "type.catch"  | "F2029" | "`catch` recovers a Result, arm by arm"
+        kind         | summary
+        "type.fail"  | "`fail` raises on a Result fn's failure channel"
+        "type.catch" | "`catch` recovers a Result, arm by arm"
     }
     let types = table<TypeRow> {
-        name     | arity | slots | judge  | builds    | variants
+        name     | arity | slots | judge   | builds    | variants
         "Result" | 2     | false | res_law | res_shape | res_variants
     }
-    component LanguageFeature f {
-        name = "results"
-        docs = "`Result<T, E>` answers or fails; `fail e` raises, a bare success wraps itself, `?` passes the failure on, `catch` recovers (a value, a bind, or arms — total or selective), and `match` asks `.Ok`/`.Err`."
-        gram = grammar {
+    LanguageFeature results {
+        gram: grammar {
             stmt = "fail" v:expression END @recover(sync_to: "END") -> fail_stmt(v)
         }
-        diags = codes
-        builders = rows
-        types = types
+        diags: codes
+        builders: rows
+        types: types
     }
-    f
+    results
 }

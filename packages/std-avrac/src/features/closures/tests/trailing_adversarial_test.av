@@ -37,33 +37,57 @@ spec "features/closures/trailing — the red team" {
             shown(under("[1, 2].map { it }[1]")) == "2"
         }
         then "a name before an empty brace pair is a record literal, and the remedy names the call" {
-            refused_with(under("noop { }"), "a call taking an empty block writes its parentheses: `noop() { }`")
+            refused_with(
+                under("noop { }"),
+                "a call taking an empty block writes its parentheses: `noop() { }`",
+            )
         }
     }
     given "wrong types in every slot" {
         then "a block answering the wrong type names the seat's fn type" {
-            refused_with(under("apply(1) { x -> \"s\" }"), "the trailing block fills seat 2 of `apply`, which takes `fn(int) -> int`, and the block is `fn(int) -> string`")
+            refused_with(
+                under("apply(1) { x -> \"s\" }"),
+                "the trailing block fills seat 2 of `apply`, which takes `fn(int) -> int`, and the block is `fn(int) -> string`",
+            )
         }
         then "too many seats misfit" {
-            refused_with(under("apply(1) { x, y -> x }"), "this lambda does not fit its seat, `fn(int) -> int`")
+            refused_with(
+                under("apply(1) { x, y -> x }"),
+                "this lambda does not fit its seat, `fn(int) -> int`",
+            )
         }
         then "a list seat refuses the block" {
-            refused_with("fn lst(xs: List<int>) -> int { xs.length }\nlst { 1 }", "the trailing block fills seat 1 of `lst`, which takes `List<int>`")
+            refused_with(
+                "fn lst(xs: List<int>) -> int { xs.length }\nlst { 1 }",
+                "the trailing block fills seat 1 of `lst`, which takes `List<int>`",
+            )
         }
         then "a record seat refuses the block" {
-            refused_with("type P = { x: int }\nfn pt(p: P) -> int { p.x }\npt { 1 }", "the trailing block fills seat 1 of `pt`, which takes `P`")
+            refused_with(
+                "type P = { x: int }\nfn pt(p: P) -> int { p.x }\npt { 1 }",
+                "the trailing block fills seat 1 of `pt`, which takes `P`",
+            )
         }
         then "an enum seat refuses the block" {
-            refused_with("enum E { A B }\nfn en(e: E) -> int { 1 }\nen { 1 }", "the trailing block fills seat 1 of `en`, which takes `E`")
+            refused_with(
+                "enum E { A B }\nfn en(e: E) -> int { 1 }\nen { 1 }",
+                "the trailing block fills seat 1 of `en`, which takes `E`",
+            )
         }
         then "a fn seat in the MIDDLE is not the last argument" {
-            refused_with("fn two(a: int, b: fn() -> int, c: int) -> int { b() + a + c }\ntwo(1) { 2 }", "`two` takes 3 arguments, and the parentheses give 1")
+            refused_with(
+                "fn two(a: int, b: fn() -> int, c: int) -> int { b() + a + c }\ntwo(1) { 2 }",
+                "`two` takes 3 arguments, and the parentheses give 1",
+            )
         }
         then "a local that holds no fn is not callable with a block" {
             refused_with(under("let v = 3\nv { 1 }"), "`v` is not callable — it holds a `int`")
         }
         then "`it` in a block for a seatless fn slot speaks the pronoun's words" {
-            refused_with(under("run { it }"), "the body reads `it`, so the block takes one seat — this slot is `fn() -> int`, which hands it none")
+            refused_with(
+                under("run { it }"),
+                "the body reads `it`, so the block takes one seat — this slot is `fn() -> int`, which hands it none",
+            )
         }
         then "an annotated seat does not parse — the slot types a block's seats" {
             refusals(under("apply(1) { x: int -> x }")) == 2
@@ -74,16 +98,19 @@ spec "features/closures/trailing — the red team" {
     }
     given "malformed surface, position by position" {
         then "an unclosed block is named" {
-            refusals(under("run { 1")) == 2
+            refusals(under("run { 1")) == 1
         }
         then "an arrow with no seat before it" {
-            refusals(under("apply(1) { -> 1 }")) == 2
+            refusals(under("apply(1) { -> 1 }")) == 1
         }
         then "`else` with no block" {
             refused_with(under("pick(true) { 1 } else"), "expected BREAK")
         }
         then "a second bare block is refused in its own words" {
-            refused_with(under("pick(true) { 1 } { 2 }"), "a second trailing block follows the first")
+            refused_with(
+                under("pick(true) { 1 } { 2 }"),
+                "a second trailing block follows the first",
+            )
         }
         then "a stray closing brace" {
             refused_with(under("apply(1) { x -> x }}"), "expected EOF")
@@ -106,19 +133,33 @@ spec "features/closures/trailing — the red team" {
             shown(under("\"v=\${run { 6 }}\"")) == "v=6"
         }
         then "recursion through a block" {
-            shown(under("fn deep(n: int) -> int { if n == 0 { 0 } else { run { deep(n - 1) + 1 } } }\ndeep(5)")) == "5"
+            shown(
+                under(
+                    "fn deep(n: int) -> int { if n == 0 { 0 } else { run { deep(n - 1) + 1 } } }\ndeep(5)",
+                ),
+            ) == "5"
         }
         then "a block inside a block reads both seats" {
-            shown(under("fn pair(f: fn(int, int) -> int) -> int { f(3, 4) }\npair { a, b -> apply(a) { x -> x * b } }")) == "12"
+            shown(
+                under(
+                    "fn pair(f: fn(int, int) -> int) -> int { f(3, 4) }\npair { a, b -> apply(a) { x -> x * b } }",
+                ),
+            ) == "12"
         }
         then "chained through the ladder" {
             shown(under("run { 1 } + run { 2 } * run { 3 }")) == "7"
         }
         then "`return` inside a block answers no fn" {
-            refused_with(under("fn body() -> int { run { return 1 } }\nbody()"), "a `return` answers a fn, and there is none enclosing")
+            refused_with(
+                under("fn body() -> int { run { return 1 } }\nbody()"),
+                "a `return` answers a fn, and there is none enclosing",
+            )
         }
         then "`fail` inside a block raises to no caller" {
-            refused_with("fn res(f: fn() -> Result<int, string>) -> Result<int, string> { f() }\nfn body() -> Result<int, string> { res { fail \"no\" } }\nbody()", "a `fail` raises to a caller, and there is none enclosing")
+            refused_with(
+                "fn res(f: fn() -> Result<int, string>) -> Result<int, string> { f() }\nfn body() -> Result<int, string> { res { fail \"no\" } }\nbody()",
+                "a `fail` raises to a caller, and there is none enclosing",
+            )
         }
         then "a head with a block is refused, and reads as the head's brace" {
             refusals(under("mut t = 0\nfor v in [1, 2].map { it * 2 } { t = t + v }\nt")) == 1
@@ -144,7 +185,9 @@ spec "features/closures/trailing — the red team" {
             refused_with(under("both(1, 2) { x, x -> x }"), "`x` names two of this lambda's seats")
         }
         then "`self` is not a seat name" {
-            refusals("type C = { n: int }\nimpl C {\n    fn go(f: fn(int) -> int) -> int { f(self.n) }\n    fn use_self() -> int { self.go { self -> self } }\n}\nC { n: 3 }.use_self()") == 2
+            refusals(
+                "type C = { n: int }\nimpl C {\n    fn go(f: fn(int) -> int) -> int { f(self.n) }\n    fn use_self() -> int { self.go { self -> self } }\n}\nC { n: 3 }.use_self()",
+            ) == 2
         }
         then "nested blocks each claim their own `it`" {
             shown(under("[[1], [2, 3]].map { it.map { it * 2 }.length }[1]")) == "2"
@@ -155,16 +198,29 @@ spec "features/closures/trailing — the red team" {
             shown(under("let s = \"held\"\ntext { s }")) == "held"
         }
         then "a block called twice builds text twice and the capture survives" {
-            shown(under("fn twice(f: fn() -> string) -> string { \"\${f()}\${f()}\" }\nlet s = \"ab\"\ntwice { \"\${s}-\" }")) == "ab-ab-"
+            shown(
+                under(
+                    "fn twice(f: fn() -> string) -> string { \"\${f()}\${f()}\" }\nlet s = \"ab\"\ntwice { \"\${s}-\" }",
+                ),
+            ) == "ab-ab-"
         }
         then "a `mut` seat of a list is written through" {
-            shown("fn grow(mut xs: List<string>, f: fn(mut List<string>) -> int) -> int { f(xs) }\nmut xs = [\"a\"]\ngrow(xs) { xs -> xs.push(\"b\")\n    xs.length }\n\"\${xs.length} \${xs[1]}\"") == "2 b"
+            shown(
+                "fn grow(mut xs: List<string>, f: fn(mut List<string>) -> int) -> int { f(xs) }\nmut xs = [\"a\"]\ngrow(xs) { xs -> xs.push(\"b\")\n    xs.length }\n\"\${xs.length} \${xs[1]}\"",
+            ) == "2 b"
         }
         then "a record's list is written through a `mut` seat" {
-            shown("type B = { xs: List<string> }\nfn fill(mut b: B, f: fn(mut B)) -> int { f(b)\n    b.xs.length }\nmut b = B { xs: [] }\nlet n = fill(b) { b -> b.xs.push(\"s\") }\n\"\${n} \${b.xs.length}\"") == "1 1"
+            shown(
+                "type B = { xs: List<string> }\nfn fill(mut b: B, f: fn(mut B)) -> int { f(b)\n    b.xs.length }\nmut b = B { xs: [] }\nlet n = fill(b) { b -> b.xs.push(\"s\") }\n\"\${n} \${b.xs.length}\"",
+            ) == "1 1"
         }
         then "a write through a CAPTURE is refused once, and the seat does not repeat it" {
-            refused_with(under("mut log: List<string> = []\nfn each(f: fn(string)) -> int { f(\"x\")\n    2 }\neach { s -> log.push(s) }\nlog.length"), "`log` is not `mut` — `push` mutates it")
+            refused_with(
+                under(
+                    "mut log: List<string> = []\nfn each(f: fn(string)) -> int { f(\"x\")\n    2 }\neach { s -> log.push(s) }\nlog.length",
+                ),
+                "`log` is not `mut` — `push` mutates it",
+            )
         }
         then "text nests through two thunks" {
             shown(under("let s = \"outer\"\ntext { text { s } }")) == "outer"

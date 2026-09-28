@@ -14,20 +14,85 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
+use core.{
+    Table,
+    new_table,
+    list_cell,
+    NodeStore,
+    StmtId,
+    same_decl,
+    module_path,
+    DeclId,
+    FileId,
+    ModuleId,
+    UseParts,
+    ExprId,
+    fp,
+    fp_list,
+    fp_str,
+    joined,
+    flatten,
+    sorted_texts,
+    distinct,
+    TypeId,
+    Type,
+    some_list,
+    same_file,
+    touch,
+    Annotation,
+    DeclKind,
+}
 use @std.path.{dir_of, joined_path}
-use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockGrammar}
+use features.components.{word_of, instanced, named_instances}
+use features.{
+    Unsettled,
+    Settled,
+    Settlement,
+    TypeCx,
+    Decls,
+    new_decls,
+    scalar_types,
+    kind_word,
+    Decl,
+    Namespace,
+    Import,
+    ModuleNames,
+    Clash,
+    NameFacts,
+    new_name_facts,
+    TypeFacts,
+    new_type_facts,
+    DeclSig,
+    Wanted,
+    nothing,
+    Lifted,
+    SeatValue,
+    Elsewhere,
+    SettleRoot,
+    BlockWords,
+}
 use @std.meta.{Diagnostic}
 use core.{StmtId}
-use diagnostics.{SourceFile, new_source_file, Diag, Voices, error_at, render_among, refusal, by_position, has_errors, is_error}
-use query.{Db, new_db, Key, Memo, new_memo}
+use diagnostics.{
+    SourceFile,
+    new_source_file,
+    Diag,
+    Voices,
+    error_at,
+    render_among,
+    refusal,
+    by_position,
+    has_errors,
+    is_error,
+}
+use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
-use compiler.store.{Store}
+use compiler.store.{Store, Pack}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
-use compiler.format.{render_source_of}
+use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 
 /// No paths, typed — a Cell's first value says what it holds.
@@ -35,7 +100,6 @@ fn no_paths() -> List<string> { [] }
 
 /// The host's environment — what a `${NAME}` hole in a link row fills from.
 extern fn avra_host_env(name: string) -> string
-
 
 /// Method clashes grouped in one pass, then read by the losing file.
 /// A new revision or declaration invalidates the grouping.
@@ -45,19 +109,27 @@ type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag
 type ExternNames = { decls: int, names: List<string> }
 
 /// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
-/// file's object key and text digest (record.av's key derivations), the
-/// tree's stamps and where this compiler's store stands (build.av). Cleared
-/// piecemeal by `keep_interfaces`: `object_keys` every record write, the rest
-/// only when a record's SEEN part (its interface or imports) moved.
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, stamped: Cell<Map<string, string>>, stamps_at: Cell<int>, store_root: Cell<string> }
+/// file's object key and text digest (record.av's key derivations), where
+/// this compiler's store stands and this compiler's own print (build.av —
+/// `compiler_id` is never cleared: the running binary cannot move
+/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys`
+/// every record write, the rest only when a record's SEEN part (its
+/// interface or imports) moved.
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
     let no_view: Map<string, string> = {}
     let no_object: Map<string, string> = {}
     let no_digests: Map<string, string> = {}
-    let no_stamps: Map<string, string> = {}
-    Keys { bytes_keys: Cell.new(no_bytes), view_keys: Cell.new(no_view), object_keys: Cell.new(no_object), text_digests: Cell.new(no_digests), stamped: Cell.new(no_stamps), stamps_at: Cell.new(0), store_root: Cell.new("") }
+    Keys {
+        bytes_keys: Cell.new(no_bytes),
+        view_keys: Cell.new(no_view),
+        object_keys: Cell.new(no_object),
+        text_digests: Cell.new(no_digests),
+        store_root: Cell.new(""),
+        compiler_id: Cell.new(""),
+    }
 }
 
 /// WHAT IS HELD THIS BUILD: the files a build must parse (`homes` — a home
@@ -69,13 +141,20 @@ fn new_keys() -> Keys {
 /// (`runs`); the files whose runs are being lowered, innermost last
 /// (`settling`); the files a hold was asked for, and the files a file
 /// that WILL be read ran bodies of the last time it was (`hold_asked`,
-/// `read_with`); the files a record knows that are read all the same,
+/// `read_with`), each of THOSE seeding paths carrying its own WHY
+/// alongside (`read_seeds`), so a candidate excluded straight from
+/// the seed is not read silently; the files a
+/// record knows that are read all the same,
 /// each with why (`read_files`); the held modules minted so far, by name
 /// (`minted`); the files whose declarations stand, read or minted
 /// (`file_ready`); whether the holds are settled, before which no file's
 /// standing is known (`holds_settled`); where every impl and trait of a
-/// name lives, since a method table wants them all (`named_in`); and the
-/// records a held file's line declared FLAT (`held_flat`).
+/// name lives, since a method table wants them all (`named_in`); the
+/// records a held file's line declared FLAT (`held_flat`); and the
+/// declarations whose OWN row has been filled from the record, by
+/// DeclId — a module mints every identity at once, but fills each
+/// row on the ask that names it, so a row that names another still
+/// unfilled in the same module can fill it first (`row_filled`).
 type Hold = {
     homes: Cell<Map<string, bool>>,
     held_wants: Cell<List<Wanted>>,
@@ -84,9 +163,11 @@ type Hold = {
     settling: Cell<List<string>>,
     hold_asked: Cell<List<string>>,
     read_with: Cell<List<string>>,
+    read_seeds: Cell<List<ReadFile>>,
     read_files: Cell<List<ReadFile>>,
     minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
+    row_filled: Table<bool>,
     holds_settled: Cell<bool>,
     named_in: Cell<Map<string, List<string>>>,
     held_flat: Cell<List<TypeId>>,
@@ -97,14 +178,27 @@ fn new_hold() -> Hold {
     let no_wants: List<Wanted> = []
     let no_runs: Map<string, List<string>> = {}
     let no_reads: List<string> = []
+    let no_seeds: List<ReadFile> = []
     let no_read_files: List<ReadFile> = []
     let no_minted: Map<string, bool> = {}
     let no_named_in: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
     Hold {
-        homes: Cell.new(no_homes), held_wants: Cell.new(no_wants), body_asks: Cell.new(no_paths()), runs: Cell.new(no_runs), settling: Cell.new(no_paths()),
-        hold_asked: Cell.new(no_paths()), read_with: Cell.new(no_reads), read_files: Cell.new(no_read_files), minted: Cell.new(no_minted), file_ready: new_table<bool>(), holds_settled: Cell.new(false),
-        named_in: Cell.new(no_named_in), held_flat: Cell.new(no_flat),
+        homes: Cell.new(no_homes),
+        held_wants: Cell.new(no_wants),
+        body_asks: Cell.new(no_paths()),
+        runs: Cell.new(no_runs),
+        settling: Cell.new(no_paths()),
+        hold_asked: Cell.new(no_paths()),
+        read_with: Cell.new(no_reads),
+        read_seeds: Cell.new(no_seeds),
+        read_files: Cell.new(no_read_files),
+        minted: Cell.new(no_minted),
+        file_ready: new_table<bool>(),
+        row_filled: new_table<bool>(),
+        holds_settled: Cell.new(false),
+        named_in: Cell.new(no_named_in),
+        held_flat: Cell.new(no_flat),
     }
 }
 
@@ -119,6 +213,11 @@ type Records = {
     record_lines: Cell<Map<string, List<string>>>,
     record_fields: Cell<Map<string, List<List<string>>>>,
     record_places: Cell<Map<string, Map<string, Placed>>>,
+    /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
+    /// `grammar` token at all — `module_names_syntax`'s cold-path
+    /// pre-filter, asked once per file per build no matter how many
+    /// `use` lines reach for the module it stands in.
+    grammar_scanned: Cell<Map<string, bool>>,
 }
 
 fn new_records() -> Records {
@@ -127,12 +226,20 @@ fn new_records() -> Records {
     let no_lines: Map<string, List<string>> = {}
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
-    Records { loaded_records: Cell.new(no_loaded), record_texts: Cell.new(no_texts), record_lines: Cell.new(no_lines), record_fields: Cell.new(no_fields), record_places: Cell.new(no_places) }
+    let no_scanned: Map<string, bool> = {}
+    Records {
+        loaded_records: Cell.new(no_loaded),
+        record_texts: Cell.new(no_texts),
+        record_lines: Cell.new(no_lines),
+        record_fields: Cell.new(no_fields),
+        record_places: Cell.new(no_places),
+        grammar_scanned: Cell.new(no_scanned),
+    }
 }
 
-/// The families' value tables, sparse by their keys and grown as
-/// values are placed; `sigs` and `methods` live in the declaration
-/// table itself.
+/// Every dense family's value table now lives on `Db.families`, one
+/// slot per family ordinal (`Workspace.relation`, below); `sigs` and
+/// `methods` live in the declaration table itself.
 export type Workspace = {
     host: Host,
     root: string,
@@ -142,36 +249,30 @@ export type Workspace = {
     /// THE ARTIFACT STORE, when a BUILD attached one. A unit's edges are persisted so a
     /// held unit can contribute them without a body; outside a build there is none and
     /// lowering runs whole, as before.
-    store: Store?,
-    // ONE RUN'S VIEW of each file and each manifest: read,
-    // fingerprinted and indexed once. A host that changes under a
-    // running workspace (Era IV's live editing) invalidates these
-    // with the revision; today no host does.
-    sources: Memo<SourceFile>,
-    manifests: Memo<Manifest>,
+    store: Cell<Store?>,
+    /// THE PACKAGE'S DURABLE WITNESS PACK, when a caller opened one
+    /// (`Workspace.attach_pack`, compiler/witness.av). Absent by
+    /// default, exactly as `store` is: nothing durable is asked for
+    /// unless something asks.
+    pack: Cell<Pack?>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
-    programs: Memo<Parsed>,
-    plain: Memo<Parsed>,
-    file_items: Memo<List<DeclId>>,
-    module_names: Memo<ModuleNames>,
-    visibles: Memo<Namespace>,
-    name_facts: Memo<NameFacts>,
     sig_voices: Table<Voices>,
-    decl_facts: Memo<TypeFacts>,
-    const_type_facts: Memo<TypeId>,
     method_clashes: Table<List<Clash>>,
     method_diags: Cell<List<MethodDiagIndex>>,
-    folds: Memo<TypeFacts>,
-    analyses: Memo<Analysis>,
+    /// each file's clash diagnostics as `Family.MethodDiags` last settled them
+    method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
-    units: Memo<Unit>,
+    /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
+    /// than scanning the whole table on every ask.
+    asks_index: Cell<Map<string, int>>,
     lift_asks: Cell<List<LiftAsk>>,
-    lift_results: Memo<LiftResult>,
-    generated: Memo<List<DeclId>>,
+    /// `lift_asks`' own name -> index (`lifted`'s interning).
+    lift_asks_index: Cell<Map<string, int>>,
     settle_asks: Cell<List<SettleAsk>>,
-    settlements: Memo<Settlement>,
+    /// `settle_asks`' own name -> index (`settle_id`'s interning).
+    settle_asks_index: Cell<Map<string, int>>,
     /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
     records: Records,
     /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
@@ -190,15 +291,24 @@ export type Workspace = {
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
     defects: Cell<List<Diag>>,
-    packages: List<Package>,
-    package_voices: List<Diag>,
+    package_rows: Cell<List<Package>>,
+    package_voices: Cell<List<Diag>>,
     lone: bool,
     // a directory of programs: every file its own module
     per_file: bool,
     // one-shot, its captures ended: nothing it hands out is kept
-    closed: bool,
+    closed: Cell<bool>,
     clock: fn() -> int,
-    phases: List<Phase>,
+    phases: Cell<List<Phase>>,
+    /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
+    /// appended by `fail_summary` (failures.av) — the plain table
+    /// `@relation` will replace once M5 lands; the accessors built on
+    /// it (`raised_by`, `error_sites_by_callee`, `error_sites_within`)
+    /// keep their names across that swap.
+    error_sites: Cell<List<ErrorSite>>,
+    /// M6 PREP: the whole-program raised-error fixpoint, over
+    /// `error_sites` — `raised_by`'s own table.
+    raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -211,10 +321,7 @@ type SettleAsk = { file: FileId, root: SettleRoot, name: string, seats: List<Sea
 
 /// The const a settlement is for — none for an expression's.
 fn const_stmt(root: SettleRoot) -> StmtId? {
-    match root {
-        .Const(s) -> s,
-        .Expr(_) -> null,
-    }
+    match root { .Const(s) -> s, .Expr(_) -> null }
 }
 
 fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
@@ -230,17 +337,11 @@ fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -
 enum LiftResult { Crossed(Lifted), Refused(Unsettled) }
 
 fn reused_lift(held: LiftResult) -> Result<Lifted, Unsettled> {
-    match held {
-        .Crossed(crossed) -> .Ok(crossed),
-        .Refused(_) -> .Err(Unsettled.Spoken),
-    }
+    match held { .Crossed(crossed) -> .Ok(crossed), .Refused(_) -> .Err(Unsettled.Spoken) }
 }
 
 fn reused_settlement(held: Settlement) -> Result<Settled, Unsettled> {
-    match held {
-        .Held(value) -> .Ok(value),
-        .Refused(_) -> .Err(Unsettled.Spoken),
-    }
+    match held { .Held(value) -> .Ok(value), .Refused(_) -> .Err(Unsettled.Spoken) }
 }
 
 /// One package of the workspace: its key (the manifest's name; ""
@@ -275,10 +376,24 @@ impl Marks {
     }
 }
 
+/// EVERY NAME ONCE, SUMMED — the one grouping every `--time` report
+/// wants: a coarse phase pushed once reads unchanged, a per-file span
+/// pushed hundreds of times folds to its total instead of flooding
+/// the line with one entry per file.
+export fn grouped_phases(phases: List<Phase>) -> List<Phase> {
+    [Phase { name: n, ns: phase_total(phases, n) } for n in distinct([p.name for p in phases])]
+}
+
+export fn phase_total(phases: List<Phase>, name: string) -> int {
+    mut total = 0
+    for p in phases { if p.name == name { total = total + p.ns } }
+    total
+}
+
 /// THE FAMILIES — the compiler's query vocabulary, in pipeline
 /// order. Keys by FileId (`Source` … `Resolved`, `Folded`,
 /// `Analysis`), ModuleId (`Namespace`), DeclId (`Sig`, `Methods`,
-/// `Typed`), unit (`Lowered`) or annotation call (`Lifted`). `ordinal` is the kernel's number
+/// `Typed`), unit (`Lowered`, `LiftLowered`) or annotation call (`Lifted`). `ordinal` is the kernel's number
 /// for each; `refetched` re-asks any of them — both exhaustive, so
 /// a new family cannot ship half-registered.
 enum Family {
@@ -300,9 +415,41 @@ enum Family {
     Manifest
     Receivers
     Expanded
+    /// A compile-time run's own units — a lift, an argument crossing,
+    /// a const's settlement — keyed the same way as `Lowered` but in
+    /// a SEPARATE space: the two never share a cache row, so a
+    /// symbol reached by both a comptime run and the real program
+    /// never has one context's answer stand in for the other's.
+    LiftLowered
     /// a file parsed under NO sublanguage words — what the block
     /// pre-scan reads of a provider, depending on its source alone
     Plain
+    /// THE REFERENCES RELATION — one key, the whole program: every
+    /// named use of a declaration, folded from every file's own rows
+    /// (compiler/references.av).
+    References
+    /// a `Result<T, _>`'s inferred error set — the whole-program
+    /// fixpoint, one key for the entire program
+    Failures
+    /// a held declaration's sig — its module's stored record, one key
+    /// per module, asked fresh every time `sig()` reads a held decl
+    HeldSig
+    /// M6 PREP: `Fixpoint<List<TypeId>>`'s own dense per-member space
+    /// for the whole-program raised-error fixpoint — one key per
+    /// `_`-declared fn, touched only from inside its own `solve`.
+    Raised
+    /// one file's method-table clashes — the whole type table's methods
+    /// asked in ITS bracket, so every file's `Analysis` depends on them
+    /// whichever file ran the scan first
+    MethodDiags
+}
+
+/// `Parsed`'s fingerprint over a `DbRow` value — the words a block
+/// import brings in are folded so a dependency's grammar appearing
+/// re-parses this file.
+fn parsed_fingerprint(s: DbRow) -> int {
+    let p = parsed_of(s)
+    fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))])
 }
 
 fn key(f: Family, arg: int) -> Key {
@@ -330,16 +477,127 @@ fn ordinal(f: Family) -> int {
         .Receivers -> 16,
         .Expanded -> 17,
         .Plain -> 18,
+        .References -> 19,
+        .Failures -> 20,
+        .HeldSig -> 21,
+        .Raised -> 22,
+        .MethodDiags -> 23,
+        .LiftLowered -> 24,
     }
 }
 
+/// `ordinal`'s other sibling: the variant's own word, for a voice that
+/// must name it — a reader recognizes `Family.Raised`, never `22`.
+fn family_word(f: Family) -> string {
+    match f {
+        .Source -> "Source",
+        .Parsed -> "Parsed",
+        .Items -> "Items",
+        .Namespace -> "Namespace",
+        .Visible -> "Visible",
+        .Resolved -> "Resolved",
+        .Sig -> "Sig",
+        .Methods -> "Methods",
+        .Typed -> "Typed",
+        .ConstTyped -> "ConstTyped",
+        .Folded -> "Folded",
+        .Analysis -> "Analysis",
+        .Settled -> "Settled",
+        .Lowered -> "Lowered",
+        .Lifted -> "Lifted",
+        .Manifest -> "Manifest",
+        .Receivers -> "Receivers",
+        .Expanded -> "Expanded",
+        .Plain -> "Plain",
+        .References -> "References",
+        .Failures -> "Failures",
+        .HeldSig -> "HeldSig",
+        .Raised -> "Raised",
+        .MethodDiags -> "MethodDiags",
+        .LiftLowered -> "LiftLowered",
+    }
+}
+
+/// `ordinal`'s own inverse, a MIRROR of it (same order, same numbers)
+/// so the two are one glance apart rather than one a hand-list forty
+/// lines away. `families()` derives its list from this, never from an
+/// independent literal: a REORDERED or DUPLICATED entry here fails
+/// the registration loop's own `!= ordinal(f)` check the moment it
+/// walks past it (`built`, below), the same check that already caught
+/// those two mistakes before this fix. What this canNOT catch: a
+/// variant added to `Family` and given an arm in `ordinal` (forced —
+/// `ordinal` is exhaustive over `Family`) but never given one here —
+/// nothing today enumerates `Family`'s own variant set to notice a gap
+/// that both hand matches share; that needs `collect enum` (N3,
+/// ROADMAP sugar backlog), not yet built. Until then, `family_count`
+/// below is the one number that must move with every new arm in BOTH
+/// this match and `ordinal`'s.
+fn family_at(i: int) -> Family {
+    match i {
+        0 -> Family.Source,
+        1 -> Family.Parsed,
+        2 -> Family.Items,
+        3 -> Family.Namespace,
+        4 -> Family.Visible,
+        5 -> Family.Resolved,
+        6 -> Family.Sig,
+        7 -> Family.Methods,
+        8 -> Family.Typed,
+        9 -> Family.ConstTyped,
+        10 -> Family.Folded,
+        11 -> Family.Analysis,
+        12 -> Family.Settled,
+        13 -> Family.Lowered,
+        14 -> Family.Lifted,
+        15 -> Family.Manifest,
+        16 -> Family.Receivers,
+        17 -> Family.Expanded,
+        18 -> Family.Plain,
+        19 -> Family.References,
+        20 -> Family.Failures,
+        21 -> Family.HeldSig,
+        22 -> Family.Raised,
+        23 -> Family.MethodDiags,
+        24 -> Family.LiftLowered,
+        other -> {
+            avra_trap(
+                "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
+            )
+            Family.Source
+        },
+    }
+}
+
+/// How many ordinals `family_at` answers — the domain `families()`
+/// walks. Bump it in the SAME edit that adds an arm to `family_at`
+/// and to `ordinal`; nothing below can notice the day only this
+/// number moves alone, or only stays still alone.
+const family_count: int = 25
+
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
-    let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
-                             Family.Sig, Family.Methods, Family.Typed, Family.ConstTyped, Family.Folded, Family.Analysis, Family.Settled, Family.Lowered, Family.Lifted, Family.Manifest,
-                             Family.Receivers, Family.Expanded, Family.Plain]
-    all
+    [family_at(i) for i in 0..family_count]
 }
+
+// ── Voices ──
+
+/// THE LAW: every registered family has a slot in `Db.families`,
+/// addressed by `ordinal`. A `Family` whose ordinal reaches past
+/// `family_count` has no slot — `family_at` (and `family_count`) were
+/// not extended the day the variant was added to `Family` and to
+/// `ordinal`. States the fix, not just the symptom, because a bare
+/// index trap would say "217 is out of bounds" and send the reader
+/// looking at `Db.families` instead of here.
+fn family_gap_voice(fam: Family, i: int) -> string {
+    "defect: Family.${family_word(fam)} has ordinal ${i} but family_count is ${family_count} — add it to family_at and family_count (compiler/workspace.av)"
+}
+
+/// TEST-ONLY DOOR: every real `Family` today has a legitimate ordinal,
+/// so nothing in ordinary use can trip `relation`'s guard — this pins
+/// the exact words it would speak if one ever didn't, without
+/// exporting `Family` itself. The 99 is fabricated; `Family.Raised`'s
+/// real ordinal is 22.
+export fn family_gap_probe() -> string { family_gap_voice(Family.Raised, 99) }
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
     timed_workspace(host, root, lang, () -> 0)
@@ -368,7 +626,7 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
 
 /// The declaration table with the language's own declarations in it.
 fn language_decls(lang: Language) -> Decls {
-    mut decls = new_decls() with { rows: lang.rows.types }
+    let decls = new_decls() with { rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -381,78 +639,156 @@ impl Workspace {
     /// so a restart from a copy keeps every hold and a changed copy is asked through
     /// hooks that still answer for the original.
     fn anew() -> Workspace {
-        built(self.host, self.root, self.packages.find(it.origin is .Root)?.src ?? self.root, self.lang, self.clock, self.lone, self.per_file)
+        built(
+            self.host,
+            self.root,
+            self.packages().find(it.origin is .Root)?.src ?? self.root,
+            self.lang,
+            self.clock,
+            self.lone,
+            self.per_file,
+        )
     }
 }
 
-fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool, per_file: bool) -> Workspace {
-    let db = new_db()
+fn built(
+    host: Host,
+    root: string,
+    src: string,
+    lang: Language,
+    clock: fn() -> int,
+    lone: bool,
+    per_file: bool,
+) -> Workspace {
+    let kernel = new_kernel()
     let no_asks: List<Wanted> = []
+    let no_asks_index: Map<string, int> = {}
     let no_lifts: List<LiftAsk> = []
+    let no_lift_index: Map<string, int> = {}
     let no_settles: List<SettleAsk> = []
+    let no_settle_index: Map<string, int> = {}
     let no_method_diags: List<MethodDiagIndex> = []
     let no_module_names_of: Map<string, string> = {}
     let no_files_of: Map<string, List<string>> = {}
     let no_surfaces: Map<string, Map<string, DeclId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
-    // NOT `mut`: the hook closures armed below (`ws.decls.arm(...)`,
-    // the family loop) capture this same workspace box, so every
-    // later writing call here — `load_packages` included — must
-    // write through it, never into a private copy the hooks cannot see.
+    let no_store: Store? = null
+    let no_pack: Pack? = null
+    // ONE IDENTITY: every table is a Cell, so the hook closures armed
+    // below (`ws.decls.arm(...)`, the family loop) and every holder of
+    // this workspace write the same tables.
     let ws = Workspace {
-        host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: null,
-        sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: new_table<ExternNames>(),
-        programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
-        plain: new_memo<Parsed>(db, ordinal(Family.Plain)),
-        file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
-        module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
-        visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
-        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table<Voices>(),
-        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table<List<Clash>>(), method_diags: Cell.new(no_method_diags),
-        folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
-        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), asks: Cell.new(no_asks),
-        lift_asks: Cell.new(no_lifts), lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
-        generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_asks: Cell.new(no_settles), settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: Cell.new(no_module_names_of), files_of: Cell.new(no_files_of), surfaces: Cell.new(no_surfaces), import_lists: Cell.new(no_import_lists), hold: new_hold(), defects: Cell.new(no_defects),
-        packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [],
+        host: host,
+        root: root,
+        lang: lang,
+        db: new_db(kernel),
+        decls: language_decls(lang),
+        store: Cell.new(no_store),
+        pack: Cell.new(no_pack),
+        externs: new_table<ExternNames>(),
+        sig_voices: new_table<Voices>(),
+        method_clashes: new_table<List<Clash>>(),
+        method_diags: Cell.new(no_method_diags),
+        method_diag_rows: new_table<List<Diag>>(),
+        asks: Cell.new(no_asks),
+        asks_index: Cell.new(no_asks_index),
+        lift_asks: Cell.new(no_lifts),
+        lift_asks_index: Cell.new(no_lift_index),
+        settle_asks: Cell.new(no_settles),
+        settle_asks_index: Cell.new(no_settle_index),
+        records: new_records(),
+        keys: new_keys(),
+        module_names_of: Cell.new(no_module_names_of),
+        files_of: Cell.new(no_files_of),
+        surfaces: Cell.new(no_surfaces),
+        import_lists: Cell.new(no_import_lists),
+        hold: new_hold(),
+        defects: Cell.new(no_defects),
+        package_rows: list_cell(),
+        package_voices: list_cell(),
+        lone: lone,
+        per_file: per_file,
+        closed: Cell.new(false),
+        clock: clock,
+        phases: list_cell(),
+        error_sites: list_cell(),
+        raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
+    // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
+    // position `i` is `family_at(i)`, so a mismatch here means the two
+    // matches disagree about which family owns that ordinal — a
+    // transposed pair or a wrong number in either one, not only a
+    // registration-order bug.
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
+    ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
+    ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
+    ws.decls.arm_references(() -> ws.refs_ensured())
+    ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
-    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
+    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
+        d: DeclId,
+        f: FileId,
+        s: StmtId,
+        call: ExprId,
+        args: List<ExprId>,
+    ) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
+    ws.arm_audit()
     ws.load_packages(src)
     ws
 }
 
 impl Workspace {
+    /// A dense family's own value table, read off `Db.families` by
+    /// ordinal — one list index, never a name and never a scan. Every
+    /// call site that once held its own `Memo<DbRow>` field reaches its
+    /// family's table through this one door instead. Guarded, not a
+    /// bare index into `Db.families`: a gap between `ordinal` and
+    /// `family_at` (see `family_gap_voice`) must name the variant it
+    /// forgot, not report a number nobody can place.
+    fn relation(fam: Family) -> Relation<DbRow> {
+        let i = ordinal(fam)
+        if i >= family_count { avra_trap(family_gap_voice(fam, i)) }
+        self.db.relation(i)
+    }
+
     /// A ONE-SHOT WORKSPACE ENDS ITS OWN CYCLE: the families and the
     /// table's hooks capture `ws`, so `ws` could never die — 1674 spec
     /// cases kept 1674 workspaces, 922 MB. Once the analysis it was made
     /// for has run, nothing re-verifies (the revision never moves) and
     /// every sig it will ask for is held, so the captures go; the
     /// workspace then dies with its last holder.
-    mut fn disarmed() {
+    fn disarmed() {
         // An Analysis holds the program closure back to this workspace.
         // Evict its typed values and kernel cells as one operation.
-        self.analyses.evict()
+        self.relation(Family.Analysis).evict()
         self.db.disarm()
         self.decls.disarm()
-        self.closed = true
+        self.closed.set(true)
     }
 
     fn ensured(d: DeclId) {
         let _ = self.sig(d)
+    }
+
+    /// A held declaration's fact is its record's — filled on the ask
+    /// that names it, never before. `target_of` (an impl's target) is
+    /// the fact this hook exists for; a live declaration's sig fills
+    /// it the ordinary way, so only a held one needs the row forced.
+    fn target_ensured(d: DeclId) {
+        if self.is_held(self.decls.decl(d).file) { self.fill_ensured(d) }
     }
 
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
@@ -460,13 +796,30 @@ impl Workspace {
     fn file_ensured(f: FileId) {
         if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
         self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store != null { self.mint_module(self.store!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
+        if self.is_held(f) && self.store.get() != null {
+            self
+                .mint_module(
+                    self.store.get()!,
+                    module_path(segments_of(self.module_of(self.decls.file(f).path))),
+                )
+        }
+    }
+
+    /// Every source file of the package `f` stands in admitted — its
+    /// tests aside, a held file minted rather than parsed.
+    fn package_admitted(f: FileId) {
+        let path = self.decls.file(f).path
+        let pkg? = self.packages().find((k) -> path.starts_with("${k.src}/")) else { return }
+        for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p)] {
+            let g = self.file_id(p)
+            if self.is_held(g) { self.file_ensured(g) } else { let _ = self.items(g) }
+        }
     }
 
     /// Every held module that declares an impl or a trait of this name, minted.
     fn named_minted(name: string) {
-        if self.store == null { return }
-        for m in self.hold.named_in.get().get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
+        if self.store.get() == null { return }
+        for m in self.hold.named_in.get().get(name) ?? [] { self.mint_module(self.store.get()!, module_path(segments_of(m))) }
     }
 
     /// A held declaration may need syntax-only facts that were not part of
@@ -484,6 +837,18 @@ impl Workspace {
 
     fn writes_ensured() {
         let _ = self.receivers()
+    }
+
+    fn consumed_ensured(d: DeclId) {
+        let _ = self.computed_consumed(d)
+    }
+
+    fn refs_ensured() {
+        let _ = self.references()
+    }
+
+    fn failures_ensured() {
+        let _ = self.failures()
     }
 
     fn marks_ensured(d: DeclId) {
@@ -506,9 +871,11 @@ impl Workspace {
         let p = self.parsed(x.file)
         // A builtin or synthetic declaration has no statement record;
         // nothing annotates it, so there is nothing to keep.
-        if x.stmt.index >= p.store.annotations.length { return [] }
+        if x.stmt.index >= p.store.annotations.get().length { return [] }
         let vis = self.visible(x.file)
-        let out = flatten([self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)])
+        let out = flatten(
+            [self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)],
+        )
         self.decls.record_marks(d, out)
         out
     }
@@ -518,7 +885,7 @@ impl Workspace {
     fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Diagnostic> {
         let found? = self.named_arg(p, vis, a.callee) else { return [] }
         let callee = found
-        let s? = (self.decls.sig(callee))?.fn_sig() else { return [] }
+        let s? = self.decls.sig(callee)?.fn_sig() else { return [] }
         if s.params.is_empty() { return [] }
         let elem? = elem_of(self.decls.types, s.ret) else { return [] }
         if !self.decls.meta_type(elem, "Diagnostic") { return [] }
@@ -548,11 +915,17 @@ impl Workspace {
             .Analysis -> touch(self.analysis(file_at(arg))),
             .Settled -> touch(self.settled_at(arg)),
             .Lowered -> touch(self.lowered(arg)),
+            .LiftLowered -> touch(self.lift_lowered(arg)),
             .Lifted -> touch(self.lifted_at(arg)),
             .Manifest -> touch(self.manifest(arg)),
             .Receivers -> touch(self.receivers()),
             .Expanded -> touch(self.expanded(file_at(arg))),
             .Plain -> touch(self.plain_parsed(file_at(arg))),
+            .References -> touch(self.references()),
+            .Failures -> touch(self.failures()),
+            .HeldSig -> touch(self.held_sig(module_at(arg))),
+            .Raised -> touch(self.raised_by(decl_at_arg(arg))),
+            .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -571,7 +944,7 @@ impl Workspace {
     // ── The families ──
     /// A path's identity — the table mints it at first mention.
     fn file_id(path: string) -> FileId {
-        self.decls.file_id(path, self.module_of(path))
+        self.decls.file_id(path, self.module_of(path), self.is_test_path(path))
     }
 
     /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
@@ -597,17 +970,95 @@ impl Workspace {
     /// check yet.
     fn formatted_source(f: FileId) -> Result<string, string> {
         let parsed = self.parsed(f)
-        if !has_errors(parsed.voices.list) { return .Ok(render_source_of(parsed.store, parsed.stmts, self.source(f).text)) }
-        .Err(joined([render_among(d, self.lang.rows.codes, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
+        if !has_errors(parsed.voices.list) { return .Ok(self.clocked_print(parsed, f)) }
+        .Err(joined([render_among(d, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
+    }
+
+    fn clocked_print(parsed: Parsed, f: FileId) -> string {
+        let t0 = self.clock()
+        let text = render_source_of(parsed.store, parsed.stmts, self.source(f).text)
+        self.timed("print", self.clock() - t0)
+        text
+    }
+
+    /// `formatted_source`, gated for `--write`: the LOSSLESS RECEIPT
+    /// must hold — the same significant tokens, remarks and doc
+    /// groups the input carried, in order (compiler/format/
+    /// receipt.av) — OR the CANON receipt must (`canon_defect`,
+    /// below): the same MEANING, remarks and doc groups, tokens free
+    /// to move. Errs with the parse report OR with what the strict
+    /// receipt found moved (the canon door only widens what a
+    /// byte-identical rewrite already proves, so its own refusal
+    /// never reads as the primary reason); this fn writes nothing
+    /// itself, it only answers the safe text.
+    fn write_checked_source(f: FileId) -> Result<string, string> {
+        self.write_checked_from(f, self.formatted_source(f))
+    }
+
+    fn write_checked_from(f: FileId, formatted: Result<string, string>) -> Result<string, string> {
+        let text = formatted?
+        // THE RECEIPT COMPARES WHAT REACHES DISK, not `render_source_of`'s
+        // own return value: the CLI's write path (and `println`'s SAID
+        // path alike) appends the file's own trailing newline AFTER this
+        // fn answers, so a text ending in a Blank remark (a trailing
+        // blank line before EOF) needs that same newline here too, or
+        // the comparison lexes one fewer break than the disk file will
+        // ever have and reads the blank line as lost.
+        let disk = "${text}\n"
+        let bad? = lossless_defect(self.source(f).text, disk) else { return .Ok(text) }
+        let canon? = self.canon_defect(f, disk) else { return .Ok(text) }
+        .Err("avra fmt: refusing to write — ${bad} (canon: ${canon})")
+    }
+
+    /// `write_checked_source`'s SECOND door: a rewrite the strict
+    /// receipt refuses may still be safe when it is CANON, not
+    /// LOSSY — a trailing comma, a dropped redundant paren, the
+    /// `void` arrow, a `MatchOpt` arm's order all move tokens
+    /// without moving meaning. Safe here means every top-level
+    /// statement's `stmt_fingerprint` (core's, span-blind —
+    /// structural identity, never position) agrees in order and
+    /// count, AND the remarks and doc groups the strict receipt
+    /// already requires still hold whole — a parse error on either
+    /// side, or one mismatched fingerprint anywhere, refuses.
+    fn canon_defect(f: FileId, after: string) -> string? {
+        let rd = remarks_and_docs_defect(self.source(f).text, after)
+        if rd != null { return rd }
+        let before = self.parsed(f)
+        if has_errors(before.voices.list) { return "the source has parse errors" }
+        // THE SAME BLOCK WORDS `before` READ UNDER: `parse_program`'s
+        // own `words` parameter defaults to none, and a file that
+        // imports a component or a named grammar (every `rule`
+        // declaration in this very file is one) parses its own blocks
+        // as ordinary statements without them — a rewrite that moved
+        // not one byte of that block would still fail to reparse.
+        let words = self.block_words(f, before)
+        let reparsed = parse_program(
+            self.lang,
+            new_source_file(self.decls.file(f).path, after),
+            words,
+        )
+        if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
+        if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
+        for i, s in before.stmts {
+            if before.store.stmt_fingerprint(s) != reparsed.store.stmt_fingerprint(reparsed.stmts[i]) { return "statement ${i}'s meaning moved" }
+        }
+        null
     }
 
     /// An INPUT: the file's text, hashed; the revision moves only when
     /// the text did.
     fn source(f: FileId) -> SourceFile {
-        self.sources.input(f.index, () -> {
-            let path = self.decls.file(f).path
-            new_source_file(path, self.host.read(path))
-        }, (src: SourceFile) -> fp_str(src.text))
+        let staged = self
+            .relation(Family.Source)
+            .input(
+                f.index,
+                () -> {
+                    let path = self.decls.file(f).path
+                    DbRow.Source(new_source_file(path, self.host.read(path)))
+                },
+                (s: DbRow) -> fp_str(source_of(s).text),
+            )
+        source_of(staged)
     }
 
     /// The file parsed — pure in its text.
@@ -619,77 +1070,176 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        self.programs.demand(f.index,
-            () -> self.parsed_under_blocks(f),
-            (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
+        parsed_of(
+            self
+                .relation(Family.Parsed)
+                .demand(f.index, () -> DbRow.Parsed(self.parsed_under_blocks(f)), parsed_fingerprint),
+        )
     }
 
-    /// A file parsed under NO block words — its own words alone. The
-    /// block pre-scan reads a provider through this, so a file's parse
-    /// never depends on a provider's parse depending back on it (two
-    /// files importing each other were a memo cycle otherwise).
+    /// A file parsed under NO block words — its own words alone: the
+    /// first read of every file, and a provider's read inside a cycle
+    /// (two files importing each other's words), where its full parse
+    /// is the one in flight.
+    ///
+    /// TIMED UNDER "ast" (lex plus build — there is no seam between
+    /// them to split), wherever it is called from: a provider file's
+    /// plain parse, triggered from the sublang lookup's own fallback,
+    /// counts here too, so "sublang" is left holding only the
+    /// lookup's own overhead. NEVER "parse" — `analyze_all` already
+    /// owns that name for its own coarser span, over the SAME work;
+    /// sharing the name would sum a span and its own subset into one
+    /// double-counted total.
     fn plain_parsed(f: FileId) -> Parsed {
-        self.plain.demand(f.index,
-            () -> parse_program(self.lang, self.source(f), []),
-            (p: Parsed) -> program_hash(p))
+        plain_of(
+            self
+                .relation(Family.Plain)
+                .demand(
+                    f.index,
+                    () -> DbRow.Plain(self.clocked_parse(f)),
+                    (s: DbRow) -> program_hash(plain_of(s)),
+                ),
+        )
+    }
+
+    fn clocked_parse(f: FileId) -> Parsed {
+        let t0 = self.clock()
+        let p = parse_program(self.lang, self.source(f), BlockWords {})
+        self.timed("ast", self.clock() - t0)
+        p
     }
 
     fn parsed_under_blocks(f: FileId) -> Parsed {
         let first = self.plain_parsed(f)
-        let blocks = self.block_grammars(f, first)
-        if blocks.is_empty() { return first }
-        let p = parse_program(self.lang, self.source(f), blocks)
-        for r in p.store.foreign {
+        let t0 = self.clock()
+        let words = self.block_words(f, first)
+        self.timed("sublang", self.clock() - t0)
+        if words.is_empty() { return self.with_import_remedies(first, words) }
+        let t1 = self.clock()
+        let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
+        self.timed("ast", self.clock() - t1)
+        for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
-            if !same_file(origin, f) { self.decls.note_origins(f, [ExprId { index: i } for i in r.lo..r.hi], [], [], origin) }
+            if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
         }
         p
     }
 
-    /// The sublanguages a file's `use` lines bring in: each item that a
-    /// provider module declares as a named grammar, readied, under its
-    /// alias. A module's own grammars are not block words in its own
-    /// files.
-    fn block_grammars(f: FileId, p: Parsed) -> List<BlockGrammar> {
-        if self.lone { return [] }
-        let from = self.packages[self.holder_of_path(p.source.file)]
-        let own = self.decls.module_name(self.decls.file(f).module_id)
-        flatten([self.line_grammars(from, own, u) for u in use_lines(p)])
+    /// A parse that stops on a component nobody imported says where it
+    /// lives: the name the failure stands on, or the one just before
+    /// it, that a package in reach exports as a component.
+    fn with_import_remedies(p: Parsed, words: BlockWords) -> Parsed {
+        if p.voices.list.is_empty() { return p }
+        p with { voices: Voices { list: [self.import_remedy(p, d, words) for d in p.voices.list] } }
     }
 
-    /// One `use` line's sublanguages — none from a module that is not
-    /// reachable, ambiguous, absent, or the file's own. A provider is
-    /// read through its PLAIN parse: an exported named grammar whose
-    /// name the line imports.
-    fn line_grammars(from: Package, own: string, u: UseParts) -> List<BlockGrammar> {
-        let m = qualified(module_path(u.path), from)
-        if m.malformed() || m.text() == own { return [] }
-        if m.package() != null && !self.reaches(from, m.package()!) { return [] }
-        if self.ambiguous_module(m) || self.module_files(m).is_empty() { return [] }
-        // THE RECORD ANSWERS FIRST. A block word is a top-level `syntax` declaration
-        // (`readied_grammar`), and the interface already names every declaration's kind —
-        // so when the provider's record names no syntax the line takes, no provider file
-        // has to be read at all. Without this every `use` line parsed every file of its
-        // provider module to look for grammars, which is seconds of parse for a program
-        // that declares none. A record that is absent (a cold tree) answers `true`, and
-        // the parse below is the fallback.
-        if !module_names_syntax(self, m, u.items) { return [] }
-        let declared = flatten([self.plain_grammars(path) for path in self.module_files(m)])
-        mut blocks: List<BlockGrammar> = []
-        for j, item in u.items {
-            let alias = if j < u.aliases.length { u.aliases[j] } else { "" }
-            let found: BlockGrammar? = declared.find(it.word == item)
-            if found != null { blocks.push(found! with { word: if alias.is_empty() { item } else { alias } }) }
+    /// A refusal near a component word this file does NOT import names
+    /// the `use` that would bring it; an imported word's refusal is its own.
+    fn import_remedy(p: Parsed, d: Diag, words: BlockWords) -> Diag {
+        let at? = d.primary.loc else { return d }
+        if d.help != null { return d }
+        let near = names_near(p.source.text, at.lo)
+        let own = self.module_at(p.source.file)
+        let homes = flatten(
+            [some_list(self.component_home(w, own)) for w in near if !w.is_empty() && !words.components.any(it.word == w)],
+        )
+        let home? = homes.first() else { return d }
+        d with { help: import_it(home) }
+    }
+
+    /// Another module, in a package in reach, that exports a component
+    /// by this name — as `use` spells it with the word.
+    fn component_home(word: string, own: string) -> string? {
+        let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
+        let path? = paths
+            .find(
+                (path: string) -> self.module_at(path) != own &&
+                    self.provided_words(path).components.any(it.word == word),
+            ) else {
+            return null
         }
-        blocks
+        "${self.module_at(path)}.{${word}}"
     }
 
-    /// The exported named grammars a provider file declares, readied,
-    /// each under its own name; one whose notation does not parse is
-    /// left out (the library speaks).
-    fn plain_grammars(path: string) -> List<BlockGrammar> {
-        let p = self.plain_parsed(self.file_id(path))
-        flatten([some_list(readied_grammar(p, s, path)) for s in p.stmts if p.store.is_exported(s)])
+    /// A provider read as it parses — under its OWN block words, since a
+    /// provider that uses one (`within` in a server) fails its plain parse
+    /// whole and would export nothing. Its plain parse answers only
+    /// inside a cycle: two files importing each other's words.
+    fn provider_parsed(f: FileId) -> Parsed {
+        if self.db.active(self.relation(Family.Parsed).query_key(f.index)) { return self.plain_parsed(f) }
+        self.parsed(f)
+    }
+
+    /// The module a source path belongs to, by name.
+    fn module_at(path: string) -> string { self.decls.module_name(self.decls.file(self.file_id(path)).module_id) }
+
+    /// The block words a file's `use` lines bring in: each item a
+    /// provider module declares as a named grammar (readied) or as a
+    /// template component, under its alias. A module's own words are
+    /// not block words in its own files.
+    fn block_words(f: FileId, p: Parsed) -> BlockWords {
+        if self.lone { return BlockWords {} }
+        let from = self.packages()[self.holder_of_path(p.source.file)]
+        let own = self.decls.module_name(self.decls.file(f).module_id)
+        let lines = [self.line_words(from, own, u) for u in p.store.built_uses()]
+        let components = flatten([l.components for l in lines])
+        let local = if components.is_empty() { [] } else { named_instances(p.source.text, components) }
+        BlockWords {
+            grammars: flatten([l.grammars for l in lines]),
+            components: components,
+            instances: local.concat(flatten([l.instances for l in lines])),
+        }
+    }
+
+    /// One `use` line's block words — none from a module that is not
+    /// reachable, ambiguous, absent, or the file's own. A provider is
+    /// read through its PLAIN parse: an exported named grammar or
+    /// component whose name the line imports.
+    fn line_words(from: Package, own: string, u: UseParts) -> BlockWords {
+        let m = qualified(module_path(u.path), from)
+        if m.malformed() || m.text() == own { return BlockWords {} }
+        if m.package() != null && !self.reaches(from, m.package()!) { return BlockWords {} }
+        if self.ambiguous_module(m) || self.module_files(m).is_empty() { return BlockWords {} }
+        // THE RECORD ANSWERS FIRST. A block word is a top-level declaration the
+        // interface marks (a `syntax`, or a record that is a component) — so when
+        // the provider's record names none the line takes, no provider file has to
+        // be read at all. Without this every `use` line parsed every file of its
+        // provider module, which is seconds of parse for a program that declares
+        // none. A record that is absent (a cold tree) is lexed instead of parsed
+        // (`maybe_declares_block`), and only a file that survives THAT
+        // reaches the parse below.
+        if !module_names_block_word(self, m, self.module_files(m), u.items) { return BlockWords {} }
+        // Only a file that can OPEN a block word is parsed for its words;
+        // the rest of the module never is.
+        let declared = [self.provided_words(path) for path in self.module_files(m) if file_lexes_block(self, path)]
+        let grammars = flatten([d.grammars for d in declared])
+        let components = flatten([d.components for d in declared])
+        let instances = flatten([d.instances for d in declared])
+        BlockWords {
+            grammars: flatten(
+                [[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items],
+            ),
+            components: flatten(
+                [[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items],
+            ),
+            instances: flatten(
+                [[x with { name: u.bound_as(j) } for x in instances if x.name == item] for j, item in u.items],
+            ),
+        }
+    }
+
+    /// The exported block words a provider file declares, each under
+    /// its own name: its named grammars readied (one whose notation
+    /// does not parse is left out — the library speaks) and its
+    /// template components.
+    fn provided_words(path: string) -> BlockWords {
+        let p = self.provider_parsed(self.file_id(path))
+        let exported = [s for s in p.stmts if p.store.is_exported(s)]
+        BlockWords {
+            grammars: flatten([some_list(readied_grammar(p, s, path)) for s in exported]),
+            components: flatten([some_list(word_of(p.store, s, path)) for s in exported]),
+            instances: flatten([some_list(instanced(p.store, s)) for s in exported]),
+        }
     }
 
     /// The declarations a file MINTS into the one table; the answer's
@@ -698,10 +1248,17 @@ impl Workspace {
         // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
         // declarations were MINTED, and `file_items` is a memo over a paree it never had.
         if self.is_held(f) { return self.decls.held_items_of_file(f) }
-        match self.file_items.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.relation(Family.Items).start(f.index) {
+            .Reuse(value) -> { return items_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
-        self.file_items.finish(f.index, ids, fp(7, [self.item_print(d) for d in ids]))
+        items_of(
+            self
+                .relation(Family.Items)
+                .finish(f.index, DbRow.Items(ids), fp(7, [self.item_print(d) for d in ids])),
+        )
     }
 
     /// The declaration behind an id.
@@ -717,19 +1274,41 @@ impl Workspace {
     }
 
     /// A module's names, bound ONCE: every file's declarations in file
-    /// then declaration order.
+    /// then declaration order. RECURSIVE: minting a held module's enum
+    /// payload asks a sibling file's signature, which types the field
+    /// against that file's visible namespace, which asks this same
+    /// module's names back — a re-entry is a SMALLER view (the binder
+    /// alone, no signature work waits on it), never a trap.
     fn namespace(m: ModuleId) -> ModuleNames {
-        match self.module_names.start(m.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.relation(Family.Namespace).start_recursive(m.index) {
+            .Reuse(value) -> { return namespace_of(value) },
+            .Compute -> nothing(),
+        }
         let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        self.module_names.finish(m.index, names, fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length]))
+        namespace_of(
+            self
+                .relation(Family.Namespace)
+                .finish(
+                    m.index,
+                    DbRow.Namespace(names),
+                    fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length]),
+                ),
+        )
     }
 
     /// What a file's top level sees: its module's names, then its
-    /// imports — with what the `use` lines earned.
+    /// imports — with what the `use` lines earned. RECURSIVE, the same
+    /// way `namespace` is: a held sibling's enum payload can ask this
+    /// same file's signature mid-mint, which asks this same file's
+    /// visible namespace back — a re-entry is a SMALLER view, never a
+    /// trap.
     fn visible(f: FileId) -> Namespace {
-        match self.visibles.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.relation(Family.Visible).start_recursive(f.index) {
+            .Reuse(value) -> { return visible_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -738,9 +1317,20 @@ impl Workspace {
             imports = imports.concat(line.imports)
             diags = diags.concat(line.diagnostics)
         }
-        let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, self.prelude_imports(f), (path: string) -> self.shown(path))
+        let names = self
+            .decls
+            .file_names(
+                f,
+                self.namespace(self.decls.file(f).module_id),
+                imports,
+                self.prelude_imports(f),
+                (path: string) -> self.shown(path),
+                self.pack.get() != null,
+            )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
-        self.visibles.finish(f.index, out, self.db.revision())
+        visible_of(
+            self.relation(Family.Visible).finish(f.index, DbRow.Visible(out), self.db.revision()),
+        )
     }
 
     /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
@@ -748,9 +1338,9 @@ impl Workspace {
     /// every file outside the prelude itself. Bound weakly — a file's
     /// own names and its `use` lines win.
     fn prelude_imports(f: FileId) -> List<Import> {
-        let from = self.packages[self.holder_of_path(self.decls.file(f).path)]
+        let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
         if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
-        [Import { decl: d.id, at: null, alias: "" } for d in self.exported_decls(prelude_module())]
+        [Import { decl: d.id, at: null, renamed: "" } for d in self.exported_decls(prelude_module())]
     }
 
     /// A file's names resolved. RECURSIVE: a whole-program pass asks
@@ -759,7 +1349,10 @@ impl Workspace {
     /// in flight — the acyclic `start` answers a cycle with a defect,
     /// and one file's resolve may be demanded while another is served.
     fn resolved(f: FileId) -> NameFacts {
-        match self.name_facts.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.relation(Family.Resolved).start_recursive(f.index) {
+            .Reuse(value) -> { return resolved_of(value) },
+            .Compute -> nothing(),
+        }
         touch(self.items(f))
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
@@ -773,18 +1366,26 @@ impl Workspace {
         // namespace asks the file's generated declarations, which
         // materialize on demand through `expanded`; a template's own
         // name asks the namespace of the file that wrote the quote.
-        let elsewhere = Elsewhere {
-            generated: (name: string) -> self.generated_named(f, name),
-            written_in: (origin: FileId) -> self.visible(origin),
-        }
+        let elsewhere = self.elsewhere_of(f)
         // A generated body's statement stands in the arena, never in
         // the parse tree — resolve it after the written bodies.
         let generated = [self.decls.decl(d).stmt for d in made]
-        let resolved = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), elsewhere, generated)
+        let resolved = resolve(
+            self.lang.dispatch,
+            self.lang.keywords,
+            file_view(self.lang, p, self.decls, f),
+            self.visible(f),
+            elsewhere,
+            generated,
+        )
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
-        let out = resolved with { voices: Voices { list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()) } }
-        self.name_facts.finish(f.index, out, self.db.revision())
+        let out = resolved with { voices: Voices {
+            list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
+        } }
+        resolved_of(
+            self.relation(Family.Resolved).finish(f.index, DbRow.Resolved(out), self.db.revision()),
+        )
     }
 
     /// A generated declaration's id by its NAME, or none — demanded
@@ -796,13 +1397,22 @@ impl Workspace {
         found
     }
 
+    /// The two looks past `f`'s written namespace: its generated
+    /// declarations, and the namespace of the file that wrote a node.
+    fn elsewhere_of(f: FileId) -> Elsewhere {
+        Elsewhere {
+            generated: (name: string) -> self.generated_named(f, name),
+            written_in: (origin: FileId) -> self.visible(origin),
+        }
+    }
+
     /// Whether the file has ANY Declares annotation — the parse-level
     /// prefilter that keeps the two-tier second look off the common
     /// path: a file with no generator never demands `expanded` (and
     /// never re-enters the namespace from inside a resolve).
     fn has_declares(f: FileId) -> bool {
         let p = self.parsed(f)
-        p.stmts.any((s: StmtId) -> !p.store.annotations_of(s).is_empty())
+        declaring_stmts(p).any((s: StmtId) -> !p.store.annotations_of(s).is_empty())
     }
 
     /// Whether any declaration carries a MARK — the same prefilter for
@@ -812,7 +1422,7 @@ impl Workspace {
     /// refused anyway: nothing claims its marks.
     fn has_marks(f: FileId) -> bool {
         let p = self.parsed(f)
-        p.stmts.any((s: StmtId) -> !p.store.marks_written(s).is_empty())
+        declaring_stmts(p).any((s: StmtId) -> !p.store.marks_written(s).is_empty())
     }
 
     /// A declaration's signature, computed on first ask: the ONE place
@@ -823,7 +1433,19 @@ impl Workspace {
     fn sig(d: DeclId) -> DeclSig? {
         let k = key(Family.Sig, d.index)
         let x = self.decls.decl(d)
-        if self.is_held(x.file) { return self.decls.sigs.get()[d.index] }
+        if self.is_held(x.file) {
+            self.held_sig_dep(x.file)
+            // A HELD DECL'S FACT MAY BE ASKED BEFORE ITS RECORD FILLS
+            // IT: mint the module's identities first (so a name it
+            // carries resolves), then fill THIS row — which, filling,
+            // may itself ask for a row later in the same module's
+            // record, and that ask fills THAT row before this one
+            // reads it, rather than seeing the blank default a whole-
+            // module sweep would not have reached yet.
+            self.file_ensured(x.file)
+            self.fill_ensured(d)
+            return self.decls.sigs.get()[d.index]
+        }
         // the language's own declarations were signed at admission
         if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
             return self.decls.sigs.get()[d.index]
@@ -835,6 +1457,31 @@ impl Workspace {
         let out: DeclSig? = self.decls.sigs.get()[d.index]
         self.db.settle(k, sig_hash(out))
         out
+    }
+
+    /// A held declaration's sig came from its module's stored record —
+    /// a read `sig()` was about to make silently, with no dependency
+    /// for whichever query asked. Recorded once per module per
+    /// revision, against the module's CURRENT record text, so a caller
+    /// asking this compile's own Kernel sees an edge to it, not
+    /// nothing (§2.5, limit 1).
+    fn held_sig_dep(f: FileId) {
+        let _ = self.held_sig(self.decls.file(f).module_id)
+    }
+
+    /// The verified read: asks the Kernel, reading the module's record
+    /// only on a real miss. `refetched`'s own re-derivation for this
+    /// family, so a re-ask through the Kernel's verifier matches a
+    /// direct one exactly.
+    fn held_sig(mid: ModuleId) -> string {
+        let name = self.decls.module_name(mid)
+        let store? = self.store.get() else { return name }
+        let hk = key(Family.HeldSig, mid.index)
+        if !(self.db.ask(hk) is .Compute) { return name }
+        self.db.begin(hk)
+        let text = record_cached(self, store, module_path(segments_of(name)))
+        self.db.settle(hk, fp_str(text))
+        name
     }
 
     /// A type's method table, filled from its own members and every
@@ -853,7 +1500,12 @@ impl Workspace {
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
         self.named_minted(self.decls.decl(target).name)
-        let blocks = self.decls.children_of(target).concat([b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)])
+        let blocks = self
+            .decls
+            .children_of(target)
+            .concat(
+                [b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)],
+            )
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
@@ -884,14 +1536,18 @@ impl Workspace {
             let aimed = self.decls.target_of(b)
             return aimed != null && same_decl(aimed!, target)
         }
-        let seen: DeclId? = self.visible(self.decls.decl(b).file).type_decl(self.decls.decl(target).name)
+        let seen: DeclId? = self
+            .visible(self.decls.decl(b).file)
+            .type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
     }
 
     /// A HELD IMPL'S METHODS, registered from the interface. The typer SIGNS an
     /// impl to fill the table; a held impl has no body to sign, so its RECORD's
-    /// children are the table's entries.
+    /// children are the table's entries — and a record's own method (a
+    /// component's) is an entry itself.
     fn held_methods(target: DeclId, block: DeclId) {
+        if self.decls.decl(block).kind is .Method { return self.decls.declare_method(target, block) }
         for m in self.decls.children_of(block) { self.decls.declare_method(target, m) }
         let tr = self.held_trait(block)
         if tr != null { self.decls.record_impl(target, tr!) }
@@ -933,8 +1589,16 @@ impl Workspace {
     /// of its file, the names it reads.
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         let p = self.parsed(x.file)
-        mut view = file_view(self.lang, p, self.decls, x.file)
-        new_type_cx(self.lang.dispatch, self.lang.keywords, view, names, x.lo, x.hi)
+        let view = file_view(self.lang, p, self.decls, x.file)
+        new_type_cx(
+            self.lang.dispatch,
+            self.lang.keywords,
+            view,
+            names,
+            self.elsewhere_of(x.file),
+            x.lo,
+            x.hi,
+        )
     }
 
     /// One declaration's body typed — a table over its own expression
@@ -943,11 +1607,14 @@ impl Workspace {
         // Annotation evaluation re-types the declaration after hiding
         // the active annotation, so this family also has a smaller
         // recursive view.
-        match self.decl_facts.start_recursive(d.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.relation(Family.Typed).start_recursive(d.index) {
+            .Reuse(value) -> { return typed_of(value) },
+            .Compute -> nothing(),
+        }
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
-        self.decl_facts.finish(d.index, out, self.db.revision())
+        typed_of(self.relation(Family.Typed).finish(d.index, DbRow.Typed(out), self.db.revision()))
     }
 
     /// A file's bodies as one table: Main's facts first (its range
@@ -957,7 +1624,10 @@ impl Workspace {
     fn folded(f: FileId) -> TypeFacts {
         // Annotation evaluation re-enters the file after the active
         // annotation has been hidden; that recursive view is smaller.
-        match self.folds.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.relation(Family.Folded).start_recursive(f.index) {
+            .Reuse(value) -> { return folded_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
@@ -968,13 +1638,18 @@ impl Workspace {
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
-        self.folds.finish(f.index, folded_facts, self.db.revision())
+        folded_of(
+            self
+                .relation(Family.Folded)
+                .finish(f.index, DbRow.Folded(folded_facts), self.db.revision()),
+        )
     }
 
     /// A file's bodies to type: Main, then every declaration owning a
     /// range, in declaration order.
     fn bodies_of(f: FileId) -> List<DeclId> {
-        some_list(self.decls.main_of(f)).concat([d for d in self.decls.decls_of_file(f) if self.decls.owns_a_range(d)])
+        some_list(self.decls.main_of(f))
+            .concat([d for d in self.decls.decls_of_file(f) if self.decls.owns_a_range(d)])
     }
 
     /// A file's signature diagnostics, in the order the rounds spoke
@@ -1022,11 +1697,16 @@ export fn sig_hash(s: DeclSig?) -> int {
 impl Decls {
     fn sig_rank(x: Decl) -> int {
         match x.kind {
-            .Record or .Named or .Enum or .Builtin -> 0,
-            .Method -> if x.parent != null && self.decl(x.parent!).kind is .Trait { 1 } else { 3 },
+            .Record or .Named or .Alias or .Enum or .Builtin -> 0,
+            .Method if x.parent != null && self.decl(x.parent!).kind is .Trait -> 1,
             .Fn -> 2,
-            .Impl -> 3,
-            .Trait or .Syntax or .Default or .Main or .Case or .Const -> 4,
+            .Method or .Impl -> 3,
+            // `CollectEnum` sits with `Collect`, never with the other
+            // type kinds: unlike an ordinary `enum`'s self-contained
+            // variants, its variant TABLE reads other declarations —
+            // ranked first, it would ask before the program it reads
+            // has minted them.
+            .Trait or .Syntax or .Default or .Main or .Case or .Const or .Collect or .CollectEnum -> 4,
         }
     }
 }
@@ -1035,9 +1715,12 @@ fn unclean(a: Analysis) -> bool {
     !a.clean()
 }
 
-
 fn is_warning(d: Diag) -> bool {
     !is_error(d)
 }
 
-
+/// Every statement that can carry an annotation or a mark: the file's
+/// own, and each impl block's methods.
+fn declaring_stmts(p: Parsed) -> List<StmtId> {
+    flatten([[s].concat(p.store.impl_parts(s)?.fns ?? []) for s in p.stmts])
+}

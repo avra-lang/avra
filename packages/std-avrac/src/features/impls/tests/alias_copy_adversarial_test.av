@@ -10,183 +10,467 @@ use @std.avrac.testing.{shown}
 spec "features/impls (alias copy, adversarial)" {
     given "degenerate shapes" {
         then "a one-field record copied, then written twice" {
-            shown("type C = { n: int }\nimpl C { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: C) -> int {\n    mut q = p\n    q.bump()\n    q.bump()\n    q.n\n}\nlet c = C { n: 5 }\nlet a = shadow(c)\n\"\${a} \${c.n}\"") == "7 5"
+            shown(
+                "type C = { n: int }\nimpl C { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: C) -> int {\n    mut q = p\n    q.bump()\n    q.bump()\n    q.n\n}\nlet c = C { n: 5 }\nlet a = shadow(c)\n\"\${a} \${c.n}\"",
+            ) == "7 5"
         }
         then "a record of one list, copied per call" {
-            shown("type C = { xs: List<int> }\nimpl C { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(p: C) -> int {\n    mut q = p\n    q.add(1)\n    q.xs.length\n}\nlet c = C { xs: [] }\nlet a = shadow(c)\nlet b = shadow(c)\n\"\${a} \${b} \${c.xs.length}\"") == "1 1 0"
+            shown(
+                "type C = { xs: List<int> }\nimpl C { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(p: C) -> int {\n    mut q = p\n    q.add(1)\n    q.xs.length\n}\nlet c = C { xs: [] }\nlet a = shadow(c)\nlet b = shadow(c)\n\"\${a} \${b} \${c.xs.length}\"",
+            ) == "1 1 0"
         }
         then "a receiver and four arguments all writing one copied local" {
-            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) -> int {\n        self.xs.push(v)\n        self.xs.length\n    }\n    mut fn all(a: int, b: int, c: int, d: int) -> int {\n        self.xs.push(a * 1000 + b * 100 + c * 10 + d)\n        self.xs.length\n    }\n}\nfn shadow(p: R) -> string {\n    mut q = p\n    let n = q.all(q.add(1), q.add(2), q.add(3), q.add(4))\n    \"\${n} \${q.xs[4]}\"\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "5 1234 5 1234 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) -> int {\n        self.xs.push(v)\n        self.xs.length\n    }\n    mut fn all(a: int, b: int, c: int, d: int) -> int {\n        self.xs.push(a * 1000 + b * 100 + c * 10 + d)\n        self.xs.length\n    }\n}\nfn shadow(p: R) -> string {\n    mut q = p\n    let n = q.all(q.add(1), q.add(2), q.add(3), q.add(4))\n    \"\${n} \${q.xs[4]}\"\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"",
+            ) == "5 1234 5 1234 0"
         }
     }
     given "the receiver in every kind of place" {
         then "a field of a copy, and a copy of a field" {
-            shown("type In = { n: int, xs: List<int> }\ntype Out = { inner: In, k: int }\nimpl In { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: Out) -> int {\n    mut q = p\n    q.inner.bump()\n    mut i = p.inner\n    i.bump()\n    i.bump()\n    q.inner.n * 10 + i.n\n}\nlet o = Out { inner: In { n: 0, xs: [] }, k: 1 }\n\"\${shadow(o)} \${o.inner.n}\"") == "12 0"
+            shown(
+                "type In = { n: int, xs: List<int> }\ntype Out = { inner: In, k: int }\nimpl In { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: Out) -> int {\n    mut q = p\n    q.inner.bump()\n    mut i = p.inner\n    i.bump()\n    i.bump()\n    q.inner.n * 10 + i.n\n}\nlet o = Out { inner: In { n: 0, xs: [] }, k: 1 }\n\"\${shadow(o)} \${o.inner.n}\"",
+            ) == "12 0"
         }
         then "an element of a copied list" {
-            shown("type R = { n: int, s: string }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(xs: List<R>) -> int {\n    mut q = xs\n    q[0].bump()\n    q[1].bump()\n    q[0].n + q[1].n\n}\nlet rs = [R { n: 0, s: \"a\" }, R { n: 10, s: \"b\" }]\n\"\${shadow(rs)} \${rs[0].n} \${rs[1].n}\"") == "12 0 10"
+            shown(
+                "type R = { n: int, s: string }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(xs: List<R>) -> int {\n    mut q = xs\n    q[0].bump()\n    q[1].bump()\n    q[0].n + q[1].n\n}\nlet rs = [R { n: 0, s: \"a\" }, R { n: 10, s: \"b\" }]\n\"\${shadow(rs)} \${rs[0].n} \${rs[1].n}\"",
+            ) == "12 0 10"
         }
         then "a copy of a copy" {
-            shown("type In = { n: int, xs: List<int> }\ntype Out = { inner: In }\nimpl In { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(o: Out) -> int {\n    mut i = o.inner\n    i.bump()\n    mut j = i\n    j.bump()\n    i.n * 10 + j.n\n}\nlet o = Out { inner: In { n: 0, xs: [] } }\n\"\${shadow(o)} \${o.inner.n}\"") == "12 0"
+            shown(
+                "type In = { n: int, xs: List<int> }\ntype Out = { inner: In }\nimpl In { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(o: Out) -> int {\n    mut i = o.inner\n    i.bump()\n    mut j = i\n    j.bump()\n    i.n * 10 + j.n\n}\nlet o = Out { inner: In { n: 0, xs: [] } }\n\"\${shadow(o)} \${o.inner.n}\"",
+            ) == "12 0"
         }
         then "a generic record" {
-            shown("type Box<T> = { held: List<T>, n: int }\nimpl Box<T> { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: Box<int>) -> int {\n    mut q = p\n    q.bump()\n    q.n\n}\nlet b: Box<int> = Box { held: [1], n: 0 }\n\"\${shadow(b)} \${b.n}\"") == "1 0"
+            shown(
+                "type Box<T> = { held: List<T>, n: int }\nimpl Box<T> { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: Box<int>) -> int {\n    mut q = p\n    q.bump()\n    q.n\n}\nlet b: Box<int> = Box { held: [1], n: 0 }\n\"\${shadow(b)} \${b.n}\"",
+            ) == "1 0"
         }
         then "a name over a list, its own method writing" {
-            shown("type Rows = List<int>\nimpl Rows { mut fn add(v: int) { self.push(v) } }\nfn shadow(p: Rows) -> int {\n    mut q = p\n    q.add(1)\n    q.add(2)\n    q.length\n}\nlet r: Rows = [9]\n\"\${shadow(r)} \${shadow(r)} \${r.length}\"") == "3 3 1"
+            shown(
+                "type Rows = List<int>\nimpl Rows { mut fn add(v: int) { self.push(v) } }\nfn shadow(p: Rows) -> int {\n    mut q = p\n    q.add(1)\n    q.add(2)\n    q.length\n}\nlet r: Rows = [9]\n\"\${shadow(r)} \${shadow(r)} \${r.length}\"",
+            ) == "3 3 1"
         }
         then "`self` copied inside its own method" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n    fn tried() -> int {\n        mut q = self\n        q.bump()\n        q.n\n    }\n}\nlet r = R { n: 3, xs: [] }\n\"\${r.tried()} \${r.n}\"") == "4 3"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n    fn tried() -> int {\n        mut q = self\n        q.bump()\n        q.n\n    }\n}\nlet r = R { n: 3, xs: [] }\n\"\${r.tried()} \${r.n}\"",
+            ) == "4 3"
         }
         then "an unwrapped nullable" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R?) -> int {\n    let v? = p else { return -1 }\n    mut q = v\n    q.bump()\n    q.n\n}\nlet r: R? = R { n: 0, xs: [] }\n\"\${shadow(r)} \${r?.n ?? -9}\"") == "1 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R?) -> int {\n    let v? = p else { return -1 }\n    mut q = v\n    q.bump()\n    q.n\n}\nlet r: R? = R { n: 0, xs: [] }\n\"\${shadow(r)} \${r?.n ?? -9}\"",
+            ) == "1 0"
         }
     }
     given "crossing other features" {
         then "a `for` and a `while` writing one copy" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R) -> int {\n    mut q = p\n    for i in 0..5 { q.bump() }\n    mut k = 0\n    while k < 3 {\n        q.bump()\n        k = k + 1\n    }\n    q.n\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.n}\"") == "8 8 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R) -> int {\n    mut q = p\n    for i in 0..5 { q.bump() }\n    mut k = 0\n    while k < 3 {\n        q.bump()\n        k = k + 1\n    }\n    q.n\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.n}\"",
+            ) == "8 8 0"
         }
         then "a `match` arm" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() -> int {\n    self.n = self.n + 1\n    self.n\n} }\nfn shadow(p: R, k: int) -> int {\n    mut q = p\n    match k {\n        0 -> q.bump(),\n        _ -> {\n            q.bump()\n            q.bump()\n        },\n    }\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r, 0)} \${shadow(r, 1)} \${r.n}\"") == "1 2 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() -> int {\n    self.n = self.n + 1\n    self.n\n} }\nfn shadow(p: R, k: int) -> int {\n    mut q = p\n    match k {\n        0 -> q.bump(),\n        _ -> {\n            q.bump()\n            q.bump()\n        },\n    }\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r, 0)} \${shadow(r, 1)} \${r.n}\"",
+            ) == "1 2 0"
         }
         then "an `if` branch" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R, k: bool) -> int {\n    mut q = p\n    if k { q.bump() } else {\n        q.bump()\n        q.bump()\n    }\n    q.n\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r, true)} \${shadow(r, false)} \${r.n}\"") == "1 2 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R, k: bool) -> int {\n    mut q = p\n    if k { q.bump() } else {\n        q.bump()\n        q.bump()\n    }\n    q.n\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r, true)} \${shadow(r, false)} \${r.n}\"",
+            ) == "1 2 0"
         }
         then "interpolation holes, left to right" {
-            shown("type R = { n: int, s: string }\nimpl R { mut fn bump() -> int {\n    self.n = self.n + 1\n    self.n\n} }\nfn shadow(p: R) -> string {\n    mut q = p\n    \"\${q.bump()}-\${q.bump()}-\${p.n}\"\n}\nlet r = R { n: 0, s: \"\" }\n\"\${shadow(r)} \${r.n}\"") == "1-2-0 0"
+            shown(
+                "type R = { n: int, s: string }\nimpl R { mut fn bump() -> int {\n    self.n = self.n + 1\n    self.n\n} }\nfn shadow(p: R) -> string {\n    mut q = p\n    \"\${q.bump()}-\${q.bump()}-\${p.n}\"\n}\nlet r = R { n: 0, s: \"\" }\n\"\${shadow(r)} \${r.n}\"",
+            ) == "1-2-0 0"
         }
         then "a loop variable copied per turn" {
-            shown("type R = { n: int }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(rs: List<R>) -> int {\n    mut t = 0\n    for r in rs {\n        mut q = r\n        q.bump()\n        t = t + q.n\n    }\n    t\n}\nlet rs = [R { n: 1 }, R { n: 2 }]\n\"\${shadow(rs)} \${rs[0].n} \${rs[1].n}\"") == "5 1 2"
+            shown(
+                "type R = { n: int }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(rs: List<R>) -> int {\n    mut t = 0\n    for r in rs {\n        mut q = r\n        q.bump()\n        t = t + q.n\n    }\n    t\n}\nlet rs = [R { n: 1 }, R { n: 2 }]\n\"\${shadow(rs)} \${rs[0].n} \${rs[1].n}\"",
+            ) == "5 1 2"
         }
         then "recursion, a copy per frame" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn deep(p: R, k: int) -> int {\n    if k == 0 { return p.n }\n    mut q = p\n    q.bump()\n    deep(q, k - 1) + p.n\n}\nlet r = R { n: 0, xs: [] }\n\"\${deep(r, 4)} \${r.n}\"") == "10 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn deep(p: R, k: int) -> int {\n    if k == 0 { return p.n }\n    mut q = p\n    q.bump()\n    deep(q, k - 1) + p.n\n}\nlet r = R { n: 0, xs: [] }\n\"\${deep(r, 4)} \${r.n}\"",
+            ) == "10 0"
         }
         then "a reassigned copy" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R, other: R) -> int {\n    mut q = p\n    q.bump()\n    q = other\n    q.bump()\n    q.n\n}\nlet r = R { n: 0, xs: [] }\nlet s = R { n: 10, xs: [] }\n\"\${shadow(r, s)} \${r.n} \${s.n}\"") == "11 0 10"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nfn shadow(p: R, other: R) -> int {\n    mut q = p\n    q.bump()\n    q = other\n    q.bump()\n    q.n\n}\nlet r = R { n: 0, xs: [] }\nlet s = R { n: 10, xs: [] }\n\"\${shadow(r, s)} \${r.n} \${s.n}\"",
+            ) == "11 0 10"
         }
         then "a top-level `mut` copy" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nlet r = R { n: 0, xs: [] }\nmut q = r\nq.bump()\nq.bump()\n\"\${q.n} \${r.n}\"") == "2 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn bump() { self.n = self.n + 1 } }\nlet r = R { n: 0, xs: [] }\nmut q = r\nq.bump()\nq.bump()\n\"\${q.n} \${r.n}\"",
+            ) == "2 0"
         }
         then "managed fields renamed and pushed" {
-            shown("type R = { name: string, tags: List<string> }\nimpl R {\n    mut fn tag(t: string) { self.tags.push(\"\${t}-\${self.name}\") }\n    mut fn rename(n: string) { self.name = n }\n}\nfn shadow(p: R) -> string {\n    mut q = p\n    q.tag(\"a\")\n    q.rename(\"\${q.name}\${q.name}\")\n    q.tag(\"b\")\n    q.tags.join(\",\")\n}\nlet r = R { name: \"x\", tags: [\"t0\"] }\nlet a = shadow(r)\nlet b = shadow(r)\n\"\${a} \${b} \${r.name} \${r.tags.length}\"") == "t0,a-x,b-xx t0,a-x,b-xx x 1"
+            shown(
+                "type R = { name: string, tags: List<string> }\nimpl R {\n    mut fn tag(t: string) { self.tags.push(\"\${t}-\${self.name}\") }\n    mut fn rename(n: string) { self.name = n }\n}\nfn shadow(p: R) -> string {\n    mut q = p\n    q.tag(\"a\")\n    q.rename(\"\${q.name}\${q.name}\")\n    q.tag(\"b\")\n    q.tags.join(\",\")\n}\nlet r = R { name: \"x\", tags: [\"t0\"] }\nlet a = shadow(r)\nlet b = shadow(r)\n\"\${a} \${b} \${r.name} \${r.tags.length}\"",
+            ) == "t0,a-x,b-xx t0,a-x,b-xx x 1"
         }
     }
     given "the order a call reads in" {
         then "an argument writing the receiver's own copy" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R {\n    mut fn add(v: int) -> int {\n        self.xs.push(v)\n        self.xs.length\n    }\n    mut fn put(v: int) -> int {\n        self.xs.push(v * 100)\n        self.xs.length\n    }\n}\nfn shadow(p: R) -> int {\n    mut q = p\n    let a = q.put(q.add(1))\n    a * 10 + q.xs.length\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "22 22 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R {\n    mut fn add(v: int) -> int {\n        self.xs.push(v)\n        self.xs.length\n    }\n    mut fn put(v: int) -> int {\n        self.xs.push(v * 100)\n        self.xs.length\n    }\n}\nfn shadow(p: R) -> int {\n    mut q = p\n    let a = q.put(q.add(1))\n    a * 10 + q.xs.length\n}\nlet r = R { n: 0, xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"",
+            ) == "22 22 0"
         }
         then "two writing calls in one expression" {
-            shown("type R = { n: int }\nimpl R {\n    mut fn bump() -> int {\n        self.n = self.n + 1\n        self.n\n    }\n}\nfn shadow(p: R) -> int {\n    mut q = p\n    q.bump() + q.bump() * 10\n}\nlet r = R { n: 0 }\n\"\${shadow(r)} \${r.n}\"") == "21 0"
+            shown(
+                "type R = { n: int }\nimpl R {\n    mut fn bump() -> int {\n        self.n = self.n + 1\n        self.n\n    }\n}\nfn shadow(p: R) -> int {\n    mut q = p\n    q.bump() + q.bump() * 10\n}\nlet r = R { n: 0 }\n\"\${shadow(r)} \${r.n}\"",
+            ) == "21 0"
         }
         then "a VALUE receiver runs before its arguments" {
-            shown("type R = { n: int }\nimpl R {\n    fn total(k: int) -> int { self.n + k }\n}\nfn f(log: Cell<List<string>>) -> R {\n    log.set(log.get().concat([\"f\"]))\n    R { n: 1 }\n}\nfn g(log: Cell<List<string>>) -> int {\n    log.set(log.get().concat([\"g\"]))\n    2\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet t = f(log).total(g(log))\n\"\${t} \${log.get().join(\" \")}\"") == "3 f g"
+            shown(
+                "type R = { n: int }\nimpl R {\n    fn total(k: int) -> int { self.n + k }\n}\nfn f(log: Cell<List<string>>) -> R {\n    log.set(log.get().concat([\"f\"]))\n    R { n: 1 }\n}\nfn g(log: Cell<List<string>>) -> int {\n    log.set(log.get().concat([\"g\"]))\n    2\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet t = f(log).total(g(log))\n\"\${t} \${log.get().join(\" \")}\"",
+            ) == "3 f g"
         }
         then "a copied receiver's index operand runs before its argument" {
-            shown("type R = { n: int }\nimpl R { mut fn set(v: int) { self.n = v } }\nfn at(log: Cell<List<string>>, i: int) -> int {\n    log.set(log.get().concat([\"i\"]))\n    i\n}\nfn val(log: Cell<List<string>>) -> int {\n    log.set(log.get().concat([\"v\"]))\n    7\n}\nfn shadow(xs: List<R>, log: Cell<List<string>>) -> int {\n    mut q = xs\n    q[at(log, 1)].set(val(log))\n    q[1].n\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet rs = [R { n: 0 }, R { n: 0 }]\nlet a = shadow(rs, log)\n\"\${a} \${rs[1].n} \${log.get().join(\" \")}\"") == "7 0 i v"
+            shown(
+                "type R = { n: int }\nimpl R { mut fn set(v: int) { self.n = v } }\nfn at(log: Cell<List<string>>, i: int) -> int {\n    log.set(log.get().concat([\"i\"]))\n    i\n}\nfn val(log: Cell<List<string>>) -> int {\n    log.set(log.get().concat([\"v\"]))\n    7\n}\nfn shadow(xs: List<R>, log: Cell<List<string>>) -> int {\n    mut q = xs\n    q[at(log, 1)].set(val(log))\n    q[1].n\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet rs = [R { n: 0 }, R { n: 0 }]\nlet a = shadow(rs, log)\n\"\${a} \${rs[1].n} \${log.get().join(\" \")}\"",
+            ) == "7 0 i v"
         }
         then "two index operands, then the argument" {
-            shown("type R = { n: int }\nimpl R { mut fn set(v: int) { self.n = v } }\nfn at(log: Cell<List<string>>, w: string, i: int) -> int {\n    log.set(log.get().concat([w]))\n    i\n}\nfn shadow(xs: List<List<R>>, log: Cell<List<string>>) -> int {\n    mut q = xs\n    q[at(log, \"a\", 1)][at(log, \"b\", 0)].set(at(log, \"v\", 7))\n    q[1][0].n\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet rs = [[R { n: 0 }], [R { n: 0 }]]\nlet a = shadow(rs, log)\n\"\${a} \${rs[1][0].n} \${log.get().join(\" \")}\"") == "7 0 a b v"
+            shown(
+                "type R = { n: int }\nimpl R { mut fn set(v: int) { self.n = v } }\nfn at(log: Cell<List<string>>, w: string, i: int) -> int {\n    log.set(log.get().concat([w]))\n    i\n}\nfn shadow(xs: List<List<R>>, log: Cell<List<string>>) -> int {\n    mut q = xs\n    q[at(log, \"a\", 1)][at(log, \"b\", 0)].set(at(log, \"v\", 7))\n    q[1][0].n\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet rs = [[R { n: 0 }], [R { n: 0 }]]\nlet a = shadow(rs, log)\n\"\${a} \${rs[1][0].n} \${log.get().join(\" \")}\"",
+            ) == "7 0 a b v"
         }
     }
     given "a copy of what a place holds" {
         then "a `Cell`'s content" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.add(1)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${shadow(c)} \${shadow(c)} \${c.get().xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.add(1)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${shadow(c)} \${shadow(c)} \${c.get().xs.length}\"",
+            ) == "1 1 0"
         }
         then "a map's value, nested in a cell" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) -> int {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet none: Map<string, R> = {}\nlet w = W { c: Cell.new(none) }\nw.c.put(\"k\", R { xs: [] })\n\"\${shadow(w)} \${shadow(w)} \${(w.c.get().get(\"k\") ?? R { xs: [9] }).xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) -> int {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet none: Map<string, R> = {}\nlet w = W { c: Cell.new(none) }\nw.c.put(\"k\", R { xs: [] })\n\"\${shadow(w)} \${shadow(w)} \${(w.c.get().get(\"k\") ?? R { xs: [9] }).xs.length}\"",
+            ) == "1 1 0"
         }
         then "a list's last, through `!`" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.last()!\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${shadow(rs)} \${shadow(rs)} \${rs[1].xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.last()!\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${shadow(rs)} \${shadow(rs)} \${rs[1].xs.length}\"",
+            ) == "1 1 0"
         }
         then "a `find` over a field" {
-            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype O = { rs: List<R> }\nfn shadow(o: O) -> int {\n    mut q = o.rs.find(it.n == 2) ?? R { n: 0, xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet o = O { rs: [R { n: 1, xs: [] }, R { n: 2, xs: [] }] }\n\"\${shadow(o)} \${shadow(o)} \${o.rs[1].xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { n: int, xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype O = { rs: List<R> }\nfn shadow(o: O) -> int {\n    mut q = o.rs.find(it.n == 2) ?? R { n: 0, xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet o = O { rs: [R { n: 1, xs: [] }, R { n: 2, xs: [] }] }\n\"\${shadow(o)} \${shadow(o)} \${o.rs[1].xs.length}\"",
+            ) == "1 1 0"
         }
         then "the warning names the place that holds what was read" {
-            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n}\n1")
-            a.clean() && a.diagnostics.length == 1 && a.report().contains("`q` is a copy of what `w.c` holds — a write through it will not reach `w.c`") && a.report().contains("store the copy back into `w.c` if the write should reach it")
+            let a = analyze_source(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n}\n1",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains(
+                        "`q` is a copy of what `w.c` holds — a write through it will not reach `w.c`",
+                    ) &&
+                a.report().contains("store the copy back into `w.c` if the write should reach it")
         }
         then "a fresh seed is no copy, and says nothing" {
-            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn made() -> R { R { xs: [] } }\nfn shadow() -> int {\n    mut q = made()\n    q.add(1)\n    mut s = R { xs: [] }\n    s.add(2)\n    q.xs.length + s.xs.length\n}\nshadow()")
+            let a = analyze_source(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn made() -> R { R { xs: [] } }\nfn shadow() -> int {\n    mut q = made()\n    q.add(1)\n    mut s = R { xs: [] }\n    s.add(2)\n    q.xs.length + s.xs.length\n}\nshadow()",
+            )
             a.diagnostics.is_empty() && a.ran() == "2"
         }
         then "the fresh side of a `??` is the copy's own" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.first() ?? R { xs: [7] }\n    q.add(1)\n    q.xs.length\n}\nlet none: List<R> = []\n\"\${shadow(none)} \${shadow(none)}\"") == "2 2"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.first() ?? R { xs: [7] }\n    q.add(1)\n    q.xs.length\n}\nlet none: List<R> = []\n\"\${shadow(none)} \${shadow(none)}\"",
+            ) == "2 2"
         }
     }
     given "a copy read through every other feature" {
         then "a branch whose arms read held values" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, b: bool) -> int {\n    mut q = if b { rs.first() ?? R { xs: [] } } else { rs.last() ?? R { xs: [] } }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }]\n\"\${a(rs, true)} \${a(rs, false)} \${rs[0].xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, b: bool) -> int {\n    mut q = if b { rs.first() ?? R { xs: [] } } else { rs.last() ?? R { xs: [] } }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }]\n\"\${a(rs, true)} \${a(rs, false)} \${rs[0].xs.length}\"",
+            ) == "1 1 0"
         }
         then "a `match` over places" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, k: int) -> int {\n    mut q = match k {\n        0 -> rs[0],\n        _ -> rs[1],\n    }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${a(rs, 0)} \${a(rs, 1)} \${rs[0].xs.length} \${rs[1].xs.length}\"") == "1 1 0 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, k: int) -> int {\n    mut q = match k {\n        0 -> rs[0],\n        _ -> rs[1],\n    }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${a(rs, 0)} \${a(rs, 1)} \${rs[0].xs.length} \${rs[1].xs.length}\"",
+            ) == "1 1 0 0"
         }
         then "a `when` over places" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, k: int) -> int {\n    mut q = when { k == 0 -> rs[0], _ -> rs[1] }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${a(rs, 0)} \${a(rs, 1)} \${rs[0].xs.length} \${rs[1].xs.length}\"") == "1 1 0 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, k: int) -> int {\n    mut q = when { k == 0 -> rs[0], _ -> rs[1] }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${a(rs, 0)} \${a(rs, 1)} \${rs[0].xs.length} \${rs[1].xs.length}\"",
+            ) == "1 1 0 0"
         }
         then "a block's value" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(c: Cell<R>) -> int {\n    mut q = {\n        let t = c\n        t.get()\n    }\n    grow(q)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${a(c)} \${a(c)} \${c.get().xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(c: Cell<R>) -> int {\n    mut q = {\n        let t = c\n        t.get()\n    }\n    grow(q)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${a(c)} \${a(c)} \${c.get().xs.length}\"",
+            ) == "1 1 0"
         }
         then "a field of a lent value" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype O = { rs: List<R> }\nfn a(c: Cell<Map<string, O>>) -> int {\n    mut q = (c.get().get(\"k\") ?? O { rs: [] }).rs.first() ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet none: Map<string, O> = {}\nlet c = Cell.new(none)\nc.put(\"k\", O { rs: [R { xs: [] }] })\n\"\${a(c)} \${a(c)} \${((c.get().get(\"k\") ?? O { rs: [] }).rs.first() ?? R { xs: [9] }).xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype O = { rs: List<R> }\nfn a(c: Cell<Map<string, O>>) -> int {\n    mut q = (c.get().get(\"k\") ?? O { rs: [] }).rs.first() ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet none: Map<string, O> = {}\nlet c = Cell.new(none)\nc.put(\"k\", O { rs: [R { xs: [] }] })\n\"\${a(c)} \${a(c)} \${((c.get().get(\"k\") ?? O { rs: [] }).rs.first() ?? R { xs: [9] }).xs.length}\"",
+            ) == "1 1 0"
         }
         then "a `?.` field read" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype O = { r: R }\nfn a(o: O?) -> int {\n    mut q = o?.r ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet o: O? = O { r: R { xs: [] } }\n\"\${a(o)} \${a(o)} \${(o?.r ?? R { xs: [9] }).xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype O = { r: R }\nfn a(o: O?) -> int {\n    mut q = o?.r ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet o: O? = O { r: R { xs: [] } }\n\"\${a(o)} \${a(o)} \${(o?.r ?? R { xs: [9] }).xs.length}\"",
+            ) == "1 1 0"
         }
         then "a const's element" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nconst SEED = [R { xs: [] }]\nfn a() -> int {\n    mut q = SEED.first() ?? R { xs: [] }\n    q.add(1)\n    grow(q)\n    q.xs.length\n}\n\"\${a()} \${a()} \${SEED[0].xs.length}\"") == "2 2 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nconst SEED = [R { xs: [] }]\nfn a() -> int {\n    mut q = SEED.first() ?? R { xs: [] }\n    q.add(1)\n    grow(q)\n    q.xs.length\n}\n\"\${a()} \${a()} \${SEED[0].xs.length}\"",
+            ) == "2 2 0"
         }
         then "`self`'s holders" {
-            shown("type W = { c: Cell<R>, rs: List<R> }\ntype R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nimpl W {\n    fn tried() -> int {\n        mut q = self.c.get()\n        q.add(1)\n        mut f = self.rs.first() ?? R { xs: [] }\n        grow(f)\n        q.xs.length + f.xs.length\n    }\n}\nlet w = W { c: Cell.new(R { xs: [] }), rs: [R { xs: [] }] }\n\"\${w.tried()} \${w.tried()} \${w.c.get().xs.length} \${w.rs[0].xs.length}\"") == "2 2 0 0"
+            shown(
+                "type W = { c: Cell<R>, rs: List<R> }\ntype R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nimpl W {\n    fn tried() -> int {\n        mut q = self.c.get()\n        q.add(1)\n        mut f = self.rs.first() ?? R { xs: [] }\n        grow(f)\n        q.xs.length + f.xs.length\n    }\n}\nlet w = W { c: Cell.new(R { xs: [] }), rs: [R { xs: [] }] }\n\"\${w.tried()} \${w.tried()} \${w.c.get().xs.length} \${w.rs[0].xs.length}\"",
+            ) == "2 2 0 0"
         }
         then "a `dyn` value a cell holds" {
-            shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn a(c: Cell<dyn Grow>) -> int {\n    mut q = c.get()\n    q.grow()\n    q.size()\n}\nlet d: dyn Grow = R { xs: [] }\nlet c = Cell.new(d)\n\"\${a(c)} \${a(c)} \${c.get().size()}\"") == "1 1 0"
+            shown(
+                "trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn a(c: Cell<dyn Grow>) -> int {\n    mut q = c.get()\n    q.grow()\n    q.size()\n}\nlet d: dyn Grow = R { xs: [] }\nlet c = Cell.new(d)\n\"\${a(c)} \${a(c)} \${c.get().size()}\"",
+            ) == "1 1 0"
         }
         then "a cell a cell holds still shares" {
-            shown("type R = { n: int, s: string }\nfn a(cc: Cell<Cell<R>>) -> int {\n    mut q = cc.get()\n    q.set(R { n: 7, s: \"x\" })\n    q.get().n\n}\nlet cc = Cell.new(Cell.new(R { n: 1, s: \"\" }))\n\"\${a(cc)} \${cc.get().get().n}\"") == "7 7"
+            shown(
+                "type R = { n: int, s: string }\nfn a(cc: Cell<Cell<R>>) -> int {\n    mut q = cc.get()\n    q.set(R { n: 7, s: \"x\" })\n    q.get().n\n}\nlet cc = Cell.new(Cell.new(R { n: 1, s: \"\" }))\n\"\${a(cc)} \${cc.get().get().n}\"",
+            ) == "7 7"
         }
         then "a cell inside the copy still shares" {
-            shown("type R = { hits: Cell<int>, n: int }\nimpl R { mut fn hit() {\n    self.n = self.n + 1\n    self.hits.set(self.hits.get() + 1)\n} }\nfn a(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.hit()\n    q.n\n}\nlet c = Cell.new(R { hits: Cell.new(0), n: 0 })\n\"\${a(c)} \${a(c)} \${c.get().n} \${c.get().hits.get()}\"") == "1 1 0 2"
+            shown(
+                "type R = { hits: Cell<int>, n: int }\nimpl R { mut fn hit() {\n    self.n = self.n + 1\n    self.hits.set(self.hits.get() + 1)\n} }\nfn a(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.hit()\n    q.n\n}\nlet c = Cell.new(R { hits: Cell.new(0), n: 0 })\n\"\${a(c)} \${a(c)} \${c.get().n} \${c.get().hits.get()}\"",
+            ) == "1 1 0 2"
         }
     }
     given "a copy of a `dyn` value" {
         then "the wrapped value is copied with its box" {
-            shown("trait Grow { mut fn grow() }\ntype R = { xs: List<int> }\nimpl Grow for R { mut fn grow() { self.xs.push(1) } }\nfn shadow(p: R) -> int {\n    let d: dyn Grow = p\n    mut q = d\n    q.grow()\n    q.grow()\n    p.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "0 0"
+            shown(
+                "trait Grow { mut fn grow() }\ntype R = { xs: List<int> }\nimpl Grow for R { mut fn grow() { self.xs.push(1) } }\nfn shadow(p: R) -> int {\n    let d: dyn Grow = p\n    mut q = d\n    q.grow()\n    q.grow()\n    p.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"",
+            ) == "0 0"
         }
         then "a flat value in the box, copied as a word" {
-            shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype N = { n: int }\nimpl Grow for N {\n    mut fn grow() { self.n = self.n + 1 }\n    fn size() -> int { self.n }\n}\nfn shadow(d: dyn Grow) -> int {\n    mut q = d\n    q.grow()\n    q.size()\n}\nlet d: dyn Grow = N { n: 5 }\n\"\${shadow(d)} \${shadow(d)} \${d.size()}\"") == "6 6 5"
+            shown(
+                "trait Grow { mut fn grow()\n    fn size() -> int }\ntype N = { n: int }\nimpl Grow for N {\n    mut fn grow() { self.n = self.n + 1 }\n    fn size() -> int { self.n }\n}\nfn shadow(d: dyn Grow) -> int {\n    mut q = d\n    q.grow()\n    q.size()\n}\nlet d: dyn Grow = N { n: 5 }\n\"\${shadow(d)} \${shadow(d)} \${d.size()}\"",
+            ) == "6 6 5"
         }
         then "a `dyn` bound `mut` straight from its value" {
-            shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn shadow(p: R) -> int {\n    mut d: dyn Grow = p\n    d.grow()\n    d.size()\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "1 1 0"
+            shown(
+                "trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn shadow(p: R) -> int {\n    mut d: dyn Grow = p\n    d.grow()\n    d.size()\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"",
+            ) == "1 1 0"
         }
     }
     given "a copy handed to a `mut` seat" {
         then "a free fn's seat writes the copy, never its source" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    mut q = p\n    grow(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    mut q = p\n    grow(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"",
+            ) == "1 0"
         }
         then "a fn VALUE's seat" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    let f: fn(mut R) -> void = grow\n    mut q = p\n    f(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    let f: fn(mut R) -> void = grow\n    mut q = p\n    f(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"",
+            ) == "1 1 0"
         }
         then "an element of a copied list" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs\n    grow(q[0])\n    q[0].xs.length\n}\nlet rs = [R { xs: [] }]\n\"\${shadow(rs)} \${shadow(rs)} \${rs[0].xs.length}\"") == "1 1 0"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs\n    grow(q[0])\n    q[0].xs.length\n}\nlet rs = [R { xs: [] }]\n\"\${shadow(rs)} \${shadow(rs)} \${rs[0].xs.length}\"",
+            ) == "1 1 0"
         }
         then "copied out, written by the seat, stored back" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype H = { r: R }\nfn shadow(mut h: H) {\n    mut q = h.r\n    grow(q)\n    h.r = q\n}\nmut h = H { r: R { xs: [] } }\nshadow(h)\nshadow(h)\n\"\${h.r.xs.length}\"") == "2"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype H = { r: R }\nfn shadow(mut h: H) {\n    mut q = h.r\n    grow(q)\n    h.r = q\n}\nmut h = H { r: R { xs: [] } }\nshadow(h)\nshadow(h)\n\"\${h.r.xs.length}\"",
+            ) == "2"
         }
         then "a fresh value's seat still writes the binding" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow() -> int {\n    mut q = R { xs: [] }\n    grow(q)\n    grow(q)\n    q.xs.length\n}\nshadow()") == "2"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow() -> int {\n    mut q = R { xs: [] }\n    grow(q)\n    grow(q)\n    q.xs.length\n}\nshadow()",
+            ) == "2"
         }
         then "a seat handed on from a seat still reaches the first caller" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn outer(mut r: R) { grow(r) }\nmut r = R { xs: [] }\nouter(r)\nouter(r)\n\"\${r.xs.length}\"") == "2"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn outer(mut r: R) { grow(r) }\nmut r = R { xs: [] }\nouter(r)\nouter(r)\n\"\${r.xs.length}\"",
+            ) == "2"
         }
     }
-    given "what the copy does not reach yet" {
-        // MEASURED, not asserted as right: spec 11.5 wants this "1 1 0". A
-        // FRESH container holding a shared element is written through a
-        // writing method on the element's path — the path is not opened
-        // unique, since its root is no copy. It flips when a path receiver
-        // opens its intermediates the way a vocabulary write does.
+    given "the root decides: a path through a local copies" {
         then "a pushed element written through its fresh list" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"") == "1 2 2"
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"",
+            ) == "1 1 0"
+        }
+        then "a local list another name also holds, written through an element" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f() -> string {\n    mut out = [R { xs: [] }]\n    let keep = out\n    out[0].add(1)\n    \"\${out[0].xs.length}\${keep[0].xs.length}\"\n}\nf()",
+            ) == "10"
+        }
+        then "the warning names the local and the path, once per local" {
+            let a = analyze_source(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f(r: R) {\n    mut out = [r]\n    out[0].add(1)\n    out[0].add(2)\n}\n1",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains(
+                        "`out` is a local — a write through `out[…]` stays in `out`, and every other holder of what it reaches keeps its own",
+                    ) &&
+                a
+                    .report()
+                    .contains(
+                        "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared",
+                    )
+        }
+        then "a path rooted at `self` or a seat says nothing" {
+            let a = analyze_source(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\n1",
+            )
+            a.clean() && a.diagnostics.is_empty()
+        }
+        then "a path rooted at `self` still writes through to the caller" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nmut h = H { r: R { xs: [] } }\nh.bump()\nh.bump()\n\"\${h.r.xs.length}\"",
+            ) == "2"
+        }
+        then "a path rooted at a `mut` parameter still writes through to the caller" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nfn grow(mut h: H) { h.r.add(1) }\nmut h = H { r: R { xs: [] } }\ngrow(h)\ngrow(h)\n\"\${h.r.xs.length}\"",
+            ) == "2"
+        }
+        then "a one-field record in a local list another name holds" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype C = { n: int }\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn f() -> string {\n    mut out = [C { n: 0 }]\n    let keep = out\n    out[0].bump()\n    \"\${out[0].n}\${keep[0].n}\"\n}\nf()",
+            ) == "10"
+        }
+        then "a path written every turn of a loop" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\nfn f(r: R) -> string {\n    mut out = [r]\n    mut i = 0\n    while i < 3 {\n        out[0].add(i)\n        i = i + 1\n    }\n    \"\${out[0].xs.length}\${r.xs.length}\"\n}\nlet r = R { xs: [] }\n\"\${f(r)} \${f(r)}\"",
+            ) == "30 30"
+        }
+        then "a local path handed to a `mut` seat" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\nfn grow(mut r: R) { r.add(1) }\nfn f(r: R) -> string {\n    mut out = [r]\n    grow(out[0])\n    grow(out[0])\n    \"\${out[0].xs.length}\${r.xs.length}\"\n}\nlet r = R { xs: [] }\n\"\${f(r)} \${f(r)}\"",
+            ) == "20 20"
+        }
+        then "a list of lists, two steps down" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\nfn f(r: R) -> string {\n    mut g = [[r]]\n    g[0][0].add(1)\n    \"\${g[0][0].xs.length}\${r.xs.length}\"\n}\nlet r = R { xs: [] }\n\"\${f(r)} \${f(r)}\"",
+            ) == "10 10"
+        }
+        then "a local record built over `self`'s field" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R }\nimpl H {\n    mut fn twice() -> int {\n        mut q = H { r: self.r }\n        q.r.add(1)\n        self.r.xs.length\n    }\n}\nmut h = H { r: R { xs: [] } }\n\"\${h.twice()} \${h.twice()}\"",
+            ) == "0 0"
+        }
+        then "a local shadowing the `mut` seat it copies" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R }\nfn g(mut h: H) -> int {\n    h.r.add(1)\n    mut h = H { r: h.r }\n    h.r.add(1)\n    h.r.xs.length\n}\nmut h = H { r: R { xs: [] } }\n\"\${g(h)} \${h.r.xs.length}\"",
+            ) == "2 1"
+        }
+        then "text payloads written through a local path" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype S = { names: List<string> }\nimpl S {\n    mut fn add(n: string) { self.names.push(\"x\${n}\") }\n}\ntype H = { s: S }\nfn f(s: S, tag: string) -> string {\n    mut h = H { s: s }\n    h.s.add(tag)\n    h.s.add(\"\${tag}\${tag}\")\n    h.s.names[1]\n}\nlet s = S { names: [\"a\"] }\n\"\${f(s, \"q\")} \${f(s, \"r\")} \${s.names.length} \${s.names[0]}\"",
+            ) == "xq xr 1 a"
+        }
+        then "a `dyn` field written through a local path" {
+            shown(
+                "trait Grow {\n    mut fn grow()\n    fn size() -> int\n}\ntype G = { xs: List<int> }\nimpl Grow for G {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\ntype H = { g: dyn Grow }\nfn f(g: dyn Grow) -> string {\n    mut h = H { g: g }\n    h.g.grow()\n    \"\${h.g.size()}\${g.size()}\"\n}\nlet g: dyn Grow = G { xs: [] }\n\"\${f(g)} \${f(g)}\"",
+            ) == "10 10"
+        }
+        then "a vocabulary write through `self` opens a shared element" {
+            shown(
+                "type R = { xs: List<int> }\ntype H = { r: R }\nimpl H { mut fn push_one() { self.r.xs.push(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.push_one()\n\"\${h.r.xs.length}\${r.xs.length}\"",
+            ) == "10"
+        }
+    }
+    given "an unwrap is a step on a place" {
+        then "a write through two unwraps stays in the local" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype A = { b: B? }\ntype B = { r: R? }\nfn f(r: R) -> string {\n    mut a = A { b: B { r: r } }\n    a.b!.r!.add(1)\n    \"\${a.b!.r!.xs.length} \${r.xs.length}\"\n}\nf(R { xs: [] })",
+            ) == "1 0"
+        }
+        then "a write through an index then an unwrap reaches one element" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nfn f(r: R) -> string {\n    mut hs = [H { r: r }, H { r: r }]\n    hs[0].r!.add(1)\n    \"\${hs[0].r!.xs.length} \${hs[1].r!.xs.length} \${r.xs.length}\"\n}\nf(R { xs: [] })",
+            ) == "1 0 0"
+        }
+        then "an index write under an unwrap stays in the local" {
+            shown(
+                "type H = { xs: List<int>? }\nfn f(ys: List<int>) -> string {\n    mut h = H { xs: ys }\n    h.xs![0] = 9\n    \"\${h.xs![0]} \${ys[0]}\"\n}\nf([1])",
+            ) == "9 1"
+        }
+        then "a write through `self.r!` leaves the other holder alone" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nimpl H { mut fn bump() { self.r!.add(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.bump()\n\"\${h.r!.xs.length} \${r.xs.length}\"",
+            ) == "1 0"
+        }
+        then "a write through a seat's `h.r!` leaves the other holder alone" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nfn grow(mut h: H) { h.r!.add(1) }\nlet r = R { xs: [] }\nmut h = H { r: r }\ngrow(h)\n\"\${h.r!.xs.length} \${r.xs.length}\"",
+            ) == "1 0"
+        }
+        then "an unwrap handed to a `mut` seat is opened like any path" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R? }\nfn grow(mut r: R) { r.add(1) }\nfn f(r: R) -> string {\n    mut h = H { r: r }\n    grow(h.r!)\n    \"\${h.r!.xs.length} \${r.xs.length}\"\n}\nf(R { xs: [] })",
+            ) == "1 0"
+        }
+        then "a write through `h.r!` on a local stays in the local" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R? }\nfn f(r: R) -> int {\n    mut h = H { r: r }\n    h.r!.add(1)\n    r.xs.length * 10 + h.r!.xs.length\n}\nf(R { xs: [] })",
+            ) == "1"
+        }
+        then "a push through `h.xs!` on a local stays in the local" {
+            shown(
+                "type H = { xs: List<int>? }\nfn f(xs: List<int>) -> int {\n    mut h = H { xs: xs }\n    h.xs!.push(4)\n    h.xs!.length * 10 + xs.length\n}\nf([1])",
+            ) == "21"
+        }
+        then "a flat record's field under an unwrap is written in the local's copy" {
+            shown(
+                "type R = { x: int }\ntype H = { r: R? }\nfn f() -> int {\n    mut h = H { r: R { x: 1 } }\n    let before = h\n    h.r!.x = 5\n    h.r!.x * 10 + before.r!.x\n}\nf()",
+            ) == "51"
+        }
+    }
+    given "the root is written through, the path below it opens" {
+        then "two paths below `self` to one shared element each open their own copy" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { a: R, b: R }\nimpl H { mut fn bump() {\n    self.a.add(1)\n    self.b.add(2)\n} }\nlet r = R { xs: [] }\nmut h = H { a: r, b: r }\nh.bump()\n\"\${h.a.xs.length} \${h.b.xs.length} \${r.xs.length}\"",
+            ) == "1 1 0"
+        }
+        then "a path below `self` in a trait impl opens too" {
+            shown(
+                "trait Bump {\n    mut fn bump()\n}\ntype R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl Bump for H { mut fn bump() { self.r.add(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.bump()\n\"\${h.r.xs.length} \${r.xs.length}\"",
+            ) == "1 0"
+        }
+        then "a path below `self` in a generic impl opens too" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype Box<T> = { held: T, r: R }\nimpl Box<T> { mut fn bump() { self.r.add(1) } }\nlet r = R { xs: [] }\nmut b: Box<int> = Box { held: 1, r: r }\nb.bump()\n\"\${b.r.xs.length} \${r.xs.length}\"",
+            ) == "1 0"
+        }
+        then "a managed value pushed through `self.h.r!` survives, and the other holder keeps its own" {
+            shown(
+                "type R = { xs: List<string> }\nimpl R { mut fn add(v: string) { self.xs.push(v) } }\ntype H = { r: R? }\ntype B = { h: H }\nimpl B { mut fn bump(s: string) { self.h.r!.add(\"\${s}!\") } }\nlet r = R { xs: [\"a\"] }\nmut b = B { h: H { r: r } }\nb.bump(\"x\")\nb.bump(\"y\")\n\"\${b.h.r!.xs[1]}\${b.h.r!.xs[2]} \${r.xs.length}\"",
+            ) == "x!y! 1"
+        }
+        then "a writing method through `self` and through a seat leaves a shared element's other holder alone" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nb.bump()\nmut h = H { r: r }\ngrow(h)\n\"\${b.h.r.xs.length} \${h.r.xs.length} \${r.xs.length}\"",
+            ) == "1 1 0"
+        }
+        then "an identity behind a Cell on the path stays one — every holder sees the write" {
+            shown(
+                "type T = { rows: Cell<List<int>> }\nimpl T { fn add(v: int) { self.rows.push(v) } }\ntype H = { t: T }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.t.add(1) } }\nlet seed: List<int> = []\nlet t = T { rows: Cell.new(seed) }\nmut b = B { h: H { t: t } }\nb.bump()\n\"\${b.h.t.rows.get().length} \${t.rows.get().length}\"",
+            ) == "1 1"
+        }
+    }
+    given "what the root does not reach yet" {
+        // MEASURED, not asserted as right: spec 11.5 wants "1 0 0" of
+        // both. The ROOT a writing call is handed is written through
+        // even when a `let` copy shares its box (ROADMAP: RECEIVER
+        // ALIASING), so the copy sees the write.
+        then "a `let` copy of a receiver sees a write through `self`" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nlet keep = h\nh.bump()\n\"\${h.r.xs.length} \${keep.r.xs.length} \${r.xs.length}\"",
+            ) == "1 1 0"
+        }
+        then "a `let` copy of a seat's argument sees a write through the seat" {
+            shown(
+                "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nfn grow(mut b: B) { b.h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nlet keep = b\ngrow(b)\n\"\${b.h.r.xs.length} \${keep.h.r.xs.length} \${r.xs.length}\"",
+            ) == "1 1 0"
         }
     }
 }

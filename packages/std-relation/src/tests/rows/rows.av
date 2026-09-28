@@ -1,0 +1,72 @@
+// proves: `@relation` gives a row its stable hash and codec — the store's
+// `id` never enters either, swapping values between fields moves the
+// hash, two relations holding the same values never share one, nested
+// lists and nullables encode with their counts and presence flags, and
+// a relation of only key fields is a relation, and every record reads
+// back to its row — a truncated or overlong one refused
+use @std.relation.{relation}
+use @std.relation.stable.{reader, CodecFault}
+
+@relation
+type Call = { id: int, @index caller: string, @index callee: string, line: int }
+
+@relation
+type Tagged = { @key name: string, tags: List<string>, note: string?, deep: List<int?>? }
+
+@relation
+type Member = { @key a: string, @unique b: string }
+
+@relation
+type Pair = { @key a: string, @index b: string }
+
+@relation
+type Flag = { id: int, @unique name: string, @index on: bool, @index rank: int }
+
+/// The first two fields a Call's record holds, read back.
+fn call_head(c: Call) -> string {
+    let r = reader(c.encoded())
+    let caller = r.text()
+    let callee = r.text()
+    match caller {
+        .Ok(a) -> match callee { .Ok(b) -> "${a}->${b}", .Err(f) -> f.word() },
+        .Err(f) -> f.word(),
+    }
+}
+
+let c = Call { id: 1, caller: "f", callee: "g", line: 3 }
+let same_but_id = Call { id: 99, caller: "f", callee: "g", line: 3 }
+let swapped = Call { id: 1, caller: "g", callee: "f", line: 3 }
+let full = Tagged { name: "n", tags: ["a", "b"], note: "x", deep: [1, null] }
+let plain = Tagged { name: "n", tags: [], note: null, deep: null }
+let emptied = Tagged { name: "n", tags: [], note: "", deep: [] }
+let checks = [
+    c.stable_hash() == same_but_id.stable_hash(),
+    c.stable_hash() != swapped.stable_hash(),
+    Member { a: "x", b: "y" }.stable_hash() != Pair { a: "x", b: "y" }.stable_hash(),
+    plain.stable_hash() != emptied.stable_hash(),
+    Call.shape_hash() != Tagged.shape_hash(),
+    Call.relation_name().ends_with(".Call"),
+]
+
+/// Whether a Tagged row survives its own record, hash for hash.
+fn tagged_back(x: Tagged) -> bool {
+    match Tagged.decoded(x.encoded()) {
+        .Ok(back) -> back.stable_hash() == x.stable_hash() && back.name == x.name,
+        .Err(_) -> false,
+    }
+}
+
+fn fault_of(r: Result<Call, CodecFault>) -> string {
+    match r { .Ok(_) -> "ok", .Err(f) -> f.word() }
+}
+
+let back = match Call.decoded(c.encoded()) {
+    .Ok(r) -> "${r.id} ${r.caller}->${r.callee} ${r.line} ${r.stable_hash() == c.stable_hash()}",
+    .Err(f) -> f.word(),
+}
+let backs = [tagged_back(full), tagged_back(plain), tagged_back(emptied)]
+let short = fault_of(Call.decoded(c.encoded().slice(0, 2)))
+let empty = fault_of(Call.decoded("".bytes()))
+let spare = fault_of(Call.decoded([c.encoded(), "x".bytes()].bytes()))
+
+"${Call.relation_name()} ${[if ok { "y" } else { "n" } for ok in checks].join("")} ${call_head(c)} ${c.encoded().length} ${same_but_id.encoded().length} ${full.encoded().length} ${plain.encoded().length} ${emptied.encoded().length} | ${back} ${[if ok { "y" } else { "n" } for ok in backs].join("")} ${short} ${empty} ${spare}"

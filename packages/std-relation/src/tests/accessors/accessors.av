@@ -1,0 +1,267 @@
+// A relation's generated accessors under a Db: `insert` in each of its
+// shapes — a `Result` only where a `@unique` field can refuse it — `by_key` answering a key's row, `by_<field>` one row or
+// every row, `get` and `all` — and each Db's rows its own.
+use @std.relation.{relation, Columns}
+use @std.meta.{dense, derive}
+use @std.relation.db.{new_db, Db, hooked_db, Hooks}
+use @std.relation.refused.{InsertRefused}
+
+/// Ided, keyless: every insert is a new row.
+@relation
+type Flag = { id: int, @unique name: string, @index on: bool, @index rank: int }
+
+/// Idless, keyless.
+@relation
+type Note = { @index tag: string, text: string }
+
+/// Ided and keyed: an insert under a known key replaces that row, id kept.
+@relation
+type Account = { id: int, @index team: string, @key handle: string }
+
+/// Idless and keyed.
+@relation
+type Tagged = { @key name: string, tags: List<string> }
+
+/// Keyed, with a `@unique` field filed after an `@index`.
+@relation
+type User = { id: int, @key handle: string, @index team: string, @unique email: string }
+
+fn names(fs: List<Flag>) -> string { [f.name for f in fs].join(",") }
+
+fn flags() -> Result<string, InsertRefused> {
+    let db = new_db()
+    let x = Flag.insert(db, name: "x", on: true, rank: 1)?
+    let y = Flag.insert(db, name: "y", on: true, rank: 2)?
+    let _ = Flag.insert(db, name: "z", on: false, rank: 1)?
+    let found = Flag.by_name(db, "y")?.rank ?? -1
+    "${x.id}${y.id} ${names(Flag.by_on(db, true))} ${names(Flag.by_rank(db, 1))} ${found} ${Flag.by_name(db, "nope") == null} ${Flag.get(db, 1)?.name ?? "-"}"
+}
+
+fn notes() -> string {
+    let db = new_db()
+    let first = Note.insert(db, tag: "a", text: "one").text
+    let _ = Note.insert(db, tag: "a", text: "one")
+    "${Note.all(db).length} ${Note.by_tag(db, "a").length} ${first}"
+}
+
+fn accounts() -> string {
+    let db = new_db()
+    let a = Account.insert(db, team: "red", handle: "ann")
+    let b = Account.insert(db, team: "red", handle: "bo")
+    let moved = Account.insert(db, team: "blue", handle: "ann")
+    let team = Account.by_key(db, AccountKey { handle: "ann" })?.team ?? "-"
+    "${a.id}${b.id}${moved.id} ${Account.all(db).length} ${team} ${Account.by_team(db, "red").length}"
+}
+
+fn tagged() -> string {
+    let db = new_db()
+    let _ = Tagged.insert(db, name: "n", tags: ["a"])
+    let _ = Tagged.insert(db, name: "n", tags: ["b", "c"])
+    "${Tagged.all(db).length} ${(Tagged.by_key(db, TaggedKey { name: "n" })?.tags ?? []).join(",")}"
+}
+
+/// A relation of no lookup fields, and one whose name is two words.
+@relation
+type Plain = { n: int }
+
+@relation
+type ErrorSite = { id: int, @index at: int }
+
+fn plain_and_sites() -> string {
+    let db = new_db()
+    let _ = Plain.insert(db, n: 4)
+    let _ = ErrorSite.insert(db, at: 7)
+    let _ = ErrorSite.insert(db, at: 7)
+    "${Plain.all(db).length} ${ErrorSite.by_at(db, 7).length} ${ErrorSite.get(db, 1)?.at ?? -1}"
+}
+
+/// A composite key: three fields together name a row, one of them
+/// indexed on its own too.
+@relation
+type Site = { id: int, @key module: string, @key owner: string, @key @index name: string, line: int }
+
+fn sites() -> string {
+    let db = new_db()
+    let a = Site.insert(db, module: "m", owner: "ab", name: "c", line: 1)
+    let b = Site.insert(db, module: "m", owner: "a", name: "bc", line: 2)
+    let moved = Site.insert(db, module: "m", owner: "ab", name: "c", line: 3)
+    let hit = Site.by_key(db, SiteKey { module: "m", owner: "a", name: "bc" })?.line ?? -1
+    let miss = Site.by_key(db, SiteKey { module: "m", owner: "abc", name: "" }) == null
+    "${a.id}${b.id}${moved.id} ${Site.all(db).length} ${hit} ${miss} ${Site.by_name(db, "c").length} ${a.key().owner}"
+}
+
+/// What an insert answered: the row's id, or the refusal's words.
+fn landed(r: Result<User, InsertRefused>) -> string {
+    match r { .Ok(u) -> "${u.id}", .Err(e) -> "${e.describe().kind}: ${e.describe().message}" }
+}
+
+fn user(db: Db, handle: string, email: string) -> string {
+    landed(User.insert(db, handle: handle, team: "t", email: email))
+}
+
+/// A `@unique` value another row holds refuses the insert and files
+/// nothing; a keyed row keeps its own value, and a value let go is free.
+fn unique() -> string {
+    let db = new_db()
+    let a = user(db, "ann", "a@x")
+    let b = user(db, "bo", "b@x")
+    let same = user(db, "ann", "a@x")
+    let taken = user(db, "bo", "a@x")
+    let kept = User.by_key(db, UserKey { handle: "bo" })?.email ?? "-"
+    let moved = user(db, "ann", "c@x")
+    let freed = user(db, "bo", "a@x")
+    let flag = match Flag.insert(new_db(), name: "x", on: true, rank: 1) {
+        .Ok(f) -> f.name,
+        .Err(e) -> e.describe().message,
+    }
+    "${a}${b}${same}${moved}${freed} ${taken} ${kept} ${User.all(db).length} ${User.by_email(db, "a@x")?.handle ?? "-"} ${flag}"
+}
+
+@dense
+type NodeId = { index: int }
+
+enum Shade { Red, Green, Blue }
+
+/// A dense id is the row's own id, minted in insert order and read by
+/// `get`, or stays `@local`; an enum hashes, encodes and files by its
+/// variant's name; a stored row carries no local column.
+@relation
+type Node = { id: NodeId, @key name: string, @index shade: Shade, @local @index(ordered, grain) at: NodeId, @local up: NodeId?, tints: List<Shade> }
+
+fn nodes() -> string {
+    let db = new_db()
+    let a = Node
+        .insert(
+            db,
+            name: "a",
+            shade: Shade.Green,
+            at: NodeId { index: 7 },
+            up: null,
+            tints: [Shade.Red, Shade.Blue],
+        )
+    let _ = Node
+        .insert(
+            db,
+            name: "b",
+            shade: Shade.Green,
+            at: NodeId { index: 8 },
+            up: NodeId { index: 7 },
+            tints: [],
+        )
+    let moved = a with { at: NodeId { index: 99 } }
+    // every declared field once, so a stored row has no `@local` column
+    let none = NodeStored { name: "c", shade: Shade.Red, tints: [] }
+    let back = match Node.decoded(a.encoded()) {
+        .Ok(s) -> "${s.name} ${s.tints.length} ${s.shade == Shade.Green}",
+        .Err(e) -> e.word(),
+    }
+    "${Node.by_shade(db, Shade.Green).length} ${Node.by_at(db, NodeId { index: 8 }).first()?.name ?? "-"} ${a.stable_hash() == moved.stable_hash()} ${back} ${none.name} ${a.id.index}${moved.id.index} ${Node.get(db, NodeId { index: 1 })?.name ?? "-"}"
+}
+
+/// A Db its owner armed: every read recorded — bucket `b` as cell
+/// `b + 1`, the whole relation as cell 0, a miss opening its bucket — the
+/// verifier answering live hashes, and a write into a cell read this
+/// revision refused, naming the reader.
+fn hooked() -> string {
+    let log: Cell<List<string>> = Cell.new([])
+    let heard: Cell<List<string>> = Cell.new([])
+    let verifiers: Cell<List<fn(int) -> int>> = Cell.new([])
+    let rev = Cell.new(1)
+    let db = hooked_db(
+        Hooks {
+            family: (v: fn(int) -> int) -> {
+                verifiers.push(v)
+                5
+            },
+            record: (f: int, cell: int) -> {
+                log.push("${f}.${cell}")
+                7
+            },
+            revision: () -> rev.get(),
+            reader: (token: int) -> "reader ${token}",
+            refused: (w: string) -> heard.push(w),
+            opened: (_f: int, _c: int) -> -1,
+            settled: (_f: int, _c: int) -> heard.push("settled"),
+        },
+    )
+    let _ = Note.insert(db, tag: "a", text: "1")
+    let _ = Note.by_tag(db, "a")
+    let _ = Note.insert(db, tag: "z", text: "2")
+    let clean = heard.get().length
+    let _ = Note.insert(db, tag: "a", text: "3")
+    let _ = Note.by_tag(db, "q")
+    let _ = Note.insert(db, tag: "q", text: "4")
+    rev.set(2)
+    let _ = Note.insert(db, tag: "a", text: "5")
+    let later = heard.get().length
+    let _ = Note.all(db)
+    let _ = Note.insert(db, tag: "m", text: "6")
+    let verify = verifiers.get()[0]
+    "${log.get().join(",")} ${clean} ${later} ${heard.get().length} ${verify(0) == db.set_hashes()[0]} ${verify(1) != 0} ${heard.get()[0]}"
+}
+
+/// An annotation fact: its words carried, its place this process's own.
+@derive(Columns)
+type Noted = { name: string, args: List<string>, @local span: int? }
+
+/// A row's facts, one nested column: every field by its own rule, the
+/// `@local` ones never hashed or written.
+@derive(Columns)
+type Facts = { external: bool, tparams: List<string>, doc: List<string>?, @local span: int?, notes: List<Noted> }
+
+@relation
+type Fact = { @key name: string, facts: Facts }
+
+fn fact(doc: List<string>?, span: int) -> Fact {
+    Fact {
+        name: "f",
+        facts: Facts {
+            external: true,
+            tparams: ["T"],
+            doc: doc,
+            span: span,
+            notes: [Noted { name: "n", args: ["a"], span: span }],
+        },
+    }
+}
+
+fn nested() -> string {
+    let a = fact(null, 1)
+    let moved = fact(null, 99)
+    let empty = fact([], 1)
+    let db = new_db()
+    let _ = Fact.insert(db, name: "f", facts: a.facts)
+    let held = Fact.by_key(db, FactKey { name: "f" })?.facts?.notes?.length ?? -1
+    "${a.stable_hash() == moved.stable_hash()} ${a.stable_hash() != empty.stable_hash()} ${a.encoded().length == moved.encoded().length} ${held}"
+}
+
+/// A list field `@index`ed files its row under every element, each once.
+@relation
+type Labeled = { @key name: string, @index labels: List<string>, @index shades: List<Shade> }
+
+fn labeled() -> string {
+    let db = new_db()
+    let _ = Labeled.insert(db, name: "a", labels: ["x", "y", "x"], shades: [Shade.Red])
+    let _ = Labeled.insert(db, name: "b", labels: ["y"], shades: [Shade.Red, Shade.Green])
+    let before = "${Labeled.by_labels(db, "y").length}${Labeled.by_labels(db, "x").length}${Labeled.by_shades(db, Shade.Red).length}"
+    let _ = Labeled.insert(db, name: "a", labels: ["z"], shades: [])
+    "${before} ${Labeled.by_labels(db, "x").length}${Labeled.by_labels(db, "z").length}${Labeled.by_shades(db, Shade.Red).length}"
+}
+
+/// Two Dbs keep their own rows; a Db knows only the relations it
+/// reached, each once however often; a closed Db's rows are let go,
+/// every hash back to none and no relation joined again.
+fn dbs() -> string {
+    let a = new_db()
+    let b = new_db()
+    let _ = Note.insert(a, tag: "t", text: "1")
+    let _ = Flag.insert(a, name: "f", on: true, rank: 1)
+    let _ = Note.insert(a, tag: "t", text: "2")
+    let seen_in_b = Note.all(b).length
+    let reached = a.set_hashes().length
+    let held = a.set_hashes().any(it != 0)
+    a.close()
+    "${seen_in_b} ${reached} ${held} ${a.set_hashes().all(it == 0)} ${a.set_hashes().length}"
+}
+
+"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()} | ${nodes()} | ${hooked()} | ${nested()} | ${labeled()}"

@@ -1,0 +1,43 @@
+//! proves: one task per connection — a handler that sleeps stalls only
+//! its own connection, so a second client asking after it is answered
+//! first, and both are answered whole
+use @std.net.{NetError, listen}
+use @std.time.{ms, secs, sleep}
+use @std.http.frame.{limits, Method}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.http.client.{ClientError, connected, request}
+
+type App = { name: string }
+
+fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+/// One client's GET of `target`, noted in `order` when its answer lands.
+fn fetched(port: int, target: string, order: Cell<List<string>>) -> Result<string, ClientError> {
+    mut c = connected("127.0.0.1", port, secs(2), limits())?
+    let a = c.fetched(Method.Get, request("GET", target, "a", [], "".bytes())!, secs(2))?
+    order.push(target)
+    let _ = c.close()
+    .Ok("${a.status} ${a.body.text() ?? "?"}")
+}
+
+fn shown() -> Result<string, ClientError> {
+    let l = lifted(listen("127.0.0.1", 0))?
+    let order: Cell<List<string>> = Cell.new([])
+    let s = served(l, () -> App { name: "witness" }, limits(), timing()) { app, q ->
+        if q.target() == "/slow" { sleep(ms(100)) }
+        text(200, "${q.target() ?? "?"} done")
+    }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let slow = spawn fetched(l.port, "/slow", order)
+    sleep(ms(10))
+    let fast = spawn fetched(l.port, "/fast", order)
+    let f = fast.await?
+    let w = slow.await?
+    .Ok("${f}\n${w}\nanswered: ${order.get().join(" ")}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -22,7 +22,7 @@ spec "compiler/run" {
     given "a program that does not analyze clean" {
         then "it refuses to run and the refusal IS the report" {
             match analyze_source("let x = 1 + y").run() {
-                .Err(report) -> report.contains("F3000") && report.contains("did you mean"),
+                .Err(report) -> report.contains("resolve.unresolved") && report.contains("did you mean"),
                 .Ok(_) -> false,
             }
         }
@@ -32,11 +32,15 @@ spec "compiler/run" {
     }
     given "a `Bytes` handed to a text row through an extern" {
         then "UTF-8 octets are the text they spell — the evaluator answers what native does" {
-            shown("extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim(\" hi \".bytes()).length") == "2"
+            shown(
+                "extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim(\" hi \".bytes()).length",
+            ) == "2"
         }
         then "octets that are not UTF-8 are refused by name, never approximated" {
-            refused_at_run("extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim([255].bytes()!)",
-                "octets that are not UTF-8 reached a text seat")
+            refused_at_run(
+                "extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim([255].bytes()!)",
+                "octets that are not UTF-8 reached a text seat",
+            )
         }
         then "a length reads the header and never decodes, so octets that are not UTF-8 still answer" {
             shown("extern fn avra_str_len(b: Bytes) -> int\navra_str_len([255, 254].bytes()!)") == "2"
@@ -44,10 +48,7 @@ spec "compiler/run" {
     }
     given "an empty program" {
         then "it runs and shows nothing" {
-            match analyze_source("").run() {
-                .Ok(out) -> out == "",
-                .Err(_) -> false,
-            }
+            match analyze_source("").run() { .Ok(out) -> out == "", .Err(_) -> false }
         }
     }
     given "a root-module fn named `main`" {

@@ -2,9 +2,13 @@
 //! that wants one cannot be handed a number that meant something
 //! else; the clock is monotonic milliseconds, what a deadline is
 //! made of. Two readings differ by the time between them and mean
-//! nothing alone.
+//! nothing alone. `within d { … }` gives a block a deadline.
+use @std.meta.{Code}
+
 extern fn avra_now_ns() -> int
 extern fn avra_fiber_sleep(ms: int)
+extern fn avra_fiber_within(ms: int) -> int
+extern fn avra_fiber_within_end(outer: int)
 
 /// A span of time, in whole milliseconds.
 export type Duration = { ms: int }
@@ -40,6 +44,24 @@ export fn sleep(d: Duration) {
     avra_fiber_sleep(d.ms)
 }
 
+/// `within limit { … }` — the block answers as written, and every
+/// park inside it (in this task, or one it spawns) ends by `limit`
+/// from now. The task's outer deadline comes back however the block
+/// ends.
+export component within(limit: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}
+                let outer = avra_fiber_within(limit.ms)
+                defer avra_fiber_within_end(outer)
+                ${self.body}
+            }
+        }
+    }
+}
+
 impl Duration {
     fn plus(other: Duration) -> Duration {
         Duration { ms: self.ms + other.ms }
@@ -56,8 +78,8 @@ impl Duration {
 /// Milliseconds as text, at the unit a human would pick.
 export fn duration_text(total: int) -> string {
     if total < 1000 { return "${total}ms" }
-    if total < 60000 { return "${total / 1000}.${(total % 1000) / 100}s" }
-    let s = (total % 60000) / 1000
+    if total < 60000 { return "${total / 1000}.${total % 1000 / 100}s" }
+    let s = total % 60000 / 1000
     let pad = if s < 10 { "0" } else { "" }
     "${total / 60000}m${pad}${s}s"
 }

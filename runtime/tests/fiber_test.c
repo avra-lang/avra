@@ -19,6 +19,11 @@ static int g_fails = 0;
 
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "fiber_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
 
+// A descriptor closed through the scheduler's door, as every closer must:
+// its waiters woken and its registration forgotten, so the number's next
+// tenant inherits none.
+static void closed(int fd) { avra_fiber_fd_closing(fd); close(fd); }
+
 typedef void* (*Code)(void*);
 
 // A closure box over `code` with integer captures.
@@ -210,8 +215,8 @@ int main(void) {
     double t0 = seconds();
     CHECK(join_value(spawn1(timed_park, 20)) == 0, "a park on a silent pipe times out");
     CHECK(seconds() - t0 >= 0.019, "the timeout waited its time");
-    close(g_pipe[0]);
-    close(g_pipe[1]);
+    closed(g_pipe[0]);
+    closed(g_pipe[1]);
 
     // ten thousand tasks
     enum { MANY = 10000 };

@@ -11,8 +11,8 @@ use @std.avrac.core.{new_node_store, Pat}
 /// boundary between spliced runs is where two shapes would collide.
 fn same_shape(text: string) -> int {
     let f = read_format(text)
-    mut s = new_node_store()
-    s.pat_fingerprint(s.alloc_pat(Pat.Format(f.head, f.parts), null))
+    let s = new_node_store()
+    s.pat_fingerprint(s.alloc_pat(Pat.Format(f.head, f.parts)))
 }
 
 spec "features/formats adversarial" {
@@ -30,7 +30,9 @@ spec "features/formats adversarial" {
             shown("match \" x\" { \"{a} {b}\" -> \"[\${a}][\${b}]\"\n    _ -> \"no\" }") == "[][x]"
         }
         then "four holes and four literals hold their order" {
-            shown("match \"a1b2c3d\" { \"{p}1{q}2{r}3{s}\" -> \"\${p}\${q}\${r}\${s}\"\n    _ -> \"no\" }") == "abcd"
+            shown(
+                "match \"a1b2c3d\" { \"{p}1{q}2{r}3{s}\" -> \"\${p}\${q}\${r}\${s}\"\n    _ -> \"no\" }",
+            ) == "abcd"
         }
         then "a literal with no holes is still an equality pattern" {
             shown("match \"abc\" { \"abc\" -> \"lit\"\n    _ -> \"no\" }") == "lit"
@@ -45,80 +47,128 @@ spec "features/formats adversarial" {
             shown("match \"{}\" { \"{{}}\" -> \"braces\"\n    _ -> \"no\" }") == "braces"
         }
     }
-
     given "every wrong subject" {
+
         then "an int subject is refused, naming the type" {
-            refused_with("match 5 { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `int`")
+            refused_with(
+                "match 5 { \"{a}b\" -> 1\n    _ -> 0 }",
+                "a format pattern reads text, found `int`",
+            )
         }
         then "a bool subject is refused" {
-            refused_with("match true { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `bool`")
+            refused_with(
+                "match true { \"{a}b\" -> 1\n    _ -> 0 }",
+                "a format pattern reads text, found `bool`",
+            )
         }
         then "a list subject is refused, naming the element type" {
-            refused_with("match [1] { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `List<int>`")
+            refused_with(
+                "match [1] { \"{a}b\" -> 1\n    _ -> 0 }",
+                "a format pattern reads text, found `List<int>`",
+            )
         }
     }
-
     given "malformed formats" {
+
         then "two holes with nothing between them are refused, naming both" {
-            refused_with("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }", "`{a}` and `{b}` have nothing between them")
+            refused_with(
+                "match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }",
+                "`{a}` and `{b}` have nothing between them",
+            )
         }
         then "one name over two spans is refused" {
-            refused_with("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }", "`a` names two spans of this format")
+            refused_with(
+                "match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }",
+                "`a` names two spans of this format",
+            )
         }
-        then "a typed hole names the row it waits for" {
-            refused_with("match \"x\" { \"{n: int}z\" -> 1\n    _ -> 0 }", "nothing reads text as `int` yet")
+        then "a typed hole of no readable type is refused" {
+            refused_with(
+                "match \"x\" { \"{n: bool}z\" -> 1\n    _ -> 0 }",
+                "`{n: bool}` reads its span as `bool`, and a hole reads text as `string` or `int`",
+            )
+        }
+        then "an `int` hole binds an int, and a span that is no int tries the next arm" {
+            shown(
+                "fn f(s: string) -> string {\n    match s {\n        \"/n/{n: int}\" -> \"int \${n * 2}\",\n        \"/n/{t}\" -> \"text \${t}\",\n        _ -> \"none\",\n    }\n}\n\"\${f(\"/n/21\")} \${f(\"/n/-4\")} \${f(\"/n/4a\")} \${f(\"/n/\")}\"",
+            ) == "int 42 int -8 text 4a text "
+        }
+        then "an `int` hole over octets reads them as text first" {
+            shown(
+                "let b = \"id=7\".bytes()\nmatch b {\n    \"id={n: int}\" -> n + 1,\n    _ -> 0,\n}",
+            ) == "8"
         }
         then "a hole named for a keyword is refused by the name law" {
             refused_with("match \"x\" { \"{match}z\" -> 1\n    _ -> 0 }", "`match` is a keyword")
         }
     }
-
     given "crossing other features" {
+
         then "a format in a fn body binds through the return" {
-            shown("fn f(s: string) -> string { match s { \"{a}!\" -> a\n        _ -> \"no\" } }\nf(\"hi!\")") == "hi"
+            shown(
+                "fn f(s: string) -> string { match s { \"{a}!\" -> a\n        _ -> \"no\" } }\nf(\"hi!\")",
+            ) == "hi"
         }
         then "a format inside a while runs every turn" {
-            shown("mut i = 0\nmut out = \"\"\nwhile i < 2 {\n    out = out + match \"a=1\" { \"{k}={v}\" -> \"\${k}\${v}\"\n        _ -> \"no\" }\n    i = i + 1\n}\nout") == "a1a1"
+            shown(
+                "mut i = 0\nmut out = \"\"\nwhile i < 2 {\n    out = out + match \"a=1\" { \"{k}={v}\" -> \"\${k}\${v}\"\n        _ -> \"no\" }\n    i = i + 1\n}\nout",
+            ) == "a1a1"
         }
         then "a format inside a comprehension answers per element" {
-            shown("[match s { \"{a}-{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" } for s in [\"x-y\", \"zz\"]].join(\",\")") == "xy,no"
+            shown(
+                "[match s { \"{a}-{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" } for s in [\"x-y\", \"zz\"]].join(\",\")",
+            ) == "xy,no"
         }
         then "a format nested in a variant pattern reads the payload" {
-            shown("enum L { R(t: string)  E }\nmatch L.R(\"a b\") {\n    .R(\"{x} {y}\") -> \"\${x}\${y}\"\n    .R(o) -> o\n    .E -> \"e\"\n}") == "ab"
+            shown(
+                "enum L { R(t: string)  E }\nmatch L.R(\"a b\") {\n    .R(\"{x} {y}\") -> \"\${x}\${y}\"\n    .R(o) -> o\n    .E -> \"e\"\n}",
+            ) == "ab"
         }
         then "an octet scan is exact over a NUL, where a C string call would stop" {
-            shown("let b = [97, 124, 0, 98, 124, 99].bytes()!\nmatch b {\n    \"{x}|{y}|{z}\" -> \"\${x.length}/\${y.length}/\${z.length}\"\n    _ -> \"no\"\n}") == "1/2/1"
+            shown(
+                "let b = [97, 124, 0, 98, 124, 99].bytes()!\nmatch b {\n    \"{x}|{y}|{z}\" -> \"\${x.length}/\${y.length}/\${z.length}\"\n    _ -> \"no\"\n}",
+            ) == "1/2/1"
         }
         then "a Bytes subject binds Bytes spans" {
-            shown("match \"GET /x\".bytes() { \"{m} {p}\" -> \"\${m.length}/\${p.length}\"\n    _ -> \"no\" }") == "3/2"
+            shown(
+                "match \"GET /x\".bytes() { \"{m} {p}\" -> \"\${m.length}/\${p.length}\"\n    _ -> \"no\" }",
+            ) == "3/2"
         }
     }
-
     given "names against names" {
+
         then "a hole shadows an outer binding for its arm alone" {
-            shown("let a = \"outer\"\nmatch \"1x2\" { \"{a}x{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" }") == "12"
+            shown(
+                "let a = \"outer\"\nmatch \"1x2\" { \"{a}x{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" }",
+            ) == "12"
         }
         then "one name may bind in two different arms" {
             shown("match \"a-b\" { \"{v}-b\" -> v\n    \"{v}!b\" -> v\n    _ -> \"no\" }") == "a"
         }
     }
-
     given "ownership" {
+
         then "a capture outlives the match that made it" {
-            shown("fn grab(s: string) -> string {\n    match s {\n        \"{a}|{b}\" -> a\n        _ -> \"\"\n    }\n}\nlet held = grab(\"keep|drop\")\n\"\${held}\${held.length}\"") == "keep4"
+            shown(
+                "fn grab(s: string) -> string {\n    match s {\n        \"{a}|{b}\" -> a\n        _ -> \"\"\n    }\n}\nlet held = grab(\"keep|drop\")\n\"\${held}\${held.length}\"",
+            ) == "keep4"
         }
         then "captures pushed into a list survive the loop" {
-            shown("mut xs: List<string> = []\nfor s in [\"a=1\", \"b=2\"] {\n    xs.push(match s { \"{k}={v}\" -> k + v\n        _ -> \"\" })\n}\nxs.join(\",\")") == "a1,b2"
+            shown(
+                "mut xs: List<string> = []\nfor s in [\"a=1\", \"b=2\"] {\n    xs.push(match s { \"{k}={v}\" -> k + v\n        _ -> \"\" })\n}\nxs.join(\",\")",
+            ) == "a1,b2"
         }
         then "a capture read four times is read four times" {
             shown("match \"x-y\" { \"{a}-{b}\" -> \"\${a}\${b}\${a}\${b}\"\n    _ -> \"no\" }") == "xyxy"
         }
         then "the same format run three times answers three times" {
-            shown("fn f(s: string) -> string { match s { \"{a}.{b}\" -> a + b\n        _ -> \"-\" } }\nf(\"1.2\") + f(\"3.4\") + f(\"zz\")") == "1234-"
+            shown(
+                "fn f(s: string) -> string { match s { \"{a}.{b}\" -> a + b\n        _ -> \"-\" } }\nf(\"1.2\") + f(\"3.4\") + f(\"zz\")",
+            ) == "1234-"
         }
     }
-
     given "the scan's own laws" {
+
         then "an interior hole stops at the FIRST next literal, never the last" {
             shown("match \"w.x.y\" { \"{a}.{b}\" -> \"\${a}|\${b}\"\n    _ -> \"no\" }") == "w|x.y"
         }
@@ -129,76 +179,118 @@ spec "features/formats adversarial" {
             shown("match \"a\" { \"a{x}a\" -> \"yes\"\n    _ -> \"no\" }") == "no"
         }
         then "a capture is measured in BYTES, as every length here is" {
-            shown("match \"café|thé\" { \"{a}|{b}\" -> \"\${a}\${b}\${a.length}\"\n    _ -> \"no\" }") == "caféthé5"
+            shown(
+                "match \"café|thé\" { \"{a}|{b}\" -> \"\${a}\${b}\${a.length}\"\n    _ -> \"no\" }",
+            ) == "caféthé5"
         }
         then "a long subject scans the same as a short one" {
-            shown("let s = \"a\" + \"0123456789012345678901234567890123456789\" + \"|z\"\nmatch s { \"{head}|{tail}\" -> \"\${head.length}\${tail}\"\n    _ -> \"no\" }") == "41z"
+            shown(
+                "let s = \"a\" + \"0123456789012345678901234567890123456789\" + \"|z\"\nmatch s { \"{head}|{tail}\" -> \"\${head.length}\${tail}\"\n    _ -> \"no\" }",
+            ) == "41z"
         }
     }
-
     given "a grammar and the door it declares" {
+
         then "a grammar of one hole parses the span between its literals" {
-            shown("grammar One = \"x{a}y\"\nmatch One.parse(\"xQy\") { r? -> r.a\n    null -> \"no\" }") == "Q"
+            shown(
+                "grammar One = \"x{a}y\"\nmatch One.parse(\"xQy\") { r? -> r.a\n    null -> \"no\" }",
+            ) == "Q"
         }
         then "a hole at each end leaves the literal between them" {
-            shown("grammar Ends = \"{a}-{b}\"\nmatch Ends.parse(\"p-q\") { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+            shown(
+                "grammar Ends = \"{a}-{b}\"\nmatch Ends.parse(\"p-q\") { r? -> r.a + r.b\n    null -> \"no\" }",
+            ) == "pq"
         }
         then "four holes keep their order through the record" {
-            shown("grammar Four = \"{a}1{b}2{c}3{d}\"\nmatch Four.parse(\"w1x2y3z\") { r? -> r.a + r.b + r.c + r.d\n    null -> \"no\" }") == "wxyz"
+            shown(
+                "grammar Four = \"{a}1{b}2{c}3{d}\"\nmatch Four.parse(\"w1x2y3z\") { r? -> r.a + r.b + r.c + r.d\n    null -> \"no\" }",
+            ) == "wxyz"
         }
         then "a hole may bind nothing and still fill its field" {
-            shown("grammar E = \"{a}|{b}\"\nmatch E.parse(\"|x\") { r? -> \"[\${r.a}][\${r.b}]\"\n    null -> \"no\" }") == "[][x]"
+            shown(
+                "grammar E = \"{a}|{b}\"\nmatch E.parse(\"|x\") { r? -> \"[\${r.a}][\${r.b}]\"\n    null -> \"no\" }",
+            ) == "[][x]"
         }
         then "a hole named for the door is a field, and the door still opens" {
-            shown("grammar G = \"{parse}-{b}\"\nlet g = G { parse: \"1\", b: \"2\" }\nmatch G.parse(\"x-y\") { r? -> r.parse + g.parse\n    null -> \"no\" }") == "x1"
+            shown(
+                "grammar G = \"{parse}-{b}\"\nlet g = G { parse: \"1\", b: \"2\" }\nmatch G.parse(\"x-y\") { r? -> r.parse + g.parse\n    null -> \"no\" }",
+            ) == "x1"
         }
         then "the door and the pattern read the same text the same way" {
-            shown("grammar G = \"{a}-{b}\"\nlet byhand = match \"x-y\" { \"{a}-{b}\" -> a + b\n    _ -> \"no\" }\nlet bydoor = match G.parse(\"x-y\") { r? -> r.a + r.b\n    null -> \"no\" }\nbyhand + bydoor") == "xyxy"
+            shown(
+                "grammar G = \"{a}-{b}\"\nlet byhand = match \"x-y\" { \"{a}-{b}\" -> a + b\n    _ -> \"no\" }\nlet bydoor = match G.parse(\"x-y\") { r? -> r.a + r.b\n    null -> \"no\" }\nbyhand + bydoor",
+            ) == "xyxy"
         }
         then "a record outlives the subject its spans were cut from" {
-            shown("grammar G = \"{a}-{b}\"\nfn held() -> G? {\n    let subject = \"keep\" + \"-\" + \"this\"\n    G.parse(subject)\n}\nmatch held() { r? -> r.a + r.b\n    null -> \"no\" }") == "keepthis"
+            shown(
+                "grammar G = \"{a}-{b}\"\nfn held() -> G? {\n    let subject = \"keep\" + \"-\" + \"this\"\n    G.parse(subject)\n}\nmatch held() { r? -> r.a + r.b\n    null -> \"no\" }",
+            ) == "keepthis"
         }
         then "a record survives a list and a loop" {
-            shown("grammar G = \"{a}-{b}\"\nmut xs: List<G> = []\nfor s in [\"1-2\", \"3-4\", \"zz\"] {\n    match G.parse(s) { r? -> { xs.push(r) }\n        null -> { xs.push(G { a: \"?\", b: \"?\" }) } }\n}\n[x.a + x.b for x in xs].join(\",\")") == "12,34,??"
+            shown(
+                "grammar G = \"{a}-{b}\"\nmut xs: List<G> = []\nfor s in [\"1-2\", \"3-4\", \"zz\"] {\n    match G.parse(s) { r? -> { xs.push(r) }\n        null -> { xs.push(G { a: \"?\", b: \"?\" }) } }\n}\n[x.a + x.b for x in xs].join(\",\")",
+            ) == "12,34,??"
         }
         then "`with` copies a parsed record without disturbing it" {
-            shown("grammar G = \"{a}-{b}\"\nmatch G.parse(\"x-y\") { r? -> (r with { a: \"Z\" }).a + r.a\n    null -> \"no\" }") == "Zx"
+            shown(
+                "grammar G = \"{a}-{b}\"\nmatch G.parse(\"x-y\") { r? -> (r with { a: \"Z\" }).a + r.a\n    null -> \"no\" }",
+            ) == "Zx"
         }
         then "a format with no holes names no fields" {
             refused_with("grammar None = \"plain text\"\n1", "has no holes")
         }
         then "an int in the text seat is refused" {
-            refused_with("grammar G = \"{a}-{b}\"\nG.parse(5)", "argument 1 of `parse` wants `string`, found `int`")
+            refused_with(
+                "grammar G = \"{a}-{b}\"\nG.parse(5)",
+                "argument 1 of `parse` wants `string`, found `int`",
+            )
         }
         then "octets read the same as the text they came from" {
-            shown("grammar G = \"{a}-{b}\"\nmatch G.parse(\"p-q\".bytes()) { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+            shown(
+                "grammar G = \"{a}-{b}\"\nmatch G.parse(\"p-q\".bytes()) { r? -> r.a + r.b\n    null -> \"no\" }",
+            ) == "pq"
         }
         then "octets that are not UTF-8 answer absence, like any target this grammar cannot read" {
-            shown("grammar G = \"{a}-{b}\"\nlet bad = [112, 45, 255].bytes()!\nmatch G.parse(bad) { r? -> r.a + r.b\n    null -> \"no\" }") == "no"
+            shown(
+                "grammar G = \"{a}-{b}\"\nlet bad = [112, 45, 255].bytes()!\nmatch G.parse(bad) { r? -> r.a + r.b\n    null -> \"no\" }",
+            ) == "no"
         }
         then "no argument is refused by arity" {
             refused_with("grammar G = \"{a}-{b}\"\nG.parse()", "`parse` takes 1 arguments, found 0")
         }
         then "two arguments are refused by arity" {
-            refused_with("grammar G = \"{a}-{b}\"\nG.parse(\"x\", \"y\")", "`parse` takes 1 arguments, found 2")
+            refused_with(
+                "grammar G = \"{a}-{b}\"\nG.parse(\"x\", \"y\")",
+                "`parse` takes 1 arguments, found 2",
+            )
         }
         then "a grammar named for a keyword is refused by the name law" {
             refused_with("grammar match = \"{a}-{b}\"\n1", "`match` is a keyword")
         }
         then "one name declared twice is refused" {
-            refused_with("grammar G = \"{a}-{b}\"\ngrammar G = \"{c}-{d}\"\n1", "`G` is declared more than once")
+            refused_with(
+                "grammar G = \"{a}-{b}\"\ngrammar G = \"{c}-{d}\"\n1",
+                "`G` is declared more than once",
+            )
         }
         then "a grammar clashing with a record of its name is refused" {
-            refused_with("type G = { n: int }\ngrammar G = \"{a}-{b}\"\n1", "`G` is declared more than once")
+            refused_with(
+                "type G = { n: int }\ngrammar G = \"{a}-{b}\"\n1",
+                "`G` is declared more than once",
+            )
         }
     }
-
     given "print, and the domain it refuses outside" {
+
         then "the domain's edge: every value that would move its delimiter is refused" {
-            shown("grammar L = \"{a}--{b}\"\nfn p(a: string) -> string { L.print(L { a: a, b: \"z\" }) ?? \"refused\" }\n[p(\"x\"), p(\"x-\"), p(\"-\"), p(\"--\"), p(\"x--\"), p(\"xy\")].join(\" \")") == "x--z refused refused refused refused xy--z"
+            shown(
+                "grammar L = \"{a}--{b}\"\nfn p(a: string) -> string { L.print(L { a: a, b: \"z\" }) ?? \"refused\" }\n[p(\"x\"), p(\"x-\"), p(\"-\"), p(\"--\"), p(\"x--\"), p(\"xy\")].join(\" \")",
+            ) == "x--z refused refused refused refused xy--z"
         }
         then "the last hole takes its delimiter freely, because the suffix fixes its end" {
-            shown("grammar L = \"{a}-{b}\"\nfn p(b: string) -> string { L.print(L { a: \"x\", b: b }) ?? \"refused\" }\n[p(\"y\"), p(\"-\"), p(\"y-z\"), p(\"--\")].join(\" \")") == "x-y x-- x-y-z x---"
+            shown(
+                "grammar L = \"{a}-{b}\"\nfn p(b: string) -> string { L.print(L { a: \"x\", b: b }) ?? \"refused\" }\n[p(\"y\"), p(\"-\"), p(\"y-z\"), p(\"--\")].join(\" \")",
+            ) == "x-y x-- x-y-z x---"
         }
         then "empty values print the literals alone" {
             shown("grammar L = \"{a}-{b}\"\nL.print(L { a: \"\", b: \"\" }) ?? \"refused\"") == "-"
@@ -207,32 +299,49 @@ spec "features/formats adversarial" {
             shown("grammar L = \"x{a}y\"\nL.print(L { a: \"\" }) ?? \"refused\"") == "xy"
         }
         then "print then parse recovers every field" {
-            shown("grammar L = \"{a}-{b}\"\nlet t = L.print(L { a: \"p\", b: \"q\" })!\nmatch L.parse(t) { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+            shown(
+                "grammar L = \"{a}-{b}\"\nlet t = L.print(L { a: \"p\", b: \"q\" })!\nmatch L.parse(t) { r? -> r.a + r.b\n    null -> \"no\" }",
+            ) == "pq"
         }
         then "parse then print returns the text it was given" {
-            shown("grammar L = \"{a}-{b}\"\nmatch L.parse(\"p-q\") { r? -> L.print(r) ?? \"refused\"\n    null -> \"no\" }") == "p-q"
+            shown(
+                "grammar L = \"{a}-{b}\"\nmatch L.parse(\"p-q\") { r? -> L.print(r) ?? \"refused\"\n    null -> \"no\" }",
+            ) == "p-q"
         }
         then "printed text outlives the record it came from" {
-            shown("grammar L = \"{a}-{b}\"\nfn made() -> string {\n    let r = L { a: \"keep\", b: \"this\" }\n    L.print(r) ?? \"refused\"\n}\nmade() + \"!\"") == "keep-this!"
+            shown(
+                "grammar L = \"{a}-{b}\"\nfn made() -> string {\n    let r = L { a: \"keep\", b: \"this\" }\n    L.print(r) ?? \"refused\"\n}\nmade() + \"!\"",
+            ) == "keep-this!"
         }
         then "print inside a comprehension answers per element" {
-            shown("grammar L = \"{a}-{b}\"\n[L.print(L { a: s, b: \"z\" }) ?? \"refused\" for s in [\"p\", \"q-\"]].join(\",\")") == "p-z,refused"
+            shown(
+                "grammar L = \"{a}-{b}\"\n[L.print(L { a: s, b: \"z\" }) ?? \"refused\" for s in [\"p\", \"q-\"]].join(\",\")",
+            ) == "p-z,refused"
         }
         then "an int in the record seat is refused" {
-            refused_with("grammar L = \"{a}-{b}\"\nL.print(5)", "argument 1 of `print` wants `L`, found `int`")
+            refused_with(
+                "grammar L = \"{a}-{b}\"\nL.print(5)",
+                "argument 1 of `print` wants `L`, found `int`",
+            )
         }
         then "a string in the record seat is refused" {
-            refused_with("grammar L = \"{a}-{b}\"\nL.print(\"x\")", "argument 1 of `print` wants `L`, found `string`")
+            refused_with(
+                "grammar L = \"{a}-{b}\"\nL.print(\"x\")",
+                "argument 1 of `print` wants `L`, found `string`",
+            )
         }
         then "another record in the seat is refused by name" {
-            refused_with("grammar L = \"{a}-{b}\"\ntype P = { n: int }\nL.print(P { n: 1 })", "argument 1 of `print` wants `L`, found `P`")
+            refused_with(
+                "grammar L = \"{a}-{b}\"\ntype P = { n: int }\nL.print(P { n: 1 })",
+                "argument 1 of `print` wants `L`, found `P`",
+            )
         }
         then "no argument is refused by arity" {
             refused_with("grammar L = \"{a}-{b}\"\nL.print()", "`print` takes 1 arguments, found 0")
         }
     }
-
     given "a format's fingerprint, at every boundary it splices" {
+
         then "a literal before a hole is not the same as one after it" {
             same_shape("x{a}y") != same_shape("xy{a}")
         }
@@ -255,8 +364,8 @@ spec "features/formats adversarial" {
             same_shape("{a}-{b}") == same_shape("{a}-{b}")
         }
     }
-
     given "the greedy mark, attacked position by position" {
+
         then "two dots are no hole" {
             shape("{a..}-{z}") == "malformed@0:a.."
         }
@@ -285,8 +394,8 @@ spec "features/formats adversarial" {
             refused_with("grammar G = \"{a..}-{z}\"", "`{name...}`")
         }
     }
-
     given "a greedy hole against a needle that overlaps itself" {
+
         then "the LAST overlapping occurrence is taken, not the last disjoint one" {
             shown("grammar G = \"{a...}aa{b}\"\nG.parse(\"aaaaXY\")?.a ?? \"no\"") == "aa"
         }
@@ -303,8 +412,8 @@ spec "features/formats adversarial" {
             shown("grammar G = \"{a...}::{b}\"\nG.parse(\"a:b\") == null") == "true"
         }
     }
-
     given "a greedy hole outside a grammar declaration" {
+
         then "IT WORKS IN A PATTERN, where the format is spelled inline" {
             shown("let s = \"1-2-3\"\nmatch s { \"{a...}-{b}\" -> a + \"|\" + b\n    _ -> \"no\" }") == "1-2|3"
         }
@@ -318,19 +427,26 @@ spec "features/formats adversarial" {
             shown("grammar G = \"/s/{p...}\"\nG.parse(\"/x/y\".bytes()) == null") == "true"
         }
     }
-
     given "a format over a NAMED text type — a pattern is a READ, so it sees the shape" {
+
         then "holes over a name over string bind the spans" {
-            shown("type Id = string\nlet i: Id = \"k-1\"\nmatch i {\n    \"k-{n}\" -> n\n    _ -> \"none\"\n}") == "1"
+            shown(
+                "type Id = string\nlet i: Id = \"k-1\"\nmatch i {\n    \"k-{n}\" -> n\n    _ -> \"none\"\n}",
+            ) == "1"
         }
         then "a hole-less literal over the name still compares the text" {
             shown("type Id = string\nlet i: Id = \"k1\"\nmatch i {\n    \"k1\" -> 1\n    _ -> 0\n}") == "1"
         }
         then "holes over a name over Bytes cut octets" {
-            shown("type Raw = Bytes\nlet r = Raw(\"k-1\".bytes())\nmatch r {\n    \"k-{n}\" -> n.text() ?? \"?\"\n    _ -> \"none\"\n}") == "1"
+            shown(
+                "type Raw = Bytes\nlet r = Raw(\"k-1\".bytes())\nmatch r {\n    \"k-{n}\" -> n.text() ?? \"?\"\n    _ -> \"none\"\n}",
+            ) == "1"
         }
         then "a grammar's door is a SEAT — a named text is judged by its name there" {
-            refused_with("grammar G = \"{a}-{b}\"\ntype Id = string\nlet i: Id = \"x-y\"\nG.parse(i)", "argument 1 of `parse` wants `string`, found `Id`")
+            refused_with(
+                "grammar G = \"{a}-{b}\"\ntype Id = string\nlet i: Id = \"x-y\"\nG.parse(i)",
+                "argument 1 of `parse` wants `string`, found `Id`",
+            )
         }
     }
 }

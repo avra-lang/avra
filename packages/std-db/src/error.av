@@ -1,0 +1,133 @@
+//! `@std/db`'s own runtime error — `SqlError` resolved back through
+//! the schema when a `@model`'s derive can name the exact `@unique`
+//! field a constraint violation broke, unenriched otherwise. Stands
+//! alone with `@std/errors` and `@std/sqlite`'s error module, per
+//! `db.av`'s derive-isolation law.
+use @std.errors.{Error, ErrorInfo, Loc, info}
+use @std.sqlite.error.{Cause, SqlError, Violation}
+
+/// One `@unique` field's own name and where it was declared — enough
+/// to say which law a violation broke, never the whole `@std/meta`
+/// `Field` a model's derive already spent at compile time.
+export type UniqueField = { name: string, at: Loc? }
+
+/// A `@model` operation's failure. `.cause()` always answers the
+/// original `SqlError` whole — the model-aware message is a richer
+/// addition, never a replacement that can lose information.
+export enum ModelError {
+    /// One `@unique` field named with full confidence: either it is
+    /// the table's only one, or SQLite's own message named it among
+    /// several.
+    Unique(field: UniqueField, model: string, sql: SqlError)
+    /// More than one `@unique` field collided and SQLite's message
+    /// did not parse against any of them — every candidate, named
+    /// honestly as "one of these" rather than a guess.
+    Ambiguous(fields: List<UniqueField>, model: string, sql: SqlError)
+    /// Every other `SqlError` — wrapped, never rewritten.
+    Other(sql: SqlError)
+}
+
+impl Error for ModelError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Unique(f, model, _) -> info("db.constraint.unique", unique_message(f, model)),
+            .Ambiguous(fs, model, _) -> info("db.constraint.unique", ambiguous_message(fs, model)),
+            .Other(sql) -> sql.describe(),
+        }
+    }
+
+    fn cause() -> dyn Error? {
+        match self { .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Other(sql) -> sql }
+    }
+}
+
+// ── Voices — a refusal's whole wording lives here, once. ───────────
+
+fn unique_message(f: UniqueField, model: string) -> string {
+    "`${f.name}` must be unique — declared @unique on `${model}.${f.name}`${at_suffix(f.at)}"
+}
+
+fn ambiguous_message(fs: List<UniqueField>, model: string) -> string {
+    "one of ${candidates(fs, model)} must be unique — which of `${model}`'s @unique fields collided could not be resolved from SQLite's own message"
+}
+
+fn candidates(fs: List<UniqueField>, model: string) -> string {
+    ["`${model}.${f.name}`${at_suffix(f.at)}" for f in fs].join(", ")
+}
+
+fn at_suffix(at: Loc?) -> string {
+    match at {
+        loc? -> " at ${loc.file ?? "?"}:${loc.lo}"
+        null -> ""
+    }
+}
+
+// ── Attribution — resolved once, at the moment a write fails. ──────
+
+/// Whether a failure is the one cause this file resolves back through
+/// the schema.
+fn is_unique_violation(cause: Cause) -> bool {
+    match cause { .Constraint(v) -> v == Violation.Unique, rest -> false }
+}
+
+/// A raw `SqlError` resolved back through a model's own `@unique`
+/// fields — the derive's compile-time knowledge meeting a run-time
+/// failure. Zero known fields makes the violation structurally
+/// impossible; the honest answer if it somehow still happens is the
+/// plain wrap, never a fabricated field.
+export fn attributed(e: SqlError, model: string, fields: List<UniqueField>) -> ModelError {
+    if !is_unique_violation(e.cause) { return ModelError.Other(e) }
+    match fields.length {
+        0 -> ModelError.Other(e),
+        1 -> ModelError.Unique(fields[0], model, e),
+        rest -> match named_field(e.message, model, fields) {
+            f? -> ModelError.Unique(f, model, e)
+            null -> ModelError.Ambiguous(fields, model, e)
+        },
+    }
+}
+
+/// The `@unique` field SQLite's own message names, when it parses as
+/// the derive's own DDL would produce it — `"table.column"`, a
+/// documented, stable part of `sqlite3_errmsg`'s text for a UNIQUE
+/// violation. Anything else (a future format, a hand-written
+/// constraint) answers null and the caller falls back honestly.
+fn named_field(message: string, model: string, fields: List<UniqueField>) -> UniqueField? {
+    fields.find((f) -> names_exact_column(message, model, f.name))
+}
+
+/// `message` names `model.name` as its OWN identifier — never merely
+/// as a substring. One `@unique` field's name can prefix or suffix
+/// another's on the same model (`name` inside `name2`), and a model's
+/// own name can be a suffix of an unrelated table's (`User` inside
+/// `SuperUser`); either way a bare `contains` names a confident wrong
+/// field instead of falling back honestly.
+fn names_exact_column(message: string, model: string, name: string) -> bool {
+    let needle = "${model}.${name}"
+    let i = message.index_of(needle)
+    i >= 0 && !ident_char_at(message, i - 1) && !ident_char_at(message, i + needle.length)
+}
+
+fn ident_char_at(message: string, at: int) -> bool {
+    at >= 0 && at < message.length && is_ident_char(message.char_code(at))
+}
+
+fn is_ident_char(c: int) -> bool {
+    c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95
+}
+
+/// A generated `insert`/`update`'s own SQL call, resolved through the
+/// model's `@unique` fields.
+export fn or_attributed<T>(r: Result<T, SqlError>, model: string, fields: List<UniqueField>) -> Result<
+    T,
+    ModelError,
+> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(attributed(e, model, fields)) }
+}
+
+/// Any other `SqlError`-returning call folded into the same
+/// `ModelError` pipeline — unenriched, since only a constraint
+/// violation resolved against a model's own fields names one.
+export fn modeled<T>(r: Result<T, SqlError>) -> Result<T, ModelError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(ModelError.Other(e)) }
+}

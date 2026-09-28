@@ -12,14 +12,14 @@
 // the reader HOLDS ONLY THE QUERY, so there is nothing past it to
 // search. That is checkable without a stopwatch, which is why it is
 // asserted here and not timed.
-use @std.http.http.{Request}
+use @std.http.http.{Request, Unrouted}
 use @std.http.query.{Query, Asked, decoded}
 
 // ── Fixtures ────────────────────────────────────────────────────
 
 /// A request as the server holds one: the head, and a body of
 /// `filler` octets in the SAME buffer.
-fn qa_q_asked_body(target: string, filler: int) -> Request {
+fn qa_q_asked_body(target: string, filler: int) -> Request<Unrouted> {
     let head = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Length: ${filler}\r\n\r\n"
     framed_from(head.bytes().concat([97 for i in 0..filler].bytes()!))!
 }
@@ -66,8 +66,8 @@ spec "@std.http query adversarial" {
             qa_q_asked_body(qa_many(1000), 1048570).query().length() == 1000
         }
     }
-
     given "separators a request can carry into the body" {
+
         then "an `&` in the body is not a separator of the query" {
             qa_body_query("/x?a=1", "z&z&z") == "1|a|[1]"
         }
@@ -78,8 +78,8 @@ spec "@std.http query adversarial" {
             qa_body_query("/x?a=1&b", "&&&===") == "2|a,b|[1]"
         }
     }
-
     given "degenerate queries" {
+
         then "only separators carry no pairs" { qa_q_of("/x?&&&&").length() == 0 }
         then "a lone `=` names no key" { qa_q_of("/x?=").length() == 0 }
         then "a lone `&` names no key" { qa_q_of("/x?&").length() == 0 }
@@ -96,8 +96,8 @@ spec "@std.http query adversarial" {
             qa_one("/x?a=1", "a" + nul()) == "absent"
         }
     }
-
     given "decoding, and the escapes that are not characters" {
+
         then "a trailing `%` is refused" { qa_dec("%") == "refused" }
         then "a `%` with one digit left is refused" { qa_dec("a%4") == "refused" }
         then "a `%` followed by non-hex is refused" { qa_dec("%zz") == "refused" }

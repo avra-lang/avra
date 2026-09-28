@@ -1,14 +1,15 @@
 //! Parse-time lowering: captured tokens and expressions -> the
-//! StructDecl or NamedType statement and the StructLit node. Names
+//! StructDecl, NamedType or Alias statement and the StructLit node. Names
 //! and their types (or values) arrive as parallel capture lists and
 //! zip.
 use core.{Expr, Stmt, Nominal, Plain, Scoped}
-use features.{LangNode, Builder, zip_defect, marks_at}
+use features.{LangNode, Builder, zip_defect, marks_at, spread_name, spread_named}
+use grammar.{Token}
 
 /// THE ONE `type` BUILDER: the grammar's ordered choice captures a
 /// record's fields OR one written shape, and the capture that
 /// arrived picks the node — a NAMED TYPE when a shape was written.
-fn build_type_decl(mut b: Builder) -> Result<LangNode, string> {
+fn build_type_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     let fs = b.tokens(2)?
@@ -17,19 +18,38 @@ fn build_type_decl(mut b: Builder) -> Result<LangNode, string> {
     let nt = b.type_refs(5)?
     let names = [t.text for t in tp]
     if !nt.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), [Plain(t) for t in names], nt[0])) }
+    let spreads = b.tokens(7)?
     let fields = b.fields_zipped(fs, ft, fds, marks_at(b.args, 6))?
-    b.make_stmt(Stmt.StructDecl(Scoped(n.text), [Plain(t) for t in names], fields))
+    b
+        .make_stmt(
+            Stmt
+                .StructDecl(Scoped(n.text), [Plain(t) for t in names], spread_named(fields, fs, spreads)),
+        )
+}
+
+/// `alias Name<T> = <type>` — a shorthand for the shape it names.
+fn build_alias_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let tp = b.tokens(1)?
+    let of = b.type_refs(2)?
+    b.make_stmt(Stmt.Alias(Scoped(n.text), [Plain(t.text) for t in tp], of[0]))
 }
 
 /// `T { a: x, b: y }` — every field written with its value: a punned
 /// `{ b }` would make `null { v }` a literal and swallow every
 /// `if … != null { v }`, since a type name and a value name share
 /// one lexical class (ROADMAP: the bs2 debt ledger).
-fn build_struct_lit(mut b: Builder) -> Result<LangNode, string> {
+fn build_struct_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let vn = b.tokens(1)?
     let ve = b.exprs(2)?
-    if vn.length != ve.length { return .Err(zip_defect) }
-    let names = [k.text for k in vn]
-    b.make_expr(Expr.StructLit(Nominal(t.text), [Plain(t) for t in names], ve))
+    let spreads = b.tokens(3)?
+    let written = [b.value_after(vn, ve, j) for j, k in vn]
+    if [v for v in written if v != null].length != ve.length { return .Err(zip_defect) }
+    let values = [v ?? b.expr_node(Expr.Ident(Scoped(vn[j].text))) for j, v in written]
+    b
+        .make_expr(
+            Expr
+                .StructLit(Nominal(t.text), [Plain(spread_name(k, spreads, vn)) for k in vn], values),
+        )
 }

@@ -3,13 +3,13 @@
 //! one-cell list — one box for every shape, so the runtime makes one
 //! call; `.await` joins and reads that cell.
 use core.{ExprId, Reg, Type, TypeId}
-use features.{LowerCx}
+use features.{LowerCx, MethodCall}
 
-fn spawn_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Spawn(body) -> cx.task_spawn(cx.shape_at(e), task_box(cx, body)),
-        rest -> cx.lower_defect(e, "a non-spawn reached the task lowering"),
+        rest -> cx.lower_defect(e, "a foreign node reached the task lowering"),
     }
 }
 
@@ -34,4 +34,14 @@ fn one_cell_elem(cx: LowerCx, answer: TypeId) -> TypeId {
 
 fn lower_done(mut cx: LowerCx, e: ExprId, task: Reg, _ty: TypeId) -> Reg {
     cx.task_done(cx.shape_at(e), task)
+}
+
+fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.grown_box(cx.shape_at(mc.e), cx.box_size(4), [])
+}
+
+fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its task survived typing") }
+    cx.tasks_push(cx.reg_of(mc.subject), cx.reg_of(first))
+    cx.hollow_of(cx.type_at(mc.e))
 }

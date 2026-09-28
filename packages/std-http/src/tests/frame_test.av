@@ -10,17 +10,11 @@ fn req_text(more: string) -> string { "GET / HTTP/1.1\r\nHost: a\r\n${more}\r\n"
 fn req(more: string) -> Bytes { req_text(more).bytes() }
 
 fn head_of(b: Bytes) -> Head? {
-    match framed(b, 0, 0, limits()) {
-        .Complete(h) -> h,
-        .Partial or .Refused(_) -> null,
-    }
+    match framed(b, 0, 0, limits()) { .Complete(h) -> h, .Partial or .Refused(_) -> null }
 }
 
 fn why(b: Bytes) -> Refusal? {
-    match framed(b, 0, 0, limits()) {
-        .Refused(r) -> r,
-        .Partial or .Complete(_) -> null,
-    }
+    match framed(b, 0, 0, limits()) { .Refused(r) -> r, .Partial or .Complete(_) -> null }
 }
 
 fn partial(b: Bytes) -> bool { framed(b, 0, 0, limits()) is .Partial }
@@ -31,11 +25,7 @@ fn length_of(h: Head) -> int { body_length(h.body) }
 
 /// The declared length, -1 for no body and -2 for chunked.
 fn body_length(b: Body) -> int {
-    match b {
-        .Length(n) -> n,
-        .Chunked -> -2,
-        .None -> -1,
-    }
+    match b { .Length(n) -> n, .Chunked -> -2, .None -> -1 }
 }
 
 /// Every split of `b` into two reads gives the unsplit verdict, and
@@ -49,7 +39,7 @@ fn split_agrees(b: Bytes, at: int, whole: Head?) -> bool {
     let first = b.slice(0, at)
     if !partial(first) { return false }
     match framed(b, 0, first.length, limits()) {
-        .Complete(h) -> whole != null && h.end == whole!.end && h.fields.length == whole!.fields.length,
+        .Complete(h) -> whole != null && h.end == whole!.end && h.fields.count() == whole!.fields.count(),
         .Partial or .Refused(_) -> false,
     }
 }
@@ -58,29 +48,41 @@ spec "std.http frame" {
     given "the head (rows 1 to 7)" {
         then "a minimal request frames complete at 27 bytes with no body, persistent" {
             let h = head_of(req(""))!
-            h.end == 27 && length_of(h) == -1 && h.keep_alive && h.method == Method.Get && h.minor == 1 && h.fields.length == 1
+            h.end == 27 &&
+                length_of(h) == -1 &&
+                h.keep_alive &&
+                h.method == Method.Get &&
+                h.minor == 1 &&
+                h.fields.count() == 1
         }
         then "every two-read split of a request agrees with the whole" {
             every_split_agrees(req("Accept: */*\r\nX-Y: z\r\n"))
         }
         then "a torn blank line is partial, then complete, never refused" {
             let b = req("")
-            partial(b.slice(0, 24)) && partial(b.slice(0, 25)) && partial(b.slice(0, 26)) && head_of(b) != null
+            partial(b.slice(0, 24)) &&
+                partial(b.slice(0, 25)) &&
+                partial(b.slice(0, 26)) &&
+                head_of(b) != null
         }
         then "the second of two requests in one read frames from the first's end" {
             let two = req("").concat(req("X: 1\r\n"))
             match framed(two, 27, 0, limits()) {
-                .Complete(h) -> h.end == two.length && h.fields.length == 2,
+                .Complete(h) -> h.end == two.length && h.fields.count() == 2,
                 .Partial or .Refused(_) -> false,
             }
         }
         then "a body's bytes are never read as the next request line" {
-            let post = "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhelloGET / HTTP/1.1\r\nHost: a\r\n\r\n".bytes()
+            let post = "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhelloGET / HTTP/1.1\r\nHost: a\r\n\r\n"
+                .bytes()
             let h = head_of(post)!
-            length_of(h) == 5 && h.method == Method.Post && head_of(post.slice(h.end + 5, post.length)) != null
+            length_of(h) == 5 &&
+                h.method == Method.Post &&
+                head_of(post.slice(h.end + 5, post.length)) != null
         }
         then "one leading empty line is ignored and two are refused" {
-            head_of("\r\n".bytes().concat(req("")))!.end == 29 && refuses("\r\n\r\n".bytes().concat(req("")), Refusal.RequestLine)
+            head_of("\r\n".bytes().concat(req("")))!.end == 29 &&
+                refuses("\r\n\r\n".bytes().concat(req("")), Refusal.RequestLine)
         }
     }
     given "the request line (rows 8 to 19)" {
@@ -98,10 +100,12 @@ spec "std.http frame" {
                 refuses("GET / HTTP/1\r\nHost: a\r\n\r\n".bytes(), Refusal.Version)
         }
         then "another major version is 505 and a higher minor is framed as its own" {
-            status("GET / HTTP/2.0\r\nHost: a\r\n\r\n".bytes()) == 505 && head_of("GET / HTTP/1.2\r\nHost: a\r\n\r\n".bytes())!.minor == 2
+            status("GET / HTTP/2.0\r\nHost: a\r\n\r\n".bytes()) == 505 &&
+                head_of("GET / HTTP/1.2\r\nHost: a\r\n\r\n".bytes())!.minor == 2
         }
         then "a bare LF or a bare CR is a line-end refusal" {
-            refuses("GET / HTTP/1.1\nHost: a\n\n".bytes(), Refusal.LineEnd) && refuses("GET / HTTP/1.1\rHost: a\r\n\r\n".bytes(), Refusal.LineEnd)
+            refuses("GET / HTTP/1.1\nHost: a\n\n".bytes(), Refusal.LineEnd) &&
+                refuses("GET / HTTP/1.1\rHost: a\r\n\r\n".bytes(), Refusal.LineEnd)
         }
         then "a space inside the target refuses" {
             status("GET /a b HTTP/1.1\r\nHost: a\r\n\r\n".bytes()) == 400
@@ -110,7 +114,8 @@ spec "std.http frame" {
             refuses("GET example.com:80 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Target) &&
                 refuses("GET * HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Target) &&
                 head_of("OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n".bytes()) != null &&
-                head_of("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n".bytes())!.method == Method.Connect
+                head_of("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n".bytes())!
+                    .method == Method.Connect
         }
         then "absolute-form is accepted" {
             head_of("GET http://h/p?q HTTP/1.1\r\nHost: other\r\n\r\n".bytes()) != null
@@ -120,7 +125,8 @@ spec "std.http frame" {
         }
         then "a request line past the line bound is 414, before any line has ended" {
             let long = "GET /".bytes().concat([97 for i in 0..8200].bytes()!)
-            status(long) == 414 && status(long.concat(" HTTP/1.1\r\nHost: a\r\n\r\n".bytes())) == 414
+            status(long) == 414 &&
+                status(long.concat(" HTTP/1.1\r\nHost: a\r\n\r\n".bytes())) == 414
         }
     }
     given "host and field lines (rows 20 to 24)" {
@@ -135,21 +141,49 @@ spec "std.http frame" {
             value_of(req("Name:${pad}v${pad}\r\n"), 1) == "v"
         }
         then "space before the colon or an empty name refuses; OWS around a value is not the value" {
-            refuses(req("Name : v\r\n"), Refusal.FieldName) && refuses(req(": v\r\n"), Refusal.FieldName) &&
-                value_of(req("Name:v\r\n"), 1) == "v" && value_of(req("Name:  v  \r\n"), 1) == "v"
+            refuses(req("Name : v\r\n"), Refusal.FieldName) &&
+                refuses(req(": v\r\n"), Refusal.FieldName) &&
+                value_of(req("Name:v\r\n"), 1) == "v" &&
+                value_of(req("Name:  v  \r\n"), 1) == "v"
         }
         then "obs-fold and a whitespace-led first line refuse" {
-            refuses(req("X: a\r\n b\r\n"), Refusal.FieldName) && refuses("GET / HTTP/1.1\r\n X: a\r\nHost: a\r\n\r\n".bytes(), Refusal.FieldName)
+            refuses(req("X: a\r\n b\r\n"), Refusal.FieldName) &&
+                refuses("GET / HTTP/1.1\r\n X: a\r\nHost: a\r\n\r\n".bytes(), Refusal.FieldName)
         }
         then "a control byte in a value refuses, a high byte too" {
-            refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([127].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue) &&
-                refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([1].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue) &&
-                refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([128].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue)
+            refuses(
+                    "GET / HTTP/1.1\r\nHost: a\r\nX: a"
+                        .bytes()
+                        .concat([127].bytes()!)
+                        .concat("b\r\n\r\n".bytes()),
+                    Refusal.FieldValue,
+                ) &&
+                refuses(
+                    "GET / HTTP/1.1\r\nHost: a\r\nX: a"
+                        .bytes()
+                        .concat([1].bytes()!)
+                        .concat("b\r\n\r\n".bytes()),
+                    Refusal.FieldValue,
+                ) &&
+                refuses(
+                    "GET / HTTP/1.1\r\nHost: a\r\nX: a"
+                        .bytes()
+                        .concat([128].bytes()!)
+                        .concat("b\r\n\r\n".bytes()),
+                    Refusal.FieldValue,
+                )
         }
         then "too many fields, a field past its bound, a head past its bound are 431" {
             let many = ["X${i}: v\r\n" for i in 0..100].join("")
             let wide = "X: " + [97 for i in 0..8200].bytes()!.text()! + "\r\n"
-            status(req(many)) == 431 && status(req(wide)) == 431 && status(req(["Y${i}: ${[97 for k in 0..1000].bytes()!.text()!}\r\n" for i in 0..70].join(""))) == 431
+            status(req(many)) == 431 &&
+                status(req(wide)) == 431 &&
+                status(
+                    req(
+                        ["Y${i}: ${[97 for k in 0..1000].bytes()!.text()!}\r\n" for i in 0..70]
+                            .join(""),
+                    ),
+                ) == 431
         }
     }
     given "content-length (rows 25 to 28)" {
@@ -159,7 +193,8 @@ spec "std.http frame" {
                 refuses(req("Content-Length: 5\r\nContent-Length: 6\r\n"), Refusal.ContentLength)
         }
         then "anything but 1*DIGIT refuses, and so does a 20-digit number" {
-            ["-1", "+5", "0x5", "", "5abc", "5 5", "18446744073709551616"].all(refuses(req("Content-Length: ${it}\r\n"), Refusal.ContentLength))
+            ["-1", "+5", "0x5", "", "5abc", "5 5", "18446744073709551616"]
+                .all(refuses(req("Content-Length: ${it}\r\n"), Refusal.ContentLength))
         }
         then "trailing OWS is not part of the number" {
             length_of(head_of(req("Content-Length: 5 \r\n"))!) == 5
@@ -170,7 +205,10 @@ spec "std.http frame" {
     }
     given "transfer-encoding (rows 29 to 34)" {
         then "chunked beside a content-length refuses" {
-            refuses(req("Content-Length: 5\r\nTransfer-Encoding: chunked\r\n"), Refusal.TransferEncoding)
+            refuses(
+                req("Content-Length: 5\r\nTransfer-Encoding: chunked\r\n"),
+                Refusal.TransferEncoding,
+            )
         }
         then "chunked that is not final refuses; unknown codings before a final chunked are 501" {
             refuses(req("Transfer-Encoding: chunked, gzip\r\n"), Refusal.TransferEncoding) &&
@@ -179,23 +217,32 @@ spec "std.http frame" {
                 status(req("Transfer-Encoding: xchunked\r\n")) == 501
         }
         then "HTAB is OWS and the coding's case does not matter" {
-            length_of(head_of(req("Transfer-Encoding:\tchunked\r\n"))!) == -2 && length_of(head_of(req("Transfer-Encoding: CHUNKED\r\n"))!) == -2
+            length_of(head_of(req("Transfer-Encoding:\tchunked\r\n"))!) == -2 &&
+                length_of(head_of(req("Transfer-Encoding: CHUNKED\r\n"))!) == -2
         }
         then "a leading space or a bare LF in the line before it refuses" {
-            refuses(req(" Transfer-Encoding: chunked\r\n"), Refusal.FieldName) && refuses(req("X: X\nTransfer-Encoding: chunked\r\n"), Refusal.LineEnd)
+            refuses(req(" Transfer-Encoding: chunked\r\n"), Refusal.FieldName) &&
+                refuses(req("X: X\nTransfer-Encoding: chunked\r\n"), Refusal.LineEnd)
         }
         then "chunked on HTTP/1.0 refuses" {
-            refuses("POST / HTTP/1.0\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n".bytes(), Refusal.OldChunked)
+            refuses(
+                "POST / HTTP/1.0\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n".bytes(),
+                Refusal.OldChunked,
+            )
         }
     }
     given "expect and persistence (rows 46 to 49)" {
         then "100-continue is noted in any case; another expectation is 417; 1.0 ignores it" {
-            head_of(req("Expect: 100-continue\r\n"))!.expects_continue && head_of(req("Expect: 100-Continue\r\n"))!.expects_continue &&
-                status(req("Expect: foo\r\n")) == 417 && head_of("GET / HTTP/1.0\r\nExpect: 100-continue\r\n\r\n".bytes())!.expects_continue == false
+            head_of(req("Expect: 100-continue\r\n"))!.expects_continue &&
+                head_of(req("Expect: 100-Continue\r\n"))!.expects_continue &&
+                status(req("Expect: foo\r\n")) == 417 &&
+                head_of("GET / HTTP/1.0\r\nExpect: 100-continue\r\n\r\n".bytes())!.expects_continue == false
         }
         then "persistence follows the version and the connection field" {
-            head_of(req(""))!.keep_alive && head_of(req("Connection: close\r\n"))!.keep_alive == false &&
-                head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false && head_of("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n".bytes())!.keep_alive &&
+            head_of(req(""))!.keep_alive &&
+                head_of(req("Connection: close\r\n"))!.keep_alive == false &&
+                head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false &&
+                head_of("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n".bytes())!.keep_alive &&
                 head_of(req("Connection: keep-alive, Upgrade, close\r\n"))!.keep_alive == false
         }
     }
@@ -239,9 +286,12 @@ fn end_of_fed(c: Chunker, whole: string) -> int {
 spec "std.http chunked" {
     given "the chunked body (rows 35 to 45)" {
         then "sizes in either case, with leading zeros, and the empty body all decode" {
-            body_of("5\r\nhello\r\n0\r\n\r\n") == "hello" && body_of("A\r\n0123456789\r\n0\r\n\r\n") == "0123456789" &&
-                body_of("a\r\n0123456789\r\n0\r\n\r\n") == "0123456789" && body_of("000005\r\nhello\r\n0\r\n\r\n") == "hello" &&
-                body_of("00\r\n\r\n") == "" && end_of("5\r\nhello\r\n0\r\n\r\n") == 15
+            body_of("5\r\nhello\r\n0\r\n\r\n") == "hello" &&
+                body_of("A\r\n0123456789\r\n0\r\n\r\n") == "0123456789" &&
+                body_of("a\r\n0123456789\r\n0\r\n\r\n") == "0123456789" &&
+                body_of("000005\r\nhello\r\n0\r\n\r\n") == "hello" &&
+                body_of("00\r\n\r\n") == "" &&
+                end_of("5\r\nhello\r\n0\r\n\r\n") == 15
         }
         then "extensions are ignored" {
             body_of("5;ext=1\r\nhello\r\n0;last\r\n\r\n") == "hello"
@@ -273,13 +323,16 @@ spec "std.http chunked" {
             ["0x5", "-1", "", "G"].all(chunk_status("${it}\r\nhello\r\n0\r\n\r\n") == 400)
         }
         then "seventeen digits refuse and sixteen past the body bound are 413" {
-            chunk_status("10000000000000000\r\n") == 400 && chunk_status("FFFFFFFFFFFFFFFF\r\n") == 413
+            chunk_status("10000000000000000\r\n") == 400 &&
+                chunk_status("FFFFFFFFFFFFFFFF\r\n") == 413
         }
         then "a bare LF after data or inside an extension refuses" {
-            chunk_status("5\r\nhello\n0\r\n\r\n") == 400 && chunk_status("5;a\nb\r\nhello\r\n0\r\n\r\n") == 400
+            chunk_status("5\r\nhello\n0\r\n\r\n") == 400 &&
+                chunk_status("5;a\nb\r\nhello\r\n0\r\n\r\n") == 400
         }
         then "trailers are parsed and dropped, framing unchanged" {
-            body_of("5\r\nhello\r\n0\r\nTrailer: v\r\n\r\n") == "hello" && body_of("5\r\nhello\r\n0\r\nContent-Length: 99\r\n\r\n") == "hello"
+            body_of("5\r\nhello\r\n0\r\nTrailer: v\r\n\r\n") == "hello" &&
+                body_of("5\r\nhello\r\n0\r\nContent-Length: 99\r\n\r\n") == "hello"
         }
         then "a next request glued to the last chunk is a trailer line without a colon" {
             chunk_status("0\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n") == 400
@@ -296,6 +349,6 @@ spec "std.http chunked" {
 
 /// Field `i`'s value as text.
 fn value_of(b: Bytes, i: int) -> string {
-    let f = head_of(b)!.fields[i]
+    let f = head_of(b)!.fields.field(i)
     b.slice(f.value.lo, f.value.hi).text() ?? "<not text>"
 }

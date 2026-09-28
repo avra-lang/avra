@@ -1,0 +1,24 @@
+//! A plugin is a package that declares a relation and the fns that read
+//! it. Nothing here names the compiler: the relation is an ordinary
+//! record under `@relation`.
+use @std.relation.{relation, query}
+use @std.relation.db.{Db}
+
+/// One task. The Db mints `id`; `title` is the row's key, so writing a
+/// title again replaces its row and keeps its id; `owner` files a row
+/// under its owner.
+@relation
+export type Todo = { id: int, @key title: string, @index owner: string, done: bool }
+
+/// Add a task, or update the one already so titled.
+export fn record(db: Db, owner: string, title: string, done: bool) -> Todo {
+    Todo.insert(db, title: title, owner: owner, done: done)
+}
+
+/// A query over the relation: an owner's tasks not yet done, in the
+/// order they were first written. Its answer is kept per call and rerun
+/// after a write to `Todo`.
+@query
+export fn open_for(db: Db, owner: string) -> List<Todo> {
+    [t for t in Todo.by_owner(db, owner) if !t.done]
+}

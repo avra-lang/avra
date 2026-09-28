@@ -7,27 +7,38 @@
 //! resolve here; a name arriving through a hole resolves where the
 //! code is spliced.
 use features.{LanguageFeature, BuilderRow}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn quote_lit() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name    | build
-        "quote" | build_quote
+        name        | build
+        "quote"     | build_quote
+        "quote_pat" | build_quote_pat
+        "run_hole"  | build_run_hole
     }
     let codes = table<DiagCode> {
-        kind               | id      | summary
-        "type.quote_hole"  | "F2075" | "a hole takes what its seat takes"
-        "type.quote_meta"  | "F2076" | "a `quote` answers a `@std.meta` value, which this program does not load"
+        kind                   | summary
+        "type.quote_hole"      | "a hole takes what its seat takes"
+        "type.quote_meta"      | "a `quote` answers a `@std.meta` value, which this program does not load"
+        "type.quote_pat_shape" | "a `quote` pattern matches one node — one statement, no arms"
+        "type.quote_pat_subj"  | "a `quote` pattern reads code — a `Code`, not this subject's type"
+        "type.quote_pat_hole"  | "a `quote` pattern's hole names a fresh variable, not a written expression"
+        "type.quote_pat_type"  | "a `quote` pattern takes no hole in type position yet"
+        "type.quote_pat_seat"  | "a `quote` pattern's hole cannot bind at this seat — an embedded name/binder hole, or an arm hole"
+        "type.quote_pat_mixed" | "a `quote` pattern's binder is used at both a code seat and a name seat"
+        "type.quote_pat_run"   | "two run holes with nothing between them — no scan can split them"
     }
-    component LanguageFeature f {
-        name = "quote"
-        docs = "`quote { … }` — a template parsed here: statements, declarations or arms; \${e} is a hole typed by its seat."
-        gram = grammar {
-            primary = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
+    LanguageFeature quote_lit {
+        name: "quote"
+        gram: grammar {
+            primary = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:hole_content )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
+            pattern = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:hole_content )? he:HOLE_END )* -> quote_pat(o, a, s, c, hb, h, he)
+            nonbind_pattern = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:hole_content )? he:HOLE_END )* -> quote_pat(o, a, s, c, hb, h, he)
+            hole_content = ".." n:NAME -> run_hole(n) | e:expression -> e
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    quote_lit
 }

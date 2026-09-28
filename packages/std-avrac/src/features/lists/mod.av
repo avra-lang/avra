@@ -1,45 +1,77 @@
 //! Lists — the first aggregate. `[e, e, e]` builds one; access
 //! (`xs[i]`, `xs.length`) is the spine's postfix ladder; the walks,
 //! the scans, the growth words and the copies are this feature's
-//! method rows.
-use features.{LanguageFeature, BuilderRow, MethodRow, ReceiverEffect, TypeRow, PropertyRow, no_law, no_variants, measured_reg, lower_is_empty}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+//! method rows. A comprehension builds one by walking another:
+//! `[e for x in xs if p]`, naming the index too with `[e for i, x
+//! in xs]`, or by counting with `[e for i in lo..hi]` — each head is
+//! the `for` statement's. A comprehension nests any number of heads,
+//! left outermost, each reading every earlier one's binder — `[a + b
+//! for a in xs for b in a.children if p(a, b)]` — with an `if`
+//! filter after any head, in written order. `collect { for o in xs {
+//! if o.ok { o.id } } }` gathers every value its statements would
+//! discard.
+use features.{
+    LanguageFeature,
+    BuilderRow,
+    MethodRow,
+    ReceiverEffect,
+    TypeRow,
+    PropertyRow,
+    no_law,
+    no_variants,
+    measured_reg,
+    lower_is_empty,
+    bool_answer,
+    held_element_answer,
+    same_answer,
+    str_answer,
+    unknown_answer,
+    void_answer,
+}
+use features.lists.{last_index, bool_comprehension_list, bool_comprehension_range}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn lists() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name       | build
-        "list_lit" | build_list
-        "comp"     | build_comp
+        name                | build
+        "list_lit"          | build_list
+        "comp"              | build_comp
+        "comp_head"         | build_comp_head
+        "comp_filter"       | build_comp_filter
+        "collect"           | build_collect
+        "collect_blockless" | build_collect_blockless
     }
     let codes = table<DiagCode> {
-        kind                | id      | summary
-        "type.list_empty"   | "F2004" | "an empty list has no element type to infer"
-        "type.list_element" | "F2005" | "a list's elements share one type"
-        "type.list_scalar"  | "F2006" | "a list holds scalars for now"
-        "type.place"        | "F2034" | "a mutation needs a mut place"
-        "type.list"         | "F2041" | "a comprehension walks a list"
+        kind                  | summary
+        "type.list_empty"     | "an empty list has no element type to infer"
+        "type.list_element"   | "a list's elements share one type"
+        "type.list_scalar"    | "a list holds scalars for now"
+        "type.place"          | "a mutation needs a mut place"
+        "type.list"           | "a comprehension walks a list"
+        "type.plan_residual"  | "a filter over a whole relation hands its rows to a call with no index narrowing it"
+        "type.plans_mismatch" | "a planned lookup files by its field's own type"
     }
     let methods = table<MethodRow> {
-        name        | takes   | check           | lower | effect
-        "map"       | on_list | check_map       | lower_map | ReceiverEffect.Read
-        "filter"    | on_list | check_filter    | lower_filter | ReceiverEffect.Read
-        "find"      | on_list | check_find      | lower_find | ReceiverEffect.Lends
-        "find_index" | on_list | check_find_index | lower_find_index | ReceiverEffect.Read
-        "any"       | on_list | check_any       | lower_any | ReceiverEffect.Read
-        "all"       | on_list | check_all       | lower_all | ReceiverEffect.Read
-        "contains"  | on_list | check_contains  | lower_contains | ReceiverEffect.Read
-        "index_of"  | on_list | check_index_of  | lower_index_of | ReceiverEffect.Read
-        "push"      | on_list | check_push      | lower_push | ReceiverEffect.Write
-        "pop"       | on_list | check_pop       | lower_pop | ReceiverEffect.Write
-        "set"       | on_list | check_set       | lower_set | ReceiverEffect.Write
-        "is_empty"  | on_list | check_is_empty  | lower_is_empty | ReceiverEffect.Read
-        "first"     | on_list | check_first     | lower_first | ReceiverEffect.Lends
-        "last"      | on_list | check_last      | lower_last | ReceiverEffect.Lends
-        "concat"    | on_list | check_concat    | lower_concat | ReceiverEffect.Read
-        "slice"     | on_list | check_slice     | lower_slice | ReceiverEffect.Read
-        "enumerate" | on_list | check_enumerate | lower_enumerate | ReceiverEffect.Read
-        "join"      | on_list | check_join      | lower_join | ReceiverEffect.Read
+        name         | takes   | check            | lower            | effect               | answers
+        "map"        | on_list | check_map        | lower_map        | ReceiverEffect.Read  | unknown_answer
+        "filter"     | on_list | check_filter     | lower_filter     | ReceiverEffect.Read  | same_answer
+        "find"       | on_list | check_find       | lower_find       | ReceiverEffect.Lends | held_element_answer
+        "find_index" | on_list | check_find_index | lower_find_index | ReceiverEffect.Read  | unknown_answer
+        "any"        | on_list | check_any        | lower_any        | ReceiverEffect.Read  | bool_answer
+        "all"        | on_list | check_all        | lower_all        | ReceiverEffect.Read  | bool_answer
+        "contains"   | on_list | check_contains   | lower_contains   | ReceiverEffect.Read  | bool_answer
+        "index_of"   | on_list | check_index_of   | lower_index_of   | ReceiverEffect.Read  | unknown_answer
+        "push"       | on_list | check_push       | lower_push       | ReceiverEffect.Write | void_answer
+        "pop"        | on_list | check_pop        | lower_pop        | ReceiverEffect.Write | unknown_answer
+        "set"        | on_list | check_set        | lower_set        | ReceiverEffect.Write | void_answer
+        "is_empty"   | on_list | check_is_empty   | lower_is_empty   | ReceiverEffect.Read  | bool_answer
+        "first"      | on_list | check_first      | lower_first      | ReceiverEffect.Lends | held_element_answer
+        "last"       | on_list | check_last       | lower_last       | ReceiverEffect.Lends | held_element_answer
+        "concat"     | on_list | check_concat     | lower_concat     | ReceiverEffect.Read  | same_answer
+        "slice"      | on_list | check_slice      | lower_slice      | ReceiverEffect.Read  | same_answer
+        "enumerate"  | on_list | check_enumerate  | lower_enumerate  | ReceiverEffect.Read  | unknown_answer
+        "join"       | on_list | check_join       | lower_join       | ReceiverEffect.Read  | str_answer
     }
     let types = table<TypeRow> {
         name   | arity | slots | judge  | builds     | variants
@@ -49,17 +81,17 @@ export fn lists() -> LanguageFeature {
         name     | takes   | check        | lower
         "length" | on_list | check_length | measured_reg
     }
-    component LanguageFeature f {
-        name = "lists"
-        docs = "`[e for x in xs if p]` builds a list by walking another, `[e for i, x in xs]` naming the index too, `[e for i in lo..hi]` by counting — the head is the `for` statement's; `[first, second, third]` — a homogeneous aggregate; index with `xs[i]`, measure with `xs.length`."
-        gram = grammar {
-            primary = "[" v:expression "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? ( "if" c:expression )? "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, ix, en, src, hi, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest)
+    LanguageFeature lists {
+        gram: grammar {
+            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, h, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest) | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
+            comp_head = "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? -> comp_head(ix, en, src, hi)
+            comp_filter = "if" c:expression -> comp_filter(c)
         }
-        builders = rows
-        diags = codes
-        methods = methods
-        types = types
-        properties = properties
+        builders: rows
+        diags: codes
+        methods: methods
+        types: types
+        properties: properties
     }
-    f
+    lists
 }

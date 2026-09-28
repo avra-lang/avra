@@ -206,45 +206,47 @@ export type SqlError = {
 
 // ── The mapping ─────────────────────────────────────────────────
 
-/// The cause an extended result code names. The primary code is the low
-/// eight bits and the DETAIL is the high ones, so both are read here and
-/// nowhere else.
-export fn cause_of(extended: int) -> Cause {
-    let detail = extended / 256
-    match extended % 256 {
-        5 -> Cause.Busy(waiting_of(detail)),
-        6 -> Cause.Busy(Waiting.Locked),
-        7 -> Cause.NoMemory,
-        8 -> Cause.Denied(denial_of(detail)),
-        9 -> Cause.Interrupted,
-        10 -> Cause.Io(detail),
-        11 -> Cause.Corrupt,
-        13 -> Cause.Full,
-        14 -> Cause.CantOpen,
-        18 -> Cause.TooBig,
-        19 -> Cause.Constraint(violation_of(detail)),
-        26 -> Cause.NotADatabase,
-        // SQLITE_ERROR is SQLite's GENERIC code — its own text is "SQL
-        // logic error" — and it covers a parse error AND a missing
-        // table alike. `Syntax` is therefore wider than its name: what
-        // separates the two is `SqlError.at`, since a parse error
-        // carries a token offset and a missing table does not.
-        // SQLITE_ERROR IS "GENERIC ERROR", AND THIS ARM IS NARROWER THAN
-        // THE CODE. A missing table, a missing column and a parse error
-        // all arrive as 1, and all read `.Syntax` — so does every detail
-        // of it (MISSING_COLLSEQ, RETRY, SNAPSHOT, KEY, UNABLE,
-        // RESERVESIZE). A caller branching on `.Syntax` goes and fixes
-        // its SQL, and for "no such table" that is the wrong
-        // instruction.
-        //
-        // KEPT ANYWAY, because the separation is already IN THE VALUE
-        // and not in this enum: a parse error carries a token offset in
-        // `at` and a missing table does not. A variant that GUESSED
-        // between them would be a worse answer than a caller reading the
-        // offset it already has.
-        1 -> Cause.Syntax,
-        21 or 25 -> Cause.Defect(misuse_word(extended % 256)),
-        _ -> Cause.Other(extended),
+impl Cause {
+    /// The cause an extended result code names. The primary code is the
+    /// low eight bits and the DETAIL is the high ones, so both are read
+    /// here and nowhere else.
+    static fn of(extended: int) -> Cause {
+        let detail = extended / 256
+        match extended % 256 {
+            5 -> Cause.Busy(waiting_of(detail)),
+            6 -> Cause.Busy(Waiting.Locked),
+            7 -> Cause.NoMemory,
+            8 -> Cause.Denied(denial_of(detail)),
+            9 -> Cause.Interrupted,
+            10 -> Cause.Io(detail),
+            11 -> Cause.Corrupt,
+            13 -> Cause.Full,
+            14 -> Cause.CantOpen,
+            18 -> Cause.TooBig,
+            19 -> Cause.Constraint(violation_of(detail)),
+            26 -> Cause.NotADatabase,
+            // SQLITE_ERROR is SQLite's GENERIC code — its own text is "SQL
+            // logic error" — and it covers a parse error AND a missing
+            // table alike. `Syntax` is therefore wider than its name: what
+            // separates the two is `SqlError.at`, since a parse error
+            // carries a token offset and a missing table does not.
+            // SQLITE_ERROR IS "GENERIC ERROR", AND THIS ARM IS NARROWER THAN
+            // THE CODE. A missing table, a missing column and a parse error
+            // all arrive as 1, and all read `.Syntax` — so does every detail
+            // of it (MISSING_COLLSEQ, RETRY, SNAPSHOT, KEY, UNABLE,
+            // RESERVESIZE). A caller branching on `.Syntax` goes and fixes
+            // its SQL, and for "no such table" that is the wrong
+            // instruction.
+            //
+            // KEPT ANYWAY, because the separation is already IN THE VALUE
+            // and not in this enum: a parse error carries a token offset in
+            // `at` and a missing table does not. A variant that GUESSED
+            // between them would be a worse answer than a caller reading the
+            // offset it already has.
+            1 -> Cause.Syntax,
+            21 or 25 -> Cause.Defect(misuse_word(extended % 256)),
+            _ -> Cause.Other(extended),
+        }
     }
 }
 
@@ -308,13 +310,7 @@ impl Cause {
     fn retryable() -> bool {
         match self {
             .Busy(b) -> waiting_clears(b),
-            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_)
-                or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow
-                or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted
-                or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired
-                or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul
-                or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized
-                or .Done or .Closed or .NoTransaction or .TransactionOpen -> false,
+            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or .Done or .Closed or .NoTransaction or .TransactionOpen -> false,
         }
     }
 
@@ -402,10 +398,7 @@ impl Cause {
 /// standing. What is fixed is the JUSTIFICATION: it is written for
 /// detail 0 and must not be read as covering 262.
 fn waiting_clears(b: Waiting) -> bool {
-    match b {
-        .Recovery or .Timeout or .Plain -> true,
-        .Locked or .Snapshot -> false,
-    }
+    match b { .Recovery or .Timeout or .Plain -> true, .Locked or .Snapshot -> false }
 }
 
 fn violation_word(v: Violation) -> string {
@@ -426,19 +419,21 @@ fn violation_word(v: Violation) -> string {
     }
 }
 
-/// A refusal the DRIVER made, before or instead of a call. It carries
-/// no result code because SQLite never saw it — a caller tells these
-/// apart by CAUSE, never by `code`, which is zero for every one.
-export fn refused(cause: Cause, message: string) -> SqlError {
-    SqlError { cause: cause, code: 0, extended: 0, message: message, sql: null }
-}
+impl SqlError {
+    /// A refusal the DRIVER made, before or instead of a call. It carries
+    /// no result code because SQLite never saw it — a caller tells these
+    /// apart by CAUSE, never by `code`, which is zero for every one.
+    static fn refused(cause: Cause, message: string) -> SqlError {
+        SqlError { cause: cause, code: 0, extended: 0, message: message, sql: null }
+    }
 
-/// THE DRIVER'S OWN BUG, said in its own words. `Defect` carries the
-/// sentence and the message repeats it, because a caller who catches
-/// one should not have to unwrap the cause to read what happened.
-///
-/// Never for a caller's mistake — that is what the other arms are for.
-export fn defect(what: string) -> SqlError { refused(Cause.Defect(what), what) }
+    /// THE DRIVER'S OWN BUG, said in its own words. `Defect` carries the
+    /// sentence and the message repeats it, because a caller who catches
+    /// one should not have to unwrap the cause to read what happened.
+    ///
+    /// Never for a caller's mistake — that is what the other arms are for.
+    static fn defect(what: string) -> SqlError { SqlError.refused(Cause.Defect(what), what) }
+}
 
 /// A DOOR'S ANSWER SPENT AS A FAILURE — a fault gate, written once
 /// because every door in this package (`path_fault`, `closed_fault`)

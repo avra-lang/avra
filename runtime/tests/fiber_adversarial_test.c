@@ -20,6 +20,11 @@ static int g_fails = 0;
 
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "fiber_adversarial_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
 
+// A descriptor closed through the scheduler's door, as every closer must:
+// its waiters woken and its registration forgotten, so the number's next
+// tenant inherits none.
+static void closed(int fd) { avra_fiber_fd_closing(fd); close(fd); }
+
 typedef void* (*Code)(void*);
 
 static void* closure(Code code, int n, const int64_t* caps) {
@@ -367,7 +372,7 @@ int main(void) {
         CHECK(write(g_pipe[1], "ab", 2) == 2, "two bytes into the pipe");
         int64_t x = join_value(a), y = join_value(b);
         CHECK(x + y == 'a' + 'b', "two tasks reading one pipe both get a byte");
-        close(g_pipe[0]); close(g_pipe[1]);
+        closed(g_pipe[0]); closed(g_pipe[1]);
 
         // one reader and one writer on the SAME descriptor
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, g_sock) != 0) return 1;
@@ -379,7 +384,7 @@ int main(void) {
         CHECK(write(g_sock[1], "q", 1) == 1, "the far end writes");
         CHECK(join_value(rd) == 'q', "a reader shares a descriptor with a parked writer");
         CHECK(join_value(wr) == 1, "the writer on that descriptor finishes");
-        close(g_sock[0]); close(g_sock[1]);
+        closed(g_sock[0]); closed(g_sock[1]);
 
         // a timeout of zero on a silent pipe
         if (pipe(g_pipe) != 0) return 1;
@@ -388,7 +393,7 @@ int main(void) {
         // a pipe already readable: the park answers ready
         CHECK(write(g_pipe[1], "r", 1) == 1, "a byte waits");
         CHECK(join_value(spawn2(park_timeout, g_pipe[0], (1000 << 1) | 0)) == 1, "a park on a readable pipe answers 1 at once");
-        close(g_pipe[0]); close(g_pipe[1]);
+        closed(g_pipe[0]); closed(g_pipe[1]);
 
         // 256 pipes, alternate ones written, every park with a deadline
         for (int i = 0; i < 256; i++) { if (pipe(g_pipes[i]) != 0) return 1; fcntl(g_pipes[i][0], F_SETFL, O_NONBLOCK); }
@@ -399,7 +404,7 @@ int main(void) {
         int right = 0;
         for (int i = 0; i < 256; i++) right += join_value(ts[i]) == (i % 2 == 0 ? 'k' : -2);
         CHECK(right == 256, "256 parks: the written ones read, the silent ones time out");
-        for (int i = 0; i < 256; i++) { close(g_pipes[i][0]); close(g_pipes[i][1]); }
+        for (int i = 0; i < 256; i++) { closed(g_pipes[i][0]); closed(g_pipes[i][1]); }
     }
 
     // ── fairness: the world is heard while tasks stay busy ──────
@@ -413,7 +418,7 @@ int main(void) {
         void* writer = spawn1(write_later, 10);
         CHECK(join_value(busy1) == 1 && join_value(busy2) == 1, "busy yielders do not starve a parked reader");
         join_value(reader); join_value(writer);
-        close(g_pipe[0]); close(g_pipe[1]);
+        closed(g_pipe[0]); closed(g_pipe[1]);
 
         g_flag = 0;
         void* sl = spawn1(flag_on_sleep, 5);
