@@ -19,14 +19,11 @@ impl Workspace {
     fn computed_consumed(d: DeclId) -> List<bool> {
         let x = self.decls.decl(d)
         let n = self.decls.seat_count(d)
-        // A COMPILE-TIME RUN'S OWN bodies infer no consuming seat: a
-        // lift runs while typing is still open, and `taken_as_value`
-        // asks the references relation — a whole-program pass that
-        // must settle after typing, never during it.
-        if x.root == null ||
-            self.is_held(x.file) ||
-            self.comptime_active() ||
-            self.taken_as_value(d) {
+        // A compile-time run infers no consuming seat and records
+        // nothing: the references relation settles after typing, and
+        // an unrecorded row leaves the program's own ask to decide.
+        if self.comptime_active() { return filled(n, false) }
+        if x.root == null || self.is_held(x.file) || self.taken_as_value(d) {
             let none = filled(n, false)
             self.decls.record_consumed(d, none)
             return none
