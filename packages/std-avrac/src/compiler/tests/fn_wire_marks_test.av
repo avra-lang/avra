@@ -1,0 +1,112 @@
+// A `Type.Fn`'s SEAT MARKS, across its own record wire. `wire_body`'s
+// `.Fn` case packs one `mark_word` per seat into ONE bits string with
+// NO separator (CLAUDE.md, "a flat concatenation of two sequences has
+// a boundary that moves"), so the decoder must slice each seat at the
+// SAME width the encoder wrote — a struct field or a sig typed
+// `fn(mut X, int) -> int`, held from a module's record, is this codec
+// alone.
+use compiler.{avra, new_workspace, Workspace}
+use compiler.host.{memory_host}
+use core.{Type, SeatMark, mut_mark, settled_mark, isolated_mark, consumed_mark}
+
+fn wire_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() { 1 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// A fn type built from `marks` alone (one `int` seat per mark),
+/// written to its wire and read back — `type_wire`/`interface_type`
+/// is the codec a held struct field or sig type crosses.
+fn round_tripped(ws: Workspace, marks: List<SeatMark>) -> List<SeatMark> {
+    let int_id = ws.decls.types.type(int)
+    let params = [int_id for j in 0..marks.length]
+    let id = ws.decls.types.intern(Type.Fn(params, marks, int_id))
+    let back = ws.interface_type(ws.decls.type_wire(id))
+    ws.decls.types.arrow_parts(back)?.marks ?? []
+}
+
+spec "compiler/interface — a fn type's seat marks survive its record wire" {
+    given "a mut seat beside a settled one" {
+        then "both marks round-trip, in order" {
+            let ws = wire_workspace()
+            let marks = [
+                SeatMark { mutable: true, settled: false },
+                SeatMark { mutable: false, settled: true },
+            ]
+            let back = round_tripped(ws, marks)
+            back.length == 2 &&
+                mut_mark(back, 0) &&
+                !settled_mark(back, 0) &&
+                !mut_mark(back, 1) &&
+                settled_mark(back, 1)
+        }
+    }
+    given "an isolated seat" {
+        then "the mark round-trips" {
+            let ws = wire_workspace()
+            let marks = [SeatMark { mutable: false, settled: false, unshared: true }]
+            let back = round_tripped(ws, marks)
+            back.length == 1 && isolated_mark(back, 0)
+        }
+    }
+    given "a consumed seat" {
+        then "the mark round-trips" {
+            let ws = wire_workspace()
+            let marks = [SeatMark { mutable: false, settled: false, consumed: true }]
+            let back = round_tripped(ws, marks)
+            back.length == 1 && consumed_mark(back, 0)
+        }
+    }
+    given "three seats so a mid-list seat's marks cannot be mistaken for a neighbour's" {
+        then "each seat keeps exactly its own promises" {
+            let ws = wire_workspace()
+            let marks = [
+                SeatMark { mutable: true, settled: false },
+                SeatMark { mutable: false, settled: true },
+                SeatMark { mutable: false, settled: false, unshared: true },
+            ]
+            let back = round_tripped(ws, marks)
+            back.length == 3 &&
+                mut_mark(back, 0) &&
+                !settled_mark(back, 0) &&
+                !isolated_mark(back, 0) &&
+                !mut_mark(back, 1) &&
+                settled_mark(back, 1) &&
+                !isolated_mark(back, 1) &&
+                !mut_mark(back, 2) &&
+                !settled_mark(back, 2) &&
+                isolated_mark(back, 2)
+        }
+    }
+    given "a fn type nested as another fn type's own parameter" {
+        then "the inner fn's own mut mark survives its outer's wire too" {
+            let ws = wire_workspace()
+            let int_id = ws.decls.types.type(int)
+            let inner = ws
+                .decls
+                .types
+                .intern(Type.Fn([int_id], [SeatMark { mutable: true, settled: false }], int_id))
+            let outer = ws
+                .decls
+                .types
+                .intern(Type.Fn([inner], [SeatMark { mutable: false, settled: true }], int_id))
+            let back = ws.interface_type(ws.decls.type_wire(outer))
+            let outer_parts = ws.decls.types.arrow_parts(back)
+            let inner_back = if outer_parts != null { outer_parts!.seats.first() } else { null }
+            let inner_parts = if inner_back != null { ws.decls.types.arrow_parts(inner_back!) } else { null }
+            outer_parts != null &&
+                settled_mark(outer_parts!.marks, 0) &&
+                inner_parts != null &&
+                mut_mark(inner_parts!.marks, 0)
+        }
+    }
+}
