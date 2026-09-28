@@ -181,6 +181,10 @@ export type TypeFacts = {
     scopes: SideTable<ParamScope?>,
     pattern_types: SideTable<List<TypeId>>,
     binding_types: SideTable<TypeId?>,
+    // a plain `let`'s OWN declaring statement, ever the root of a
+    // writing method's non-`mut` receiver — lowering boxes its fresh
+    // seed into a cell, thawed, exactly as a `mut` local's own is
+    boxed_locals: SideTable<bool>,
     // a use whose declaration's warnings were already spoken — one
     // voice per use, however often the node is typed
     warned: SideTable<bool>,
@@ -234,6 +238,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
         binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
+        boxed_locals: side_table("boxed_locals", 0, stmts, false),
         voices: no_voices(),
     }
 }
@@ -415,9 +420,20 @@ impl TypeFacts {
         self.spreads.lay(other.spreads)
         self.null_tails.lay(other.null_tails)
         self.binding_types.lay_named(other.binding_types, is_typed)
+        // NAMED, never plain .lay(): this column is a STmtId over the
+        // WHOLE FILE (main's LET marks a local another declaration's
+        // own body never touches), so a plain lay's unconditional
+        // overwrite would stomp main's `true` with a later body's
+        // untouched `false` — the same law `binding_types` already
+        // pays with `is_typed`.
+        self.boxed_locals.lay_named(other.boxed_locals, marked_boxed)
     }
 
     fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
+
+    fn wants_boxed_local(s: StmtId) -> bool { self.boxed_locals.get(s.index) }
+
+    fn mark_boxed_local(s: StmtId) { self.boxed_locals.set(s.index, true) }
 
     fn seat_lambda(lam: ExprId, tys: List<TypeId>, marks: List<SeatMark>) {
         self.lambda_params.set(lam.index, tys)
@@ -585,6 +601,7 @@ impl BodyRegs {
 /// A column's fold reads only what the body actually recorded.
 fn is_typed(t: TypeId?) -> bool { t != null }
 fn is_hungry(h: bool) -> bool { h }
+fn marked_boxed(b: bool) -> bool { b }
 
 /// `n` empty type lists — spelled without the generic fill: a test
 /// shard instantiating a list-writing generic at a list-of-lists

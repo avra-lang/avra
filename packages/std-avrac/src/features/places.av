@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, Reg, Ins, Type}
+use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -110,6 +110,21 @@ impl LowerCx {
     mut fn thawed_box(s: ExprId) -> Reg {
         let cell? = self.cell_of(s) else { return self.lower_defect(s, "a thawed write rooted outside a mut cell survived resolve") }
         self.cell_thawed(self.shape_at(s), cell)
+    }
+
+    /// A plain `let`'s fresh seed, boxed into a cell exactly as a
+    /// `mut` local's is — the receiver law found this local is ever a
+    /// writing method's non-`mut` receiver, so its box is thawed once,
+    /// here, and every later read or write (the ordinary boxed-slot
+    /// machinery, unchanged) finds the same cell.
+    mut fn boxed_seed(s: StmtId, v: Reg) -> Reg {
+        let thawed = self.box_thawed(self.view.types.shape_of(self.out.type_of_reg(v)), v)
+        let declared: TypeId? = self.facts.declared_binding(s)
+        let slot = if declared == null { self.mint_like(thawed) } else { self.mint_ty(self.concrete(declared!)) }
+        self.emit(Ins.Alloca(slot))
+        self.emit(Ins.Store(slot, thawed))
+        self.body.bind_slot(s, slot)
+        thawed
     }
 
     /// The box a path's subject holds, UNIQUE for writing. Operands

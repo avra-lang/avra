@@ -1202,6 +1202,7 @@ impl TypeCx {
                     ),
                 )
         }
+        self.boxed_law(root!)
         self
             .emit(
                 warning(
@@ -1212,6 +1213,27 @@ impl TypeCx {
                     "declare it `mut ${n} = …`",
                 ),
             )
+    }
+
+    /// A plain `let`, ever a writing method's non-`mut` receiver: its
+    /// OWN declaring statement is marked, so lowering boxes its fresh
+    /// seed into a cell (thawed if the binary's own data) exactly as
+    /// a `mut` local's is — the same law, spelled over a local the
+    /// receiver law found rather than one the seat law already knew.
+    /// A parameter has no declaring statement to box; the per-call
+    /// thaw at its own write sites is what it keeps instead.
+    fn boxed_law(root: ExprId) {
+        let s? = self.bare_let_stmt(root) else { return }
+        if self.view.types.rides_pointer(self.type_at(root)) { self.facts.mark_boxed_local(s) }
+    }
+
+    /// A plain (non-`mut`) `let` local's own declaring statement —
+    /// null for `self`, a parameter, and every place that is not a
+    /// bare `let` name. The `bare_mut_stmt` twin, over `.Let` instead
+    /// of `.MutLet`.
+    fn bare_let_stmt(e: ExprId) -> StmtId? {
+        let b? = self.names.binding(e) else { return null }
+        match b { .Def(s) -> if self.view.store.stmt(s) is .Let { s } else { null }, _ -> null }
     }
 
     /// A root's word for a voice: its name, or `self` for the receiver

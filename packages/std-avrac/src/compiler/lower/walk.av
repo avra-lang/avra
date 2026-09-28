@@ -167,8 +167,10 @@ impl LowerCx {
     /// owns slots and the running last register.
     mut fn lower_stmts(stmts: List<StmtId>) {
         for s in stmts {
-            let r: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
+            let got: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
                 .lower_stmt(self, s)
+            let boxes = got != null && self.body.slot_of(s) == null && self.facts.wants_boxed_local(s)
+            let r: Reg? = if boxes { self.boxed_seed(s, got!) } else { got }
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
         }
