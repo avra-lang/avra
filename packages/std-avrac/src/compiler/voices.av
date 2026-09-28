@@ -34,7 +34,7 @@ use features.{
 }
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind, Annotation as MetaAnnotation}
-use core.{StmtId, Arm, HoleKind, Unplaced, is_name_cont, digest_of}
+use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
@@ -265,7 +265,7 @@ fn readied_grammar(p: Parsed, s: StmtId, path: string) -> BlockGrammar? {
 }
 
 /// A template's body copied: its statements, or its arms.
-type Copied = { stmts: List<StmtId>, arms: List<Arm> }
+type Copied = { stmts: List<StmtId>, arms: List<Arm>, params: List<Param> = [], inits: Inits = no_inits() }
 
 impl Workspace {
     /// A copied node whose source a sublanguage minted wears that
@@ -282,6 +282,16 @@ impl Workspace {
     fn holes_copied(f: FileId, fills: List<Node>, seat: HoleKind) -> Copied {
         match seat {
             .Arm -> Copied { stmts: [], arms: flatten([self.spliced_arms(f, x) for x in fills]) },
+            .Fields -> Copied {
+                stmts: [],
+                arms: [],
+                params: flatten([self.spliced_params(f, x) for x in fills]),
+            },
+            .Inits -> Copied {
+                stmts: [],
+                arms: [],
+                inits: joined_inits([self.spliced_inits(f, x) for x in fills]),
+            },
             .Expression or .Statement or .Name or .Binder or .Type or .Run -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
         }
     }
@@ -302,6 +312,50 @@ fn template_site(node: Node) -> Loc? {
 
 fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
 
+/// What a field or record-field seat took from its template.
+type Lift = { lifts: bool, params: List<Param>, inits: Inits }
+
+/// A statement's fields when it declares some — a type's, or a fn's
+/// parameters.
+fn fields_of(s: Stmt) -> List<Param>? {
+    match s {
+        .StructDecl(_, _, fields) -> fields,
+        .FnDecl(_, _, params, _, _) -> params,
+        .ExprStmt(_) or .Discard(_) or .IfStmt(_, _, _) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .Error -> null,
+    }
+}
+
+/// A run whose template has nothing to lift, in the unplaceable
+/// channel's words.
+fn unliftable(template: string, at: int, why: string) -> Diag {
+    refusal(
+        "annotation.unplaceable",
+        at_template(template, at),
+        "a hole was filled with something no seat can hold",
+        why,
+        "a fill the compiler cannot place is spoken, never spliced",
+    )
+}
+
+fn no_inits() -> Inits { Inits { names: [], values: [] } }
+
+/// Several literals' fields as one run, in order.
+fn joined_inits(parts: List<Inits>) -> Inits {
+    Inits {
+        names: flatten([i.names for i in parts]),
+        values: flatten([i.values for i in parts]),
+        spoiled: parts.any(it.spoiled),
+    }
+}
+
+fn no_fields(template: string) -> string {
+    "a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from ${template} carries no fields"
+}
+
+fn no_literal(template: string) -> string {
+    "a record-field run takes `W { … }` templates, and the one from ${template} is not a record literal"
+}
+
 fn misfit_defect(template: string, at: int, k: int) -> Diag {
     defect_at(
         at_template(template, at),
@@ -316,15 +370,7 @@ fn at_template(template: string, at: int) -> Loc {
 
 /// The words for a fill no seat can hold — the FILL's own, since the
 /// splice cannot re-derive why a shape had nowhere to go.
-fn unplaceable_fill(template: string, at: int, u: Unplaced) -> Diag {
-    refusal(
-        "annotation.unplaceable",
-        at_template(template, at),
-        "a hole was filled with something no seat can hold",
-        u.why,
-        "a fill the compiler cannot place is spoken, never spliced",
-    )
-}
+fn unplaceable_fill(template: string, at: int, u: Unplaced) -> Diag { unliftable(template, at, u.why) }
 
 /// A `List<Code>` — a run of templates — in a seat that holds ONE
 /// value.

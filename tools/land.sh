@@ -152,20 +152,23 @@ ticket=""
 # The queue's own directory, made once.
 tickets_dir() { echo "$lock_dir/tickets"; }
 
-# Every ticket number waiting or holding, ascending, with a dead one's
-# directory removed on the way past it — so a caller scanning for the
-# lowest LIVE ticket cleans the queue as a side effect of asking.
-live_tickets() {
+# The lowest ticket still waiting or holding, every dead ticket removed
+# on the way past, so asking cleans the queue. It answers one value and
+# pipes nothing: a caller reading only the first of a listed queue would
+# leave the rest writing into a closed pipe.
+lowest_live_ticket() {
     d="$(tickets_dir)"
+    lowest=""
     for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
         pid="$(cat "$d/$t/pid" 2>/dev/null)"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "$t"
+            [ -z "$lowest" ] && lowest="$t"
         elif [ -n "$pid" ]; then
             echo "land: reclaiming a dead ticket ($t, pid $pid is not running)" >&2
             rm -rf "$d/$t" 2>/dev/null
         fi
     done
+    echo "$lowest"
 }
 
 acquire_lock() {
@@ -190,7 +193,7 @@ acquire_lock() {
 
     printed_wait=0
     while :; do
-        lowest="$(live_tickets | head -1)"
+        lowest="$(lowest_live_ticket)"
         [ "$lowest" = "$ticket" ] && return 0
         if [ "$printed_wait" -eq 0 ]; then
             echo "land: ticket $ticket taken — waiting behind ticket $lowest" >&2
@@ -343,6 +346,9 @@ build_generation() {
     cp packages/cli/src/main build/avra
     codesign -f -s - build/avra
     rm -f packages/cli/src/main packages/cli/src/main.av.ll
+    # A package's C library is linked by the suites that bind it; `-o avra`
+    # keeps make from rebuilding the compiler under it.
+    heavy "build-$n-libs" make -o avra libs
 }
 
 # ── AFFECTED-PACKAGE TESTS ─────────────────────────────────────────────
@@ -436,6 +442,17 @@ seed_policy() {
 }
 
 try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
+
+# Whether main's ref moved off `base`. A fast-forward that fails while
+# the ref stands still failed for its own reason, and git's words say it.
+main_moved_since() { [ "$(git -C "$main_wt" rev-parse refs/heads/main)" != "$1" ]; }
+
+# Stops the landing with git's own refusal when main did not move.
+ff_refused() {
+    echo "land: the fast-forward was refused and main did not move — git says:" >&2
+    cat "$1" >&2
+    exit 1
+}
 
 # ══ BATCH MODE: SEVERAL BRANCHES, ONE TREE, ONE BUILD, ONE CHECK ═════
 # `land.sh a b c` merges main and every named branch into ONE scratch
@@ -615,6 +632,7 @@ main_batch() {
     if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD) — $good"
     else
+        main_moved_since "$old_main_sha" || ff_refused "$ff_log"
         echo "land: main moved during the batch — land it again once it settles" >&2
         tail -30 "$ff_log" >&2
         exit 1
@@ -670,6 +688,7 @@ main() {
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
+    main_moved_since "$old_main_sha" || ff_refused "$ff_log"
 
     echo "land: main moved during the checks — re-merging and re-running once" >&2
     tail -10 "$ff_log" >&2
@@ -681,6 +700,7 @@ main() {
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
+    main_moved_since "$old_main_sha" || ff_refused "$ff_retry_log"
 
     echo "land: main moved again after the retry — giving up. Land manually once it settles." >&2
     tail -30 "$ff_retry_log" >&2

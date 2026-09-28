@@ -274,7 +274,9 @@ sweep:
 	@find packages -type d -name build -prune -exec rm -rf {} +
 	@rm -rf build/test_shards
 
-test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites
+# A suite whose package C lives outside the compiler's image evaluates
+# through that package's library, so `test` needs `libs`, as `tested` does.
+test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites libs
 	@for p in $(SUITES); do \
 	  AVRA_SOUND_CHECK=1 ./avra test $$p || exit 1; \
 	done

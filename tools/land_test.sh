@@ -116,6 +116,25 @@ test_lock_fifo() {
     else
         ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
     fi
+    # A deep queue, with SIGPIPE ignored as a harness's children inherit
+    # it: a waiter's scan writes into no pipe, so its log stays a few
+    # lines however long it waits.
+    for w in d e f; do
+        ( trap '' PIPE; export AVRA_LAND_LOCK="$lockdir" branch=$w; exec sh "$land" --call hold_lock_for "$scratch/sig-$w-never" ) \
+            > "$scratch/lock-$w.out" 2>&1 &
+        eval "${w}_pid=\$!"
+    done
+    sleep 8
+    grown=0
+    for w in c d e f; do
+        [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
+    done
+    if [ "$grown" -eq 0 ]; then
+        ok "lock-fifo: every waiter's log stays a few lines over a long wait"
+    else
+        bad "lock-fifo: a waiter's log grew while waiting"
+    fi
+    for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
     if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 150; then
@@ -518,6 +537,8 @@ STUB
     cat > "$d/Makefile" <<'MK'
 build/libavra_runtime.a:
 	@touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
 idioms:
 	@echo idioms-ok
 fmt-lossless:
@@ -642,6 +663,33 @@ test_heavy_status() {
     fi
 }
 
+test_ff_refused_not_moved() {
+    d="$(git_repo ff-refused)"
+    printf 'a\n' > "$d/f.txt"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    wt="$scratch/ff-refused-wt"
+    git -C "$d" worktree add -q -b adds "$wt" main > /dev/null 2>&1
+    printf 'new\n' > "$wt/added.txt"
+    commit_all "$wt" "adds a file"
+    printf 'squatter\n' > "$d/added.txt"
+    log="$scratch/ff-refused.log"
+    ( main_wt="$d" branch=adds sh "$land" --call try_ff ) > "$log" 2>&1
+    if ( main_wt="$d" sh "$land" --call main_moved_since "$base_sha" ); then
+        bad "ff: a refused fast-forward with main standing still reads as main moved"
+    else
+        ok "ff: a refused fast-forward with main standing still is not main moving"
+    fi
+    st=0
+    ( main_wt="$d" sh "$land" --call ff_refused "$log" ) > "$scratch/ff-refused.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ] && grep -q "untracked working tree files would be overwritten" "$scratch/ff-refused.out"; then
+        ok "ff: a refusal stops with git's own words"
+    else
+        bad "ff: a refusal stops with git's own words (got $st)"
+    fi
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
@@ -655,6 +703,7 @@ test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
 test_heavy_status
+test_ff_refused_not_moved
 
 echo
 echo "land_test: $total checks, $failed failed"
