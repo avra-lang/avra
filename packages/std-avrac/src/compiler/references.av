@@ -49,6 +49,7 @@ use core.{
     Span,
 }
 use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
+use @std.relation.db.{new_db as new_refs_db}
 
 impl Workspace {
     /// THE PASS: every admitted file's own rows, folded into one
@@ -74,13 +75,10 @@ impl Workspace {
         self.db.begin(k)
         let all_files = self.decls.files.get()
         let files = [x.id for x in all_files if !self.is_held(x.id)]
-        mut all: List<Ref> = []
-        for f in files {
-            let rows = self.file_refs(f)
-            self.decls.set_file_refs(f, rows)
-            all = all.concat(rows)
-        }
-        self.decls.settle_refs(all)
+        let all = flatten([self.file_refs(f) for f in files])
+        let fresh = new_refs_db()
+        for r in all { let _ = Ref.insert(fresh, decl: r.decl, file: r.file, at: r.at, kind: r.kind) }
+        self.decls.settle_refs(fresh)
         // A HELD FILE IS NOT SURVEYED (no store to walk), so a
         // workspace carrying one answers an INCOMPLETE relation — a
         // decl this pass calls unused may be used from inside it.
