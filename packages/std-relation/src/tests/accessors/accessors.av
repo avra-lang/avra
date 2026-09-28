@@ -2,6 +2,7 @@
 // shapes — a `Result` only where a `@unique` field can refuse it — `by_key` answering a key's row, `by_<field>` one row or
 // every row, `get` and `all` — and each Db's rows its own.
 use @std.relation.{relation}
+use @std.meta.{dense}
 use @std.relation.db.{new_db, Db}
 use @std.relation.refused.{InsertRefused}
 
@@ -116,6 +117,46 @@ fn unique() -> string {
     "${a}${b}${same}${moved}${freed} ${taken} ${kept} ${User.all(db).length} ${User.by_email(db, "a@x")?.handle ?? "-"} ${flag}"
 }
 
+@dense
+type NodeId = { index: int }
+
+enum Shade { Red, Green, Blue }
+
+/// A dense id stays `@local`; an enum hashes, encodes and files by its
+/// variant's name; a stored row carries no local column.
+@relation
+type Node = { id: int, @key name: string, @index shade: Shade, @local @index at: NodeId, @local up: NodeId?, tints: List<Shade> }
+
+fn nodes() -> string {
+    let db = new_db()
+    let a = Node
+        .insert(
+            db,
+            name: "a",
+            shade: Shade.Green,
+            at: NodeId { index: 7 },
+            up: null,
+            tints: [Shade.Red, Shade.Blue],
+        )
+    let _ = Node
+        .insert(
+            db,
+            name: "b",
+            shade: Shade.Green,
+            at: NodeId { index: 8 },
+            up: NodeId { index: 7 },
+            tints: [],
+        )
+    let moved = a with { at: NodeId { index: 99 } }
+    // every declared field once, so a stored row has no `@local` column
+    let none = NodeStored { name: "c", shade: Shade.Red, tints: [] }
+    let back = match Node.decoded(a.encoded()) {
+        .Ok(s) -> "${s.name} ${s.tints.length} ${s.shade == Shade.Green}",
+        .Err(e) -> e.word(),
+    }
+    "${Node.by_shade(db, Shade.Green).length} ${Node.by_at(db, NodeId { index: 8 }).first()?.name ?? "-"} ${a.stable_hash() == moved.stable_hash()} ${back} ${none.name}"
+}
+
 /// Two Dbs keep their own rows; a Db knows only the relations it
 /// reached, each once however often; a closed Db's rows are let go,
 /// every hash back to none and no relation joined again.
@@ -132,4 +173,4 @@ fn dbs() -> string {
     "${seen_in_b} ${reached} ${held} ${a.set_hashes().all(it == 0)} ${a.set_hashes().length}"
 }
 
-"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()}"
+"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()} | ${nodes()}"

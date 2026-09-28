@@ -172,6 +172,8 @@ export enum CodecFault {
     NotText
     /// octets left after the last field
     Trailing
+    /// a variant name the enum does not declare
+    NotVariant
 }
 
 impl CodecFault {
@@ -182,6 +184,7 @@ impl CodecFault {
             .NotFlag -> "not_flag",
             .NotText -> "not_text",
             .Trailing -> "trailing",
+            .NotVariant -> "not_variant",
         }
     }
 }
@@ -248,8 +251,21 @@ impl Reader {
         s
     }
 
+    /// A variant read back by its NAME: its place among `names`, the
+    /// enum's variants in declared order.
+    fn variant(names: List<string>) -> Result<int, CodecFault> {
+        let at = names.index_of(self.text()?)
+        if at < 0 { fail CodecFault.NotVariant }
+        at
+    }
+
     /// Whether every octet has been read.
     fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A tagged enum's variant, read back by its place among the names.
+export fn tagged<T>(at: Result<int, CodecFault>, variants: List<T>) -> Result<T, CodecFault> {
+    variants[at?]
 }
 
 /// A nullable read back: its presence, then the value when present.
