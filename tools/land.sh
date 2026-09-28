@@ -53,9 +53,14 @@ export AVRA_WATCH_HELD
 usage() {
     cat <<'EOF'
 usage: sh tools/land.sh [--dry-run] <branch>
+       sh tools/land.sh [--dry-run] <branch> <branch> [<branch>...]
 
-Lands <branch> onto LOCAL main. Never pushes anywhere, never rewrites
-the branch's own history — main advances by a fast-forward onto it.
+Lands one branch, or a BATCH of several at once: merges them all into
+one scratch integration branch, builds and checks that ONCE, then
+fast-forwards main to it. A batch that fails BISECTS — it lands the
+largest subset that passes together and names the branch(es) that
+broke it, exiting non-zero when anything was excluded. Never pushes
+anywhere, never rewrites a branch's own history.
 
   --dry-run   run every step but the final fast-forward merge.
 EOF
@@ -94,15 +99,23 @@ heavy() {
     name="$1"
     shift
     log="$(log_of "$name")"
-    echo "land: $name …"
-    if sh "$tools_dir/capped.sh" "$log" 2000000 sh "$tools_dir/slot.sh" 2 "$@"; then
-        echo "land: $name OK"
+    # Progress goes to stderr: batch mode reads a function's stdout as its value.
+    echo "land: $name …" >&2
+    st=0
+    sh "$tools_dir/capped.sh" "$log" 2000000 \
+        sh "$tools_dir/slot.sh" 2 \
+        sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
+    if [ "$st" -eq 0 ]; then
+        echo "land: $name OK" >&2
         return 0
     fi
-    st=$?
+    # 137 is the memory cap's kill: a finding about the change, never a retry.
     fail_report "$name" "$st" "$log"
     return "$st"
 }
+
+# A step's exit status is read as `cmd || st=$?`: after `if cmd; then …
+# fi` with no else, `$?` is 0 whatever cmd answered.
 
 # A LIGHT STEP: quick git/file plumbing with its own control flow — no
 # loop, no unbounded output, so no cap and no slot. `body` is a shell
@@ -113,14 +126,14 @@ light() {
     body="$2"
     shift 2
     log="$(log_of "$name")"
-    echo "land: $name …"
+    echo "land: $name …" >&2
     st=0
     ( "$body" "$@" ) > "$log" 2>&1 || st=$?
     if [ "$st" -ne 0 ]; then
         fail_report "$name" "$st" "$log"
         return "$st"
     fi
-    echo "land: $name OK"
+    echo "land: $name OK" >&2
 }
 
 # ── THE LANDING LOCK — A FIFO TICKET QUEUE ───────────────────────────
@@ -139,20 +152,23 @@ ticket=""
 # The queue's own directory, made once.
 tickets_dir() { echo "$lock_dir/tickets"; }
 
-# Every ticket number waiting or holding, ascending, with a dead one's
-# directory removed on the way past it — so a caller scanning for the
-# lowest LIVE ticket cleans the queue as a side effect of asking.
-live_tickets() {
+# The lowest ticket still waiting or holding, every dead ticket removed
+# on the way past, so asking cleans the queue. It answers one value and
+# pipes nothing: a caller reading only the first of a listed queue would
+# leave the rest writing into a closed pipe.
+lowest_live_ticket() {
     d="$(tickets_dir)"
+    lowest=""
     for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
         pid="$(cat "$d/$t/pid" 2>/dev/null)"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "$t"
+            [ -z "$lowest" ] && lowest="$t"
         elif [ -n "$pid" ]; then
             echo "land: reclaiming a dead ticket ($t, pid $pid is not running)" >&2
             rm -rf "$d/$t" 2>/dev/null
         fi
     done
+    echo "$lowest"
 }
 
 acquire_lock() {
@@ -177,16 +193,31 @@ acquire_lock() {
 
     printed_wait=0
     while :; do
-        lowest="$(live_tickets | head -1)"
+        lowest="$(lowest_live_ticket)"
         [ "$lowest" = "$ticket" ] && return 0
         if [ "$printed_wait" -eq 0 ]; then
-            echo "land: ticket $ticket taken — waiting behind ticket $lowest"
+            echo "land: ticket $ticket taken — waiting behind ticket $lowest" >&2
             printed_wait=1
         fi
         sleep 1
     done
 }
 release_lock() { [ -n "$ticket" ] && rm -rf "$(tickets_dir)/$ticket" 2>/dev/null; }
+
+# A TRAP ON A SIGNAL RESUMES AFTER THE HANDLER, IT DOES NOT EXIT — a
+# `trap release_lock INT TERM` alone frees the ticket on Ctrl-C or a
+# kill, then the script carries straight on from wherever it was
+# interrupted (witnessed: a killed `--dry-run` had its ticket cleaned
+# up correctly and kept running anyway). INT/TERM need their own
+# handler that exits afterward, at the conventional 128+signal code.
+release_lock_and_exit() {
+    sig="$1"
+    release_lock
+    case "$sig" in
+        INT) exit 130 ;;
+        *) exit 143 ;;
+    esac
+}
 
 # ACQUIRE, HOLD UNTIL A SIGNAL FILE APPEARS (OR A TIMEOUT), RELEASE —
 # one process that stays alive for the whole hold, the shape a real
@@ -224,38 +255,50 @@ worktree_for_branch() {
 # conflict confined to bootstrap/seed.ll and/or bootstrap/seed.sources
 # is not a real disagreement — it is two commits that each re-emitted
 # a seed the other did not have. Any OTHER conflicting file aborts the
-# merge and names every file, rather than guess at code.
-merge_main_in() {
+# merge and names every file, rather than guess at code. Takes the
+# REF to merge as its own argument — a single landing merges main in,
+# a batch merges main AND then every branch in the batch, one at a
+# time, through this same door.
+merge_ref_in() {
     wt="$1"
+    ref="$2"
     cd "$wt"
-    if git merge --no-edit "refs/heads/main"; then
-        echo "land: merge OK (no conflicts, or already up to date)"
+    if git merge --no-edit "$ref"; then
+        echo "land: merge $ref OK (no conflicts, or already up to date)" >&2
         return 0
     fi
     conflicts="$(git diff --name-only --diff-filter=U)"
     others="$(printf '%s\n' "$conflicts" | grep -v -E '^bootstrap/seed\.(ll|sources)$' || true)"
     if [ -n "$(printf '%s' "$others" | tr -d '[:space:]')" ]; then
-        echo "land: merge conflict outside the seed — aborting"
+        echo "land: merge conflict outside the seed ($ref) — aborting" >&2
         echo "$conflicts"
         git merge --abort
         return 1
     fi
-    echo "land: merge conflict confined to the seed — taking main's side"
+    echo "land: merge conflict confined to the seed ($ref) — taking main's side" >&2
     for f in bootstrap/seed.ll bootstrap/seed.sources; do
         case "$conflicts" in *"$f"*) git checkout --theirs -- "$f" && git add "$f" ;; esac
     done
     git commit --no-edit
 }
 
+# The single-landing shape land_test.sh's fixtures already call by
+# name — unchanged behavior, just merge_ref_in with the ref fixed.
+merge_main_in() { merge_ref_in "$1" "refs/heads/main"; }
+
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
-# A cache entry is not yet keyed by the compiler that wrote it, so a
-# newer compiler can decode an older one's (avra-8sb5.57.24/.25) —
-# drop this step once every entry carries the compiler print.
+# avra-8sb5.57.25 (compiler print folded into every durable key) and
+# avra-8sb5.57.24 (a held module's record decoder now enforces its own
+# fingerprint, so a test-then-check sequence in one tree no longer
+# indexes a stale shape) are BOTH closed, on main — nothing in the
+# pipeline forces a cache sweep any more. Kept as a callable utility
+# (land_test.sh's own fixture still exercises it, and it is a
+# reasonable manual escape hatch), just not wired into a landing.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
     if [ -z "$(printf '%s' "$found" | tr -d '[:space:]')" ]; then
-        echo "land: no .avra-cache under $wt"
+        echo "land: no .avra-cache under $wt" >&2
         return 0
     fi
     mkdir -p "$trash/avra-cache"
@@ -264,7 +307,7 @@ move_caches_aside() {
         [ -z "$d" ] && continue
         n=$((n + 1))
         mv "$d" "$trash/avra-cache/cache-$n"
-        echo "land: moved $d -> $trash/avra-cache/cache-$n"
+        echo "land: moved $d -> $trash/avra-cache/cache-$n" >&2
     done
 }
 
@@ -277,7 +320,7 @@ commit_seed_if_moved() {
     label="${2:-$branch}"
     cd "$wt"
     if git diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources; then
-        echo "land: seed unchanged"
+        echo "land: seed unchanged" >&2
         return 0
     fi
     git add bootstrap/seed.ll bootstrap/seed.sources
@@ -303,24 +346,31 @@ build_generation() {
     cp packages/cli/src/main build/avra
     codesign -f -s - build/avra
     rm -f packages/cli/src/main packages/cli/src/main.av.ll
+    # A package's C library is linked by the suites that bind it; `-o avra`
+    # keeps make from rebuilding the compiler under it.
+    heavy "build-$n-libs" make -o avra libs
 }
 
 # ── AFFECTED-PACKAGE TESTS ─────────────────────────────────────────────
-run_affected_tests() {
+# THE AFFECTED PACKAGES' TESTS, TOGETHER WITH `make idioms` — ALL
+# SEQUENTIAL: two avra processes compiling into one .avra-cache AT
+# ONCE corrupt it (avra-8sb5.57.41 — tried as a concurrent batch here
+# first, and both suites failed to link with undefined av_ symbols).
+# Parallelize once concurrent writers into one store are safe; until
+# then every affected package's suite runs one at a time, then idioms.
+run_checks() {
     wt="$1"
     base_sha="$2"
     head_sha="$3"
+    suffix="$4"
     affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt")"
-    if [ -z "$(printf '%s' "$affected" | tr -d '[:space:]')" ]; then
-        echo "land: no package affected — nothing to test"
-        return 0
-    fi
+
     fails=0
     for pkg in $affected; do
-        if ! heavy "test-$pkg" sh -c "cd '$wt' && build/avra test packages/$pkg"; then
-            fails=1
-        fi
+        heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg" || fails=1
     done
+    heavy "idioms$suffix" sh -c "cd '$wt' && make idioms" || fails=1
+
     [ "$fails" -eq 0 ]
 }
 
@@ -338,9 +388,7 @@ run_pipeline() {
     case "$diff_files" in
         *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
     esac
-    echo "land: compiler changed in this landing: $compiler_changed"
-
-    light "caches-aside$suffix" move_caches_aside "$branch_wt"
+    echo "land: compiler changed in this landing: $compiler_changed" >&2
 
     # A SUBSHELL each: `build_generation`'s own `cd "$wt"` must not
     # leak into the steps after it.
@@ -355,29 +403,242 @@ run_pipeline() {
         fi
     fi
 
-    if ! run_affected_tests "$branch_wt" "$old_main_sha" "$new_branch_sha"; then
-        echo "land: an affected package's tests failed" >&2
+    if ! run_checks "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix"; then
+        echo "land: a check failed (an affected package's tests, or idioms)" >&2
         return 1
     fi
 
-    # A SECOND sweep, between the test suites and the keepers: `avra
-    # test` (test files included) and `avra check` (without them)
-    # share a record key, so a check run after a test in the same
-    # tree traps — "index N is out of bounds" (avra-8sb5.57.24) — drop
-    # this once test and check records are keyed apart.
-    light "caches-aside-2$suffix" move_caches_aside "$branch_wt"
-
-    heavy "idioms$suffix" sh -c "cd '$branch_wt' && make idioms"
     heavy "fmt-lossless$suffix" sh -c "cd '$branch_wt' && make fmt-lossless"
     heavy "cache-attacks$suffix" sh -c "cd '$branch_wt' && make cache-attacks"
 
-    heavy "seed-emit$suffix" sh -c "cd '$branch_wt' && make seed"
-    light "seed-commit$suffix" commit_seed_if_moved "$branch_wt" "$branch"
+    seed_policy "$branch_wt" "$suffix"
+}
 
-    heavy "seed-check$suffix" sh -c "cd '$branch_wt' && make seed-check"
+# ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
+# `tools/seed_guard.sh` now REPORTS a lagging seed rather than
+# refusing it (SEED_STRICT=1 restores the refusal) — "the seed
+# compiles HEAD" stays the hard gate, which `make seed-check` alone
+# still tests. Re-emitting on EVERY landing paid for a whole-package
+# `avra emit` whether or not the seed had actually moved; checking
+# first and emitting only when the check fails pays that cost only
+# when it is owed. The FIRST check's own failure is not reported as a
+# land failure — it is the ordinary signal to refresh — so it runs
+# quietly, capped and slotted like any heavy step, but through its own
+# name; only a check that STILL fails after a fresh emit is fatal.
+seed_policy() {
+    wt="$1"
+    suffix="$2"
+    log1="$(log_of "seed-check$suffix")"
+    echo "land: seed-check (first pass) …" >&2
+    if sh "$tools_dir/capped.sh" "$log1" 2000000 sh "$tools_dir/slot.sh" 2 sh -c "cd '$wt' && make seed-check"; then
+        echo "land: seed-check passed on the first try — seed already matches HEAD, no emit" >&2
+        return 0
+    fi
+    echo "land: seed-check failed on the first try — the seed lags HEAD; re-emitting" >&2
+    heavy "seed-emit$suffix" sh -c "cd '$wt' && make seed"
+    light "seed-commit$suffix" commit_seed_if_moved "$wt" "$branch"
+    heavy "seed-check-2$suffix" sh -c "cd '$wt' && make seed-check"
+    echo "land: seed-check passed after a fresh emit" >&2
 }
 
 try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
+
+# Whether main's ref moved off `base`. A fast-forward that fails while
+# the ref stands still failed for its own reason, and git's words say it.
+main_moved_since() { [ "$(git -C "$main_wt" rev-parse refs/heads/main)" != "$1" ]; }
+
+# Stops the landing with git's own refusal when main did not move.
+ff_refused() {
+    echo "land: the fast-forward was refused and main did not move — git says:" >&2
+    cat "$1" >&2
+    exit 1
+}
+
+# ══ BATCH MODE: SEVERAL BRANCHES, ONE TREE, ONE BUILD, ONE CHECK ═════
+# `land.sh a b c` merges main and every named branch into ONE scratch
+# integration branch, builds and checks that ONCE, then fast-forwards
+# main to it — never the per-branch dance a single landing runs three
+# times over. A batch failure BISECTS: the whole set failed, so it is
+# split in half and each half tried FRESH from main; a half that still
+# fails splits again, down to a single branch, which is named a
+# CULPRIT rather than retried further. The surviving halves are
+# recombined into one final integration and built/checked once more
+# (two branches that are each fine alone can still disagree combined,
+# so that combination gets its own real answer, not an assumption).
+#
+# The batch integration lives in ONE reusable worktree+branch — reset
+# to main's CURRENT tip before every attempt, never removed and
+# re-added, since a bisection tries many attempts in one run. Its
+# path is overridable (AVRA_LAND_BATCH_WT) so a fixture never touches
+# the real one.
+batch_wt="${AVRA_LAND_BATCH_WT:-/tmp/avra-land-batch-wt}"
+batch_branch="land/batch-integration"
+
+# Resets the integration worktree to main's current tip — creating it
+# first if this is the first attempt this process has made.
+reset_batch_wt() {
+    if [ ! -d "$batch_wt" ]; then
+        mkdir -p "$(dirname "$batch_wt")"
+        git -C "$main_wt" worktree add -q -B "$batch_branch" "$batch_wt" main
+    else
+        git -C "$batch_wt" checkout -q -B "$batch_branch" main
+    fi
+    git -C "$batch_wt" reset -q --hard main
+    git -C "$batch_wt" clean -q -fd
+}
+
+# ONE ATTEMPT: reset to main, merge every given branch in order, then
+# the same build/check pipeline a single landing runs. Returns 0/1;
+# never touches main itself — only try_ff, at the very end, does.
+try_integration() {
+    label="$1"
+    shift
+    echo "land: batch attempt [$label]: $*" >&2
+    reset_batch_wt
+    for b in "$@"; do
+        b_safe="$(printf '%s' "$b" | tr '/ ' '__')"
+        if ! merge_ref_in "$batch_wt" "refs/heads/$b" > "$(log_of "batch-merge-$label-$b_safe")" 2>&1; then
+            echo "land: [$label] merge of $b failed" >&2
+            return 1
+        fi
+    done
+
+    old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
+    new_sha="$(git -C "$batch_wt" rev-parse HEAD)"
+    diff_files="$(git -C "$batch_wt" diff --name-only "$old_main_sha...$new_sha")"
+    compiler_changed=0
+    case "$diff_files" in
+        *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
+    esac
+
+    if ! ( build_generation "$batch_wt" "batch-1-$label" ); then return 1; fi
+    if [ "$compiler_changed" -eq 1 ]; then
+        if ! ( build_generation "$batch_wt" "batch-2-$label" ); then return 1; fi
+    fi
+    if ! run_checks "$batch_wt" "$old_main_sha" "$new_sha" "-batch-$label"; then return 1; fi
+    if ! heavy "batch-fmt-lossless-$label" sh -c "cd '$batch_wt' && make fmt-lossless"; then return 1; fi
+    if ! heavy "batch-cache-attacks-$label" sh -c "cd '$batch_wt' && make cache-attacks"; then return 1; fi
+    if ! seed_policy "$batch_wt" "-batch-$label"; then return 1; fi
+    echo "land: batch attempt [$label] GREEN: $*" >&2
+    return 0
+}
+
+# THE BISECTION: prints the surviving GREEN branch names (space
+# separated) on stdout; prints each isolated CULPRIT, one per line,
+# to stderr as "CULPRIT: <branch>". Recurses on halves, then on a
+# recombination that itself turns out red — the same procedure
+# either way, since "a set that fails" is the only fact it acts on.
+bisect_land() {
+    # shellcheck: word-splits on purpose — every element is one ref name
+    set -- $*
+    n=$#
+    label="bisect-$n-$(echo "$*" |  tr ' /' '__'| cut -c1-40)"
+    if try_integration "$label" "$@"; then
+        echo "$@"
+        return 0
+    fi
+    if [ "$n" -eq 1 ]; then
+        echo "CULPRIT: $1" >&2
+        return 1
+    fi
+    half=$(((n + 1) / 2))
+    left=""
+    right=""
+    i=0
+    for b in "$@"; do
+        i=$((i + 1))
+        if [ "$i" -le "$half" ]; then left="$left $b"; else right="$right $b"; fi
+    done
+    # `|| true` on EACH: a recursive call answering "no green branches
+    # here" is a LEGITIMATE outcome (a lone culprit, or a half that is
+    # all culprits), not a script error — but `set -e` does not know
+    # that, and a bare `var=$(cmd)` assignment IS one of the shapes
+    # -e treats as fatal even though it sits nowhere near an `if`.
+    # Without this, isolating the very first culprit unwound the
+    # WHOLE bisection immediately: main_batch's own top-level
+    # `good=$(bisect_land …)` is exactly this shape, one level up.
+    good_left="$(bisect_land $left)" || true
+    good_right="$(bisect_land $right)" || true
+    combined="$(printf '%s %s' "$good_left" "$good_right" | tr -s ' ')"
+    combined="${combined# }"
+    combined="${combined% }"
+    if [ -z "$combined" ]; then
+        return 1
+    fi
+    set -- $combined
+    if [ "$#" -eq 1 ]; then
+        # a single survivor needs no recombination check — it already
+        # passed alone, in its own bisect_land call above.
+        echo "$combined"
+        return 0
+    fi
+    if try_integration "recombine-$(echo "$combined" |  tr ' /' '__'| cut -c1-40)" $combined; then
+        echo "$combined"
+        return 0
+    fi
+    echo "land: the surviving branches disagree recombined — bisecting them too" >&2
+    bisect_land $combined
+}
+
+main_batch() {
+    dry_run="$1"
+    shift
+    branches="$*"
+    branch="batch($*)"
+
+    trap release_lock EXIT
+    trap 'release_lock_and_exit INT' INT
+    trap 'release_lock_and_exit TERM' TERM
+    acquire_lock
+
+    main_wt="$(worktree_for_branch main)"
+    if [ -z "$main_wt" ]; then
+        echo "land: no worktree has 'main' checked out — \`git worktree list\`" >&2
+        exit 1
+    fi
+    for b in $branches; do
+        if ! git -C "$main_wt" show-ref --verify --quiet "refs/heads/$b"; then
+            echo "land: no branch '$b' — \`git branch --list\`" >&2
+            exit 1
+        fi
+    done
+    echo "land: batch of: $branches"
+
+    # `|| true`: the whole batch can fail outright (every branch a
+    # culprit), which is bisect_land answering truthfully, not this
+    # script breaking — see the same note at bisect_land's own
+    # recursive calls.
+    good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
+    culprits="$(grep -h '^CULPRIT: ' "$(log_of batch-bisect-stderr)" 2>/dev/null | sed 's/^CULPRIT: //')"
+    cat "$(log_of batch-bisect-stderr)" >&2
+
+    if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
+        echo "land: every branch in the batch failed — nothing to land" >&2
+        exit 1
+    fi
+
+    echo "land: green subset: $good"
+    if [ -n "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]; then
+        echo "land: culprit(s), excluded: $culprits"
+    fi
+
+    if [ "$dry_run" -eq 1 ]; then
+        echo "land: --dry-run — skipping the fast-forward"
+        echo "land: BATCH DRY RUN OK — would land [$good] as $(git -C "$batch_wt" rev-parse --short HEAD)"
+        [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && exit 0 || exit 1
+    fi
+
+    ff_log="$(log_of batch-ff)"
+    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
+        echo "LANDED $(git -C "$main_wt" rev-parse HEAD) — $good"
+    else
+        main_moved_since "$old_main_sha" || ff_refused "$ff_log"
+        echo "land: main moved during the batch — land it again once it settles" >&2
+        tail -30 "$ff_log" >&2
+        exit 1
+    fi
+    [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]
+}
 
 # ── MAIN ──────────────────────────────────────────────────────────────
 main() {
@@ -386,13 +647,19 @@ main() {
         dry_run=1
         shift
     fi
-    branch="${1:-}"
-    if [ -z "$branch" ]; then
+    if [ "$#" -eq 0 ]; then
         usage >&2
         exit 2
     fi
+    if [ "$#" -gt 1 ]; then
+        main_batch "$dry_run" "$@"
+        exit $?
+    fi
+    branch="${1:-}"
 
-    trap release_lock EXIT INT TERM
+    trap release_lock EXIT
+    trap 'release_lock_and_exit INT' INT
+    trap 'release_lock_and_exit TERM' TERM
     acquire_lock
 
     main_wt="$(worktree_for_branch main)"
@@ -421,6 +688,7 @@ main() {
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
+    main_moved_since "$old_main_sha" || ff_refused "$ff_log"
 
     echo "land: main moved during the checks — re-merging and re-running once" >&2
     tail -10 "$ff_log" >&2
@@ -432,6 +700,7 @@ main() {
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
+    main_moved_since "$old_main_sha" || ff_refused "$ff_retry_log"
 
     echo "land: main moved again after the retry — giving up. Land manually once it settles." >&2
     tail -30 "$ff_retry_log" >&2

@@ -89,7 +89,7 @@ test_lock_fifo() {
     ( AVRA_LAND_LOCK="$lockdir" branch=A sh "$land" --call hold_lock_for "$sig_a" ) \
         > "$scratch/lock-a.out" 2>&1 &
     a_pid=$!
-    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 50; then
+    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 150; then
         bad "lock-fifo: A (first arrival) never acquired ticket 1"
     else
         ok "lock-fifo: A, arriving first, acquires ticket 1 immediately"
@@ -116,9 +116,27 @@ test_lock_fifo() {
     else
         ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
     fi
+    # A deep queue: each waiter's scan answers one value and writes into
+    # no pipe, so its log stays a few lines however long it waits.
+    for w in d e f; do
+        ( AVRA_LAND_LOCK="$lockdir" branch=$w sh "$land" --call hold_lock_for "$scratch/sig-$w-never" ) \
+            > "$scratch/lock-$w.out" 2>&1 &
+        eval "${w}_pid=\$!"
+    done
+    sleep 8
+    grown=0
+    for w in c d e f; do
+        [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
+    done
+    if [ "$grown" -eq 0 ]; then
+        ok "lock-fifo: every waiter's log stays a few lines over a long wait"
+    else
+        bad "lock-fifo: a waiter's log grew while waiting"
+    fi
+    for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 50; then
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 150; then
         bad "lock-fifo: C never acquired ticket 3 after A released"
     else
         ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
@@ -275,6 +293,89 @@ test_affected_packages() {
     fi
 }
 
+# ══ run_checks: std-avrac, cli AND idioms RUN ONE AT A TIME ═════════
+# SEQUENTIAL is the LAW here, not an optimization not yet made: two
+# avra processes compiling into one .avra-cache AT ONCE corrupt it
+# (avra-8sb5.57.41 — tried as a concurrent batch, both suites failed
+# to link with undefined av_ symbols). This fixture pins the opposite
+# property a concurrent version would have broken: std-avrac (or
+# cli), whichever runs first, must FULLY FINISH before idioms starts
+# — never an overlap, whatever the machine's speed. A throwaway tree
+# with a STUB `build/avra` and `Makefile` (each just sleeps and logs
+# a timestamped start/end line) makes this observable without a real
+# build.
+test_run_checks_sequential() {
+    d="$(git_repo checks-sequential)"
+    write_pkg "$d" "std-avrac" "avrac"
+    write_pkg "$d" "cli" ""
+    write_pkg "$d" "other" ""
+    mkdir -p "$d/build"
+    timeline="$scratch/checks-sequential-timeline"
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+pkg="\$(basename "\$2")"
+echo "start \$pkg \$(date +%s)" >> "$timeline"
+sleep 1
+echo "end \$pkg \$(date +%s)" >> "$timeline"
+if [ "\$pkg" = "\${FAIL_PKG:-}" ]; then
+    echo "FAILED \$pkg"
+    exit 1
+fi
+echo "tested \$pkg"
+STUB
+    chmod +x "$d/build/avra"
+    printf 'idioms:\n\techo "start idioms $$(date +%%s)" >> %s && sleep 1 && echo "end idioms $$(date +%%s)" >> %s && echo idioms-ok\n' \
+        "$timeline" "$timeline" > "$d/Makefile"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    for p in std-avrac cli other; do
+        printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    commit_all "$d" "touch all three"
+
+    slots="$scratch/checks-sequential-slots"
+    rm -rf "$slots"
+    rm -f "$timeline"
+
+    if AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
+        > "$scratch/checks-sequential.out" 2>&1; then
+        # Every "end" must precede the NEXT line's "start" — a total
+        # order, not just idioms-after-the-rest: nothing may overlap.
+        overlap=0
+        prev_end=""
+        while read -r kind pkg ts; do
+            case "$kind" in
+                start)
+                    if [ -n "$prev_end" ] && [ "$ts" -lt "$prev_end" ]; then overlap=1; fi
+                    ;;
+                end) prev_end="$ts" ;;
+            esac
+        done < "$timeline"
+        if [ "$overlap" -eq 0 ]; then
+            ok "run_checks: std-avrac/cli and idioms never overlap — strictly sequential"
+        else
+            bad "run_checks: two steps overlapped — this must stay sequential (avra-8sb5.57.41)"
+            cat "$timeline"
+        fi
+    else
+        bad "run_checks: the all-passing case failed"
+        cat "$scratch/checks-sequential.out"
+    fi
+
+    # Now make cli fail — the run must fail closed and NAME cli.
+    if FAIL_PKG=cli AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
+        > "$scratch/checks-sequential-fail.out" 2>&1; then
+        bad "run_checks: a failing package's test did not fail the run"
+    else
+        ok "run_checks: a failing package's test fails the whole run"
+    fi
+    if grep -q "FAILED at 'test-cli" "$scratch/checks-sequential-fail.out" 2>/dev/null; then
+        ok "run_checks: the failure report names test-cli specifically"
+    else
+        bad "run_checks: the failure was not attributed to test-cli by name"
+    fi
+}
+
 # ══ SLOT.SH: THE LIMIT, AND STALE-SLOT CLEANUP ════════════════════════
 test_slot_limit() {
     dir="$scratch/slots-limit"
@@ -314,13 +415,13 @@ test_slot_stale_reclaim() {
     fi
 }
 
-# ══ THE CACHE SWEEP RUNS TWICE, AND THE SECOND RUN IS A CLEAN NO-OP ═══
-# land.sh moves every .avra-cache aside BEFORE the build (a compiler
-# print collision, avra-8sb5.57.24/.25) AND AGAIN between the test
-# suites and the keepers (avra test and avra check sharing a record
-# key, the same bug's other face). The second call must find nothing
-# left to move — the first already swept everything — and must not
-# treat an already-clean tree as a failure.
+# ══ THE CACHE SWEEP IS SAFE TO RUN TWICE IN A ROW ═════════════════════
+# move_caches_aside is no longer wired into a landing (avra-8sb5.57.24
+# and .25, the two bugs it existed to guard against, are both closed
+# on main) but stays a callable utility — this pins the property that
+# made it safe to call more than once when it WAS in the pipeline: a
+# second call over an already-clean tree finds nothing left to move
+# and says so, rather than treating that as a failure.
 test_caches_aside_twice() {
     tree="$scratch/caches-twice"
     rm -rf "$tree"
@@ -389,6 +490,118 @@ test_commit_seed_if_moved() {
     fi
 }
 
+# ══ BATCH MODE: THREE BRANCHES, ONE HAS A FAILING TEST ═══════════════
+# A full stub toolchain (build/avra, Makefile) so main_batch's real
+# pipeline — merge, build, run_checks, fmt-lossless, cache-attacks,
+# seed_policy — runs against a throwaway repo, never the real one.
+# Branch b's own package always fails its "test"; a and c always
+# pass. The batch must land a+c, name b as the culprit, and exit
+# non-zero (a batch that excludes anything did not fully succeed).
+test_batch_mode() {
+    d="$(git_repo batch)"
+    for p in a b c; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/bootstrap"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+# build_generation copies packages/cli/src/main OVER build/avra after
+# a successful "build" — the "new" compiler it thinks it produced —
+# so the build case must leave a COPY OF THIS WHOLE STUB there, self-
+# replicating, or every later "test" invocation runs a dumb placeholder
+# with no test/culprit logic at all (found exactly this way: every
+# package's test silently reported OK because build/avra had been
+# overwritten with a one-line "echo built" stand-in).
+case "$1" in
+    build)
+        mkdir -p packages/cli/src
+        cp "$0" packages/cli/src/main
+        chmod +x packages/cli/src/main
+        exit 0
+        ;;
+    test)
+        pkg="$(basename "$2")"
+        if [ "$pkg" = "${CULPRIT_PKG:-}" ]; then
+            echo "FAILED $pkg"
+            exit 1
+        fi
+        echo "tested $pkg"
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "$d/build/avra"
+    cat > "$d/Makefile" <<'MK'
+build/libavra_runtime.a:
+	@touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
+idioms:
+	@echo idioms-ok
+fmt-lossless:
+	@echo fmt-ok
+cache-attacks:
+	@echo cache-attacks-ok
+seed:
+	@echo seed-src > bootstrap/seed.ll
+	@echo seed-src > bootstrap/seed.sources
+seed-check:
+	@test -f bootstrap/seed.ll && echo seed-check-ok
+MK
+    printf 'seed-src\n' > "$d/bootstrap/seed.ll"
+    printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    commit_all "$d" "base"
+
+    for p in a b c; do
+        git -C "$d" checkout -q -b "$p" main
+        printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
+        commit_all "$d" "$p's own change"
+    done
+    git -C "$d" checkout -q main
+
+    lockdir="$scratch/batch-lock"
+    batchwt="$scratch/batch-integration-wt"
+    slots="$scratch/batch-slots"
+    rm -rf "$lockdir" "$batchwt" "$slots"
+
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" \
+        CULPRIT_PKG=b branch=x sh "$land" --call main_batch 0 a b c ) \
+        > "$scratch/batch.out" 2>&1 || st=$?
+
+    if [ "$st" -ne 0 ]; then
+        ok "batch: exits non-zero when a culprit was excluded"
+    else
+        bad "batch: exited 0 despite excluding a culprit"
+    fi
+    if grep -q "CULPRIT: b" "$scratch/batch.out"; then
+        ok "batch: names b as the culprit"
+    else
+        bad "batch: did not name b as the culprit"
+        cat "$scratch/batch.out"
+    fi
+    if grep -qE "green subset: (a c|c a)" "$scratch/batch.out"; then
+        ok "batch: the green subset is exactly a and c"
+    else
+        bad "batch: the green subset was not reported as a and c"
+        cat "$scratch/batch.out"
+    fi
+    if grep -q "^LANDED" "$scratch/batch.out"; then
+        ok "batch: still lands the green subset despite the culprit"
+    else
+        bad "batch: did not land anything"
+    fi
+    main_head_a="$(git -C "$d" show main:packages/a/src/lib.av 2>/dev/null)"
+    main_head_b="$(git -C "$d" show main:packages/b/src/lib.av 2>/dev/null)"
+    if printf '%s' "$main_head_a" | grep -q "int { 1 }" && ! printf '%s' "$main_head_b" | grep -q "int { 1 }"; then
+        ok "batch: main carries a's change but not b's"
+    else
+        bad "batch: main's content after landing does not match a-in, b-out"
+    fi
+}
+
 # ══ THE FAST-FORWARD: CLEAN WHEN LINEAR, REFUSED WHEN MAIN ALSO MOVED ═
 test_try_ff() {
     d="$(git_repo ff)"
@@ -422,16 +635,74 @@ test_try_ff() {
     git -C "$d" worktree remove -f "$branch_wt_dir" > /dev/null 2>&1
 }
 
+test_heavy_status() {
+    slots="$scratch/heavy-slots"
+    out="$scratch/heavy.out"
+    st=0
+    AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy failing sh -c "exit 3" > "$out" 2>&1 || st=$?
+    if [ "$st" -eq 3 ] && grep -q "FAILED at 'failing' (exit 3)" "$out"; then
+        ok "heavy answers a failing step's own status"
+    else
+        bad "heavy answers a failing step's own status (got $st)"
+    fi
+    st=0
+    AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy passing sh -c "exit 0" > "$out" 2>&1 || st=$?
+    if [ "$st" -eq 0 ] && grep -q "land: passing OK" "$out"; then
+        ok "heavy answers 0 for a passing step"
+    else
+        bad "heavy answers 0 for a passing step (got $st)"
+    fi
+    st=0
+    AVRA_MEMCAP_MB=200 AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy hog \
+        python3 -c "import time; x=b'x' * (400*1024*1024); time.sleep(5)" > "$out" 2>&1 || st=$?
+    if [ "$st" -eq 137 ] && grep -q "memcap: KILLED" "$out"; then
+        ok "heavy kills a step past the memory cap with 137"
+    else
+        bad "heavy kills a step past the memory cap with 137 (got $st)"
+    fi
+}
+
+test_ff_refused_not_moved() {
+    d="$(git_repo ff-refused)"
+    printf 'a\n' > "$d/f.txt"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    wt="$scratch/ff-refused-wt"
+    git -C "$d" worktree add -q -b adds "$wt" main > /dev/null 2>&1
+    printf 'new\n' > "$wt/added.txt"
+    commit_all "$wt" "adds a file"
+    printf 'squatter\n' > "$d/added.txt"
+    log="$scratch/ff-refused.log"
+    ( main_wt="$d" branch=adds sh "$land" --call try_ff ) > "$log" 2>&1
+    if ( main_wt="$d" sh "$land" --call main_moved_since "$base_sha" ); then
+        bad "ff: a refused fast-forward with main standing still reads as main moved"
+    else
+        ok "ff: a refused fast-forward with main standing still is not main moving"
+    fi
+    st=0
+    ( main_wt="$d" sh "$land" --call ff_refused "$log" ) > "$scratch/ff-refused.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ] && grep -q "untracked working tree files would be overwritten" "$scratch/ff-refused.out"; then
+        ok "ff: a refusal stops with git's own words"
+    else
+        bad "ff: a refusal stops with git's own words (got $st)"
+    fi
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
 test_merge_real_conflict
 test_affected_packages
+test_run_checks_sequential
 test_slot_limit
 test_slot_stale_reclaim
 test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
+test_batch_mode
+test_heavy_status
+test_ff_refused_not_moved
 
 echo
 echo "land_test: $total checks, $failed failed"

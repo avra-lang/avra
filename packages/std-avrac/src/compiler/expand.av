@@ -62,6 +62,10 @@ use core.{
     BodyView,
     HoleKind,
     Filled,
+    Inits,
+    spoiled_inits,
+    Rebuilder,
+    NodeStore,
     copier,
     hole_runs,
     quote_kind,
@@ -361,6 +365,84 @@ impl Workspace {
             .Statement -> Filled.Stmts(self.spliced_stmts(f, node)),
             .Arm -> Filled.Arms(self.spliced_arms(f, node)),
             .Run -> Filled.Exprs(self.spliced_exprs(f, node)),
+            .Fields -> Filled.Params(self.spliced_params(f, node)),
+            .Inits -> Filled.Inits(self.spliced_inits(f, node)),
+        }
+    }
+
+    /// What a field or record-field seat takes from a template: the
+    /// fields its declarations carry, or its record literal's — only
+    /// those, rebuilt, never the declaration that wrapped them.
+    fn lifted_from(
+        f: FileId,
+        src: NodeStore,
+        ss: List<StmtId>,
+        seat: HoleKind,
+        file: string,
+        at: int,
+        mut rb: Rebuilder,
+    ) -> Lift {
+        match seat {
+            .Fields -> Lift {
+                lifts: true,
+                params: rb.params(flatten([self.carried_fields(f, src, s, file, at) for s in ss])),
+                inits: no_inits(),
+            },
+            .Inits -> Lift { lifts: true, params: [], inits: self.carried_inits(f, src, ss, file, at, rb) },
+            .Expression or .Name or .Binder or .Type or .Statement or .Arm or .Run -> Lift { lifts: false, params: [], inits: no_inits() },
+        }
+    }
+
+    /// A declaration's fields — a type's, or a fn's parameters — and a
+    /// refusal for a declaration that carries none. A statement that
+    /// declares nothing is a template typing already refused here.
+    fn carried_fields(f: FileId, src: NodeStore, s: StmtId, file: string, at: int) -> List<Param> {
+        let fields? = fields_of(src.stmt(s)) else {
+            if src.declares(s) { self.decls.speak_expansion(f, [unliftable(file, at, no_fields("${file}:${at}"))]) }
+            return []
+        }
+        fields
+    }
+
+    /// A template's record literal, its fields rebuilt — a refusal for
+    /// a template that is not one.
+    fn carried_inits(
+        f: FileId,
+        src: NodeStore,
+        ss: List<StmtId>,
+        file: string,
+        at: int,
+        mut rb: Rebuilder,
+    ) -> Inits {
+        // a template answering no expression is one typing already refused here
+        let last? = ss.last() else { return no_inits() }
+        let e? = src.answer_of(last) else { return no_inits() }
+        match src.expr(e) {
+            .StructLit(_, names, values) -> rb.inits(names, values),
+            rest -> self.not_a_literal(f, file, at),
+        }
+    }
+
+    fn not_a_literal(f: FileId, file: string, at: int) -> Inits {
+        self.decls.speak_expansion(f, [unliftable(file, at, no_literal("${file}:${at}"))])
+        spoiled_inits()
+    }
+
+    /// A field run's fill: each template's fields, flattened.
+    fn spliced_params(f: FileId, node: Node) -> List<Param> {
+        match node {
+            .Template(file, at, _, fills) -> self.copied(f, file, at, fills, HoleKind.Fields).params,
+            .Many(items) -> flatten([self.spliced_params(f, i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+        }
+    }
+
+    /// A record-field run's fill: each literal's fields, flattened.
+    fn spliced_inits(f: FileId, node: Node) -> Inits {
+        match node {
+            .Template(file, at, _, fills) -> self.copied(f, file, at, fills, HoleKind.Inits).inits,
+            .Many(items) -> joined_inits([self.spliced_inits(f, i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> no_inits(),
         }
     }
 
@@ -463,7 +545,8 @@ impl Workspace {
             .Verbatim(_, arms) -> arms,
             .None or .Expanded(_) -> [],
         }
-        let stmts = rb.stmts(copied_stmts)
+        let lifted = self.lifted_from(f, src, copied_stmts, seat, file, at, rb)
+        let stmts = if lifted.lifts { [] } else { rb.stmts(copied_stmts) }
         let arms = rb.arms(copied_arms)
         if !same_file(origin, f) {
             self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin)
@@ -480,7 +563,7 @@ impl Workspace {
         self
             .decls
             .speak_expansion(f, [unplaceable_fill(self.decls.file(origin).path, at, u) for u in rb.unplaceable])
-        Copied { stmts: stmts, arms: arms }
+        Copied { stmts: stmts, arms: arms, params: lifted.params, inits: lifted.inits }
     }
 
     /// A lifted call's directives, or none when it refused — the ONE
@@ -673,7 +756,7 @@ impl Workspace {
             ty: typed_text(self.decls.types, p.ty),
             mutable: p.promises.mutable,
             settled: p.promises.settled,
-            at: placed(v, p.span),
+            at: placed(v, v.store.param_id_span(p.id)),
             kind: k,
         }
     }

@@ -5,6 +5,7 @@ use @std.avrac.core.{
     Plain,
     Span,
     new_node_store,
+    NodeStore,
     Expr,
     Stmt,
     Pat,
@@ -30,14 +31,20 @@ fn ty(name: string, optional: bool = false) -> TypeRef {
 }
 
 /// One param carrying a written type.
-fn param(name: string, t: TypeRef?) -> Param {
-    Param { name: Scoped(name), ty: t, default: null, promises: plain_mark }
+fn param(store: NodeStore, name: string, t: TypeRef?) -> Param {
+    Param {
+        name: Scoped(name),
+        ty: t,
+        default: null,
+        promises: plain_mark,
+        id: store.alloc_param_id(null),
+    }
 }
 
 /// One variant: unit when `t` is absent, else carrying one payload.
-fn variant(name: string, t: TypeRef?) -> Variant {
+fn variant(store: NodeStore, name: string, t: TypeRef?) -> Variant {
     if t == null { return Variant { name: Plain(name), payloads: [] } }
-    Variant { name: Plain(name), payloads: [param("", t)] }
+    Variant { name: Plain(name), payloads: [param(store, "", t)] }
 }
 
 spec "core/nodes" {
@@ -126,8 +133,8 @@ spec "core/nodes" {
         then "a WRITTEN TYPE is part of identity: `int` and `int?` differ" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
-            let plain = param("x", ty("int"))
-            let opt = param("x", ty("int", true))
+            let plain = param(s, "x", ty("int"))
+            let opt = param(s, "x", ty("int", true))
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int"), body))
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [opt], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
@@ -135,16 +142,16 @@ spec "core/nodes" {
         then "a nullable RETURN differs from its guarantee" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
-            let p = param("x", ty("int"))
+            let p = param(s, "x", ty("int"))
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int"), body))
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int", true), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "an ABSENT type differs from every written one" {
             mut s = new_node_store()
-            let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", null)]))
-            let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int"))]))
-            let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", true))]))
+            let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant(s, "a", null)]))
+            let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant(s, "a", ty("int"))]))
+            let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant(s, "a", ty("int", true))]))
             let fu = s.stmt_fingerprint(unit)
             let fc = s.stmt_fingerprint(carrying)
             let fnul = s.stmt_fingerprint(nullable)
@@ -152,19 +159,19 @@ spec "core/nodes" {
         }
         then "a field's written type is part of the record's identity" {
             mut s = new_node_store()
-            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int"))]))
-            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", true))]))
-            let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("bool"))]))
+            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param(s, "x", ty("int"))]))
+            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param(s, "x", ty("int", true))]))
+            let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param(s, "x", ty("bool"))]))
             let fa = s.stmt_fingerprint(a)
             fa != s.stmt_fingerprint(b) && fa != s.stmt_fingerprint(c)
         }
         then "an APPLICATION is part of identity: `List<int>` vs `int`" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1))
-            let plain = param("x", ty("int"))
+            let plain = param(s, "x", ty("int"))
             let applied = named_ref("List") with { args: [ty("int")], optional: false }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int"), body))
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", applied)], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param(s, "x", applied)], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "the ELEMENT is part of identity: `List<int>` vs `List<bool>`" {
@@ -172,8 +179,8 @@ spec "core/nodes" {
             let body = s.alloc_expr(Expr.IntLit(1))
             let li = named_ref("List") with { args: [ty("int")], optional: false }
             let lb = named_ref("List") with { args: [ty("bool")], optional: false }
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int"), body))
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", lb)], ty("int"), body))
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param(s, "x", li)], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param(s, "x", lb)], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "NESTING is part of identity: `List<int>` vs `List<List<int>>`" {
@@ -181,8 +188,8 @@ spec "core/nodes" {
             let body = s.alloc_expr(Expr.IntLit(1))
             let li = named_ref("List") with { args: [ty("int")], optional: false }
             let ll = named_ref("List") with { args: [li], optional: false }
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int"), body))
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", ll)], ty("int"), body))
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param(s, "x", li)], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param(s, "x", ll)], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "two DIFFERENT match shapes never fingerprint alike — an arm is one hash, not a run of them" {
@@ -260,8 +267,8 @@ spec "core/nodes" {
             mut s = new_node_store()
             let here = named_ref("int") with { optional: true, span: at(0, 4) }
             let there = named_ref("int") with { optional: true, span: at(90, 94) }
-            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", here)]))
-            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", there)]))
+            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param(s, "x", here)]))
+            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param(s, "x", there)]))
             s.stmt_fingerprint(a) == s.stmt_fingerprint(b)
         }
         then "a parent's fingerprint sees its children's" {

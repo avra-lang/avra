@@ -76,6 +76,11 @@ export enum HoleKind {
     /// a lone `${..name}` among a list of expressions — a call's
     /// arguments, a list literal's elements
     Run
+    /// a lone name standing as a whole entry of a type's fields or a
+    /// fn's parameters
+    Fields
+    /// a lone name standing as a whole field of a record literal
+    Inits
 }
 
 /// The kind a template VALUE wears — one per `@std/meta` type.
@@ -148,7 +153,25 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
             .Templates(k) -> k is .Code,
             .Template(_) or .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
         },
+        .Fields -> match class {
+            .Template(k) or .Templates(k) -> declares(k),
+            .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
+        },
+        .Inits -> match class {
+            .Template(k) or .Templates(k) -> expresses(k),
+            .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
+        },
     }
+}
+
+/// Whether a template of this kind is one expression.
+fn expresses(k: MetaKind) -> bool {
+    match k { .Code -> true, .Stmts or .Arms or .Decls -> false }
+}
+
+/// Whether a template of this kind is declarations.
+fn declares(k: MetaKind) -> bool {
+    match k { .Decls -> true, .Code or .Stmts or .Arms -> false }
 }
 
 /// The kind a body of NOTHING BUT HOLES wears: its first hole's —
