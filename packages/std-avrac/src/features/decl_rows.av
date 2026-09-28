@@ -6,11 +6,15 @@
 //! so none of them enters the stable hash. `file` keeps an `@index` so a reader can
 //! ask for a file's rows, the shape the grain law (S1) records against.
 //!
-//! NOT YET DECIDED: a `@key`. The real interning key is a built string
-//! (`decls_mint.av`'s `fresh_key`/`generated_key`), not a clean tuple of these
-//! columns — `owner` alone collides across files, and a generated declaration's key
-//! folds in its origin. Landing a `@key` here before that composite is designed risks
-//! a spurious uniqueness refusal on a real insert. `DeclRow` carries none until it is.
+//! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `File` is a
+//! relation and `file` stops being `@local` (decision 10(a)) — owner: ERRORS. That
+//! tuple, not the interning string, is the row's stable name (townhall doc §6,
+//! "same-(owner, name) siblings only"): the key and the name a witness stores a
+//! dependency under are one derivation, or a second caller gets a wrong answer. No
+//! `sibling` column exists on `Decl` yet — it is an ordinal among same-(owner, name)
+//! declarations, computed, not stored, and the shadow carries none until it does.
+//! `DeclRow` is keyless meanwhile: a rerun replaces the whole set, which is sound for
+//! a shadow inserted by one query (`mint`) and read by nobody.
 use core.{DeclId, FileId, StmtId, ExprId, DeclKind}
 use @std.relation.{relation}
 
