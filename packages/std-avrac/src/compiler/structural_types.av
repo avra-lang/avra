@@ -6,7 +6,7 @@
 //! type-check — receivers.av's writer inference, and the error-union
 //! fixpoint (failures.av).
 use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, MethodParts}
-use features.{NameFacts, Decls, bound_decl_of, row_writes, declared_decl}
+use features.{NameFacts, Decls, bound_decl_of, method_row, declared_decl}
 
 /// One fn's own view: its seats' declared types (the receiver's when
 /// it has one), the file's resolved names, and its body's store — the
@@ -45,17 +45,24 @@ impl DeclaredTypes {
     /// What a `let`/`mut` holds, by its value's declared answer.
     fn bound_type(s: StmtId) -> TypeId? {
         let value? = self.store.stmt_value(s) else { return null }
+        self.value_type(value)
+    }
+
+    /// The type a value answers: a place's, a named call's or a method
+    /// call's declared answer, a construction's — null past that.
+    fn value_type(value: ExprId) -> TypeId? {
         let placed: TypeId? = self.place_type(value)
         if placed != null { return placed }
         let callee: DeclId? = bound_decl_of(self.names, value)
         if callee != null { return self.decls.sig(callee!)?.fn_sig()?.ret }
         let m? = self.store.method_parts(value) else { return self.constructed_type(value) }
-        let subject? = self.place_type(m.subject) else { return null }
+        let subject? = self.value_type(m.subject) else { return null }
         match self.callee_of(subject, m.name) {
             .Method(d) or .Static(d) -> self.decls.sig(d)?.fn_sig()?.ret,
             .FnSeats(held) -> held.answer,
             .Contract(d) -> self.decls.sig(d)?.fn_sig()?.ret,
-            .Row(_) or .None -> null,
+            .Row(_, answer) -> answer,
+            .None -> null,
         }
     }
 
@@ -87,7 +94,7 @@ impl DeclaredTypes {
         if under != null { return self.named_callee(ty, under!, name) }
         let sh: Type = self.decls.types.shape_of(ty)
         match sh {
-            .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
+            .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Bytes or .Str -> self.row_callee(ty, sh, name),
             .Struct(d, _) -> self.field_or_method(ty, d, name),
             .Enum(d, _) -> self.declared_method(d, name),
             .App(d, _, _) -> self.field_or_method(ty, d, name),
@@ -96,6 +103,13 @@ impl DeclaredTypes {
             .TypeName(d, _) -> self.static_member(d, name),
             .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Union(_) or .Error or .Void or .EmptyMap -> Callee.None,
         }
+    }
+
+    /// A vocabulary row's callee: whether it writes its receiver, and
+    /// what it answers on this receiver when that is told alone.
+    fn row_callee(ty: TypeId, sh: Type, name: string) -> Callee {
+        let row? = method_row(self.ws.lang.rows.methods, name, sh) else { return Callee.Row(false, null) }
+        Callee.Row(row.effect is .Write, row.answers(self.decls.types, ty))
     }
 
     /// A NAME's callee, as typing finds it: a method its own impl
@@ -155,7 +169,7 @@ impl DeclaredTypes {
 /// What a name on a shape calls: the vocabulary's row, a declared
 /// method, a contract's member — or nothing this pass can name.
 export enum Callee {
-    Row(writes: bool)
+    Row(writes: bool, answer: TypeId?)
     Method(d: DeclId)
     /// A `static fn` under a TYPE NAME — no receiver, so its
     /// arguments start at seat 0.
