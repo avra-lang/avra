@@ -99,42 +99,23 @@ heavy() {
     name="$1"
     shift
     log="$(log_of "$name")"
-    # PROGRESS GOES TO STDERR, ALWAYS: `bisect_land` (batch mode)
-    # reads a function's STDOUT as its return value, so any progress
-    # line landing on stdout instead corrupts that value — witnessed
-    # exactly this way, "land: green subset: <every OK line> a b c".
+    # Progress goes to stderr: batch mode reads a function's stdout as its value.
     echo "land: $name …" >&2
-    # `st=$?` reads IMMEDIATELY after the command, never after an
-    # `if …; then … fi` wrapped around it — inside a FUNCTION, `wait`
-    # in particular loses that status by the time `fi` is reached
-    # (confirmed: `if wait "$pid"; then …; fi; st=$?` answered 0 for a
-    # job that had actually failed, called from a function, gone once
-    # `st=$?` moved to read `wait`'s own line directly); the same safe
-    # shape is used here too rather than trust that a plain command
-    # in the condition is exempt.
-    sh "$tools_dir/capped.sh" "$log" 2000000 sh "$tools_dir/slot.sh" 2 "$@"
-    st=$?
+    st=0
+    sh "$tools_dir/capped.sh" "$log" 2000000 \
+        sh "$tools_dir/slot.sh" 2 \
+        sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
     if [ "$st" -eq 0 ]; then
         echo "land: $name OK" >&2
         return 0
     fi
+    # 137 is the memory cap's kill: a finding about the change, never a retry.
     fail_report "$name" "$st" "$log"
     return "$st"
 }
 
-# THE BACKGROUND HALF (heavy_bg/wait_heavy) LIVED HERE ONCE, for
-# running several heavy steps at once — removed with the concurrent
-# checks that used it (avra-8sb5.57.41: two avra processes writing
-# one .avra-cache at once corrupt it). Kept as a note, not code, for
-# whoever parallelizes checks once concurrent writers are safe: a
-# BACKGROUNDED job must be started as a direct statement, never
-# through a `$( … )` capture (that forks a subshell and re-parents the
-# job the instant the subshell exits, so a later `wait` on it would
-# not be this shell's own child any more) — and reading its exit
-# status needs `st=$?` on the line RIGHT AFTER `wait`, never through
-# `if wait "$pid"; then … fi` (witnessed answering 0 for a genuinely
-# failed job when read that way from inside a function; `heavy`'s own
-# shape above was changed for the same reason).
+# A step's exit status is read as `cmd || st=$?`: after `if cmd; then …
+# fi` with no else, `$?` is 0 whatever cmd answered.
 
 # A LIGHT STEP: quick git/file plumbing with its own control flow — no
 # loop, no unbounded output, so no cap and no slot. `body` is a shell

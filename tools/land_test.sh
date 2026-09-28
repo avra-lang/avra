@@ -615,6 +615,33 @@ test_try_ff() {
     git -C "$d" worktree remove -f "$branch_wt_dir" > /dev/null 2>&1
 }
 
+test_heavy_status() {
+    slots="$scratch/heavy-slots"
+    out="$scratch/heavy.out"
+    st=0
+    AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy failing sh -c "exit 3" > "$out" 2>&1 || st=$?
+    if [ "$st" -eq 3 ] && grep -q "FAILED at 'failing' (exit 3)" "$out"; then
+        ok "heavy answers a failing step's own status"
+    else
+        bad "heavy answers a failing step's own status (got $st)"
+    fi
+    st=0
+    AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy passing sh -c "exit 0" > "$out" 2>&1 || st=$?
+    if [ "$st" -eq 0 ] && grep -q "land: passing OK" "$out"; then
+        ok "heavy answers 0 for a passing step"
+    else
+        bad "heavy answers 0 for a passing step (got $st)"
+    fi
+    st=0
+    AVRA_MEMCAP_MB=200 AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy hog \
+        python3 -c "import time; x=b'x' * (400*1024*1024); time.sleep(5)" > "$out" 2>&1 || st=$?
+    if [ "$st" -eq 137 ] && grep -q "memcap: KILLED" "$out"; then
+        ok "heavy kills a step past the memory cap with 137"
+    else
+        bad "heavy kills a step past the memory cap with 137 (got $st)"
+    fi
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
@@ -627,6 +654,7 @@ test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
+test_heavy_status
 
 echo
 echo "land_test: $total checks, $failed failed"
