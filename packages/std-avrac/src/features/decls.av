@@ -352,6 +352,10 @@ export type Decls = {
     held_values: Cell<Map<string, Settled>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
+    /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
+    /// arms hears each read that skipped the Kernel, while `auditing` is on.
+    auditing: Cell<bool>,
+    audit_hook: Cell<fn(Bypassed) -> void>,
 
     // a GENERATED declaration's origin — null for every written one
     provenance: Cell<List<Provenance?>>,
@@ -471,6 +475,8 @@ fn no_failures_ensure() {}
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
+fn no_audit(_r: Bypassed) {}
+
 /// Whether a scope gathers from every file of the owner's package.
 fn admits_package(scope: CollectScope) -> bool {
     match scope { .Package -> true, .Self or .Closure or .UnknownScope(_) -> false }
@@ -536,6 +542,8 @@ export fn new_decls() -> Decls {
         mains: Cell.new(no_mains),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
+        auditing: Cell.new(false),
+        audit_hook: Cell.new(no_audit),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
         ensure_package: Cell.new(no_store),
@@ -633,7 +641,24 @@ impl Decls {
     // ── files ──
 
     /// A path's identity — minted at first mention.
-    fn decl(d: DeclId) -> Decl { self.decls.get()[d.index] }
+    fn decl(d: DeclId) -> Decl {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+        self.decls.get()[d.index]
+    }
+
+    /// One audited read, told to the hook — which reads the tables itself, so the
+    /// audit is off while it runs.
+    fn audited(r: Bypassed) {
+        self.auditing.set(false)
+        (self.audit_hook.get())(r)
+        self.auditing.set(true)
+    }
+
+    /// The workspace arms the audit once, when `AVRA_DEP_AUDIT` asks.
+    fn arm_audit(hook: fn(Bypassed) -> void) {
+        self.audit_hook.set(hook)
+        self.auditing.set(true)
+    }
 
     /// A generated declaration's origin, or null for a written one.
     fn provenance_of(d: DeclId) -> Provenance? { self.provenance.get()[d.index] }
@@ -1047,6 +1072,7 @@ impl Decls {
     /// `d` itself belongs to) and must not recurse back into it —
     /// null answers "not settled yet," never "not there is an error."
     fn sig_so_far(d: DeclId) -> DeclSig? {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
         self.sigs.get()[d.index]
     }
 
@@ -1055,6 +1081,7 @@ impl Decls {
     /// once every declaration it will ever ask about is signed; a
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
+        self.auditing.set(false)
         self.ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
         self.ensure_entry.set(no_entry_ensure)
@@ -1448,6 +1475,7 @@ impl Decls {
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Written(d)) }
         let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
@@ -1481,6 +1509,7 @@ impl Decls {
     /// A `_`-declared fn's growing error set, as the fixpoint found it
     /// so far — deduped by type identity, the pass's own read, hook-free.
     fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
         self.inferred_errs.at(d.index) ?? []
     }
 
@@ -1978,7 +2007,10 @@ impl Decls {
     }
 
     /// A type's registered methods, as they stand — the hook-free read.
-    fn methods_of(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
+    fn methods_of(target: DeclId) -> List<DeclId> {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
+        self.methods.get()[target.index].get()
+    }
 
     /// Every method a type declares, its table filled first.
     fn declared_methods(target: DeclId) -> List<DeclId> {

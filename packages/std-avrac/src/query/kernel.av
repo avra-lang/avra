@@ -12,6 +12,8 @@
 //! driver sets. A key is a FAMILY number and the dense id the family
 //! keys by — two list indexes, no strings. Values live in the
 //! families' own typed tables; the kernel holds only bookkeeping.
+use core.{list_cell, map_cell}
+
 /// A cell's address: its family, and the dense id the family keys
 /// by (a FileId, a DeclId).
 export type Key = { family: int, arg: int }
@@ -85,10 +87,40 @@ type KernelState = {
     misses: int,
 }
 
+/// A read that skipped `ask`, held for the outermost open query: which verb read
+/// which subject (both the reader's own dense numbers), and the queries open when it
+/// first happened.
+export type Bypass = { verb: int, subject: int, frames: List<Key> }
+
+/// THE DEPENDENCY AUDIT: off, it is one flag. On, a bypass read is held once per
+/// (verb, subject) until the outermost query settles, then judged against the queries
+/// that were open when it happened: a read none of them records a cover for is one no
+/// witness of them could see, and goes to `sink`. `seen` marks the pairs held so far,
+/// `touched` lists them for the reset.
+export type Audit = {
+    on: Cell<bool>,
+    width: Cell<int>,
+    held: Cell<List<Bypass>>,
+    seen: Cell<List<bool>>,
+    touched: Cell<List<int>>,
+    exempt: Cell<fn(Bypass) -> bool>,
+    covers: Cell<fn(Bypass) -> List<Key>>,
+    sink: Cell<fn(Bypass) -> void>,
+    visit: Cell<List<Cell<List<int>>>>,
+    round: Cell<int>,
+    reach: Cell<Map<string, bool>>,
+}
+
 /// A kernel is a shared handle. Copying it copies the handle; every
 /// query family and verifier therefore sees the same revision, open
 /// stack, dependencies, and counters.
-export type Kernel = { state: Cell<KernelState> }
+export type Kernel = { state: Cell<KernelState>, audit: Audit }
+
+fn unheard(_b: Bypass) {}
+
+fn unexempt(_b: Bypass) -> bool { false }
+
+fn uncovering(_b: Bypass) -> List<Key> { [] }
 
 export fn new_kernel() -> Kernel {
     let state = KernelState {
@@ -104,11 +136,129 @@ export fn new_kernel() -> Kernel {
         hits: 0,
         misses: 0,
     }
-    Kernel { state: Cell.new(state) }
+    Kernel {
+        state: Cell.new(state),
+        audit: Audit {
+            on: Cell.new(false),
+            width: Cell.new(1),
+            held: list_cell(),
+            seen: list_cell(),
+            touched: list_cell(),
+            exempt: Cell.new(unexempt),
+            covers: Cell.new(uncovering),
+            sink: Cell.new(unheard),
+            visit: list_cell(),
+            round: Cell.new(0),
+            reach: map_cell(),
+        },
+    }
 }
 
 impl Kernel {
     fn snapshot() -> KernelState { self.state.get() }
+
+    /// Arms the audit for a reader with `width` verbs: `exempt` names the reads that need
+    /// no dependency, `covers` the keys that would have recorded one, and `sink` hears
+    /// each read no open query covered, when the outermost query settles.
+    fn audit_to(
+        width: int,
+        exempt: fn(Bypass) -> bool,
+        covers: fn(Bypass) -> List<Key>,
+        sink: fn(Bypass) -> void,
+    ) {
+        self.audit.width.set(width)
+        self.audit.exempt.set(exempt)
+        self.audit.covers.set(covers)
+        self.audit.sink.set(sink)
+        self.audit.on.set(true)
+    }
+
+    /// Notes a read that skipped `ask`, for the outermost open query to judge — once per
+    /// (verb, subject). With no query open, nothing depends on the read.
+    fn bypassed(verb: int, subject: int) {
+        if !self.audit.on.get() { return }
+        let open = self.snapshot().open
+        if open.is_empty() { return }
+        let at = subject * self.audit.width.get() + verb
+        while self.audit.seen.get().length <= at { self.audit.seen.push(false) }
+        if self.audit.seen.get()[at] { return }
+        self.audit.seen.set_at(at, true)
+        self.audit.touched.push(at)
+        self.audit.held.push(Bypass { verb: verb, subject: subject, frames: open })
+    }
+
+    /// The outermost query settled: every read held for it is judged against the queries
+    /// that were open when it happened, whose deps are final now.
+    fn judged() {
+        if !self.snapshot().open.is_empty() { return }
+        let held = self.audit.held.get()
+        if held.is_empty() { return }
+        let exempt = self.audit.exempt.get()
+        let covers = self.audit.covers.get()
+        let sink = self.audit.sink.get()
+        for b in held {
+            if !exempt(b) && !self.covered(b, covers(b)) { sink(b) }
+        }
+        for at in self.audit.touched.get() { self.audit.seen.set_at(at, false) }
+        let no_touched: List<int> = []
+        self.audit.touched.set(no_touched)
+        let none: List<Bypass> = []
+        self.audit.held.set(none)
+        let unasked: Map<string, bool> = {}
+        self.audit.reach.set(unasked)
+    }
+
+    /// Whether the cover is a query open at the read (the read is of a table that query
+    /// is making), or the query that PERFORMED the read reaches it: every query is a cell
+    /// verified on its own dependencies, so a cover only an ancestor reaches leaves the
+    /// reader's own cell unsound.
+    fn covered(b: Bypass, covers: List<Key>) -> bool {
+        let reader? = b.frames.last() else { return true }
+        covers.any((c: Key) -> b.frames.any((f: Key) -> same_key(c, f)) || self.reaches(reader, c))
+    }
+
+    /// Whether following `from`'s dependencies to the bottom meets `target`; answered once
+    /// per (from, target) until the judging ends.
+    fn reaches(from: Key, target: Key) -> bool {
+        let asked = "${from.family}:${from.arg}>${target.family}:${target.arg}"
+        let known? = self.audit.reach.get().get(asked) else {
+            let found = self.searched(from, target)
+            self.audit.reach.put(asked, found)
+            return found
+        }
+        known
+    }
+
+    /// The search: each cell is visited once, stamped with a round the call opens.
+    fn searched(from: Key, target: Key) -> bool {
+        self.audit.round.set(self.audit.round.get() + 1)
+        mut frontier = [from]
+        while !frontier.is_empty() {
+            mut below: List<Key> = []
+            for k in frontier {
+                for d in self.deps_of(k) {
+                    if same_key(d, target) { return true }
+                    if self.first_visit(d) { below.push(d) }
+                }
+            }
+            frontier = below
+        }
+        false
+    }
+
+    /// Whether `k` has not yet been reached in this round; stamps it.
+    fn first_visit(k: Key) -> bool {
+        while self.audit.visit.get().length <= k.family {
+            let row: Cell<List<int>> = list_cell()
+            self.audit.visit.push(row)
+        }
+        let row = self.audit.visit.get()[k.family]
+        while row.get().length <= k.arg { row.push(0) }
+        let round = self.audit.round.get()
+        if row.get()[k.arg] == round { return false }
+        row.set_at(k.arg, round)
+        true
+    }
 
     fn replace(state: KernelState) { self.state.set(state) }
 
@@ -247,6 +397,7 @@ impl Kernel {
                 },
             )
             self.replace(s)
+            if self.audit.on.get() { self.judged() }
             return
         }
         let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
@@ -261,6 +412,7 @@ impl Kernel {
             },
         )
         self.replace(s)
+        if self.audit.on.get() { self.judged() }
     }
 
     /// One read's dependency, appended to the OPEN query's list — unless
