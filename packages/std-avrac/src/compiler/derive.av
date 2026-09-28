@@ -381,8 +381,11 @@ impl Workspace {
         // appends (O(the batch), store/pack.av) rather than rewriting
         // the whole file, so this call is a no-op on the ordinary
         // path — it exists for the one file that stages nothing after
-        // the last one that does.
+        // the last one that does. THEN ONE `fsync` for the whole pass:
+        // `commit` itself never syncs (the pack is a cache — atomicity
+        // matters, not per-commit durability, `Pack.flushed`'s own doc).
         let _ = self.pack.get()?.commit()
+        let _ = self.pack.get()?.flushed()
         said
     }
 

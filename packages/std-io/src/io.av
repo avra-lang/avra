@@ -262,14 +262,25 @@ fn poured(path: string, fd: int, bytes: Bytes) -> Result<int, IoError> {
 
 /// OCTETS appended after the file's current end, created if absent —
 /// never a rewrite of what was already there, so a caller's own
-/// growing content is never copied to append a small addition. The
-/// write is `fsync`ed before this answers: a crash right after
-/// cannot lose bytes already appended. Answers the path, the same
-/// convention as `write_bytes`.
+/// growing content is never copied to append a small addition. NOT
+/// durable on its own: the write reaches the OS's page cache, not
+/// necessarily the device, until a caller asks `synced` for it —
+/// call that once for a whole batch of appends, never once per
+/// append. Answers the path, the same convention as `write_bytes`.
 export fn append_bytes(path: string, bytes: Bytes) -> Result<string, IoError> {
     let fd = done(path, avra_io_open_append(one_path(path)?))?
     defer avra_io_close(fd)
     poured(path, fd, bytes)?
+    path
+}
+
+/// Every byte appended to `path` since the last `synced` (or ever)
+/// made durable on the device — a crash after this returns cannot
+/// lose them. The cost of durability paid ONCE for however many
+/// `append_bytes` calls came before it, not once per call.
+export fn synced(path: string) -> Result<string, IoError> {
+    let fd = done(path, avra_io_open_append(one_path(path)?))?
+    defer avra_io_close(fd)
     done(path, avra_fd_sync(fd))?
     path
 }

@@ -6,6 +6,10 @@
 //! entries. A commit marker closes a batch; a reader trusts nothing
 //! past the last one it can verify, so a crash mid-write leaves the
 //! prior committed state exactly as it was — never a partial entry.
+//! ATOMICITY, not per-commit DURABILITY: `commit` appends with no
+//! `fsync` (this is a cache — a lost commit is only recomputed, never
+//! a wrong answer), and `flushed` pays that cost once, for a whole
+//! pass's worth of commits.
 //!
 //! THE FILE, in order:
 //!   header: magic, format version, the producing compiler's id
@@ -19,7 +23,7 @@
 //! read through `avra_mmap_word_at`'s eight-byte stride instead, with
 //! `@std/io`'s `read_bytes` for the tail under eight bytes it cannot
 //! reach.
-use @std.io.{read_bytes, write_bytes, append_bytes, truncate_to}
+use @std.io.{read_bytes, write_bytes, append_bytes, truncate_to, synced}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
 // ── The header ──
@@ -476,6 +480,19 @@ impl Pack {
         self.pending.out.set([])
         if self.garbage_heavy() { return self.compact() }
         true
+    }
+
+    /// Every commit so far made DURABLE — one `fsync`, paid once for
+    /// however many `commit` calls came before it. THE PACK IS A
+    /// CACHE: what correctness needs is that a reader never sees a
+    /// half-written entry as valid, which the commit marker and the
+    /// torn-tail trim already guarantee with no `fsync` at all — losing
+    /// the last few commits to a crash before this runs just means
+    /// recomputing them next time, not a wrong answer. Call once at
+    /// the end of a pass, or whenever this `Pack` is done being
+    /// written to.
+    fn flushed() -> bool {
+        match synced(self.path) { .Ok(_) -> true, .Err(_) -> false }
     }
 
     /// The file left ready to APPEND to, paid once per `Pack` (never
