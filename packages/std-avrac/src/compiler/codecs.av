@@ -14,8 +14,8 @@
 //! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
-use core.{SeatMark, TypeId, Type, list_eq}
-use features.{DeclFacts, AnnotationFact, Settled, MetaHeap, Wanted, SeatValue, MetaVal}
+use core.{SeatMark, TypeId, Type, DeclKind, list_eq}
+use features.{DeclFacts, AnnotationFact, Settled, MetaHeap, Wanted, SeatValue, MetaVal, kind_word}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 
@@ -391,11 +391,69 @@ fn same_annotation_list(a: List<AnnotationFact>, b: List<AnnotationFact>) -> boo
     list_eq(a, b, (x, y) -> x.codec_same(y))
 }
 
+// ── `kind_word`/`kind_of_word` — a record line's "kind" column, for
+// the shapes that actually READ it back: `Fn`/`Extern`/`Opaque` alone
+// (`record.av`'s `declared_kind`). `Record`/`Named`/`Alias` also
+// encode through `kind_word` (all three collapse to "type"), but
+// their DeclKind comes back from the SHAPE column instead — `kind_of_
+// word` has no `"type"` arm at all — so those three sit outside this
+// pair's own contract and are left out of its exemplars. ──
+
+fn decl_kind_exemplars() -> List<DeclKind> {
+    [
+        DeclKind.Fn,
+        DeclKind.Enum,
+        DeclKind.Trait,
+        DeclKind.Syntax,
+        DeclKind.Method,
+        DeclKind.Default,
+        DeclKind.Impl,
+        DeclKind.Main,
+        DeclKind.Case,
+        DeclKind.Const,
+        DeclKind.Collect,
+        DeclKind.CollectEnum,
+        DeclKind.Builtin,
+    ]
+}
+
+fn decl_kind_labels() -> List<string> {
+    [
+        "fn",
+        "enum",
+        "trait",
+        "syntax",
+        "method",
+        "default",
+        "impl",
+        "main",
+        "case",
+        "const",
+        "collect",
+        "collect_enum",
+        "builtin",
+    ]
+}
+
+fn kind_of_word_total(w: string) -> DeclKind {
+    kind_of_word(w) ?? DeclKind.Builtin
+}
+
+fn same_decl_kind(a: DeclKind, b: DeclKind) -> bool { a == b }
+
 // ── THE REGISTRY ─────────────────────────────────────────────────────
 
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
+        derived_total(
+            "record.kind_word/kind_of_word",
+            decl_kind_exemplars(),
+            decl_kind_labels(),
+            kind_word,
+            kind_of_word_total,
+            same_decl_kind,
+        ),
         derived_total(
             "record.mark_word/mark_of_word",
             SeatMark.exemplars(),
