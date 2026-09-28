@@ -267,6 +267,16 @@ export type Workspace = {
     /// NameRead edge list (one entry per name that module answered)
     /// from scratch otherwise.
     visible_memo_sets: Cell<Map<string, List<int>>>,
+    /// EVERY DECLARATION'S STABLE NAME, MEMOIZED ONCE FOR THE WHOLE
+    /// PROCESS (compiler/witness.av's `decl_at_stable`) — built the
+    /// first time a validation asks for one, keyed the same way
+    /// `Decls.stable_decl_name` spells it. Without this, resolving
+    /// one Sig or Methods edge back to a `DeclId` scanned its file's
+    /// whole declaration list, and `stable_match`'s own
+    /// `sibling_index` scanned it AGAIN per candidate — paid by every
+    /// such edge, on every file a process validates. Shares
+    /// `leaf_memo_revision`'s staleness stamp.
+    decl_by_stable: Cell<Map<string, DeclId>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -690,6 +700,7 @@ fn built(
     let no_edge_table: List<Edge> = []
     let no_edge_ids: Map<string, int> = {}
     let no_visible: Map<string, List<int>> = {}
+    let no_decls_by_stable: Map<string, DeclId> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -706,6 +717,7 @@ fn built(
         edge_table: Cell.new(no_edge_table),
         edge_id_by_key: Cell.new(no_edge_ids),
         visible_memo_sets: Cell.new(no_visible),
+        decl_by_stable: Cell.new(no_decls_by_stable),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),

@@ -384,10 +384,38 @@ impl Workspace {
     fn decl_at_stable(path: string, owner: string, name: string, sibling: int) -> DeclId? {
         if path == "" { return self.decls.builtins.get().find((b: DeclId) -> self.decls.decl(b).name == name) }
         if !self.host.exists(path) { return null }
-        self
-            .decls
-            .decls_of_file(self.file_id(path))
-            .find((d: DeclId) -> self.decls.stable_match(d, owner, name, sibling))
+        let key = stable_line("decl", [path, owner, name, "${sibling}"])
+        let cached? = self.decl_lookup_memo(key) else {
+            let found = self
+                .decls
+                .decls_of_file(self.file_id(path))
+                .find((d: DeclId) -> self.decls.stable_match(d, owner, name, sibling))
+            if found != null { self.decl_lookup_remember(key, found!) }
+            return found
+        }
+        cached
+    }
+
+    /// One (path, owner, name, sibling) tuple's answer, memoized LAZILY
+    /// by the tuple actually asked — never a whole-table build, which
+    /// would eagerly resolve every declaration in the package (test
+    /// suite included) whether or not any edge ever names it. WITHOUT
+    /// this, resolving one Sig or Methods edge scanned its file's
+    /// WHOLE declaration list (`decls_of_file(f).find`), and
+    /// `stable_match`'s own `sibling_index` scanned it AGAIN per
+    /// candidate tried — paid by every such edge, on every file a
+    /// process validates (measured: about half of an edited recheck's
+    /// wall time). Only HITS are cached: a miss (the declaration is
+    /// gone, or moved) is uncommon and its own witness edge is about
+    /// to be refused as stale regardless, so caching it buys nothing.
+    fn decl_lookup_memo(key: string) -> DeclId? {
+        if self.leaf_memo_stale() { return null }
+        self.decl_by_stable.get().get(key)
+    }
+
+    fn decl_lookup_remember(key: string, d: DeclId) {
+        self.ensure_memo_fresh()
+        self.decl_by_stable.put(key, d)
     }
 
     /// Opens (or re-opens) this workspace's own witness pack, over one
@@ -805,9 +833,11 @@ impl Workspace {
             let no_table: List<Edge> = []
             let no_ids: Map<string, int> = {}
             let no_visible: Map<string, List<int>> = {}
+            let no_decls: Map<string, DeclId> = {}
             self.edge_table.set(no_table)
             self.edge_id_by_key.set(no_ids)
             self.visible_memo_sets.set(no_visible)
+            self.decl_by_stable.set(no_decls)
             self.leaf_memo_revision.set(self.db.revision())
         }
     }
