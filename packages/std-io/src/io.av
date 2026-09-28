@@ -28,6 +28,9 @@ extern fn avra_io_temp_fd(h: int) -> int
 extern fn avra_io_commit(h: int) -> int
 extern fn avra_io_drop(h: int) -> int
 extern fn avra_io_env_set(name: string) -> int
+extern fn avra_io_open_append(path: string) -> int
+extern fn avra_fd_sync(fd: int) -> int
+extern fn avra_io_truncate(path: string, len: int) -> int
 
 // THE RUNTIME'S OWN, which mint or answer immortal text — the only
 // doors through which bytes become a value. `avra_io_list` is the one
@@ -255,6 +258,29 @@ fn poured(path: string, fd: int, bytes: Bytes) -> Result<int, IoError> {
         at = at + done(path, avra_fd_write(fd, bytes, at))?
     }
     at
+}
+
+/// OCTETS appended after the file's current end, created if absent —
+/// never a rewrite of what was already there, so a caller's own
+/// growing content is never copied to append a small addition. The
+/// write is `fsync`ed before this answers: a crash right after
+/// cannot lose bytes already appended. Answers the path, the same
+/// convention as `write_bytes`.
+export fn append_bytes(path: string, bytes: Bytes) -> Result<string, IoError> {
+    let fd = done(path, avra_io_open_append(one_path(path)?))?
+    defer avra_io_close(fd)
+    poured(path, fd, bytes)?
+    done(path, avra_fd_sync(fd))?
+    path
+}
+
+/// The file cut back to exactly `len` bytes — what a caller trims a
+/// TORN TAIL to (bytes an earlier crash left past the last frame it
+/// could verify) before appending past it, so a half-written frame
+/// never ends up between two valid ones. Answers the path.
+export fn truncate_to(path: string, len: int) -> Result<string, IoError> {
+    done(path, avra_io_truncate(one_path(path)?, len))?
+    path
 }
 
 /// The directory's entries in byte order, `.` and `..` left out.

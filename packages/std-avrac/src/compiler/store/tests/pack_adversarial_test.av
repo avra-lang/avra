@@ -76,6 +76,24 @@ spec "compiler/store/pack, red-teamed" {
             !p.commit()
         }
     }
+    given "a torn tail left by a crashed writer, found by a live one" {
+        then "the garbage is trimmed before the new commit APPENDS, so the old entry and the new one both read back" {
+            let path = fresh("torn_then_append")
+            let p1 = pack_at(path, "cid")
+            p1.put(entry("a", 1, 10, [], "first"))
+            let _ = p1.commit()
+            // A crash mid-append: bytes past the last verified commit,
+            // never closed by a Commit frame of their own.
+            let _ = write_bytes(path, raw_of(path).concat(junk(37)))
+            let p2 = pack_at(path, "cid")
+            p2.put(entry("b", 2, 20, [], "second"))
+            let ok = p2.commit()
+            let reread = pack_at(path, "cid")
+            ok &&
+                same(reread.get("a"), "a", 1, 10, "first") &&
+                same(reread.get("b"), "b", 2, 20, "second")
+        }
+    }
     given "malformed bytes, every scale a real length can take" {
         then "pure junk at every length up to and past the mmap word stride answers absent, never a trap" {
             [absent_over_junk(l) for l in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 17, 200]].all(it)
