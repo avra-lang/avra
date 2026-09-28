@@ -409,7 +409,7 @@ impl Workspace {
         }
         mut clock = self.marking()
         let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
-        let program = self.program_object(d, full, asked, binary, tools)?
+        let program = self.program_object(d, full, asked, tools)?
         let read = [self.object_of(d.store, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat([program]), tools)?
         // the program's module stands under what it is a function of, too
@@ -440,13 +440,15 @@ impl Workspace {
     }
 
     /// A read file's object: kept under the file's key, standing beside the store's
-    /// for the link.
+    /// for the link. Its scratch path is named by that same content key, so two
+    /// builds of one tree share a file only when they would write the same bytes.
     fn object_of(store: Store, a: Analysis) -> Made {
         let path = a.view.source.file
+        let key = self.held_okey(store, path)
         Made {
             which: Owned.File(a.view.file),
-            key: self.held_okey(store, path),
-            obj: "${build_cache_root(self)}/${node_key(Stored.Obj, [digest_of(path)])}.o",
+            key: key,
+            obj: "${build_cache_root(self)}/${key}.o",
             source: path,
         }
     }
@@ -454,14 +456,20 @@ impl Workspace {
     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered
     /// here — written every build, compiled only when they moved, so a home's edit
     /// that moves no instantiation compiles nothing — and by what it is a function
-    /// of when it was not.
-    fn program_object(d: Derived, full: Lowered, asked: string, binary: string, tools: Toolchain) -> Result<
+    /// of when it was not. The `.o` is named by its key, as `object_of`'s is; the
+    /// `.bc` a key is computed from has no key yet, so its scratch name is call-unique.
+    fn program_object(d: Derived, full: Lowered, asked: string, tools: Toolchain) -> Result<
         Made,
         BuildError,
     > {
-        let base = "${build_cache_root(self)}/${node_key(Stored.Obj, [digest_of(binary)])}"
-        let key = if d.unlowered.is_empty() { self.bytes_keyed(full, "${base}.bc", tools)? } else { asked }
-        Made { which: Owned.Program, key: key, obj: "${base}.o", source: "" }
+        let bc = "${build_cache_root(self)}/${node_key(Stored.Obj, ["bc-scratch", "${now_ns()}"])}.bc"
+        let key = if d.unlowered.is_empty() { self.bytes_keyed(full, bc, tools)? } else { asked }
+        Made {
+            which: Owned.Program,
+            key: key,
+            obj: "${build_cache_root(self)}/${key}.o",
+            source: "",
+        }
     }
 
     /// EVERY OBJECT A BUILD OWES, STANDING AND KEPT. One the store holds is placed;
