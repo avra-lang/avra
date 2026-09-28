@@ -116,6 +116,24 @@ test_lock_fifo() {
     else
         ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
     fi
+    # A deep queue: each waiter's scan answers one value and writes into
+    # no pipe, so its log stays a few lines however long it waits.
+    for w in d e f; do
+        ( AVRA_LAND_LOCK="$lockdir" branch=$w sh "$land" --call hold_lock_for "$scratch/sig-$w-never" ) \
+            > "$scratch/lock-$w.out" 2>&1 &
+        eval "${w}_pid=\$!"
+    done
+    sleep 8
+    grown=0
+    for w in c d e f; do
+        [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
+    done
+    if [ "$grown" -eq 0 ]; then
+        ok "lock-fifo: every waiter's log stays a few lines over a long wait"
+    else
+        bad "lock-fifo: a waiter's log grew while waiting"
+    fi
+    for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
     if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 150; then
