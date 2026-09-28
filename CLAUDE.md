@@ -1622,11 +1622,6 @@ Syntax the grammar lacks:
   `xs.concat(ys)` is the spelling.
 - `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
   > 0)` compiles — which retires the double negative `![…].any(!it)`.
-- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in ps for b in
-  qs]` is F0100 "expected `]` to close the comprehension" AT the
-  second `for`. The let's own binding still reads UNDEFINED at its use
-  site (F3000) behind it, but the comprehension is named FIRST now. A
-  nested sweep is a named helper per outer element.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is

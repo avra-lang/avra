@@ -376,9 +376,16 @@ impl Rebuilder {
 
     /// A RECONSTRUCTION NAMES WHAT CHANGES — the rest rides. Spelling
     /// every field drops the next one silently, and a field with a
-    /// DEFAULT drops without even a compile error.
+    /// DEFAULT drops without even a compile error. `id` rides through
+    /// a CLASSIFY pass (nothing mints there), but a COPY mints its
+    /// own — `src`'s id names a slot in `src`'s own span table, which
+    /// `dst` does not share, so carrying it unchanged would read
+    /// another store's table by a foreign index the day the two
+    /// diverge in length.
     mut fn param(p: Param) -> Param {
-        p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
+        let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
+        if !self.copying { return rebuilt }
+        rebuilt with { id: self.dst.alloc_param_id(self.src.param_id_span(p.id)) }
     }
 
     mut fn params(ps: List<Param>) -> List<Param> { flatten([self.param_seat(p) for p in ps]) }
@@ -436,6 +443,21 @@ impl Rebuilder {
     }
 
     mut fn cases(cs: List<Case>) -> List<Case> { [self.case(c) for c in cs] }
+
+    mut fn comp_clauses(clauses: List<CompClause>) -> List<CompClause> { [self.comp_clause(c) for c in clauses] }
+
+    mut fn comp_clause(c: CompClause) -> CompClause {
+        match c {
+            .Head(index, name, source, hi) -> CompClause
+                .Head(
+                    self.scoped_name_opt(index),
+                    self.scoped_name(name),
+                    self.expr(source),
+                    self.expr_opt(hi),
+                ),
+            .Filter(cond) -> CompClause.Filter(self.expr(cond)),
+        }
+    }
 
     // ── the view payload ──
     // A body's PARSED form and EXPANSION ride the node as its `view`

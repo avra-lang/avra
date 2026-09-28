@@ -17,6 +17,7 @@ use core.{
     Arm,
     Case,
     Mark,
+    CompClause,
     flatten,
     some_list,
     SeatMark,
@@ -186,6 +187,11 @@ impl Builder {
         .Ok(LangNode.NArm(Arm { pats: pats, guard: guard, value: value }))
     }
 
+    /// One comprehension clause, as data.
+    fn make_comp_clause(c: CompClause) -> Result<LangNode, string> {
+        .Ok(LangNode.NCompClause(c))
+    }
+
     /// A new expression node, spanning the matched branch.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
         .Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
@@ -330,6 +336,17 @@ fn arm_at(args: List<Captured<Token, LangNode>>, i: int) -> Arm? {
     match args[i] { .Node(.NArm(a)) -> a, _ -> null }
 }
 
+/// The comprehension clause at `args[i]`, when that capture is one.
+export fn comp_clause_at(args: List<Captured<Token, LangNode>>, i: int) -> CompClause? {
+    match args[i] { .Node(.NCompClause(c)) -> c, _ -> null }
+}
+
+/// The repeated comprehension clause capture at `args[i]`, as clauses.
+export fn comp_clauses_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CompClause> {
+    let items = list_at(args, i)
+    flatten([some_list(comp_clause_at(items, j)) for j in 0..items.length])
+}
+
 /// The token at `args[i]`, when that capture is one.
 export fn token_at(args: List<Captured<Token, LangNode>>, i: int) -> Token? {
     match args[i] { .Terminal(t) -> t, _ -> null }
@@ -451,7 +468,7 @@ impl Builder {
                 ty: typed[j],
                 default: self.default_before(fs, fds, j),
                 promises: plain_mark,
-                span: f.span,
+                id: self.store.alloc_param_id(f.span),
                 marks: w.at(f.span.lo),
             } for j, f in fs],
         )
@@ -501,8 +518,8 @@ export fn between(at: int, after: int, before: int) -> bool {
 /// Parameter seats from two parallel captures — the names and the
 /// types they aligned to — with no defaults: what every fn-shaped
 /// declaration zips.
-export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(ps, tys, [], [], 0)
+export fn seats(store: NodeStore, ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
+    marked_seats(store, ps, tys, [], [], 0)
 }
 
 /// Seats with their marks: a `mut` or `const` token between the
@@ -510,6 +527,7 @@ export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
 /// seat. ONE window law, so every param list — a fn's, a method's, a
 /// lambda's, a fn type's — reads the same marks the same way.
 export fn marked_seats(
+    store: NodeStore,
     ps: List<Token>,
     tys: List<TypeRef?>,
     muts: List<Token>,
@@ -521,7 +539,7 @@ export fn marked_seats(
         ty: tys[j],
         default: null,
         promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
-        span: p.span,
+        id: store.alloc_param_id(p.span),
     } for j, p in ps]
 }
 
