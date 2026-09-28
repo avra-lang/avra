@@ -298,86 +298,267 @@ test_affected_packages() {
     fi
 }
 
-# ══ run_checks: std-avrac, cli AND idioms RUN ONE AT A TIME ═════════
-# SEQUENTIAL is the LAW here, not an optimization not yet made: two
-# avra processes compiling into one .avra-cache AT ONCE corrupt it
-# (avra-8sb5.57.41 — tried as a concurrent batch, both suites failed
-# to link with undefined av_ symbols). This fixture pins the opposite
-# property a concurrent version would have broken: std-avrac (or
-# cli), whichever runs first, must FULLY FINISH before idioms starts
-# — never an overlap, whatever the machine's speed. A throwaway tree
-# with a STUB `build/avra` and `Makefile` (each just sleeps and logs
-# a timestamped start/end line) makes this observable without a real
-# build.
-test_run_checks_sequential() {
-    d="$(git_repo checks-sequential)"
-    write_pkg "$d" "std-avrac" "avrac"
-    write_pkg "$d" "cli" ""
-    write_pkg "$d" "other" ""
+# ══ run_checks: THE PARALLEL JOB POOL ═════════════════════════════════
+# The write race that once forced every check to run one at a time
+# (avra-8sb5.57.41) is fixed (content-keyed objects, publish by
+# rename), so run_checks now launches a package's tests, idioms and
+# fmt-lossless TOGETHER, bounded by AVRA_LAND_JOBS. A throwaway tree
+# with a STUB `build/avra` (test AND check, each sleeping and logging
+# a timestamped start/end line) and `Makefile` (fmt-lossless) makes
+# this observable without a real build.
+#
+# `pa`/`pb`/`pc` — never `std-avrac`/`cli`: those names trip
+# affected_packages.sh's OWN compiler-changed detection (a path
+# prefix, not a fixture accident to route around).
+parallel_checks_repo() {
+    d="$(git_repo "$1")"
+    for p in pa pb pc; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
     mkdir -p "$d/build"
-    timeline="$scratch/checks-sequential-timeline"
+    timeline="$2"
     cat > "$d/build/avra" <<STUB
 #!/bin/sh
-pkg="\$(basename "\$2")"
-echo "start \$pkg \$(date +%s)" >> "$timeline"
-sleep 1
-echo "end \$pkg \$(date +%s)" >> "$timeline"
-if [ "\$pkg" = "\${FAIL_PKG:-}" ]; then
-    echo "FAILED \$pkg"
-    exit 1
-fi
-echo "tested \$pkg"
+cmd="\$1"; path="\$2"
+pkg="\$(basename "\$path")"
+echo "start \$cmd \$pkg \$(date +%s)" >> "$timeline"
+sleep "\${SLEEP_S:-1}"
+echo "end \$cmd \$pkg \$(date +%s)" >> "$timeline"
+case " \${FAIL_PKGS:-} " in
+    *" \$pkg "*) echo "FAILED \$cmd \$pkg"; exit 1 ;;
+esac
+echo "\$cmd-ok \$pkg"
 STUB
     chmod +x "$d/build/avra"
-    printf 'idioms:\n\techo "start idioms $$(date +%%s)" >> %s && sleep 1 && echo "end idioms $$(date +%%s)" >> %s && echo idioms-ok\n' \
+    printf 'fmt-lossless:\n\t@echo "start fmt-lossless $$(date +%%s)" >> %s && sleep "$${SLEEP_S:-1}" && echo "end fmt-lossless $$(date +%%s)" >> %s && echo fmt-ok\n' \
         "$timeline" "$timeline" > "$d/Makefile"
     commit_all "$d" "base"
     base_sha="$(git -C "$d" rev-parse HEAD)"
-    for p in std-avrac cli other; do
+    for p in pa pb pc; do
         printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
     done
     commit_all "$d" "touch all three"
+    echo "$d $base_sha"
+}
 
-    slots="$scratch/checks-sequential-slots"
-    rm -rf "$slots"
+# ALL PASSING, AND CONCURRENT: 3 tests (1s each) + idioms (one job,
+# 3 sequential checks inside it, ~3s) + fmt-lossless (1s) sum to ~6s
+# run one at a time; AVRA_LAND_JOBS=4 launches all four TOP-LEVEL jobs
+# together, so wall time tracks the LONGEST one (idioms), not the sum.
+test_run_checks_parallel() {
+    timeline="$scratch/checks-parallel-timeline"
     rm -f "$timeline"
+    read -r d base_sha <<EOF
+$(parallel_checks_repo checks-parallel "$timeline")
+EOF
+    scr="$scratch/checks-parallel-scratch"
+    slots="$scratch/checks-parallel-slots"
+    rm -rf "$scr" "$slots"
 
-    if AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
-        > "$scratch/checks-sequential.out" 2>&1; then
-        # Every "end" must precede the NEXT line's "start" — a total
-        # order, not just idioms-after-the-rest: nothing may overlap.
-        overlap=0
-        prev_end=""
-        while read -r kind pkg ts; do
-            case "$kind" in
-                start)
-                    if [ -n "$prev_end" ] && [ "$ts" -lt "$prev_end" ]; then overlap=1; fi
-                    ;;
-                end) prev_end="$ts" ;;
-            esac
-        done < "$timeline"
-        if [ "$overlap" -eq 0 ]; then
-            ok "run_checks: std-avrac/cli and idioms never overlap — strictly sequential"
-        else
-            bad "run_checks: two steps overlapped — this must stay sequential (avra-8sb5.57.41)"
-            cat "$timeline"
-        fi
+    t_start=$(date +%s)
+    if AVRA_LAND_JOBS=4 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
+        sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 \
+        > "$scratch/checks-parallel.out" 2>&1; then
+        ok "run_checks: the all-passing case succeeds"
     else
         bad "run_checks: the all-passing case failed"
-        cat "$scratch/checks-sequential.out"
+        cat "$scratch/checks-parallel.out"
+    fi
+    elapsed=$(($(date +%s) - t_start))
+    # Serial would be >= 6s (2+2+2 tests... no: 1+1+1 tests + ~3s idioms +
+    # 1s fmt = ~6s of OUTER-job time); concurrent finishes near the
+    # longest single job (idioms, ~3-4s). A generous ceiling catches a
+    # regression to serial without flaking on a loaded machine.
+    if [ "$elapsed" -le 5 ]; then
+        ok "run_checks: wall time ($elapsed s) tracks the longest job, not the sum — jobs ran together"
+    else
+        bad "run_checks: wall time ($elapsed s) looks serial, not parallel"
+        cat "$timeline"
+    fi
+}
+
+# ONE FAILURE, NAMED WITH ITS LOG.
+test_run_checks_one_fails() {
+    timeline="$scratch/checks-one-fail-timeline"
+    rm -f "$timeline"
+    read -r d base_sha <<EOF
+$(parallel_checks_repo checks-one-fail "$timeline")
+EOF
+    scr="$scratch/checks-one-fail-scratch"
+    slots="$scratch/checks-one-fail-slots"
+    rm -rf "$scr" "$slots"
+
+    st=0
+    FAIL_PKGS=pb AVRA_LAND_JOBS=4 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
+        sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 \
+        > "$scratch/checks-one-fail.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ]; then
+        ok "run_checks: a single failing package fails the whole run"
+    else
+        bad "run_checks: a failing package's test did not fail the run"
+    fi
+    # heavy() ALSO prints its own inline "FAILED at" the moment test-pb
+    # fails, so a bare grep for the line would pass even with a broken
+    # report_parallel_failures — isolate the text AFTER the consolidated
+    # report's own marker to test THAT specifically.
+    tail_report="$(sed -n '/^land: a parallel check failed:/,$p' "$scratch/checks-one-fail.out")"
+    if printf '%s' "$tail_report" | grep -q "FAILED at 'test-pb' (exit 1) — log: $scr/logs/test-pb.log"; then
+        ok "run_checks: the CONSOLIDATED report names test-pb and its own log path"
+    else
+        bad "run_checks: the consolidated report did not name test-pb by name and log"
+        cat "$scratch/checks-one-fail.out"
+    fi
+}
+
+# TWO FAILURES, BOTH NAMED — the consolidated report at the end lists
+# every failed job, not just the first one seen.
+test_run_checks_two_fail() {
+    timeline="$scratch/checks-two-fail-timeline"
+    rm -f "$timeline"
+    read -r d base_sha <<EOF
+$(parallel_checks_repo checks-two-fail "$timeline")
+EOF
+    scr="$scratch/checks-two-fail-scratch"
+    slots="$scratch/checks-two-fail-slots"
+    rm -rf "$scr" "$slots"
+
+    st=0
+    FAIL_PKGS="pa pc" AVRA_LAND_JOBS=4 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
+        sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 \
+        > "$scratch/checks-two-fail.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ]; then
+        ok "run_checks: two failing packages still fail the whole run"
+    else
+        bad "run_checks: two failing packages did not fail the run"
+    fi
+    # Isolate the CONSOLIDATED report (after its own marker line) — heavy()
+    # already prints its own inline "FAILED at" per job as it happens, so
+    # checking the whole output would pass even if the consolidated report
+    # silently dropped one, or all, of the failures.
+    tail_report="$(sed -n '/^land: a parallel check failed:/,$p' "$scratch/checks-two-fail.out")"
+    if printf '%s' "$tail_report" | grep -q "FAILED at 'test-pa' (exit 1) — log: $scr/logs/test-pa.log" &&
+        printf '%s' "$tail_report" | grep -q "FAILED at 'test-pc' (exit 1) — log: $scr/logs/test-pc.log"; then
+        ok "run_checks: the CONSOLIDATED report names BOTH test-pa and test-pc with their own logs"
+    else
+        bad "run_checks: the consolidated report did not name both failing jobs with their logs"
+        cat "$scratch/checks-two-fail.out"
+    fi
+}
+
+# AVRA_LAND_JOBS BOUNDS CONCURRENCY. AVRA_LAND_JOBS=1 is the
+# order-independent proof: with one slot, whatever job_launch's own
+# launch order does, only ONE job ever runs at a time, so the wall
+# time must land near the SUM of every job's own duration — never near
+# the LONGEST one, which is what a broken (or ignored) cap would give.
+# Two packages (test-pa, test-pb, 1s each), idioms (its own two 1s
+# checks, sequential inside ONE job — 2s) and fmt-lossless (1s):
+# serial sum ~5s; run_checks_parallel already pins the cap=4 (~max)
+# side of this contrast.
+test_run_checks_jobs_cap() {
+    d="$(git_repo checks-jobs-cap)"
+    for p in pa pb; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+sleep 1
+echo "$1-ok $(basename "$2")"
+STUB
+    chmod +x "$d/build/avra"
+    printf 'fmt-lossless:\n\t@sleep 1 && echo fmt-ok\n' > "$d/Makefile"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    for p in pa pb; do printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"; done
+    commit_all "$d" "touch"
+
+    scr="$scratch/checks-jobs-cap-scratch"
+    slots="$scratch/checks-jobs-cap-slots"
+    rm -rf "$scr" "$slots"
+    t_start=$(date +%s)
+    AVRA_LAND_JOBS=1 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
+        sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 > "$scratch/checks-jobs-cap.out" 2>&1
+    elapsed=$(($(date +%s) - t_start))
+    # Serial sum is ~5s (1+1+2+1); a cap that let even 2 run together
+    # would land near 3-4s (2s idioms overlapping a 1s test). >=4s is
+    # the floor that tells the two apart with room for poll overhead.
+    if [ "$elapsed" -ge 4 ]; then
+        ok "run_checks: AVRA_LAND_JOBS=1 takes ~the serial sum ($elapsed s) — the cap is a real ceiling, not advisory"
+    else
+        bad "run_checks: AVRA_LAND_JOBS=1 took only ${elapsed}s — jobs ran concurrently despite a cap of 1"
+        cat "$scratch/checks-jobs-cap.out"
+    fi
+}
+
+# A JOB THAT DIES BEFORE IT CAN REPORT MUST STILL FAIL THE RUN. Killing
+# its own wrapper (the pid job_launch records) before it writes its
+# status file is the sharpest form of "the status is missing" — the
+# wrapper's own exit is never observed except through `wait`, so this
+# also pins that job_wait_all reads THAT, never the status file, as
+# its verdict.
+test_job_wait_fails_closed_on_killed_job() {
+    d="$(git_repo job-kill)"
+    for p in pa pb; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+pkg="$(basename "$2")"
+if [ "$1" = "test" ] && [ "$pkg" = "${HANG_PKG:-}" ]; then
+    sleep 5
+    exit 0
+fi
+sleep 0.2
+echo "$1-ok $pkg"
+STUB
+    chmod +x "$d/build/avra"
+    printf 'fmt-lossless:\n\t@echo fmt-ok\n' > "$d/Makefile"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    for p in pa pb; do printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"; done
+    commit_all "$d" "touch"
+
+    scr="$scratch/job-kill-scratch"
+    slots="$scratch/job-kill-slots"
+    rm -rf "$scr" "$slots"
+    ( HANG_PKG=pb AVRA_LAND_JOBS=4 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
+        sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 > "$scratch/job-kill.out" 2>&1 ) &
+    rc_pid=$!
+
+    target_pid=""
+    i=0
+    while [ "$i" -lt 100 ]; do
+        target_pid="$(awk '$2=="test-pb"{print $1}' "$scr/jobs.list" 2>/dev/null | head -1)"
+        [ -n "$target_pid" ] && break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if [ -z "$target_pid" ]; then
+        bad "job-kill: never saw test-pb's own job registered"
+    else
+        kill -9 "$target_pid" 2>/dev/null
+        ok "job-kill: killed test-pb's wrapper before it could write its own status file"
     fi
 
-    # Now make cli fail — the run must fail closed and NAME cli.
-    if FAIL_PKG=cli AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" \
-        > "$scratch/checks-sequential-fail.out" 2>&1; then
-        bad "run_checks: a failing package's test did not fail the run"
+    rc_st=0
+    wait "$rc_pid" || rc_st=$?
+    if [ "$rc_st" -ne 0 ]; then
+        ok "job-kill: run_checks still fails closed when a job dies unreported"
     else
-        ok "run_checks: a failing package's test fails the whole run"
+        bad "job-kill: run_checks read a killed, unreported job as a pass"
+        cat "$scratch/job-kill.out"
     fi
-    if grep -q "FAILED at 'test-cli" "$scratch/checks-sequential-fail.out" 2>/dev/null; then
-        ok "run_checks: the failure report names test-cli specifically"
+    if [ -f "$scr/jobs/test-pb.status" ]; then
+        bad "job-kill: the killed job's status file should never have been written"
     else
-        bad "run_checks: the failure was not attributed to test-cli by name"
+        ok "job-kill: confirms the killed job never wrote a status file — a real 'missing status' case"
     fi
 }
 
@@ -822,12 +1003,149 @@ test_batch_stale_registration() {
     fi
 }
 
+# ══ COMPILER-UNTOUCHED: NO SECOND BUILD, NO SEED-CHECK ═══════════════
+# `batch_repo`'s packages (a, b, c) live outside packages/std-avrac,
+# packages/cli, packages/std-meta and runtime/, so landing one alone
+# is a compiler-untouched batch by construction — no fixture-only flag
+# needed to reach that path.
+# One landing of `branch` in a copy of batch_repo, its stderr at $scratch/<tag>.out.
+land_scoped() {
+    d="$1"; branch="$2"; tag="$3"
+    wt="$scratch/$tag-wt"
+    git -C "$d" worktree add -q "$wt" "$branch" > /dev/null 2>&1
+    mkdir -p "$wt/build"
+    cp "$d/build/avra" "$wt/build/avra"
+    rm -rf "$scratch/$tag-lock" "$scratch/$tag-slots"
+    st=0
+    ( cd "$wt" && AVRA_LAND_LOCK="$scratch/$tag-lock" AVRA_LAND_BATCH_WT="$scratch/$tag-batchwt" AVRA_SLOTS_DIR="$scratch/$tag-slots" AVRA_LAND_ABSORB=0 \
+        exec sh "$land" "$branch" ) > "$scratch/$tag.out" 2>&1 || st=$?
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+    return "$st"
+}
+
+# Whether the landing's log holds a line, else a failure naming the case.
+logged() {
+    if grep -q "$2" "$scratch/$1.out"; then ok "$3"; else bad "$3"; cat "$scratch/$1.out"; fi
+}
+unlogged() {
+    if grep -q "$2" "$scratch/$1.out"; then bad "$3"; cat "$scratch/$1.out"; else ok "$3"; fi
+}
+
+test_diff_scope_skips() {
+    d="$(batch_repo scope)"
+    git -C "$d" checkout -q -b t main
+    mkdir -p "$d/tools"
+    printf 'echo land-test-ok\n' > "$d/tools/land_test.sh"
+    commit_all "$d" "tools only"
+    git -C "$d" checkout -q -b dc main
+    mkdir -p "$d/docs"
+    printf 'words\n' > "$d/docs/note.md"
+    commit_all "$d" "docs only"
+    git -C "$d" checkout -q -b cc main
+    printf 'int x;\n' > "$d/packages/a/src/x.c"
+    commit_all "$d" "c only"
+    git -C "$d" checkout -q main
+
+    land_scoped "$d" t scope-t || bad "scope: a tools-only landing failed"
+    logged scope-t "skipped builds and package checks: diff touches no code outside tools/ or docs/" "scope: a tools-only diff skips builds and checks"
+    logged scope-t "land-test OK" "scope: a tools-only diff runs land_test.sh"
+    unlogged scope-t "build-1" "scope: a tools-only diff runs no build"
+
+    land_scoped "$d" dc scope-dc || bad "scope: a docs-only landing failed"
+    logged scope-dc "skipped land-test: diff touches no tools/" "scope: a docs-only diff runs not even land_test.sh"
+    unlogged scope-dc "build-1" "scope: a docs-only diff runs no build"
+
+    land_scoped "$d" cc scope-cc || bad "scope: a C-only landing failed"
+    logged scope-cc "skipped idioms and fmt-lossless: diff touches no .av file" "scope: a diff with no .av file skips idioms and fmt-lossless"
+    logged scope-cc "build-1" "scope: a diff with code still builds"
+
+    land_scoped "$d" a scope-a || bad "scope: an .av landing failed"
+    logged scope-a "idioms" "scope: an .av diff runs idioms"
+    logged scope-a "skipped cache-attacks: diff touches no compiler source" "scope: a compiler-untouched diff skips cache-attacks"
+}
+
+test_compiler_untouched_skips_second_build_and_seedcheck() {
+    d="$(batch_repo skip-seed)"
+    wt_a="$scratch/skip-seed-a"
+    git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
+    # A fresh worktree has no build/ (gitignored, untracked) — a real
+    # lane's worktree already carries one from earlier work; this
+    # fixture's stub stands in for that.
+    mkdir -p "$wt_a/build"
+    cp "$d/build/avra" "$wt_a/build/avra"
+    lockdir="$scratch/skip-seed-lock"
+    slots="$scratch/skip-seed-slots"
+    batchwt="$scratch/skip-seed-batchwt"
+    rm -rf "$lockdir" "$slots"
+    st=0
+    ( cd "$wt_a" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" AVRA_LAND_ABSORB=0 \
+        exec sh "$land" a ) > "$scratch/skip-seed.out" 2>&1 || st=$?
+    if [ "$st" -eq 0 ]; then
+        ok "skip-seed: a compiler-untouched landing still lands"
+    else
+        bad "skip-seed: a compiler-untouched landing failed"
+        cat "$scratch/skip-seed.out"
+    fi
+    if grep -q "skipped the second build and seed-check: diff touches no compiler source" "$scratch/skip-seed.out"; then
+        ok "skip-seed: announces skipping the second build and seed-check"
+    else
+        bad "skip-seed: did not announce skipping"
+        cat "$scratch/skip-seed.out"
+    fi
+    if grep -q "build-2" "$scratch/skip-seed.out"; then
+        bad "skip-seed: a second build ran despite the compiler being untouched"
+    else
+        ok "skip-seed: no second build ran"
+    fi
+    if grep -q "land: seed-check" "$scratch/skip-seed.out"; then
+        bad "skip-seed: seed-check ran despite the compiler being untouched"
+    else
+        ok "skip-seed: seed-check did not run"
+    fi
+    git -C "$d" worktree remove -f "$wt_a" > /dev/null 2>&1
+}
+
+# ══ THE TIMELINE: A LINE PER STEP, A TOTAL AT THE END ═════════════════
+test_timeline_lines_present() {
+    d="$(batch_repo timeline)"
+    wt_a="$scratch/timeline-a"
+    git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
+    mkdir -p "$wt_a/build"
+    cp "$d/build/avra" "$wt_a/build/avra"
+    lockdir="$scratch/timeline-lock"
+    slots="$scratch/timeline-slots"
+    batchwt="$scratch/timeline-batchwt"
+    rm -rf "$lockdir" "$slots"
+    ( cd "$wt_a" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" AVRA_LAND_ABSORB=0 \
+        exec sh "$land" a ) > "$scratch/timeline.out" 2>&1
+    if grep -q "^land: timeline: build-1-objects start=+[0-9]*s dur=[0-9]*s exit=[0-9]*$" "$scratch/timeline.out"; then
+        ok "timeline: a per-step timeline line is printed (build-1-objects)"
+    else
+        bad "timeline: no per-step timeline line seen"
+        cat "$scratch/timeline.out"
+    fi
+    if grep -qE "^land: timeline: total wall=[0-9]+s$" "$scratch/timeline.out"; then
+        ok "timeline: a total wall-time line closes the run"
+    else
+        bad "timeline: no total wall-time line seen"
+        cat "$scratch/timeline.out"
+    fi
+    git -C "$d" worktree remove -f "$wt_a" > /dev/null 2>&1
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
 test_merge_real_conflict
 test_affected_packages
-test_run_checks_sequential
+test_run_checks_parallel
+test_run_checks_one_fails
+test_run_checks_two_fail
+test_run_checks_jobs_cap
+test_job_wait_fails_closed_on_killed_job
+test_compiler_untouched_skips_second_build_and_seedcheck
+test_diff_scope_skips
+test_timeline_lines_present
 test_slot_limit
 test_slot_stale_reclaim
 test_caches_aside_twice
