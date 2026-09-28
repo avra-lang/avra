@@ -368,6 +368,7 @@ const every_member: List<string> = [
     "index_keys",
     "get",
     "all",
+    "prior",
 ]
 
 /// The member names the derive writes onto this relation: every
@@ -400,6 +401,7 @@ fn members(t: Type) -> List<Decls> {
         insert_member(t),
         get_member(t),
         all_member(t),
+        prior_member(t),
     ]
         .concat(decoded_members(t))
         .concat(key_members(t))
@@ -460,6 +462,12 @@ fn store_member(t: Type) -> Decls {
 fn get_member(t: Type) -> Decls {
     let ty = t.fields.find(it.name == "id")?.ty ?? "int"
     quote { static fn get(db: Db, id: ${ty}) -> ${t}? { ${name(t.name)}.rows_in(db).got(db, ${id_int(t, quote { id })}, ${grain_index(t)}) } }
+}
+
+/// `prior`: the running query's rows as its previous run left them —
+/// the one read of a relation a query writes, recording nothing.
+fn prior_member(t: Type) -> Decls {
+    quote { static fn prior(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).prior_in(db, ${literal(t.name)}) } }
 }
 
 /// `all`: every live row under a Db, in id order.

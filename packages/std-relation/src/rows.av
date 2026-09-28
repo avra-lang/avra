@@ -77,6 +77,12 @@ type Seen = { revision: int, reader: int }
 
 const unseen: Seen = Seen { revision: -1, reader: 0 }
 
+/// Who wrote a row: the query cell that owns it and which of its runs —
+/// owner 0 is no query.
+export type Stamp = { owner: int, run: int }
+
+export const unowned: Stamp = Stamp { owner: 0, run: 0 }
+
 /// A read of `cell` in `family` recorded under `db`, and when and by whom.
 fn noted(db: Db, family: int, cell: int) -> Seen { Seen { revision: db.revision(), reader: db.read(family, cell) } }
 
@@ -89,6 +95,8 @@ export type Rows<R> = {
     rows: Cell<List<R?>>,
     hashes: Cell<List<int>>,
     filed: Cell<List<List<List<IndexKey>>>>,
+    stamps: Cell<List<Stamp>>,
+    last_runs: Cell<Map<string, List<R>>>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -103,11 +111,15 @@ export fn rows<R>(ordered: List<bool>) -> Rows<R> {
     let rs: Cell<List<R?>> = Cell.new([])
     let hashes: Cell<List<int>> = Cell.new([])
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
+    let stamps: Cell<List<Stamp>> = Cell.new([])
+    let last_runs: Cell<Map<string, List<R>>> = Cell.new({})
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         rows: rs,
         hashes: hashes,
         filed: filed,
+        stamps: stamps,
+        last_runs: last_runs,
         set: Cell.new(0),
         live: Cell.new(0),
         indexes: [empty_index(o) for o in ordered],
@@ -218,7 +230,36 @@ impl Rows<R> {
     fn put_in(db: Db, relation: string, id: int, row: R, hash: int, keys: List<List<IndexKey>>) {
         let now = db.revision()
         if now >= 0 { self.late_check(db, relation, id, keys, now) }
+        let stamp = db.stamp()
+        if self.row(id) != null && self.stamps.get()[id].owner != stamp.owner { db.refuse(two_owners(relation, id)) }
+        db.wrote(self.family.get())
         self.put(id, row, hash, keys)
+        self.stamps.set_at(id, stamp)
+    }
+
+    /// The rows `owner` did not write again in `run`, removed; what it
+    /// holds now kept as what `prior` reads in its next run.
+    fn sweep(owner: int, run: int) {
+        let marks = self.stamps.get()
+        for id, s in marks {
+            if s.owner == owner && s.run < run { self.remove(id) }
+        }
+        self
+            .last_runs
+            .put(
+                "${owner}",
+                [r! for id, r in self.rows.get() if r != null && self.stamps.get()[id].owner == owner],
+            )
+    }
+
+    /// The running query's rows as its previous run left them, recording
+    /// nothing — refused outside a running query.
+    fn prior_in(db: Db, relation: string) -> List<R> {
+        let owner? = db.running_owner() else {
+            db.refuse(prior_outside(relation))
+            return []
+        }
+        self.last_runs.get().get("${owner}") ?? []
     }
 
     /// A write read before it lands, told to the owner: the first cell it
@@ -275,6 +316,7 @@ impl Rows<R> {
             self.rows.push(row)
             self.hashes.push(hash)
             self.filed.push(keys)
+            self.stamps.push(unowned)
         }
         self.live.set(self.live.get() + 1)
         self.set.set(self.set.get() + hash)
@@ -374,4 +416,12 @@ impl Rows<R> {
 
 fn late_write(relation: string, cell: string, reader: string) -> string {
     "a `${relation}` row was filed into ${cell} after ${reader} read it this revision — a producer runs before its readers"
+}
+
+fn two_owners(relation: string, id: int) -> string {
+    "`${relation}` row ${id} is written by two owners — each row has one: key it by what distinguishes its writers"
+}
+
+fn prior_outside(relation: string) -> string {
+    "`${relation}.prior` read outside a running query — it answers that query's previous rows, so call it inside the query"
 }
