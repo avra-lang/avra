@@ -9,7 +9,7 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
-use diagnostics.{Diag, render_among, render_facts_among, SourceFile}
+use diagnostics.{Diag, render_among, render_facts_among, SourceFile, diag_facts_of}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
@@ -376,6 +376,10 @@ impl Workspace {
         if !adrift.is_empty() { fail at.adrift(adrift) }
         for a in p.files { self.keep_asks(store, lo, a) }
         let said? = self.all_said(store, p) else { fail at.unheld("what a held file said could not be read") }
+        // BISECTION instrumentation (avra-8sb5.57.55): leaf_keys'
+        // total visit count this process, against its distinct-key
+        // count. Removed before this ticket lands.
+        if self.pack.get() != null { eprintln("BISECT: leaf_visit_total=${leaf_visit_total()}") }
         // ONE commit for the whole pass: record_witness only stages
         // (witness.av) — committing per file paid Pack.commit's own
         // garbage_heavy check, which rebuilds the whole compacted
@@ -577,9 +581,16 @@ impl Workspace {
     /// pass — never from whichever process happened to settle the
     /// witness.
     fn says(a: Analysis, sources: List<SourceFile>) -> Said {
-        let outcome = self.witnessed_check(a.view.file)
-        if outcome.reused() { self.witness_hits.set(self.witness_hits.get() + 1) }
-        let warned = [f for f in outcome.value().diagnostics if f.severity is .Warning]
+        // BISECTION (a): bypass witnessed_check entirely — neither
+        // reused_check's edge validation nor record_witness runs.
+        let facts = if skip_witness_lookup() {
+            [diag_facts_of(d) for d in a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))]
+        } else {
+            let outcome = self.witnessed_check(a.view.file)
+            if outcome.reused() { self.witness_hits.set(self.witness_hits.get() + 1) }
+            outcome.value().diagnostics
+        }
+        let warned = [f for f in facts if f.severity is .Warning]
         Said {
             path: a.view.source.file,
             warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
