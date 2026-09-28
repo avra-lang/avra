@@ -319,11 +319,12 @@ for app in a b c; do
 done
 
 # `--verify-held` OVER A WARM `a`: every held declaration this build just kept
-# decodes back to what a fresh reading of the same file produces — the
-# instrument avra-8sb5.57.69 exists to run, held to its own zero-mismatch claim.
+# decodes back to what a fresh reading of the same file produces, and a run
+# that compared nothing is a failure, never a clean pass.
 steps=$((steps+1)); ./avra check $R/a >/dev/null 2>&1
 vh=$(./avra check $R/a --verify-held 2>&1 | grep -v '^watch:')
 case "$vh" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over a compared nothing" ;;
     *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over a -> clean" ;;
     *) fails=$((fails+1)); echo "FAIL  verify-held over a: $(printf '%s' "$vh" | tail -5 | tr '\n' ' ')" ;;
 esac
