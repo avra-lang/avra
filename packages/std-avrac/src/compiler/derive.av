@@ -488,9 +488,19 @@ impl Workspace {
 
     /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
     /// compile-time runs read — and what THAT file's runs read, since it runs too.
+    /// A CANDIDATE EXCLUDED THIS WAY NAMES WHY, seeded or discovered alike: the
+    /// seed already carries its own `RunBy` (record.av's `load_interface`), so
+    /// the noting below is the same one the worklist does for what IT finds,
+    /// never a second law.
     fn settle_holds(store: Store) {
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
+        for rf in self.hold.read_seeds.get() {
+            if self.hold.hold_asked.get().contains(rf.path) &&
+                !self.hold.read_files.get().any(it.path == rf.path) {
+                self.hold.read_files.push(rf)
+            }
+        }
         mut at = 0
         while at < reads.length {
             for path in kept_runs(
@@ -577,11 +587,22 @@ fn boxed_name(parts: List<string>, path: string) -> string? {
 
 /// What the hold said before the sources overruled it.
 fn hold_refused(held: Result<Derived, string>) -> string {
-    match held {
-        .Ok(_) -> "",
-        .Err(why) -> "avra: the hold was refused — this program builds from its sources, and under the hold it said:\n${why}",
-    }
+    match held { .Ok(_) -> "", .Err(why) -> hold_refusal(why) }
 }
+
+/// The law on one line, then the held attempt's own words set apart under
+/// it — they describe a derivation the sources overruled, not this run's
+/// outcome. The first line keeps "the hold was refused": the cache-attack
+/// and hold-sweep tools read that phrase.
+export fn hold_refusal(why: string) -> string {
+    "avra: the hold was refused — the kept results for this program are stale, so it is built from its sources instead. Under the hold it said:\n${set_apart(why)}"
+}
+
+fn set_apart(text: string) -> string {
+    [indented_line(line) for line in text.split("\n")].join("\n")
+}
+
+fn indented_line(line: string) -> string { if line.is_empty() { "" } else { "    ${line}" } }
 
 fn nothing_held(why: string) -> string {
     "internal compiler error: ${why}, and nothing was held"

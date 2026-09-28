@@ -438,6 +438,54 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
     )
 }
 
+/// A WRAP directive whose `source` names no fn matching the
+/// annotated one — nothing to move the written body behind.
+fn wrap_missing(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_missing",
+        at,
+        "`@${ann}` asks to wrap `${name}`, and its `source` declares no fn of that name",
+        "asked here",
+        "a WRAP directive's `source` writes the wrapper under the annotated fn's own name",
+    )
+}
+
+/// A WRAP directive over a declaration with no body — an extern, a
+/// trait member — has no written code to move behind the wrapper.
+fn wrap_bodiless(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_bodiless",
+        at,
+        "`@${ann}` asks to wrap `${name}`, which has no body to move",
+        "asked here",
+        "WRAP moves a written body behind its wrapper — an extern or a trait member has none",
+    )
+}
+
+/// A WRAP directive over a method: WRAP wraps a free fn.
+fn wrap_method(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_method",
+        at,
+        "`@${ann}` asks to wrap the method `${name}` — WRAP over a method is recorded, not landed",
+        "asked here",
+        "WRAP wraps a free fn",
+    )
+}
+
+/// A WRAP directive's wrapper redeclares a DIFFERENT signature than
+/// the fn it wraps — params, marks, defaults and the answer type all
+/// carry the contract every caller already compiled against.
+fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag {
+    refusal(
+        "annotation.wrap_mismatch",
+        at,
+        "`@${ann}`'s wrapper for `${name}` does not redeclare its exact signature",
+        "asked here",
+        "match the params (marks and defaults included) and the answer type, word for word",
+    )
+}
+
 /// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
 /// own table — a plain seat would copy the map, and a copy-on-write that runs once per
 /// minted unit turns the walk quadratic.

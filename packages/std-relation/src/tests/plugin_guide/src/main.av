@@ -1,0 +1,23 @@
+// A plugin's relation, end to end: a package outside the compiler
+// declares it, a query reads it, and a projection renders it.
+use @std.relation.db.{new_db, Db}
+use @example.todos.{Todo, record, open_for}
+
+/// A projection: rows in, one line out.
+fn agenda(db: Db, owner: string) -> string {
+    let titles = [t.title for t in open_for(db, owner)]
+    "${owner}: ${if titles.is_empty() { "nothing open" } else { titles.join(", ") }}"
+}
+
+fn plan() -> string {
+    let db = new_db()
+    let first = record(db, "ann", "write the guide", false)
+    let _ = record(db, "ann", "red-team the accessors", false)
+    let _ = record(db, "bo", "review", false)
+    let before = agenda(db, "ann")
+    let done = record(db, "ann", "write the guide", true)
+    let kept = if done.id == first.id { "id kept" } else { "id moved" }
+    "${before} | ${agenda(db, "ann")} | ${agenda(db, "bo")} | ${agenda(db, "cy")} | ${kept} | ${Todo.all(db).length} rows"
+}
+
+plan()

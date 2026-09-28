@@ -1,7 +1,7 @@
 //! The client under attack by a peer that speaks raw bytes: a reply
 //! torn across reads, one the framer refuses, one cut short, one
 //! read to the close, one chunked, one that never comes.
-use @std.net.{Listener, Conn, listen}
+use @std.net.{Listener, Conn, listen, poller}
 use @std.time.{ms, secs, within}
 use @std.http.frame.{framed, limits, Limits}
 use @std.http.http.{Header}
@@ -18,7 +18,21 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     mut c = connected("127.0.0.1", l.port, secs(2), lim)?
     c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let peer = lifted(within ms(500) { l.accept() })?
+    if !arrived(peer)? { return .Err(.TimedOut) }
     .Ok(Wire { c: c, peer: peer, l: l })
+}
+
+/// Whether the peer's receive buffer holds bytes, UNREAD — the reset
+/// law's precondition. A write returning and an accept succeeding do
+/// not by themselves mean delivery has landed; under load it has not.
+/// The poller blocks on the kernel's own readiness signal instead of a
+/// guessed budget.
+fn arrived(peer: Conn) -> Result<bool, ClientError> {
+    let p = lifted(poller())?
+    let _ = lifted(p.watch(peer.fd, .Read))?
+    let events = lifted(p.wait(secs(2)))?
+    let _ = lifted(p.close())?
+    .Ok(events.any(it.fd == peer.fd && it.readable))
 }
 
 /// The same, with the request READ, so a later close is a FIN and

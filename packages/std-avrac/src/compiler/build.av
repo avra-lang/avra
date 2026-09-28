@@ -18,7 +18,7 @@ use core.{
 }
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
-use @std.io.{read_bytes}
+use @std.io.{read_bytes, make_dirs, remove}
 use @std.time.{now_ns}
 use compiler.backend.{
     emit_object,
@@ -58,6 +58,8 @@ export enum BuildError {
     /// The program's own analysis, or a workspace-level refusal, already
     /// rendered this.
     Diagnosed(report: string)
+    /// The finished binary could not be renamed onto its path.
+    Unpublished(path: string)
 }
 
 impl Error for BuildError {
@@ -70,13 +72,22 @@ impl Error for BuildError {
             .ObjectGone(p) -> info("build.object_gone", object_gone(p)),
             .NotClosed(missing) -> info("build.not_closed", not_closed(missing)),
             .Diagnosed(report) -> info("build.diagnosed", report),
+            .Unpublished(p) -> info("build.unpublished", unpublished(p)),
         }
     }
 }
 
 /// A build's result: the words that linked it, the binary, the warnings to
-/// speak, whether the kept binary was reused, and where a fresh one's time went.
-export type BuildOutcome = { binary: string, warnings: string, reused: bool, phases: string = "" }
+/// speak, whether the kept binary was reused, where a fresh one's time went,
+/// and its package's `.refuses` tests — a suite's alone; a lone file's build
+/// carries none.
+export type BuildOutcome = {
+    binary: string,
+    warnings: string,
+    reused: bool,
+    phases: string = "",
+    refuses: List<RefusesCall> = [],
+}
 
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
 /// where it stands for the link, and the source the link orders it by.
@@ -139,8 +150,30 @@ const LEGACY_UNNAMED_STORE: string = "shared"
 
 /// A SERIAL FOR THIS PROCESS ALONE — `now_ns()`'s own clock cannot be
 /// trusted to tell two calls apart (a wall clock's resolution is not a
-/// promise), so an unnamed print is never the timestamp alone.
-once fn unnamed_serial() -> Cell<int> { Cell.new(0) }
+/// promise), so a name minted from the timestamp is never the timestamp alone.
+once fn process_serial() -> Cell<int> { Cell.new(0) }
+
+/// The next serial: never the same twice in this process.
+fn next_serial() -> int {
+    let serial = process_serial()
+    let n = serial.get() + 1
+    serial.set(n)
+    n
+}
+
+/// A path beside `binary` that no other process names. A binary is written
+/// and made ready THERE, then renamed onto `binary` whole (`published`), so a
+/// reader of `binary` never meets it missing, half-written or not yet
+/// executable.
+export fn staged_beside(binary: string) -> string { "${binary}.${now_ns()}-${next_serial()}.staged" }
+
+/// `staged` renamed onto `to` in one step: what stands at `to` is the old
+/// file or the new one, whole. A failed rename leaves no staged file behind.
+export fn published(staged: string, to: string) -> bool {
+    if avra_spawn_status("mv", ["-f", staged, to]) == 0 { return true }
+    let _ = remove(staged)
+    false
+}
 
 /// THE PRINT OF A COMPILER THIS PROCESS CANNOT IDENTIFY — a host with no
 /// binary to name (a test's, in memory) or one whose binary this process
@@ -153,10 +186,7 @@ once fn unnamed_serial() -> Cell<int> { Cell.new(0) }
 /// WHAT MAKES TWO ASKS IN ONE PROCESS DISAGREE: two workspaces built
 /// back to back can land in the same tick of a coarse wall clock.
 fn unnamed_print() -> string {
-    let serial = unnamed_serial()
-    let n = serial.get() + 1
-    serial.set(n)
-    "unnamed-${now_ns()}-${n}"
+    "unnamed-${now_ns()}-${next_serial()}"
 }
 
 /// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, hashed FRESH
@@ -229,38 +259,50 @@ fn looks_like_tree(host: Host, dir: string) -> bool {
 /// its sources.
 export type Keyed = { named: string, beside: List<string> }
 
-/// A program built: its kept binary when these exact inputs were built
-/// before, else derived, compiled and linked now. A refusal is never kept.
+/// A program built beside its own source: its kept binary when these exact
+/// inputs were built before, else derived, compiled and linked now. A
+/// refusal is never kept.
 // LICENSED compiler.free_state_verb: THE ENTRY POINT — the one standard signature.
 export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<
     BuildOutcome,
     BuildError,
 > {
-    let binary = binary_name(entry)
-    let kept = ws.kept_binary(ws.program_key(entry, []), binary)
-    if kept != null { return .Ok(kept!) }
-    let d = diagnosed(ws.derived(entry, Want.Binary))?
-    let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(ws.root)])) }
-    if main.view.stmts.is_empty() { fail BuildError.Empty }
-    d
-        .linked(
-            ProgramModule {
-                main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
-            },
-            Keyed { named: entry, beside: [] },
-            binary,
-            tools,
-        )
+    ws.linked_program(entry, binary_name(entry), tools)
 }
 
 impl Workspace {
+    /// `build_program`, freed from where its binary lands — a `.refuses` test's
+    /// native leg wants its own binary under `build/`, never beside its source.
+    fn linked_program(entry: string, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
+        let kept = self.kept_binary(self.program_key(entry, []), binary)
+        if kept != null { return .Ok(kept!) }
+        let d = diagnosed(self.derived(entry, Want.Binary))?
+        let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
+        if main.view.stmts.is_empty() { fail BuildError.Empty }
+        let _ = make_dirs(dir_of(binary))
+        d
+            .linked(
+                ProgramModule {
+                    main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
+                },
+                Keyed { named: entry, beside: [] },
+                binary,
+                tools,
+            )
+    }
+
     /// A binary these exact inputs linked before, placed where a fresh one would
     /// be — with the warnings that build spoke.
     fn kept_binary(key: string, binary: string) -> BuildOutcome? {
         let store = store_at(build_cache_root(self))
-        if !store.has(Stored.Bin, key) || !store.place(Stored.Bin, key, binary) { return null }
+        let staged = staged_beside(binary)
+        if !store.has(Stored.Bin, key) || !store.place(Stored.Bin, key, staged) { return null }
         // a stored binary is bytes, and its mode is not in them
-        let _ = avra_spawn_status("chmod", ["+x", binary])
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        if !published(staged, binary) { return null }
         BuildOutcome { binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true }
     }
 
@@ -417,20 +459,22 @@ impl Workspace {
         clock.mark("emit")
         let held = self.held_objects(d.store)?
         clock.mark("place")
+        let staged = staged_beside(binary)
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
                 [o.obj for o in by_source(read.concat(held))].concat([program.obj]),
                 self,
                 tools.runtime,
-                binary,
+                staged,
             ),
         )
         if code != 0 { fail BuildError.LinkFailed(code) }
         clock.mark("link")
         let key = self.kept_key(under)
-        let _ = d.store.keep_file(Stored.Bin, key, binary, [key])
+        let _ = d.store.keep_file(Stored.Bin, key, staged, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
+        if !published(staged, binary) { fail BuildError.Unpublished(binary) }
         BuildOutcome {
             binary: binary,
             warnings: d.warnings,
@@ -572,6 +616,10 @@ fn handed(full: Lowered, owed: List<Made>, opt: int) -> string? {
 
 fn object_gone(path: string) -> string {
     "avra: a held object disappeared: ${path}"
+}
+
+fn unpublished(path: string) -> string {
+    "avra: the built binary could not be moved into place — ${path}"
 }
 
 fn module_unreadable(path: string) -> string {

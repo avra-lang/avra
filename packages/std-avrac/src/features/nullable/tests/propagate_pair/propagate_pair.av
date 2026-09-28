@@ -1,0 +1,46 @@
+// proves: `?` whose answer is a PAIR nullable (`int?`, `bool?`,
+// `float?`) builds natively — the arm that leaves yields the absent
+// pair, never a bare zero — in a comprehension, a loop and a `let`,
+// on the ok path and the failing one, in both engines.
+fn each(i: int) -> Result<int?, string> {
+    if i == 1 { return .Ok(null) }
+    if i == 9 { return .Err("nine") }
+    .Ok(i)
+}
+
+fn flag(i: int) -> Result<bool?, string> {
+    if i == 0 { return .Ok(null) }
+    .Ok(i > 1)
+}
+
+fn half(i: int) -> Result<float?, string> {
+    if i == 0 { return .Ok(null) }
+    .Ok(1.5)
+}
+
+fn listed(n: int) -> Result<List<int?>, string> {
+    .Ok([each(i)? for i in 0..n])
+}
+
+fn looped(n: int) -> Result<int, string> {
+    mut sum = 0
+    for i in 0..n { sum = sum + (each(i)? ?? 100) }
+    .Ok(sum)
+}
+
+fn pair(i: int) -> Result<string, string> {
+    let b = flag(i)?
+    let f = half(i)?
+    .Ok("${b ?? false} ${f ?? 0.0}")
+}
+
+fn said<T>(r: Result<T, string>, shown: fn(T) -> string) -> string {
+    match r { .Ok(v) -> shown(v), .Err(e) -> e }
+}
+
+let a = said(listed(3), (xs: List<int?>) -> "${xs.length} ${xs[1] == null} ${xs[2] ?? -1}")
+let b = said(listed(10), (xs: List<int?>) -> "${xs.length}")
+let c = said(looped(3), (n: int) -> "${n}")
+let d = said(pair(0), (s: string) -> s)
+let e = said(pair(2), (s: string) -> s)
+"${a} | ${b} | ${c} | ${d} | ${e}"

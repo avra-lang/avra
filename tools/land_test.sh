@@ -561,6 +561,8 @@ seed-check:
 MK
     printf 'seed-src\n' > "$d/bootstrap/seed.ll"
     printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    # build/ is untracked, as in the real tree: a fresh worktree has no compiler.
+    printf 'build/\n' > "$d/.gitignore"
     commit_all "$d" "base"
 
     for p in a b c; do
@@ -668,7 +670,11 @@ test_heavy_status() {
     fi
     st=0
     AVRA_MEMCAP_MB=200 AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy hog \
-        python3 -c "import time; x=b'x' * (400*1024*1024); time.sleep(5)" > "$out" 2>&1 || st=$?
+        python3 -c "import time
+x = bytearray(400 * 1024 * 1024)
+end = time.time() + 8
+while time.time() < end:
+    for i in range(0, len(x), 4096): x[i] = 1" > "$out" 2>&1 || st=$?
     if [ "$st" -eq 137 ] && grep -q "memcap: KILLED" "$out"; then
         ok "heavy kills a step past the memory cap with 137"
     else
@@ -711,7 +717,7 @@ test_auto_batch() {
     batchwt="$scratch/auto-batch-integration-wt"
     slots="$scratch/auto-batch-slots"
     hold="$scratch/auto-batch-hold"
-    export AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" CULPRIT_PKG=c
+    export AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" CULPRIT_PKG=c AVRA_LAND_ABSORB=1
     ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/auto-holder.out" 2>&1 &
     wait_for_line "$scratch/auto-holder.out" "^acquired ticket 1$" 150 > /dev/null
     ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/auto-a.out" 2>&1 &
@@ -727,7 +733,7 @@ test_auto_batch() {
     a_st=0; wait "$a_pid" || a_st=$?
     b_st=0; wait "$b_pid" || b_st=$?
     c_st=0; wait "$c_pid" || c_st=$?
-    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR CULPRIT_PKG
+    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR CULPRIT_PKG AVRA_LAND_ABSORB
     if [ "$(grep -c "absorbing the queue" "$scratch/auto-a.out")" -eq 1 ] && ! grep -q "absorbing" "$scratch/auto-b.out"; then
         ok "auto-batch: the lock's taker absorbs the queue behind it, once"
     else
@@ -759,7 +765,7 @@ test_auto_batch_holder_stopped() {
     wt_a="$scratch/auto-stop-a"
     git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
     hold="$scratch/auto-stop-hold"
-    export AVRA_LAND_LOCK="$scratch/auto-stop-lock" AVRA_LAND_BATCH_WT="$scratch/auto-stop-wt" AVRA_SLOTS_DIR="$scratch/auto-stop-slots" SLOW_BUILD=20
+    export AVRA_LAND_LOCK="$scratch/auto-stop-lock" AVRA_LAND_BATCH_WT="$scratch/auto-stop-wt" AVRA_SLOTS_DIR="$scratch/auto-stop-slots" SLOW_BUILD=20 AVRA_LAND_ABSORB=1
     ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/auto-stop-holder.out" 2>&1 &
     wait_for_line "$scratch/auto-stop-holder.out" "^acquired ticket 1$" 150 > /dev/null
     ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/auto-stop-a.out" 2>&1 &
@@ -773,12 +779,44 @@ test_auto_batch_holder_stopped() {
     kill -TERM "$a_pid"
     b_st=0; wait "$b_pid" || b_st=$?
     wait "$a_pid" 2>/dev/null
-    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR SLOW_BUILD
+    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR SLOW_BUILD AVRA_LAND_ABSORB
     if [ "$b_st" -ne 0 ] && grep -q "stopped before a verdict" "$scratch/auto-stop-b.out"; then
         ok "auto-batch: a holder stopped mid-batch hands its absorbed waiters a verdict"
     else
         bad "auto-batch: an absorbed waiter was stranded or misled by a stopped holder ($b_st)"
         cat "$scratch/auto-stop-b.out"
+    fi
+}
+
+test_batch_tool_failure() {
+    d="$(batch_repo batch-tool)"
+    mv "$d/build/avra" "$scratch/batch-tool-avra-aside"
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/batch-tool-lock" AVRA_LAND_BATCH_WT="$scratch/batch-tool-wt" \
+        AVRA_SLOTS_DIR="$scratch/batch-tool-slots" branch=x sh "$land" --call main_batch 0 a b ) \
+        > "$scratch/batch-tool.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ] && grep -q "TOOL FAILURE" "$scratch/batch-tool.out" && ! grep -q "CULPRIT" "$scratch/batch-tool.out"; then
+        ok "batch: a missing compiler is a tool failure, and no branch is blamed"
+    else
+        bad "batch: a missing compiler was not reported as a tool failure ($st)"
+        cat "$scratch/batch-tool.out"
+    fi
+}
+
+test_batch_stale_registration() {
+    d="$(batch_repo batch-stale)"
+    git -C "$d" worktree add -q -b land/batch-integration "$scratch/batch-stale-old" main > /dev/null 2>&1
+    # A leftover directory, not a worktree, standing at the batch path.
+    mkdir -p "$scratch/batch-stale-new/build"
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/batch-stale-lock" AVRA_LAND_BATCH_WT="$scratch/batch-stale-new" \
+        AVRA_SLOTS_DIR="$scratch/batch-stale-slots" branch=x sh "$land" --call main_batch 0 a c ) \
+        > "$scratch/batch-stale.out" 2>&1 || st=$?
+    if [ "$st" -eq 0 ] && grep -q "^LANDED" "$scratch/batch-stale.out" && ! grep -q "CULPRIT" "$scratch/batch-stale.out"; then
+        ok "batch: a batch branch still registered to an older tree does not block the batch"
+    else
+        bad "batch: a stale batch-branch registration blocked the batch ($st)"
+        cat "$scratch/batch-stale.out"
     fi
 }
 
@@ -794,6 +832,8 @@ test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
+test_batch_tool_failure
+test_batch_stale_registration
 test_heavy_status
 test_auto_batch
 test_auto_batch_holder_stopped
