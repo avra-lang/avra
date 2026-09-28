@@ -169,7 +169,7 @@ use @std.relation.db.{new_db}
 @relation
 type Todo = { id: int, @index owner: string }
 let db = new_db()
-let _ = Todo.insert(db, Todo { id: 0, owner: "a" })
+let _ = Todo.insert(db, owner: "a")
 println("rel ${Todo.all(db).length}")
 AV
 S "a program holds @std/relation, reaching only stable.av" st

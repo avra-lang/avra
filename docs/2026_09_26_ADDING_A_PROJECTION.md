@@ -40,10 +40,10 @@ one spelling for the compiler's relations and a plugin's:
 | Mark | Means | Generates |
 |---|---|---|
 | a field named `id` | the Db mints it on insert; it must be `int` | `Decl.get(db, id) -> Decl?` |
-| `@key f` (one field) | the row's stable name; a known key REPLACES its row, keeping the id | `Decl.by_key(db, k) -> Decl?` |
-| `@unique f` | a lookup that answers one row | `Decl.by_f(db, v) -> Decl?` |
+| `@key f` (one or more fields) | together, the row's stable name; a known key REPLACES its row, keeping the id | `Decl.by_key(db, DeclKey { f: v }) -> Decl?` |
+| `@unique f` | a lookup that answers one row; an insert of a value another row holds is refused | `Decl.by_f(db, v) -> Decl?` |
 | `@index f` | a lookup that answers a list, in id order | `Decl.by_f(db, v) -> List<Decl>` |
-| (always) | the rows | `Decl.insert(db, row) -> Decl` (the row as stored), `Decl.all(db) -> List<Decl>` |
+| (always) | the rows | `Decl.insert(db, f: v, …) -> Decl`, its fields as named seats with no `id` (the row as stored; `Result<Decl, InsertRefused>` when a field is `@unique`), `Decl.all(db) -> List<Decl>` |
 
 `@query fn q(db, k)` is the second annotation: a memoized, dependency-
 recorded, persisted wrapper. **Not built** (avra-8sb5.57.4.6): today a
@@ -103,7 +103,7 @@ export type Todo = { id: int, @key title: string, @index owner: string, done: bo
 
 /// Add a task, or update the one already so titled.
 export fn record(db: Db, owner: string, title: string, done: bool) -> Todo {
-    Todo.insert(db, Todo { id: 0, title: title, owner: owner, done: done })
+    Todo.insert(db, title: title, owner: owner, done: done)
 }
 
 /// A query over the relation: an owner's tasks not yet done, in the
