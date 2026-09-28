@@ -1,0 +1,111 @@
+//! `@query` — a fn over a Db whose answer is kept per call. Its written
+//! body moves behind a wrapper (WRAP): a call's CELL is its arguments'
+//! stable hash, a kept answer is reused while it may be, and otherwise
+//! the body runs as that cell's next run — the rows it inserts its own,
+//! swept of what it did not write again.
+//!
+//!     @query
+//!     fn open_for(db: Db, owner: string) -> int { … }
+use @std.meta.{
+    Fn,
+    Param,
+    Kind,
+    Directive,
+    Declared,
+    Diagnostic,
+    Decls,
+    Code,
+    name,
+    wrapped,
+    refuse_as_at,
+}
+use db.{Db, Memo, memo}
+use stable.{stable_hasher, text_hash, hashed_opt, hashed_list, StableHasher}
+
+/// `@query`: the wrapper and the query's contract, from one reading.
+export fn query(f: Fn) -> Declared {
+    let problems = query_problems(f)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    let kept = kept_name(f)
+    Declared {
+        made: [
+            Directive {
+                twin: "",
+                name: kept,
+                at: f.at,
+                source: quote { once fn ${kept}() -> Memo<${f.answer}> { memo() } },
+            },
+            Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
+        ],
+        problems: [],
+    }
+}
+
+/// Every way a fn breaks the query law: a first seat that is no `Db`, an
+/// argument or an answer with no stable encoding.
+export fn query_problems(f: Fn) -> List<Diagnostic> {
+    let first? = f.params.first() else { return [no_db(f)] }
+    if !is_db(first.kind) { return [no_db(f)] }
+    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !carried(p.kind, named_shape)]
+    let answer = if carried(f.answers, named_shape) { [] } else { [answer_not_carried(f)] }
+    args.concat(answer)
+}
+
+fn is_db(k: Kind) -> bool {
+    match k { .Named(n, _) -> n == "Db", rest -> false }
+}
+
+/// The fn holding a query's kept answers.
+fn kept_name(f: Fn) -> string { "${f.name}_answers" }
+
+/// The wrapper under the written name.
+fn wrapper(f: Fn) -> Decls {
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    let args = [name(p.name) for p in f.params]
+    let db = name(f.params[0].name)
+    quote {
+        fn ${f.name}(..${seats}) -> ${f.answer} {
+            let m = ${kept_name(f)}()
+            let cell = m.cell(${db}, ${args_hash(f)})
+            let held? = m.kept(${db}, cell) else { return m.ran(${db}, cell, () -> ${wrapped(f)}(${..args})) }
+            held.value
+        }
+    }
+}
+
+/// A call's arguments folded in order through the stable encoding, the
+/// query's own name the seed — two queries never share a cell.
+fn args_hash(f: Fn) -> Code {
+    mut acc: Code = quote { stable_hasher(${text_hash(f.name)}) }
+    for p in f.params.slice(1, f.params.length) { acc = hashed(acc, name(p.name), p.kind) }
+    quote { ${acc}.finish() }
+}
+
+// ── voices ──
+
+fn no_db(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_db",
+        f.at,
+        "`@query fn ${f.name}` takes the `Db` its answer is kept under as its first seat",
+        "write `fn ${f.name}(db: Db, …)`",
+    )
+}
+
+fn arg_not_carried(f: Fn, p: Param) -> Diagnostic {
+    refuse_as_at(
+        "query_arg",
+        p.at ?? f.at,
+        "`${f.name}`'s seat `${p.name}` is `${p.ty}`, which has no stable encoding — a query's call is named by its arguments' hash",
+        "take an int, a bool, a string, a tagged enum or a nested record of those",
+    )
+}
+
+fn answer_not_carried(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_answer",
+        f.at,
+        "`${f.name}` answers `${f.answer}`, which has no stable encoding — a query's answer is kept and compared by its hash",
+        "answer an int, a bool, a string, a tagged enum or a nested record of those",
+    )
+}
