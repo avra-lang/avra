@@ -44,12 +44,14 @@ use core.{
 use query.{Key}
 use features.{Decls, Decl}
 use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
+use diagnostics.{DiagFacts, diag_facts_of}
 use @std.relation.stable.{
     writer as stable_writer,
     reader as stable_reader,
     Writer,
     Reader,
     CodecFault,
+    written_list,
 }
 use @std.text.{parse_int}
 
@@ -177,22 +179,30 @@ fn bound_word(x: Decl) -> string {
 // ── The row this file makes durable: one file's rendered check ──
 
 /// What `Family.Analysis` is worth keeping across a process: whether
-/// the file is clean, and its rendered diagnostics — the two things
-/// `avra check` prints per file. Not the full `Analysis` struct: that
+/// the file is clean, and its diagnostics AND rule findings — the
+/// full answer `avra check` prints per file (derive.av's `says`) —
+/// as STRUCTURED FACTS, never a rendered string: a `Diag`'s render
+/// picks its window from the sources the READING process has loaded,
+/// so a row rendered once and cached as text would carry whichever
+/// process happened to write it. `render_facts_among`
+/// (diagnostics/render.av) renders these fresh, every time, the same
+/// way a live diagnostic does. Not the full `Analysis` struct: that
 /// carries a `NodeStore` arena and a `program: fn() -> Program`
 /// closure, neither of which a durable row can hold (M5b's own future
 /// slice, COMPILER DB townhall §6.11).
-export type WitnessedCheck = { clean: bool, report: string }
+export type WitnessedCheck = { clean: bool, diagnostics: List<DiagFacts> }
 
 /// The record-shape stamp a stored check carries (§6.6's record header
 /// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an
 /// entry written in another shape is refused rather than decoded.
-fn witnessed_check_shape() -> int { 1 }
+/// 2: `report: string` became `diagnostics: List<DiagFacts>`
+/// (avra-8sb5.57.55).
+fn witnessed_check_shape() -> int { 2 }
 
 fn encoded_witnessed_check(c: WitnessedCheck) -> Bytes {
     let w = stable_writer()
     w.bool(c.clean)
-    w.text(c.report)
+    written_list(w, c.diagnostics, written_diag_facts)
     w.bytes()
 }
 
@@ -200,11 +210,16 @@ fn codec_ok<T>(r: Result<T, CodecFault>) -> T? {
     match r { .Ok(v) -> v, .Err(_) -> null }
 }
 
+fn read_diag_facts_list(r: Reader) -> Result<List<DiagFacts>, CodecFault> {
+    let n = r.count()?
+    [read_diag_facts(r)? for _k in 0..n]
+}
+
 fn decoded_witnessed_check(b: Bytes) -> WitnessedCheck? {
     let r = stable_reader(b)
     let clean? = codec_ok(r.bool()) else { return null }
-    let report? = codec_ok(r.text()) else { return null }
-    WitnessedCheck { clean: clean, report: report }
+    let diagnostics? = codec_ok(read_diag_facts_list(r)) else { return null }
+    WitnessedCheck { clean: clean, diagnostics: diagnostics }
 }
 
 /// Whether this call reused a durable answer or paid for a fresh one
@@ -451,9 +466,14 @@ impl Workspace {
         flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(k)])
     }
 
+    /// The file's whole checked answer: its own diagnostics plus its
+    /// rule findings (`says`'s own `ds`, derive.av) — `rule_findings`
+    /// reads only the file's own `Analysed` facts, so nothing here
+    /// widens the edges `record_witness` already expands.
     fn settled_check(f: FileId, name: string) -> WitnessedCheck {
         let a = self.analysis(f)
-        let out = WitnessedCheck { clean: a.clean(), report: a.report() }
+        let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
+        let out = WitnessedCheck { clean: a.clean(), diagnostics: [diag_facts_of(d) for d in ds] }
         self.record_witness(f, name, out)
         out
     }
@@ -475,7 +495,13 @@ impl Workspace {
                 PackEntry {
                     fingerprint: witnessed_check_shape(),
                     name: name,
-                    hash: fp_str(out.report),
+                    hash: fp_str(
+                        joined(
+                            [d.kind for d in out.diagnostics]
+                                .concat([d.message for d in out.diagnostics]),
+                            "\n",
+                        ),
+                    ),
                     edges: edges,
                     payload: encoded_witnessed_check(out),
                 },
