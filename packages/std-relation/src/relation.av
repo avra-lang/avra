@@ -29,6 +29,7 @@ use @std.meta.{
     type_named,
     Type,
     Field,
+    Mark,
     Kind,
     Directive,
     Diagnostic,
@@ -102,7 +103,9 @@ fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic
     let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(f.kind, shapes)]
     let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind, shapes)]
     let keyed_local = [key_local(t, f) for f in lookups(t) if marked(f, "key") && marked(f, "local")]
-    clashes.concat(taken).concat(unfiled).concat(ids).concat(keyed_local)
+    let grains = [f for f in lookups(t) if index_with(f, "grain")]
+    let more_grains = [grain_twice(t, f) for f in grains.slice(1, grains.length)]
+    clashes.concat(taken).concat(unfiled).concat(ids).concat(keyed_local).concat(more_grains)
 }
 
 /// Whether a field's own lookup would be named `by_key`, the name the
@@ -252,8 +255,21 @@ const relation_marks: List<string> = lookup_words.concat(["local"])
 /// Whether a field's marks are the vocabulary's, each worn once.
 fn marks_ok(f: Field) -> bool {
     let names = [m.name for m in f.marks]
-    names.all(known_mark) && repeated(names).is_empty()
+    names.all(known_mark) && repeated(names).is_empty() && f.marks.all(args_ok)
 }
+
+/// The arguments an `@index` may carry: `ordered` hashes its buckets in
+/// id order, `grain` is the bucket `get` records a row's read through.
+const index_args: List<string> = ["ordered", "grain"]
+
+/// Whether a mark's arguments are its own — only `@index` takes any.
+fn args_ok(m: Mark) -> bool {
+    if m.name == "index" { return m.args.all((a: string) -> index_args.contains(a)) && repeated(m.args).is_empty() }
+    m.args.is_empty()
+}
+
+/// Whether a field's `@index` carries `arg`.
+fn index_with(f: Field, arg: string) -> bool { f.marks.any(it.name == "index" && it.args.contains(arg)) }
 
 fn known_mark(name: string) -> bool { relation_marks.contains(name) }
 
@@ -265,8 +281,14 @@ fn repeated(names: List<string>) -> List<string> {
 /// A field's first unknown mark, else its first repeated one.
 fn mark_problem(t: Type, f: Field) -> Diagnostic {
     let names = [m.name for m in f.marks]
-    let unknown? = names.find((n: string) -> !known_mark(n)) else { return duplicate_mark(t, f, repeated(names).first() ?? "") }
+    let unknown? = names.find((n: string) -> !known_mark(n)) else { return known_mark_problem(t, f, names) }
     unknown_mark(t, f, unknown)
+}
+
+/// Every mark known: a repeated one, else one whose arguments are wrong.
+fn known_mark_problem(t: Type, f: Field, names: List<string>) -> Diagnostic {
+    let twice? = repeated(names).first() else { return mark_args(t, f, f.marks.find(!args_ok(it))?.name ?? "") }
+    duplicate_mark(t, f, twice)
 }
 
 /// The seat `insert` takes the Db in, beside a seat per content field.
@@ -343,12 +365,21 @@ fn generated(t: Type) -> Decls {
     }
 }
 
+/// An int with bit `i` set for each `i`.
+fn bits(at: List<int>) -> int {
+    mut m = 0
+    for i in at { m = m | (1 << i) }
+    m
+}
+
 /// The generated store's name: `decl_stores` for `Decl`.
 fn stores_name(t: Type) -> string { "${snake(t.name)}_stores" }
 
 /// The relation's rows under every Db.
 fn stores_decl(t: Type) -> Decls {
-    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${key_indexes(t) + named_lookups(t).length}) } }
+    let base = key_indexes(t)
+    let mask = bits([base + j for j, f in named_lookups(t) if index_with(f, "ordered")])
+    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${base + named_lookups(t).length}, ${mask}) } }
 }
 
 /// `rows_in`: this relation's rows under a Db, opened on the first reach.
@@ -783,6 +814,24 @@ fn dense_unmarked(t: Type, f: Field) -> Diagnostic {
         f.at ?? t.at,
         "`${t.name}.${f.name}` holds a dense id, which means nothing in another process, so it never enters a stable hash or a record",
         "mark it `@local`, or hold a keyed relation's id",
+    )
+}
+
+fn mark_args(t: Type, f: Field, mark: string) -> Diagnostic {
+    refuse_as_at(
+        "mark_args",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}`'s `@${mark}` takes arguments it does not know — only `@index` takes any: `ordered`, `grain`, each once",
+        "write `@${mark}` bare, or `@index(ordered)` / `@index(grain)`",
+    )
+}
+
+fn grain_twice(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "grain_twice",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is a second `@index(grain)` — `get` records a row's read through ONE bucket",
+        "keep `grain` on one field",
     )
 }
 

@@ -52,12 +52,13 @@ enum Slot<R> {
 }
 
 /// One relation's rows under every Db, indexed by the Db's id, each
-/// opened with the relation's own number of indexes.
-export type Stores<R> = { slots: Cell<List<Slot<R>>>, indexes: int }
+/// opened with the relation's own indexes: how many, and a bit per index
+/// set where it hashes in order.
+export type Stores<R> = { slots: Cell<List<Slot<R>>>, indexes: int, ordered: int }
 
-export fn stores<R>(indexes: int) -> Stores<R> {
+export fn stores<R>(indexes: int, ordered: int) -> Stores<R> {
     let none: List<Slot<R>> = []
-    Stores { slots: Cell.new(none), indexes: indexes }
+    Stores { slots: Cell.new(none), indexes: indexes, ordered: ordered }
 }
 
 impl Stores<R> {
@@ -98,7 +99,7 @@ impl Stores<R> {
         self.fresh()
     }
 
-    fn fresh() -> Rows<R> { rows(self.indexes) }
+    fn fresh() -> Rows<R> { rows([(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
 }
 
 /// A slot's set hash: its rows', none while unreached or closed.
