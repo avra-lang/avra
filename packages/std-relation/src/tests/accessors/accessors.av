@@ -1,8 +1,9 @@
 // A relation's generated accessors under a Db: `insert` in each of its
-// four shapes, `by_key` answering a key's row, `by_<field>` one row or
+// shapes — a `Result` only where a `@unique` field can refuse it — `by_key` answering a key's row, `by_<field>` one row or
 // every row, `get` and `all` — and each Db's rows its own.
 use @std.relation.{relation}
-use @std.relation.db.{new_db}
+use @std.relation.db.{new_db, Db}
+use @std.relation.refused.{InsertRefused}
 
 /// Ided, keyless: every insert is a new row.
 @relation
@@ -20,37 +21,41 @@ type Account = { id: int, @index team: string, @key handle: string }
 @relation
 type Tagged = { @key name: string, tags: List<string> }
 
+/// Keyed, with a `@unique` field filed after an `@index`.
+@relation
+type User = { id: int, @key handle: string, @index team: string, @unique email: string }
+
 fn names(fs: List<Flag>) -> string { [f.name for f in fs].join(",") }
 
-fn flags() -> string {
+fn flags() -> Result<string, InsertRefused> {
     let db = new_db()
-    let x = Flag.insert(db, Flag { id: 0, name: "x", on: true, rank: 1 })
-    let y = Flag.insert(db, Flag { id: 0, name: "y", on: true, rank: 2 })
-    let _ = Flag.insert(db, Flag { id: 0, name: "z", on: false, rank: 1 })
+    let x = Flag.insert(db, name: "x", on: true, rank: 1)?
+    let y = Flag.insert(db, name: "y", on: true, rank: 2)?
+    let _ = Flag.insert(db, name: "z", on: false, rank: 1)?
     let found = Flag.by_name(db, "y")?.rank ?? -1
     "${x.id}${y.id} ${names(Flag.by_on(db, true))} ${names(Flag.by_rank(db, 1))} ${found} ${Flag.by_name(db, "nope") == null} ${Flag.get(db, 1)?.name ?? "-"}"
 }
 
 fn notes() -> string {
     let db = new_db()
-    let _ = Note.insert(db, Note { tag: "a", text: "one" })
-    let _ = Note.insert(db, Note { tag: "a", text: "one" })
-    "${Note.all(db).length} ${Note.by_tag(db, "a").length}"
+    let first = Note.insert(db, tag: "a", text: "one").text
+    let _ = Note.insert(db, tag: "a", text: "one")
+    "${Note.all(db).length} ${Note.by_tag(db, "a").length} ${first}"
 }
 
 fn accounts() -> string {
     let db = new_db()
-    let a = Account.insert(db, Account { id: 0, team: "red", handle: "ann" })
-    let b = Account.insert(db, Account { id: 0, team: "red", handle: "bo" })
-    let moved = Account.insert(db, Account { id: 9, team: "blue", handle: "ann" })
+    let a = Account.insert(db, team: "red", handle: "ann")
+    let b = Account.insert(db, team: "red", handle: "bo")
+    let moved = Account.insert(db, team: "blue", handle: "ann")
     let team = Account.by_key(db, AccountKey { handle: "ann" })?.team ?? "-"
     "${a.id}${b.id}${moved.id} ${Account.all(db).length} ${team} ${Account.by_team(db, "red").length}"
 }
 
 fn tagged() -> string {
     let db = new_db()
-    let _ = Tagged.insert(db, Tagged { name: "n", tags: ["a"] })
-    let _ = Tagged.insert(db, Tagged { name: "n", tags: ["b", "c"] })
+    let _ = Tagged.insert(db, name: "n", tags: ["a"])
+    let _ = Tagged.insert(db, name: "n", tags: ["b", "c"])
     "${Tagged.all(db).length} ${(Tagged.by_key(db, TaggedKey { name: "n" })?.tags ?? []).join(",")}"
 }
 
@@ -63,9 +68,9 @@ type ErrorSite = { id: int, @index at: int }
 
 fn plain_and_sites() -> string {
     let db = new_db()
-    let _ = Plain.insert(db, Plain { n: 4 })
-    let _ = ErrorSite.insert(db, ErrorSite { id: 0, at: 7 })
-    let _ = ErrorSite.insert(db, ErrorSite { id: 0, at: 7 })
+    let _ = Plain.insert(db, n: 4)
+    let _ = ErrorSite.insert(db, at: 7)
+    let _ = ErrorSite.insert(db, at: 7)
     "${Plain.all(db).length} ${ErrorSite.by_at(db, 7).length} ${ErrorSite.get(db, 1)?.at ?? -1}"
 }
 
@@ -74,32 +79,60 @@ fn plain_and_sites() -> string {
 @relation
 type Site = { id: int, @key module: string, @key owner: string, @key @index name: string, line: int }
 
-fn site(module: string, owner: string, name: string, line: int) -> Site {
-    Site { id: 0, module: module, owner: owner, name: name, line: line }
-}
-
 fn sites() -> string {
     let db = new_db()
-    let a = Site.insert(db, site("m", "ab", "c", 1))
-    let b = Site.insert(db, site("m", "a", "bc", 2))
-    let moved = Site.insert(db, site("m", "ab", "c", 3))
+    let a = Site.insert(db, module: "m", owner: "ab", name: "c", line: 1)
+    let b = Site.insert(db, module: "m", owner: "a", name: "bc", line: 2)
+    let moved = Site.insert(db, module: "m", owner: "ab", name: "c", line: 3)
     let hit = Site.by_key(db, SiteKey { module: "m", owner: "a", name: "bc" })?.line ?? -1
     let miss = Site.by_key(db, SiteKey { module: "m", owner: "abc", name: "" }) == null
     "${a.id}${b.id}${moved.id} ${Site.all(db).length} ${hit} ${miss} ${Site.by_name(db, "c").length} ${a.key().owner}"
 }
 
+/// What an insert answered: the row's id, or the refusal's words.
+fn landed(r: Result<User, InsertRefused>) -> string {
+    match r {
+        .Ok(u) -> "${u.id}",
+        .Err(e) -> "${e.describe().kind}: ${e.describe().message}",
+    }
+}
+
+fn user(db: Db, handle: string, email: string) -> string {
+    landed(User.insert(db, handle: handle, team: "t", email: email))
+}
+
+/// A `@unique` value another row holds refuses the insert and files
+/// nothing; a keyed row keeps its own value, and a value let go is free.
+fn unique() -> string {
+    let db = new_db()
+    let a = user(db, "ann", "a@x")
+    let b = user(db, "bo", "b@x")
+    let same = user(db, "ann", "a@x")
+    let taken = user(db, "bo", "a@x")
+    let kept = User.by_key(db, UserKey { handle: "bo" })?.email ?? "-"
+    let moved = user(db, "ann", "c@x")
+    let freed = user(db, "bo", "a@x")
+    let flag = match Flag.insert(new_db(), name: "x", on: true, rank: 1) {
+        .Ok(f) -> f.name,
+        .Err(e) -> e.describe().message,
+    }
+    "${a}${b}${same}${moved}${freed} ${taken} ${kept} ${User.all(db).length} ${User.by_email(db, "a@x")?.handle ?? "-"} ${flag}"
+}
+
 /// Two Dbs keep their own rows; a Db knows only the relations it
-/// reached; a closed Db's rows are let go, every hash back to none.
+/// reached, each once however often; a closed Db's rows are let go,
+/// every hash back to none and no relation joined again.
 fn dbs() -> string {
     let a = new_db()
     let b = new_db()
-    let _ = Note.insert(a, Note { tag: "t", text: "1" })
-    let _ = Flag.insert(a, Flag { id: 0, name: "f", on: true, rank: 1 })
+    let _ = Note.insert(a, tag: "t", text: "1")
+    let _ = Flag.insert(a, name: "f", on: true, rank: 1)
+    let _ = Note.insert(a, tag: "t", text: "2")
     let seen_in_b = Note.all(b).length
     let reached = a.set_hashes().length
     let held = a.set_hashes().any(it != 0)
     a.close()
-    "${seen_in_b} ${reached} ${held} ${a.set_hashes().all(it == 0)}"
+    "${seen_in_b} ${reached} ${held} ${a.set_hashes().all(it == 0)} ${a.set_hashes().length}"
 }
 
-"${flags()} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()}"
+"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()}"

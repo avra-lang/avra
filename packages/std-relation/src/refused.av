@@ -1,0 +1,27 @@
+//! What an insert refuses: a `@unique` value another row already holds.
+use @std.errors.{Error, ErrorInfo, info}
+
+/// An insert the `@unique` law refused: the relation, the field, the
+/// value it carried, and the id of the row already holding that value.
+export type InsertRefused = { relation: string, field: string, value: string, holder: int }
+
+impl Error for InsertRefused {
+    fn describe() -> ErrorInfo { info("relation.unique", taken(self)) }
+}
+
+/// A `@unique` field's check: `holder` is the other row already filed
+/// under `value`, if any. Answers the value, free.
+export fn unheld(holder: int?, relation: string, field: string, value: string) -> Result<string, InsertRefused> {
+    let h? = holder else { return value }
+    fail InsertRefused { relation: relation, field: field, value: value, holder: h }
+}
+
+export fn int_text(v: int) -> string { "${v}" }
+
+export fn bool_text(v: bool) -> string { "${v}" }
+
+// ── voices ──
+
+fn taken(r: InsertRefused) -> string {
+    "`${r.relation}.${r.field}` is `@unique`, and row ${r.holder} already holds `${r.value}`"
+}
