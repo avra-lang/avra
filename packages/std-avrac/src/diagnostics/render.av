@@ -103,14 +103,38 @@ fn causes_of(e: dyn Error?, depth: int = cause_chain_cap) -> List<string> {
 
 /// The whole diagnostic as terminal text — the kind is the bracket.
 export fn render(d: Diag, src: SourceFile) -> string {
-    render_with(d, (l: Loc) -> src)
+    render_with(diag_facts_of(d), (l: Loc) -> src)
 }
 
 /// The diagnostic rendered over MANY sources — each frame's window
 /// comes from the file its Loc names; a file no source answers to
 /// falls back to the first.
 export fn render_among(d: Diag, sources: List<SourceFile>) -> string {
-    render_with(d, (l: Loc) -> source_named(sources, l.file))
+    render_with(diag_facts_of(d), (l: Loc) -> source_named(sources, l.file))
+}
+
+/// A durable `DiagFacts` row, rendered exactly as the `Diag` it came
+/// from would have been — same frames, same cause lines, same
+/// suggestions — over MANY sources, freshly, at print time: nothing
+/// about the rendering is baked in at the point the facts were kept.
+export fn render_facts_among(f: DiagFacts, sources: List<SourceFile>) -> string {
+    render_with(f, (l: Loc) -> source_named(sources, l.file))
+}
+
+/// A live `Diag`'s wire-safe twin — its `cause` chain flattened once,
+/// here, into the lines `causes_of` would have printed for it. Every
+/// other field is already plain data.
+export fn diag_facts_of(d: Diag) -> DiagFacts {
+    DiagFacts {
+        kind: d.kind,
+        severity: d.severity,
+        primary: d.primary,
+        secondary: d.secondary,
+        cause_lines: causes_of(d.cause),
+        message: d.message,
+        help: d.help,
+        suggestions: d.suggestions,
+    }
 }
 
 fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
@@ -128,7 +152,7 @@ fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
 /// those words went red with the refusal itself still correct. The
 /// workaround is worse than the defect: folding the label into the
 /// message at one voice is a copy the next unlocated voice repeats.
-fn render_with(d: Diag, pick: fn(Loc) -> SourceFile) -> string {
+fn render_with(d: DiagFacts, pick: fn(Loc) -> SourceFile) -> string {
     mut parts = ["${severity_word(d.severity)}[${d.kind}]: ${d.message}"]
     if d.primary.loc != null {
         parts.push(window(d.primary.loc!, d.primary.label, pick(d.primary.loc!)))
@@ -137,7 +161,7 @@ fn render_with(d: Diag, pick: fn(Loc) -> SourceFile) -> string {
     }
     parts = parts
         .concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
-    parts = parts.concat(causes_of(d.cause))
+    parts = parts.concat(d.cause_lines)
     if d.help != null { parts.push("help: ${d.help!}") }
     parts = parts.concat(flatten([suggestion_lines(sg) for sg in d.suggestions]))
     joined(parts, "\n")
