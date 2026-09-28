@@ -30,6 +30,7 @@ use core.{
     fp,
     fp_list,
     fp_str,
+    mix_final,
     joined,
     flatten,
     sorted_texts,
@@ -442,6 +443,12 @@ enum Family {
     /// asked in ITS bracket, so every file's `Analysis` depends on them
     /// whichever file ran the scan first
     MethodDiags
+    /// a declaration's own syntax (COMPILER DB townhall §6.11): the
+    /// fold of its expr/stmt range's fingerprints, keyed by DeclId so
+    /// an edit to one declaration in a file cuts off before a
+    /// neighbour's reader — a query reading another declaration's
+    /// nodes depends on this, never on the file's whole `Parsed`
+    Syntax
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -454,6 +461,17 @@ fn parsed_fingerprint(s: DbRow) -> int {
 
 fn key(f: Family, arg: int) -> Key {
     Key { family: ordinal(f), arg: arg }
+}
+
+/// `Family.Syntax`'s own fold: the declaration's expr range and its
+/// declaring statement, each avalanched (`mix_final`, splitmix64's
+/// finalizer) before folding through `fp_list` — `fp`'s own inner mix
+/// is linear, so summing raw fingerprints would carry over whatever
+/// structure made two of them collide; avalanching first breaks that
+/// (CLAUDE.md's arity law) and `fp_list` keeps the fold order-sensitive.
+fn syntax_hash(store: NodeStore, x: Decl) -> int {
+    let exprs = [mix_final(store.expr_fingerprint(ExprId { index: i })) for i in x.lo..x.hi]
+    fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
 }
 
 fn ordinal(f: Family) -> int {
@@ -483,6 +501,7 @@ fn ordinal(f: Family) -> int {
         .Raised -> 22,
         .MethodDiags -> 23,
         .LiftLowered -> 24,
+        .Syntax -> 25,
     }
 }
 
@@ -515,6 +534,7 @@ fn family_word(f: Family) -> string {
         .Raised -> "Raised",
         .MethodDiags -> "MethodDiags",
         .LiftLowered -> "LiftLowered",
+        .Syntax -> "Syntax",
     }
 }
 
@@ -559,6 +579,7 @@ fn family_at(i: int) -> Family {
         22 -> Family.Raised,
         23 -> Family.MethodDiags,
         24 -> Family.LiftLowered,
+        25 -> Family.Syntax,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
@@ -572,7 +593,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`
 /// and to `ordinal`; nothing below can notice the day only this
 /// number moves alone, or only stays still alone.
-const family_count: int = 25
+const family_count: int = 26
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -925,6 +946,7 @@ impl Workspace {
             .HeldSig -> touch(self.held_sig(module_at(arg))),
             .Raised -> touch(self.raised_by(decl_at_arg(arg))),
             .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
+            .Syntax -> touch(self.syntax(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1521,6 +1543,30 @@ impl Workspace {
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
+    }
+
+    /// A declaration's own syntax, DECLARATION-GRAIN (COMPILER DB
+    /// townhall §6.11): the fold of its expr/stmt range's fingerprints.
+    /// Depends on the file's `Parsed` alone, so an edit ANYWHERE in the
+    /// file recomputes this — but `settle`'s early cutoff pins
+    /// `changed_at` whenever the fold comes out the same, which it does
+    /// for every OTHER declaration in the file. A caller that reads
+    /// another declaration's nodes calls this to depend on THAT
+    /// declaration's syntax, never on the whole file's `Parsed` — one
+    /// edge per file would retype every declaration on any edit. The
+    /// declaration's OWN query (the one this decl's own body is typed,
+    /// signed or lowered under) never calls this for itself: reading
+    /// the nodes it is itself the pass for is its computation, not a
+    /// Db read.
+    fn syntax(d: DeclId) -> int {
+        let k = key(Family.Syntax, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        let _ = self.parsed(x.file)
+        let h = syntax_hash(self.decls.store(d), x)
+        self.db.settle(k, h)
+        h
     }
 
     /// Whether an impl block written under the target's NAME can mean
