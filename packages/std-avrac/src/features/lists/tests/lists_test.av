@@ -56,7 +56,12 @@ spec "features/lists" {
         }
         then "`==` on lists offers the alternatives" {
             let a = analyze_source("let xs = [1]\nlet ys = [1]\nxs == ys\n2")
-            a.diagnostics.length == 1 && a.report().contains("`==` compares by value — a scalar, text, a tagged enum, or a record of one such field")
+            a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains(
+                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                    )
         }
     }
     given "the run's own refusals" {
@@ -284,11 +289,14 @@ spec "features/lists" {
         then "the count is the row's" {
             refused_with("let xs = [1]\nxs.slice(1)", "`slice` takes 2 arguments, found 1")
         }
-        then "a scan reads by value — a list of records refuses like `==` does" {
+        then "a scan reads by value — a list of two-field records refuses like `==` does" {
             refused_with(
-                "type P = { n: int }\nlet ps = [P { n: 1 }]\nps.contains(P { n: 1 })",
-                "`contains` scans by value — scalars and text for now, this list holds `P`",
+                "type P = { n: int, m: int }\nlet ps = [P { n: 1, m: 2 }]\nps.contains(P { n: 1, m: 2 })",
+                "`contains` scans by value — a scalar, text, a tagged enum, or a record of one such field — and this list holds `P`",
             )
+        }
+        then "a scan over one-field records finds by the field" {
+            shown("type P = { n: int }\nlet ps = [P { n: 1 }, P { n: 2 }]\nps.index_of(P { n: 2 })") == "1"
         }
         then "enumerate stands only under a paired head" {
             refused_with(
