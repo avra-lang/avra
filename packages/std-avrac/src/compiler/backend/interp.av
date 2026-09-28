@@ -34,7 +34,7 @@ use core.{
     Slot,
     debug,
 }
-use @std.path.{joined_path}
+use @std.path.{joined_path, normalized}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
@@ -795,7 +795,10 @@ impl Machine {
                 )
             return Val.S("")
         }
-        let path = if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) }
+        // NORMALIZED: an unfolded `..` names the same file under a second
+        // spelling, minting it a second FileId — the same file parsed and
+        // admitted twice under two identities.
+        let path = normalized(if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) })
         if avra_selfhost_file_exists(path) == 0 {
             self.trapped("`embed` finds no `${rel}` beside the source")
             return Val.S("")
