@@ -4,6 +4,7 @@
 //! zip.
 use core.{Expr, Stmt, Nominal, Plain, Scoped}
 use features.{LangNode, Builder, zip_defect, marks_at}
+use grammar.{Token}
 
 /// THE ONE `type` BUILDER: the grammar's ordered choice captures a
 /// record's fields OR one written shape, and the capture that
@@ -17,8 +18,10 @@ fn build_type_decl(b: Builder) -> Result<LangNode, string> {
     let nt = b.type_refs(5)?
     let names = [t.text for t in tp]
     if !nt.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), [Plain(t) for t in names], nt[0])) }
+    let spreads = b.tokens(7)?
     let fields = b.fields_zipped(fs, ft, fds, marks_at(b.args, 6))?
-    b.make_stmt(Stmt.StructDecl(Scoped(n.text), [Plain(t) for t in names], fields))
+    let spread = [p with { name: Scoped(spread_name(fs[j], spreads, fs)) } for j, p in fields]
+    b.make_stmt(Stmt.StructDecl(Scoped(n.text), [Plain(t) for t in names], spread))
 }
 
 /// `alias Name<T> = <type>` — a shorthand for the shape it names.
@@ -37,7 +40,25 @@ fn build_struct_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let vn = b.tokens(1)?
     let ve = b.exprs(2)?
-    if vn.length != ve.length { return .Err(zip_defect) }
-    let names = [k.text for k in vn]
-    b.make_expr(Expr.StructLit(Nominal(t.text), [Plain(t) for t in names], ve))
+    let spreads = b.tokens(3)?
+    let written = [b.value_after(vn, ve, j) for j, k in vn]
+    if [v for v in written if v != null].length != ve.length { return .Err(zip_defect) }
+    let values = [v ?? b.expr_node(Expr.Ident(Scoped(vn[j].text))) for j, v in written]
+    b
+        .make_expr(
+            Expr
+                .StructLit(Nominal(t.text), [Plain(spread_name(k, spreads, vn)) for k in vn], values),
+        )
+}
+
+/// A field's name as written: a hole SPREAD by `..` keeps the `..`,
+/// which is how a template tells a run of fields from a name hole.
+fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> string {
+    if spreads.any((s: Token) -> spread_before(s, f, all)) { "..${f.text}" } else { f.text }
+}
+
+/// Whether `..` stands directly before field `f` — after every field
+/// written before it.
+fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
+    s.span.lo < f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
 }
