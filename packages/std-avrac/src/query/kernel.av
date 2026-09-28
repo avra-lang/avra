@@ -12,7 +12,7 @@
 //! driver sets. A key is a FAMILY number and the dense id the family
 //! keys by — two list indexes, no strings. Values live in the
 //! families' own typed tables; the kernel holds only bookkeeping.
-use core.{list_cell}
+use core.{list_cell, map_cell}
 
 /// A cell's address: its family, and the dense id the family keys
 /// by (a FileId, a DeclId).
@@ -108,6 +108,7 @@ export type Audit = {
     sink: Cell<fn(Bypass) -> void>,
     visit: Cell<List<Cell<List<int>>>>,
     round: Cell<int>,
+    reach: Cell<Map<string, bool>>,
 }
 
 /// A kernel is a shared handle. Copying it copies the handle; every
@@ -148,6 +149,7 @@ export fn new_kernel() -> Kernel {
             sink: Cell.new(unheard),
             visit: list_cell(),
             round: Cell.new(0),
+            reach: map_cell(),
         },
     }
 }
@@ -194,7 +196,6 @@ impl Kernel {
         let exempt = self.audit.exempt.get()
         let covers = self.audit.covers.get()
         let sink = self.audit.sink.get()
-        self.close_over(held[0].frames[0])
         for b in held {
             if !exempt(b) && !self.covered(b, covers(b)) { sink(b) }
         }
@@ -203,34 +204,46 @@ impl Kernel {
         self.audit.touched.set(no_touched)
         let none: List<Bypass> = []
         self.audit.held.set(none)
+        let unasked: Map<string, bool> = {}
+        self.audit.reach.set(unasked)
     }
 
-    /// Whether a query that was open for the read is that very key, or the outermost one
-    /// reaches it: every query the read was made under is below the outermost, whose
-    /// dependencies `close_over` marked.
+    /// Whether the cover is a query open at the read (the read is of a table that query
+    /// is making), or the query that PERFORMED the read reaches it: every query is a cell
+    /// verified on its own dependencies, so a cover only an ancestor reaches leaves the
+    /// reader's own cell unsound.
     fn covered(b: Bypass, covers: List<Key>) -> bool {
-        covers.any((c: Key) -> self.reached(c) || b.frames.any((f: Key) -> same_key(c, f)))
+        let reader? = b.frames.last() else { return true }
+        covers.any((c: Key) -> b.frames.any((f: Key) -> same_key(c, f)) || self.reaches(reader, c))
     }
 
-    /// Marks every cell below `root`, one stamp per cell: a visit is stamped with a round
-    /// the call opens.
-    fn close_over(root: Key) {
+    /// Whether following `from`'s dependencies to the bottom meets `target`; answered once
+    /// per (from, target) until the judging ends.
+    fn reaches(from: Key, target: Key) -> bool {
+        let asked = "${from.family}:${from.arg}>${target.family}:${target.arg}"
+        let known? = self.audit.reach.get().get(asked) else {
+            let found = self.searched(from, target)
+            self.audit.reach.put(asked, found)
+            return found
+        }
+        known
+    }
+
+    /// The search: each cell is visited once, stamped with a round the call opens.
+    fn searched(from: Key, target: Key) -> bool {
         self.audit.round.set(self.audit.round.get() + 1)
-        mut frontier = [root]
+        mut frontier = [from]
         while !frontier.is_empty() {
             mut below: List<Key> = []
             for k in frontier {
-                for d in self.deps_of(k) { if self.first_visit(d) { below.push(d) } }
+                for d in self.deps_of(k) {
+                    if same_key(d, target) { return true }
+                    if self.first_visit(d) { below.push(d) }
+                }
             }
             frontier = below
         }
-    }
-
-    /// Whether `close_over`'s latest call reached `k`.
-    fn reached(k: Key) -> bool {
-        if self.audit.visit.get().length <= k.family { return false }
-        let row = self.audit.visit.get()[k.family]
-        k.arg < row.get().length && row.get()[k.arg] == self.audit.round.get()
+        false
     }
 
     /// Whether `k` has not yet been reached in this round; stamps it.
