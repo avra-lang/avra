@@ -1019,10 +1019,19 @@ export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId
 /// callee write through the seat; `settled` demands the caller
 /// settle the seat's value at compile time; `isolated` demands a fn
 /// that shares nothing with its caller — it may run on another core.
-/// All ride the fn type's identity, so a callee demanding one cannot
-/// sit in a seat that promised none — and a new promise is a field
-/// here, never a parallel list at every mark site.
-export type SeatMark = { mutable: bool, settled: bool, unshared: bool = false }
+/// `consumed` is never WRITTEN — no keyword names it (`owned` itself
+/// is reserved for a future one) — it is INFERRED from the callee's
+/// own body (compiler/consumes.av) the same way a method's receiver
+/// write is: the caller hands its dying argument over instead of
+/// retaining across the call. All ride the fn type's identity, so a
+/// callee demanding one cannot sit in a seat that promised none —
+/// and a new promise is a field here, never a parallel list at every
+/// mark site. `@derive(Fingerprint)` for `Body.marks`
+/// (compiler/lower/lower.av) — every other holder (`Type.Fn`'s own
+/// identity) already folds it through `mark_words`' own string,
+/// never through this derive.
+@derive(Fingerprint)
+export type SeatMark = { mutable: bool, settled: bool, unshared: bool = false, consumed: bool = false }
 
 /// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.
 export const plain_mark: SeatMark = SeatMark { mutable: false, settled: false }
@@ -1061,6 +1070,12 @@ export fn isolated_mark(marks: List<SeatMark>, j: int) -> bool {
     mark_at(marks, j).unshared
 }
 
+/// Whether seat `j`'s argument is CONSUMED — the caller hands its
+/// dying reference over rather than retaining across the call.
+export fn consumed_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).consumed
+}
+
 /// A seat's written prefix — `const`, `mut` and `isolated`, in the
 /// order the grammar takes them.
 export fn mark_prefixed(m: SeatMark, word: string) -> string {
@@ -1072,12 +1087,20 @@ export fn mark_prefixed(m: SeatMark, word: string) -> string {
 
 /// The canonical word for a mark set — ONE spelling in the
 /// interner's key, so two mark sets are one type exactly when their
-/// words agree.
+/// words agree. FIXED WIDTH PER SEAT: a splice with no separator over
+/// a variable-width element moves its own boundary (CLAUDE.md, "a
+/// flat concatenation of two sequences has a boundary that moves"),
+/// so `owned` rides a SECOND character alongside the first rather
+/// than an optional trailing one — every seat spends exactly two.
 fn mark_words(marks: List<SeatMark>) -> string {
     joined([mark_word(m) for m in marks], "")
 }
 
 fn mark_word(m: SeatMark) -> string {
+    "${mark_letter(m)}${if m.consumed { "o" } else { "_" }}"
+}
+
+fn mark_letter(m: SeatMark) -> string {
     if m.unshared {
         return when {
             m.mutable -> if m.settled { "B" } else { "M" }
@@ -1100,7 +1123,7 @@ fn trimmed_marks(t: Type) -> Type {
 }
 
 fn is_plain(m: SeatMark) -> bool {
-    !m.mutable && !m.settled && !m.unshared
+    !m.mutable && !m.settled && !m.unshared && !m.consumed
 }
 
 fn trimmed(marks: List<SeatMark>) -> List<SeatMark> {

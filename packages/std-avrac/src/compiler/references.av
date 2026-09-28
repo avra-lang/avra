@@ -46,6 +46,7 @@ use core.{
     fp_list,
     flatten,
     some_list,
+    Span,
 }
 use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
 
@@ -54,6 +55,20 @@ impl Workspace {
     /// relation.
     fn references() -> int {
         if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
+        // THE RELATION SETTLES AFTER TYPING. Asked while a file is
+        // still typing, or while a compile-time run is lowering, its
+        // walk would read `folded`'s smaller recursive view for that
+        // file and settle the whole program's rows on an incomplete
+        // one — permanently, since a settled answer is never redone.
+        // `computed_consumed` no longer reaches here from a lift; a
+        // caller that still does is the defect this names.
+        if self.db.family_active(ordinal(Family.Typed)) ||
+            self.db.family_active(ordinal(Family.Folded)) ||
+            self.comptime_active() {
+            avra_trap(
+                "defect: the references relation settles after typing, and something asked for it while a file was still typing",
+            )
+        }
         let k = key(Family.References, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
@@ -96,7 +111,38 @@ impl Workspace {
             .concat(impl_rows)
             .concat(type_rows)
             .concat(mark_rows)
+            .concat(self.template_refs(f, names, store))
             .concat(self.import_refs(f))
+    }
+
+    /// A TEMPLATE'S OWN NAMES are read where its quote is written, when
+    /// it is spliced, and resolve never walks a quote's body — so each
+    /// name a body calls or reads, spanned inside a quote and bound to
+    /// nothing, is read here through this file's namespace, as a
+    /// written type already is. A hole's fill is ordinary code, bound
+    /// where it stands, and counted by the walk above.
+    fn template_refs(f: FileId, names: NameFacts, store: NodeStore) -> List<Ref> {
+        let quotes = flatten(
+            [quote_span(store, ExprId { index: i }) for i in 0..store.exprs.count()],
+        )
+        if quotes.is_empty() { return [] }
+        let inside = [ExprId { index: i } for i in 0..store.exprs.count() if spanned_in(store, ExprId { index: i }, quotes)]
+        flatten([some_list(self.template_name_ref(f, names, store, e)) for e in inside])
+    }
+
+    fn template_name_ref(f: FileId, names: NameFacts, store: NodeStore, e: ExprId) -> Ref? {
+        if bound_decl_of(names, e) != null { return null }
+        let called: string? = store.callee_name(e)
+        if called != null { return self.named_use(f, names, e, called!, UseKind.Call) }
+        let read? = store.ident_name(e) else { return null }
+        self.named_use(f, names, e, read, UseKind.Read)
+    }
+
+    /// A name resolved through the file's namespace — a fn's first, a
+    /// type's for a name read as a receiver.
+    fn named_use(f: FileId, names: NameFacts, e: ExprId, name: string, kind: UseKind) -> Ref? {
+        let d? = names.names.fn_decl(name) ?? names.names.type_decl(name) else { return null }
+        expr_use(d, f, e, kind)
     }
 
     /// An `impl … for` block's own TRAIT, and an impl's own TARGET
@@ -142,7 +188,7 @@ impl Workspace {
     /// expression naming nothing.
     fn use_of(f: FileId, names: NameFacts, e: ExprId, kind: UseKind) -> Ref? {
         let d? = bound_decl_of(names, e) else { return null }
-        Ref { decl: d, file: f, at: At.Expr(e), kind: kind }
+        expr_use(d, f, e, kind)
     }
 
     /// A method call's own target, read off the ALREADY-SETTLED
@@ -258,3 +304,22 @@ fn ref_fp(r: Ref) -> int {
 fn kind_ord(k: UseKind) -> int {
     match k { .Call -> 0, .MethodCall -> 1, .Read -> 2, .Write -> 3, .Import -> 4, .TypeUse -> 5 }
 }
+
+/// A quote's own span, as written — none for any other expression.
+fn quote_span(store: NodeStore, e: ExprId) -> List<Span> {
+    let body? = store.expr(e).body_of() else { return [] }
+    match body.view {
+        .Verbatim(_, _) -> some_list(store.expr_span(e)),
+        .None or .Expanded(_) -> [],
+    }
+}
+
+/// Whether an expression is written inside one of the quote spans —
+/// never the quote itself.
+fn spanned_in(store: NodeStore, e: ExprId, quotes: List<Span>) -> bool {
+    let sp? = store.expr_span(e) else { return false }
+    !store.spanned_elsewhere(e) && quotes.any((q: Span) -> q.lo < sp.lo && sp.hi <= q.hi)
+}
+
+/// One expression's use of a declaration.
+fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl: d, file: f, at: At.Expr(e), kind: kind } }
