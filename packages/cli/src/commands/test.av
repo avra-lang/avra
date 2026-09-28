@@ -4,6 +4,7 @@
 //! evaluated again. The binaries run in a fresh image of this program.
 use @std.cli.{CliResult, Runnable, command}
 use @std.avrac.compiler.{BuildOutcome, Toolchain}
+use @std.avrac.core.{flatten}
 use @std.io.{is_dir}
 
 type TestCmd = {}
@@ -13,13 +14,9 @@ impl Runnable for TestCmd {
         let path? = argued_path(args) else { return 2 }
         let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
         let ws = build_workspace(path)
-        match ws
-            .suites(
-                if is_dir(path) { null } else { path },
-                here(),
-                Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path },
-            ) {
-            .Ok(made) -> proved(args, path, made),
+        let tools = Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path }
+        match ws.suites(if is_dir(path) { null } else { path }, here(), tools) {
+            .Ok(made) -> proved(args, path, made, tools),
             .Err(report) -> {
                 println(report)
                 1
@@ -28,13 +25,19 @@ impl Runnable for TestCmd {
     }
 }
 
-/// The suites said, then run by a fresh image — or the voice for none.
-fn proved(args: CliResult, path: string, made: List<BuildOutcome>) -> int {
+/// The suites said, their `.refuses` tests held to their voice, then run
+/// by a fresh image — or the voice for none.
+fn proved(args: CliResult, path: string, made: List<BuildOutcome>, tools: Toolchain) -> int {
     for b in made {
         if !b.warnings.is_empty() { eprintln(b.warnings) }
         if timed(args) { eprintln(if b.reused { "time: suite · cache hit" } else { "time: ${b.phases}" }) }
     }
     if made.is_empty() { return nothing_to_prove(path) }
+    let refuses = flatten([b.refuses for b in made])
+    if !refuses.is_empty() {
+        let wrong = checked_refuses(own_binary(), tools, refuses)
+        if wrong != 0 { return wrong }
+    }
     handed_off([b.binary for b in made])
 }
 

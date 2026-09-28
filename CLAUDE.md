@@ -1396,6 +1396,10 @@ registry is the idiom engine's spec, written by dogfooding.
   only, and only when that statement IS an expression, and
   an interpolation hole prints scalars and strings only — a list
   is shown through `join`, an index or `length`.
+  A program whose proof is a TRAP gets `<name>.refuses` (the voice it
+  must speak) instead of `.expected`; `avra test` runs it as a CHILD
+  in both engines and passes it only on exit 2 with that voice on
+  stderr.
 
 - The CLI: each subcommand is ONE file in
   `packages/cli/src/commands/`, exporting `command <name> { … }` —

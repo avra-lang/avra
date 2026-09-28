@@ -172,7 +172,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -195,6 +195,9 @@ SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 # whole cli, and anything short of six figures is a truncated write
 # reporting success.
 SEED_FLOOR := 100000
+# Every C object the compiler and the packages link, built from its source.
+objects: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+
 seed: $(COMPILER_OBJS)
 	@./avra emit packages/cli > build/seed.ll.new
 	@n=$$(wc -l < build/seed.ll.new | tr -d ' '); \

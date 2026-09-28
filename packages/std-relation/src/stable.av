@@ -170,6 +170,8 @@ export enum CodecFault {
     Overlong
     NotFlag
     NotText
+    /// octets left after the last field
+    Trailing
 }
 
 impl CodecFault {
@@ -179,6 +181,7 @@ impl CodecFault {
             .Overlong -> "overlong",
             .NotFlag -> "not_flag",
             .NotText -> "not_text",
+            .Trailing -> "trailing",
         }
     }
 }
@@ -247,4 +250,22 @@ impl Reader {
 
     /// Whether every octet has been read.
     fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A nullable read back: its presence, then the value when present.
+export fn read_opt<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T?,
+    CodecFault,
+> {
+    if !r.present()? { return .Ok(null) }
+    .Ok(each(r)?)
+}
+
+/// A list read back: its count, then every element in order.
+export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    List<T>,
+    CodecFault,
+> {
+    let n = r.count()?
+    .Ok([each(r)? for i in 0..n])
 }

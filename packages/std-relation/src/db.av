@@ -1,11 +1,15 @@
 //! THE DB a relation's rows live under: an identity and ERASED hooks.
 //! Each relation keeps its typed rows in a store of its own, indexed by
 //! the Db's id, so a Db never names a row type and a relation declared
-//! in any package reaches its rows the same way.
+//! in any package reaches its rows the same way. A CLOSED Db refuses
+//! every reach: its rows are gone, and nothing opens them again.
 use rows.{Rows, rows}
 
-/// A Db: its dense id, and each relation's hooks once reached in it.
-export type Db = { id: int, hashes: Cell<List<fn() -> int>>, closers: Cell<List<fn() -> void>> }
+extern fn avra_trap(message: string)
+
+/// A Db: its dense id, whether it is closed, and each relation's hooks
+/// once reached in it.
+export type Db = { id: int, closed: Cell<bool>, hashes: Cell<List<fn() -> int>>, closers: Cell<List<fn() -> void>> }
 
 /// The next Db id this process mints.
 once fn minted() -> Cell<int> { Cell.new(0) }
@@ -17,7 +21,7 @@ export fn new_db() -> Db {
     next.set(id + 1)
     let hashes: Cell<List<fn() -> int>> = Cell.new([])
     let closers: Cell<List<fn() -> void>> = Cell.new([])
-    Db { id: id, hashes: hashes, closers: closers }
+    Db { id: id, closed: Cell.new(false), hashes: hashes, closers: closers }
 }
 
 impl Db {
@@ -31,36 +35,69 @@ impl Db {
     /// Every reached relation's set hash, in the order they were reached.
     fn set_hashes() -> List<int> { [h() for h in self.hashes.get()] }
 
-    /// Every reached relation's rows let go.
+    /// Every reached relation's rows let go, and every later reach
+    /// refused.
     fn close() {
+        self.closed.set(true)
         for c in self.closers.get() { c() }
     }
 }
 
+/// One Db's rows of one relation: never reached, open, or let go when
+/// the Db closed — three states, never one absence standing for two.
+enum Slot<R> {
+    Unreached
+    Open(rows: Rows<R>)
+    Closed
+}
+
 /// One relation's rows under every Db, indexed by the Db's id, each
 /// opened with the relation's own number of indexes.
-export type Stores<R> = { slots: Cell<List<Rows<R>?>>, indexes: int }
+export type Stores<R> = { slots: Cell<List<Slot<R>>>, indexes: int }
 
 export fn stores<R>(indexes: int) -> Stores<R> {
-    let none: List<Rows<R>?> = []
+    let none: List<Slot<R>> = []
     Stores { slots: Cell.new(none), indexes: indexes }
 }
 
 impl Stores<R> {
-    /// The rows under `db`, opened on the first reach — the Db told how
-    /// to hash them and how to let them go.
+    /// The rows under `db`: opened and kept on the first reach, the Db
+    /// told how to hash them and let them go; refused once it closed.
     fn reach(db: Db) -> Rows<R> {
-        while self.slots.get().length <= db.id { self.slots.push(null) }
-        let held? = self.slots.get()[db.id] else {
-            let made = self.opened()
-            self.slots.set_at(db.id, made)
-            let slots = self.slots
-            let id = db.id
-            db.joined(() -> slots.get()[id]?.set_hash() ?? 0, () -> slots.set_at(id, null))
-            return made
+        if db.closed.get() { return self.refused(db) }
+        while self.slots.get().length <= db.id { self.slots.push(Slot.Unreached) }
+        match self.slots.get()[db.id] {
+            .Open(held) -> held,
+            .Unreached -> self.opened(db),
+            .Closed -> self.refused(db),
         }
-        held
     }
 
-    fn opened() -> Rows<R> { rows(self.indexes) }
+    /// The first reach under `db`: fresh rows, kept, the Db told.
+    fn opened(db: Db) -> Rows<R> {
+        let made = self.fresh()
+        self.slots.set_at(db.id, Slot.Open(made))
+        let slots = self.slots
+        let id = db.id
+        db.joined(() -> open_hash(slots.get()[id]), () -> slots.set_at(id, Slot.Closed))
+        made
+    }
+
+    fn refused(db: Db) -> Rows<R> {
+        avra_trap(closed_db(db.id))
+        self.fresh()
+    }
+
+    fn fresh() -> Rows<R> { rows(self.indexes) }
+}
+
+/// A slot's set hash: its rows', none while unreached or closed.
+fn open_hash<R>(s: Slot<R>) -> int {
+    match s { .Open(held) -> held.set_hash(), .Unreached or .Closed -> 0 }
+}
+
+// ── voices ──
+
+fn closed_db(id: int) -> string {
+    "relation rows reached through Db ${id} after it closed — a closed Db's rows are gone; open a new Db"
 }
