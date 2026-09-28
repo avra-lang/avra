@@ -145,14 +145,22 @@ impl Workspace {
         self.admit_code(f, source.node, ann, w.at, vis)
     }
 
-    /// A WRAP directive over the annotated declaration — a fn's or a
+    /// A WRAP directive over the annotated declaration. An expansion
+    /// re-runs until its answer settles, and a wrap already run answers
+    /// the declarations it made, never splicing a second wrapper.
+    fn wrap_directive(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
+        let done? = self.decls.wrap_body_of(f, w.annotated) else { return self.wrapped_anew(f, w, directive, ann) }
+        [done, w.annotated]
+    }
+
+    /// A WRAP not yet run over the annotated declaration — a fn's or a
     /// METHOD's, told apart by `orig.kind` (never re-derived from a
     /// name: a method binds no name in either fn namespace). A
     /// bodiless signature (an extern, a trait member) has no body to
     /// relocate; a `source` naming no matching fn has no wrapper to
     /// install — both refuse, naming themselves. The signature the
     /// wrapper redeclares is checked word for word before it lands.
-    fn wrap_directive(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
+    fn wrapped_anew(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
         let at = loc_at(self.decls.file(f).path, w.at)
         let orig = self.decls.decl(w.annotated)
         if orig.root == null {
@@ -219,13 +227,15 @@ impl Workspace {
     /// A written fn's Declares annotation, as the materializer's
     /// inputs — nothing when the annotation is not a generator.
     fn declared_work(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclareWork> {
+        if self.decls.is_wrap_body(f, d) { return [] }
         let x = self.decls.decl(d)
-        let anns = p.store.annotations_of(x.stmt)
+        let written = self.written_stmt(f, d)
+        let anns = p.store.annotations_of(written)
         if anns.is_empty() { return [] }
         // A code directive needs no declaration shape; a twin walks a
         // FN, so a type's twin reads empty seats and a `void` answer.
-        let parts: FnParts? = p.store.fn_parts(x.stmt)
-        let params = if parts == null { [] } else { p.store.declared_params(x.stmt) }
+        let parts: FnParts? = p.store.fn_parts(written)
+        let params = if parts == null { [] } else { p.store.declared_params(written) }
         let tparams: List<Param> = parts?.tparams ?? []
         let answer: TypeRef = parts?.ret ?? named_ref("void")
         mut out: List<DeclareWork> = []
@@ -251,7 +261,7 @@ impl Workspace {
                                     .push(
                                         DeclareWork {
                                             ann: ann_decl,
-                                            stmt: x.stmt,
+                                            stmt: written,
                                             callee: a.callee,
                                             args: a.args,
                                             ret: sig.ret,
@@ -259,7 +269,7 @@ impl Workspace {
                                             params: params,
                                             answer: answer,
                                             original: x.name,
-                                            at: a.span ?? p.store.stmt_span(x.stmt),
+                                            at: a.span ?? p.store.stmt_span(written),
                                             annotated: d,
                                         },
                                     )
@@ -270,6 +280,12 @@ impl Workspace {
             }
         }
         out
+    }
+
+    /// The statement a declaration was written as: a wrapped fn's is
+    /// the one its moved body rides, since its own now names the wrapper.
+    fn written_stmt(f: FileId, d: DeclId) -> StmtId {
+        self.decls.decl(self.decls.wrap_body_of(f, d) ?? d).stmt
     }
 
     /// Whether a return type is `List<Directive>` — the Declares cue.
@@ -740,6 +756,7 @@ impl Workspace {
                     doc: self.decl_doc_text(d),
                     annotations: self.decl_annotations(v, d),
                     module: self.decls.qualified_module(d),
+                    over: self.named_over(d),
                 },
                 heap,
             ),
@@ -873,6 +890,13 @@ impl Workspace {
     fn answer_kind(d: DeclId) -> Kind {
         let sig? = self.decls.sig(d)?.fn_sig() else { return no_kind() }
         kind_of(self.decls.types, sig.ret)
+    }
+
+    /// A named type's shape — `type Code = string` stands over `string` —
+    /// and nothing for any other declaration.
+    fn named_over(d: DeclId) -> Kind {
+        let sig? = self.decls.sig(d) else { return no_kind() }
+        match sig { .Named(n) -> kind_of(self.decls.types, n.of), rest -> no_kind() }
     }
 
     fn field_kinds(d: DeclId) -> List<Kind> {

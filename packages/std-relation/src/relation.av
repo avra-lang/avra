@@ -44,7 +44,7 @@ use @std.meta.{
     name,
     refuse_as_at,
 }
-use rows.{Rows, IndexKey, text_key, int_key, bool_key, key_part, int_part, bool_part}
+use rows.{Rows, IndexKey, text_key, int_key, dense_key, bool_key, key_part, int_part, bool_part}
 use db.{Db, Stores, stores}
 use refused.{InsertRefused, unheld, int_text, bool_text}
 use stable.{
@@ -137,7 +137,10 @@ fn takes_key_lookup(t: Type, f: Field) -> bool {
 fn mints(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
     match k {
         .Int -> true,
-        .Named(n, _) -> match shapes(n) { .Dense(_) -> true, .Tagged(_) or .Record(_) or .Plain -> false },
+        .Named(n, _) -> match shapes(n) {
+            .Dense(_) -> true,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> false,
+        },
         .Float or .Bool or .Str or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
@@ -179,7 +182,11 @@ fn is_list(k: Kind) -> bool {
 fn files(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
     match k {
         .Int or .Bool or .Str -> true,
-        .Named(n, _) -> match shapes(n) { .Dense(_) or .Tagged(_) -> true, .Record(_) or .Plain -> false },
+        .Named(n, _) -> match shapes(n) {
+            .Dense(_) or .Tagged(_) -> true,
+            .Over(shape) -> files(shape, shapes),
+            .Record(_) or .Plain -> false,
+        },
         .Float or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
@@ -226,6 +233,7 @@ fn carried_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) 
             .Tagged(_) -> true,
             .Record(fs) -> !seen.contains(n) &&
                 columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n]))),
+            .Over(shape) -> carried_under(shape, shapes, seen),
             .Dense(_) or .Plain -> false,
         },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
@@ -244,6 +252,7 @@ fn dense_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) ->
             .Dense(_) -> true,
             .Record(fs) -> !seen.contains(n) &&
                 columns(fs).any((f: Field) -> dense_under(f.kind, shapes, seen.concat([n]))),
+            .Over(shape) -> dense_under(shape, shapes, seen),
             .Tagged(_) or .Plain -> false,
         },
         .Opt(inner) -> dense_under(inner, shapes, seen),
@@ -260,7 +269,10 @@ fn decodable(k: Kind) -> bool {
         .Int or .Bool or .Str -> true,
         .Opt(inner) -> decodable(inner),
         .List(elem) -> decodable(elem),
-        .Named(n, _) -> match named_shape(n) { .Tagged(_) -> true, .Dense(_) or .Record(_) or .Plain -> false },
+        .Named(n, _) -> match named_shape(n) {
+            .Tagged(_) -> true,
+            .Dense(_) or .Record(_) or .Over(_) or .Plain -> false,
+        },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
@@ -273,6 +285,9 @@ export enum NamedShape {
     Tagged(names: List<string>)
     /// a record, each field a column of its own
     Record(fields: List<Field>)
+    /// a NAMED type — `type Code = string` — carried as its shape, read
+    /// through `.of`, its name kept at every seat
+    Over(shape: Kind)
     /// anything else
     Plain
 }
@@ -280,6 +295,7 @@ export enum NamedShape {
 /// A declared name's shape, read from its declaration.
 export fn named_shape(n: string) -> NamedShape {
     let ty? = type_named(n) else { return NamedShape.Plain }
+    if spelled_shape(ty.over) { return NamedShape.Over(ty.over) }
     if !ty.variants.is_empty() && ty.variants.all(it.payload.is_empty()) { return NamedShape.Tagged([v.name for v in ty.variants]) }
     let one? = ty.fields.first() else { return NamedShape.Plain }
     if ty.fields.length == 1 && one.kind is .Int && ty.annotations.any(it.name == "dense") { return NamedShape.Dense(one.name) }
@@ -287,10 +303,18 @@ export fn named_shape(n: string) -> NamedShape {
     NamedShape.Plain
 }
 
+/// Whether a kind names a shape — `Unspelled` names none.
+fn spelled_shape(k: Kind) -> bool {
+    match k { .Unspelled(_) -> false, rest -> true }
+}
+
 /// A tagged enum's variant names, none for any other kind.
 fn tags(k: Kind) -> List<string> {
     match k {
-        .Named(n, _) -> match named_shape(n) { .Tagged(names) -> names, .Dense(_) or .Record(_) or .Plain -> [] },
+        .Named(n, _) -> match named_shape(n) {
+            .Tagged(names) -> names,
+            .Dense(_) or .Record(_) or .Over(_) or .Plain -> [],
+        },
         rest -> [],
     }
 }
@@ -503,8 +527,9 @@ fn key_of(e: Code, k: Kind) -> Code {
         .Int -> quote { int_key(${e}) },
         .Bool -> quote { bool_key(${e}) },
         .Named(n, _) -> match named_shape(n) {
-            .Dense(f) -> quote { int_key(${e}.${f}) },
+            .Dense(f) -> quote { dense_key(${e}.${f}) },
             .Tagged(_) -> quote { text_key(${tag_of(e, k)}) },
+            .Over(shape) -> key_of(quote { ${e}.of }, shape),
             .Record(_) or .Plain -> quote { a_relation_lookup_kind_with_no_index_key() },
         },
         rest -> quote { a_relation_lookup_kind_with_no_index_key() },
@@ -572,6 +597,7 @@ fn shown(e: Code, k: Kind) -> Code {
         .Named(n, _) -> match named_shape(n) {
             .Dense(f) -> quote { int_text(${e}.${f}) },
             .Tagged(_) -> tag_of(e, k),
+            .Over(shape) -> shown(quote { ${e}.of }, shape),
             .Record(_) or .Plain -> quote { a_relation_lookup_kind_with_no_text() },
         },
         rest -> quote { a_relation_lookup_kind_with_no_text() },
@@ -625,7 +651,10 @@ fn part_of(e: Code, k: Kind) -> Code {
         .Str -> quote { key_part(${e}) },
         .Int -> quote { int_part(${e}) },
         .Bool -> quote { bool_part(${e}) },
-        .Named(_, _) -> quote { key_part(${tag_of(e, k)}) },
+        .Named(n, _) -> match named_shape(n) {
+            .Over(shape) -> part_of(quote { ${e}.of }, shape),
+            .Tagged(_) or .Dense(_) or .Record(_) or .Plain -> quote { key_part(${tag_of(e, k)}) },
+        },
         rest -> quote { a_relation_key_kind_with_no_text() },
     }
 }
@@ -698,6 +727,7 @@ fn hashed(acc: Code, e: Code, k: Kind) -> Code {
         .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem)}) },
         .Named(n, _) -> match named_shape(n) {
             .Record(fs) -> folded_record(acc, e, fs),
+            .Over(shape) -> hashed(acc, quote { ${e}.of }, shape),
             .Tagged(_) or .Dense(_) or .Plain -> quote { ${acc}.text(${tag_of(e, k)}) },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
@@ -723,6 +753,7 @@ fn hash_each(k: Kind) -> Code {
         .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem)}) },
         .Named(n, _) -> match named_shape(n) {
             .Record(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs)} },
+            .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape)} },
             .Tagged(_) or .Dense(_) or .Plain -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
@@ -790,7 +821,7 @@ fn minted_id(t: Type, n: Code) -> Code {
     match id.kind {
         .Named(ty, _) -> match named_shape(ty) {
             .Dense(f) -> quote { ${ty} { ..${[quote { W { ${f}: ${n} } }]} } },
-            .Tagged(_) or .Record(_) or .Plain -> n,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> n,
         },
         rest -> n,
     }
@@ -802,7 +833,7 @@ fn id_int(t: Type, e: Code) -> Code {
     match id.kind {
         .Named(ty, _) -> match named_shape(ty) {
             .Dense(f) -> quote { ${e}.${f} },
-            .Tagged(_) or .Record(_) or .Plain -> e,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> e,
         },
         rest -> e,
     }
@@ -850,6 +881,7 @@ fn written(w: Code, e: Code, k: Kind) -> Code {
                 let writers = column_writers(k, fs)
                 quote { written_all(${w}, ${e}, [${..writers}]) }
             },
+            .Over(shape) -> written(w, quote { ${e}.of }, shape),
             .Tagged(_) or .Dense(_) or .Plain -> quote { ${w}.text(${tag_of(e, k)}) },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
@@ -874,6 +906,7 @@ fn write_each(k: Kind) -> Code {
                 let writers = column_writers(k, fs)
                 quote { (w: Writer, v: ${k.spelled()}) -> written_all(w, v, [${..writers}]) }
             },
+            .Over(shape) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.of }, shape)} },
             .Tagged(_) or .Dense(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> w.text(${tag_of(quote { v }, k)}) },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
@@ -904,8 +937,8 @@ fn kind_not_carried(t: Type, f: Field) -> Diagnostic {
     refuse_as_at(
         "kind_not_carried",
         f.at ?? t.at,
-        "a relation's fields carry a stable encoding — int, bool, string, and lists and nullables of them — and `${t.name}.${f.name}` is `${f.ty}`",
-        "store what identifies the value as one of those kinds",
+        "a relation's fields carry a stable encoding — an int, a bool, a string, a tagged enum, a named type over one of those, a nested record of them, or a list or nullable of any — and `${t.name}.${f.name}` is `${f.ty}`",
+        "store what identifies the value as one of those kinds, or mark the column `@local`",
     )
 }
 
