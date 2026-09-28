@@ -329,6 +329,34 @@ case "$vh" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over a: $(printf '%s' "$vh" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# A CALLER'S CONST FOLLOWS ITS CALLEE'S BODY EVEN WHEN THE CALLER'S OWN FILE IS
+# HELD, NEVER THE ENTRY: `hcl/src/lib.av` declares `const M` and is a library
+# file, so it is never forced fresh by the entry law — `a`'s own held consts
+# above (TWICE, FAR) all live in the entry and never exercise this. Editing
+# only `seed()`'s body, in a sibling file `lib.av` never touches, must still
+# move `M`: `avra run` holds nothing, so a native/eval split here means a
+# stale held object, not a mistyped fixture (avra-8sb5.57.85).
+mkdir -p $R/hcl/src $R/hc/src
+printf '[package]\nname = "@rt/hcl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-hcl"\npath = "src/lib.av"\n' > $R/hcl/avra.toml
+printf 'export fn seed() -> int { 41 }\n' > $R/hcl/src/seed.av
+printf 'export const M: int = seed()\n' > $R/hcl/src/lib.av
+printf '[package]\nname = "rt-hc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/hcl" = { path = "../hcl" }\n' > $R/hc/avra.toml
+printf 'use @rt.hcl.{M}\nprintln("hc ${M}")\n' > $R/hc/src/main.av
+S "cold hc: a const in a non-entry file settles from a callee" hc
+got=$($R/hc/src/main 2>&1)
+[ "$got" = "hc 41" ] || { fails=$((fails+1)); echo "FAIL  cold hc printed '$got', wanted 'hc 41'"; }
+ed $R/hcl/src/seed.av "{ 41 }" "{ 42 }"
+S "hc: the callee's body moves, the held caller's const must follow" hc
+got=$($R/hc/src/main 2>&1)
+[ "$got" = "hc 42" ] || { fails=$((fails+1)); echo "FAIL  warm hc printed '$got', wanted 'hc 42' — a held const did not follow its callee's body"; }
+vh_hc=$(./avra check $R/hc --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_hc" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over hc compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over hc -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
+esac
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
