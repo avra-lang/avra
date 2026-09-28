@@ -16,6 +16,7 @@ impl TypeCx {
         let fp? = self.view.store.fn_parts(f) else { return }
         let m = self.decl_of(f)
         let contract: DeclId = self.view.decls.decl(m).parent!
+        if self.repeated_member(f, contract) { self.member_twice(f, contract, fp.name) }
         // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
         // scope for it, so a signature naming `Self` does not resolve.
         if self.view.store.is_static(f) {
@@ -367,10 +368,33 @@ impl TypeCx {
 
     // ── The declare voices — each refusal worded once, at its name ──
 
+    /// Whether an earlier member of the trait already took `f`'s name.
+    fn repeated_member(f: StmtId, contract: DeclId) -> bool {
+        let name = self.fn_named(f)
+        self
+            .view
+            .store
+            .member_fns(self.view.decls.decl(contract).stmt)
+            .any((s) -> s.index < f.index && self.fn_named(s) == name)
+    }
+
     /// A declared fn's name, or the empty word — the totality laws
     /// compare names, and a nameless decl matches nothing.
     fn fn_named(f: StmtId) -> string {
         self.view.store.fn_parts(f)?.name ?? ""
+    }
+
+    fn member_twice(f: StmtId, contract: DeclId, name: string) {
+        self
+            .emit(
+                refusal(
+                    "type.trait_member",
+                    self.stmt_loc(f),
+                    "`${self.view.decls.decl(contract).name}.${name}` is declared twice",
+                    "declared again here",
+                    "a trait names each member once — drop or rename one",
+                ),
+            )
     }
 
     fn no_such_target(s: StmtId, target: string) {
