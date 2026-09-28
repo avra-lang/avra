@@ -135,7 +135,7 @@ impl TypeCx {
     /// about records.
     mut fn no_variants_here(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
         if self.view.decls.is_trait(decl) { return self.no_trait_static(e, decl, tname, name) }
-        if self.view.decls.grammar_of(decl) == null { return self.not_an_enum(e, tname) }
+        if self.view.decls.grammar_of(decl) == null { return self.no_static_fn(e, tname, name, self.static_names(decl)) }
         self.no_such_door(e, tname, name)
     }
 
@@ -180,15 +180,23 @@ impl TypeCx {
             )
     }
 
-    mut fn not_an_enum(e: ExprId, tname: string) -> TypeId {
+    /// The static fns a type declares, by name.
+    fn static_names(decl: DeclId) -> List<string> {
+        [self.view.decls.decl(m).name for m in self.view.decls.declared_methods(decl) if self.view.decls.is_static_of(m)]
+    }
+
+    /// A record's name answers only its own static fns: the ones it
+    /// declares are the help, and one that declares none is told how a
+    /// record is built.
+    mut fn no_static_fn(e: ExprId, tname: string, name: string, statics: List<string>) -> TypeId {
         self
             .spoken(
                 refusal(
                     "type.unknown_prop",
                     self.loc_of(e),
-                    "`${tname}` is a record, not an enum",
-                    "built here",
-                    build_a_record(tname),
+                    "`${tname}` has no static fn `${name}`",
+                    "called here",
+                    if statics.is_empty() { build_a_record(tname) } else { "its static fns are ${["`${s}`" for s in statics].join(", ")}" },
                 ),
             )
     }
