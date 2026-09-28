@@ -518,6 +518,8 @@ STUB
     cat > "$d/Makefile" <<'MK'
 build/libavra_runtime.a:
 	@touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
 idioms:
 	@echo idioms-ok
 fmt-lossless:
@@ -642,6 +644,33 @@ test_heavy_status() {
     fi
 }
 
+test_ff_refused_not_moved() {
+    d="$(git_repo ff-refused)"
+    printf 'a\n' > "$d/f.txt"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    wt="$scratch/ff-refused-wt"
+    git -C "$d" worktree add -q -b adds "$wt" main > /dev/null 2>&1
+    printf 'new\n' > "$wt/added.txt"
+    commit_all "$wt" "adds a file"
+    printf 'squatter\n' > "$d/added.txt"
+    log="$scratch/ff-refused.log"
+    ( main_wt="$d" branch=adds sh "$land" --call try_ff ) > "$log" 2>&1
+    if ( main_wt="$d" sh "$land" --call main_moved_since "$base_sha" ); then
+        bad "ff: a refused fast-forward with main standing still reads as main moved"
+    else
+        ok "ff: a refused fast-forward with main standing still is not main moving"
+    fi
+    st=0
+    ( main_wt="$d" sh "$land" --call ff_refused "$log" ) > "$scratch/ff-refused.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ] && grep -q "untracked working tree files would be overwritten" "$scratch/ff-refused.out"; then
+        ok "ff: a refusal stops with git's own words"
+    else
+        bad "ff: a refusal stops with git's own words (got $st)"
+    fi
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
@@ -655,6 +684,7 @@ test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
 test_heavy_status
+test_ff_refused_not_moved
 
 echo
 echo "land_test: $total checks, $failed failed"

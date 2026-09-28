@@ -343,6 +343,9 @@ build_generation() {
     cp packages/cli/src/main build/avra
     codesign -f -s - build/avra
     rm -f packages/cli/src/main packages/cli/src/main.av.ll
+    # A package's C library is linked by the suites that bind it; `-o avra`
+    # keeps make from rebuilding the compiler under it.
+    heavy "build-$n-libs" make -o avra libs
 }
 
 # ── AFFECTED-PACKAGE TESTS ─────────────────────────────────────────────
@@ -436,6 +439,17 @@ seed_policy() {
 }
 
 try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
+
+# Whether main's ref moved off `base`. A fast-forward that fails while
+# the ref stands still failed for its own reason, and git's words say it.
+main_moved_since() { [ "$(git -C "$main_wt" rev-parse refs/heads/main)" != "$1" ]; }
+
+# Stops the landing with git's own refusal when main did not move.
+ff_refused() {
+    echo "land: the fast-forward was refused and main did not move — git says:" >&2
+    cat "$1" >&2
+    exit 1
+}
 
 # ══ BATCH MODE: SEVERAL BRANCHES, ONE TREE, ONE BUILD, ONE CHECK ═════
 # `land.sh a b c` merges main and every named branch into ONE scratch
@@ -615,6 +629,7 @@ main_batch() {
     if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD) — $good"
     else
+        main_moved_since "$old_main_sha" || ff_refused "$ff_log"
         echo "land: main moved during the batch — land it again once it settles" >&2
         tail -30 "$ff_log" >&2
         exit 1
@@ -670,6 +685,7 @@ main() {
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
+    main_moved_since "$old_main_sha" || ff_refused "$ff_log"
 
     echo "land: main moved during the checks — re-merging and re-running once" >&2
     tail -10 "$ff_log" >&2
@@ -681,6 +697,7 @@ main() {
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
+    main_moved_since "$old_main_sha" || ff_refused "$ff_retry_log"
 
     echo "land: main moved again after the retry — giving up. Land manually once it settles." >&2
     tail -30 "$ff_retry_log" >&2
