@@ -14,7 +14,7 @@
 //! workspace (`anew`, never a copy of the warm one) with nothing held, so
 //! the comparison never reads a held value back as its own fresh side.
 use core.{DeclId, TypeId, SeatMark, Span, flatten, some_list}
-use features.{DeclFacts, DeclSig, Decl, AnnotationFact, kind_word}
+use features.{DeclFacts, DeclSig, Decl, AnnotationFact, kind_word, SettleRoot, Settled, Unsettled}
 
 /// One held field that decoded to something a fresh reading would not.
 export type HeldMismatch = { file: string, decl: string, field: string, held: string, fresh: string }
@@ -157,6 +157,24 @@ fn const_type_mismatches(path: string, warm_ws: Workspace, wd: Decl, fresh_ws: W
     some_list(
         maybe_mismatch(path, wd.name, "const_type", warm_ws.type_str(wt), fresh_ws.type_str(ft)),
     )
+        .concat(const_value_mismatches(path, warm_ws, wd, fresh_ws, fd))
+}
+
+/// A HELD CONST'S VALUE IS ITS OWN CLAIM, NOT ITS TYPE'S. `const_type_mismatches`
+/// answers whether the two sides agree on `int`; it says nothing about whether the
+/// held `41` and a fresh `42` are the same `int` — a callee body a held const's
+/// initializer reached can move without moving the const's TYPE at all. Compared
+/// by fingerprint, the settled value's own identity (worklist.av's `Settled`).
+fn const_value_mismatches(path: string, warm_ws: Workspace, wd: Decl, fresh_ws: Workspace, fd: Decl) -> List<
+    HeldMismatch,
+> {
+    let wv = warm_ws.settled(wd.file, SettleRoot.Const(wd.stmt), [])
+    let fv = fresh_ws.settled(fd.file, SettleRoot.Const(fd.stmt), [])
+    some_list(maybe_mismatch(path, wd.name, "const_value", settled_str(wv), settled_str(fv)))
+}
+
+fn settled_str(r: Result<Settled, Unsettled>) -> string {
+    match r { .Ok(v) -> "${v.fingerprint}", .Err(_) -> "<unsettled>" }
 }
 
 /// SEAT `j`'s FOUR PROMISES. `consumed` (R3) is never merged into
