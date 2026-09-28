@@ -41,16 +41,26 @@ fn dyn_dispatch(
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
     if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
     let s = seated(cx, subject, args)
-    let data = boxed_value(cx, subject, s.recv)
+    let data = boxed_value(cx, subject, s.recv, dyn_writes(cx, tdecl, name))
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
     cx.call_ptr_at(e, fp, [data].concat(s.args))
 }
 
+/// Whether the trait member named writes its receiver — a contract's
+/// declared `mut`, the same word `checks.av`'s `contract_judged` reads.
+fn dyn_writes(cx: LowerCx, tdecl: DeclId, name: string) -> bool {
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return false }
+    cx.view.decls.declares_writing(member)
+}
+
 /// A contract box's value, the method's `self`. A copied receiver's box
 /// was opened unique, and its value is opened with it — the box alone
-/// would still share the value it wraps.
-fn boxed_value(mut cx: LowerCx, subject: ExprId, box: Reg) -> Reg {
-    if !cx.facts.wants_alias_copy(subject) { return cx.slot_read(box, 0, cx.type_at(subject)) }
+/// would still share the value it wraps. A WRITING member opens the
+/// value unique on its own account too, and writes the open back into
+/// the box's own slot: nothing else names this value, so a later call
+/// through the same box must read what this one just opened.
+fn boxed_value(mut cx: LowerCx, subject: ExprId, box: Reg, writes: bool) -> Reg {
+    if !cx.facts.wants_alias_copy(subject) && !writes { return cx.slot_read(box, 0, cx.type_at(subject)) }
     cx.owned_slot_unique(cx.shape_at(subject), box, cx.const_int(0))
 }
 

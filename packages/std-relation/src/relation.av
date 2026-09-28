@@ -31,6 +31,8 @@ use @std.meta.{
     name,
     refuse_as_at,
 }
+use rows.{Rows, IndexKey, text_key, int_key, bool_key}
+use db.{Db, Stores, stores}
 use stable.{
     stable_hasher,
     text_hash,
@@ -176,10 +178,12 @@ const generated_members: List<string> = [
     "shape_hash",
     "stable_hash",
     "encoded",
-    "store",
+    "rows_in",
     "insert",
     "index_keys",
     "by_key",
+    "get",
+    "all",
 ]
 
 // ── The generated members ──
@@ -193,9 +197,24 @@ fn shape_ok(t: Type) -> bool {
     relation_problems(t).is_empty()
 }
 
+/// Every member the derive writes onto a sound relation.
+fn members(t: Type) -> List<Decls> {
+    [
+        encoded_member(t),
+        store_member(t),
+        index_keys_member(t),
+        insert_member(t),
+        get_member(t),
+        all_member(t),
+    ]
+        .concat(key_lookups(t))
+        .concat(field_lookups(t))
+}
+
 fn generated(t: Type) -> Decls {
     if !shape_ok(t) { return quote { impl ${t} { } } }
     quote {
+        ${stores_decl(t)}
         impl ${t} {
             static fn relation_name() -> string { ${literal(stable_name(t))} }
 
@@ -206,22 +225,32 @@ fn generated(t: Type) -> Decls {
             /// same values never share a hash.
             fn stable_hash() -> int { ${hash_chain(t)}.finish() }
 
-            ${encoded_member(t)}
+            ${members(t)}
         }
     }
 }
 
-/// The store's type, spelled whole — a hole stands for a type, never
-/// inside a type's argument list.
-fn store_type(t: Type) -> string { "Rows<${t.name}>" }
+/// The generated store's name: `decl_stores` for `Decl`.
+fn stores_name(t: Type) -> string { "${snake(t.name)}_stores" }
 
-fn opt_type(t: Type) -> string { "${t.name}?" }
+/// The relation's rows under every Db.
+fn stores_decl(t: Type) -> Decls {
+    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${lookups(t).length}) } }
+}
 
-fn list_type(t: Type) -> string { "List<${t.name}>" }
-
-/// The store for this relation's rows: one index per lookup field.
+/// `rows_in`: this relation's rows under a Db, opened on the first reach.
 fn store_member(t: Type) -> Decls {
-    quote { static fn store() -> ${store_type(t)} { rows<${t}>(${lookups(t).length}) } }
+    quote { static fn rows_in(db: Db) -> Rows<${t}> { ${stores_name(t)}().reach(db) } }
+}
+
+/// `get`: the row an id names under a Db.
+fn get_member(t: Type) -> Decls {
+    quote { static fn get(db: Db, id: int) -> ${t}? { ${name(t.name)}.rows_in(db).row(id) } }
+}
+
+/// `all`: every live row under a Db, in id order.
+fn all_member(t: Type) -> Decls {
+    quote { static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all() } }
 }
 
 /// The row's key in each index, in the lookups' own order.
@@ -256,7 +285,8 @@ fn insert_member(t: Type) -> Decls {
     let place? = key_place(t) else {
         if ided {
             return quote {
-                static fn insert(rs: ${store_type(t)}, r: ${t}) -> ${t} {
+                static fn insert(db: Db, r: ${t}) -> ${t} {
+                    let rs = ${name(t.name)}.rows_in(db)
                     let stored = r with { id: rs.next_id() }
                     rs.put(stored.id, stored, stored.stable_hash(), stored.index_keys())
                     stored
@@ -264,7 +294,8 @@ fn insert_member(t: Type) -> Decls {
             }
         }
         return quote {
-            static fn insert(rs: ${store_type(t)}, r: ${t}) -> ${t} {
+            static fn insert(db: Db, r: ${t}) -> ${t} {
+                let rs = ${name(t.name)}.rows_in(db)
                 rs.put(rs.next_id(), r, r.stable_hash(), r.index_keys())
                 r
             }
@@ -272,7 +303,8 @@ fn insert_member(t: Type) -> Decls {
     }
     if ided {
         return quote {
-            static fn insert(rs: ${store_type(t)}, r: ${t}) -> ${t} {
+            static fn insert(db: Db, r: ${t}) -> ${t} {
+                let rs = ${name(t.name)}.rows_in(db)
                 let keys = r.index_keys()
                 let stored = r with { id: rs.first_id(rs.bucket_of(${place}, keys[${place}])) ?? rs.next_id() }
                 rs.put(stored.id, stored, stored.stable_hash(), keys)
@@ -281,7 +313,8 @@ fn insert_member(t: Type) -> Decls {
         }
     }
     quote {
-        static fn insert(rs: ${store_type(t)}, r: ${t}) -> ${t} {
+        static fn insert(db: Db, r: ${t}) -> ${t} {
+            let rs = ${name(t.name)}.rows_in(db)
             let keys = r.index_keys()
             rs.put(rs.first_id(rs.bucket_of(${place}, keys[${place}])) ?? rs.next_id(), r, r.stable_hash(), keys)
             r
@@ -289,13 +322,18 @@ fn insert_member(t: Type) -> Decls {
     }
 }
 
-/// A field's lookups over its one index `i`: `by_key` for its `@key`,
-/// and `by_<field>` for its `@unique` or `@index`.
-fn lookup_members(t: Type, f: Field, i: int) -> List<Decls> {
-    let keyed = if marked(f, "key") { [lookup_member(t, f, i, "by_key", true)] } else { [] }
-    let named = if lookup_marks(f).any(it != "key") { [lookup_member(t, f, i, "by_${f.name}", marked(f, "unique"))] } else { [] }
-    keyed.concat(named)
+/// `by_key`, over the `@key` field's index.
+fn key_lookups(t: Type) -> List<Decls> {
+    [lookup_member(t, f, i, "by_key", true) for i, f in lookups(t) if marked(f, "key")]
 }
+
+/// `by_<field>`, over each `@unique` or `@index` field's index.
+fn field_lookups(t: Type) -> List<Decls> {
+    [lookup_member(t, f, i, "by_${f.name}", marked(f, "unique")) for i, f in lookups(t) if names_a_lookup(f)]
+}
+
+/// Whether a field is looked up by its own name — `@unique` or `@index`.
+fn names_a_lookup(f: Field) -> bool { marked(f, "unique") || marked(f, "index") }
 
 /// One lookup named `n`: `one` answers the row filed under the value,
 /// otherwise every row. Each member is whole in one template, so its
@@ -303,19 +341,49 @@ fn lookup_members(t: Type, f: Field, i: int) -> List<Decls> {
 fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
     match f.kind {
         .Str -> if one {
-            quote { static fn ${n}(rs: ${store_type(t)}, v: string) -> ${opt_type(t)} { rs.row(rs.first_id(rs.bucket_of(${i}, text_key(v))) ?? -1) } }
+            quote {
+                static fn ${n}(db: Db, v: string) -> ${t}? {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.row(rs.first_id(rs.bucket_of(${i}, text_key(v))) ?? -1)
+                }
+            }
         } else {
-            quote { static fn ${n}(rs: ${store_type(t)}, v: string) -> ${list_type(t)} { rs.members(rs.bucket_of(${i}, text_key(v))) } }
+            quote {
+                static fn ${n}(db: Db, v: string) -> List<${t}> {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.members(rs.bucket_of(${i}, text_key(v)))
+                }
+            }
         },
         .Int -> if one {
-            quote { static fn ${n}(rs: ${store_type(t)}, v: int) -> ${opt_type(t)} { rs.row(rs.first_id(rs.bucket_of(${i}, int_key(v))) ?? -1) } }
+            quote {
+                static fn ${n}(db: Db, v: int) -> ${t}? {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.row(rs.first_id(rs.bucket_of(${i}, int_key(v))) ?? -1)
+                }
+            }
         } else {
-            quote { static fn ${n}(rs: ${store_type(t)}, v: int) -> ${list_type(t)} { rs.members(rs.bucket_of(${i}, int_key(v))) } }
+            quote {
+                static fn ${n}(db: Db, v: int) -> List<${t}> {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.members(rs.bucket_of(${i}, int_key(v)))
+                }
+            }
         },
         .Bool -> if one {
-            quote { static fn ${n}(rs: ${store_type(t)}, v: bool) -> ${opt_type(t)} { rs.row(rs.first_id(rs.bucket_of(${i}, bool_key(v))) ?? -1) } }
+            quote {
+                static fn ${n}(db: Db, v: bool) -> ${t}? {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.row(rs.first_id(rs.bucket_of(${i}, bool_key(v))) ?? -1)
+                }
+            }
         } else {
-            quote { static fn ${n}(rs: ${store_type(t)}, v: bool) -> ${list_type(t)} { rs.members(rs.bucket_of(${i}, bool_key(v))) } }
+            quote {
+                static fn ${n}(db: Db, v: bool) -> List<${t}> {
+                    let rs = ${name(t.name)}.rows_in(db)
+                    rs.members(rs.bucket_of(${i}, bool_key(v)))
+                }
+            }
         },
         rest -> quote { impl ${t} { } },
     }
@@ -491,4 +559,20 @@ fn id_not_int(t: Type, f: Field) -> Diagnostic {
         "the store mints `id` as an int, and `${t.name}.id` is `${f.ty}`",
         "declare `id: int`, or drop the field",
     )
+}
+
+const upper_letters: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+const lower_letters: string = "abcdefghijklmnopqrstuvwxyz"
+
+/// A type name's snake_case: `ErrorSite` is `error_site`.
+fn snake(name: string) -> string {
+    [snake_letter(name.substring(i, i + 1), i) for i in 0..name.length].join("")
+}
+
+fn snake_letter(c: string, i: int) -> string {
+    let at = upper_letters.index_of(c)
+    if at < 0 { return c }
+    let low = lower_letters.substring(at, at + 1)
+    if i == 0 { low } else { "_${low}" }
 }

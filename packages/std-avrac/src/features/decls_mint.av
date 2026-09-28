@@ -116,8 +116,18 @@ impl Decls {
                 out.push(d)
                 made.push(d)
                 self.orphan(d)
-                for m in store.member_fns(s) {
-                    let md = self.mint_method(key, f, store, m, name, d, declared_body(store, m))
+                let members = store.member_fns(s)
+                for m in members {
+                    let md = self
+                        .mint_method(
+                            member_key(key, store, m, members),
+                            f,
+                            store,
+                            m,
+                            name,
+                            d,
+                            declared_body(store, m),
+                        )
                     by_stmt.set(m.index, md)
                     made.push(md)
                 }
@@ -172,17 +182,15 @@ impl Decls {
                 made.push(block_decl)
                 self.orphan(block_decl)
                 for m in block.fns {
+                    let mkey = member_key(key, store, m, block.fns)
                     let md = self
-                        .mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
+                        .mint_method(mkey, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
                     by_stmt.set(m.index, md)
                     made.push(md)
                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
                     let mname = self.decl(md).name
                     made = made
-                        .concat(
-                            self
-                                .mint_defaults("${key}#${mname}", f, m, seats, "${block.target}.${mname}", md),
-                        )
+                        .concat(self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md))
                 }
             }
         }
@@ -408,7 +416,7 @@ impl Decls {
 
     /// A trait's method has no body to lower; an impl's does.
     fn mint_method(
-        owner_key: string,
+        key: string,
         f: FileId,
         store: NodeStore,
         m: StmtId,
@@ -417,8 +425,7 @@ impl Decls {
         root: ExprId?,
     ) -> DeclId {
         let name = store.fn_parts(m)?.name ?? ""
-        self
-            .mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner, parent, false, root)
+        self.mint(key, f, m, name, DeclKind.Method, false, owner, parent, false, root)
     }
 
     /// Each default a record's fields or a fn's seats carry: a body
@@ -497,6 +504,7 @@ impl Decls {
             self.declared_writes.push(false)
             let no_ws: List<bool> = []
             self.written_seats.push(Cell.new(no_ws))
+            self.consumed.push(null)
             let none: List<DeclId> = []
             self.children.push(Cell.new(none))
             let no_ms: List<DeclId> = []
@@ -651,7 +659,7 @@ impl Decls {
         for m in fns {
             let mb: ExprId? = declared_body(store, m)
             let hi: int = if mb == null { cursor } else { mb!.index + 1 }
-            let md = self.mint_method(key, f, store, m, name, d, mb)
+            let md = self.mint_method(member_key(key, store, m, fns), f, store, m, name, d, mb)
             self.decls.set_at(md.index, self.decl(md) with { lo: cursor, hi: hi })
             members.push(md)
             cursor = hi
@@ -698,9 +706,14 @@ impl Decls {
         for m in block.fns {
             let mb: ExprId? = store.fn_parts(m)?.body
             let hi: int = if mb == null { cursor } else { mb!.index + 1 }
-            let md = self.mint_method(key, f, store, m, block.target, block_decl, mb)
+            let mkey = member_key(key, store, m, block.fns)
+            let md = self.mint_method(mkey, f, store, m, block.target, block_decl, mb)
             self.decls.set_at(md.index, self.decl(md) with { lo: cursor, hi: hi })
-            methods.push(md)
+            let mname = self.decl(md).name
+            let seats: List<Param> = store.fn_parts(m)?.params ?? []
+            let defaults = self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md)
+            self.range_defaults(defaults, cursor)
+            methods = methods.concat([md]).concat(defaults)
             cursor = hi
         }
         self.decls.set_at(block_decl.index, self.decl(block_decl) with { lo: lo, hi: cursor })
@@ -778,4 +791,13 @@ fn names_its_stmt(kind: DeclKind) -> bool {
         .Default -> false,
         .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> true,
     }
+}
+
+/// A member's key: its name under its owner, or — when an earlier
+/// sibling took that name — its statement too, so the repeat stays a
+/// declaration of its own for the method-table law to refuse.
+fn member_key(owner_key: string, store: NodeStore, m: StmtId, siblings: List<StmtId>) -> string {
+    let name = store.fn_parts(m)?.name ?? ""
+    let key = "${owner_key}#${name}"
+    if siblings.any((s) -> s.index < m.index && store.fn_parts(s)?.name == name) { "${key}#${m.index}" } else { key }
 }

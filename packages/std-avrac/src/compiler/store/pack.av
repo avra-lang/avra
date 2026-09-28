@@ -373,6 +373,21 @@ impl Pack {
         entry
     }
 
+    /// Every name this pack has ever interned, in the order it first
+    /// appeared — an EDGE-only name (referenced by another entry, never
+    /// `put` itself) has no `Entry` of its own, so `get` on one answers
+    /// null; that is how a caller tells an external dependency apart
+    /// from one this pack stores (`avra explain`, P7).
+    fn names() -> List<string> { self.by_id.get() }
+
+    /// The bytes this pack occupies on disk right now.
+    fn disk_bytes() -> int { self.raw.get().length }
+
+    /// What this pack would occupy freshly compacted — every live
+    /// name's newest entry, nothing else. The gap to `disk_bytes` is
+    /// garbage a compaction would reclaim.
+    fn live_bytes() -> int { self.fresh_bytes().length }
+
     /// Everything staged since the last commit, durable in one write —
     /// a rewrite-and-rename, never a partial file. Compacts past it
     /// when about half the pack is dead weight.

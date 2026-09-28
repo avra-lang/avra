@@ -13,6 +13,8 @@ use core.{
     touch,
     spelled,
     module_path,
+    fp_str,
+    joined,
 }
 use @std.path.{dir_of}
 use features.{
@@ -58,23 +60,54 @@ fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned 
     Interned.Found(known)
 }
 
+/// A file's clash diagnostics by what each says — the value a `Family.MethodDiags`
+/// cell settles on, and the hash a witness edge holds.
+fn diags_fingerprint(out: List<Diag>) -> int {
+    fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
+}
+
 impl Workspace {
-    /// The method-table clashes spoken in a file. Build the index once:
-    /// scanning every type for every file made this a whole-program
-    /// pass repeated for each file.
+    /// The method-table clashes spoken in a file, asked as `Family.MethodDiags`
+    /// so the file's `Analysis` depends on every type's method table
+    /// whichever file ran the scan first.
     fn method_diagnostics(f: FileId) -> List<Diag> {
         // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
         // analysis must not force ANOTHER file's resolve (a re-entrant
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(ordinal(Family.Resolved)) { return [] }
+        let k = key(Family.MethodDiags, f.index)
+        if !(self.db.ask(k) is .Compute) { return self.method_diag_rows.at(f.index) ?? [] }
+        self.db.begin(k)
+        self.touch_method_tables()
+        let out = self.method_clash_index(f).by_file[f.index]
+        self.method_diag_rows.keep(f.index, out)
+        self.db.settle(k, diags_fingerprint(out))
+        out
+    }
+
+    /// Every type's method table asked, so the open cell depends on all of
+    /// them: the scan below asks them only the first time in a revision.
+    fn touch_method_tables() {
+        mut at = 0
+        while at < self.decls.decls.get().length {
+            let x = self.decls.decls.get()[at]
+            at = at + 1
+            if is_type_decl(x) { touch(self.methods(x.id)) }
+        }
+    }
+
+    /// The whole type table's clashes by file. Built once a revision:
+    /// scanning every type for every file made this a whole-program
+    /// pass repeated for each file.
+    fn method_clash_index(f: FileId) -> MethodDiagIndex {
         let previous: MethodDiagIndex? = self.method_diags.get().first()
         if previous != null {
             let held = previous!
             if held.revision == self.db.revision() &&
                 held.decl_count == self.decls.decls.get().length &&
                 f.index < held.by_file.length {
-                return held.by_file[f.index]
+                return held
             }
         }
         mut by_file: List<List<Diag>> = []
@@ -102,7 +135,7 @@ impl Workspace {
             by_file: by_file,
         }
         if self.method_diags.get().is_empty() { self.method_diags.push(current) } else { self.method_diags.set_at(0, current) }
-        by_file[f.index]
+        current
     }
 
     /// One file's analysis: the snapshot every facade reads.
@@ -174,17 +207,39 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit {
-        match self.relation(Family.Lowered).start_recursive(id) {
+    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
+
+    /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
+    /// never `Lowered`'s. The two share `id`'s space (interned by
+    /// symbol name, `spec_id`), so a symbol a lift also reaches would
+    /// collide on one cache row and let whichever context asked
+    /// first decide the other's answer. Separating the family keeps
+    /// a comptime run's units — every seat borrowed, see
+    /// `comptime_active` — from ever standing in for the real
+    /// program's.
+    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id) }
+
+    /// The shared memo shape `lowered` and `lift_lowered` differ only
+    /// by family: start recursive, reuse a settled answer, or lower
+    /// the ask and settle it.
+    fn lowered_in(fam: Family, id: int) -> Unit {
+        match self.relation(fam).start_recursive(id) {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
         lowered_of(
             self
-                .relation(Family.Lowered)
+                .relation(fam)
                 .finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()),
         )
     }
+
+    /// Whether a compile-time run — a lift, an argument crossing, a
+    /// const's settlement — is currently lowering bodies. Its units
+    /// infer no consuming seat (every argument stays borrowed) and
+    /// must never ask the references relation: a file that run reads
+    /// may still be typing.
+    fn comptime_active() -> bool { !self.hold.settling.get().is_empty() }
 
     /// The store, attached by a build; null outside one.
     fn attach_store(s: Store) { self.store.set(s) }
@@ -236,10 +291,11 @@ impl Workspace {
     /// An isolated compile-time run needs the body of every function it
     /// reaches, including one whose machine-code object is held. Parse and
     /// lower that source on demand; ordinary program lowering still reuses
-    /// the held object through `lowered` above.
+    /// the held object through `lowered` above. Every unit this asks for
+    /// is the RUN's own, remembered under `lift_lowered`, never `lowered`.
     fn lowered_for_eval(id: int) -> Unit {
         let w = self.asks.get()[id]
-        if w.decl == null || !self.is_held(w.file) { return self.lowered(id) }
+        if w.decl == null || !self.is_held(w.file) { return self.lift_lowered(id) }
         self.lower_requested(w)
     }
 

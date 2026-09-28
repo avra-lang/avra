@@ -19,12 +19,20 @@ impl LowerCx {
         let born = when {
             self.facts.wants_alias_copy(e) -> self.unique_box(e)
             self.facts.wants_thaw(e) -> self.thawed_box(e)
+            self.facts.wants_plain_thaw(e) -> self.plain_thawed(e)
             _ -> self.spelled_static(e) ?? semantics_of(self.dispatch, self.view.store.expr(e))
                 .lower(self, e)
         }
         let r = self.widened(e, self.narrowed(e, born))
         self.body.set_reg(e, r)
         r
+    }
+
+    /// A writing method's receiver with no cell behind it: its value,
+    /// thawed once here, before the call.
+    mut fn plain_thawed(e: ExprId) -> Reg {
+        let born = semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
+        self.box_thawed(self.shape_at(e), born)
     }
 
     /// A read a presence test PROVED — typing recorded the nullable
@@ -167,8 +175,12 @@ impl LowerCx {
     /// owns slots and the running last register.
     mut fn lower_stmts(stmts: List<StmtId>) {
         for s in stmts {
-            let r: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
+            let got: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
                 .lower_stmt(self, s)
+            let boxes = got != null &&
+                self.body.slot_of(s) == null &&
+                self.facts.wants_boxed_local(s)
+            let r: Reg? = if boxes { self.boxed_seed(s, got!) } else { got }
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
         }

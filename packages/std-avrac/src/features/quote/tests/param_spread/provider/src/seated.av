@@ -1,0 +1,33 @@
+use @std.meta.{Type, Field, Directive, Decls}
+
+fn seat_of(f: Field) -> Decls { quote { fn _(${f.name}: ${f.ty}) {} } }
+
+fn five_of(f: Field) -> Decls { quote { fn _(${f.name}: ${f.ty} = 5) {} } }
+
+/// Methods whose seats are the type's own fields, spread: alone, among
+/// written seats, under a hole-named fn, empty, defaulted, and on self.
+export trait Seated {
+    static fn derive(t: Type) -> List<Directive> {
+        let seats = [seat_of(f) for f in t.fields]
+        let fives = [five_of(f) for f in t.fields]
+        let none: List<Decls> = []
+        let n = "prod"
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        static fn sum(..${seats}) -> int { a + b }
+                        static fn around(first: int, ..${seats}, last: int) -> int { first + a + b + last }
+                        static fn ${n}(..${seats},) -> int { a * b }
+                        static fn zero(..${none}) -> int { 0 }
+                        static fn dflt(..${fives}) -> int { a + b }
+                        fn scaled(..${seats}) -> int { self.a * a }
+                    }
+                },
+            },
+        ]
+    }
+}

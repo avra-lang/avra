@@ -660,6 +660,39 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       Not ratcheted: no grep tells a one-slot list from a list whose
       first element is written.
 
+- style.encoding_empty_field_dropped (unratcheted) A DELIMITED ENCODING
+      DECODES ITS EMPTY LAST FIELD. `split` drops a trailing empty
+      segment, so a name joined by a separator and ending in an empty
+      field reads back one field short: `stable_line("module", [""])` is
+      "module\n" and splits to one piece. The root module's name is
+      empty, so every witness edge naming it answered unresolved, in
+      both processes, and no root-module file could ever reuse an
+      answer. A refusal case cannot see this — it passes when
+      everything is refused — and only a positive control (an unchanged
+      source is reused) failed. `stable_fields` restores the field.
+      THE SMELL: a decoder that splits on the separator its encoder
+      joined with and takes the field count from the result. THE IDIOM:
+      write the empty case first — an empty last field, an empty first
+      one, an empty middle one — as a round trip beside the codec, and
+      ask of every such decoder whether its encoder can emit an empty
+      tail. Not ratcheted: no grep tells a decoder from any other split.
+
+- compiler.publish_by_rename (unratcheted) A PATH OTHER PROCESSES READ IS
+      PUBLISHED, NEVER WRITTEN. A linker unlinks and re-creates its output,
+      and a placed row is written at mode 0644, so writing a shared path in
+      place shows a reader — a peer building the same package, the suite's
+      own re-exec — the file missing, half-written or not yet executable:
+      a package's suite binary was seen non-executable in 5 of 6 warm
+      rounds, the window between the place and the mode set after it.
+      `staged_beside` names a path no other process names, the file is
+      finished THERE (linked, placed, mode set), and `published` renames
+      it on in one step. THE SMELL: a verb that writes a path and then
+      adjusts it — a mode, a stamp, a second write. THE IDIOM: adjust the
+      staged file, then rename. A guard that samples the path proves it:
+      tools/witness_parallel_build.sh reads mode and size in one `stat`
+      while runs repeat, and a poller that read nothing is no witness.
+      Not ratcheted: no grep tells a path others read from one nobody does.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

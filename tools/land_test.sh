@@ -18,7 +18,11 @@ affected="$here/affected_packages.sh"
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
-cleanup() { rm -rf "$scratch"; }
+# Every process a fixture started names the scratch dir; none outlives the run.
+cleanup() {
+    pkill -9 -f "$scratch" 2>/dev/null
+    rm -rf "$scratch"
+}
 trap cleanup EXIT INT TERM
 
 total=0
@@ -116,6 +120,25 @@ test_lock_fifo() {
     else
         ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
     fi
+    # A deep queue, with SIGPIPE ignored as a harness's children inherit
+    # it: a waiter's scan writes into no pipe, so its log stays a few
+    # lines however long it waits.
+    for w in d e f; do
+        ( trap '' PIPE; export AVRA_LAND_LOCK="$lockdir" branch=$w; exec sh "$land" --call hold_lock_for "$scratch/sig-$w-never" ) \
+            > "$scratch/lock-$w.out" 2>&1 &
+        eval "${w}_pid=\$!"
+    done
+    sleep 8
+    grown=0
+    for w in c d e f; do
+        [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
+    done
+    if [ "$grown" -eq 0 ]; then
+        ok "lock-fifo: every waiter's log stays a few lines over a long wait"
+    else
+        bad "lock-fifo: a waiter's log grew while waiting"
+    fi
+    for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
     if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 150; then
@@ -479,8 +502,11 @@ test_commit_seed_if_moved() {
 # Branch b's own package always fails its "test"; a and c always
 # pass. The batch must land a+c, name b as the culprit, and exit
 # non-zero (a batch that excludes anything did not fully succeed).
-test_batch_mode() {
-    d="$(git_repo batch)"
+# A repo whose `build/avra` and Makefile stand in for the real ones:
+# branches a, b and c each change their own package, and a package
+# named by CULPRIT_PKG fails its tests.
+batch_repo() {
+    d="$(git_repo "$1")"
     for p in a b c; do
         mkdir -p "$d/packages/$p/src"
         printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
@@ -498,6 +524,7 @@ test_batch_mode() {
 # overwritten with a one-line "echo built" stand-in).
 case "$1" in
     build)
+        [ -n "${SLOW_BUILD:-}" ] && sleep "$SLOW_BUILD"
         mkdir -p packages/cli/src
         cp "$0" packages/cli/src/main
         chmod +x packages/cli/src/main
@@ -534,6 +561,8 @@ seed-check:
 MK
     printf 'seed-src\n' > "$d/bootstrap/seed.ll"
     printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    # build/ is untracked, as in the real tree: a fresh worktree has no compiler.
+    printf 'build/\n' > "$d/.gitignore"
     commit_all "$d" "base"
 
     for p in a b c; do
@@ -543,6 +572,11 @@ MK
     done
     git -C "$d" checkout -q main
 
+    echo "$d"
+}
+
+test_batch_mode() {
+    d="$(batch_repo batch)"
     lockdir="$scratch/batch-lock"
     batchwt="$scratch/batch-integration-wt"
     slots="$scratch/batch-slots"
@@ -671,6 +705,100 @@ test_ff_refused_not_moved() {
     git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
 }
 
+test_auto_batch() {
+    d="$(batch_repo auto-batch)"
+    wt_a="$scratch/auto-batch-a"
+    git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
+    lockdir="$scratch/auto-batch-lock"
+    batchwt="$scratch/auto-batch-integration-wt"
+    slots="$scratch/auto-batch-slots"
+    hold="$scratch/auto-batch-hold"
+    export AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" CULPRIT_PKG=c AVRA_LAND_ABSORB=1
+    ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/auto-holder.out" 2>&1 &
+    wait_for_line "$scratch/auto-holder.out" "^acquired ticket 1$" 150 > /dev/null
+    ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/auto-a.out" 2>&1 &
+    a_pid=$!
+    wait_for_line "$scratch/auto-a.out" "waiting behind" 150 > /dev/null
+    ( cd "$d" && exec sh "$land" b ) > "$scratch/auto-b.out" 2>&1 &
+    b_pid=$!
+    wait_for_line "$scratch/auto-b.out" "waiting behind" 150 > /dev/null
+    ( cd "$d" && exec sh "$land" c ) > "$scratch/auto-c.out" 2>&1 &
+    c_pid=$!
+    wait_for_line "$scratch/auto-c.out" "waiting behind" 150 > /dev/null
+    touch "$hold"
+    a_st=0; wait "$a_pid" || a_st=$?
+    b_st=0; wait "$b_pid" || b_st=$?
+    c_st=0; wait "$c_pid" || c_st=$?
+    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR CULPRIT_PKG AVRA_LAND_ABSORB
+    if [ "$(grep -c "absorbing the queue" "$scratch/auto-a.out")" -eq 1 ] && ! grep -q "absorbing" "$scratch/auto-b.out"; then
+        ok "auto-batch: the lock's taker absorbs the queue behind it, once"
+    else
+        bad "auto-batch: the queue was not absorbed by exactly one run"
+        cat "$scratch/auto-a.out"
+    fi
+    if [ "$a_st" -eq 0 ] && [ "$b_st" -eq 0 ] && grep -q "^LANDED" "$scratch/auto-b.out"; then
+        ok "auto-batch: the taker and an absorbed waiter both land, each told so"
+    else
+        bad "auto-batch: a ($a_st) or b ($b_st) did not land"
+        cat "$scratch/auto-b.out"
+    fi
+    if [ "$c_st" -ne 0 ] && grep -q "bisected out" "$scratch/auto-c.out"; then
+        ok "auto-batch: the bad branch is bisected out and its waiter exits red"
+    else
+        bad "auto-batch: c ($c_st) was not bisected out"
+        cat "$scratch/auto-c.out"
+    fi
+    on_main() { git -C "$d" show "main:packages/$1/src/lib.av" 2>/dev/null | grep -q "int { 1 }"; }
+    if on_main a && on_main b && ! on_main c; then
+        ok "auto-batch: main carries a and b and not c"
+    else
+        bad "auto-batch: main's content does not match a and b in, c out"
+    fi
+}
+
+test_auto_batch_holder_stopped() {
+    d="$(batch_repo auto-stop)"
+    wt_a="$scratch/auto-stop-a"
+    git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
+    hold="$scratch/auto-stop-hold"
+    export AVRA_LAND_LOCK="$scratch/auto-stop-lock" AVRA_LAND_BATCH_WT="$scratch/auto-stop-wt" AVRA_SLOTS_DIR="$scratch/auto-stop-slots" SLOW_BUILD=20 AVRA_LAND_ABSORB=1
+    ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/auto-stop-holder.out" 2>&1 &
+    wait_for_line "$scratch/auto-stop-holder.out" "^acquired ticket 1$" 150 > /dev/null
+    ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/auto-stop-a.out" 2>&1 &
+    a_pid=$!
+    wait_for_line "$scratch/auto-stop-a.out" "waiting behind" 150 > /dev/null
+    ( cd "$d" && exec sh "$land" b ) > "$scratch/auto-stop-b.out" 2>&1 &
+    b_pid=$!
+    wait_for_line "$scratch/auto-stop-b.out" "waiting behind" 150 > /dev/null
+    touch "$hold"
+    wait_for_line "$scratch/auto-stop-a.out" "absorbing the queue" 150 > /dev/null
+    kill -TERM "$a_pid"
+    b_st=0; wait "$b_pid" || b_st=$?
+    wait "$a_pid" 2>/dev/null
+    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR SLOW_BUILD AVRA_LAND_ABSORB
+    if [ "$b_st" -ne 0 ] && grep -q "stopped before a verdict" "$scratch/auto-stop-b.out"; then
+        ok "auto-batch: a holder stopped mid-batch hands its absorbed waiters a verdict"
+    else
+        bad "auto-batch: an absorbed waiter was stranded or misled by a stopped holder ($b_st)"
+        cat "$scratch/auto-stop-b.out"
+    fi
+}
+
+test_batch_tool_failure() {
+    d="$(batch_repo batch-tool)"
+    mv "$d/build/avra" "$scratch/batch-tool-avra-aside"
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/batch-tool-lock" AVRA_LAND_BATCH_WT="$scratch/batch-tool-wt" \
+        AVRA_SLOTS_DIR="$scratch/batch-tool-slots" branch=x sh "$land" --call main_batch 0 a b ) \
+        > "$scratch/batch-tool.out" 2>&1 || st=$?
+    if [ "$st" -ne 0 ] && grep -q "TOOL FAILURE" "$scratch/batch-tool.out" && ! grep -q "CULPRIT" "$scratch/batch-tool.out"; then
+        ok "batch: a missing compiler is a tool failure, and no branch is blamed"
+    else
+        bad "batch: a missing compiler was not reported as a tool failure ($st)"
+        cat "$scratch/batch-tool.out"
+    fi
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
@@ -683,7 +811,10 @@ test_caches_aside_twice
 test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
+test_batch_tool_failure
 test_heavy_status
+test_auto_batch
+test_auto_batch_holder_stopped
 test_ff_refused_not_moved
 
 echo
