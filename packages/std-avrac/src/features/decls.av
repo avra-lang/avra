@@ -395,7 +395,7 @@ export type Decls = {
     declared_writes: Cell<List<bool>>,
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
-    ensure_writes: Cell<fn(DeclId) -> void>,
+    ensure_writes: Cell<fn(DeclId) -> bool>,
     // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
     // through `ensure_consumed`, the same shape as `marks` (null =
     // unasked). No fixpoint: unlike `written_seats`, a seat's
@@ -556,7 +556,7 @@ export fn new_decls() -> Decls {
         seat_marks: Cell.new(no_seat_marks),
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
-        ensure_writes: Cell.new(no_ensure),
+        ensure_writes: Cell.new(no_answer),
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
@@ -590,6 +590,8 @@ fn builtin_tparams(arity: int) -> List<string> {
 /// The table's own reads ask nothing more.
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_ensure(d: DeclId) {}
+
+fn no_answer(_d: DeclId) -> bool { false }
 
 /// A kind's word — the key's middle, and prose.
 export fn kind_word(k: DeclKind) -> string {
@@ -1100,7 +1102,7 @@ impl Decls {
         self.ensure_const.set(no_const_ensure)
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
-        self.ensure_writes.set(no_ensure)
+        self.ensure_writes.set(no_answer)
         self.ensure_consumed.set(no_ensure)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
@@ -1500,11 +1502,6 @@ impl Decls {
         i == 0 && self.declared_writes.get()[d.index] || self.seat_written_so_far(d, i)
     }
 
-    /// The receiver's inferred bit — seat 0 of a method.
-    fn written_so_far(d: DeclId) -> bool { self.seat_written_so_far(d, 0) }
-
-    fn writes_so_far(d: DeclId) -> bool { self.seat_writes_so_far(d, 0) }
-
     /// The pass starts over: every inferred bit falls, and the
     /// fixpoint re-earns them.
     fn clear_written() {
@@ -1564,23 +1561,31 @@ impl Decls {
         self.inferred_errors_so_far(d)
     }
 
-    /// Whether a method WRITES its receiver: declared, or found by
-    /// the receivers pass — asking IS the query; the hook runs the
-    /// pass and records the dependency.
+    /// Whether a method WRITES its receiver: declared, or found by the receivers pass.
+    /// Asking IS the query: the hook runs the pass and records the dependency. Where the
+    /// pass cannot run (inside a resolve) the hook answers false and only what was
+    /// declared is read, so every answer is a function of what is recorded.
     fn writes_receiver(d: DeclId) -> bool {
-        (self.ensure_writes.get())(d)
-        self.seat_writes_so_far(d, 0)
+        let answered = (self.ensure_writes.get())(d)
+        self.declared_writes.get()[d.index] || answered && self.seat_written_so_far(d, 0)
     }
 
-    /// Whether the body writes through seat `i` — asking runs the
-    /// pass; the declared `mut` is what the caller's law reads.
+    /// The receiver's bit as the receivers pass found it, or null where the pass could
+    /// not be asked: an absence of a finding is no finding of absence.
+    fn written_found(d: DeclId) -> bool? {
+        if !(self.ensure_writes.get())(d) { return null }
+        self.seat_written_so_far(d, 0)
+    }
+
+    /// Whether the body writes through seat `i` as the pass found it, false where the
+    /// pass could not be asked; the declared `mut` is what the caller's law reads.
     fn seat_written(d: DeclId, i: int) -> bool {
-        (self.ensure_writes.get())(d)
-        self.seat_written_so_far(d, i)
+        let answered = (self.ensure_writes.get())(d)
+        answered && self.seat_written_so_far(d, i)
     }
 
     /// The workspace arms the receivers hook once.
-    fn arm_writes(ensure: fn(DeclId) -> void) {
+    fn arm_writes(ensure: fn(DeclId) -> bool) {
         self.ensure_writes.set(ensure)
     }
 

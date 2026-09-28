@@ -1,0 +1,62 @@
+// A method's written receiver is the receivers pass's answer only where the pass can be
+// asked. Inside a resolve it cannot run, so a read there answers what the method declares,
+// in every order — the pass settled or not — and needs no edge. Outside one, asking records
+// the pass and the answer is what was declared or found. `bump` writes through `self`
+// without saying `mut`, so only the pass knows.
+use core.{DeclId}
+use query.{Key}
+use compiler.{Workspace}
+
+fn resolve_ordinal() -> int { 5 }
+
+fn bump_of(ws: Workspace) -> DeclId { [d.id for d in ws.decls.decls.get() if d.name == "bump"][0] }
+
+/// A workspace whose receivers pass has settled over the writing `bump`.
+fn settled_over_writer(tag: string) -> Workspace {
+    let ws = a_process_over(
+        written_files(writer_body()),
+        written_names(),
+        fresh_pack_path("where_${tag}"),
+    )
+    let _ = checked(ws, "/w/src/a.av")
+    ws
+}
+
+/// What `writes_receiver` answers for `d` with a resolve open, which is where the pass
+/// cannot be asked.
+fn writes_inside_resolve(ws: Workspace, d: DeclId) -> bool {
+    let k = Key { family: resolve_ordinal(), arg: 9999 }
+    ws.db.begin(k)
+    let answer = ws.decls.writes_receiver(d)
+    ws.db.settle(k, 1)
+    answer
+}
+
+/// What `written_found` answers for `d` with a resolve open.
+fn found_inside_resolve(ws: Workspace, d: DeclId) -> bool? {
+    let k = Key { family: resolve_ordinal(), arg: 9999 }
+    ws.db.begin(k)
+    let answer = ws.decls.written_found(d)
+    ws.db.settle(k, 1)
+    answer
+}
+
+spec "compiler/receivers — a written receiver is read where the pass can be asked" {
+    then "outside a resolve, the pass's finding is read" {
+        let ws = settled_over_writer("outside")
+        ws.decls.writes_receiver(bump_of(ws))
+    }
+    then "inside a resolve, a method that only writes by inference reads as declaring nothing, though the pass settled" {
+        let ws = settled_over_writer("inside")
+        let bump = bump_of(ws)
+        !writes_inside_resolve(ws, bump)
+    }
+    then "outside a resolve, the pass's negative is a finding" {
+        let ws = settled_over_writer("found")
+        ws.decls.written_found(bump_of(ws)) == true
+    }
+    then "inside a resolve, the pass has no finding to give" {
+        let ws = settled_over_writer("nofinding")
+        found_inside_resolve(ws, bump_of(ws)) == null
+    }
+}
