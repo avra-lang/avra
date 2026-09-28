@@ -352,6 +352,13 @@ export type Decls = {
     held_values: Cell<Map<string, Settled>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
+    /// A fn's SEATS' TYPES, recorded before its answer is: the answer's inference
+    /// may ask every `_`-declared fn's own seats, and asking `sig_so_far` for them
+    /// answers null until the whole signature settles — including the answer this
+    /// same ask is computing. Recorded the moment they are typed, one step ahead of
+    /// the answer (failures.av's seats); a fn `failures()`'s pre-pass reaches before
+    /// it signs at all is typed there instead, into the same table.
+    seat_types: Cell<List<List<TypeId>?>>,
     /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
@@ -515,6 +522,7 @@ export fn new_decls() -> Decls {
     let no_faces: List<DeclFacts?> = []
     let no_keys: Map<string, DeclId> = {}
     let no_sigs: List<DeclSig?> = []
+    let no_seat_types: List<List<TypeId>?> = []
     let no_provenance: List<Provenance?> = []
     let empty_marks: List<List<Diagnostic>?> = []
     let no_targets: List<DeclId?> = []
@@ -562,6 +570,7 @@ export fn new_decls() -> Decls {
         held_values: map_cell(),
         keys: Cell.new(no_keys),
         sigs: Cell.new(no_sigs),
+        seat_types: Cell.new(no_seat_types),
         provenance: Cell.new(no_provenance),
         marks: Cell.new(empty_marks),
         ensure_marks: Cell.new(no_marks),
@@ -1075,6 +1084,20 @@ impl Decls {
         if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
         self.sigs.get()[d.index]
     }
+
+    /// A fn's seat types, recorded before `sig` settles — or by `failures()`'s
+    /// pre-pass, for a fn it reaches before anything signs it at all. Never
+    /// triggering the hook, the same law `sig_so_far` answers for the whole
+    /// signature: null until they are typed, which always happens before the
+    /// answer (or the pre-pass) that may ask for them.
+    fn seat_types_so_far(d: DeclId) -> List<TypeId>? { self.seat_types.get()[d.index] }
+
+    /// Records a fn's seat types — the receiver's first when it has one, in the
+    /// same order `sig`'s own `FnSig.params` wears. `typed_seats`' every caller
+    /// records here before typing the answer: the three seat-declaring sites
+    /// (`declare_sig`, `declare_method`, `declare_trait_sig`), and `failures()`'s
+    /// pre-pass for a fn none of them has reached yet.
+    fn record_seat_types(d: DeclId, ts: List<TypeId>) { self.seat_types.set_at(d.index, ts) }
 
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them

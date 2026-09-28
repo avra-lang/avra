@@ -38,7 +38,7 @@ use core.{
     same_expr,
     same_type as same_type_id,
 }
-use features.{Decls, Decl, bound_decl_of}
+use features.{Decls, Decl, TypeCx, bound_decl_of}
 use query.{FixpointRefusal, spoken as fixpoint_spoken}
 
 /// `Result<_, _>`'s error side — a bare `_`, checked by SHAPE: `_?`,
@@ -427,6 +427,12 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
         let fns = [x.id for x in self.decls.decls.get() if !self.is_held(x.file) && self.decls.inferring(x)]
+        // A fn's seats are recorded when IT signs (typed_seats' callers) — but the
+        // fixpoint runs once, on the FIRST `_`-declared fn asked, and surveys every
+        // member of `fns` in that one pass: a later-declared fn in the same set has
+        // not signed yet, so its seats are still unrecorded here. Type them now,
+        // standalone, before any survey reads them.
+        for d in fns { self.ensure_seat_types(d) }
         self.decls.clear_inferred()
         let sums = [self.fail_summary(d) for d in fns]
         self.decls.settle_failures(fns, sums)
@@ -452,6 +458,39 @@ impl Workspace {
         fns.length
     }
 
+    /// A fn's seats, typed standalone when the fixpoint reaches it before it has
+    /// signed at all: a throwaway signing context, discarded with whatever it
+    /// would have said — the fn's own `declare_sig`/`declare_method`, whenever it
+    /// runs, re-types the same seats and speaks for real. A held fn's seats come
+    /// from its record, never a parse it does not have; left unrecorded (`?? []`
+    /// in `fail_summary` answers empty for it, as for any fn not yet reached).
+    fn ensure_seat_types(d: DeclId) {
+        if self.decls.seat_types_so_far(d) != null { return }
+        let x = self.decls.decl(d)
+        if self.is_held(x.file) { return }
+        let store = self.parsed(x.file).store
+        let fp? = store.fn_parts(x.stmt) else { return }
+        mut t = self.sign_cx_for(x)
+        let receiver = self.pre_receiver(x, store, t)
+        let ptypes = t.typed_seats(x.stmt, fp.params, receiver)
+        self.decls.record_seat_types(d, ptypes)
+    }
+
+    /// The receiver type a not-yet-signed fn's seats would carry — null for a
+    /// free fn or a static member, a trait member's own Self otherwise. An impl
+    /// method's target is resolved FRESH from the parse (`impl_target`), never
+    /// read through `target_of`/`receiver_type`: those answer from what the
+    /// impl block's OWN signing already recorded, which may not have run yet —
+    /// the same hazard this whole pre-pass exists to route around, one level up.
+    fn pre_receiver(x: Decl, store: NodeStore, t: TypeCx) -> TypeId? {
+        if x.parent == null || store.is_static(x.stmt) { return null }
+        let parent = self.decls.decl(x.parent!)
+        if parent.kind is .Trait { return self.decls.self_type_of(x.parent!) }
+        let parts? = store.impl_parts(parent.stmt) else { return null }
+        let target? = t.impl_target(parent.stmt, parts, false) else { return null }
+        self.decls.self_type_of(target)
+    }
+
     /// One fn's own evidence, read from its resolved body and the
     /// declarations its expressions name — never from another
     /// `_`-declared fn's `sig()` (FailSurvey.via_callee's guard).
@@ -459,12 +498,11 @@ impl Workspace {
         let x = self.decls.decl(d)
         if x.root == null { return FailSummary { direct: [], calls: [] } }
         let receiver: TypeId? = self.receiver_type(x)
-        // `sig_so_far`, never `sig`: `d` is one of THIS fixpoint's own
-        // decls, and `d` has not necessarily started signing yet —
-        // `sig(d)` would start it, running straight into `d`'s own
-        // `inferred_answer`, which asks this same fixpoint for an
-        // answer it has not settled yet (empty table, spurious refusal).
-        let seats: List<TypeId> = self.decls.sig_so_far(d)?.fn_sig()?.params ?? []
+        // `seat_types_so_far`, never `sig`/`sig_so_far`'s `FnSig.params`: `d`'s seats
+        // are recorded before its answer is typed (typing/declare.av,
+        // typing/impls.av's `typed_seats`), or by `ensure_seat_types` below for a
+        // fn none of those has reached yet — always before this fixpoint asks.
+        let seats: List<TypeId> = self.decls.seat_types_so_far(d) ?? []
         let store = self.decls.store(d)
         let fs = FailSurvey {
             dt: DeclaredTypes {

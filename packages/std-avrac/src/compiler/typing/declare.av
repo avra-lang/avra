@@ -294,7 +294,8 @@ impl TypeCx {
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
-        let ptypes = [self.param_type(s, pp) for pp in seats]
+        let ptypes = self.typed_seats(s, fparams, null)
+        self.view.decls.record_seat_types(self.decl_of(s), ptypes)
         let rt = self.answer_type(s, owner, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
@@ -381,6 +382,17 @@ impl TypeCx {
     fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
         self.typeless_param(s, pp.name.of)
+    }
+
+    /// A fn's whole SEAT LIST, typed — the receiver's type first when there is
+    /// one, then the written parameters in order. The ONE fold every seat-declaring
+    /// site (a free fn, an inherent method, a trait member) shares, called before
+    /// `answer_type`: an inferred `Result<T, _>` answer may ask any `_`-declared
+    /// fn's own seats mid-fixpoint, and they must already be typed by then.
+    fn typed_seats(s: StmtId, params: List<Param>, receiver: TypeId?) -> List<TypeId> {
+        let ptypes = [self.param_type(s, pp) for pp in written_seats(self.keywords, params)]
+        let r? = receiver else { return ptypes }
+        [r].concat(ptypes)
     }
 
     fn typeless_param(s: StmtId, name: string) -> TypeId {
