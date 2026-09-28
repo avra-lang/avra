@@ -106,6 +106,8 @@ export type Audit = {
     exempt: Cell<fn(Bypass) -> bool>,
     covers: Cell<fn(Bypass) -> List<Key>>,
     sink: Cell<fn(Bypass) -> void>,
+    visit: Cell<List<Cell<List<int>>>>,
+    round: Cell<int>,
 }
 
 /// A kernel is a shared handle. Copying it copies the handle; every
@@ -144,6 +146,8 @@ export fn new_kernel() -> Kernel {
             exempt: Cell.new(unexempt),
             covers: Cell.new(uncovering),
             sink: Cell.new(unheard),
+            visit: list_cell(),
+            round: Cell.new(0),
         },
     }
 }
@@ -190,6 +194,7 @@ impl Kernel {
         let exempt = self.audit.exempt.get()
         let covers = self.audit.covers.get()
         let sink = self.audit.sink.get()
+        self.close_over(held[0].frames[0])
         for b in held {
             if !exempt(b) && !self.covered(b, covers(b)) { sink(b) }
         }
@@ -200,16 +205,46 @@ impl Kernel {
         self.audit.held.set(none)
     }
 
-    /// Whether a query that was open for the read records what would have covered it —
-    /// or is that very key.
+    /// Whether a query that was open for the read is that very key, or the outermost one
+    /// reaches it: every query the read was made under is below the outermost, whose
+    /// dependencies `close_over` marked.
     fn covered(b: Bypass, covers: List<Key>) -> bool {
-        b
-            .frames
-            .any((f: Key) -> covers.any((c: Key) -> same_key(c, f)) || self.reads_any(f, covers))
+        covers.any((c: Key) -> self.reached(c) || b.frames.any((f: Key) -> same_key(c, f)))
     }
 
-    fn reads_any(frame: Key, covers: List<Key>) -> bool {
-        self.deps_of(frame).any((d: Key) -> covers.any((c: Key) -> same_key(c, d)))
+    /// Marks every cell below `root`, one stamp per cell: a visit is stamped with a round
+    /// the call opens.
+    fn close_over(root: Key) {
+        self.audit.round.set(self.audit.round.get() + 1)
+        mut frontier = [root]
+        while !frontier.is_empty() {
+            mut below: List<Key> = []
+            for k in frontier {
+                for d in self.deps_of(k) { if self.first_visit(d) { below.push(d) } }
+            }
+            frontier = below
+        }
+    }
+
+    /// Whether `close_over`'s latest call reached `k`.
+    fn reached(k: Key) -> bool {
+        if self.audit.visit.get().length <= k.family { return false }
+        let row = self.audit.visit.get()[k.family]
+        k.arg < row.get().length && row.get()[k.arg] == self.audit.round.get()
+    }
+
+    /// Whether `k` has not yet been reached in this round; stamps it.
+    fn first_visit(k: Key) -> bool {
+        while self.audit.visit.get().length <= k.family {
+            let row: Cell<List<int>> = list_cell()
+            self.audit.visit.push(row)
+        }
+        let row = self.audit.visit.get()[k.family]
+        while row.get().length <= k.arg { row.push(0) }
+        let round = self.audit.round.get()
+        if row.get()[k.arg] == round { return false }
+        row.set_at(k.arg, round)
+        true
     }
 
     fn replace(state: KernelState) { self.state.set(state) }
