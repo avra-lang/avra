@@ -62,7 +62,7 @@ largest subset that passes together and names the branch(es) that
 broke it, exiting non-zero when anything was excluded. The queue
 batches itself: whoever takes the lock lands every branch still queued
 behind it in the same run, and each waiter exits with its own
-branch's verdict. Never pushes
+branch's verdict — opt-in, with AVRA_LAND_ABSORB=1. Never pushes
 anywhere, never rewrites a branch's own history.
 
   --dry-run   run every step but the final fast-forward merge.
@@ -818,7 +818,10 @@ main() {
     echo "land: main worktree   $main_wt"
     echo "land: branch worktree $branch_wt ($branch)"
 
-    if [ "$dry_run" -eq 0 ]; then
+    # Absorbing the queue is opt-in until a batch runs the real keepers
+    # green: a batch tree's idioms paths, caches and rule self-tests
+    # differ from a branch's own tree.
+    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-0}" = "1" ]; then
         absorbed="$(absorb_waiters | tr '\n' ' ')"
         [ -n "$(printf '%s' "$absorbed" | tr -d '[:space:]')" ] && land_absorbed
     fi
