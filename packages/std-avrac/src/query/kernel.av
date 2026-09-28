@@ -85,10 +85,24 @@ type KernelState = {
     misses: int,
 }
 
+/// No key has been read in a fresh frame yet. `state_slot` traps
+/// under a negative family, so this sentinel names no real query and
+/// never matches one.
+const no_frame_key: Key = Key { family: -1, arg: -1 }
+
 /// A kernel is a shared handle. Copying it copies the handle; every
 /// query family and verifier therefore sees the same revision, open
 /// stack, dependencies, and counters.
-export type Kernel = { state: Cell<KernelState> }
+export type Kernel = {
+    state: Cell<KernelState>,
+    /// One LAST-RECORDED-KEY slot per open frame, held apart from
+    /// `state`: a repeat read of the frame's own last key costs one
+    /// `Cell.get` and one list index, never a `KernelState` snapshot.
+    /// `begin` pushes `no_frame_key`, `settle` pops — a nested
+    /// frame's slot sits above the outer's, so closing it exposes the
+    /// outer's own last key exactly as it stood before the nesting.
+    frame_last: Cell<List<Key>>,
+}
 
 export fn new_kernel() -> Kernel {
     let state = KernelState {
@@ -104,7 +118,8 @@ export fn new_kernel() -> Kernel {
         hits: 0,
         misses: 0,
     }
-    Kernel { state: Cell.new(state) }
+    let no_frame_reads: List<Key> = []
+    Kernel { state: Cell.new(state), frame_last: Cell.new(no_frame_reads) }
 }
 
 impl Kernel {
@@ -226,6 +241,7 @@ impl Kernel {
         s.next_reader = s.next_reader + 1
         s.reading.push(s.next_reader)
         self.replace(s)
+        self.frame_last.push(no_frame_key)
     }
 
     fn settle(key: Key, value_hash: int) {
@@ -234,6 +250,9 @@ impl Kernel {
         let restored: Cell<List<Restore>>? = s.restore.pop()
         let _ = s.open.pop()
         let _ = s.reading.pop()
+        mut fl = self.frame_last.get()
+        let _ = fl.pop()
+        self.frame_last.set(fl)
         if restored != null { for r in restored!.get() { restore_one(s, r) } }
         let prior? = state_cell(s, key) else {
             write_cell(
@@ -263,34 +282,58 @@ impl Kernel {
         self.replace(s)
     }
 
-    /// One read's dependency, appended to the OPEN query's list — unless
-    /// `key`'s LAST-READER STAMP already names the currently open
-    /// query: the fast path, one flat-array read and one int compare,
-    /// touching neither the cell table nor a `QueryCell`'s `deps` list.
-    /// A MISMATCH is not always "never read": a NESTED query reading
-    /// the same key overwrites the stamp with ITS OWN reader id, so the
-    /// outer query's next read of that key mismatches too, though it
+    /// Two fast paths, cheapest first. THE FRAME PATH compares `key`
+    /// against the OPEN FRAME'S OWN last-recorded key (`frame_last`,
+    /// held apart from `state`) — one `Cell.get`, one length check,
+    /// one indexed read, no `KernelState` snapshot at all — and
+    /// answers most repeat reads, since a query's reads of one key
+    /// cluster together. A miss there (a different key, or nothing
+    /// recorded in this frame yet) falls to THE STAMP PATH: one
+    /// flat-array read and one int compare, touching neither the cell
+    /// table nor a `QueryCell`'s `deps` list. A MISMATCH is not
+    /// always "never read": a NESTED query reading the same key
+    /// overwrites the stamp with ITS OWN reader id, so the outer
+    /// query's next read of that key mismatches too, though it
     /// already recorded the dep. The two are told apart by asking
     /// whether the STAMP BEING OVERWRITTEN belongs to a STILL-OPEN
-    /// frame (`reading.contains`, a scan of the open stack — a handful
-    /// of ints deep, never the program's dep count): if so, that frame
-    /// will read this key again and must see its own stamp restored,
-    /// so the value is saved (`save_restore`, lazily minting the
-    /// frame's own restore list); if not — a genuinely new dep, or a
-    /// stamp some now-closed query left behind — nothing will ever ask
-    /// for it again, so nothing is saved. The dep list lives in a
-    /// `Cell`, so the append (like the stamp write) is in place; only
-    /// the rare save allocates anything at all.
+    /// frame (`reading.contains`, a scan of the open stack — a
+    /// handful of ints deep, never the program's dep count): if so,
+    /// that frame will read this key again and must see its own
+    /// stamp restored, so the value is saved (`save_restore`, lazily
+    /// minting the frame's own restore list); if not — a genuinely
+    /// new dep, or a stamp some now-closed query left behind —
+    /// nothing will ever ask for it again, so nothing is saved.
+    /// Either way — stamp hit or genuinely new dep — `key` becomes
+    /// this frame's new last key, so its NEXT read takes the frame
+    /// path. ONE fn, not two: a split tried here paid a second
+    /// prologue on every miss (`record_dep_miss`, avra-8sb5.57.56)
+    /// for a hit-path saving smaller than that cost — kbench's altkey
+    /// and newdep modes both got slower, so the fn stayed whole.
     fn record_dep(key: Key) {
+        let fl = self.frame_last.get()
+        if fl.is_empty() { return }
+        // LICENSED lists.last_index: `last()` answers `Key?`, and a
+        // flat record wrapped nullable is a BOXED answer — minting
+        // one here to read a value this compare never keeps costs an
+        // allocation per call; measured 6-7x the indexed read's cost
+        // (kbench's hit mode, avra-8sb5.57.56: ~100 vs 626-689
+        // instructions/call, `last()` and `last()!` alike).
+        if same_key(fl[fl.length - 1], key) { return }
+        // The depth alone crosses the slow path below, never `fl`
+        // itself: an int costs nothing to hold live across a run of
+        // calls, where the LIST would need retaining across every one
+        // of them for a write this fn makes only once, at the end.
+        let depth = fl.length
         mut s = self.snapshot()
-        if s.pending.is_empty() { return }
         let reader = s.reading.last() ?? 0
         let stamp = state_stamp(s, key)
-        if stamp == reader { return }
-        if s.reading.contains(stamp) { self.save_restore(s, key, stamp) }
-        write_stamp(s, key, reader)
-        s.pending.last()!.push(key)
-        self.replace(s)
+        if stamp != reader {
+            if s.reading.contains(stamp) { self.save_restore(s, key, stamp) }
+            write_stamp(s, key, reader)
+            s.pending.last()!.push(key)
+            self.replace(s)
+        }
+        self.frame_last.set_at(depth - 1, key)
     }
 
     /// Remembers a stamp `record_dep` is about to overwrite, so
