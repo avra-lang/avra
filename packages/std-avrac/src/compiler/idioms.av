@@ -8,7 +8,7 @@
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
 use core.{TypeRef}
-use features.{ArmInfo, Code, Fix, rule, said}
+use features.{ArmInfo, Code, Fix, enclosing_decl, rule, said}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -1179,6 +1179,50 @@ fn repeated_projection_found(a: Code) -> Fix {
                 a.loc(),
                 "`${a.text()}` computed twice on one line — bind it once and read the name",
                 "this projection",
+                null,
+            ),
+        )
+}
+
+/// A method-table read that RECORDS NOTHING, made outside `Methods`'s own bracket. A
+/// table's computation waits on the registration inside it, so a read there must not
+/// record the table (an edge from a reader the table waits on is a cycle):
+/// `registered_methods` is that read, and `methods`, `declare_method`, `held_method`
+/// and `method_clashes` are where it is made, with `methods_of`, whose own read follows
+/// the record. Any other reader is a consumer, and reads through `methods_of`, which
+/// records the dependency.
+///
+/// NO REWRITE: `methods_of` records into the open query, and whether the reader is
+/// inside a bracket that would cycle is a judgement this pattern cannot make.
+@keeps("fn declare_method(target: int) {\n    let held = decls.registered_methods(target)\n}")
+@keeps("fn f(target: int) {\n    let held = decls.methods_of(target)\n}")
+export rule registered_methods_outside {
+    // LICENSED compiler.registered_methods_outside: the pattern's own text names the shape it detects
+    quote { ${r}.registered_methods(${t}) } if outside_methods_bracket(it) -> registered_methods_outside_found(it),
+}
+
+/// The fns that hold `Methods`'s own bracket.
+const methods_bracket_fns: List<string> = [
+    "methods",
+    "methods_of",
+    "declare_method",
+    "held_method",
+    "method_clashes",
+]
+
+fn outside_methods_bracket(c: Code) -> bool {
+    if c.of.view.source.file.contains("/tests/") { return false }
+    let d? = enclosing_decl(c.of.view, c.at) else { return true }
+    !methods_bracket_fns.contains(c.of.view.decls.decl(d).name)
+}
+
+fn registered_methods_outside_found(c: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                c.loc(),
+                "a method table read that records nothing, outside `Methods`'s own bracket — a consumer reads through `methods_of`, which records the dependency",
+                "this read",
                 null,
             ),
         )

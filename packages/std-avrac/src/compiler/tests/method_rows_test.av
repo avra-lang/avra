@@ -1,0 +1,84 @@
+// A method table is read at its own cell. A reader that is not making the table records
+// the type's `Methods` in the open query, so it depends on the impls it dispatches through;
+// the table's own bracket and the registration inside it record nothing, since the table
+// waits on them. `base_b` (decl_rows_test.av) declares `Box` and its impl.
+use core.{DeclId}
+use query.{Key}
+use compiler.{Workspace, analyze_source, nearest_fix, registered_methods_outside}
+
+fn references_ordinal() -> int { 19 }
+
+/// `a`'s `g` calls a method of `b`'s `Box`.
+fn method_caller_files() -> Map<string, string> {
+    {"/w/src/a.av": "export fn g(v: Box) -> int {\n    v.get()\n}\n", "/w/src/b.av": base_b()}
+}
+
+/// The workspace over `method_caller_files`, typed and its references settled.
+fn referenced_workspace(tag: string) -> Workspace {
+    let names = ["/w/src/a.av", "/w/src/b.av"]
+    let ws = a_process_over(method_caller_files(), names, fresh_pack_path("methods_${tag}"))
+    let _ = checked(ws, "/w/src/a.av")
+    let _ = ws.references()
+    ws
+}
+
+/// Whether `frame`'s cell lists a dep on `Methods` of `target`.
+fn reads_methods(ws: Workspace, frame: Key, target: DeclId) -> bool {
+    ws.db.deps_of(frame).any((k: Key) -> k.family == methods_ordinal() && k.arg == target.index)
+}
+
+spec "compiler/methods — a method table is read at its own cell" {
+    then "fixture: the references relation settles a cell" {
+        let ws = referenced_workspace("fixture")
+        ws.db.value_hash_of(Key { family: references_ordinal(), arg: 0 }) != null
+    }
+    then "the references relation lists the Methods of a type whose method a call resolves through" {
+        let ws = referenced_workspace("refs")
+        reads_methods(
+            ws,
+            Key { family: references_ordinal(), arg: 0 },
+            decl_in_file(ws, "/w/src/b.av", "Box"),
+        )
+    }
+    then "a type's Methods does not list itself" {
+        let ws = referenced_workspace("self")
+        let box = decl_in_file(ws, "/w/src/b.av", "Box")
+        !reads_methods(ws, Key { family: methods_ordinal(), arg: box.index }, box)
+    }
+    then "a type's Methods lists a signature it waits on" {
+        let ws = referenced_workspace("impl")
+        let box = decl_in_file(ws, "/w/src/b.av", "Box")
+        ws
+            .db
+            .deps_of(Key { family: methods_ordinal(), arg: box.index })
+            .any((k: Key) -> k.family == sig_ordinal())
+    }
+}
+
+/// Whether the keeper fires anywhere in the first statement of `text`.
+fn keeper_fires(text: string) -> bool {
+    let a = analyze_source(text)
+    match a.view.stmts.first() {
+        s? -> nearest_fix(registered_methods_outside.run, a.code_at(.Stmt(s))) != null
+        null -> false
+    }
+}
+
+spec "compiler/methods — the registered read has a keeper" {
+    then "a consumer calling it is refused" {
+        keeper_fires("fn peek(d: Decls, t: DeclId) {\n    let held = d.registered_methods(t)\n}")
+    }
+    then "the registration that makes the table may call it" {
+        !keeper_fires(
+            "fn declare_method(d: Decls, t: DeclId) {\n    let held = d.registered_methods(t)\n}",
+        )
+    }
+    then "the recording door may call it after the record" {
+        !keeper_fires(
+            "fn methods_of(d: Decls, t: DeclId) {\n    let held = d.registered_methods(t)\n}",
+        )
+    }
+    then "the recorded read is no business of the keeper" {
+        !keeper_fires("fn peek(d: Decls, t: DeclId) {\n    let held = d.methods_of(t)\n}")
+    }
+}

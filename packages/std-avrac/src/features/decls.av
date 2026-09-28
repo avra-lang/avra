@@ -325,6 +325,7 @@ export type Decls = {
     recording: Cell<bool>,
     record_kernel: Cell<Kernel>,
     record_items: Cell<int>,
+    record_methods: Cell<int>,
     rows_state: Cell<List<int>>,
     held_rows: Cell<fn(FileId) -> void>,
 
@@ -519,6 +520,7 @@ export fn new_decls() -> Decls {
         recording: Cell.new(false),
         record_kernel: Cell.new(new_kernel()),
         record_items: Cell.new(0),
+        record_methods: Cell.new(0),
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
@@ -664,9 +666,10 @@ impl Decls {
 
     /// The workspace arms the recording once: the kernel the reads record into, the
     /// family a file's rows settle under, and what a held file's rows read instead.
-    fn arm_recording(kernel: Kernel, items: int, held: fn(FileId) -> void) {
+    fn arm_recording(kernel: Kernel, items: int, methods: int, held: fn(FileId) -> void) {
         self.record_kernel.set(kernel)
         self.record_items.set(items)
+        self.record_methods.set(methods)
         self.held_rows.set(held)
         self.recording.set(true)
         self.watching.set(true)
@@ -2026,16 +2029,35 @@ impl Decls {
 
     /// The table as it stands — the registering side's own read.
     fn held_method(target: DeclId, name: string) -> DeclId? {
-        for m in self.methods_of(target) {
+        for m in self.registered_methods(target) {
             if self.decl(m).name == name { return m }
         }
         null
     }
 
-    /// A type's registered methods, as they stand — the hook-free read.
+    /// A type's registered methods, as they stand — the hook-free read of a reader
+    /// that is not making the table. Records the type's `Methods` cell in the open
+    /// query, so a reader depends on the impls it dispatches through.
     fn methods_of(target: DeclId) -> List<DeclId> {
+        if self.watching.get() { self.methods_watched(target) }
+        self.registered_methods(target)
+    }
+
+    /// A read inside `Methods`'s own bracket, or while that bracket cannot open (an impl
+    /// still registering, an impl's file resolving): the table as it stands, and it
+    /// records nothing. The table's computation waits on the reader, so an edge to it
+    /// would be a cycle.
+    fn registered_methods(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
+
+    /// A read of a method table the audit or the recording wants told.
+    fn methods_watched(target: DeclId) {
+        if self.recording.get() {
+            self
+                .record_kernel
+                .get()
+                .record_dep(Key { family: self.record_methods.get(), arg: target.index })
+        }
         if self.auditing.get() { self.audited(Bypassed.Methods(target)) }
-        self.methods.get()[target.index].get()
     }
 
     /// The workspace arms the method-table hook once.

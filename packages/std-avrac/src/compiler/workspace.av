@@ -745,7 +745,9 @@ fn built(
         args: List<ExprId>,
     ) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
-    ws.decls.arm_recording(kernel, ordinal(Family.Items), (f: FileId) -> ws.held_sig_dep(f))
+    ws
+        .decls
+        .arm_recording(kernel, ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
     ws.arm_audit()
     ws.load_packages(src)
     ws
@@ -1537,15 +1539,15 @@ impl Workspace {
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
         // one, and the generated impl it is minting is not signed yet).
-        if blocks.any((b) -> self.registering(b)) { return self.decls.methods_of(target) }
-        if blocks.any((b) -> self.db.active(key(Family.Resolved, self.decls.decl(b).file.index))) { return self.decls.methods_of(target) }
+        if blocks.any((b) -> self.registering(b)) { return self.decls.registered_methods(target) }
+        if blocks.any((b) -> self.db.active(key(Family.Resolved, self.decls.decl(b).file.index))) { return self.decls.registered_methods(target) }
         let k = key(Family.Methods, target.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.methods_of(target) }
+        if !(self.db.ask(k) is .Compute) { return self.decls.registered_methods(target) }
         self.db.begin(k)
         for b in blocks {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
-        let out = self.decls.methods_of(target)
+        let out = self.decls.registered_methods(target)
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
