@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, Reg, Ins, Type}
+use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -112,6 +112,19 @@ impl LowerCx {
         self.cell_thawed(self.shape_at(s), cell)
     }
 
+    /// A plain `let`'s fresh seed, boxed into a cell exactly as a
+    /// `mut` local's is: thawed once, here, so every later read or
+    /// write finds the same cell.
+    mut fn boxed_seed(s: StmtId, v: Reg) -> Reg {
+        let thawed = self.box_thawed(self.view.types.shape_of(self.out.type_of_reg(v)), v)
+        let declared: TypeId? = self.facts.declared_binding(s)
+        let slot = if declared == null { self.mint_like(thawed) } else { self.mint_ty(self.concrete(declared!)) }
+        self.emit(Ins.Alloca(slot))
+        self.emit(Ins.Store(slot, thawed))
+        self.body.bind_slot(s, slot)
+        thawed
+    }
+
     /// The box a path's subject holds, UNIQUE for writing. Operands
     /// first, the destination last — registers define in mint order.
     mut fn unique_box(s: ExprId) -> Reg {
@@ -123,10 +136,14 @@ impl LowerCx {
                     // a cell opens unique — copy-on-write
                     return self.cell_unique(self.shape_at(s), cell!)
                 }
-                // a method's receiver: `self` is the box itself — shared
-                // by design, so no uniqueness is asked of it
-                self.def_reg(s) ?? self
-                    .lower_defect(s, "a mutation rooted outside a mut cell survived resolve")
+                // a method's receiver, a borrowed parameter: no cell
+                // stands behind it, so its box is thawed once here —
+                // idempotent, since the call site already thawed it
+                let reg? = self.def_reg(s) else {
+                    return self
+                        .lower_defect(s, "a mutation rooted outside a mut cell survived resolve")
+                }
+                self.box_thawed(self.shape_at(s), reg)
             },
             .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),
             .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),

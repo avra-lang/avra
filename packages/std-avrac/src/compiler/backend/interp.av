@@ -1184,6 +1184,7 @@ impl Machine {
             .CellRelease or .CellForget -> Val.I(0),
             .CellUnique -> self.cell_unique_val(vals),
             .CellThawed -> self.cell_thawed_val(vals),
+            .BoxThawed -> self.box_thawed_val(vals),
             .EnumBoxed -> if self.whole(vals[0]) < 0 { Val.N } else { self.fresh_array([vals[0], vals[1]]) },
             .EnumTag -> self.enum_part_val(vals, 0, -1),
             .EnumWord -> self.enum_part_val(vals, 1, 0),
@@ -1749,6 +1750,14 @@ impl Machine {
             },
             _ -> self.defect_val("a place opened through a non-cell"),
         }
+    }
+
+    /// The same law with no cell to hold the answer — a method's
+    /// receiver, a borrowed parameter: opened only when it is a
+    /// static's. Any other box stands, whoever else holds it.
+    fn box_thawed_val(vals: List<Val>) -> Val {
+        if self.frozen.get(vals[0].handle()) == null { return vals[0] }
+        self.cloned_val(vals[0])
     }
 
     fn slot_unique_val(vals: List<Val>) -> Val {
