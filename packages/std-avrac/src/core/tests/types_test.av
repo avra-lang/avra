@@ -2,10 +2,13 @@
 // the one-member collapse, and the set operations `catch`/widening
 // read (`covers`, `subtracted`). Pure registry calls — no source, no
 // parsing — since the shape's contract lives entirely in
-// `TypeRegistry`.
+// `TypeRegistry`. Also the write-once-after-read settle guard: a
+// declare hook asked before its declaration has settled anything.
 use @std.avrac.core.{new_type_registry, Type, DeclId}
 
 fn decl(n: int) -> DeclId { DeclId { index: n } }
+
+fn nothing_settled() {}
 
 spec "core/types: Union" {
     given "a union of members" {
@@ -71,6 +74,24 @@ spec "core/types: Union" {
             let ab = r.union_of([a, b])
             let remaining = r.union_of(r.subtracted(ab, [a]))
             !(r.shape_of(remaining) is .Union) && remaining.index == b.index
+        }
+    }
+    given "a declare hook asked before its own declaration has settled anything" {
+        then "a hook that only forces the sig, settling nothing, leaves a later real settle refused" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            r.arm_declare((id) -> nothing_settled())
+            let _ = r.is_settled(a)
+            r.mark_settled(a)
+            !r.drain_stale().is_empty()
+        }
+        then "a hook that settles the type FROM ITS RECORD on first ask is read correctly, and a repeat settle is a no-op, never a stale write" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            r.arm_declare((id) -> r.mark_settled(id))
+            let settled = r.is_settled(a)
+            r.mark_settled(a)
+            settled && r.drain_stale().is_empty()
         }
     }
 }

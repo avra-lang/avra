@@ -351,6 +351,10 @@ export type Decls = {
     // inside `mint`, behind the same captured hooks.
     impls_by_name: Cell<Map<string, List<DeclId>>>,
     ensure: Cell<fn(DeclId) -> void>,
+    // the workspace's held-row hook: fills a held declaration's own
+    // record row before a fact it fills (an impl's target among them)
+    // is read
+    ensure_target: Cell<fn(DeclId) -> void>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
@@ -518,6 +522,7 @@ export fn new_decls() -> Decls {
         impls: Cell.new(no_impls),
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
+        ensure_target: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
         ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
@@ -1025,6 +1030,11 @@ impl Decls {
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId) -> void) {
         self.ensure.set(ensure)
+    }
+
+    /// The workspace arms the held-row hook once.
+    fn arm_target(ensure: fn(DeclId) -> void) {
+        self.ensure_target.set(ensure)
     }
 
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
@@ -1592,6 +1602,7 @@ impl Decls {
     }
 
     fn target_of(impl_decl: DeclId) -> DeclId? {
+        (self.ensure_target.get())(impl_decl)
         let held: DeclId? = self.targets.get()[impl_decl.index]
         held
     }
