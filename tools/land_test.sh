@@ -399,10 +399,15 @@ EOF
     else
         bad "run_checks: a failing package's test did not fail the run"
     fi
-    if grep -q "FAILED at 'test-pb' (exit 1) — log: $scr/logs/test-pb.log" "$scratch/checks-one-fail.out"; then
-        ok "run_checks: the failure names test-pb and its own log path"
+    # heavy() ALSO prints its own inline "FAILED at" the moment test-pb
+    # fails, so a bare grep for the line would pass even with a broken
+    # report_parallel_failures — isolate the text AFTER the consolidated
+    # report's own marker to test THAT specifically.
+    tail_report="$(sed -n '/^land: a parallel check failed:/,$p' "$scratch/checks-one-fail.out")"
+    if printf '%s' "$tail_report" | grep -q "FAILED at 'test-pb' (exit 1) — log: $scr/logs/test-pb.log"; then
+        ok "run_checks: the CONSOLIDATED report names test-pb and its own log path"
     else
-        bad "run_checks: the failure was not attributed to test-pb by name and log"
+        bad "run_checks: the consolidated report did not name test-pb by name and log"
         cat "$scratch/checks-one-fail.out"
     fi
 }
@@ -428,11 +433,16 @@ EOF
     else
         bad "run_checks: two failing packages did not fail the run"
     fi
-    if grep -q "FAILED at 'test-pa' (exit 1) — log: $scr/logs/test-pa.log" "$scratch/checks-two-fail.out" &&
-        grep -q "FAILED at 'test-pc' (exit 1) — log: $scr/logs/test-pc.log" "$scratch/checks-two-fail.out"; then
-        ok "run_checks: BOTH test-pa and test-pc are named with their own logs"
+    # Isolate the CONSOLIDATED report (after its own marker line) — heavy()
+    # already prints its own inline "FAILED at" per job as it happens, so
+    # checking the whole output would pass even if the consolidated report
+    # silently dropped one, or all, of the failures.
+    tail_report="$(sed -n '/^land: a parallel check failed:/,$p' "$scratch/checks-two-fail.out")"
+    if printf '%s' "$tail_report" | grep -q "FAILED at 'test-pa' (exit 1) — log: $scr/logs/test-pa.log" &&
+        printf '%s' "$tail_report" | grep -q "FAILED at 'test-pc' (exit 1) — log: $scr/logs/test-pc.log"; then
+        ok "run_checks: the CONSOLIDATED report names BOTH test-pa and test-pc with their own logs"
     else
-        bad "run_checks: did not name both failing jobs with their logs"
+        bad "run_checks: the consolidated report did not name both failing jobs with their logs"
         cat "$scratch/checks-two-fail.out"
     fi
 }
