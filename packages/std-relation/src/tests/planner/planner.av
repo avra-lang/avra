@@ -7,6 +7,12 @@ use @std.relation.db.{Db, hooked_db, Hooks}
 
 enum Shade { Red, Green }
 
+type Code = string
+
+/// A named type's column: carried as its shape, looked up by its name.
+@relation
+type Coded = { @index code: Code, n: int }
+
 @relation
 type Item = { @index tag: string, @index shade: Shade, @index labels: List<string>, n: int, note: string? }
 
@@ -106,6 +112,19 @@ fn cases() -> string {
     "${c1} | ${c2} | ${c3} | ${c4} | ${c5} | ${c6} | ${c7}"
 }
 
+fn coded() -> string {
+    let db = logged()
+    let _ = Coded.insert(db, code: Code("a"), n: 1)
+    let _ = Coded.insert(db, code: Code("b"), n: 2)
+    let _ = Coded.insert(db, code: Code("a"), n: 3)
+    let rows = Coded.all(db)
+    let want = Code("a")
+    let m = reads().get().length
+    let hits = [c.n for c in Coded.all(db) if c.code == want]
+    let scan = [c.n for c in rows if c.code == want]
+    "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
+}
+
 fn empty_calls() -> string {
     let db = logged()
     let before = picks().get()
@@ -113,4 +132,4 @@ fn empty_calls() -> string {
     "${none.length} ${picks().get() - before}"
 }
 
-"${cases()} | ${empty_calls()}"
+"${cases()} | ${empty_calls()} | ${coded()}"
