@@ -154,6 +154,25 @@ ud=$(find .avra-cache -type d -iname 'unit*' | head -1)
 rm -rf "$ud"; S "every Unit row deleted (asks, homes, consts)" a; S "same, b" b
 ed $R/c/src/main.av 'println("cc ' 'println("C ';                     S "c again, over a's objects" c
 S "final no-op a" a
+# A GENERIC REACHED WITH NO SUBSTITUTION IS STILL AN INSTANTIATION, and the caller's.
+# `st` holds @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
+# `stores<R>` with R pinned by nothing but the answer, from a home `st` never lowered.
+mkdir -p $R/st/src $R/rel/src
+printf '[package]\nname = "rt-st"\nversion = "0.1.0"\n' > $R/st/avra.toml
+printf '[package]\nname = "rt-rel"\nversion = "0.1.0"\n' > $R/rel/avra.toml
+printf 'use @std.relation.stable.{stable_hasher}\nprintln("st ${stable_hasher(1).finish() != 0}")\n' > $R/st/src/main.av
+cat > $R/rel/src/main.av <<'AV'
+use @std.relation.{relation}
+use @std.relation.db.{new_db}
+@relation
+type Todo = { id: int, @index owner: string }
+let db = new_db()
+let _ = Todo.insert(db, Todo { id: 0, owner: "a" })
+println("rel ${Todo.all(db).length}")
+AV
+S "a program holds @std/relation, reaching only stable.av" st
+S "a @relation's generic, reached with no substitution, from a home never lowered" rel
+
 # THE SUITE THROUGH THE SAME STORE: a verdict must follow a body a held test calls
 mkdir -p $R/t/src/tests/shown
 cat > $R/t/avra.toml <<'TOML'
