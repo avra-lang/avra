@@ -1,0 +1,90 @@
+//! What `avra explain` renders — the pack made visible (P7: the cache
+//! is never a black box). Pure reads over `Pack` alone, so this never
+//! depends on which query families are durable yet
+//! (docs/2026_09_26_COMPILER_DB_TOWNHALL.md, §7.2 N6).
+
+/// The four ways a stored edge can answer, once its recorded name is
+/// re-asked against this pack: it still matches what was expected, it
+/// changed (a recomputation is owed), it names nothing this pack
+/// stores (an external input — a file, an env var, a manifest — this
+/// pack cannot re-check on its own), or it re-enters a name already on
+/// the path here, which a sound dependency graph never does.
+export enum Held { Matches, Stale, External, Cycle }
+
+export type WitnessNode = {
+    name: string,
+    held: Held,
+    stored_hash: int,
+    expected_hash: int,
+    children: List<WitnessNode>,
+}
+
+/// One edge's own witness tree: whether `name`'s pack entry still
+/// carries `expected_hash`, and the same question asked of every edge
+/// IT recorded — red-green, all the way down. `seen` is the path here,
+/// so a cycle in what should be a DAG is named rather than looped.
+export fn witnessed(pack: Pack, name: string, expected_hash: int, seen: List<string>) -> WitnessNode {
+    if seen.contains(name) {
+        return WitnessNode {
+            name: name,
+            held: Held.Cycle,
+            stored_hash: 0,
+            expected_hash: expected_hash,
+            children: [],
+        }
+    }
+    let entry? = pack.get(name) else {
+        return WitnessNode {
+            name: name,
+            held: Held.External,
+            stored_hash: 0,
+            expected_hash: expected_hash,
+            children: [],
+        }
+    }
+    let deeper = seen.concat([name])
+    WitnessNode {
+        name: name,
+        held: if entry.hash == expected_hash { Held.Matches } else { Held.Stale },
+        stored_hash: entry.hash,
+        expected_hash: expected_hash,
+        children: [witnessed(pack, e.name, e.hash, deeper) for e in entry.edges],
+    }
+}
+
+/// Every name this pack ever interned that also has its own stored
+/// entry — an edge-only name (referenced, never `put`) is excluded,
+/// since it names an external dependency, not a row this pack holds.
+export fn real_entries(pack: Pack) -> List<Entry> {
+    let names = pack.names()
+    [pack.get(n)! for n in names if pack.get(n) != null]
+}
+
+export type PackSummary = {
+    entries: int,
+    referenced_only: int,
+    payload_bytes: int,
+    disk_bytes: int,
+    live_bytes: int,
+}
+
+/// The pack's own shape: how many rows it stores, how many further
+/// names it only ever heard of as someone else's dependency, how many
+/// payload bytes those rows hold, and how the file on disk compares to
+/// what a fresh compaction would write.
+export fn summarized(pack: Pack) -> PackSummary {
+    let entries = real_entries(pack)
+    PackSummary {
+        entries: entries.length,
+        referenced_only: pack.names().length - entries.length,
+        payload_bytes: sum_of([e.payload.length for e in entries]),
+        disk_bytes: pack.disk_bytes(),
+        live_bytes: pack.live_bytes(),
+    }
+}
+
+fn sum_of(ns: List<int>) -> int {
+    mut total = 0
+    for n in ns { total = total + n }
+    total
+}
