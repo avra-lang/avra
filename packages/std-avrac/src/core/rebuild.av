@@ -77,6 +77,9 @@ export type Rebuilder = {
     holed_exprs: List<ExprId>,
     holed_stmts: List<StmtId>,
     holed_pats: List<PatId>,
+    // a seat or lambda param whose NAME came through a hole: a binder
+    // with no node of its own, keyed by its ParamId
+    holed_params: List<ParamId>,
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
@@ -107,6 +110,7 @@ export fn classifier(store: NodeStore, runs: List<bool>) -> Rebuilder {
         holed_exprs: [],
         holed_stmts: [],
         holed_pats: [],
+        holed_params: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -137,6 +141,7 @@ export fn copier(
         holed_exprs: [],
         holed_stmts: [],
         holed_pats: [],
+        holed_params: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -385,7 +390,9 @@ impl Rebuilder {
     mut fn param(p: Param) -> Param {
         let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
         if !self.copying { return rebuilt }
-        rebuilt with { id: self.dst.alloc_param_id(self.src.param_id_span(p.id)) }
+        let id = self.dst.alloc_param_id(self.src.param_id_span(p.id))
+        if !self.verbatim && hole_name(p.name.of) != null { self.holed_params.push(id) }
+        rebuilt with { id: id }
     }
 
     mut fn params(ps: List<Param>) -> List<Param> { flatten([self.param_seat(p) for p in ps]) }
@@ -477,6 +484,7 @@ impl Rebuilder {
                 self.holed_exprs = self.holed_exprs.concat(sub.holed_exprs)
                 self.holed_stmts = self.holed_stmts.concat(sub.holed_stmts)
                 self.holed_pats = self.holed_pats.concat(sub.holed_pats)
+                self.holed_params = self.holed_params.concat(sub.holed_params)
                 copied
             },
             .Expanded(expansion) -> BodyView.Expanded(self.expr(expansion)),

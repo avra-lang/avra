@@ -3,17 +3,62 @@
 //! gone. Not a command — `test` re-executes this program with the hand-off's
 //! own first word, and the entry reads it before its commands do. The first
 //! red suite stops the run, so a failure names one thing.
-use @std.avrac.compiler.{verdict_of, staged_binaries}
+use @std.avrac.compiler.{verdict_of, staged_binaries, Want}
+use @std.avrac.compiler.backend.{run_program}
+use @std.avrac.compiler.lower.{program_symbol}
 use @std.process.{status_of, tool, cmd, Env, Outcome, ProcessError, minimal}
 use @std.text.{parse_int}
 use @std.io.{env}
-use commands.{run_binary, refused_by_host}
+use commands.{run_binary, refused_by_host, root_workspace}
+
+/// A `.refuses` test's EVAL leg's own hand-off word — a package's root and
+/// one file under it, never a suite binary.
+const refuse_eval_word = "@refuse-eval"
+
+/// The words a `.refuses` test's eval leg is spawned with.
+export fn refuse_eval_words(root: string, path: string) -> List<string> {
+    [refuse_eval_word, root, path]
+}
 
 /// The light phase's exit when the words are a hand-off; null when
 /// they are a person's line.
 export fn light_phase(words: List<string>) -> int? {
+    if words.first() == refuse_eval_word && words.length == 3 { return refuse_eval(words[1], words[2]) }
     let binaries? = staged_binaries(words) else { return null }
     first_red(binaries)
+}
+
+/// A `.refuses` test's EVAL leg: an EVALUATION NEVER HOLDS A FILE WHOSE
+/// BODY IT CALLS — a hold is a native-link concept (the store's kept
+/// OBJECT stands in for what the evaluator has no linker to read), so
+/// a program calling its own package's held functions met a body with
+/// no instructions and traps on the compiler's OWN defect, not the
+/// law under test. `from_sources(null, Want.Binary)` holds nothing —
+/// every reached body is really there — and asking with NO SINGLE
+/// ENTRY is what already keeps a sibling program test's top level out
+/// of the entry-only law's way (`outside_entry` answers `[]` the
+/// moment `entry == null`, `union`'s `programs` flag lowers every
+/// file's own top level under its `program_symbol` regardless): the
+/// suite's own quarrel-retry (`evaluated()`, suite.av) already reaches
+/// for this exact derivation when a hold taints its first answer, so
+/// this leg reaches for it FIRST. Its own body called by NAME, run
+/// through the evaluator IN THIS PROCESS ALONE — a trap here ends
+/// this child and nothing else, which is the whole point of a leg. A
+/// trap's words on stderr, exit 2; clean, exit 0.
+fn refuse_eval(root: string, path: string) -> int {
+    match root_workspace(root).from_sources(null, Want.Binary) {
+        .Ok(d) -> match run_program(d.lowered, program_symbol(path)) {
+            .Ok(_) -> 0,
+            .Err(words) -> {
+                eprintln("avra: ${words}")
+                2
+            },
+        },
+        .Err(report) -> {
+            println(report)
+            1
+        },
+    }
 }
 
 /// `AVRA_SOUNDNESS` asks for the two extra runs below — off by

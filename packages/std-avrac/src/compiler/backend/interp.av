@@ -34,7 +34,7 @@ use core.{
     Slot,
     debug,
 }
-use @std.path.{joined_path}
+use @std.path.{joined_path, normalized}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
@@ -557,7 +557,7 @@ impl Machine {
                                 body_named(self.l, callee),
                                 resumed_at(body, pc, d),
                                 args,
-                                "a call without a body survived lowering",
+                                "a call to `${callee}` without a body survived lowering",
                             )
                         body = next.body
                         pc = next.pc
@@ -669,6 +669,8 @@ impl Machine {
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
             .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
+            .OnceRead(d, sym) -> self.put_at(d, self.onces.get(sym) ?? Val.N, pc),
+            .OnceCommit(sym, value) -> self.once_committed(sym, value, pc),
             .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
             .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
             .ArmEnd(gives) -> self.merge_then(b, gives, pc),
@@ -795,7 +797,10 @@ impl Machine {
                 )
             return Val.S("")
         }
-        let path = if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) }
+        // NORMALIZED: an unfolded `..` names the same file under a second
+        // spelling, minting it a second FileId — the same file parsed and
+        // admitted twice under two identities.
+        let path = normalized(if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) })
         if avra_selfhost_file_exists(path) == 0 {
             self.trapped("`embed` finds no `${rel}` beside the source")
             return Val.S("")
@@ -1866,10 +1871,26 @@ impl Machine {
         held ?? Val.N
     }
 
-    /// The once cache kept: the first answer wins for the run.
+    /// The once cache kept: the first answer wins for the run — this
+    /// arm is unreachable now (lowering emits `OnceCommit`, never a
+    /// `CallRt` to this name), and it answered LAST-WINS with no
+    /// presence check, contradicting its own doc and the runtime's
+    /// `avra_once_set`; fixed to match both, found writing
+    /// `once_committed`'s fiber-race witness.
     fn once_set_val(vals: List<Val>) -> Val {
-        self.onces.set(self.text_val(vals[0]), vals[1])
+        let key = self.text_val(vals[0])
+        if self.onces.get(key) == null { self.onces.set(key, vals[1]) }
         Val.I(0)
+    }
+
+    /// A compiled `once fn`'s slot, committed: this run's ONE table
+    /// (`self.onces`) is both the keyed cache and every fn's own
+    /// slot at once, so the first commit for `sym` wins and a later
+    /// one is silent — `OnceRead`'s own arm is what every later call
+    /// sees.
+    fn once_committed(sym: string, value: Reg, pc: int) -> int {
+        if self.onces.get(sym) == null { self.onces.set(sym, self.value(value)) }
+        pc + 1
     }
 
     fn insist_val(vals: List<Val>) -> Val {

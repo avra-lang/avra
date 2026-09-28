@@ -43,6 +43,7 @@
 //! when it moves a name that was read. Everything else `Visible(f)` reads
 //! (the manifest, the file's own text) is read as anywhere.
 use core.{
+    wire_fields,
     DeclId,
     FileId,
     ModuleId,
@@ -57,19 +58,15 @@ use core.{
     module_path,
     same_file,
     sorted_texts,
+    Exemplar,
 }
 use query.{Key}
 use diagnostics.{Diag, located_files}
 use features.{Decls, Decl, NameKind, name_kind_word, name_kind_of, Namespace}
 use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
-use @std.relation.stable.{
-    writer as stable_writer,
-    reader as stable_reader,
-    Writer,
-    Reader,
-    CodecFault,
-}
+use @std.relation.{writer as stable_writer, reader as stable_reader, Writer, Reader, CodecFault}
 use @std.text.{parse_int}
+use @std.meta.{derive}
 
 // ── Stable names: a dense id means nothing in the next process ──
 
@@ -89,17 +86,9 @@ fn stable_line(kind: string, parts: List<string>) -> string {
 type StableId = { kind: string, parts: List<string> }
 
 fn parsed_stable(s: string) -> StableId {
-    let lines = stable_fields(s)
+    let lines = wire_fields(s, "\n")
     let kind = lines.first() ?? ""
     StableId { kind: kind, parts: [wire_unescape(lines[i]) for i in 1..lines.length] }
-}
-
-/// A `stable_line`'s fields, an empty last one included: `split` drops a
-/// trailing empty segment, so a name ending in an empty field (the root
-/// module's) would read back one field short.
-fn stable_fields(s: string) -> List<string> {
-    let lines = s.split("\n")
-    if s.ends_with("\n") { lines.concat([""]) } else { lines }
 }
 
 /// `stable_key_name`'s inverse: the family's own word, and the arg it
@@ -282,7 +271,13 @@ impl Walk {
 /// carries a `NodeStore` arena and a `program: fn() -> Program`
 /// closure, neither of which a durable row can hold (M5b's own future
 /// slice, COMPILER DB townhall §6.11).
+@derive(Exemplar)
 export type WitnessedCheck = { clean: bool, report: string }
+
+impl WitnessedCheck {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> WitnessedCheck { WitnessedCheck { clean: false, report: "" } }
+}
 
 /// The record-shape stamp a stored check carries (§6.6's record header
 /// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an

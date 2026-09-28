@@ -3,13 +3,17 @@
 //! it must print beside it. Every proof is both engines: a program the
 //! evaluator has not agreed with since anything it can see last moved runs
 //! there first, and a disagreement stops the run before a binary exists.
-use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted}
+use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized}
 use @std.io.{make_dirs}
 use compiler.backend.{run_program}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host}
 use compiler.lower.{Lowered, program_symbol}
+
+/// One `.refuses` program: a trap IS its proof, so it is never called
+/// in-process — `voice` is the text its trap's stderr must carry.
+export type RefusesCall = { path: string, voice: string }
 
 impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
@@ -53,6 +57,7 @@ impl Workspace {
             if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }
             println("${counted(results.length, "example")} proved, as cases")
         }
+        let refuses = self.refuses_tests()
         let programs = if only == null { self.program_tests() } else { [] }
         let under = Keyed {
             named: "suite:${only ?? ""}",
@@ -60,13 +65,13 @@ impl Workspace {
         }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
         let kept = self.kept_binary(self.program_key(under.named, under.beside), binary)
-        if kept != null { return kept }
+        if kept != null { return .Ok(kept! with { refuses: refuses }) }
         let store = store_at(build_cache_root(self))
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
         let d = self.evaluated(store, owed, told_from)?
         let told = [s for s in d.said if only == null || normalized(s.path) == normalized(only!)]
         let cases = flatten([s.cases for s in told])
-        if cases.is_empty() && programs.is_empty() { return .Ok(null) }
+        if cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
         let calls = [self.program_call(path, told_from) for path in programs]
         let homes = flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told])
@@ -80,8 +85,24 @@ impl Workspace {
                 under,
                 binary,
                 tools,
-            ) { .Ok(b) -> b, .Err(e) -> { fail e.describe().message } }
+            ) { .Ok(b) -> b with { refuses: refuses }, .Err(e) -> { fail e.describe().message } }
         made
+    }
+
+    /// The package's REFUSAL program tests, marked `.refuses` instead
+    /// of `.expected`: a program whose trap is the proof. Never among
+    /// `program_tests()` — a suite runs every case in one process, and
+    /// calling one of these there would end it at the first one.
+    fn refuses_tests() -> List<RefusesCall> {
+        [self.refuses_call(p) for p in sorted_texts([f for f in self.root_files() if self.expects_trap(f)])]
+    }
+
+    fn refuses_call(path: string) -> RefusesCall {
+        let text = self.host.read(beside(path, "refuses"))
+        RefusesCall {
+            path: path,
+            voice: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+        }
     }
 
     /// The program derived with every program the evaluator owes a run READ,
@@ -115,8 +136,22 @@ impl Workspace {
 
     /// The package's program tests, in name order.
     fn program_tests() -> List<string> {
-        sorted_texts([f for f in self.root_files() if self.host.exists(beside(f, "expected"))])
+        sorted_texts([f for f in self.root_files() if self.expects_text(f)])
     }
+
+    /// The text a program must print stands beside it.
+    fn expects_text(path: string) -> bool { self.host.exists(beside(path, "expected")) }
+
+    /// The voice a program's trap must speak stands beside it.
+    fn expects_trap(path: string) -> bool { self.host.exists(beside(path, "refuses")) }
+
+    /// WHETHER A FILE IS A PROGRAM, not a module: a proof stands beside it, so its
+    /// top-level statements are its own to run. Discovery reads the same two
+    /// markers, each for its own kind of proof.
+    fn is_program(path: string) -> bool { self.expects_text(path) || self.expects_trap(path) }
+
+    /// `is_program`, asked of a file the analysis holds.
+    fn is_program_file(f: FileId) -> bool { self.is_program(self.decls.file(f).path) }
 
     /// A marker beside a program drops the evaluator's leg — the seam is the
     /// host's, and the marker's text says why.

@@ -545,6 +545,8 @@ STUB
     cat > "$d/Makefile" <<'MK'
 build/libavra_runtime.a:
 	@touch build/libavra_runtime.a
+objects:
+	@touch build/libavra_runtime.a
 libs:
 	@echo libs-ok
 idioms:
@@ -670,7 +672,11 @@ test_heavy_status() {
     fi
     st=0
     AVRA_MEMCAP_MB=200 AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy hog \
-        python3 -c "import time; x=b'x' * (400*1024*1024); time.sleep(5)" > "$out" 2>&1 || st=$?
+        python3 -c "import time
+x = bytearray(400 * 1024 * 1024)
+end = time.time() + 8
+while time.time() < end:
+    for i in range(0, len(x), 4096): x[i] = 1" > "$out" 2>&1 || st=$?
     if [ "$st" -eq 137 ] && grep -q "memcap: KILLED" "$out"; then
         ok "heavy kills a step past the memory cap with 137"
     else
@@ -799,6 +805,23 @@ test_batch_tool_failure() {
     fi
 }
 
+test_batch_stale_registration() {
+    d="$(batch_repo batch-stale)"
+    git -C "$d" worktree add -q -b land/batch-integration "$scratch/batch-stale-old" main > /dev/null 2>&1
+    # A leftover directory, not a worktree, standing at the batch path.
+    mkdir -p "$scratch/batch-stale-new/build"
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/batch-stale-lock" AVRA_LAND_BATCH_WT="$scratch/batch-stale-new" \
+        AVRA_SLOTS_DIR="$scratch/batch-stale-slots" branch=x sh "$land" --call main_batch 0 a c ) \
+        > "$scratch/batch-stale.out" 2>&1 || st=$?
+    if [ "$st" -eq 0 ] && grep -q "^LANDED" "$scratch/batch-stale.out" && ! grep -q "CULPRIT" "$scratch/batch-stale.out"; then
+        ok "batch: a batch branch still registered to an older tree does not block the batch"
+    else
+        bad "batch: a stale batch-branch registration blocked the batch ($st)"
+        cat "$scratch/batch-stale.out"
+    fi
+}
+
 echo "=== land tooling fixtures ==="
 test_lock_fifo
 test_merge_seed_conflict
@@ -812,6 +835,7 @@ test_commit_seed_if_moved
 test_try_ff
 test_batch_mode
 test_batch_tool_failure
+test_batch_stale_registration
 test_heavy_status
 test_auto_batch
 test_auto_batch_holder_stopped

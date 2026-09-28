@@ -482,6 +482,23 @@ export once fn rt_sigs() -> List<RtSig> {
             keeps: [true, true],
             inert: true,
         },
+        // A COMPILED `once fn`'s OWN SLOT, committed: settles the
+        // keyed table exactly as `avra_once_set` always has (the
+        // credit and the immortal flip happen there, unchanged), then
+        // fills this fn's own process-lifetime global with whichever
+        // value won — so every later `OnceRead` of it is a load, no
+        // call. Reached only from the backend's `OnceCommit` arm,
+        // never through `Ins.CallRt` — the interpreter's once cache is
+        // its own `self.onces`, so this row hosts nothing.
+        RtSig {
+            name: "avra_once_slot_commit",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
         RtSig {
             name: "avra_str_join",
             ret: RtKind.Ptr,
