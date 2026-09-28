@@ -83,7 +83,8 @@ export fn relation_problems(t: Type) -> List<Diagnostic> {
     let collisions = [name_collision(t, f) for f in content(t) if names.contains(f.name) && !takes_key_lookup(t, f)]
     let marks = [mark_problem(t, f) for f in t.fields if !marks_ok(f)]
     let kinds = [kind_problem(t, f) for f in content(t) if !carried(f.kind)]
-    collisions.concat(marks).concat(kinds).concat(lookup_problems(t))
+    let seats = [seat_collision(t, f) for f in content(t) if f.name == db_seat]
+    collisions.concat(seats).concat(marks).concat(kinds).concat(lookup_problems(t))
 }
 
 /// The lookup laws, over fields whose marks are sound: no field
@@ -200,6 +201,9 @@ fn mark_problem(t: Type, f: Field) -> Diagnostic {
     let unknown? = names.find((n: string) -> !known_mark(n)) else { return duplicate_mark(t, f, repeated(names).first() ?? "") }
     unknown_mark(t, f, unknown)
 }
+
+/// The seat `insert` takes the Db in, beside a seat per content field.
+const db_seat: string = "db"
 
 /// The member names the derive writes onto every relation.
 const every_member: List<string> = [
@@ -523,7 +527,8 @@ fn encoded_member(t: Type) -> Decls {
 /// in declared order — `id` left for the store to mint, and a record with
 /// octets to spare refused, never half read.
 fn decoded_member(t: Type) -> Decls {
-    let inits = id_init(t).concat([quote { W { ${f.name}: ${read_value(f.kind)} } } for f in content(t)])
+    let inits = id_init(t)
+        .concat([quote { W { ${f.name}: ${read_value(f.kind)} } } for f in content(t)])
     quote {
         static fn decoded(b: Bytes) -> Result<${t}, CodecFault> {
             let rd = reader(b)
@@ -643,6 +648,15 @@ fn duplicate_mark(t: Type, f: Field, mark: string) -> Diagnostic {
         f.at ?? t.at,
         "`${t.name}.${f.name}` wears `@${mark}` twice",
         "write the mark once",
+    )
+}
+
+fn seat_collision(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "seat_collision",
+        f.at ?? t.at,
+        "`${t.name}.insert` takes the Db as its seat `${db_seat}`, beside a seat per field, and the field wears that name",
+        "rename the field",
     )
 }
 
