@@ -697,6 +697,7 @@ impl Program {
                     ws.hold.held_wants.get(),
                     (w: Wanted) -> ws.lowered(ws.spec_id(w)),
                     (f: FileId) -> ws.is_held(f),
+                    (f: FileId) -> ws.is_program_file(f),
                 ),
         ) with { libraries: ws.linked_packages() }
     }
@@ -713,13 +714,20 @@ impl Program {
     /// WHAT EVERY PARSED FILE'S OBJECT HOLDS, CHECKED: each declared body, and the
     /// file's top level as a body under its program symbol — the same whatever
     /// program asks, so the object is the file's. The entry's law still speaks:
-    /// a module file runs nothing.
+    /// a module file runs nothing, and a program file is none.
     fn files_checked() -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_as(null, true, true)
         let stale = self.layout_report()
         if stale != null { return .Err(stale!) }
-        let spoken = lo.diagnostics.concat(self.ws.decls.outside_entry(self.files, self.entry?.at))
+        let ws = self.ws
+        let spoken = lo
+            .diagnostics
+            .concat(
+                ws
+                    .decls
+                    .outside_entry(self.files, self.entry?.at, (f: FileId) -> ws.is_program_file(f)),
+            )
         if !spoken.is_empty() { return .Err(self.rendered(spoken)) }
         .Ok(lo)
     }

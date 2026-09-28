@@ -1,0 +1,84 @@
+//! A program test beside other program tests in one package: `avra run`
+//! and `avra build` on one answer that program's own text, from a cold
+//! cache — real subprocesses over a package minted fresh for each case,
+//! so no hold stands in for the siblings. `avra_bin`, `scratch_dir` and
+//! `exit_is_zero` are the neighbouring tests' own: this module shares
+//! one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, Env, Outcome, ProcessError}
+use @std.time.{ms, now_ns}
+
+/// A package minted fresh: two program tests, each with its proof beside
+/// it — and, when asked, one more file that runs a statement and has no
+/// proof. Answers the package's root.
+fn sibling_package(stray: bool) -> string {
+    let root = "${scratch_dir()}/siblings_${now_ns()}"
+    let _ = make_dirs("${root}/src/alpha")
+    let _ = make_dirs("${root}/src/beta")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"siblings\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/alpha/alpha.av", "println(\"alpha\")\n")
+    let _ = write_text("${root}/src/alpha/alpha.expected", "alpha\n")
+    let _ = write_text("${root}/src/beta/beta.av", "println(\"beta\")\n")
+    let _ = write_text("${root}/src/beta/beta.expected", "beta\n")
+    if stray {
+        let _ = make_dirs("${root}/src/stray")
+        let _ = write_text("${root}/src/stray/stray.av", "println(\"stray\")\n")
+    }
+    root
+}
+
+fn program_at(root: string, name: string) -> string { "${root}/src/${name}/${name}.av" }
+
+fn avra_ran(args: List<string>) -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, args) with { env: Env.Inherit, timeout: ms(60000) }).outcome()
+}
+
+fn binary_ran(binary: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool(binary)?, []) with { timeout: ms(20000) }).outcome()
+}
+
+/// The stdout of a run that ended clean.
+fn clean_stdout(r: Result<Outcome, ProcessError>) -> string? {
+    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
+}
+
+/// What `avra run` printed for a program, when it ran clean.
+fn run_printed(path: string) -> string? { clean_stdout(avra_ran(["run", path])) }
+
+/// What the binary `avra build` answered for a program printed, when both
+/// steps ran clean.
+fn built_printed(path: string) -> string? {
+    let binary? = clean_stdout(avra_ran(["build", path])) else { return null }
+    clean_stdout(binary_ran(binary.replace("\n", "")))
+}
+
+/// Whether a command refused the program in the entry's law's words.
+fn refused_naming_entry(sub: string, path: string) -> bool {
+    match avra_ran([sub, path]) {
+        .Ok(o) -> !exit_is_zero(o.exit) && o.out.stdout.contains("only the entry `${path}` runs statements"),
+        .Err(_) -> false,
+    }
+}
+
+spec "avra run and build — a program test among its siblings" {
+    given "a package holding two program tests, each with its proof beside it" {
+        then "`run` answers each one's own text" {
+            let root = sibling_package(false)
+            run_printed(program_at(root, "alpha")) == "alpha\n" &&
+                run_printed(program_at(root, "beta")) == "beta\n"
+        }
+        then "`build` from a cold cache answers a binary that prints its own text, for each" {
+            built_printed(program_at(sibling_package(false), "alpha")) == "alpha\n" &&
+                built_printed(program_at(sibling_package(false), "beta")) == "beta\n"
+        }
+    }
+    given "a package that also holds a file with a statement and no proof" {
+        then "`run` refuses it, naming the entry" {
+            refused_naming_entry("run", program_at(sibling_package(true), "alpha"))
+        }
+        then "`build` refuses it the same way" {
+            refused_naming_entry("build", program_at(sibling_package(true), "alpha"))
+        }
+    }
+}
