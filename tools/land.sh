@@ -552,14 +552,16 @@ batch_branch="land/batch-integration"
 # first if this is the first attempt this process has made.
 reset_batch_wt() {
     [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
-    if [ ! -d "$batch_wt" ]; then
+    if [ ! -d "$batch_wt/.git" ] && [ ! -f "$batch_wt/.git" ]; then
         mkdir -p "$(dirname "$batch_wt")"
-        git -C "$main_wt" worktree add -q -B "$batch_branch" "$batch_wt" main
-    else
-        git -C "$batch_wt" checkout -q -B "$batch_branch" main
+        git -C "$main_wt" worktree add -q --detach "$batch_wt" main ||
+            { tool_failed "could not make the batch tree at $batch_wt"; return 1; }
     fi
-    git -C "$batch_wt" reset -q --hard main
-    git -C "$batch_wt" clean -q -fd
+    # The batch branch may still be registered to an older tree.
+    git -C "$batch_wt" checkout -q -f --ignore-other-worktrees -B "$batch_branch" main ||
+        { tool_failed "could not check out the batch branch in $batch_wt"; return 1; }
+    git -C "$batch_wt" reset -q --hard main && git -C "$batch_wt" clean -q -fd ||
+        { tool_failed "could not reset the batch tree at $batch_wt"; return 1; }
     # Each attempt merges different content: a cache kept from the last
     # one describes files that are no longer there.
     move_caches_aside "$batch_wt"
@@ -589,7 +591,7 @@ try_integration() {
     label="$1"
     shift
     echo "land: batch attempt [$label]: $*" >&2
-    reset_batch_wt
+    reset_batch_wt || return 1
     for b in "$@"; do
         b_safe="$(printf '%s' "$b" | tr '/ ' '__')"
         if ! merge_ref_in "$batch_wt" "refs/heads/$b" > "$(log_of "batch-merge-$label-$b_safe")" 2>&1; then
