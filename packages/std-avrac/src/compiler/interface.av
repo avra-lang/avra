@@ -535,10 +535,16 @@ impl Decls {
             }
             if cursor >= words.length { return null }
             let bits = words[cursor]
+            // EACH SEAT SPENDS `mark_word_width` CHARACTERS, PACKED WITH NO
+            // SEPARATOR — the same boundary-that-moves hazard a flat splice
+            // always carries (CLAUDE.md), so a seat is read at its own
+            // slice, never at one character per seat.
             mut marks: List<SeatMark> = []
             for j in 0..n {
-                if j >= bits.length { return null }
-                marks.push(mark_of_word(bits.substring(j, j + 1)))
+                let lo = j * mark_word_width
+                let hi = lo + mark_word_width
+                if hi > bits.length { return null }
+                marks.push(mark_of_word(bits.substring(lo, hi)))
             }
             let ret? = self.read_type_wire(words, cursor + 1) else { return null }
             return WireType {
