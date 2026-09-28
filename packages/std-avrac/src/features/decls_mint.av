@@ -14,7 +14,6 @@ use core.{
     NodeStore,
     Param,
     filled,
-    flatten,
     same_decl,
     SpecParts,
     ImplParts,
@@ -568,6 +567,9 @@ impl Decls {
     /// Generated SOURCE admitted beside the declaration that asked for
     /// it: the code was parsed INTO this file's store (no copy), so the
     /// declarations mint from the same arena every pass already reads.
+    /// Each statement's range starts where the one before it ended:
+    /// ranges never overlap, since `TypeFacts.absorb` lays a later
+    /// declaration's facts over an earlier one's at the same id.
     fn mint_generated_code(
         f: FileId,
         store: NodeStore,
@@ -579,11 +581,27 @@ impl Decls {
     ) -> List<DeclId> {
         // each statement keys under its place, so two impls of one
         // target in one generation mint two
-        let made = flatten(
-            [self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, lo) for j, s in stmts],
-        )
+        mut cursor = lo
+        mut made: List<DeclId> = []
+        for j, s in stmts {
+            let one = self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, cursor)
+            made = made.concat(one)
+            cursor = self.stmts_end(one, cursor)
+        }
         self.record_generated(f, made)
         made
+    }
+
+    /// The highest `hi` among a statement's own minted declarations —
+    /// the true end of its subtree, regardless of the `lo` it was
+    /// minted from — or `fallback` when it minted none.
+    fn stmts_end(made: List<DeclId>, fallback: int) -> int {
+        mut furthest = fallback
+        for d in made {
+            let hi = self.decl(d).hi
+            if hi > furthest { furthest = hi }
+        }
+        furthest
     }
 
     /// One generated statement: its declaration and members, or its
