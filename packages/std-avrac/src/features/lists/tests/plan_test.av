@@ -16,10 +16,11 @@ fn rows() -> string {
         "    @plans(\"n\")\n" +
         "    static fn by_n(db: int, v: string) -> List<Row> { [] }\n" +
         "}\n" +
-        "export fn ok(r: Row) -> bool { r.n > 0 }\n"
+        "export fn ok(r: Row) -> bool { r.n > 0 }\n" +
+        "export fn same(r: Row) -> Row { r }\n"
 }
 
-fn row_use() -> string { "use @x.c.{Row, ok}\n" }
+fn row_use() -> string { "use @x.c.{Row, ok, same}\n" }
 
 spec "features/lists — the comprehension planner" {
     given "a declared lookup" {
@@ -50,6 +51,35 @@ spec "features/lists — the comprehension planner" {
                 provided(row_use() + "[r for r in Row.all(1) if ok(r)].length", rows()),
                 "this filter hands `Row`'s rows to a call, and no declared index narrows the scan it would run over",
             )
+        }
+        then "a row handed through another call is refused, at the call it reaches first" {
+            let p = provided(row_use() + "[r for r in Row.all(1) if ok(same(r))].length", rows())
+            refused_in(p, "this filter hands `Row`'s rows to a call") &&
+                p.report().contains("main.av:2:30]")
+        }
+        then "a call under `!` is refused" {
+            refused_in(
+                provided(row_use() + "[r for r in Row.all(1) if !ok(r)].length", rows()),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "a call on one side of `||` is refused — a disjunction narrows nothing" {
+            refused_in(
+                provided(
+                    row_use() + "[r for r in Row.all(1) if r.tag == \"a\" || ok(r)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "a call reading a row field under `!` beside a narrowing compare is a filter" {
+            answered(
+                provided(
+                    row_use() +
+                        "fn big(n: int) -> bool { n > 5 }\n[r for r in Row.all(1) if r.tag == \"a\" && !big(r.n)].length",
+                    rows(),
+                ),
+            ) == "0"
         }
         then "the same call beside a narrowing compare is a filter on the narrowed rows" {
             answered(

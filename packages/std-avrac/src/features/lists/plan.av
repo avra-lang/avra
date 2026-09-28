@@ -6,7 +6,7 @@
 //! filter still runs, so the narrowed walk keeps the scan's meaning; the
 //! index is a declaration, never a guess.
 use core.{ExprId, DeclId, DeclKind, BinOp, CompClause, Binding, Type, same_expr}
-use features.{FileView, NameFacts, bound_decl_of}
+use features.{FileView, NameFacts, Dispatch, bound_decl_of, post_order}
 
 /// A relation's whole set scanned by a comprehension's first head: the
 /// relation, its `@plans_all` accessor, and the Db it was asked of.
@@ -173,34 +173,28 @@ export fn could_be_null(shape: Type) -> bool {
     match shape { .Opt(_) or .Null -> true, rest -> false }
 }
 
-/// The first conjunct, in a filter before any second head, that hands a
-/// row to a call — what no index can answer, so a scan of the whole set
-/// would run it per row with nothing narrowing it first.
-export fn residual(view: FileView, names: NameFacts, clauses: List<CompClause>) -> ExprId? {
+/// The first call, in a filter before any second head, handed a row —
+/// what no index can answer, so a scan of the whole set would run it per
+/// row with nothing narrowing it first. Children come first, so the call
+/// named is the innermost.
+export fn residual(d: Dispatch, view: FileView, names: NameFacts, clauses: List<CompClause>) -> ExprId? {
     let j = elem_place(clauses[0])
-    [c for cond in leading_filters(clauses) for c in conjuncts(view, cond) if hands_row(view, names, cond, c, j)]
+    [k for cond in leading_filters(clauses) for k in post_order(d, view.store, cond) if hands_row(d, view, names, cond, k, j)]
         .first()
 }
 
-/// Whether a conjunct calls something with the row — `r.f.contains(v)`
-/// excepted, the list lookup's own form.
-fn hands_row(view: FileView, names: NameFacts, cond: ExprId, c: ExprId, j: int) -> bool {
-    match view.store.expr(c) {
-        .Call(_, _, args) -> args.any((a: ExprId) -> reads_row(view, names, cond, a, j)),
+/// Whether a node is a call whose subject or arguments mention the row —
+/// `r.f.contains(v)` excepted, the list lookup's own form.
+fn hands_row(d: Dispatch, view: FileView, names: NameFacts, cond: ExprId, k: ExprId, j: int) -> bool {
+    match view.store.expr(k) {
+        .Call(_, _, args) -> args.any((a: ExprId) -> mentions_row(d, view, names, cond, a, j)),
         .MethodCall(subject, name, args) -> !(name.of == "contains" && row_field(view, names, cond, subject, j) != null) &&
-            (reads_row(view, names, cond, subject, j) ||
-                args.any((a: ExprId) -> reads_row(view, names, cond, a, j))),
-        .Not(inner) -> hands_row(view, names, cond, inner, j),
-        .Binary(_, l, r) -> hands_row(view, names, cond, l, j) || hands_row(view, names, cond, r, j),
+            [subject].concat(args).any((a: ExprId) -> mentions_row(d, view, names, cond, a, j)),
         rest -> false,
     }
 }
 
-/// Whether an expression is the row, or a field path of it.
-fn reads_row(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
-    match view.store.expr(e) {
-        .Ident(_) -> is_row(names, cond, e, j),
-        .Prop(subject, _) -> reads_row(view, names, cond, subject, j),
-        rest -> false,
-    }
+/// Whether the first head's row appears anywhere in an expression.
+fn mentions_row(d: Dispatch, view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
+    post_order(d, view.store, e).any((k: ExprId) -> is_row(names, cond, k, j))
 }
