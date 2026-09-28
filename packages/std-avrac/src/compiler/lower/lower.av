@@ -270,6 +270,7 @@ export fn lower(a: Analysis) -> Lowered {
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
+            (_f: FileId) -> false,
         )
 }
 
@@ -366,6 +367,7 @@ impl Decls {
         held_asks: List<Wanted>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
+        is_program: fn(FileId) -> bool,
     ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -375,7 +377,7 @@ impl Decls {
         // a body under the program's own symbol, for a runner's entry to
         // call in turn — every program in one binary
         mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
-        spoken = spoken.concat(self.outside_entry(files, entry))
+        spoken = spoken.concat(self.outside_entry(files, entry, is_program))
         let main_unit: Unit? = if entry == null {
             null
         } else {
@@ -440,10 +442,15 @@ impl Decls {
         }
     }
 
-    /// THE ENTRY'S LAW over every other file: a module file runs nothing.
-    fn outside_entry(files: List<Analysis>, entry: int?) -> List<Diag> {
+    /// THE ENTRY'S LAW over every other file: a module file runs nothing. A program
+    /// file is no module file — its statements are its own program's.
+    fn outside_entry(files: List<Analysis>, entry: int?, is_program: fn(FileId) -> bool) -> List<
+        Diag,
+    > {
         if entry == null { return [] }
-        flatten([entry_only(a, files[entry!]) for i, a in files if i != entry!])
+        flatten(
+            [entry_only(a, files[entry!]) for i, a in files if i != entry! && !is_program(a.view.file)],
+        )
     }
 
     /// A const's initializer as a program of its own: the root unit's

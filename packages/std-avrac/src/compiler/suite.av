@@ -3,7 +3,7 @@
 //! it must print beside it. Every proof is both engines: a program the
 //! evaluator has not agreed with since anything it can see last moved runs
 //! there first, and a disagreement stops the run before a binary exists.
-use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted}
+use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized}
 use @std.io.{make_dirs}
 use compiler.backend.{run_program}
@@ -94,7 +94,7 @@ impl Workspace {
     /// `program_tests()` — a suite runs every case in one process, and
     /// calling one of these there would end it at the first one.
     fn refuses_tests() -> List<RefusesCall> {
-        [self.refuses_call(p) for p in sorted_texts([f for f in self.root_files() if self.host.exists(beside(f, "refuses"))])]
+        [self.refuses_call(p) for p in sorted_texts([f for f in self.root_files() if self.expects_trap(f)])]
     }
 
     fn refuses_call(path: string) -> RefusesCall {
@@ -136,8 +136,22 @@ impl Workspace {
 
     /// The package's program tests, in name order.
     fn program_tests() -> List<string> {
-        sorted_texts([f for f in self.root_files() if self.host.exists(beside(f, "expected"))])
+        sorted_texts([f for f in self.root_files() if self.expects_text(f)])
     }
+
+    /// The text a program must print stands beside it.
+    fn expects_text(path: string) -> bool { self.host.exists(beside(path, "expected")) }
+
+    /// The voice a program's trap must speak stands beside it.
+    fn expects_trap(path: string) -> bool { self.host.exists(beside(path, "refuses")) }
+
+    /// WHETHER A FILE IS A PROGRAM, not a module: a proof stands beside it, so its
+    /// top-level statements are its own to run. Discovery reads the same two
+    /// markers, each for its own kind of proof.
+    fn is_program(path: string) -> bool { self.expects_text(path) || self.expects_trap(path) }
+
+    /// `is_program`, asked of a file the analysis holds.
+    fn is_program_file(f: FileId) -> bool { self.is_program(self.decls.file(f).path) }
 
     /// A marker beside a program drops the evaluator's leg — the seam is the
     /// host's, and the marker's text says why.
