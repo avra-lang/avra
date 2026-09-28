@@ -740,6 +740,7 @@ impl Workspace {
                     doc: self.decl_doc_text(d),
                     annotations: self.decl_annotations(v, d),
                     module: self.decls.qualified_module(d),
+                    over: self.named_over(d),
                 },
                 heap,
             ),
@@ -873,6 +874,13 @@ impl Workspace {
     fn answer_kind(d: DeclId) -> Kind {
         let sig? = self.decls.sig(d)?.fn_sig() else { return no_kind() }
         kind_of(self.decls.types, sig.ret)
+    }
+
+    /// A named type's shape — `type Code = string` stands over `string` —
+    /// and nothing for any other declaration.
+    fn named_over(d: DeclId) -> Kind {
+        let sig? = self.decls.sig(d) else { return no_kind() }
+        match sig { .Named(n) -> kind_of(self.decls.types, n.of), rest -> no_kind() }
     }
 
     fn field_kinds(d: DeclId) -> List<Kind> {
