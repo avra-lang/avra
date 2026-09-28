@@ -23,8 +23,18 @@ export enum Filled {
     Type(t: TypeRef)
     Stmts(ss: List<StmtId>)
     Arms(arms: List<Arm>)
+    Params(ps: List<Param>)
+    Inits(inits: Inits)
     Unplaceable(why: string)
 }
+
+/// A literal whose run was refused: no fields, and nothing more to say.
+export fn spoiled_inits() -> Inits { Inits { names: [], values: [], spoiled: true } }
+
+/// A record literal's fields: each name beside its value, in order —
+/// `spoiled` when a run among them was refused, so the literal says no
+/// more.
+export type Inits = { names: List<Plain>, values: List<ExprId>, spoiled: bool = false }
 
 /// A hole no seat can hold: which hole, and the words for it.
 export type Unplaced = { hole: int, why: string }
@@ -310,7 +320,11 @@ impl Rebuilder {
 
     /// A type's NAME where no written type stands (an impl target).
     mut fn type_name(text: Nominal) -> Nominal {
-        let k? = self.lone_hole(text.of) else { return Nominal(self.rewritten(text.of)) }
+        let k? = self.lone_hole(text.of) else {
+            // a woven name is read where the code lands, as a scoped one is
+            if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+            return Nominal(self.rewritten(text.of))
+        }
         self.classify(k, HoleKind.Type)
         if !self.copying { return text }
         Nominal(self.fill_type(k).name)
@@ -367,7 +381,49 @@ impl Rebuilder {
         p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
     }
 
-    mut fn params(ps: List<Param>) -> List<Param> { [self.param(p) for p in ps] }
+    mut fn params(ps: List<Param>) -> List<Param> { flatten([self.param_seat(p) for p in ps]) }
+
+    /// A field or parameter seat: a lone hole standing as the whole
+    /// entry — a name with no type written — fills with entries.
+    mut fn param_seat(p: Param) -> List<Param> {
+        let k: int? = self.param_hole(p)
+        if k != null {
+            self.classify(k!, HoleKind.Fields)
+            if !self.copying { return [p] }
+            return self.fill_params(k!)
+        }
+        [self.param(p)]
+    }
+
+    fn param_hole(p: Param) -> int? { self.spread_hole(p.name.of) }
+
+    /// A record literal's fields, each name with its value: a lone hole
+    /// standing as a whole field — its name and its value the same
+    /// hole — fills with fields.
+    mut fn inits(names: List<Plain>, values: List<ExprId>) -> Inits {
+        let parts = [self.init_seat(n, values[j]) for j, n in names]
+        Inits {
+            names: flatten([i.names for i in parts]),
+            values: flatten([i.values for i in parts]),
+            spoiled: parts.any(it.spoiled),
+        }
+    }
+
+    mut fn init_seat(n: Plain, v: ExprId) -> Inits {
+        let k: int? = self.init_hole(n, v)
+        if k != null {
+            self.classify(k!, HoleKind.Inits)
+            if !self.copying { return Inits { names: [n], values: [v] } }
+            return self.fill_inits(k!)
+        }
+        Inits { names: [self.plain_name(n)], values: [self.expr(v)] }
+    }
+
+    fn init_hole(n: Plain, v: ExprId) -> int? {
+        let k: int? = self.spread_hole(n.of)
+        if k == null || self.lone_hole(self.src.ident_name(v)) != k { return null }
+        k
+    }
 
     mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
 
@@ -472,6 +528,15 @@ impl Rebuilder {
         hole!.holes[0]
     }
 
+    /// The index of a hole SPREAD as a whole entry — `..${k}`, nothing
+    /// else around it — or null.
+    fn spread_hole(text: string) -> int? {
+        if self.verbatim { return null }
+        let hole? = hole_name(text) else { return null }
+        if hole.holes.length != 1 || hole.parts[0] != ".." || !hole.parts[1].is_empty() { return null }
+        hole.holes[0]
+    }
+
     /// The index of a lone hole standing as this expression, marked
     /// `${..name}` — `lone_hole`'s twin, gated on the run mark, for a
     /// seat among a `List<ExprId>`. The mark rides the hole's FILL
@@ -509,7 +574,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 self.dst.alloc_expr(Expr.Error)
             },
-            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
                 self.dst.alloc_expr(Expr.Error)
             },
@@ -525,7 +590,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) -> {
+            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -538,7 +603,7 @@ impl Rebuilder {
             .Type(t) -> t.name,
             .Names(ts) -> ts.first() ?? "",
             .Unplaceable(why) -> self.unplaced_name(k, why),
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> self.misfit(k),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.misfit(k),
         }
     }
 
@@ -548,7 +613,7 @@ impl Rebuilder {
             .Name(t) -> [t],
             .Type(t) -> [t.name],
             .Unplaceable(why) -> [self.unplaced_name(k, why)],
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> [self.misfit(k)],
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.misfit(k)],
         }
     }
 
@@ -557,7 +622,7 @@ impl Rebuilder {
             .Type(t) -> t,
             .Name(t) -> named_ref(t),
             .Unplaceable(why) -> named_ref(self.unplaced_name(k, why)),
-            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> named_ref(self.misfit(k)),
+            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> named_ref(self.misfit(k)),
         }
     }
 
@@ -569,7 +634,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -583,9 +648,37 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Params(_) or .Inits(_) -> {
                 self.misfits.push(k)
                 []
+            },
+        }
+    }
+
+    mut fn fill_params(k: int) -> List<Param> {
+        match self.filled(k, HoleKind.Fields) {
+            .Params(ps) -> ps,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Inits(_) -> {
+                self.misfits.push(k)
+                []
+            },
+        }
+    }
+
+    mut fn fill_inits(k: int) -> Inits {
+        match self.filled(k, HoleKind.Inits) {
+            .Inits(i) -> i,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                spoiled_inits()
+            },
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) -> {
+                self.misfits.push(k)
+                spoiled_inits()
             },
         }
     }

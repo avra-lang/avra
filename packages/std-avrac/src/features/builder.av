@@ -436,7 +436,8 @@ impl Builder {
         List<Param>,
         string,
     > {
-        if fs.length != ft.length {
+        let typed = [self.type_after(fs, ft, j) for j, f in fs]
+        if [t for t in typed if t != null].length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
         let w = MarkWindows {
@@ -447,7 +448,7 @@ impl Builder {
         .Ok(
             [Param {
                 name: Scoped(f.text),
-                ty: ft[j],
+                ty: typed[j],
                 default: self.default_before(fs, fds, j),
                 promises: plain_mark,
                 span: f.span,
@@ -468,6 +469,22 @@ impl Builder {
         let lo = fs[j].span.lo
         let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
         fds.find((d) -> self.starts_between(d, lo, hi))
+    }
+
+    /// The written type between field `j`'s name and the next field's
+    /// — null for a hole standing as the whole field.
+    fn type_after(fs: List<Token>, ft: List<TypeRef>, j: int) -> TypeRef? {
+        let lo = fs[j].span.lo
+        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
+        ft.find((t) -> t.span != null && between(t.span!.lo, lo, hi))
+    }
+
+    /// The value between field `j`'s name and the next field's — null
+    /// for a hole standing as the whole field.
+    fn value_after(vn: List<Token>, ve: List<ExprId>, j: int) -> ExprId? {
+        let lo = vn[j].span.lo
+        let hi: int = if j + 1 < vn.length { vn[j + 1].span.lo } else { 1000000000 }
+        ve.find((e) -> self.starts_between(e, lo, hi))
     }
 
     fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
