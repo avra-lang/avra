@@ -14,7 +14,6 @@ use core.{
     NodeStore,
     Param,
     filled,
-    flatten,
     same_decl,
     SpecParts,
     ImplParts,
@@ -566,6 +565,17 @@ impl Decls {
     /// Generated SOURCE admitted beside the declaration that asked for
     /// it: the code was parsed INTO this file's store (no copy), so the
     /// declarations mint from the same arena every pass already reads.
+    /// EACH STATEMENT'S RANGE STARTS WHERE THE ONE BEFORE IT ENDED: a
+    /// splice of several top-level statements allocates them in order
+    /// (children before their own owner, owners before their
+    /// successor), so a shared `lo` handed to every statement gives
+    /// every statement after the first a window that OVERLAPS the
+    /// ones before it. `TypeFacts.absorb` folds a later declaration's
+    /// facts over an earlier one's at the SAME expression id, so that
+    /// overlap silently stomps a real fact (a generic call's recorded
+    /// substitution among them) with the later declaration's unset
+    /// seed. `range_bodies` gives a written impl's methods this same
+    /// non-overlapping threading; this is its generated twin.
     fn mint_generated_code(
         f: FileId,
         store: NodeStore,
@@ -577,11 +587,27 @@ impl Decls {
     ) -> List<DeclId> {
         // each statement keys under its place, so two impls of one
         // target in one generation mint two
-        let made = flatten(
-            [self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, lo) for j, s in stmts],
-        )
+        mut cursor = lo
+        mut made: List<DeclId> = []
+        for j, s in stmts {
+            let one = self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, cursor)
+            made = made.concat(one)
+            cursor = self.stmts_end(one, cursor)
+        }
         self.record_generated(f, made)
         made
+    }
+
+    /// The highest `hi` among a statement's own minted declarations —
+    /// the true end of its subtree, regardless of the `lo` it was
+    /// minted from — or `fallback` when it minted none.
+    fn stmts_end(made: List<DeclId>, fallback: int) -> int {
+        mut furthest = fallback
+        for d in made {
+            let hi = self.decl(d).hi
+            if hi > furthest { furthest = hi }
+        }
+        furthest
     }
 
     /// One generated statement: its declaration and members, or its
