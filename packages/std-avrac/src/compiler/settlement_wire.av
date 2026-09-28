@@ -35,14 +35,7 @@ fn wire_map(row: MetaMap) -> string {
 fn settled_wire(s: Settled) -> string {
     mut out = "S1" + wire_field("${s.fingerprint}") + wire_field("${s.embeds.length}")
     for path in s.embeds { out = out + wire_field(path) }
-    out = out + wire_field("${s.heap.nodes.length}")
-    for slots in s.heap.nodes {
-        out = out + wire_field("${slots.length}")
-        for v in slots { out = out + wire_value(v) }
-    }
-    out = out + wire_field("${s.heap.maps.length}")
-    for row in s.heap.maps { out = out + wire_map(row) }
-    out + wire_value(s.answer)
+    out + heap_wire(s.heap) + wire_value(s.answer)
 }
 
 type WireReader = { raw: string, pos: int }
@@ -117,6 +110,36 @@ fn settled_from_wire(raw: string) -> Settled? {
         let path? = r.field() else { return null }
         embeds.push(path)
     }
+    let heap? = heap_from_wire(r) else { return null }
+    let answer? = r.value() else { return null }
+    if r.pos != raw.length { return null }
+    Settled { answer: answer, heap: heap, embeds: embeds, fingerprint: fp }
+}
+
+// ── What a file's bodies ASK ──────────────────────────────────────
+//
+// A held file contributes no body — its machine code is the stored object — but
+// it does contribute the instantiations its bodies demand. A type argument rides
+// the same wire a record's shape does; `read_type_wire` is its inverse.
+use core.{FileId, DeclId, TypeId}
+use features.{Wanted, Sub, SeatValue}
+
+fn heap_wire(h: MetaHeap) -> string {
+    mut out = wire_field("${h.nodes.length}")
+    for slots in h.nodes {
+        out = out + wire_field("${slots.length}")
+        for v in slots { out = out + wire_value(v) }
+    }
+    out = out + wire_field("${h.maps.length}")
+    for row in h.maps { out = out + wire_map(row) }
+    out
+}
+
+/// `heap_wire`'s inverse — nodes then maps, each length-prefixed. The
+/// one decoder for a shape written from two envelopes (a settlement's
+/// own heap, a wanted seat's): a third hand-copy of this walk is the
+/// third copy CLAUDE.md's own law refuses.
+fn heap_from_wire(mut r: WireReader) -> MetaHeap? {
     let node_count? = r.number() else { return null }
     if node_count < 0 { return null }
     mut nodes: List<List<MetaVal>> = []
@@ -146,28 +169,7 @@ fn settled_from_wire(raw: string) -> Settled? {
         }
         maps.push(meta_map(keys, values))
     }
-    let answer? = r.value() else { return null }
-    if r.pos != raw.length { return null }
-    Settled { answer: answer, heap: meta_heap(nodes, maps), embeds: embeds, fingerprint: fp }
-}
-
-// ── What a file's bodies ASK ──────────────────────────────────────
-//
-// A held file contributes no body — its machine code is the stored object — but
-// it does contribute the instantiations its bodies demand. A type argument rides
-// the same wire a record's shape does; `read_type_wire` is its inverse.
-use core.{FileId, DeclId, TypeId}
-use features.{Wanted, Sub, SeatValue}
-
-fn heap_wire(h: MetaHeap) -> string {
-    mut out = wire_field("${h.nodes.length}")
-    for slots in h.nodes {
-        out = out + wire_field("${slots.length}")
-        for v in slots { out = out + wire_value(v) }
-    }
-    out = out + wire_field("${h.maps.length}")
-    for row in h.maps { out = out + wire_map(row) }
-    out
+    meta_heap(nodes, maps)
 }
 
 impl Workspace {
@@ -265,45 +267,8 @@ impl Workspace {
                 let ty = self.type_from_wire(tw)
                 if ty == null { return null }
                 let value? = r.value() else { return null }
-                let node_count? = r.number() else { return null }
-                if node_count < 0 { return null }
-                mut nodes: List<List<MetaVal>> = []
-                for k in 0..node_count {
-                    let c? = r.number() else { return null }
-                    if c < 0 { return null }
-                    mut slots: List<MetaVal> = []
-                    for m in 0..c {
-                        let v? = r.value() else { return null }
-                        slots.push(v)
-                    }
-                    nodes.push(slots)
-                }
-                let map_count? = r.number() else { return null }
-                if map_count < 0 { return null }
-                mut maps: List<MetaMap> = []
-                for k in 0..map_count {
-                    let c? = r.number() else { return null }
-                    if c < 0 { return null }
-                    mut keys: List<string> = []
-                    mut values: List<MetaVal> = []
-                    for m in 0..c {
-                        let key? = r.field() else { return null }
-                        let v? = r.value() else { return null }
-                        keys.push(key)
-                        values.push(v)
-                    }
-                    maps.push(meta_map(keys, values))
-                }
-                seats
-                    .push(
-                        SeatValue {
-                            index: index,
-                            fp: fp,
-                            ty: ty!,
-                            value: value,
-                            heap: meta_heap(nodes, maps),
-                        },
-                    )
+                let heap? = heap_from_wire(r) else { return null }
+                seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: heap })
             }
             out.push(Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: null })
         }
