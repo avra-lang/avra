@@ -1,0 +1,283 @@
+// Red-team of durable witnesses. Every case asserts the CORRECT behaviour, so a
+// failing case is a defect. `dir`, `fresh_pack_path`, `a_process_over`,
+// `checked`, `all_reused` are witness_test.av's own (one shared namespace).
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace, WitnessedCheck, name_parts}
+use compiler.host.{memory_host}
+use compiler.store.{pack_at}
+use query.{Key}
+
+/// The un-witnessed answer a reused one must equal.
+fn fresh_check(files: Map<string, string>, names: List<string>, path: string) -> WitnessedCheck {
+    let ws = new_workspace(memory_host(files, names), "/w", avra())
+    for p in names { let _ = ws.items(ws.file_id(p)) }
+    let a = ws.analysis(ws.file_id(path))
+    WitnessedCheck { clean: a.clean(), report: a.report() }
+}
+
+fn edge_families(ws: Workspace, pack_path: string, file: string) -> List<string> {
+    let pk = pack_at(pack_path, "witness-test")
+    let name = ws.decls.stable_key_name(Key { family: 11, arg: ws.file_id(file).index })
+    let e? = pk.get(name) else { return [] }
+    [name_parts(edge.name)?.family ?? "?" for edge in e.edges]
+}
+
+fn first_line_with(text: string, needle: string) -> string {
+    ([l for l in text.split("\n") if l.contains(needle)].first() ?? "").trim()
+}
+
+
+/// Each stored edge of `file`'s witness: family, stored hash -> its current hash in `ws`.
+fn edge_dump(ws: Workspace, pack_path: string, file: string) -> string {
+    let pk = pack_at(pack_path, "witness-test")
+    let name = ws.decls.stable_key_name(Key { family: 11, arg: ws.file_id(file).index })
+    let e? = pk.get(name) else { return "no entry" }
+    [
+        "${name_parts(x.name)?.family ?? "?"}: ${x.hash} -> ${ws.edge_current_hash(x.name) ?? 0 - 1}"
+        for x in e.edges
+    ].join(" | ")
+}
+
+
+fn edge_names_of(ws: Workspace, pack_path: string, file: string, word: string) -> List<string> {
+    let pk = pack_at(pack_path, "witness-test")
+    let name = ws.decls.stable_key_name(Key { family: 11, arg: ws.file_id(file).index })
+    let e? = pk.get(name) else { return [] }
+    [x.name for x in e.edges if (name_parts(x.name)?.family ?? "") == word]
+}
+
+fn unresolved_count(ws: Workspace, names: List<string>) -> int {
+    [n for n in names if ws.edge_current_hash(n) == null].length
+}
+
+fn count_of(xs: List<string>, word: string) -> int { [x for x in xs if x == word].length }
+
+spec "compiler/witness, attacked: fixtures are what they claim" {
+    then "a body answering string under -> int is a real error" {
+        let f: Map<string, string> = {"/w/src/e.av": "export fn f() -> int {\n    \"s\"\n}\n"}
+        !fresh_check(f, ["/w/src/e.av"], "/w/src/e.av").clean
+    }
+    then "an undefined sibling name is a real error, and defining it in a new file clears it" {
+        let a = "export fn g() -> int {\n    helper()\n}\n"
+        let h = "export fn helper() -> int {\n    1\n}\n"
+        let before: Map<string, string> = {"/w/src/a.av": a}
+        let after: Map<string, string> = {"/w/src/a.av": a, "/w/src/h.av": h}
+        !fresh_check(before, ["/w/src/a.av"], "/w/src/a.av").clean &&
+            fresh_check(after, ["/w/src/a.av", "/w/src/h.av"], "/w/src/a.av").clean
+    }
+    then "a second impl of one method name, in an earlier file, is a clash spoken at the later impl" {
+        let t = "export type T = { v: int }\nimpl T {\n    fn show() -> int {\n        1\n    }\n}\n"
+        let w = "impl T {\n    fn show() -> int {\n        2\n    }\n}\n"
+        let one: Map<string, string> = {"/w/src/x.av": t}
+        let two: Map<string, string> = {"/w/src/w.av": w, "/w/src/x.av": t}
+        fresh_check(one, ["/w/src/x.av"], "/w/src/x.av").clean &&
+            !fresh_check(two, ["/w/src/w.av", "/w/src/x.av"], "/w/src/x.av").clean
+    }
+    then "List<int> -> List<string> under an unchanged caller is a real error" {
+        let a = "export fn f() -> List<string> {\n    [\"s\"]\n}\n"
+        let b = "export fn g() -> int {\n    f()[0] + 1\n}\n"
+        let after: Map<string, string> = {"/w/src/a.av": a, "/w/src/b.av": b}
+        !fresh_check(after, ["/w/src/a.av", "/w/src/b.av"], "/w/src/b.av").clean
+    }
+}
+
+spec "compiler/witness, attacked" {
+    given "ATK1: a file with a diagnostic gains a leading comment between processes" {
+        then "its report is the fresh one (positions moved), never the stored one" {
+            let names = ["/w/src/e.av"]
+            let path = fresh_pack_path("atk1_trivia")
+            let before: Map<string, string> = {"/w/src/e.av": "export fn f() -> int {\n    \"s\"\n}\n"}
+            let _ = checked(a_process_over(before, names, path), "/w/src/e.av")
+            let after: Map<string, string> = {"/w/src/e.av": "// a note\nexport fn f() -> int {\n    \"s\"\n}\n"}
+            let got = checked(a_process_over(after, names, path), "/w/src/e.av")
+            let fresh = fresh_check(after, names, "/w/src/e.av")
+            println("ATK1 reused=${got.reused()} stored=[${first_line_with(got.value().report, "e.av:")}] fresh=[${first_line_with(fresh.report, "e.av:")}]")
+            got.value().report == fresh.report
+        }
+    }
+    given "ATK2a: a new sibling file defines a name the file used and could not resolve" {
+        then "the file's verdict is the fresh one (now clean), never the stored 'undefined'" {
+            let a = "export fn g() -> int {\n    helper()\n}\n"
+            let h = "export fn helper() -> int {\n    1\n}\n"
+            let path = fresh_pack_path("atk2a_added")
+            let before: Map<string, string> = {"/w/src/a.av": a}
+            let _ = checked(a_process_over(before, ["/w/src/a.av"], path), "/w/src/a.av")
+            let after: Map<string, string> = {"/w/src/a.av": a, "/w/src/h.av": h}
+            let names = ["/w/src/a.av", "/w/src/h.av"]
+            let got = checked(a_process_over(after, names, path), "/w/src/a.av")
+            println("ATK2a reused=${got.reused()} clean=${got.value().clean}")
+            got.value().clean
+        }
+    }
+    given "ATK2b: a new earlier file adds a second impl of a method the file already had" {
+        then "the file's report is the fresh one (a clash), even when another file ran the method-table scan first" {
+            let t = "export type T = { v: int }\nimpl T {\n    fn show() -> int {\n        1\n    }\n}\n"
+            let z = "export fn h() -> int {\n    2\n}\n"
+            let w = "impl T {\n    fn show() -> int {\n        2\n    }\n}\n"
+            let path = fresh_pack_path("atk2b_clash")
+            let before: Map<string, string> = {"/w/src/other/z.av": z, "/w/src/x.av": t}
+            let n1 = ["/w/src/other/z.av", "/w/src/x.av"]
+            let first = a_process_over(before, n1, path)
+            let _ = checked(first, "/w/src/other/z.av")
+            let _ = checked(first, "/w/src/x.av")
+            let after: Map<string, string> = {"/w/src/other/z.av": z, "/w/src/w.av": w, "/w/src/x.av": t}
+            let n2 = ["/w/src/other/z.av", "/w/src/w.av", "/w/src/x.av"]
+            let got = checked(a_process_over(after, n2, path), "/w/src/x.av")
+            println("ATK2b reused=${got.reused()} clean=${got.value().clean}")
+            got.value().report == fresh_check(after, n2, "/w/src/x.av").report
+        }
+    }
+    given "ATK3: a callee's return type changes List<int> -> List<string>; the caller is unchanged" {
+        then "the caller's verdict is the fresh one (a type error), never the stored 'clean'" {
+            let a1 = "export fn f() -> List<int> {\n    [1]\n}\n"
+            let a2 = "export fn f() -> List<string> {\n    [\"s\"]\n}\n"
+            let b = "export fn g() -> int {\n    f()[0] + 1\n}\n"
+            let names = ["/w/src/a.av", "/w/src/b.av"]
+            let path = fresh_pack_path("atk3_typeid")
+            let before: Map<string, string> = {"/w/src/a.av": a1, "/w/src/b.av": b}
+            let first = a_process_over(before, names, path)
+            let _ = checked(first, "/w/src/a.av")
+            let _ = checked(first, "/w/src/b.av")
+            let after: Map<string, string> = {"/w/src/a.av": a2, "/w/src/b.av": b}
+            let second = a_process_over(after, names, path)
+            let _ = checked(second, "/w/src/a.av")
+            let got = checked(second, "/w/src/b.av")
+            println("ATK3 reused=${got.reused()} clean=${got.value().clean}")
+            got.value().clean == fresh_check(after, names, "/w/src/b.av").clean
+        }
+    }
+    given "ATK6: two files witnessed in one process, the first to run pays the whole-table method scan" {
+        then "every file's witness records the same number of Methods edges" {
+            let names = ["/w/src/other/z.av", "/w/src/x.av"]
+            let files: Map<string, string> = {
+                "/w/src/other/z.av": "export fn h() -> int {\n    2\n}\n",
+                "/w/src/x.av": "export fn k() -> int {\n    3\n}\n",
+            }
+            let path = fresh_pack_path("atk6_methods_edges")
+            let ws = a_process_over(files, names, path)
+            let _ = checked(ws, "/w/src/other/z.av")
+            let _ = checked(ws, "/w/src/x.av")
+            let z = edge_families(ws, path, "/w/src/other/z.av")
+            let x = edge_families(ws, path, "/w/src/x.av")
+            println("ATK6 z edges: Parsed ${count_of(z, "Parsed")} Sig ${count_of(z, "Sig")} Methods ${count_of(z, "Methods")} Manifest ${count_of(z, "Manifest")} all ${z.length}")
+            println("ATK6 x edges: Parsed ${count_of(x, "Parsed")} Sig ${count_of(x, "Sig")} Methods ${count_of(x, "Methods")} Manifest ${count_of(x, "Manifest")} all ${x.length}")
+            count_of(z, "Methods") == count_of(x, "Methods")
+        }
+    }
+    given "ATK9: the callee decl is deleted but its file stays" {
+        then "the caller's verdict is the fresh one (undefined), never the stored 'clean'" {
+            let a1 = "export fn f() -> int {\n    1\n}\nexport fn k() -> int {\n    3\n}\n"
+            let a2 = "export fn k() -> int {\n    3\n}\n"
+            let b = "export fn g() -> int {\n    f() + 1\n}\n"
+            let names = ["/w/src/a.av", "/w/src/b.av"]
+            let path = fresh_pack_path("atk9_decl_removed")
+            let before: Map<string, string> = {"/w/src/a.av": a1, "/w/src/b.av": b}
+            let first = a_process_over(before, names, path)
+            let _ = checked(first, "/w/src/a.av")
+            let _ = checked(first, "/w/src/b.av")
+            let after: Map<string, string> = {"/w/src/a.av": a2, "/w/src/b.av": b}
+            let got = checked(a_process_over(after, names, path), "/w/src/b.av")
+            println("ATK9 reused=${got.reused()} clean=${got.value().clean}")
+            got.value().clean == fresh_check(after, names, "/w/src/b.av").clean
+        }
+    }
+}
+
+spec "compiler/witness, attacked: which edge refused the near-misses" {
+    then "DIAG ATK2b: x's stored edges against the second process" {
+        let t = "export type T = { v: int }\nimpl T {\n    fn show() -> int {\n        1\n    }\n}\n"
+        let z = "export fn h() -> int {\n    2\n}\n"
+        let w = "impl T {\n    fn show() -> int {\n        2\n    }\n}\n"
+        let path = fresh_pack_path("diag_atk2b")
+        let before: Map<string, string> = {"/w/src/other/z.av": z, "/w/src/x.av": t}
+        let first = a_process_over(before, ["/w/src/other/z.av", "/w/src/x.av"], path)
+        let _ = checked(first, "/w/src/other/z.av")
+        let _ = checked(first, "/w/src/x.av")
+        println("DIAG2b stored (p1) edges of x, evaluated in p1: ${edge_dump(first, path, "/w/src/x.av")}")
+        let after: Map<string, string> = {"/w/src/other/z.av": z, "/w/src/w.av": w, "/w/src/x.av": t}
+        let second = a_process_over(after, ["/w/src/other/z.av", "/w/src/w.av", "/w/src/x.av"], path)
+        println("DIAG2b edges of x, evaluated in p2 (before any recheck): ${edge_dump(second, path, "/w/src/x.av")}")
+        true
+    }
+    then "DIAG ATK3: b's stored edges against the second process, after a is rechecked" {
+        let a1 = "export fn f() -> List<int> {\n    [1]\n}\n"
+        let a2 = "export fn f() -> List<string> {\n    [\"s\"]\n}\n"
+        let b = "export fn g() -> int {\n    f()[0] + 1\n}\n"
+        let names = ["/w/src/a.av", "/w/src/b.av"]
+        let path = fresh_pack_path("diag_atk3")
+        let before: Map<string, string> = {"/w/src/a.av": a1, "/w/src/b.av": b}
+        let first = a_process_over(before, names, path)
+        let _ = checked(first, "/w/src/a.av")
+        let _ = checked(first, "/w/src/b.av")
+        println("DIAG3 b edges in p1: ${edge_dump(first, path, "/w/src/b.av")}")
+        let after: Map<string, string> = {"/w/src/a.av": a2, "/w/src/b.av": b}
+        let second = a_process_over(after, names, path)
+        let _ = checked(second, "/w/src/a.av")
+        println("DIAG3 b edges in p2 (a rechecked first): ${edge_dump(second, path, "/w/src/b.av")}")
+        true
+    }
+}
+
+spec "compiler/witness, attacked: section 6.5 per dep kind, edge by edge" {
+    then "c-Parsed: a file that never existed answers unresolved, not a hash" {
+        let ws = a_process_over(package_files(), package_names(), fresh_pack_path("catk_parsed"))
+        let ph = ws.file_id("/w/src/gone.av")
+        let name = ws.decls.stable_key_name(Key { family: 1, arg: ph.index })
+        let h = ws.edge_current_hash(name)
+        println("c-Parsed phantom hash=${h ?? 0 - 1}")
+        h == null
+    }
+    then "c-Parsed: a removed file's hash differs from an emptied file's" {
+        let ws = a_process_over(package_files(), package_names(), fresh_pack_path("catk_parsed2"))
+        let ph = ws.file_id("/w/src/gone.av")
+        let phantom = ws.edge_current_hash(ws.decls.stable_key_name(Key { family: 1, arg: ph.index }))
+        let empty: Map<string, string> = {"/w/src/e.av": ""}
+        let es = a_process_over(empty, ["/w/src/e.av"], fresh_pack_path("catk_parsed3"))
+        let emptied = es.edge_current_hash(es.decls.stable_key_name(Key { family: 1, arg: es.file_id("/w/src/e.av").index }))
+        println("c-Parsed phantom=${phantom ?? 0 - 1} emptied=${emptied ?? 0 - 1}")
+        phantom != emptied
+    }
+    then "c-Sig: a removed callee decl's Sig edge answers unresolved, not a hash" {
+        let a1 = "export fn f() -> int {\n    1\n}\nexport fn k() -> int {\n    3\n}\n"
+        let a2 = "export fn k() -> int {\n    3\n}\n"
+        let b = "export fn g() -> int {\n    f() + 1\n}\n"
+        let names = ["/w/src/a.av", "/w/src/b.av"]
+        let path = fresh_pack_path("catk_sig")
+        let before: Map<string, string> = {"/w/src/a.av": a1, "/w/src/b.av": b}
+        let first = a_process_over(before, names, path)
+        let _ = checked(first, "/w/src/a.av")
+        let _ = checked(first, "/w/src/b.av")
+        let sigs = edge_names_of(first, path, "/w/src/b.av", "Sig")
+        let after: Map<string, string> = {"/w/src/a.av": a2, "/w/src/b.av": b}
+        let second = a_process_over(after, names, path)
+        println("c-Sig edges=${sigs.length} unresolved-in-p2=${unresolved_count(second, sigs)}")
+        unresolved_count(second, sigs) >= 1
+    }
+    then "c-Methods: a removed type's Methods edge answers unresolved, not a hash" {
+        let z = "export fn h() -> int {\n    2\n}\n"
+        let t = "export type T = { v: int }\n"
+        let path = fresh_pack_path("catk_methods")
+        let before: Map<string, string> = {"/w/src/other/z.av": z, "/w/src/t.av": t}
+        let first = a_process_over(before, ["/w/src/other/z.av", "/w/src/t.av"], path)
+        let _ = checked(first, "/w/src/other/z.av")
+        let ms = edge_names_of(first, path, "/w/src/other/z.av", "Methods")
+        let after: Map<string, string> = {"/w/src/other/z.av": z}
+        let second = a_process_over(after, ["/w/src/other/z.av"], path)
+        println("c-Methods edges=${ms.length} unresolved-in-p2=${unresolved_count(second, ms)}")
+        unresolved_count(second, ms) >= 1
+    }
+    then "d: an entry stamped with another record-shape version is refused" {
+        let path = fresh_pack_path("datk_fingerprint")
+        let first = a_process(package_files(), path)
+        let _ = [checked(first, p) for p in package_names()]
+        let pk = pack_at(path, "witness-test")
+        let name = first.decls.stable_key_name(Key { family: 11, arg: first.file_id("/w/src/a.av").index })
+        let e? = pk.get(name) else { return false }
+        pk.put(e with { fingerprint: 999 })
+        let _ = pk.commit()
+        let second = a_process(package_files(), path)
+        let got = checked(second, "/w/src/a.av")
+        println("d fingerprint=999 reused=${got.reused()}")
+        !got.reused()
+    }
+}
