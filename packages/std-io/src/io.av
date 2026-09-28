@@ -285,6 +285,28 @@ export fn synced(path: string) -> Result<string, IoError> {
     path
 }
 
+/// An append-mode descriptor held OPEN across many writes — the cost
+/// of `open`/`close` paid once for a whole session of `append_bytes`
+/// calls, not once per call, the same shape `append_bytes` itself
+/// gives durability.
+export type AppendFile = { path: string, fd: int }
+
+export fn opened_for_append(path: string) -> Result<AppendFile, IoError> {
+    let clean = one_path(path)?
+    let fd = done(clean, avra_io_open_append(clean))?
+    AppendFile { path: clean, fd: fd }
+}
+
+impl AppendFile {
+    /// OCTETS appended after the file's current end. NOT durable on
+    /// its own — the same convention `append_bytes` keeps.
+    fn write(bytes: Bytes) -> Result<int, IoError> { poured(self.path, self.fd, bytes) }
+
+    fn synced() -> Result<int, IoError> { done(self.path, avra_fd_sync(self.fd)) }
+
+    fn closed() -> Result<int, IoError> { done(self.path, avra_io_close(self.fd)) }
+}
+
 /// The file cut back to exactly `len` bytes — what a caller trims a
 /// TORN TAIL to (bytes an earlier crash left past the last frame it
 /// could verify) before appending past it, so a half-written frame
