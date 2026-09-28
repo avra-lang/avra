@@ -89,6 +89,17 @@ impl Workspace {
             null -> "<none>"
         }
     }
+
+    /// An impl's target, spelled the way any other type is: the target
+    /// declaration's own instance type, through `type_str` — so a target
+    /// ref resolved to the wrong declaration reads as the wrong type wire,
+    /// not as an opaque id no reader can place.
+    fn target_str(t: DeclId?) -> string {
+        match t {
+            id? -> self.type_str(self.decls.self_type_of(id))
+            null -> "<none>"
+        }
+    }
 }
 
 fn decl_mismatches(path: string, warm_ws: Workspace, wid: DeclId, fresh_ws: Workspace, fid: DeclId) -> List<
@@ -140,6 +151,9 @@ fn sig_mismatches(
         warm_ws.fill_ensured(wid)
         return const_type_mismatches(path, warm_ws, wd, fresh_ws, fd)
     }
+    if wd.kind is .Impl {
+        return target_mismatches(path, warm_ws, wd, wid, fresh_ws, fid)
+    }
     let wsig = warm_ws.sig(wid)
     let fsig = fresh_ws.sig(fid)
     some_list(maybe_mismatch(path, wd.name, "sig", warm_ws.sig_str(wsig), fresh_ws.sig_str(fsig)))
@@ -175,6 +189,32 @@ fn const_value_mismatches(path: string, warm_ws: Workspace, wd: Decl, fresh_ws: 
 
 fn settled_str(r: Result<Settled, Unsettled>) -> string {
     match r { .Ok(v) -> "${v.fingerprint}", .Err(_) -> "<unsettled>" }
+}
+
+/// AN IMPL'S TARGET LIVES IN `Decls.targets`, A SEPARATE TABLE FROM ITS SIGNATURE
+/// — an impl declares no `sig()` of its own (`fill_aims` never calls `declare`),
+/// so `sig_mismatches`' general path says nothing about it. `sig()` is asked
+/// first on each side because it is what runs an impl's own declare step
+/// (`declare_impl_block`'s `record_target`) on a live file; a held file's
+/// `target_of` self-forces through `ensure_target` regardless, so forcing it
+/// here is belt for the held side and the whole reason for the fresh one. The
+/// trait an `impl … for` names is `facts.of`'s, already compared above — this
+/// is the target type alone.
+fn target_mismatches(
+    path: string,
+    warm_ws: Workspace,
+    wd: Decl,
+    wid: DeclId,
+    fresh_ws: Workspace,
+    fid: DeclId,
+) -> List<HeldMismatch> {
+    let _ = warm_ws.sig(wid)
+    let _ = fresh_ws.sig(fid)
+    let wt = warm_ws.decls.target_of(wid)
+    let ft = fresh_ws.decls.target_of(fid)
+    some_list(
+        maybe_mismatch(path, wd.name, "target", warm_ws.target_str(wt), fresh_ws.target_str(ft)),
+    )
 }
 
 /// SEAT `j`'s FOUR PROMISES. `consumed` (R3) is never merged into
