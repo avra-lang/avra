@@ -5,11 +5,20 @@
 //! it happened. A read none of them records a cover for (per verb, `audit_covers`) is
 //! written here, one line per (verb, scope, query stack) with the number of outermost
 //! queries that made it. A line is rewritten at each power of two of its count, so the
-//! last one a run leaves carries the count to within a factor of two. Off, it costs one
-//! flag read per audited accessor and nothing else.
+//! last one a run leaves carries the count to within a factor of two. It exists only in a
+//! compiler built with `audit_build` true (features/bypass.av); any other compiler carries
+//! none of it.
 use core.{DeclId, FileId, joined, list_cell, map_cell, sorted_texts}
 use query.{Key, Bypass}
-use features.{Bypassed, bypass_word, bypass_verbs, bypass_ordinal, bypass_subject, bypassed_at}
+use features.{
+    Bypassed,
+    audit_build,
+    bypass_word,
+    bypass_verbs,
+    bypass_ordinal,
+    bypass_subject,
+    bypassed_at,
+}
 use @std.io.{env, write_text}
 
 /// The run's tally, one slot per (read, scope, stack): a map cannot be walked, so the
@@ -40,6 +49,7 @@ fn audit_slot(key: string) -> int {
 impl Workspace {
     /// Arms the audit when the environment names a file to write.
     fn arm_audit() {
+        if !audit_build { return }
         let path? = env("AVRA_DEP_AUDIT") else { return }
         if path.is_empty() { return }
         self.decls.arm_audit((r: Bypassed) -> self.audit_read(r))
