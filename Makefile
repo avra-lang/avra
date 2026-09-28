@@ -172,7 +172,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -195,6 +195,9 @@ SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 # whole cli, and anything short of six figures is a truncated write
 # reporting success.
 SEED_FLOOR := 100000
+# Every C object the compiler and the packages link, built from its source.
+objects: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+
 seed: $(COMPILER_OBJS)
 	@./avra emit packages/cli > build/seed.ll.new
 	@n=$$(wc -l < build/seed.ll.new | tr -d ' '); \
@@ -224,9 +227,15 @@ recover: $(COMPILER_OBJS)
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
+# Bootstrap hands out GEN-2. A change to lowering or memory reaches a
+# compiler's own body only when a compiler already carrying it compiles
+# that body, so the seed's gen-1 rebuilds once more.
 bootstrap: recover
-	@echo "bootstrap: rebuilding build/avra from source"
+	@echo "bootstrap: gen-1, the source compiled by the seed"
 	@$(MAKE) -s avra
+	@echo "bootstrap: gen-2, the source compiled by gen-1"
+	@$(MAKE) -s avra
+	@echo "bootstrap: build/avra is gen-2"
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next

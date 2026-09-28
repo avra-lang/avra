@@ -46,8 +46,17 @@ export fn memory(l: Lowered) -> Lowered {
     // two instantiations of one source fn the same inferred marks
     // under different concrete seats, so the lookup is by the name
     // every `Ins.Call` already carries, built once for the program.
+    // A HELD CALLEE carries no body here (`drained`, compiler/lower/
+    // lower.av: "never asked for") — only a MARKS-ONLY STUB, `weak`
+    // with no `ins`, minted so this lookup can still see its declared
+    // `consumed` seats. It answers no instructions of its own, so it
+    // is read for `by_name` and dropped before `fns` leaves this pass
+    // — `held_stubs` (compiler/record.av) is the declaration a later
+    // emission actually links against; a second, empty-bodied one
+    // reaching emission is an unterminated LLVM function, not a body.
     let by_name = marks_by_name(l.fns)
-    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length, b.marks, by_name) } for b in l.fns]
+    let named = [b for b in l.fns if !(b.weak && b.ins.is_empty())]
+    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length, b.marks, by_name) } for b in named]
     let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0, l.entry.marks, by_name) }
     let out = l with { fns: fns, entry: entry }
     if !sound_checked() { return out }
@@ -175,8 +184,12 @@ fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
     out
 }
 
+/// A `once fn`'s OWN SLOT joins this set: `OnceRead` answers non-null
+/// only once its matching `OnceCommit` has already made that answer
+/// immortal (runtime's `avra_once_slot_commit`), and the null case
+/// costs nothing either way — retain and release both no-op on it.
 fn immortal_dst(i: Ins) -> Reg? {
-    match i { .ConstStr(d, _) or .StaticAddr(d, _) -> d, rest -> null }
+    match i { .ConstStr(d, _) or .StaticAddr(d, _) or .OnceRead(d, _) -> d, rest -> null }
 }
 
 fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
@@ -202,17 +215,18 @@ fn memory_ins(
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
     let last = last_reads(reg_types.length, ins)
+    let defs = def_sites(reg_types.length, ins)
     let life = Lives {
         types: types,
         reg_types: reg_types,
         ins: ins,
         last: last,
-        defs: def_sites(reg_types.length, ins),
+        defs: defs,
         viewed: viewed_regs(types, reg_types, ins),
-        death: death_points(types, reg_types, ins, last),
+        death: death_points(defs, types, reg_types, ins, last),
     }
     for at, raw in ins {
-        let i = owned_form(types, reg_types, ins, at, raw)
+        let i = owned_form(defs, types, reg_types, ins, at, raw)
         match i {
             .ScopeEnter(tier) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
@@ -345,7 +359,7 @@ fn memory_ins(
             .Load(dst, slot) -> {
                 out.push(i)
                 if is_managed(types, reg_types[dst.index]) &&
-                    borrow_outlives(types, reg_types, ins, at, dst, slot) {
+                    borrow_outlives(defs, types, reg_types, ins, at, dst, slot) {
                     out.push(Ins.Retain(dst))
                     manages(types, reg_types, open_scopes, i)
                 }
@@ -405,7 +419,7 @@ fn memory_ins(
                     out.push(Ins.CallRtVoid(moving!, args))
                 }
             },
-            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             },
@@ -441,6 +455,7 @@ fn memory_ins(
 /// before this pass counted uses. A row that keeps without
 /// retaining is a dangling store whether the read owns or not.
 fn borrow_outlives(
+    defs: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -460,13 +475,13 @@ fn borrow_outlives(
             // a child that takes its OWN reference rides nobody's
             if d != null &&
                 is_managed(types, reg_types[d!.index]) &&
-                !takes_twin(types, reg_types, ins, j, i) {
+                !takes_twin(defs, types, reg_types, ins, j, i) {
                 views.push(d!)
             }
         }
         j = j + 1
     }
-    leaves_or_changes(ins, at, last, slot)
+    leaves_or_changes(defs, ins, at, last, slot)
 }
 
 /// WHETHER THE CELL'S REFERENCE MAY NOT STAND for the whole stretch a borrow is
@@ -474,13 +489,13 @@ fn borrow_outlives(
 /// be that scope's. A bracket opened since the load nests inside the cell's
 /// life and is read through; a LOOP opened since runs again, so its whole body
 /// is the stretch — a change after the last use meets that use next turn.
-fn leaves_or_changes(ins: List<Ins>, at: int, last: int, slot: Reg) -> bool {
+fn leaves_or_changes(defs: List<int>, ins: List<Ins>, at: int, last: int, slot: Reg) -> bool {
     mut depth = 0
     mut loops = 0
     mut k = at + 1
     while k < ins.length && (k <= last || loops > 0) {
         let i = ins[k]
-        if changes_cell(i, slot) { return true }
+        if changes_cell(defs, ins, i, slot) { return true }
         if opens(i) {
             depth = depth + 1
             if i is .LoopStart { loops = loops + 1 }
@@ -505,20 +520,62 @@ fn held_by(views: List<Reg>, r: Reg) -> bool {
 /// any step handed the cell itself — a writing callee opens it
 /// there. A second load only reads it.
 ///
-/// COMPLETE, not merely conservative, and that is what the scan
-/// rests on. A cell register is an `Alloca` destination, and every
-/// consumer of one in the tree is a `Load`, a `Store`,
-/// `avra_cell_unique` or this pass's own `avra_cell_release`: a
+/// EXACT IDENTITY IS COMPLETE ONLY WHEN `slot` IS A STABLE REGISTER —
+/// an `Alloca` destination or a param, which the pass never re-mints:
+/// every consumer of one in the tree is a `Load`, a `Store`,
+/// `avra_cell_unique` or this pass's own `avra_cell_release`, and a
 /// cell is never packed, never an argument to a user callee, never
-/// aliased into a second register. The day one escapes, this test
-/// goes BLIND and the scan is unsound rather than pessimistic.
-/// The `.Load` exemption rests on the second half: a borrow root's
-/// write loads the cell and writes THROUGH the box (places.av), so
-/// it never re-points the cell. Widen that and the exemption goes
-/// with it.
-fn changes_cell(i: Ins, slot: Reg) -> bool {
+/// aliased into a second register. The `.Load` exemption rests on the
+/// other half: a borrow root's write loads the cell and writes
+/// THROUGH the box (places.av), so it never re-points the cell.
+///
+/// A `slot` read off anything else — a field chain, a nested cell, a
+/// second `.Load` — has no such guarantee: the SAME source re-run for
+/// a `set`/`put`/`push` a few lines on mints a FRESH register for the
+/// SAME box (`self.audit.held` evaluated twice is two registers, one
+/// pointer), so exact identity goes BLIND exactly where a write is
+/// about to free what this borrow rides. There the scan asks CELL_ROOT
+/// instead — is the write's own box the SAME STABLE IDENTITY `slot`
+/// traces back to.
+fn changes_cell(defs: List<int>, ins: List<Ins>, i: Ins, slot: Reg) -> bool {
     if i is .Load { return false }
-    reads_of(i).any(same_reg(it, slot))
+    if reads_of(i).any(same_reg(it, slot)) { return true }
+    if !rederivable(defs, ins, slot) { return false }
+    match i {
+        .CallRtVoid(_, args) -> {
+            let box? = args.first() else { return false }
+            same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box))
+        },
+        rest -> false,
+    }
+}
+
+/// Whether `r` could be RE-MINTED: read again by re-running whatever
+/// produced it, landing in a fresh register for the exact same box. An
+/// `Alloca` and a param are the two identities the pass hands out
+/// once and never re-derives — everything else (a `.Load`, a field
+/// read, a nested cell's own read) is read OFF some other value and
+/// comes back a different register the next time the same source runs.
+fn rederivable(defs: List<int>, ins: List<Ins>, r: Reg) -> bool {
+    let d = defs[r.index]
+    d >= 0 && !(ins[d] is .Alloca)
+}
+
+/// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a
+/// `.Load` to the `Alloca` it reads (two loads of one `mut` cell are
+/// two registers for the one slot) and through a VIEW to ITS source (a
+/// field read run twice is two registers for the one box) — down to a
+/// param or an `Alloca`, which name themselves. Unlike `Lives.root_of`,
+/// never absent: this walk exists to COMPARE two provenances, so it
+/// must land somewhere, itself when there is nowhere further to go.
+fn cell_root(defs: List<int>, ins: List<Ins>, r: Reg) -> Reg {
+    let d = defs[r.index]
+    if d < 0 { return r }
+    let loaded? = loaded_slot(ins[d]) else {
+        let src? = view_source(ins[d]) else { return r }
+        return cell_root(defs, ins, src)
+    }
+    cell_root(defs, ins, loaded)
 }
 
 /// THE BRACKETS, by what each does to the nesting: one OPENS a region, one
@@ -754,7 +811,14 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
 /// managed becomes an owned +1 read — each by the registry's OWNED
 /// TWIN column. Lowering never chooses; ownership stays this
 /// pass's one concern, and no runtime name is spelled here.
-fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, i: Ins) -> Ins {
+fn owned_form(
+    defs: List<int>,
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    at: int,
+    i: Ins,
+) -> Ins {
     // a pre-filter — the caller's dispatch is exhaustive
     // over Ins; this rewrite touches only the runtime call shapes
     match i {
@@ -762,7 +826,7 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
             let twin: string? = rt_owned_twin(callee)
             if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
         },
-        .CallRt(dst, callee, args) if takes_twin(types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
+        .CallRt(dst, callee, args) if takes_twin(defs, types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
         rest -> i,
     }
 }
@@ -770,11 +834,18 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
 /// WHETHER A READ TAKES ITS OWNED TWIN — its answer its own +1, riding nobody's
 /// reference: a managed answer of a row that has a twin, which a LENDING row
 /// declines only while the child stays a borrow.
-fn takes_twin(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, i: Ins) -> bool {
+fn takes_twin(
+    defs: List<int>,
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    at: int,
+    i: Ins,
+) -> bool {
     match i {
         .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
             is_managed(types, reg_types[dst.index]) &&
-            (!rt_lends(callee) || read_outlives(types, reg_types, ins, at, dst, args)),
+            (!rt_lends(callee) || read_outlives(defs, types, reg_types, ins, at, dst, args)),
         rest -> false,
     }
 }
@@ -785,6 +856,7 @@ fn takes_twin(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
 /// does. Declining the owned twin is what leaves the count at one,
 /// so the write that follows lands IN PLACE instead of cloning.
 fn read_outlives(
+    defs: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -793,7 +865,7 @@ fn read_outlives(
     args: List<Reg>,
 ) -> bool {
     if args.is_empty() { return true }
-    borrow_outlives(types, reg_types, ins, at, dst, args[0])
+    borrow_outlives(defs, types, reg_types, ins, at, dst, args[0])
 }
 
 /// A push's VALUE seat (arg 1) holds a managed type.
@@ -924,7 +996,7 @@ impl Lives {
             if d != null &&
                 reads_of(i).any(held_by(family, it)) &&
                 is_managed(self.types, self.reg_types[d!.index]) &&
-                !takes_twin(self.types, self.reg_types, self.ins, j, i) {
+                !takes_twin(self.defs, self.types, self.reg_types, self.ins, j, i) {
                 family.push(d!)
             }
             j = j + 1
@@ -958,7 +1030,7 @@ impl Lives {
         let d = self.defs[r.index]
         if d < 0 { return null }
         let slot? = loaded_slot(self.ins[d]) else { return null }
-        if borrow_outlives(self.types, self.reg_types, self.ins, d, r, slot) { return null }
+        if borrow_outlives(self.defs, self.types, self.reg_types, self.ins, d, r, slot) { return null }
         if !self.level_with(slot, d, at) ||
             !self.refilled(slot, at) ||
             self.borrowed_past(slot, r, at) {
@@ -1092,16 +1164,20 @@ fn last_reads(count: int, ins: List<Ins>) -> List<int> {
 /// reverse walk has folded the view's own riders in before it. A view
 /// of ANY type rides: an enum's payload word is typed as a scalar and
 /// may still point into the box.
-fn death_points(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, last: List<int>) -> List<
-    int,
-> {
+fn death_points(
+    defs: List<int>,
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+    last: List<int>,
+) -> List<int> {
     mut out = [t for t in last]
     // LICENSED loops.index_walk: a REVERSE walk — a view's riders fold in before it does
     mut j = ins.length - 1
     while j >= 0 {
         let i = ins[j]
         let d: Reg? = view_of(i)
-        if d != null && !takes_twin(types, reg_types, ins, j, i) {
+        if d != null && !takes_twin(defs, types, reg_types, ins, j, i) {
             let dies = out[d!.index]
             for r in reads_of(i) {
                 if dies > out[r.index] { out.set(r.index, dies) }

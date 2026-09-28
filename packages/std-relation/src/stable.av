@@ -158,6 +158,12 @@ export fn written_opt<T>(w: Writer, v: T?, each: fn(Writer, T) -> void) {
 }
 
 /// A list written: its count, then every element in order.
+/// A value written through each of its columns' writers, in order — a
+/// nested record's fixed arity.
+export fn written_all<T>(w: Writer, v: T, columns: List<fn(Writer, T) -> void>) {
+    for each in columns { each(w, v) }
+}
+
 export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
     w.count(xs.length)
     for x in xs { each(w, x) }
@@ -170,6 +176,10 @@ export enum CodecFault {
     Overlong
     NotFlag
     NotText
+    /// octets left after the last field
+    Trailing
+    /// a variant name the enum does not declare
+    NotVariant
 }
 
 impl CodecFault {
@@ -179,6 +189,8 @@ impl CodecFault {
             .Overlong -> "overlong",
             .NotFlag -> "not_flag",
             .NotText -> "not_text",
+            .Trailing -> "trailing",
+            .NotVariant -> "not_variant",
         }
     }
 }
@@ -245,6 +257,37 @@ impl Reader {
         s
     }
 
+    /// A variant read back by its NAME: its place among `names`, the
+    /// enum's variants in declared order.
+    fn variant(names: List<string>) -> Result<int, CodecFault> {
+        let at = names.index_of(self.text()?)
+        if at < 0 { fail CodecFault.NotVariant }
+        at
+    }
+
     /// Whether every octet has been read.
     fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A tagged enum's variant, read back by its place among the names.
+export fn tagged<T>(at: Result<int, CodecFault>, variants: List<T>) -> Result<T, CodecFault> {
+    variants[at?]
+}
+
+/// A nullable read back: its presence, then the value when present.
+export fn read_opt<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T?,
+    CodecFault,
+> {
+    if !r.present()? { return .Ok(null) }
+    .Ok(each(r)?)
+}
+
+/// A list read back: its count, then every element in order.
+export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    List<T>,
+    CodecFault,
+> {
+    let n = r.count()?
+    .Ok([each(r)? for i in 0..n])
 }

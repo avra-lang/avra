@@ -404,10 +404,15 @@ impl Decls {
     }
 
     /// Every range-owning declaration of a file with its span, read
-    /// once — every owner has one (`owns_a_range` said so).
+    /// once — every owner has one (`owns_a_range` said so). A generated
+    /// declaration spanned in its template's file is left out: its span
+    /// is that file's offsets, and read as this one's it would claim
+    /// whatever code happens to sit there.
     fn owner_spans(f: FileId) -> List<OwnerSpan> {
-        [self.owner_span(d) for d in self.decls_of_file(f) if self.owns_a_range(d)]
+        [self.owner_span(d) for d in self.decls_of_file(f) if self.owns_a_range(d) && self.spanned_here(f, d)]
     }
+
+    fn spanned_here(f: FileId, d: DeclId) -> bool { self.spanned_stmt_of(f, self.decl(d).stmt) == null }
 
     fn owner_span(d: DeclId) -> OwnerSpan {
         let sp: Span = self.decl_span(d)!

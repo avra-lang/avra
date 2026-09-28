@@ -62,7 +62,7 @@ largest subset that passes together and names the branch(es) that
 broke it, exiting non-zero when anything was excluded. The queue
 batches itself: whoever takes the lock lands every branch still queued
 behind it in the same run, and each waiter exits with its own
-branch's verdict — opt-in, with AVRA_LAND_ABSORB=1. Never pushes
+branch's verdict; AVRA_LAND_ABSORB=0 lands one branch alone. Never pushes
 anywhere, never rewrites a branch's own history.
 
   --dry-run   run every step but the final fast-forward merge.
@@ -403,7 +403,9 @@ build_generation() {
         return 1
     fi
     cp build/avra "build/avra.pre.$n" 2>/dev/null || true
-    if ! heavy "build-$n-runtime" make build/libavra_runtime.a; then
+    # Every C object, not only the runtime: a tree's own objects lag
+    # the C a merge brought in.
+    if ! heavy "build-$n-objects" make objects; then
         [ -f "build/avra.pre.$n" ] && cp "build/avra.pre.$n" build/avra
         return 1
     fi
@@ -836,10 +838,8 @@ main() {
     echo "land: main worktree   $main_wt"
     echo "land: branch worktree $branch_wt ($branch)"
 
-    # Absorbing the queue is opt-in until a batch runs the real keepers
-    # green: a batch tree's idioms paths, caches and rule self-tests
-    # differ from a branch's own tree.
-    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-0}" = "1" ]; then
+    # AVRA_LAND_ABSORB=0 lands this branch alone.
+    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-1}" = "1" ]; then
         absorbed="$(absorb_waiters | tr '\n' ' ')"
         [ -n "$(printf '%s' "$absorbed" | tr -d '[:space:]')" ] && land_absorbed
     fi
