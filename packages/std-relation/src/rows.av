@@ -206,7 +206,11 @@ impl Rows<R> {
             let b = self.bucket_of(i, k)
             let bucket = self.buckets.get()[b]
             bucket.members.set([m for m in bucket.members.get() if m != id])
-            bucket.hash.set(if self.indexes[i].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - hash })
+            bucket
+                .hash
+                .set(
+                    if self.indexes[i].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - hash },
+                )
         }
         self.live.set(self.live.get() - 1)
         self.set.set(self.set.get() - hash)
@@ -224,13 +228,15 @@ impl Rows<R> {
                 .members
                 .set([m for m in held if m < id].concat([id]).concat([m for m in held if m > id]))
         }
-        if !self.indexes[index].ordered {
-            bucket.hash.set(bucket.hash.get() + hash)
-        } else if appended {
-            bucket.hash.set(ordered_step(bucket.hash.get(), hash))
-        } else {
-            bucket.hash.set(self.ordered_fold(bucket.members.get()))
-        }
+        bucket
+            .hash
+            .set(
+                when {
+                    !self.indexes[index].ordered -> bucket.hash.get() + hash
+                    appended -> ordered_step(bucket.hash.get(), hash)
+                    _ -> self.ordered_fold(bucket.members.get())
+                },
+            )
     }
 
     /// An ordered bucket's hash: its members' hashes folded in id order.

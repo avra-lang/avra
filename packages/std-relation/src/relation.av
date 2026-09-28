@@ -365,17 +365,21 @@ fn generated(t: Type) -> Decls {
     }
 }
 
-/// A bool as the code that spells it.
-fn bool_code(b: bool) -> Code { if b { quote { true } } else { quote { false } } }
+/// An int with bit `i` set for each `i`.
+fn bits(at: List<int>) -> int {
+    mut m = 0
+    for i in at { m = m | (1 << i) }
+    m
+}
 
 /// The generated store's name: `decl_stores` for `Decl`.
 fn stores_name(t: Type) -> string { "${snake(t.name)}_stores" }
 
 /// The relation's rows under every Db.
 fn stores_decl(t: Type) -> Decls {
-    let keyed: List<Code> = if key_fields(t).is_empty() { [] } else { [bool_code(false)] }
-    let flags = keyed.concat([bool_code(index_with(f, "ordered")) for f in named_lookups(t)])
-    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores([${..flags}]) } }
+    let base = key_indexes(t)
+    let mask = bits([base + j for j, f in named_lookups(t) if index_with(f, "ordered")])
+    quote { once fn ${stores_name(t)}() -> Stores<${t}> { stores(${base + named_lookups(t).length}, ${mask}) } }
 }
 
 /// `rows_in`: this relation's rows under a Db, opened on the first reach.
