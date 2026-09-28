@@ -334,11 +334,25 @@ export fn pack_at(path: string, compiler_id: string) -> Pack {
 }
 
 impl Pack {
+    /// `name`'s dense id, if already assigned — its WHOLE body, so the
+    /// map `self.names.get()` answers is never still held by the time
+    /// `interned` may go on to write it: a read held across a write
+    /// finds the Cell's box shared, and `avra_cell_unique` clones the
+    /// whole map — with no index, so the next lookup rebuilds it —
+    /// once per new name, which is quadratic in the pack's own names
+    /// (measured: 724 files' worth of edges turned a ~46s check into
+    /// minutes before this fn existed).
+    fn name_id(name: string) -> int? { self.names.get().get(name) }
+
+    /// The next id `by_id` would mint — its own read, ended before
+    /// `interned`'s write, the same reason `name_id` is its own fn.
+    fn next_id() -> int { self.by_id.get().length }
+
     /// `name`'s dense id — already assigned, or minted here and staged
     /// as a `NameDef` frame this pack has not yet committed.
     fn interned(name: string) -> int {
-        let known? = self.names.get().get(name) else {
-            let id = self.by_id.get().length
+        let known? = self.name_id(name) else {
+            let id = self.next_id()
             self.by_id.push(name)
             self.names.put(name, id)
             write_frame(self.pending, name_tag(), name.bytes())
@@ -357,10 +371,16 @@ impl Pack {
         self.slots.put(entry.name, Slot.Loaded(entry))
     }
 
+    /// `name`'s slot, if any — its own fn for the same reason
+    /// `name_id` is: `.OnDisk`'s branch below may go on to WRITE
+    /// `self.slots` (`materialized`), and a read held across that
+    /// write clones the whole map the same way `interned`'s did.
+    fn slot_at(name: string) -> Slot? { self.slots.get().get(name) }
+
     /// The newest entry for `name` — this session's own `put`, or the
     /// pack's own committed state, decoded once and kept.
     fn get(name: string) -> Entry? {
-        let slot? = self.slots.get().get(name) else { return null }
+        let slot? = self.slot_at(name) else { return null }
         match slot { .Loaded(e) -> e, .OnDisk(body) -> self.materialized(name, body) }
     }
 

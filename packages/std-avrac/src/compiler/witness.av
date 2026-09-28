@@ -251,10 +251,20 @@ impl Walk {
         if self.inside.get() { reading_inside_visible(fam) } else { reading_of(fam) }
     }
 
+    /// Whether `vk` was already emitted — its own fn, ended before any
+    /// caller goes on to WRITE `emitted`: a read held across that write
+    /// finds the Cell's box shared, and `avra_cell_unique` clones the
+    /// whole map (with no index, so the next lookup rebuilds it) — once
+    /// per key this walk visits, quadratic in the walk's own size (a
+    /// file with tens of thousands of edges pays it once per edge;
+    /// measured turning std-avrac's "keep" phase from ~10s to over ten
+    /// minutes).
+    fn already_emitted(vk: string) -> bool { self.emitted.get().get(vk) != null }
+
     /// The key once, then nothing: a leaf reached by two paths is one edge.
     fn once(k: Key) -> List<Key> {
         let vk = depkey_string(k)
-        if self.emitted.get().get(vk) != null { return [] }
+        if self.already_emitted(vk) { return [] }
         self.emitted.put(vk, true)
         [k]
     }
@@ -262,9 +272,18 @@ impl Walk {
     /// The walk's key, told apart by whether it is inside a `Visible`.
     fn walked(k: Key) -> string { "${depkey_string(k)}|${self.inside.get()}" }
 
+    /// Whether `vk` was already visited — `already_emitted`'s own twin,
+    /// for `visited` rather than `emitted`.
+    fn already_visited(vk: string) -> bool { self.visited.get().get(vk) != null }
+
+    /// Whether `f` is already among the named files — its own fn for the
+    /// same reason `already_emitted` is: `name` may go on to WRITE
+    /// `named`.
+    fn is_named(f: FileId) -> bool { self.named.get().any((n: FileId) -> same_file(n, f)) }
+
     /// Notes that `f`'s namespace is read by name.
     fn name(f: FileId) {
-        if !self.named.get().any((n: FileId) -> same_file(n, f)) { self.named.push(f) }
+        if !self.is_named(f) { self.named.push(f) }
     }
 }
 
@@ -636,7 +655,7 @@ impl Workspace {
     /// never a dependency silently dropped.
     fn leaf_keys(k: Key, walk: Walk) -> List<Key> {
         let vk = walk.walked(k)
-        if walk.visited.get().get(vk) != null { return [] }
+        if walk.already_visited(vk) { return [] }
         walk.visited.put(vk, true)
         match walk.reading(family_at(k.family)) {
             .Itself -> walk.once(k),
@@ -684,9 +703,18 @@ impl Workspace {
     /// settle brackets, so their reads land on THEIR OWN cells, not
     /// directly on `Analysis`'s (`Kernel.record_dep`'s nesting law) —
     /// translated to (stable name, current value hash) edges and
-    /// committed beside the row's answer: one write (`Pack.put` then
-    /// `commit`), so a trap between the two never leaves a row with no
-    /// witness or a witness with no row (§4 decision 7).
+    /// STAGED beside the row's answer (`Pack.put`), visible to `get`
+    /// at once. NEVER committed here: `Pack.commit`'s own
+    /// `garbage_heavy` check rebuilds the whole compacted byte form
+    /// (`fresh_bytes`, one map lookup per live name) to answer a
+    /// length comparison, unconditionally, on every call — paying
+    /// that per FILE turns a 724-file check from ~46s into minutes
+    /// (measured; census attached to the finding). The caller commits
+    /// ONCE for the whole pass (derive.av's `all_said`); §4 decision
+    /// 7's guarantee still holds, at the coarser grain of the batch
+    /// rather than the file — a trap loses whatever this pass staged
+    /// and nothing already committed, never a witness with no row or
+    /// a row with no witness.
     fn record_witness(f: FileId, name: string, out: WitnessedCheck) {
         let pack? = self.pack.get() else { return }
         let edges = self.expanded_edges(key(Family.Analysis, f.index))
@@ -706,6 +734,5 @@ impl Workspace {
                     payload: encoded_witnessed_check(out),
                 },
             )
-        let _ = pack.commit()
     }
 }

@@ -9,7 +9,7 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
-use diagnostics.{Diag, render_among, render_facts_among}
+use diagnostics.{Diag, render_among, render_facts_among, SourceFile}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
@@ -376,6 +376,11 @@ impl Workspace {
         if !adrift.is_empty() { fail at.adrift(adrift) }
         for a in p.files { self.keep_asks(store, lo, a) }
         let said? = self.all_said(store, p) else { fail at.unheld("what a held file said could not be read") }
+        // ONE commit for the whole pass: record_witness only stages
+        // (witness.av) — committing per file paid Pack.commit's own
+        // garbage_heavy check, which rebuilds the whole compacted
+        // form just to answer a length comparison, on every call.
+        let _ = self.pack.get()?.commit()
         said
     }
 
@@ -545,8 +550,16 @@ impl Workspace {
     /// as the store kept it — null when a held row cannot be read. A file the
     /// table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program) -> List<Said>? {
+        // EVERY LOADED SOURCE, ONCE FOR THE WHOLE PASS: `says` renders
+        // through it per file, and gathering it per file (734 files'
+        // worth of SourceFile, 734 times) is exactly the O(n²) that
+        // turned std-avrac's "keep" phase from ~10s into 700+s
+        // (measured; the hot path was @std.text.codepoints under
+        // avra_release_dead — line-start construction, paid again for
+        // every file on every file).
+        let sources = p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()])
         mut fresh: Map<string, Said> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(p, a)) }
+        for a in p.files { fresh.set(a.view.source.file, self.says(a, sources)) }
         let said = [self.file_said(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
@@ -560,13 +573,13 @@ impl Workspace {
     /// `Said` row carries both and a later hold answers them alike. A
     /// reused row is rendered here, fresh, the same way a freshly
     /// computed one is — `render_facts_among` picks each frame's window
-    /// from the sources THIS process has loaded, never from whichever
-    /// process happened to settle the witness.
-    fn says(p: Program, a: Analysis) -> Said {
+    /// from `sources`, `all_said`'s own, gathered once for the whole
+    /// pass — never from whichever process happened to settle the
+    /// witness.
+    fn says(a: Analysis, sources: List<SourceFile>) -> Said {
         let outcome = self.witnessed_check(a.view.file)
         if outcome.reused() { self.witness_hits.set(self.witness_hits.get() + 1) }
         let warned = [f for f in outcome.value().diagnostics if f.severity is .Warning]
-        let sources = p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()])
         Said {
             path: a.view.source.file,
             warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),

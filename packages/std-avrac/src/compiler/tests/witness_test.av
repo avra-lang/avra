@@ -69,7 +69,24 @@ fn a_process(files: Map<string, string>, pack_path: string) -> Workspace {
     a_process_over(files, package_names(), pack_path)
 }
 
-fn checked(ws: Workspace, path: string) -> WitnessedOutcome { ws.witnessed_check(ws.file_id(path)) }
+/// `record_witness` only STAGES now (witness.av: a per-file `commit`
+/// made a 724-file check minutes instead of seconds — its own
+/// `garbage_heavy` check rebuilds the whole compacted form to answer
+/// a length comparison, on every call, whether or not anything
+/// compacts). A real caller batches one commit per whole pass
+/// (derive.av's `all_said`); this fixture's callers each simulate one
+/// whole "process" over a handful of files, so committing once per
+/// `checked` call — not once per PASS — is still the right grain here.
+fn checked(ws: Workspace, path: string) -> WitnessedOutcome {
+    let out = ws.witnessed_check(ws.file_id(path))
+    let _ = committed(ws)
+    out
+}
+
+fn committed(ws: Workspace) -> bool {
+    let pack? = ws.pack.get() else { return true }
+    pack.commit()
+}
 
 fn all_reused(outs: List<WitnessedOutcome>) -> bool { outs.all((o: WitnessedOutcome) -> o.reused()) }
 
