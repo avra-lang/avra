@@ -49,7 +49,7 @@ use core.{
     Span,
 }
 use features.{NameFacts, TypeFacts, Decls, Ref, UseKind, Import, bound_decl_of, declaring_decl}
-use @std.relation.db.{new_db as new_refs_db}
+use @std.relation.db.{new_db as new_refs_db, Db as RelDb}
 
 impl Workspace {
     /// THE PASS: every admitted file's own rows, folded into one
@@ -75,9 +75,8 @@ impl Workspace {
         self.db.begin(k)
         let all_files = self.decls.files.get()
         let files = [x.id for x in all_files if !self.is_held(x.id)]
-        let all = flatten([self.file_refs(f) for f in files])
         let fresh = new_refs_db()
-        for r in all { let _ = Ref.insert(fresh, decl: r.decl, file: r.file, at: r.at, kind: r.kind) }
+        let fps = flatten([self.filed_refs(fresh, f) for f in files])
         self.decls.settle_refs(fresh)
         // A HELD FILE IS NOT SURVEYED (no store to walk), so a
         // workspace carrying one answers an INCOMPLETE relation — a
@@ -85,8 +84,20 @@ impl Workspace {
         // `Decls.used` reads this before ever answering "no use
         // anywhere": an unsure answer is never "unused".
         self.decls.mark_refs_incomplete(files.length < all_files.length)
-        self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in all])]))
-        all.length
+        self.db.settle(k, fp(41, [fp_list(fps)]))
+        fps.length
+    }
+
+    /// One file's own rows, inserted into `db` as `file_refs` produces
+    /// them — never held whole across the program first — and each
+    /// row's own fingerprint, for the pass's settle.
+    fn filed_refs(db: RelDb, f: FileId) -> List<int> {
+        [self.filed_ref(db, r) for r in self.file_refs(f)]
+    }
+
+    fn filed_ref(db: RelDb, r: Ref) -> int {
+        let _ = Ref.insert(db, decl: r.decl, file: r.file, at: r.at, kind: r.kind)
+        ref_fp(r)
     }
 
     /// One file's own rows: every expression naming a declaration,
