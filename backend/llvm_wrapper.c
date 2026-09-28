@@ -482,6 +482,21 @@ LLVMValueRef avra_llvm_build_alloca(LLVMBuilderRef b, LLVMTypeRef ty, const char
     if (LLVMGetTypeKind(ty) == LLVMPointerTypeKind) {
         LLVMBuildStore(entry_builder, LLVMConstNull(ty), alloca);
     }
+    // A struct-typed cell needs the same zeroing, whole, padding
+    // included: `avra_cell_release` reads the cell's first word raw,
+    // and a per-field `LLVMConstNull` store leaves inter-field padding
+    // (an i1 tag's alignment gap before the pointer that follows it)
+    // untouched — read as that pointer, on a settle before the seed
+    // store ever writes it.
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        LLVMBuildMemSet(
+            entry_builder,
+            alloca,
+            LLVMConstInt(LLVMInt8TypeInContext(LLVMGetTypeContext(ty)), 0, 0),
+            LLVMSizeOf(ty),
+            8
+        );
+    }
     LLVMDisposeBuilder(entry_builder);
     return alloca;
 }
