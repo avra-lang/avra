@@ -62,18 +62,28 @@ export fn stores<R>(indexes: int) -> Stores<R> {
 
 impl Stores<R> {
     /// The rows under `db`: opened and kept on the first reach, the Db
-    /// told how to hash them and let them go; refused once it closed.
+    /// told how to hash them and let them go; refused once it closed. A
+    /// close turns every reached slot `Closed`, so only a first reach
+    /// asks the Db whether it closed.
     fn reach(db: Db) -> Rows<R> {
-        if db.closed.get() { return self.refused(db) }
-        while self.slots.get().length <= db.id { self.slots.push(Slot.Unreached) }
-        match self.slots.get()[db.id] {
-            .Open(held) -> held,
-            .Unreached -> self.opened(db),
+        let held = self.slots.get()
+        let at = db.id
+        if at >= held.length { return self.first_reach(db) }
+        match held[at] {
+            .Open(rows) -> rows,
+            .Unreached -> self.first_reach(db),
             .Closed -> self.refused(db),
         }
     }
 
-    /// The first reach under `db`: fresh rows, kept, the Db told.
+    /// A Db's first reach: refused once it closed, opened otherwise.
+    fn first_reach(db: Db) -> Rows<R> {
+        if db.closed.get() { return self.refused(db) }
+        while self.slots.get().length <= db.id { self.slots.push(Slot.Unreached) }
+        self.opened(db)
+    }
+
+    /// Fresh rows under `db`, kept, the Db told.
     fn opened(db: Db) -> Rows<R> {
         let made = self.fresh()
         self.slots.set_at(db.id, Slot.Open(made))
