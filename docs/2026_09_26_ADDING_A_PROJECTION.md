@@ -1,9 +1,9 @@
 # Adding a projection to the compiler DB
 
 > Describes the `@relation`/`@query` design (docs/2026_09_26_COMPILER_DB_TOWNHALL.md,
-> §6). **Status:** `@relation` and its accessors are on main and
-> gate-verified — the plugin half below is a real program. `@query`, the
-> durable pack for relations, and the compiler's own relations (`Decl`,
+> §6). **Status:** `@relation`, its accessors and `@query` are on main
+> and gate-verified — the plugin half below is a real program. The
+> durable pack for relations and the compiler's own relations (`Decl`,
 > …) are not built; where a section describes them it says so and names
 > the ticket. Until they land, the design doc is the source of truth.
 
@@ -27,7 +27,7 @@ Most projections don't. Ask first:
 
 ## The whole API
 
-Two annotations, three field marks and a field named `id`. The derive
+Two annotations, four field marks and a field named `id`. The derive
 writes the rest.
 
 ```avra
@@ -40,15 +40,30 @@ one spelling for the compiler's relations and a plugin's:
 
 | Mark | Means | Generates |
 |---|---|---|
-| a field named `id` | the Db mints it on insert; it must be `int` | `Decl.get(db, id) -> Decl?` |
+| a field named `id` | the Db mints it on insert; it is an `int`, or a `@dense` type (`use @std.meta.{dense}`, a record of one int) | `Decl.get(db, id) -> Decl?` |
 | `@key f` (one or more fields) | together, the row's stable name; a known key REPLACES its row, keeping the id | `Decl.by_key(db, DeclKey { f: v }) -> Decl?` |
 | `@unique f` | a lookup that answers one row; an insert of a value another row holds is refused | `Decl.by_f(db, v) -> Decl?` |
-| `@index f` | a lookup that answers a list, in id order | `Decl.by_f(db, v) -> List<Decl>` |
+| `@index f` | a lookup that answers a list, in id order; a list field files its row under every element | `Decl.by_f(db, v) -> List<Decl>` |
+| `@local f` | a column this process alone reads: out of the stable hash and the codec | `DeclStored`, the row without its `@local` columns, which `Decl.decoded(bytes)` answers |
 | (always) | the rows | `Decl.insert(db, f: v, …) -> Decl`, its fields as named seats with no `id` (the row as stored; `Result<Decl, InsertRefused>` when a field is `@unique`), `Decl.all(db) -> List<Decl>` |
 
-`@query fn q(db, k)` is the second annotation: a memoized, dependency-
-recorded, persisted wrapper. **Not built** (avra-8sb5.57.4.6): today a
-query is a plain fn, recomputed on every call.
+A field is an `int`, a `bool`, a `string`, an enum (carried by its
+variant's name), a record of those (a column, hashed and written field by
+field), or a list or nullable of them. `@index` alone takes arguments,
+`ordered` and `grain`, each once: `@index(grain)` names the bucket `get`
+records a row's read through, on one field only.
+
+`@query fn q(db, …)` (`use @std.relation.{query}`) is the second
+annotation: a fn over a Db whose answer is kept per call. A kept answer
+is reused until a write to a relation the query read, then the body
+reruns. The rows a run inserts are the query's own: a rerun replaces
+them (a keyed row keeps its id, a row the run no longer writes is
+dropped), two queries writing one key are refused, and a query that
+reads a relation it writes is refused — it reads the rows its last run
+left with `Rel.prior(db)`, from inside the query. ORM's program
+`packages/std-relation/src/tests/query/` pins each of these. Answers and
+rows live in memory for the life of the Db; persisting them is
+avra-8sb5.57.6.
 
 `id` is fast in-process identity; `@key` is identity that will survive
 to the next process. A relation needs no `@key` if nothing updates or
@@ -57,9 +72,8 @@ references its rows.
 ## Worked example: `avra docs` (on paper)
 
 Docs reads two things: one name's declaration(s), and every exported
-declaration. Written against the design — the compiler's own `Decl`
-relation is not built yet (avra-8sb5.57.8), so this is a sketch, not a
-program:
+declaration. `@query` is built, but the compiler's own `Decl` relation is
+not (avra-8sb5.57.8), so this is a sketch, not a program:
 
 ```avra
 @query
@@ -93,7 +107,7 @@ line for line.
 a query over it:
 
 ```avra
-use @std.relation.{relation}
+use @std.relation.{relation, query}
 use @std.relation.db.{Db}
 
 /// One task. The Db mints `id`; `title` is the row's key, so writing a
@@ -108,7 +122,9 @@ export fn record(db: Db, owner: string, title: string, done: bool) -> Todo {
 }
 
 /// A query over the relation: an owner's tasks not yet done, in the
-/// order they were first written.
+/// order they were first written. Its answer is kept per call and rerun
+/// after a write to `Todo`.
+@query
 export fn open_for(db: Db, owner: string) -> List<Todo> {
     [t for t in Todo.by_owner(db, owner) if !t.done]
 }
@@ -129,14 +145,18 @@ fn agenda(db: Db, owner: string) -> string {
 The program writes three tasks, re-writes one by its key, and prints
 `ann: write the guide, red-team the accessors | ann: red-team the
 accessors | bo: review | cy: nothing open | id kept | 3 rows` — the
-updated row kept its id and the count stayed three.
+updated row kept its id and the count stayed three. The second line for
+`ann` shows the rewrite because the write made `open_for`'s kept answer
+rerun.
 
 **To update a row, key it.** Writing a known `@key` replaces that row.
-A keyless relation only appends: three identical inserts are three rows,
-and nothing removes or replaces one. Re-running a projection that
-inserts what it derives, against one Db, doubles its rows. `@key` may
-sit on several fields, which together are the key: `Todo.by_key(db,
-TodoKey { owner: o, title: t })`.
+Outside a `@query`, a keyless relation only appends: three identical
+inserts are three rows, and no verb removes or replaces one
+(`Todo.remove` is refused: "`Todo` has no static fn `remove`"). A plain
+fn that inserts what it derives, run twice against one Db, doubles its
+rows; written as a `@query`, its rerun replaces them. `@key` may sit on
+several fields, which together are the key: `Todo.by_key(db, TodoKey {
+owner: o, title: t })`.
 
 **A `@unique` field guards its value.** An insert that repeats a value
 another row holds is not stored: a relation with a `@unique` field
@@ -166,17 +186,23 @@ All were compiled to check:
 
 | Declaration | Refusal |
 |---|---|
-| a field of `float`, a named type (`type OwnerId = int`), an enum, or a generic `T` | `kind_not_carried` — fields carry int, bool, string, and lists and nullables of them |
-| `id: CallId`, or any `id` that is not `int` | `id_not_int` |
+| a field of `float`, a named type (`type OwnerId = int`), or a generic `T`, unless it is `@local` | `kind_not_carried` — fields carry int, bool, string, enums, records of those, and lists and nullables of them |
+| an `id` that is not an `int` or a `@dense` type (`id: CallId`) | `id_not_int` |
+| a `@dense` id held anywhere but the row's `id` or a `@local` column | `dense_unmarked` — a dense id means nothing in another process |
+| `@key` and `@local` on one field | `key_local` — a key is the row's stable name |
+| a list field under `@key` or `@unique` | `many_valued` — a list files its row under every element, so mark it `@index` |
 | a lookup mark on `string?`, or any kind but int, bool, string | `lookup_kind` |
 | `@unique @index` on one field | `answer_clash` |
-| a mark twice, or a mark outside the three (`@key`, `@unique`, `@index`) | `duplicate_mark`, `unknown_mark` |
+| a mark twice, or a mark outside the four (`@key`, `@unique`, `@index`, `@local`) | `duplicate_mark`, `unknown_mark` |
+| an argument on a mark, other than `@index(ordered)` or `@index(grain)` | `mark_args` |
+| a second `@index(grain)` in one relation | `grain_twice` — `get` records a row's read through one bucket |
 | a field named like a generated member: `insert`, `get`, `all`, `encoded`, `stable_hash`, … | `name_collision` |
 | a field named `db`, the Db's seat on `insert` | `seat_collision` |
 | a `@unique` or `@index` field named `key`, beside `@key` fields | `lookup_collision` — the `@key` fields' lookup is `by_key` |
 
 Store what a refused kind stands for as one that is carried — a float as
-an int in a fixed unit, an enum as its name.
+an int in a fixed unit — or mark the column `@local`, which holds any
+type and stays out of the hash and the codec.
 
 ### What misleads today
 
@@ -185,10 +211,19 @@ Found by using the accessors as a plugin author would:
 - `insert` takes the row's fields as seats and no `id`; writing one is
   refused at the call, in the typer's words: "`Todo.insert` has no seat
   named `id`", help "its seats are `db`, `title`, `done`".
-- There is no remove verb, and asking for one is answered as if it were
-  an enum's: `Todo.remove(db, id)` is `type.unknown_prop`, "`Todo` is a
-  record, not an enum". Key the row to update it (see "To update a row,
-  key it"); removal arrives with `@query`.
+- There is no remove verb: `Todo.remove(db, id)` is refused, "`Todo` has
+  no static fn `remove`". Key the row to update it, or let a `@query`
+  own the rows it writes (see "To update a row, key it").
+- `@query` written in the root package's own files — the package you
+  `avra run` or `avra test` — is refused, `annotation.wrap_missing`:
+  "`@query` asks to wrap `f$body`, and its `source` declares no fn of
+  that name". The same text works in a package another package depends
+  on, as the plugin above does, and in `@std/relation`'s own tests
+  (avra-8sb5.57.4.15).
+- The generated `TodoKey` and `TodoStored` records are not exported with
+  `export type Todo`, so another package cannot write `TodoKey { … }` and
+  `by_key` is out of its reach: export a fn of your own that calls it
+  (avra-8sb5.57.4.16).
 
 Two names to avoid, from the language and not the derive: `Task` is a
 built-in type, and `level` is reserved.
@@ -197,23 +232,25 @@ built-in type, and `level` is reserved.
 
 | You want | Status | Ticket |
 |---|---|---|
-| a memoized, dependency-tracked, persisted query (`@query`) | not built — your query is a plain fn | avra-8sb5.57.4.6 |
-| a fixpoint over a plugin relation | the Kernel's fixpoint mode landed; a plugin cannot spell it until `@query` exists | avra-8sb5.57.13.1, .57.4.6 |
+| a query's answer persisted with its dependency list | not built — answers and rows are memory for the life of the Db | avra-8sb5.57.6 (M3) |
+| a fixpoint over a plugin relation | the Kernel's fixpoint mode landed; `@query` takes no `fixpoint` argument (`fixpoint` is not defined), and a query reading a relation it writes is refused | avra-8sb5.57.13.1 |
 | a plugin's rows in the durable pack | not built — rows are memory for the life of the Db | avra-8sb5.57.6 (M3) |
-| typed-id, enum or float fields, as the design doc's own relations use (§6.3, §6.7) | refused today, by name, at the field | — |
-| a query that owns its rows and replaces them on rerun | not expressible — no remove verb, no `@query` | avra-8sb5.57.4.6 |
+| a `float` or a named type in a hashed column | refused at the field; hold it in a `@local` column or store an int | — |
 | a plugin's relations in the compiler's own Db | two `Db` types today | avra-8sb5.57.4.7 |
 
 ## What you get for free, and what you still write
 
-Free from `@relation`, today: the accessors above, a stable hash over
-every field, a codec, and per-Db row stores with their indexes kept
-current on each insert.
+Free from `@relation`: the accessors above, a stable hash over every
+field but the `@local` ones, a codec, and per-Db row stores with their
+indexes kept current on each insert.
 
-Free from `@query`, once it exists: memoization, recorded reads, early
-cutoff on the hash, and an answer persisted with its dependency list —
-so a later process reuses it after checking those dependencies' current
-hashes, no re-parsing.
+Free from `@query`: an answer kept per call and rerun only after a write
+to a relation it read, and the rows it writes owned — replaced on rerun,
+refused when two queries write one key.
+
+Still to come with the durable pack (avra-8sb5.57.6): an answer
+persisted with its dependency list, so a later process reuses it after
+checking those dependencies' current hashes, no re-parsing.
 
 Still yours, permanently: the fn body's own logic — what a query reads
 and how it renders. The derive generates the plumbing around a
@@ -222,12 +259,13 @@ computation; it was never going to write the computation.
 ## Why this is enough (the short version)
 
 Every read goes through a generated accessor, so there is no raw table
-to bypass and no dependency a witness can miss. Every answer's hash and
-dependency list persist whether or not its value does, so a cold
-process validates a warm answer by checking file (and env/manifest)
-digests alone. A query owns exactly the rows it inserts, so a relation
-is derived data that reruns and invalidates itself rather than a
-mutable table something else might corrupt.
+to bypass and no dependency a witness can miss. By design every answer's
+hash and dependency list persist whether or not its value does, so a
+cold process validates a warm answer by checking file (and env/manifest)
+digests alone — the durable half is avra-8sb5.57.6. A query owns exactly
+the rows it inserts, so a relation is derived data that reruns and
+invalidates itself rather than a mutable table something else might
+corrupt.
 
 The mechanics behind those three sentences — how a witness is built,
 how an index bucket's hash stays cheap to maintain, how identity
