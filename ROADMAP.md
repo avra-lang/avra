@@ -1344,7 +1344,7 @@ the order is the dependency.
         resizes the slice. `Type.name(args)` already PARSES; the
         CHECKER refuses it, with a variant-shaped message:
 
-            Point.origin()   F2003 `Point` is a record, not an enum
+            Point.origin()   F2003 `Point` has no static fn `origin`
             K.other()        F2003 `K` has no variant `other`
                                    help: the variants are `a`, `b`
 
