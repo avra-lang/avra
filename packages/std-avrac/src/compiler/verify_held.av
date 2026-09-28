@@ -1,0 +1,335 @@
+//! `--verify-held` (avra-8sb5.57.69) — every held declaration diffed against
+//! a fresh parse+sign of its file, field by field. P7: a hold that decoded a
+//! declaration wrong surfaces far from its cause — a seat-mark width
+//! mismatch as 127 second-order type errors (.67), a dropped `consumed` bit
+//! as a segfault (.66) — this names the declaration and the field directly.
+//!
+//! THE WARM SIDE IS `attempted`, NEVER `derived`: `derived`'s own
+//! `derived_reading` silently retries from the sources whole when a held
+//! attempt's analysis refuses, which is exactly the shape a corrupted hold
+//! would take — the retry would erase the corruption before this ever saw
+//! it. `attempted` stops one layer short of that retry.
+//!
+//! THE FRESH SIDE IS `from_sources`, the hold's own oracle: a SEPARATE
+//! workspace (`anew`, never a copy of the warm one) with nothing held, so
+//! the comparison never reads a held value back as its own fresh side.
+use core.{DeclId, TypeId, SeatMark, Span, flatten, some_list}
+use features.{DeclFacts, DeclSig, Decl, AnnotationFact, kind_word}
+
+/// One held field that decoded to something a fresh reading would not.
+export type HeldMismatch = { file: string, decl: string, field: string, held: string, fresh: string }
+
+/// What the pass examined and found.
+export type VerifyHeld = { files: int, declarations: int, mismatches: List<HeldMismatch> }
+
+/// One held file's own count and mismatches.
+type FileVerified = { declarations: int, mismatches: List<HeldMismatch> }
+
+impl Workspace {
+    fn verify_held(entry: string?) -> Result<VerifyHeld, string> {
+        let warm = self.attempted(Attempt { entry: entry, want: Want.Diagnostics })?
+        let warm_ws = warm.program.ws
+        let files = held_paths(warm_ws)
+        if files.is_empty() { return .Ok(VerifyHeld { files: 0, declarations: 0, mismatches: [] }) }
+        let fresh = self.from_sources(entry, Want.Diagnostics)?
+        let fresh_ws = fresh.program.ws
+        let checks = [warm_ws.file_verified(path, fresh_ws) for path in files]
+        mut declarations = 0
+        for c in checks { declarations = declarations + c.declarations }
+        .Ok(
+            VerifyHeld {
+                files: files.length,
+                declarations: declarations,
+                mismatches: flatten([c.mismatches for c in checks]),
+            },
+        )
+    }
+
+    /// A HELD FILE'S DECLARATIONS PAIR WITH A FRESH READ'S BY ORDINAL: the
+    /// record's own ordinal IS a fresh parse's declaration order (`record.av`'s
+    /// `record_complete` holds every held module to it), so the two lists walk
+    /// in step. A length that disagrees names itself instead of pairing wrong
+    /// declarations against each other.
+    fn file_verified(path: string, fresh_ws: Workspace) -> FileVerified {
+        let warm_ids = self.decls.decls_of_file(self.file_id(path))
+        let fresh_ids = fresh_ws.decls.decls_of_file(fresh_ws.file_id(path))
+        if warm_ids.length != fresh_ids.length {
+            return FileVerified {
+                declarations: 0,
+                mismatches: [
+                    HeldMismatch {
+                        file: path,
+                        decl: "<file>",
+                        field: "declaration_count",
+                        held: "${warm_ids.length}",
+                        fresh: "${fresh_ids.length}",
+                    },
+                ],
+            }
+        }
+        let n = warm_ids.length
+        FileVerified {
+            declarations: n,
+            mismatches: flatten(
+                [decl_mismatches(path, self, warm_ids[i], fresh_ws, fresh_ids[i]) for i in 0..n],
+            ),
+        }
+    }
+
+    fn sig_str(s: DeclSig?) -> string {
+        match s {
+            sig? -> shape_line(self, sig, "")
+            null -> "<none>"
+        }
+    }
+
+    fn type_str(t: TypeId?) -> string {
+        match t {
+            id? -> self.decls.type_wire(id)
+            null -> "<none>"
+        }
+    }
+}
+
+fn decl_mismatches(path: string, warm_ws: Workspace, wid: DeclId, fresh_ws: Workspace, fid: DeclId) -> List<
+    HeldMismatch,
+> {
+    let wd = warm_ws.decls.decl(wid)
+    let fd = fresh_ws.decls.decl(fid)
+    identity_mismatches(path, wd, fd)
+        .concat(
+            facts_mismatches(
+                path,
+                wd.name,
+                warm_ws.decls.facts_or(wid),
+                fresh_ws.decls.facts_or(fid),
+            ),
+        )
+        .concat(sig_mismatches(path, warm_ws, wd, wid, fresh_ws, fd, fid))
+}
+
+fn identity_mismatches(path: string, wd: Decl, fd: Decl) -> List<HeldMismatch> {
+    let found = [
+        maybe_mismatch(path, wd.name, "identity.name", wd.name, fd.name),
+        maybe_mismatch(path, wd.name, "identity.kind", kind_word(wd.kind), kind_word(fd.kind)),
+        maybe_mismatch(
+            path,
+            wd.name,
+            "identity.exported",
+            bool_str(wd.exported),
+            bool_str(fd.exported),
+        ),
+    ]
+    [m! for m in found if m != null]
+}
+
+/// THE SIGNATURE, THE SEAT MARKS, THE LAYOUT — everything a `sig()` ask
+/// unlocks. A `const` never fills through `sig()` (its type rides
+/// `type_of_const` instead — `record_line`'s own writer guards it the same
+/// way), so it is asked apart and nothing here reads seats or layout for it.
+fn sig_mismatches(
+    path: string,
+    warm_ws: Workspace,
+    wd: Decl,
+    wid: DeclId,
+    fresh_ws: Workspace,
+    fd: Decl,
+    fid: DeclId,
+) -> List<HeldMismatch> {
+    if wd.kind is .Const {
+        warm_ws.fill_ensured(wid)
+        return const_type_mismatches(path, warm_ws, wd, fresh_ws, fd)
+    }
+    let wsig = warm_ws.sig(wid)
+    let fsig = fresh_ws.sig(fid)
+    some_list(maybe_mismatch(path, wd.name, "sig", warm_ws.sig_str(wsig), fresh_ws.sig_str(fsig)))
+        .concat(seat_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid))
+        .concat(
+            if wd.kind is .Record { flat_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid) } else { [] },
+        )
+}
+
+fn const_type_mismatches(path: string, warm_ws: Workspace, wd: Decl, fresh_ws: Workspace, fd: Decl) -> List<
+    HeldMismatch,
+> {
+    let wt = warm_ws.decls.type_of_const(wd.file, wd.stmt)
+    let ft = fresh_ws.decls.type_of_const(fd.file, fd.stmt)
+    some_list(
+        maybe_mismatch(path, wd.name, "const_type", warm_ws.type_str(wt), fresh_ws.type_str(ft)),
+    )
+}
+
+/// SEAT `j`'s FOUR PROMISES. `consumed` (R3) is never merged into
+/// `seat_mark` on a live declaration — it is asked apart, at `consumed_seat`
+/// — while a HELD declaration's `seat_mark` already carries it, decoded
+/// straight off the record (`record.av`'s `mark_of_word`). Recombining the
+/// fresh side the same way `record_line` itself does when it WRITES a
+/// record is what makes the two sides answer the same question.
+fn seat_mismatches(
+    path: string,
+    name: string,
+    warm_ws: Workspace,
+    wid: DeclId,
+    fresh_ws: Workspace,
+    fid: DeclId,
+) -> List<HeldMismatch> {
+    let wn = warm_ws.decls.seat_count(wid)
+    let xn = fresh_ws.decls.seat_count(fid)
+    if wn != xn {
+        return [
+            HeldMismatch {
+                file: path,
+                decl: name,
+                field: "seats.count",
+                held: "${wn}",
+                fresh: "${xn}",
+            },
+        ]
+    }
+    let found = [maybe_mismatch(
+        path,
+        name,
+        "seats[${j}]",
+        mark_str(warm_ws.decls.seat_mark(wid, j)),
+        mark_str(
+            fresh_ws.decls.seat_mark(fid, j) with { consumed: fresh_ws.decls.consumed_seat(fid, j) },
+        ),
+    ) for j in 0..wn]
+    [m! for m in found if m != null]
+}
+
+fn flat_mismatches(
+    path: string,
+    name: string,
+    warm_ws: Workspace,
+    wid: DeclId,
+    fresh_ws: Workspace,
+    fid: DeclId,
+) -> List<HeldMismatch> {
+    let wt = warm_ws.decls.record_type(wid)
+    let ft = fresh_ws.decls.record_type(fid)
+    some_list(
+        maybe_mismatch(
+            path,
+            name,
+            "layout.boxed",
+            bool_str(warm_ws.decls.types.boxed_flat(wt)),
+            bool_str(fresh_ws.decls.types.boxed_flat(ft)),
+        ),
+    )
+}
+
+/// EVERY `DeclFacts` FIELD, NAMED — the fingerprint gates first (it folds
+/// the whole value, so a field this list has not caught up to still makes
+/// the gate fire), and a fingerprint disagreement no named field explains
+/// says so rather than passing silent (CLAUDE.md, "a hash that forgets a
+/// payload").
+fn facts_mismatches(path: string, name: string, held: DeclFacts, fresh: DeclFacts) -> List<
+    HeldMismatch,
+> {
+    if held.codec_same(fresh) { return [] }
+    let found = [
+        maybe_mismatch(
+            path,
+            name,
+            "facts.external",
+            bool_str(held.external),
+            bool_str(fresh.external),
+        ),
+        maybe_mismatch(path, name, "facts.stat", bool_str(held.stat), bool_str(fresh.stat)),
+        maybe_mismatch(
+            path,
+            name,
+            "facts.is_grammar",
+            bool_str(held.is_grammar),
+            bool_str(fresh.is_grammar),
+        ),
+        maybe_mismatch(
+            path,
+            name,
+            "facts.is_component",
+            bool_str(held.is_component),
+            bool_str(fresh.is_component),
+        ),
+        maybe_mismatch(path, name, "facts.span", span_str(held.span), span_str(fresh.span)),
+        maybe_mismatch(path, name, "facts.tparams", list_str(held.tparams), list_str(fresh.tparams)),
+        maybe_mismatch(path, name, "facts.bounds", list_str(held.bounds), list_str(fresh.bounds)),
+        maybe_mismatch(path, name, "facts.seats", list_str(held.seats), list_str(fresh.seats)),
+        maybe_mismatch(path, name, "facts.host", list_str(held.host), list_str(fresh.host)),
+        maybe_mismatch(
+            path,
+            name,
+            "facts.annotated",
+            bool_str(held.annotated),
+            bool_str(fresh.annotated),
+        ),
+        maybe_mismatch(path, name, "facts.of", held.of, fresh.of),
+        maybe_mismatch(
+            path,
+            name,
+            "facts.instance",
+            bool_str(held.instance),
+            bool_str(fresh.instance),
+        ),
+        maybe_mismatch(path, name, "facts.doc", doc_str(held.doc), doc_str(fresh.doc)),
+        maybe_mismatch(
+            path,
+            name,
+            "facts.annotations",
+            annotations_str(held.annotations),
+            annotations_str(fresh.annotations),
+        ),
+        maybe_mismatch(
+            path,
+            name,
+            "facts.mut_seats",
+            list_str(held.mut_seats),
+            list_str(fresh.mut_seats),
+        ),
+    ]
+    let named = [m! for m in found if m != null]
+    if !named.is_empty() { return named }
+    [
+        HeldMismatch {
+            file: path,
+            decl: name,
+            field: "facts.<unidentified>",
+            held: "${held.fingerprint()}",
+            fresh: "${fresh.fingerprint()}",
+        },
+    ]
+}
+
+// ── RENDERING — one field, two values, both read straight. ──
+
+fn maybe_mismatch(file: string, decl: string, field: string, held: string, fresh: string) -> HeldMismatch? {
+    if held == fresh { null } else { HeldMismatch { file: file, decl: decl, field: field, held: held, fresh: fresh } }
+}
+
+fn bool_str(b: bool) -> string { if b { "true" } else { "false" } }
+
+fn list_str(xs: List<string>) -> string { if xs.is_empty() { "<empty>" } else { xs.join(",") } }
+
+fn span_str(s: Span?) -> string {
+    match s {
+        sp? -> "${sp.lo}..${sp.hi}"
+        null -> "<none>"
+    }
+}
+
+fn doc_str(d: List<string>?) -> string {
+    match d {
+        lines? -> if lines.is_empty() { "<empty>" } else { lines.join(" / ") }
+        null -> "<none>"
+    }
+}
+
+fn annotation_str(a: AnnotationFact) -> string { "${a.name}(${a.args.join(",")})" }
+
+fn annotations_str(xs: List<AnnotationFact>) -> string {
+    if xs.is_empty() { "<empty>" } else { [annotation_str(a) for a in xs].join("; ") }
+}
+
+fn mark_str(m: SeatMark) -> string {
+    "mutable=${bool_str(m.mutable)} settled=${bool_str(m.settled)} unshared=${bool_str(m.unshared)} consumed=${bool_str(m.consumed)}"
+}

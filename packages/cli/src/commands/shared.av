@@ -14,6 +14,8 @@ use @std.avrac.compiler.{
     Checked,
     phase_total,
     BuildError,
+    VerifyHeld,
+    HeldMismatch,
 }
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name, stem_of}
@@ -368,6 +370,32 @@ export fn checked_at(path: string) -> Result<Checked, string> {
     ws.checked(build_entry(ws, path))
 }
 
+/// `--verify-held`'s own answer, printed the same way `checked_at`'s
+/// refusal is: a report, or the ratio one line per mismatch and a summary
+/// names what it examined — a check that examined nothing says so.
+export fn verify_held_said(path: string) -> int {
+    let ws = build_workspace(path)
+    match ws.verify_held(build_entry(ws, path)) {
+        .Ok(v) -> reported_verify_held(v),
+        .Err(report) -> {
+            println(report)
+            1
+        },
+    }
+}
+
+fn reported_verify_held(v: VerifyHeld) -> int {
+    for m in v.mismatches { println(verify_held_line(m)) }
+    println(
+        "verify-held: ${v.declarations} held declaration(s) in ${v.files} file(s) compared, ${v.mismatches.length} mismatch(es)",
+    )
+    if v.mismatches.is_empty() { 0 } else { 1 }
+}
+
+fn verify_held_line(m: HeldMismatch) -> string {
+    "${m.file}\t${m.decl}\t${m.field}\theld=${m.held}\tfresh=${m.fresh}"
+}
+
 fn hit_line(reused: bool) -> string {
     if reused { "time: lower+emit · cache hit" } else { "time: lower+emit · built" }
 }
@@ -425,6 +453,13 @@ fn cached_build(args: CliResult) -> int {
 
 /// The flag every file command takes.
 export flag time { description: "print phase timings and memo hits" }
+
+/// `check`/`build`'s own: after a warm run, diff every held declaration
+/// against a fresh parse+sign of its file.
+export flag verify_held {
+    description: "diff every held declaration against a fresh parse+sign of its file"
+    aliases: ["--verify-held"]
+}
 
 /// The source file a file command reads.
 export arg file {
