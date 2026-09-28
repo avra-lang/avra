@@ -3,9 +3,13 @@
 //! the scans, the growth words and the copies are this feature's
 //! method rows. A comprehension builds one by walking another:
 //! `[e for x in xs if p]`, naming the index too with `[e for i, x
-//! in xs]`, or by counting with `[e for i in lo..hi]` — the head is
-//! the `for` statement's. `collect { for o in xs { if o.ok { o.id
-//! } } }` gathers every value its statements would discard.
+//! in xs]`, or by counting with `[e for i in lo..hi]` — each head is
+//! the `for` statement's. A comprehension nests any number of heads,
+//! left outermost, each reading every earlier one's binder — `[a + b
+//! for a in xs for b in a.children if p(a, b)]` — with an `if`
+//! filter after any head, in written order. `collect { for o in xs {
+//! if o.ok { o.id } } }` gathers every value its statements would
+//! discard.
 use features.{
     LanguageFeature,
     BuilderRow,
@@ -27,6 +31,8 @@ export fn lists() -> LanguageFeature {
         name                | build
         "list_lit"          | build_list
         "comp"              | build_comp
+        "comp_head"         | build_comp_head
+        "comp_filter"       | build_comp_filter
         "collect"           | build_collect
         "collect_blockless" | build_collect_blockless
     }
@@ -69,7 +75,9 @@ export fn lists() -> LanguageFeature {
     }
     LanguageFeature lists {
         gram: grammar {
-            primary = "[" v:expression "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? ( "if" c:expression )? "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, ix, en, src, hi, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest) | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
+            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, h, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest) | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
+            comp_head = "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? -> comp_head(ix, en, src, hi)
+            comp_filter = "if" c:expression -> comp_filter(c)
         }
         builders: rows
         diags: codes
