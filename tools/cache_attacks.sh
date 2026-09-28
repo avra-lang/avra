@@ -154,6 +154,16 @@ ud=$(find .avra-cache -type d -iname 'unit*' | head -1)
 rm -rf "$ud"; S "every Unit row deleted (asks, homes, consts)" a; S "same, b" b
 ed $R/c/src/main.av 'println("cc ' 'println("C ';                     S "c again, over a's objects" c
 S "final no-op a" a
+# A DECLARATION INSERTED ABOVE ANOTHER SHIFTS ITS ORDINAL WITHIN THE FILE: a
+# caller held across the edit reads every shifted name's WIRE, and the wire
+# must still name the shape it named before — never the newcomer sharing its
+# old ordinal.
+ed $R/lib/src/words.av 'export type Word = { text: string }' 'export enum Sizing { Fixed, Auto }
+export type Word = { text: string }'
+S "a type inserted above Word/Ratio/Tick/Line: a's held wire must not read the newcomer" a
+ed $R/lib/src/words.av 'export enum Sizing { Fixed, Auto }
+export type Word = { text: string }' 'export type Word = { text: string }'
+S "and back" a
 # THE SUITE THROUGH THE SAME STORE: a verdict must follow a body a held test calls
 mkdir -p $R/t/src/tests/shown
 cat > $R/t/avra.toml <<'TOML'
