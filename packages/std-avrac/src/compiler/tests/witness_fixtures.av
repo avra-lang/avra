@@ -4,15 +4,20 @@
 // and `checked` are witness_test.av's own (one shared namespace).
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, WitnessedCheck, WitnessedOutcome, name_parts}
+use core.{DeclId, joined, sorted_texts}
 use compiler.host.{memory_host}
 use compiler.store.{pack_at}
 
-/// `Family.Parsed`'s, `Family.Namespace`'s and `Family.Manifest`'s ordinals (workspace.av's `ordinal`), the one
+/// `Family.Parsed`'s, `Family.Namespace`'s, `Family.Sig`'s, `Family.Methods`'s and `Family.Manifest`'s ordinals (workspace.av's `ordinal`), the one
 /// way a test builds a `Key` without reaching a `compiler`-private enum. Pinned by name in
 /// witness_refusal_test.av, so a moved ordinal fails there instead of here.
 fn parsed_ordinal() -> int { 1 }
 
 fn namespace_ordinal() -> int { 3 }
+
+fn sig_ordinal() -> int { 6 }
+
+fn methods_ordinal() -> int { 7 }
 
 fn manifest_ordinal() -> int { 15 }
 
@@ -56,3 +61,30 @@ fn verdict(ws: Workspace, pack_path: string, file: string) -> Verdict {
 
 /// Whether the edge of this family refused.
 fn refused_family(v: Verdict, family: string) -> bool { v.refused_by.contains(family) }
+
+/// The stored edge names of `file`'s witness, of one family.
+fn edge_names_of(ws: Workspace, pack_path: string, file: string, family: string) -> List<string> {
+    let e? = pack_at(pack_path, "witness-test").get(ws.witness_name(ws.file_id(file))) else { return [] }
+    [x.name for x in e.edges if name_parts(x.name)?.family ?? "" == family]
+}
+
+/// The families of `file`'s stored edges, sorted and joined — the shape of a witness, blind to order.
+fn edge_shape(ws: Workspace, pack_path: string, file: string) -> string {
+    let e? = pack_at(pack_path, "witness-test").get(ws.witness_name(ws.file_id(file))) else { return "" }
+    joined(sorted_texts([name_parts(x.name)?.family ?? "?" for x in e.edges]), ",")
+}
+
+/// How many stored edges of `file`'s witness belong to one family.
+fn edge_count(ws: Workspace, pack_path: string, file: string, family: string) -> int {
+    edge_names_of(ws, pack_path, file, family).length
+}
+
+/// The declaration named `name` that `file` declares.
+fn decl_in_file(ws: Workspace, file: string, name: string) -> DeclId {
+    [d.id for d in ws.decls.decls.get() if d.name == name && ws.decls.file(d.file).path == file][0]
+}
+
+/// Whether a second process's verdict is the fresh, un-witnessed one.
+fn same_verdict_as_fresh(v: Verdict, fresh: WitnessedCheck) -> bool {
+    v.outcome.value().clean == fresh.clean && v.outcome.value().report == fresh.report
+}

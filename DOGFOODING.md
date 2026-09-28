@@ -660,6 +660,23 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       Not ratcheted: no grep tells a one-slot list from a list whose
       first element is written.
 
+- style.encoding_empty_field_dropped (unratcheted) A DELIMITED ENCODING
+      DECODES ITS EMPTY LAST FIELD. `split` drops a trailing empty
+      segment, so a name joined by a separator and ending in an empty
+      field reads back one field short: `stable_line("module", [""])` is
+      "module\n" and splits to one piece. The root module's name is
+      empty, so every witness edge naming it answered unresolved, in
+      both processes, and no root-module file could ever reuse an
+      answer. A refusal case cannot see this — it passes when
+      everything is refused — and only a positive control (an unchanged
+      source is reused) failed. `stable_fields` restores the field.
+      THE SMELL: a decoder that splits on the separator its encoder
+      joined with and takes the field count from the result. THE IDIOM:
+      write the empty case first — an empty last field, an empty first
+      one, an empty middle one — as a round trip beside the codec, and
+      ask of every such decoder whether its encoder can emit an empty
+      tail. Not ratcheted: no grep tells a decoder from any other split.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

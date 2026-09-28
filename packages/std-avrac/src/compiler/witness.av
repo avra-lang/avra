@@ -105,85 +105,51 @@ export fn stable_module_name(name: string) -> string { stable_line("module", [na
 
 /// A `Key`'s own dense identity, for a visited set during ONE
 /// process's own expansion — never persisted, never compared across
-/// processes (that is exactly what `Decls.stable_key_name` is for).
+/// processes (that is exactly what `Workspace.stable_key_name` is for).
 fn depkey_string(k: Key) -> string { "${k.family}:${k.arg}" }
 
 impl Decls {
-    /// How many EARLIER declarations (by dense id, which is admission
-    /// order) share this one's (module, owner, name) — the
-    /// disambiguator a name alone cannot carry (`fn f()` shadowed by a
-    /// later `fn f()` is two declarations, one name). Moves only when
-    /// an earlier same-named sibling is added or removed above it,
-    /// never when anything else in the module changes.
-    fn sibling_index(module: string, d: DeclId) -> int {
+    /// How many EARLIER declarations of the SAME FILE share this one's
+    /// (owner, name) — the disambiguator a name alone cannot carry
+    /// (`type T` and `impl T` are one name, `fn f` twice is two
+    /// declarations). Counted inside the declaring file, so it moves only
+    /// when that file's text does, never when another file is admitted
+    /// first.
+    fn sibling_index(d: DeclId) -> int {
         let x = self.decl(d)
-        [i for i in 0..d.index if self.same_sibling(module, x, DeclId { index: i })].length
+        [o for o in self.decls_of_file(x.file) if o.index < d.index && self.same_words(x, o)].length
     }
 
-    fn same_sibling(module: string, x: Decl, other: DeclId) -> bool {
-        let y = self.decl(other)
-        y.owner == x.owner &&
-            y.name == x.name &&
-            self.module_name(self.file(y.file).module_id) == module
+    fn same_words(x: Decl, o: DeclId) -> bool {
+        let y = self.decl(o)
+        y.owner == x.owner && y.name == x.name
     }
 
+    /// A declaration's stable name: its declaring file's path, its own
+    /// words and its sibling index in that file. A builtin has no declaring
+    /// file (its `file` is whichever was admitted first), so its path is
+    /// empty.
     export fn stable_decl_name(d: DeclId) -> string {
         let x = self.decl(d)
-        let module = self.module_name(self.file(x.file).module_id)
-        stable_line("decl", [module, x.owner, x.name, "${self.sibling_index(module, d)}"])
-    }
-
-    /// A `Key`'s stable name: the family's own word (`family_word`,
-    /// this module), then the id it keys by, dispatched by what THAT
-    /// family keys by (workspace.av's own doc comment on `Family`:
-    /// FileId, ModuleId, DeclId, unit, or one whole-program key). A
-    /// REGISTRY, spelled by arm — CLAUDE.md's registry law — so a
-    /// family given real per-arg identity later moves ONE arm here,
-    /// and the ones still keyed by a bare int (`Lowered`, `Lifted`,
-    /// `Settled` — a unit or a const-site ask, dense-only today) stay
-    /// honestly named as such rather than pretending to an identity
-    /// they do not have yet.
-    export fn stable_key_name(k: Key) -> string {
-        let fam = family_at(k.family)
-        let word = family_word(fam)
-        match fam {
-            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain -> stable_line("key", [word, stable_file_name(self.file(FileId { index: k.arg }).path)]),
-            .Namespace or .HeldSig -> stable_line(
-                "key",
-                [word, stable_module_name(self.module_name(ModuleId { index: k.arg }))],
+        match x.kind {
+            .Builtin -> stable_line("decl", ["", x.owner, x.name, "0"]),
+            rest -> stable_line(
+                "decl",
+                [self.file(x.file).path, x.owner, x.name, "${self.sibling_index(d)}"],
             ),
-            .Sig or .Methods or .Typed or .ConstTyped or .Raised -> stable_line("key", [word, self.stable_decl_name(DeclId { index: k.arg })]),
-            // `Manifest` keys by PACKAGE ORDINAL (`packages.av`'s
-            // `manifest(i)`), never a true singleton — every package
-            // a workspace opens, root or dependency, has its own.
-            .Manifest -> stable_line("key", [word, stable_line("pkg", ["${k.arg}"])]),
-            .Receivers or .References or .Failures -> stable_line("key", [word, "singleton"]),
-            .Lowered or .LiftLowered or .Lifted or .Settled -> stable_line("key", [word, "arg${k.arg}"]),
         }
     }
 
-    /// A decl by the same (module, owner, name, sibling) tuple its
-    /// stable name carries — a linear scan, licensed for this slice's
-    /// small packages; the design's own index-bucket scheme (§6.5) is
-    /// the fix once this matters at scale.
-    // LICENSED compiler.free_state_verb: exempted by being the very method the rule asks for.
-    fn decl_by_stable(module: string, owner: string, name: string, sibling: int) -> DeclId? {
-        [DeclId { index: i } for i in 0..self.decls.get().length if self.matches_stable(module, owner, name, sibling, i)]
-            .first()
-    }
-
-    fn matches_stable(module: string, owner: string, name: string, sibling: int, i: int) -> bool {
-        let y = self.decl(DeclId { index: i })
-        y.owner == owner &&
-            y.name == name &&
-            self.sibling_index(module, DeclId { index: i }) == sibling &&
-            self.module_name(self.file(y.file).module_id) == module
+    /// Whether this declaration bears these words and this sibling index.
+    fn stable_match(d: DeclId, owner: string, name: string, sibling: int) -> bool {
+        let y = self.decl(d)
+        y.owner == owner && y.name == name && self.sibling_index(d) == sibling
     }
 }
 
-fn family_from_word(w: string) -> Family? {
-    families().find(family_word(it) == w)
-}
+/// A family by its own word — read off the registered list, so a new family
+/// is named here the day it is registered.
+fn family_from_word(w: string) -> Family? { families().find((f: Family) -> family_word(f) == w) }
 
 // ── How a dependency reads into a witness's edges ──
 
@@ -197,7 +163,7 @@ enum Reading { Itself, ItselfAndBelow, Below }
 /// be read into a witness without someone deciding how.
 fn reading_of(fam: Family) -> Reading {
     match fam {
-        .Parsed or .Sig -> Reading.Itself,
+        .Parsed or .Sig or .MethodDiags -> Reading.Itself,
         .Namespace -> Reading.ItselfAndBelow,
         .Source or .Items or .Visible or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
     }
@@ -217,6 +183,11 @@ fn bound_word(x: Decl) -> string {
 /// closure, neither of which a durable row can hold (M5b's own future
 /// slice, COMPILER DB townhall §6.11).
 export type WitnessedCheck = { clean: bool, report: string }
+
+/// The record-shape stamp a stored check carries (§6.6's record header
+/// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an
+/// entry written in another shape is refused rather than decoded.
+fn witnessed_check_shape() -> int { 1 }
 
 fn encoded_witnessed_check(c: WitnessedCheck) -> Bytes {
     let w = stable_writer()
@@ -250,6 +221,49 @@ impl WitnessedOutcome {
 }
 
 impl Workspace {
+    /// A `Key`'s stable name: the family's own word (`family_word`), then
+    /// the id it keys by, dispatched by what THAT family keys by
+    /// (workspace.av's own doc comment on `Family`: FileId, ModuleId,
+    /// DeclId, package, unit, or one whole-program key). A REGISTRY,
+    /// spelled by arm, so a family given real per-arg identity later moves
+    /// ONE arm here, and the ones still keyed by a bare int (`Lowered`,
+    /// `Lifted`, `Settled` — a unit or a const-site ask, dense-only today)
+    /// stay honestly named as such rather than pretending to an identity
+    /// they do not have yet.
+    export fn stable_key_name(k: Key) -> string {
+        let fam = family_at(k.family)
+        let word = family_word(fam)
+        match fam {
+            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> stable_line(
+                "key",
+                [word, stable_file_name(self.decls.file(FileId { index: k.arg }).path)],
+            ),
+            .Namespace or .HeldSig -> stable_line(
+                "key",
+                [word, stable_module_name(self.decls.module_name(ModuleId { index: k.arg }))],
+            ),
+            .Sig or .Methods or .Typed or .ConstTyped or .Raised -> stable_line("key", [word, self.decls.stable_decl_name(DeclId { index: k.arg })]),
+            // `Manifest` keys by package ordinal (`packages.av`'s
+            // `manifest(i)`), which shifts when a dependency row is added
+            // or removed; its NAME is the package's root.
+            .Manifest -> stable_line("key", [word, stable_line("pkg", [self.packages()[k.arg].root])]),
+            .Receivers or .References or .Failures -> stable_line("key", [word, "singleton"]),
+            .Lowered or .LiftLowered or .Lifted or .Settled -> stable_line("key", [word, "arg${k.arg}"]),
+        }
+    }
+
+    /// A declaration by the tuple its stable name carries: its file's path
+    /// (empty for a builtin), owner, name and sibling. A path the host does
+    /// not have answers null, and minting nothing.
+    fn decl_at_stable(path: string, owner: string, name: string, sibling: int) -> DeclId? {
+        if path == "" { return self.decls.builtins.get().find((b: DeclId) -> self.decls.decl(b).name == name) }
+        if !self.host.exists(path) { return null }
+        self
+            .decls
+            .decls_of_file(self.file_id(path))
+            .find((d: DeclId) -> self.decls.stable_match(d, owner, name, sibling))
+    }
+
     /// Opens (or re-opens) this workspace's own witness pack, over one
     /// file per package (COMPILER DB townhall §6.6's disk shape) —
     /// today, one file for the workspace's own root package, since
@@ -273,11 +287,12 @@ impl Workspace {
     }
 
     /// The stable name a file's checked answer is kept under.
-    fn witness_name(f: FileId) -> string { self.decls.stable_key_name(key(Family.Analysis, f.index)) }
+    fn witness_name(f: FileId) -> string { self.stable_key_name(key(Family.Analysis, f.index)) }
 
     fn reused_check(name: string) -> WitnessedCheck? {
         let pack? = self.pack.get() else { return null }
         let entry? = pack.get(name) else { return null }
+        if entry.fingerprint != witnessed_check_shape() { return null }
         if !entry.edges.all((e: Edge) -> self.edge_current(e)) { return null }
         decoded_witnessed_check(entry.payload)
     }
@@ -300,6 +315,7 @@ impl Workspace {
         match fam {
             .Parsed -> self.current_parsed_hash(inner),
             .Namespace -> self.current_namespace_hash(inner),
+            .MethodDiags -> self.current_method_diags_hash(inner),
             .Sig -> self.current_sig_hash(inner),
             .Manifest -> self.current_manifest_hash(inner),
             .Methods -> self.current_methods_hash(inner),
@@ -323,6 +339,15 @@ impl Workspace {
         let structure? = self.db.value_hash_of(key(Family.Parsed, f.index)) else { return null }
         let text? = self.db.value_hash_of(key(Family.Source, f.index)) else { return null }
         fp_list([structure, text])
+    }
+
+    /// A file's clash diagnostics as they stand now: asking is the query.
+    fn current_method_diags_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        if !self.host.exists(inner.parts[0]) { return null }
+        let f = self.file_id(inner.parts[0])
+        let _ = self.method_diagnostics(f)
+        self.db.value_hash_of(key(Family.MethodDiags, f.index))
     }
 
     fn current_namespace_hash(inner: StableId) -> int? {
@@ -369,17 +394,16 @@ impl Workspace {
     fn current_sig_hash(inner: StableId) -> int? {
         if inner.kind != "decl" || inner.parts.length < 4 { return null }
         let sibling? = parse_int(inner.parts[3]) else { return null }
-        let d? = self.decls.decl_by_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
+        let d? = self.decl_at_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
         let _ = self.sig(d)
         self.db.value_hash_of(key(Family.Sig, d.index))
     }
 
     fn current_manifest_hash(inner: StableId) -> int? {
         if inner.kind != "pkg" || inner.parts.length < 1 { return null }
-        let i? = parse_int(inner.parts[0]) else { return null }
-        if i < 0 || i >= self.packages().length { return null }
-        let _ = self.manifest(i)
-        self.db.value_hash_of(key(Family.Manifest, i))
+        let pkg? = self.packages().find((p: Package) -> p.root == inner.parts[0]) else { return null }
+        let _ = self.manifest(pkg.ordinal)
+        self.db.value_hash_of(key(Family.Manifest, pkg.ordinal))
     }
 
     /// `method_diagnostics` (workspace_analysis.av) scans every TYPE
@@ -389,7 +413,7 @@ impl Workspace {
     fn current_methods_hash(inner: StableId) -> int? {
         if inner.kind != "decl" || inner.parts.length < 4 { return null }
         let sibling? = parse_int(inner.parts[3]) else { return null }
-        let d? = self.decls.decl_by_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
+        let d? = self.decl_at_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
         let _ = self.methods(d)
         self.db.value_hash_of(key(Family.Methods, d.index))
     }
@@ -401,7 +425,7 @@ impl Workspace {
         let visited: Cell<Map<string, bool>> = Cell.new(empty)
         visited.put(depkey_string(root), true)
         let leaves = flatten([self.leaf_keys(d, visited) for d in self.db.deps_of(root)])
-        [Edge { name: self.decls.stable_key_name(k), hash: self.edge_hash_of(k) } for k in leaves]
+        [Edge { name: self.stable_key_name(k), hash: self.edge_hash_of(k) } for k in leaves]
     }
 
     /// One dependency, read into edges by its family's `Reading`. A
@@ -449,10 +473,7 @@ impl Workspace {
         pack
             .put(
                 PackEntry {
-                    // `WitnessedCheck`'s own shape version (§6.6's record
-                    // header fingerprint) — one field added later bumps
-                    // this, never the row's content.
-                    fingerprint: 1,
+                    fingerprint: witnessed_check_shape(),
                     name: name,
                     hash: fp_str(out.report),
                     edges: edges,
