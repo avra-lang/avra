@@ -182,7 +182,57 @@ CASES = [
 SPLICE = "// LICENSED style.raw_thing: not a real site\n"
 
 
+# ── A DECODER READS A JOINED RECORD THROUGH `wire_fields` ─────────────
+# `split` drops a trailing empty segment, so a decoder that splits a
+# joined line reads back one field short when its last field is empty.
+# Every registered decoder's own body is scanned for a raw `.split(`.
+
+RAW_SPLIT = re.compile(r"\.split\(")
+
+
+def fn_body(text, name):
+    """The body of `fn name(...)` in text, braces counted from the
+    signature's own `{` — a one-line body included — or None."""
+    m = re.search(r"^\s*(?:export\s+)?(?:static\s+)?(?:mut\s+)?fn\s+" + re.escape(name) + r"\s*\(", text, re.M)
+    if not m:
+        return None
+    i = text.find("{", m.end())
+    if i < 0:
+        return None
+    depth = 0
+    for j in range(i, len(text)):
+        c = text[j]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return (text.count("\n", 0, m.start()) + 1, text[i:j + 1])
+    return None
+
+
+def raw_splits(text, decoders):
+    """Each registered decoder in `text` whose own body splits raw."""
+    out = []
+    for name in decoders:
+        got = fn_body(text, name)
+        if got and RAW_SPLIT.search(got[1]):
+            out.append((name, got[0]))
+    return out
+
+
+SPLIT_CASES = [
+    ("fn read_it(s: string) -> List<string> { s.split(\",\") }\n", ["read_it"], [("read_it", 1)]),
+    ("fn read_it(s: string) -> List<string> {\n    wire_fields(s, \",\")\n}\n", ["read_it"], []),
+    ("fn other(s: string) -> List<string> { s.split(\",\") }\nfn read_it(s: string) -> List<string> { wire_fields(s, \",\") }\n", ["read_it"], []),
+]
+
+
 def selftest():
+    for text, decoders, want in SPLIT_CASES:
+        got = raw_splits(text, decoders)
+        if got != want:
+            sys.exit(f"codecs: raw-split self-test failed on {text!r}: {got} != {want}")
     for text, want in CASES:
         names = set()
         for m in FN_DEF.finditer(text):
@@ -230,6 +280,14 @@ def main():
                 print(f"codecs: registered pair {pair} names `{fn}`, which no fn in the tree defines")
                 bad += 1
 
+    decoders = sorted(set(pair[1] for pair in registered))
+    for rel in av_files():
+        text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        for name, line in raw_splits(text, decoders):
+            print(f"codecs: {rel}:{line}: `{name}` decodes a joined record with a raw `.split(` — "
+                  f"read it through core's `wire_fields`, which keeps an empty last field")
+            bad += 1
+
     uncovered = []
     for pair in candidates:
         if pair in registered or pair in ACKNOWLEDGED_GAPS:
@@ -243,7 +301,7 @@ def main():
         bad += 1
 
     if bad:
-        print(f"codecs: {bad} DEFECT(S) — a codec pair the registry does not know cannot be kept honest")
+        print(f"codecs: {bad} DEFECT(S) — a codec the keeper cannot hold honest")
         return 1
     print(
         f"codecs: {len(candidates)} candidate pair(s) found in {len(list(av_files()))} file(s), "

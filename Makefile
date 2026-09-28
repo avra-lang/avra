@@ -524,8 +524,8 @@ fingerprints:
 # decode(encode(x)) compared to x field by field; tools/codecs.py
 # refuses any encoder/decoder-shaped pair in the tree the registry
 # does not name.
-codecs: avra
-	@./avra test packages/std-avrac/src/compiler/tests/codecs_test.av
+codecs:
+	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
 	@python3 tools/codecs.py
 
 # THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
