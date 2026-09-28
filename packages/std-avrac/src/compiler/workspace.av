@@ -141,13 +141,20 @@ fn new_keys() -> Keys {
 /// (`runs`); the files whose runs are being lowered, innermost last
 /// (`settling`); the files a hold was asked for, and the files a file
 /// that WILL be read ran bodies of the last time it was (`hold_asked`,
-/// `read_with`); the files a record knows that are read all the same,
+/// `read_with`), each of THOSE seeding paths carrying its own WHY
+/// alongside (`read_seeds`), so a candidate excluded straight from
+/// the seed is not read silently; the files a
+/// record knows that are read all the same,
 /// each with why (`read_files`); the held modules minted so far, by name
 /// (`minted`); the files whose declarations stand, read or minted
 /// (`file_ready`); whether the holds are settled, before which no file's
 /// standing is known (`holds_settled`); where every impl and trait of a
-/// name lives, since a method table wants them all (`named_in`); and the
-/// records a held file's line declared FLAT (`held_flat`).
+/// name lives, since a method table wants them all (`named_in`); the
+/// records a held file's line declared FLAT (`held_flat`); and the
+/// declarations whose OWN row has been filled from the record, by
+/// DeclId — a module mints every identity at once, but fills each
+/// row on the ask that names it, so a row that names another still
+/// unfilled in the same module can fill it first (`row_filled`).
 type Hold = {
     homes: Cell<Map<string, bool>>,
     held_wants: Cell<List<Wanted>>,
@@ -156,9 +163,11 @@ type Hold = {
     settling: Cell<List<string>>,
     hold_asked: Cell<List<string>>,
     read_with: Cell<List<string>>,
+    read_seeds: Cell<List<ReadFile>>,
     read_files: Cell<List<ReadFile>>,
     minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
+    row_filled: Table<bool>,
     holds_settled: Cell<bool>,
     named_in: Cell<Map<string, List<string>>>,
     held_flat: Cell<List<TypeId>>,
@@ -169,6 +178,7 @@ fn new_hold() -> Hold {
     let no_wants: List<Wanted> = []
     let no_runs: Map<string, List<string>> = {}
     let no_reads: List<string> = []
+    let no_seeds: List<ReadFile> = []
     let no_read_files: List<ReadFile> = []
     let no_minted: Map<string, bool> = {}
     let no_named_in: Map<string, List<string>> = {}
@@ -181,9 +191,11 @@ fn new_hold() -> Hold {
         settling: Cell.new(no_paths()),
         hold_asked: Cell.new(no_paths()),
         read_with: Cell.new(no_reads),
+        read_seeds: Cell.new(no_seeds),
         read_files: Cell.new(no_read_files),
         minted: Cell.new(no_minted),
         file_ready: new_table<bool>(),
+        row_filled: new_table<bool>(),
         holds_settled: Cell.new(false),
         named_in: Cell.new(no_named_in),
         held_flat: Cell.new(no_flat),
@@ -713,6 +725,7 @@ fn built(
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
@@ -767,6 +780,14 @@ impl Workspace {
 
     fn ensured(d: DeclId) {
         let _ = self.sig(d)
+    }
+
+    /// A held declaration's fact is its record's — filled on the ask
+    /// that names it, never before. `target_of` (an impl's target) is
+    /// the fact this hook exists for; a live declaration's sig fills
+    /// it the ordinary way, so only a held one needs the row forced.
+    fn target_ensured(d: DeclId) {
+        if self.is_held(self.decls.decl(d).file) { self.fill_ensured(d) }
     }
 
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
@@ -1413,6 +1434,15 @@ impl Workspace {
         let x = self.decls.decl(d)
         if self.is_held(x.file) {
             self.held_sig_dep(x.file)
+            // A HELD DECL'S FACT MAY BE ASKED BEFORE ITS RECORD FILLS
+            // IT: mint the module's identities first (so a name it
+            // carries resolves), then fill THIS row — which, filling,
+            // may itself ask for a row later in the same module's
+            // record, and that ask fills THAT row before this one
+            // reads it, rather than seeing the blank default a whole-
+            // module sweep would not have reached yet.
+            self.file_ensured(x.file)
+            self.fill_ensured(d)
             return self.decls.sigs.get()[d.index]
         }
         // the language's own declarations were signed at admission
