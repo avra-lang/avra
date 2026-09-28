@@ -1294,6 +1294,22 @@ void avra_once_set(void* key, void* value) {
     g_once_count++;
 }
 
+// THE NATIVE FAST PATH'S COLD HALF. A compiled `once fn` keeps its
+// own answer in a process-lifetime GLOBAL SLOT (one word, null until
+// set) so every REPEAT call is a load and a null test, no call at
+// all — this runs once, the first time the slot is still null, and
+// settles both tables together: the keyed one (`avra_once_set`,
+// unchanged — the credit and the immortal flip happen exactly there)
+// and this fn's own slot, which the table's winner fills either way.
+// A second caller racing the first still calls this — `avra_once_set`
+// is the dedup, so the LOSER's slot is written the WINNER's value,
+// never its own; only the loser's own local answer (this call's
+// `value`, unused here after) differs from what the slot now holds.
+void avra_once_slot_commit(void* key, void* value, void** slot) {
+    avra_once_set(key, value);
+    *slot = avra_once_get(key);
+}
+
 // `v!` on a PAIR nullable — the flag guards, the value passes.
 int64_t avra_insist_scalar(int64_t present, int64_t value) {
     if (!present) { avra_trap("unwrapped an absent value"); }

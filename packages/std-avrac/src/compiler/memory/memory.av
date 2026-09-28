@@ -175,8 +175,12 @@ fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
     out
 }
 
+/// A `once fn`'s OWN SLOT joins this set: `OnceRead` answers non-null
+/// only once its matching `OnceCommit` has already made that answer
+/// immortal (runtime's `avra_once_slot_commit`), and the null case
+/// costs nothing either way — retain and release both no-op on it.
 fn immortal_dst(i: Ins) -> Reg? {
-    match i { .ConstStr(d, _) or .StaticAddr(d, _) -> d, rest -> null }
+    match i { .ConstStr(d, _) or .StaticAddr(d, _) or .OnceRead(d, _) -> d, rest -> null }
 }
 
 fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
@@ -405,7 +409,7 @@ fn memory_ins(
                     out.push(Ins.CallRtVoid(moving!, args))
                 }
             },
-            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             },

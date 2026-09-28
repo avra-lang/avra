@@ -109,6 +109,7 @@ extern const char avra_rt_held_avra_array_last_present __asm__(AVRA_RT_LABEL(avr
 extern const char avra_rt_held_avra_array_len __asm__(AVRA_RT_LABEL(avra_array_len));
 extern const char avra_rt_held_avra_once_get __asm__(AVRA_RT_LABEL(avra_once_get));
 extern const char avra_rt_held_avra_once_set __asm__(AVRA_RT_LABEL(avra_once_set));
+extern const char avra_rt_held_avra_once_slot_commit __asm__(AVRA_RT_LABEL(avra_once_slot_commit));
 extern const char avra_rt_held_avra_str_join __asm__(AVRA_RT_LABEL(avra_str_join));
 extern const char avra_rt_held_avra_insist __asm__(AVRA_RT_LABEL(avra_insist));
 extern const char avra_rt_held_avra_insist_scalar __asm__(AVRA_RT_LABEL(avra_insist_scalar));
@@ -260,6 +261,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_array_len,
     &avra_rt_held_avra_once_get,
     &avra_rt_held_avra_once_set,
+    &avra_rt_held_avra_once_slot_commit,
     &avra_rt_held_avra_str_join,
     &avra_rt_held_avra_insist,
     &avra_rt_held_avra_insist_scalar,
@@ -459,6 +461,8 @@ _Static_assert(__builtin_classify_type(avra_once_get(AVRA_RT_PTR)) == AVRA_RT_PO
     "avra_once_get: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_once_set(AVRA_RT_PTR, AVRA_RT_PTR)), void),
     "avra_once_set: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_once_slot_commit(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR)), void),
+    "avra_once_slot_commit: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_str_join(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_str_join: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_insist(AVRA_RT_PTR)) == AVRA_RT_POINTER,
