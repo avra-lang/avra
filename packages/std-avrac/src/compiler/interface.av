@@ -205,22 +205,38 @@ impl Workspace {
         if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
     }
 
-    /// A held file's shapes filled, the same way.
-    fn fill_file(store: Store, m: ModulePath, path: string, rows: List<List<string>>) {
-        let ids = self.decls.decls_so_far(self.file_id(path))
-        for parts in rows { self.fill_row(store, m, ids, parts) }
-    }
-
     fn fill_row(store: Store, m: ModulePath, ids: List<DeclId>, parts: List<string>) {
         let row? = read_row(parts) else { return }
         if row.ordinal >= 0 && row.ordinal < ids.length { self.fill_shape(store, m, ids[row.ordinal], row) }
     }
 
+    /// A HELD DECLARATION'S OWN ROW, FILLED ON THE ASK THAT NAMES IT,
+    /// never eagerly with the rest of its module: a row that fills
+    /// EARLIER in record order can itself name a declaration whose row
+    /// sits LATER, and a settle read through that name must see the
+    /// later row's own fill, not the blank default sitting there until
+    /// the module's sweep reaches it. Guarded per declaration, so a
+    /// name reached while filling ITS OWN row (a cycle) sees "not
+    /// filled yet" rather than recursing.
+    fn fill_ensured(d: DeclId) {
+        if self.hold.row_filled.at(d.index) != null { return }
+        self.hold.row_filled.keep(d.index, true)
+        let x = self.decls.decl(d)
+        let store? = self.store.get() else { return }
+        let path = self.decls.file(x.file).path
+        let m = module_path(self.module_of(path).split("."))
+        let ids = self.decls.decls_so_far(x.file)
+        let ordinal? = [i for i, id in ids if same_decl(id, d)].first() else { return }
+        let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
+        if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
+    }
+
     /// ONE HELD MODULE, MINTED: every held file's declarations from its record lines,
-    /// each adopted by its parent, then every shape filled — names before shapes, since
-    /// a shape names a type of its own module. A shape naming ANOTHER module's type
-    /// mints that module on the way (`Decls.decls_of_file` asks), and the flag stands
-    /// before the work does, so two modules that name each other meet once.
+    /// each adopted by its parent — names before shapes, since a shape names a type
+    /// of its own module. A shape naming ANOTHER module's type mints that module on
+    /// the way (`Decls.decls_of_file` asks), and the flag stands before the work
+    /// does, so two modules that name each other meet once. SHAPES ARE NOT FILLED
+    /// HERE: `fill_ensured` fills each row lazily, on the ask that names it.
     fn mint_module(store: Store, m: ModulePath) {
         if self.hold.minted.get().get(m.text()) != null { return }
         self.hold.minted.put(m.text(), true)
@@ -229,7 +245,6 @@ impl Workspace {
         let held = [path for path in self.module_files(m) if self.decls.held.get().get(path) != null]
         for path in held { self.mint_file(path, file_rows(fields, places.get(path))) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
-        for path in held { self.fill_file(store, m, path, file_rows(fields, places.get(path))) }
     }
 
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The

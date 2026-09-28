@@ -2,6 +2,7 @@
 //! Core because every layer above speaks it — features implement
 //! typing semantics against these, the driver owns the pass.
 use @std.meta.{derive}
+use core.{qtrace}
 
 /// Opaque handle into the registry: compared and looked up, never
 /// inspected. Text exists only in the registry's printing projection.
@@ -440,12 +441,14 @@ impl TypeRegistry {
     /// is a no-op, moving the answer after it was read is refused.
     fn mark_settled(id: TypeId) {
         let r = self.reps.get()[id.index]
+        qtrace("WATCH_HELD\tmark_settled\t${self.name_of(id)}\t#${id.index}\tsettled=${r.settled}\tread_settled=${r.read_settled}\n")
         if r.settled { return }
         if r.read_settled { return self.flag_stale(id, LayoutFact.Settled, "its declaration settled a second time") }
         self.reps.set_at(id.index, r with { settled: true })
     }
 
     fn is_settled(id: TypeId) -> bool {
+        qtrace("WATCH_HELD\tis_settled\t${self.name_of(id)}\t#${id.index}\n")
         self.note(id, LayoutFact.Settled)
         self.reps.get()[id.index].settled
     }
@@ -467,6 +470,7 @@ impl TypeRegistry {
     /// (avra-8sb5.34.21).
     fn note(id: TypeId, fact: LayoutFact) {
         if self.was_read(id, fact) { return }
+        qtrace("WATCH_HELD\tnote\t${self.fact_word(fact)}\t${self.name_of(id)}\t#${id.index}\n")
         (self.declare_hook.get())(id)
         let r = self.reps.get()[id.index]
         match fact {
@@ -538,6 +542,7 @@ impl TypeRegistry {
     /// declaration has not settled what it is — a flat record stays
     /// out, since a `mut` seat may still box it.
     fn side_word(t: TypeId) -> int? {
+        qtrace("WATCH_HELD\tside_word\t${self.name_of(t)}\t#${t.index}\n")
         match self.shape_of(t) {
             .Int or .Float or .Bool -> 0,
             .Enum(_, _) -> if !self.is_settled(t) || self.is_valued(t) { null } else if self.is_flat(t) { 0 } else { 1 },

@@ -41,6 +41,7 @@ use core.{
     touch,
     Annotation,
     DeclKind,
+    qtrace,
 }
 use @std.path.{dir_of, joined_path}
 use features.components.{word_of, instanced, named_instances}
@@ -146,8 +147,12 @@ fn new_keys() -> Keys {
 /// (`minted`); the files whose declarations stand, read or minted
 /// (`file_ready`); whether the holds are settled, before which no file's
 /// standing is known (`holds_settled`); where every impl and trait of a
-/// name lives, since a method table wants them all (`named_in`); and the
-/// records a held file's line declared FLAT (`held_flat`).
+/// name lives, since a method table wants them all (`named_in`); the
+/// records a held file's line declared FLAT (`held_flat`); and the
+/// declarations whose OWN row has been filled from the record, by
+/// DeclId — a module mints every identity at once, but fills each
+/// row on the ask that names it, so a row that names another still
+/// unfilled in the same module can fill it first (`row_filled`).
 type Hold = {
     homes: Cell<Map<string, bool>>,
     held_wants: Cell<List<Wanted>>,
@@ -159,6 +164,7 @@ type Hold = {
     read_files: Cell<List<ReadFile>>,
     minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
+    row_filled: Table<bool>,
     holds_settled: Cell<bool>,
     named_in: Cell<Map<string, List<string>>>,
     held_flat: Cell<List<TypeId>>,
@@ -184,6 +190,7 @@ fn new_hold() -> Hold {
         read_files: Cell.new(no_read_files),
         minted: Cell.new(no_minted),
         file_ready: new_table<bool>(),
+        row_filled: new_table<bool>(),
         holds_settled: Cell.new(false),
         named_in: Cell.new(no_named_in),
         held_flat: Cell.new(no_flat),
@@ -1374,9 +1381,14 @@ impl Workspace {
         if self.is_held(x.file) {
             self.held_sig_dep(x.file)
             // A HELD DECL'S FACT MAY BE ASKED BEFORE ITS RECORD FILLS
-            // IT: mint the module first, so the record's own settle is
-            // the first one, never a later "second time" refusal.
+            // IT: mint the module's identities first (so a name it
+            // carries resolves), then fill THIS row — which, filling,
+            // may itself ask for a row later in the same module's
+            // record, and that ask fills THAT row before this one
+            // reads it, rather than seeing the blank default a whole-
+            // module sweep would not have reached yet.
             self.file_ensured(x.file)
+            self.fill_ensured(d)
             return self.decls.sigs.get()[d.index]
         }
         // the language's own declarations were signed at admission
@@ -1521,6 +1533,7 @@ impl Workspace {
     /// The one context over a declaration's expression range: the view
     /// of its file, the names it reads.
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
+        qtrace("WATCH_HELD\tcx_over\t${x.name}\t${self.decls.file(x.file).path}\tlo=${x.lo}\thi=${x.hi}\theld=${self.is_held(x.file)}\n")
         let p = self.parsed(x.file)
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
