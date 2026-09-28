@@ -2,7 +2,8 @@
 // its receiver: the receivers pass reads that callee's body, so an edit to the body that
 // changes only whether it writes must move the caller's witness. `a` calls `bump` on a
 // binding that is not `mut`; the writing `bump` earns a warning there and the reading one
-// does not.
+// does not. The callee is in a module of its own: siblings share one namespace whose
+// witness names every file's parse, so an edit to a sibling is refused for that reason alone.
 use compiler.{Workspace}
 
 fn writer_body() -> string {
@@ -15,12 +16,12 @@ fn reader_body() -> string {
 
 fn written_files(callee: string) -> Map<string, string> {
     {
-        "/w/src/a.av": "export fn g() -> int {\n    let b = Box { v: 1 }\n    b.bump()\n    b.v\n}\n",
-        "/w/src/b.av": callee,
+        "/w/src/a.av": "use other.{Box}\n\nexport fn g() -> int {\n    let b = Box { v: 1 }\n    b.bump()\n    b.v\n}\n",
+        "/w/src/other/b.av": callee,
     }
 }
 
-fn written_names() -> List<string> { ["/w/src/a.av", "/w/src/b.av"] }
+fn written_names() -> List<string> { ["/w/src/a.av", "/w/src/other/b.av"] }
 
 /// `a`'s verdict text over `callee`, in a pack of its own.
 fn report_over(callee: string, tag: string) -> string {
