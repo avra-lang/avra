@@ -590,14 +590,19 @@ run_checks() {
     head_sha="$3"
     suffix="$4"
     compiler_changed="$5"
+    has_av="${6:-1}"
     affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt")"
 
     job_pool_reset
     for pkg in $affected; do
         job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
     done
-    job_launch "idioms$suffix" heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $affected
-    job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
+    if [ "$has_av" -eq 1 ]; then
+        job_launch "idioms$suffix" heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $affected
+        job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
+    else
+        skipped "idioms and fmt-lossless$suffix" ".av file"
+    fi
     if [ "$compiler_changed" -eq 1 ]; then
         job_launch "seed-check$suffix" seed_policy "$wt" "$suffix" "$branch"
     fi
@@ -622,31 +627,65 @@ run_pipeline() {
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
+    check_phase "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix" "$diff_files"
+}
+
+# ── WHAT A DIFF CAN AFFECT DECIDES WHAT RUNS ──────────────────────────
+# Every step a diff cannot affect is skipped, and says so. A diff of
+# tools/ and docs/ alone runs land_test.sh (when tools/ moved) and
+# nothing else; no .av file skips idioms and fmt-lossless; a compiler
+# the diff does not reach skips the second build, seed-check and
+# cache-attacks.
+diff_touches() { printf '%s\n' "$1" | grep -qE "$2"; }
+diff_beyond() { printf '%s\n' "$1" | grep -vE "$2" | grep -q .; }
+skipped() { echo "land: skipped $1: diff touches no $2" >&2; }
+
+check_phase() {
+    wt="$1"
+    base_sha="$2"
+    head_sha="$3"
+    suffix="$4"
+    diff="$5"
+    if ! diff_beyond "$diff" '^(tools|docs)/'; then
+        skipped "builds and package checks$suffix" "code outside tools/ or docs/"
+        if diff_touches "$diff" '^tools/'; then
+            heavy "land-test$suffix" sh -c "cd '$wt' && sh tools/land_test.sh"
+            return
+        fi
+        skipped "land-test$suffix" "tools/"
+        return 0
+    fi
     compiler_changed=0
-    if compiler_reached "$branch_wt" "$old_main_sha" "$new_branch_sha" "$diff_files"; then compiler_changed=1; fi
+    if compiler_reached "$wt" "$base_sha" "$head_sha" "$diff"; then compiler_changed=1; fi
     echo "land: compiler changed in this landing: $compiler_changed" >&2
+    has_av=0
+    if diff_touches "$diff" '\.av$'; then has_av=1; fi
 
     # A SUBSHELL each: `build_generation`'s own `cd "$wt"` must not
     # leak into the steps after it.
-    if ! ( build_generation "$branch_wt" "1$suffix" ); then
+    if ! ( build_generation "$wt" "1$suffix" ); then
         echo "land: build generation 1$suffix failed" >&2
         return 1
     fi
     if [ "$compiler_changed" -eq 1 ]; then
-        if ! ( build_generation "$branch_wt" "2$suffix" ); then
+        if ! ( build_generation "$wt" "2$suffix" ); then
             echo "land: build generation 2$suffix failed" >&2
             return 1
         fi
     else
-        echo "land: compiler unchanged — skipping the second build and seed-check" >&2
+        skipped "the second build and seed-check$suffix" "compiler source"
     fi
 
-    if ! run_checks "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix" "$compiler_changed"; then
+    if ! run_checks "$wt" "$base_sha" "$head_sha" "$suffix" "$compiler_changed" "$has_av"; then
         echo "land: a check failed (an affected package's tests, idioms, fmt-lossless, or seed-check)" >&2
         return 1
     fi
 
-    heavy "cache-attacks$suffix" sh -c "cd '$branch_wt' && make cache-attacks"
+    if [ "$compiler_changed" -eq 0 ]; then
+        skipped "cache-attacks$suffix" "compiler source"
+        return 0
+    fi
+    heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"
 }
 
 # ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
@@ -780,17 +819,7 @@ try_integration() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
     new_sha="$(git -C "$batch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$batch_wt" diff --name-only "$old_main_sha...$new_sha")"
-    compiler_changed=0
-    if compiler_reached "$batch_wt" "$old_main_sha" "$new_sha" "$diff_files"; then compiler_changed=1; fi
-
-    if ! ( build_generation "$batch_wt" "batch-1-$label" ); then return 1; fi
-    if [ "$compiler_changed" -eq 1 ]; then
-        if ! ( build_generation "$batch_wt" "batch-2-$label" ); then return 1; fi
-    else
-        echo "land: [$label] compiler unchanged — skipping the second build and seed-check" >&2
-    fi
-    if ! run_checks "$batch_wt" "$old_main_sha" "$new_sha" "-batch-$label" "$compiler_changed"; then return 1; fi
-    if ! heavy "batch-cache-attacks-$label" sh -c "cd '$batch_wt' && make cache-attacks"; then return 1; fi
+    if ! check_phase "$batch_wt" "$old_main_sha" "$new_sha" "-batch-$label" "$diff_files"; then return 1; fi
     echo "land: batch attempt [$label] GREEN: $*" >&2
     return 0
 }

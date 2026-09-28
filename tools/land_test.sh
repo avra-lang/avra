@@ -1008,6 +1008,62 @@ test_batch_stale_registration() {
 # packages/cli, packages/std-meta and runtime/, so landing one alone
 # is a compiler-untouched batch by construction — no fixture-only flag
 # needed to reach that path.
+# One landing of `branch` in a copy of batch_repo, its stderr at $scratch/<tag>.out.
+land_scoped() {
+    d="$1"; branch="$2"; tag="$3"
+    wt="$scratch/$tag-wt"
+    git -C "$d" worktree add -q "$wt" "$branch" > /dev/null 2>&1
+    mkdir -p "$wt/build"
+    cp "$d/build/avra" "$wt/build/avra"
+    rm -rf "$scratch/$tag-lock" "$scratch/$tag-slots"
+    st=0
+    ( cd "$wt" && AVRA_LAND_LOCK="$scratch/$tag-lock" AVRA_LAND_BATCH_WT="$scratch/$tag-batchwt" AVRA_SLOTS_DIR="$scratch/$tag-slots" AVRA_LAND_ABSORB=0 \
+        exec sh "$land" "$branch" ) > "$scratch/$tag.out" 2>&1 || st=$?
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+    return "$st"
+}
+
+# Whether the landing's log holds a line, else a failure naming the case.
+logged() {
+    if grep -q "$2" "$scratch/$1.out"; then ok "$3"; else bad "$3"; cat "$scratch/$1.out"; fi
+}
+unlogged() {
+    if grep -q "$2" "$scratch/$1.out"; then bad "$3"; cat "$scratch/$1.out"; else ok "$3"; fi
+}
+
+test_diff_scope_skips() {
+    d="$(batch_repo scope)"
+    git -C "$d" checkout -q -b t main
+    mkdir -p "$d/tools"
+    printf 'echo land-test-ok\n' > "$d/tools/land_test.sh"
+    commit_all "$d" "tools only"
+    git -C "$d" checkout -q -b dc main
+    mkdir -p "$d/docs"
+    printf 'words\n' > "$d/docs/note.md"
+    commit_all "$d" "docs only"
+    git -C "$d" checkout -q -b cc main
+    printf 'int x;\n' > "$d/packages/a/src/x.c"
+    commit_all "$d" "c only"
+    git -C "$d" checkout -q main
+
+    land_scoped "$d" t scope-t || bad "scope: a tools-only landing failed"
+    logged scope-t "skipped builds and package checks: diff touches no code outside tools/ or docs/" "scope: a tools-only diff skips builds and checks"
+    logged scope-t "land-test OK" "scope: a tools-only diff runs land_test.sh"
+    unlogged scope-t "build-1" "scope: a tools-only diff runs no build"
+
+    land_scoped "$d" dc scope-dc || bad "scope: a docs-only landing failed"
+    logged scope-dc "skipped land-test: diff touches no tools/" "scope: a docs-only diff runs not even land_test.sh"
+    unlogged scope-dc "build-1" "scope: a docs-only diff runs no build"
+
+    land_scoped "$d" cc scope-cc || bad "scope: a C-only landing failed"
+    logged scope-cc "skipped idioms and fmt-lossless: diff touches no .av file" "scope: a diff with no .av file skips idioms and fmt-lossless"
+    logged scope-cc "build-1" "scope: a diff with code still builds"
+
+    land_scoped "$d" a scope-a || bad "scope: an .av landing failed"
+    logged scope-a "idioms" "scope: an .av diff runs idioms"
+    logged scope-a "skipped cache-attacks: diff touches no compiler source" "scope: a compiler-untouched diff skips cache-attacks"
+}
+
 test_compiler_untouched_skips_second_build_and_seedcheck() {
     d="$(batch_repo skip-seed)"
     wt_a="$scratch/skip-seed-a"
@@ -1030,7 +1086,7 @@ test_compiler_untouched_skips_second_build_and_seedcheck() {
         bad "skip-seed: a compiler-untouched landing failed"
         cat "$scratch/skip-seed.out"
     fi
-    if grep -q "compiler unchanged — skipping the second build and seed-check" "$scratch/skip-seed.out"; then
+    if grep -q "skipped the second build and seed-check: diff touches no compiler source" "$scratch/skip-seed.out"; then
         ok "skip-seed: announces skipping the second build and seed-check"
     else
         bad "skip-seed: did not announce skipping"
@@ -1088,6 +1144,7 @@ test_run_checks_two_fail
 test_run_checks_jobs_cap
 test_job_wait_fails_closed_on_killed_job
 test_compiler_untouched_skips_second_build_and_seedcheck
+test_diff_scope_skips
 test_timeline_lines_present
 test_slot_limit
 test_slot_stale_reclaim
