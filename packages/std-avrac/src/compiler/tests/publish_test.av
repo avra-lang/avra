@@ -1,0 +1,51 @@
+// A built binary reaches its path whole: written beside it under a name no other process
+// names, then renamed on. `staged_beside` and `published` are build.av's own.
+use @std.io.{make_dirs, write_text, read_text, exists, remove}
+use @std.path.{dir_of}
+use compiler.{staged_beside, published}
+
+/// A path in a directory of this file's own, with nothing at it yet.
+fn unpublished_path(name: string) -> string {
+    let _ = make_dirs("/tmp/avra-publish-test")
+    let path = "/tmp/avra-publish-test/${name}"
+    if exists(path) { let _ = remove(path) }
+    path
+}
+
+spec "compiler/build — a binary is published by rename" {
+    given "the name a binary is staged under" {
+        then "it stands beside the binary and is never the binary" {
+            let s = staged_beside("/tmp/x/build/suite")
+            dir_of(s) == "/tmp/x/build" &&
+                s != "/tmp/x/build/suite" &&
+                s.starts_with("/tmp/x/build/suite.")
+        }
+        then "two stagings of one binary are two paths" {
+            staged_beside("/tmp/x/build/suite") != staged_beside("/tmp/x/build/suite")
+        }
+    }
+    given "a staged file and a binary already at the path" {
+        then "the path holds the staged bytes whole and nothing stays staged" {
+            let to = unpublished_path("replaced")
+            let staged = staged_beside(to)
+            let _ = write_text(to, "old")
+            let _ = write_text(staged, "new")
+            published(staged, to) && (read_text(to) catch "") == "new" && !exists(staged)
+        }
+    }
+    given "a staged file and nothing at the path" {
+        then "the path holds the staged bytes" {
+            let to = unpublished_path("fresh")
+            let staged = staged_beside(to)
+            let _ = write_text(staged, "new")
+            published(staged, to) && (read_text(to) catch "") == "new"
+        }
+    }
+    given "a staged file that is not there" {
+        then "publishing answers false and the path stays as it was" {
+            let to = unpublished_path("missing")
+            let _ = write_text(to, "old")
+            !published(staged_beside(to), to) && (read_text(to) catch "") == "old"
+        }
+    }
+}
