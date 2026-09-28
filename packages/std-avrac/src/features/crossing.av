@@ -91,7 +91,11 @@ fn meta_records() -> List<MetaShape> {
         },
         MetaShape { pkg: "@std.meta", name: "Named", fields: ["name", "at"] },
         MetaShape { pkg: "@std.meta", name: "Trait", fields: ["name", "at"] },
-        MetaShape { pkg: "@std.meta", name: "Directive", fields: ["twin", "name", "at", "source"] },
+        MetaShape {
+            pkg: "@std.meta",
+            name: "Directive",
+            fields: ["twin", "name", "at", "source", "wraps"],
+        },
         MetaShape { pkg: "@std.meta", name: "Code", fields: ["node"] },
         MetaShape { pkg: "@std.meta", name: "Stmts", fields: ["node"] },
         MetaShape { pkg: "@std.meta", name: "Arms", fields: ["node"] },
@@ -249,7 +253,7 @@ fn crossed_diagnostic(heap: MetaHeap, v: MetaVal) -> Diagnostic {
 }
 
 /// A crossed `Directive`: the twin's name, the original's, the site,
-/// and the declarations it generates.
+/// the declarations it generates, and whether it asks to wrap.
 fn crossed_directive(heap: MetaHeap, v: MetaVal) -> Directive {
     let c = crossed(heap, v)
     Directive {
@@ -257,6 +261,7 @@ fn crossed_directive(heap: MetaHeap, v: MetaVal) -> Directive {
         name: c.text(1),
         at: c.loc(2),
         source: crossed_decls(heap, c.at(3)),
+        wraps: c.flag(4),
     }
 }
 
@@ -671,8 +676,8 @@ fn fills_type_seat(kind: DeclKind) -> bool {
 
 fn fills_fn_seat(kind: DeclKind) -> bool {
     match kind {
-        .Fn -> true,
-        .Builtin or .Record or .Enum or .CollectEnum or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+        .Fn or .Method -> true,
+        .Builtin or .Record or .Enum or .CollectEnum or .Named or .Alias or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
     }
 }
 
