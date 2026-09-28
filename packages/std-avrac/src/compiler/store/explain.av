@@ -82,6 +82,24 @@ export fn real_entries(pack: Pack) -> List<Entry> {
     [pack.get(n)! for n in names if pack.get(n) != null]
 }
 
+/// Every stored entry a change to `name` would send back to recompute:
+/// those with an edge on it, and those with an edge on any of THOSE, until
+/// no new entry appears — the reverse of `witnessed`. An entry is listed
+/// once, so a cycle in what should be a DAG ends the walk rather than
+/// looping it.
+export fn dependents(pack: Pack, name: string) -> List<Entry> {
+    spread(real_entries(pack), [name], [])
+}
+
+fn spread(entries: List<Entry>, frontier: List<string>, found: List<Entry>) -> List<Entry> {
+    if frontier.is_empty() { return found }
+    let known = [e.name for e in found]
+    let next = [e for e in entries if !known.contains(e.name) && leans_on(e, frontier)]
+    spread(entries, [e.name for e in next], found.concat(next))
+}
+
+fn leans_on(e: Entry, names: List<string>) -> bool { e.edges.any((d: Edge) -> names.contains(d.name)) }
+
 export type FamilyCount = { family: string, entries: int, payload_bytes: int }
 
 export type FamilyNames = { family: string, names: int }
@@ -136,8 +154,18 @@ fn family_count(family: string, tagged: List<Tagged>) -> FamilyCount {
 }
 
 fn family_names(names: List<string>, family_of: fn(string) -> string?) -> List<FamilyNames> {
-    let labels = [family_label(family_of, n) for n in names]
-    [FamilyNames { family: f, names: [l for l in labels if l == f].length } for f in distinct(labels)]
+    [FamilyNames { family: g.family, names: g.names.length } for g in family_groups(names, family_of)]
+}
+
+export type FamilyGroup = { family: string, names: List<string> }
+
+type Named = { family: string, name: string }
+
+/// `names` filed under the family `family_of` answers for each, families
+/// in the order their first name appears, names in the order given.
+export fn family_groups(names: List<string>, family_of: fn(string) -> string?) -> List<FamilyGroup> {
+    let tagged = [Named { family: family_label(family_of, n), name: n } for n in names]
+    [FamilyGroup { family: f, names: [t.name for t in tagged if t.family == f] } for f in distinct([t.family for t in tagged])]
 }
 
 fn sum_of(ns: List<int>) -> int {

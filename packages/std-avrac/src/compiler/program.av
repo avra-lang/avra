@@ -22,6 +22,7 @@ use core.{
     is_user_kind,
     same_decl,
     user_kind,
+    touch,
 }
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
@@ -678,6 +679,12 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
+        // Every file this program reaches is typed by now (the
+        // driver's own law: analysis before lowering). Settle the
+        // references relation HERE, once, so the consuming pass
+        // reads it below as an ordinary dependency rather than
+        // computing it lazily mid-lower.
+        touch(ws.references())
         memory(
             self
                 .ws
