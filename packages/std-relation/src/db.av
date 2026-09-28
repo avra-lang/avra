@@ -1,0 +1,66 @@
+//! THE DB a relation's rows live under: an identity and ERASED hooks.
+//! Each relation keeps its typed rows in a store of its own, indexed by
+//! the Db's id, so a Db never names a row type and a relation declared
+//! in any package reaches its rows the same way.
+use rows.{Rows, rows}
+
+/// A Db: its dense id, and each relation's hooks once reached in it.
+export type Db = { id: int, hashes: Cell<List<fn() -> int>>, closers: Cell<List<fn() -> void>> }
+
+/// The next Db id this process mints.
+once fn minted() -> Cell<int> { Cell.new(0) }
+
+/// A fresh Db under the next dense id.
+export fn new_db() -> Db {
+    let next = minted()
+    let id = next.get()
+    next.set(id + 1)
+    let hashes: Cell<List<fn() -> int>> = Cell.new([])
+    let closers: Cell<List<fn() -> void>> = Cell.new([])
+    Db { id: id, hashes: hashes, closers: closers }
+}
+
+impl Db {
+    /// A relation reached here for the first time: its set hash and its
+    /// close, each already bound to this Db.
+    fn joined(hash: fn() -> int, close: fn() -> void) {
+        self.hashes.push(hash)
+        self.closers.push(close)
+    }
+
+    /// Every reached relation's set hash, in the order they were reached.
+    fn set_hashes() -> List<int> { [h() for h in self.hashes.get()] }
+
+    /// Every reached relation's rows let go.
+    fn close() {
+        for c in self.closers.get() { c() }
+    }
+}
+
+/// One relation's rows under every Db, indexed by the Db's id, each
+/// opened with the relation's own number of indexes.
+export type Stores<R> = { slots: Cell<List<Rows<R>?>>, indexes: int }
+
+export fn stores<R>(indexes: int) -> Stores<R> {
+    let none: List<Rows<R>?> = []
+    Stores { slots: Cell.new(none), indexes: indexes }
+}
+
+impl Stores<R> {
+    /// The rows under `db`, opened on the first reach — the Db told how
+    /// to hash them and how to let them go.
+    fn reach(db: Db) -> Rows<R> {
+        while self.slots.get().length <= db.id { self.slots.push(null) }
+        let held? = self.slots.get()[db.id] else {
+            let made = self.opened()
+            self.slots.set_at(db.id, made)
+            let slots = self.slots
+            let id = db.id
+            db.joined(() -> slots.get()[id]?.set_hash() ?? 0, () -> slots.set_at(id, null))
+            return made
+        }
+        held
+    }
+
+    fn opened() -> Rows<R> { rows(self.indexes) }
+}
