@@ -45,9 +45,19 @@ export fn bool_part(v: bool) -> string { if v { "t" } else { "f" } }
 /// members swapped never fold alike.
 fn ordered_step(h: int, x: int) -> int { mix(h + x) }
 
-/// Whether two rows file under the same key in every index.
-fn same_keys(a: List<IndexKey>, b: List<IndexKey>) -> bool {
+/// Whether two rows file under the same keys in every index.
+fn same_keys(a: List<List<IndexKey>>, b: List<List<IndexKey>>) -> bool {
+    a.length == b.length && [same_run(ks, b[i]) for i, ks in a].all(it)
+}
+
+fn same_run(a: List<IndexKey>, b: List<IndexKey>) -> bool {
     a.length == b.length && [same_key(k, b[i]) for i, k in a].all(it)
+}
+
+/// A row's keys in one index, each once — a list field naming one value
+/// twice files the row once.
+fn distinct_keys(ks: List<IndexKey>) -> List<IndexKey> {
+    [k for i, k in ks if !ks.slice(0, i).any((e: IndexKey) -> same_key(e, k))]
 }
 
 fn same_key(a: IndexKey, b: IndexKey) -> bool {
@@ -78,7 +88,7 @@ type Index = { texts: Cell<Map<string, int>>, slots: Cell<List<int>>, opened: Ce
 export type Rows<R> = {
     rows: Cell<List<R?>>,
     hashes: Cell<List<int>>,
-    filed: Cell<List<List<IndexKey>>>,
+    filed: Cell<List<List<List<IndexKey>>>>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -92,7 +102,7 @@ export type Rows<R> = {
 export fn rows<R>(ordered: List<bool>) -> Rows<R> {
     let rs: Cell<List<R?>> = Cell.new([])
     let hashes: Cell<List<int>> = Cell.new([])
-    let filed: Cell<List<List<IndexKey>>> = Cell.new([])
+    let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         rows: rs,
@@ -197,7 +207,7 @@ impl Rows<R> {
         if grain < 0 {
             self.seen_whole(db)
         } else {
-            let _ = self.seen(db, self.bucket_of(grain, self.filed.get()[id][grain]))
+            let _ = self.seen(db, self.bucket_of(grain, self.filed.get()[id][grain][0]))
         }
         found
     }
@@ -205,7 +215,7 @@ impl Rows<R> {
     /// `put`, under the WRITE-ONCE-AFTER-READ law: a write that moves a
     /// cell some reader already read in this revision is refused, so a
     /// producer ordered after its readers is heard, never stale.
-    fn put_in(db: Db, relation: string, id: int, row: R, hash: int, keys: List<IndexKey>) {
+    fn put_in(db: Db, relation: string, id: int, row: R, hash: int, keys: List<List<IndexKey>>) {
         let now = db.revision()
         if now >= 0 { self.late_check(db, relation, id, keys, now) }
         self.put(id, row, hash, keys)
@@ -213,10 +223,9 @@ impl Rows<R> {
 
     /// A write read before it lands, told to the owner: the first cell it
     /// moves that a reader saw in revision `now`, else the whole relation.
-    fn late_check(db: Db, relation: string, id: int, keys: List<IndexKey>, now: int) {
-        let before: List<IndexKey> = if id < self.next_id() { self.filed.get()[id] } else { [] }
-        let touched = [self.bucket_of(i, k) for i, k in before]
-            .concat([self.bucket_of(i, k) for i, k in keys])
+    fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>, now: int) {
+        let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
+        let touched = [self.bucket_of(i, k) for i, ks in before.concat(keys) for k in ks]
         let late? = touched.find(it >= 0 && self.buckets.get()[it].read.get().revision == now) else {
             let whole = self.read.get()
             if whole.revision == now { db.refuse(late_write(relation, "the whole relation", db.reader(whole.reader))) }
@@ -245,10 +254,12 @@ impl Rows<R> {
 
     /// A row filed under `id` — appended when `id` is the next one,
     /// replacing whatever stood there otherwise. `hash` is the row's
-    /// finished stable hash; `keys` its key in each index, in order. A
+    /// finished stable hash; `named` its keys in each index, in order —
+    /// one for a single value, one per distinct element for a list. A
     /// replacement with the same hash and keys files nothing: the row
     /// is stored and every bucket stays exactly as it was.
-    fn put(id: int, row: R, hash: int, keys: List<IndexKey>) {
+    fn put(id: int, row: R, hash: int, named: List<List<IndexKey>>) {
+        let keys = [distinct_keys(ks) for ks in named]
         if id < self.next_id() {
             if self.row(id) != null &&
                 self.hashes.get()[id] == hash &&
@@ -267,7 +278,9 @@ impl Rows<R> {
         }
         self.live.set(self.live.get() + 1)
         self.set.set(self.set.get() + hash)
-        for i, k in keys { self.file(i, k, id, hash) }
+        for i, ks in keys {
+            for k in ks { self.file(i, k, id, hash) }
+        }
     }
 
     /// The row at `id` gone, its id kept as a tombstone.
@@ -288,18 +301,22 @@ impl Rows<R> {
     fn unfile(id: int) {
         if self.row(id) == null { return }
         let hash = self.hashes.get()[id]
-        for i, k in self.filed.get()[id] {
-            let b = self.bucket_of(i, k)
-            let bucket = self.buckets.get()[b]
-            bucket.members.set([m for m in bucket.members.get() if m != id])
-            bucket
-                .hash
-                .set(
-                    if self.indexes[i].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - hash },
-                )
+        for i, ks in self.filed.get()[id] {
+            for k in ks { self.unfile_from(i, k, id, hash) }
         }
         self.live.set(self.live.get() - 1)
         self.set.set(self.set.get() - hash)
+    }
+
+    /// The row at `id` taken out of its bucket under one key.
+    fn unfile_from(index: int, key: IndexKey, id: int, hash: int) {
+        let bucket = self.buckets.get()[self.bucket_of(index, key)]
+        bucket.members.set([m for m in bucket.members.get() if m != id])
+        bucket
+            .hash
+            .set(
+                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - hash },
+            )
     }
 
     fn file(index: int, key: IndexKey, id: int, hash: int) {
