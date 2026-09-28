@@ -403,7 +403,9 @@ build_generation() {
         return 1
     fi
     cp build/avra "build/avra.pre.$n" 2>/dev/null || true
-    if ! heavy "build-$n-runtime" make build/libavra_runtime.a; then
+    # Every C object, not only the runtime: a tree's own objects lag
+    # the C a merge brought in.
+    if ! heavy "build-$n-objects" make objects; then
         [ -f "build/avra.pre.$n" ] && cp "build/avra.pre.$n" build/avra
         return 1
     fi
