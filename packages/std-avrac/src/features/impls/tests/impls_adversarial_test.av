@@ -28,6 +28,12 @@ spec "features/impls adversarial" {
         then "without `mut fn` the write is still SEEN, never silent" {
             refused_with(fn_field_server("fn"), "`s` is not `mut` — `turn` writes through it")
         }
+        then "a concat chained on a concat reads its receiver and writes nothing" {
+            let a = analyze_source(
+                "type N = { a: List<string>, b: List<string>, c: List<string> }\nimpl N {\n    fn two() -> List<string> { self.a.concat(self.b).concat(self.c) }\n}\nlet n = N { a: [\"x\"], b: [\"y\"], c: [\"z\"] }\nn.two().length",
+            )
+            a.diagnostics.length == 0
+        }
         then "a declared callee's `mut` seat reads the same — one rule, not two" {
             refused_with(
                 "type C = { n: int }\ntype S = { app: C }\nfn bump(mut c: C, by: int) -> int {\n    c.n = c.n + by\n    c.n\n}\nimpl S {\n    mut fn turn(by: int) -> int { bump(self.app, by) }\n}\nlet s = S { app: C { n: 0 } }\ns.turn(2)",
