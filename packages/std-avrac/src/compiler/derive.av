@@ -9,7 +9,7 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
-use diagnostics.{Diag, render_among}
+use diagnostics.{Diag, render_among, render_facts_among}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
@@ -70,7 +70,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
 
 /// What an attempt that holds nothing is about to read, as a count.
 const EVERY_FILE: int = 1000000
@@ -91,7 +91,11 @@ impl Derived {
     /// WHAT `--time` SAYS: the phases and what followed them on one line, then
     /// the files a record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
-        let counted = ["held ${self.held}/${self.files}", "attempt ${self.turns}"]
+        let counted = [
+            "held ${self.held}/${self.files}",
+            "witnessed ${self.witnessed}/${self.files}",
+            "attempt ${self.turns}",
+        ]
         let spent = joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
                 .concat(counted)
@@ -314,6 +318,11 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = store_at(build_cache_root(self))
         self.attach_store(store)
+        // guarded, unlike `attach_store`: `holding` can run more than
+        // once per `derived` (a retried attempt), and re-opening would
+        // both re-scan the pack file and discard an earlier attempt's
+        // still-uncommitted writes on the Pack value it replaces
+        if self.pack.get() == null { let _ = self.open_pack(self.pack_path()) }
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for path in homes.concat(at.parse) { self.hold.homes.put(path, true) }
@@ -407,6 +416,7 @@ impl Workspace {
             unlowered: unlowered,
             asked: asked,
             held: held_paths(self).length,
+            witnessed: self.witness_hits.get(),
             files: self.decls.files.get().length,
             turns: at.moved,
             spans: spans,
@@ -542,14 +552,24 @@ impl Workspace {
         [s! for s in said]
     }
 
-    /// What a parsed file says now — its own diagnostics AND its
-    /// rule findings (`rule_findings`), so a HELD file's `Said` row
-    /// carries both and a later hold answers them alike.
+    /// What a parsed file says now: its witnessed answer
+    /// (compiler/witness.av), reused when a still-current one exists —
+    /// `Family.Analysis` already covers exactly this file's own
+    /// diagnostics AND its rule findings (`settled_check`'s `ds`, the
+    /// same pair this fn used to compute by hand), so a HELD file's
+    /// `Said` row carries both and a later hold answers them alike. A
+    /// reused row is rendered here, fresh, the same way a freshly
+    /// computed one is — `render_facts_among` picks each frame's window
+    /// from the sources THIS process has loaded, never from whichever
+    /// process happened to settle the witness.
     fn says(p: Program, a: Analysis) -> Said {
-        let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
+        let outcome = self.witnessed_check(a.view.file)
+        if outcome.reused() { self.witness_hits.set(self.witness_hits.get() + 1) }
+        let warned = [f for f in outcome.value().diagnostics if f.severity is .Warning]
+        let sources = p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()])
         Said {
             path: a.view.source.file,
-            warnings: p.warned(ds),
+            warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
             cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
         }
     }
