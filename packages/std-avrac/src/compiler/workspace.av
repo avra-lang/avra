@@ -140,9 +140,10 @@ fn new_keys() -> Keys {
 /// from inside a query); what each file's compile-time runs read
 /// (`runs`); the files whose runs are being lowered, innermost last
 /// (`settling`); the files a hold was asked for, and the files a file
-/// that WILL be read ran bodies of the last time it was — each already
-/// carrying WHY, so a candidate seeded straight into the excluded set
-/// is not read silently (`hold_asked`, `read_with`); the files a
+/// that WILL be read ran bodies of the last time it was (`hold_asked`,
+/// `read_with`), each of THOSE seeding paths carrying its own WHY
+/// alongside (`read_seeds`), so a candidate excluded straight from
+/// the seed is not read silently; the files a
 /// record knows that are read all the same,
 /// each with why (`read_files`); the held modules minted so far, by name
 /// (`minted`); the files whose declarations stand, read or minted
@@ -161,7 +162,8 @@ type Hold = {
     runs: Cell<Map<string, List<string>>>,
     settling: Cell<List<string>>,
     hold_asked: Cell<List<string>>,
-    read_with: Cell<List<ReadFile>>,
+    read_with: Cell<List<string>>,
+    read_seeds: Cell<List<ReadFile>>,
     read_files: Cell<List<ReadFile>>,
     minted: Cell<Map<string, bool>>,
     file_ready: Table<bool>,
@@ -175,7 +177,8 @@ fn new_hold() -> Hold {
     let no_homes: Map<string, bool> = {}
     let no_wants: List<Wanted> = []
     let no_runs: Map<string, List<string>> = {}
-    let no_reads: List<ReadFile> = []
+    let no_reads: List<string> = []
+    let no_seeds: List<ReadFile> = []
     let no_read_files: List<ReadFile> = []
     let no_minted: Map<string, bool> = {}
     let no_named_in: Map<string, List<string>> = {}
@@ -188,6 +191,7 @@ fn new_hold() -> Hold {
         settling: Cell.new(no_paths()),
         hold_asked: Cell.new(no_paths()),
         read_with: Cell.new(no_reads),
+        read_seeds: Cell.new(no_seeds),
         read_files: Cell.new(no_read_files),
         minted: Cell.new(no_minted),
         file_ready: new_table<bool>(),
