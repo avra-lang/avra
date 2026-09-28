@@ -181,9 +181,9 @@ export type TypeFacts = {
     scopes: SideTable<ParamScope?>,
     pattern_types: SideTable<List<TypeId>>,
     binding_types: SideTable<TypeId?>,
-    // a plain `let`'s OWN declaring statement, ever the root of a
-    // writing method's non-`mut` receiver — lowering boxes its fresh
-    // seed into a cell, thawed, exactly as a `mut` local's own is
+    // a plain `let`'s declaring statement, marked when it is a
+    // writing method's non-`mut` receiver — its seed is boxed into
+    // a cell, thawed, the same way a `mut` local's is
     boxed_locals: SideTable<bool>,
     // a use whose declaration's warnings were already spoken — one
     // voice per use, however often the node is typed
@@ -193,10 +193,8 @@ export type TypeFacts = {
     // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
     alias_copies: SideTable<bool>,
     thaws: SideTable<bool>,
-    // a writing method's receiver with no mut cell behind it at all —
-    // a parameter, or a value with no binding — thawed once at THIS
-    // call's own subject read, so the callee receives an already-
-    // unique box and needs no uniqueness of its own
+    // a writing method's receiver with no cell behind it (a
+    // parameter, or a value with no binding), thawed once at the call
     plain_thaws: SideTable<bool>,
     // a value a `collect` keeps — checking's one answer, lowering's one read
     gathered: SideTable<bool>,
@@ -361,9 +359,8 @@ impl TypeFacts {
         self.thaws.set(e.index, true)
     }
 
-    /// Whether this writing method's receiver has no cell behind it
-    /// at all — read once at the call, thawed before the callee ever
-    /// sees it.
+    /// Whether this writing method's receiver was thawed at the
+    /// call, with no cell behind it.
     fn wants_plain_thaw(e: ExprId) -> bool { self.plain_thaws.get(e.index) }
 
     fn mark_plain_thaw(e: ExprId) {
@@ -436,12 +433,9 @@ impl TypeFacts {
         self.spreads.lay(other.spreads)
         self.null_tails.lay(other.null_tails)
         self.binding_types.lay_named(other.binding_types, is_typed)
-        // NAMED, never plain .lay(): this column is a STmtId over the
-        // WHOLE FILE (main's LET marks a local another declaration's
-        // own body never touches), so a plain lay's unconditional
-        // overwrite would stomp main's `true` with a later body's
-        // untouched `false` — the same law `binding_types` already
-        // pays with `is_typed`.
+        // a WHOLE-FILE column: a named lay, never plain, keeps one
+        // declaration's `true` from being stomped by another's
+        // untouched `false` — the same law `binding_types` pays
         self.boxed_locals.lay_named(other.boxed_locals, marked_boxed)
     }
 

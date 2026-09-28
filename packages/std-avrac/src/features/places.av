@@ -113,10 +113,8 @@ impl LowerCx {
     }
 
     /// A plain `let`'s fresh seed, boxed into a cell exactly as a
-    /// `mut` local's is — the receiver law found this local is ever a
-    /// writing method's non-`mut` receiver, so its box is thawed once,
-    /// here, and every later read or write (the ordinary boxed-slot
-    /// machinery, unchanged) finds the same cell.
+    /// `mut` local's is: thawed once, here, so every later read or
+    /// write finds the same cell.
     mut fn boxed_seed(s: StmtId, v: Reg) -> Reg {
         let thawed = self.box_thawed(self.view.types.shape_of(self.out.type_of_reg(v)), v)
         let declared: TypeId? = self.facts.declared_binding(s)
@@ -139,14 +137,12 @@ impl LowerCx {
                     return self.cell_unique(self.shape_at(s), cell!)
                 }
                 // a method's receiver, a borrowed parameter: no cell
-                // stands behind it to hold a clone, so it is written
-                // in place — which it may only be once it is not the
-                // binary's own data. The call site (checks.av's
-                // `plain_thaw_law`, walk.av's `reg_of`) already thawed
-                // it once before the call, so this is idempotent —
-                // already unique, box_thawed answers the same value.
-                let reg? = self.def_reg(s) else { return self
-                        .lower_defect(s, "a mutation rooted outside a mut cell survived resolve") }
+                // stands behind it, so its box is thawed once here —
+                // idempotent, since the call site already thawed it
+                let reg? = self.def_reg(s) else {
+                    return self
+                        .lower_defect(s, "a mutation rooted outside a mut cell survived resolve")
+                }
                 self.box_thawed(self.shape_at(s), reg)
             },
             .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),

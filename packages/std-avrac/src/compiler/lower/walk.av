@@ -29,10 +29,7 @@ impl LowerCx {
     }
 
     /// A writing method's receiver with no cell behind it: its value,
-    /// computed the ordinary way, thawed once right here — before the
-    /// call ever sees it, so the callee needs no uniqueness of its
-    /// own (places.av's `unique_box` reads a method's receiver as
-    /// already the box, by design).
+    /// thawed once here, before the call.
     mut fn plain_thawed(e: ExprId) -> Reg {
         let born = semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
         self.box_thawed(self.shape_at(e), born)
@@ -180,7 +177,9 @@ impl LowerCx {
         for s in stmts {
             let got: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
                 .lower_stmt(self, s)
-            let boxes = got != null && self.body.slot_of(s) == null && self.facts.wants_boxed_local(s)
+            let boxes = got != null &&
+                self.body.slot_of(s) == null &&
+                self.facts.wants_boxed_local(s)
             let r: Reg? = if boxes { self.boxed_seed(s, got!) } else { got }
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
