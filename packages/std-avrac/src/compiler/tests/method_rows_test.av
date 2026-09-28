@@ -4,7 +4,7 @@
 // waits on them. `base_b` (decl_rows_test.av) declares `Box` and its impl.
 use core.{DeclId}
 use query.{Key}
-use compiler.{Workspace, analyze_source, nearest_fix, registered_methods_outside}
+use compiler.{Workspace, analyze_source, nearest_fix, methods_cell_outside}
 
 fn references_ordinal() -> int { 19 }
 
@@ -59,26 +59,41 @@ spec "compiler/methods — a method table is read at its own cell" {
 fn keeper_fires(text: string) -> bool {
     let a = analyze_source(text)
     match a.view.stmts.first() {
-        s? -> nearest_fix(registered_methods_outside.run, a.code_at(.Stmt(s))) != null
+        s? -> nearest_fix(methods_cell_outside.run, a.code_at(.Stmt(s))) != null
         null -> false
     }
 }
 
-spec "compiler/methods — the registered read has a keeper" {
-    then "a consumer calling it is refused" {
-        keeper_fires("fn peek(d: Decls, t: DeclId) {\n    let held = d.registered_methods(t)\n}")
-    }
-    then "the registration that makes the table may call it" {
-        !keeper_fires(
-            "fn declare_method(d: Decls, t: DeclId) {\n    let held = d.registered_methods(t)\n}",
+spec "compiler/methods — the raw cell has a keeper" {
+    then "a raw read of the cell is refused, even with no wrapper called" {
+        keeper_fires(
+            "fn peek(d: Decls, t: DeclId) {\n    let held = d.methods.get()[t.index].get()\n}",
         )
     }
-    then "the recording door may call it after the record" {
+    then "the table's own maker may read the cell" {
         !keeper_fires(
-            "fn methods_of(d: Decls, t: DeclId) {\n    let held = d.registered_methods(t)\n}",
+            "fn methods(d: Decls, t: DeclId) {\n    let held = d.methods.get()[t.index].get()\n}",
         )
     }
-    then "the recorded read is no business of the keeper" {
+    then "the registration inside the bracket may read the cell" {
+        !keeper_fires(
+            "fn declare_method(d: Decls, t: DeclId) {\n    let held = d.methods.get()[t.index].get()\n}",
+        )
+    }
+    then "the unrecorded door may read the cell" {
+        !keeper_fires(
+            "fn registered_methods(d: Decls, t: DeclId) {\n    d.methods.get()[t.index].get()\n}",
+        )
+    }
+    then "the recorded door may read the cell" {
+        !keeper_fires("fn methods_of(d: Decls, t: DeclId) {\n    d.methods.get()[t.index].get()\n}")
+    }
+    then "the declared-methods door may read the cell" {
+        !keeper_fires(
+            "fn declared_methods(d: Decls, t: DeclId) {\n    d.methods.get()[t.index].get()\n}",
+        )
+    }
+    then "the recorded read itself is no business of the keeper" {
         !keeper_fires("fn peek(d: Decls, t: DeclId) {\n    let held = d.methods_of(t)\n}")
     }
 }
