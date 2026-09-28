@@ -5,6 +5,7 @@
 // reads its rows while they are made, never records itself. `witness_fixtures.av`'s
 // `a_process_over`, `fresh_pack_path` and `decl_in_file` are the neighbouring files' own.
 use query.{Key}
+use compiler.{Workspace}
 
 fn items_ordinal() -> int { 2 }
 
@@ -19,7 +20,9 @@ fn items_hash(text: string, tag: string) -> int? {
     ws.db.value_hash_of(Key { family: items_ordinal(), arg: b.index })
 }
 
-fn base_b() -> string { "export fn helper(n: int) -> int {\n    n + 1\n}\nexport type Box = { v: int }\nimpl Box {\n    fn get() -> int {\n        self.v\n    }\n}\n" }
+fn base_b() -> string {
+    "export fn helper(n: int) -> int {\n    n + 1\n}\nexport type Box = { v: int }\nexport type Other = { w: int }\nimpl Box {\n    fn get() -> int {\n        self.v\n    }\n}\nimpl Other {\n    fn peek() -> int {\n        self.w\n    }\n}\n"
+}
 
 /// `text` is the same row set as `base_b`.
 fn same_rows(text: string, tag: string) -> bool {
@@ -48,7 +51,10 @@ spec "compiler/rows — a file's items hash the stable rows" {
         same_rows("\n\n${base_b()}", "blank")
     }
     then "a signature's TYPE moves nothing: the signature is Sig's" {
-        same_rows(base_b().replace("(n: int) -> int", "(n: int) -> string").replace("n + 1", "\"s\""), "sigtype")
+        same_rows(
+            base_b().replace("(n: int) -> int", "(n: int) -> string").replace("n + 1", "\"s\""),
+            "sigtype",
+        )
     }
     then "a rename moves it" {
         other_rows(base_b().replace("helper", "helper2"), "rename")
@@ -57,7 +63,12 @@ spec "compiler/rows — a file's items hash the stable rows" {
         other_rows(base_b().replace("export fn helper", "fn helper"), "visible")
     }
     then "a kind change moves it" {
-        other_rows(base_b().replace("export type Box = { v: int }", "export enum Box {\n    A\n}").replace("self.v", "1"), "kind")
+        other_rows(
+            base_b()
+                .replace("export type Box = { v: int }", "export enum Box {\n    A\n}")
+                .replace("self.v", "1"),
+            "kind",
+        )
     }
     then "a new declaration moves it" {
         other_rows("${base_b()}export fn extra() -> int {\n    3\n}\n", "added")
@@ -65,11 +76,24 @@ spec "compiler/rows — a file's items hash the stable rows" {
     then "a parameter NAME moves it: the seats are a fact of the row" {
         other_rows(base_b().replace("(n: int)", "(m: int)").replace("n + 1", "m + 1"), "seatname")
     }
-    then "an owner moves it" {
-        other_rows(base_b().replace("impl Box {", "impl Other {").replace("export type Box = { v: int }", "export type Box = { v: int }\nexport type Other = { w: int }").replace("self.v", "1"), "owner")
+    then "swapping two methods between two impls moves it" {
+        other_rows(
+            base_b()
+                .replace("fn get()", "fn tmp()")
+                .replace("fn peek()", "fn get()")
+                .replace("fn tmp()", "fn peek()"),
+            "owner",
+        )
     }
     then "declaration order moves it" {
-        other_rows("export type Box = { v: int }\nimpl Box {\n    fn get() -> int {\n        self.v\n    }\n}\nexport fn helper(n: int) -> int {\n    n + 1\n}\n", "order")
+        other_rows(
+            base_b()
+                .replace(
+                    "export type Box = { v: int }\nexport type Other = { w: int }\n",
+                    "export type Other = { w: int }\nexport type Box = { v: int }\n",
+                ),
+            "order",
+        )
     }
     then "a `///` doc line moves it" {
         other_rows(base_b().replace("export fn helper", "/// adds one\nexport fn helper"), "doc")
@@ -78,10 +102,7 @@ spec "compiler/rows — a file's items hash the stable rows" {
 
 /// `a`'s `g` calls `helper` from `b`.
 fn caller_files() -> Map<string, string> {
-    {
-        "/w/src/a.av": "export fn g() -> int {\n    helper(1)\n}\n",
-        "/w/src/b.av": base_b(),
-    }
+    {"/w/src/a.av": "export fn g() -> int {\n    helper(1)\n}\n", "/w/src/b.av": base_b()}
 }
 
 /// Whether `key`'s cell lists a dep on the file's `Items`.
