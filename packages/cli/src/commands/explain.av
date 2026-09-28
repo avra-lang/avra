@@ -1,15 +1,17 @@
-//! `avra explain db [<package>]` / `avra explain why <entry>` — the
-//! compiler's own durable pack, made visible: `compiler/store/explain.av`
-//! holds the logic, this file is CLI wiring and text formatting alone.
+//! `avra explain db [<package>]` / `why <entry>` / `dependents <name>` —
+//! the compiler's own durable pack, made visible: `compiler/store/explain.av`
+//! and `compiler/explain_names.av` hold the logic, this file is CLI wiring
+//! and text formatting alone.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{Workspace, build_cache_root, name_parts}
+use @std.avrac.compiler.{Workspace, build_cache_root, key_family, shown_name, matching_names}
 use @std.avrac.compiler.store.{
     Pack,
-    Entry,
     pack_at,
     witnessed,
     summarized,
     real_entries,
+    dependents,
+    family_groups,
     WitnessNode,
     Held,
 }
@@ -25,8 +27,9 @@ impl Runnable for ExplainCmd {
         when {
             mode == "db" -> explained_db(args.arg("target"))
             mode == "why" -> explained_why(args.arg("target"))
+            mode == "dependents" -> explained_dependents(args.arg("target"))
             _ -> {
-                eprintln("avra: `explain` takes `db` or `why`, not `${mode}`")
+                eprintln("avra: `explain` takes `db`, `why` or `dependents`, not `${mode}`")
                 1
             }
         }
@@ -54,20 +57,10 @@ fn package_dir(root: string) -> string {
     if is_dir(joined_path(root, "src")) { joined_path(root, "src") } else { root }
 }
 
-fn family_of(name: string) -> string? { name_parts(name)?.family }
-
-/// A name a person can read and type: its family and its argument's own
-/// fields on one line, `Analysis(file · /w/src/b.av)`. A name no family
-/// claims shows its own fields the same way.
-fn shown(name: string) -> string {
-    let parts? = name_parts(name) else { return name.split("\n").join(" · ") }
-    "${parts.family}(${parts.arg.split("\n").join(" · ")})"
-}
-
 // ── `avra explain db` ──
 
 fn explained_db(target: string) -> int {
-    let s = summarized(pack_for(root_workspace(pack_root(target))), family_of)
+    let s = summarized(pack_for(root_workspace(pack_root(target))), key_family)
     println(
         "db: ${s.entries} ${entry_word(s.entries)}, ${s.payload_bytes} payload byte${plural(s.payload_bytes)}",
     )
@@ -100,39 +93,45 @@ fn garbage_word(disk: int, live: int) -> string {
     if disk <= live { "${live} live, no garbage" } else { "${live} live, ${disk - live} garbage bytes, compacts on next commit past half" }
 }
 
-// ── `avra explain why` ──
-
-/// The entries a typed query names: an exact match on the display form
-/// alone when there is one, else every entry whose display form holds
-/// the query.
-fn matching(entries: List<Entry>, query: string) -> List<Entry> {
-    let exact = [e for e in entries if shown(e.name) == query]
-    if exact.is_empty() { [e for e in entries if shown(e.name).contains(query)] } else { exact }
-}
+// ── naming a query: shared by `why` and `dependents` ──
 
 fn capped(n: int, cap: int) -> int { if n < cap { n } else { cap } }
 
-fn listing(entries: List<Entry>) -> List<string> {
-    let head = entries.slice(0, capped(entries.length, 12))
-    ["why:   ${shown(e.name)}" for e in head].concat(more_line(entries.length, head.length))
+/// The names a refused query still lets a person choose from, at most
+/// twenty, each on its own line under `prefix`.
+fn listing(prefix: string, names: List<string>) -> List<string> {
+    let head = names.slice(0, capped(names.length, 20))
+    ["${prefix}${shown_name(n)}" for n in head].concat(more_line(prefix, names.length, head.length))
 }
 
-fn more_line(total: int, listed: int) -> List<string> {
-    if total > listed { ["why:   … and ${total - listed} more"] } else { [] }
+fn more_line(prefix: string, total: int, listed: int) -> List<string> {
+    if total > listed { ["${prefix}… and ${total - listed} more"] } else { [] }
 }
+
+/// Why a query did not name exactly one thing: `mode` is the verb asked,
+/// `noun` what it wants, `total` how many names the pack could answer with.
+fn refusal(mode: string, noun: string, query: string, matched: int, total: int) -> string {
+    if query == "" { return "avra: `explain ${mode}` needs ${noun} — this package's pack holds ${holds(total)}" }
+    if matched == 0 { return "avra: nothing in this package's pack matches `${query}` — it holds ${holds(total)}" }
+    "avra: ${matched} match `${query}` — name one exactly:"
+}
+
+fn holds(held: int) -> string { if held == 0 { "none yet" } else { "${held}:" } }
+
+// ── `avra explain why` ──
 
 fn explained_why(query: string) -> int {
     let ws = admitted_workspace(here())
     let pack = pack_for(ws)
-    let stored = real_entries(pack)
-    let named = if query == "" { stored } else { matching(stored, query) }
+    let stored = [e.name for e in real_entries(pack)]
+    let named = if query == "" { stored } else { matching_names(stored, query) }
     if named.length != 1 {
-        eprintln(why_refusal(query, named.length, stored.length))
-        for line in listing(named) { eprintln(line) }
+        eprintln(refusal("why", "an entry", query, named.length, stored.length))
+        for line in listing("why:   ", named) { eprintln(line) }
         return 1
     }
-    let entry = named[0]
-    println("why: ${shown(entry.name)}")
+    let entry = pack.get(named[0])!
+    println("why: ${shown_name(entry.name)}")
     println(
         "why:   fingerprint ${entry.fingerprint}, hash ${entry.hash}, ${entry.payload.length} payload byte${plural(entry.payload.length)}",
     )
@@ -151,14 +150,6 @@ fn explained_why(query: string) -> int {
     0
 }
 
-fn why_refusal(query: string, matched: int, held: int) -> string {
-    if query == "" { return "avra: `explain why` needs an entry — this package's pack holds ${holds(held)}" }
-    if matched == 0 { return "avra: no entry in this package's pack matches `${query}` — it holds ${holds(held)}" }
-    "avra: ${matched} entries match `${query}` — name one exactly:"
-}
-
-fn holds(held: int) -> string { if held == 0 { "none yet" } else { "${held}:" } }
-
 fn witness_lines(node: WitnessNode, depth: int) -> List<string> {
     [indented(depth, node)].concat(flatten([witness_lines(c, depth + 1) for c in node.children]))
 }
@@ -166,7 +157,7 @@ fn witness_lines(node: WitnessNode, depth: int) -> List<string> {
 fn indent(depth: int) -> string { ["  " for _k in 0..depth].join("") }
 
 fn indented(depth: int, node: WitnessNode) -> string {
-    "why: ${indent(depth)}${held_word(node.held)} ${shown(node.name)}${hash_detail(node)}"
+    "why: ${indent(depth)}${held_word(node.held)} ${shown_name(node.name)}${hash_detail(node)}"
 }
 
 fn hash_detail(node: WitnessNode) -> string {
@@ -186,14 +177,39 @@ fn held_word(h: Held) -> string {
     }
 }
 
+// ── `avra explain dependents` ──
+
+fn explained_dependents(query: string) -> int {
+    let pack = pack_for(root_workspace(here()))
+    let known = pack.names()
+    let named = if query == "" { known } else { matching_names(known, query) }
+    if named.length != 1 {
+        eprintln(refusal("dependents", "a name", query, named.length, known.length))
+        for line in listing("dependents:   ", named) { eprintln(line) }
+        return 1
+    }
+    let found = dependents(pack, named[0])
+    println("dependents: ${shown_name(named[0])}")
+    if found.is_empty() {
+        println("dependents:   nothing in this pack depends on it")
+        return 0
+    }
+    println("dependents:   ${found.length} ${entry_word(found.length)} recompute if it changes")
+    for g in family_groups([e.name for e in found], key_family) {
+        println("dependents:   ${g.family}: ${g.names.length}")
+        for line in listing("dependents:     ", g.names) { println(line) }
+    }
+    0
+}
+
 export command explain {
-    description: "The compiler's own durable pack, made visible: `db` for its size and shape by family, `why <entry>` for one entry's witness tree"
+    description: "The compiler's own durable pack, made visible: `db` for its size and shape by family, `why <entry>` for one entry's witness tree, `dependents <name>` for what a change to a name would recompute"
     arg mode {
-        description: "`db` or `why`"
+        description: "`db`, `why` or `dependents`"
         required: true
     }
     arg target {
-        description: "for `db`, a package path (the current one when absent); for `why`, an entry as `Family(argument)` or any part of it that names exactly one"
+        description: "for `db`, a package path (the current one when absent); for `why` and `dependents`, a name as `Family(argument)` or any part of it that names exactly one"
     }
     run: ExplainCmd {}
 }

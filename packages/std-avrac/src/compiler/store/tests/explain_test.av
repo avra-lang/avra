@@ -11,6 +11,8 @@ use compiler.store.{
     witnessed,
     real_entries,
     summarized,
+    dependents,
+    family_groups,
     Held,
     FamilyCount,
 }
@@ -203,6 +205,48 @@ spec "compiler/store/explain — the pack's own shape" {
                 )
             let s = summarized(p, stub_family)
             ["${r.family}=${r.names}" for r in s.referenced].join(",") == "beta=2,(other)=1"
+        }
+    }
+}
+
+spec "compiler/store/explain — what depends on a name" {
+    given "entries leaning on a name directly and through another entry" {
+        then "both are listed, nearest first, and an entry leaning on something else is not" {
+            let p = pack_at(explain_fresh("dependents-chain"), "cid")
+            p.put(witness_entry("mid", 1, [witness_edge("base", 5)]))
+            p.put(witness_entry("top", 2, [witness_edge("mid", 1)]))
+            p.put(witness_entry("apart", 3, [witness_edge("elsewhere", 9)]))
+            [e.name for e in dependents(p, "base")].join(",") == "mid,top"
+        }
+    }
+    given "two entries that both lean on the name, and one leaning on both of them" {
+        then "the shared dependent is listed once" {
+            let p = pack_at(explain_fresh("dependents-diamond"), "cid")
+            p.put(witness_entry("left", 1, [witness_edge("base", 5)]))
+            p.put(witness_entry("right", 2, [witness_edge("base", 5)]))
+            p.put(witness_entry("top", 3, [witness_edge("left", 1), witness_edge("right", 2)]))
+            [e.name for e in dependents(p, "base")].join(",") == "left,right,top"
+        }
+    }
+    given "a name nothing leans on" {
+        then "it has no dependents, whether or not the pack knows it" {
+            let p = pack_at(explain_fresh("dependents-none"), "cid")
+            p.put(witness_entry("base", 1, [witness_edge("input", 5)]))
+            dependents(p, "base").is_empty() && dependents(p, "never-heard-of").is_empty()
+        }
+    }
+    given "two entries that lean on each other" {
+        then "the walk ends, each listed once" {
+            let p = pack_at(explain_fresh("dependents-cycle"), "cid")
+            p.put(witness_entry("a", 1, [witness_edge("b", 2)]))
+            p.put(witness_entry("b", 2, [witness_edge("a", 1)]))
+            [e.name for e in dependents(p, "a")].join(",") == "b,a"
+        }
+    }
+    given "names of several families and some no family claims" {
+        then "family_groups files each name under its family, in first-seen order" {
+            let gs = family_groups(["alpha.x", "beta.z", "alpha.y", "loose"], stub_family)
+            ["${g.family}=${g.names.join("+")}" for g in gs].join(";") == "alpha=alpha.x+alpha.y;beta=beta.z;(other)=loose"
         }
     }
 }

@@ -21,6 +21,12 @@
 //!     OWN span — a scope, an arm, or the body itself — still alive:
 //!     released, transferred, or answered on every path out.
 //!
+//! A CONSUMING PARAM (R3) IS AN OWNING DEFINITION TOO, just one this
+//! body's own stream never births — its birth reference arrived with
+//! the call. `Body.marks` says which seats those are; this pass reads
+//! them ONCE, at the body's own start, the one fact it takes from
+//! outside the instruction stream rather than re-deriving.
+//!
 //! Registers this pass does not model precisely (the exact credit an
 //! arm carries out of a region) are left unchecked rather than
 //! guessed at — a checker that cries wolf gets switched off.
@@ -28,6 +34,9 @@ use core.{
     Ins,
     Reg,
     TypeId,
+    TypeRegistry,
+    SeatMark,
+    consumed_mark,
     same_reg,
     reads_of,
     dst_of,
@@ -47,20 +56,32 @@ use diagnostics.{Diag, defect_at}
 /// THIS module, the one way the layering runs), so it takes the
 /// answer as a predicate rather than the module that computes it.
 export fn checked(l: Lowered, managed: fn(TypeId) -> bool) -> List<Diag> {
-    flatten([checked_body(b, managed) for b in l.fns.concat([l.entry])])
+    // A `.Call`'s callee is a SYMBOL, by name — the same map
+    // memory.av builds for the same reason (compiler.memory.memory),
+    // re-derived here rather than imported, on this file's own rule.
+    let by_name = marks_by_name(l.fns)
+    flatten([checked_body(b, l.types, by_name, managed) for b in l.fns.concat([l.entry])])
 }
 
-fn checked_body(b: Body, managed: fn(TypeId) -> bool) -> List<Diag> {
+fn checked_body(
+    b: Body,
+    types: TypeRegistry,
+    by_name: Map<string, List<SeatMark>>,
+    managed: fn(TypeId) -> bool,
+) -> List<Diag> {
     let n = b.reg_types.length
     let immortal = immortal_regs(n, b.ins)
+    let consuming = owned_param_regs(b.params.length, b.marks)
     let ctx = Ctx {
         reg_types: b.reg_types,
         ins: b.ins,
         name: b.name,
         managed: managed,
         immortal: immortal,
-        owning: owning_table(b.reg_types, immortal, b.ins, managed),
+        owning: owning_table(b.reg_types, immortal, b.ins, managed, consuming),
         defs: def_sites(n, b.ins),
+        types: types,
+        by_name: by_name,
     }
     // A body this pass understands ends its own top-level span in a
     // terminal (`RetVal`, `Ret`, or an `FnExit` that never falls
@@ -71,7 +92,14 @@ fn checked_body(b: Body, managed: fn(TypeId) -> bool) -> List<Diag> {
     // leak check is skipped — every OTHER check still runs, and a
     // register genuinely left dangling inside a NESTED scope is still
     // caught there, where a terminal is never in question.
-    walk(ctx, 0, b.ins.length, fresh_sim(n), null, ends_in_terminal(b.ins)).diags
+    walk(ctx, 0, b.ins.length, fresh_sim(n, consuming), null, ends_in_terminal(b.ins)).diags
+}
+
+/// Which param registers a consuming seat mark names — this body's
+/// OWN birth credit for each, arriving with the call rather than an
+/// instruction in its stream.
+fn owned_param_regs(seats: int, marks: List<SeatMark>) -> List<bool> {
+    [consumed_mark(marks, j) for j in 0..seats]
 }
 
 fn ends_in_terminal(ins: List<Ins>) -> bool {
@@ -85,7 +113,7 @@ fn ends_in_terminal(ins: List<Ins>) -> bool {
 /// retained, never released), which are OWNING definitions (a fresh
 /// box — never a param, a view, or immortal data), and where each
 /// register is DEFINED (-1 for a param).
-type Ctx = { reg_types: List<TypeId>, ins: List<Ins>, name: string, managed: fn(TypeId) -> bool, immortal: List<bool>, owning: List<bool>, defs: List<int> }
+type Ctx = { reg_types: List<TypeId>, ins: List<Ins>, name: string, managed: fn(TypeId) -> bool, immortal: List<bool>, owning: List<bool>, defs: List<int>, types: TypeRegistry, by_name: Map<string, List<SeatMark>> }
 
 /// A string constant or a settled aggregate's address — the binary's
 /// own data, counted by no retain and freed by no release.
@@ -137,6 +165,22 @@ fn retained_next(ins: List<Ins>, at: int, dst: Reg) -> bool {
     at + 1 < ins.length && is_retain_of(ins[at + 1], dst)
 }
 
+/// Whether `at`'s OWN instruction is a shape whose destination mints
+/// NO reference of its own — a Load (a borrow of the cell's, earning
+/// its +1 only from the Retain memory.av places right after) or a
+/// Pack (identity: the destination is a SECOND NAME for a part's own
+/// box). Every OTHER owning definition — a `.Call`, a `.CallPtr`, an
+/// owning `.CallRt` — MINTS its reference independently, so a Retain
+/// that happens to follow one (R3: the caller protecting a dying-
+/// later argument it is about to hand a consuming seat) is a SECOND,
+/// UNRELATED reference, never the birth's own — crediting the birth
+/// at 1 and the Retain at +1 is the true count, not a double-spend.
+/// `retained_next` alone cannot tell the two apart; this is the gate
+/// that keeps its deferral to the two shapes it was written for.
+fn defers_to_retain(ins: List<Ins>, at: int) -> bool {
+    match ins[at] { .Load(_, _) or .Pack(_, _) -> true, rest -> false }
+}
+
 fn is_retain_of(i: Ins, dst: Reg) -> bool {
     match i { .Retain(r) -> same_reg(r, dst), rest -> false }
 }
@@ -146,8 +190,9 @@ fn owning_table(
     immortal: List<bool>,
     ins: List<Ins>,
     managed: fn(TypeId) -> bool,
+    owned_params: List<bool>,
 ) -> List<bool> {
-    mut out = [false for i in 0..reg_types.length]
+    mut out = [j < owned_params.length && owned_params[j] for j in 0..reg_types.length]
     for at, step in ins {
         let od: Reg? = owning_def(ins, at, reg_types, immortal, managed)
         if od != null { out.set(od!.index, true) }
@@ -165,6 +210,31 @@ fn def_sites(count: int, ins: List<Ins>) -> List<int> {
         if d != null { out.set(d!.index, at) }
     }
     out
+}
+
+/// Every body's own marks, by its SYMBOL — compiler.memory.memory's
+/// `marks_by_name`, re-derived rather than imported (this file's own
+/// rule against calling the pass it checks).
+fn marks_by_name(fns: List<Body>) -> Map<string, List<SeatMark>> {
+    mut out: Map<string, List<SeatMark>> = {}
+    for b in fns { out.set(b.name, b.marks) }
+    out
+}
+
+/// A `.Call`/`.CallPtr`'s own callee's seat marks — memory.av's
+/// `callee_marks`, the same two doors: a direct call's SYMBOL, an
+/// indirect one's own register TYPE.
+fn callee_marks(
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    by_name: Map<string, List<SeatMark>>,
+    i: Ins,
+) -> List<SeatMark> {
+    match i {
+        .Call(_, callee, _) -> by_name.get(callee) ?? [],
+        .CallPtr(_, f, _) -> types.arrow_parts(reg_types[f.index])?.marks ?? [],
+        rest -> [],
+    }
 }
 
 // ── The proof carried forward through the walk ──────────────────────
@@ -185,8 +255,11 @@ fn def_sites(count: int, ins: List<Ins>) -> List<int> {
 /// released = 0) was exactly balanced.
 type Sim = { refs: List<int> }
 
-fn fresh_sim(count: int) -> Sim {
-    Sim { refs: [0 for i in 0..count] }
+/// The starting count: 0 for everything this body itself will mint,
+/// 1 for a consuming param (R3) — its birth reference already stands,
+/// handed over by the caller before instruction 0 ever runs.
+fn fresh_sim(count: int, owned_params: List<bool>) -> Sim {
+    Sim { refs: [if j < owned_params.length && owned_params[j] { 1 } else { 0 } for j in 0..count] }
 }
 
 /// One span's walk, and what it found — `diverges` when the span
@@ -241,14 +314,18 @@ fn walk(
         let od: Reg? = owning_def(ctx.ins, i, ctx.reg_types, ctx.immortal, ctx.managed)
         if od != null {
             // A birth this pass credits at 1 UNLESS its own `Retain`
-            // is the very next instruction — a Load that outlives its
-            // cell, or a `Pack` (ALWAYS retained when managed, PACK
-            // IS IDENTITY) — in which case that Retain is the ONE
+            // is the very next instruction AND its own SHAPE mints no
+            // reference on its own — a Load that outlives its cell, or
+            // a `Pack` (ALWAYS retained when managed, PACK IS
+            // IDENTITY) — in which case that Retain is the ONE
             // reference this birth mints, and crediting both is the
             // same double-spend the region merge and the Store
             // hand-off were fixed for, one instruction earlier.
+            // `defers_to_retain` is the gate: a `.Call`'s own Retain
+            // (R3, protecting a still-needed argument at a consuming
+            // seat) is a SECOND, independent reference, not this one.
             let o = od!
-            if !retained_next(ctx.ins, i, o) { sim.refs.set(o.index, 1) }
+            if !(defers_to_retain(ctx.ins, i) && retained_next(ctx.ins, i, o)) { sim.refs.set(o.index, 1) }
             born.push(o)
         }
         let stepped = dispatch(ctx, sim, born, i, step, check_end, outer)
@@ -320,9 +397,22 @@ fn dispatch(
             }
             stepped(sim, born, i + 1)
         },
+        // A CONSUMING SEAT (R3) is a sink exactly like a `.Store`
+        // above: the argument's own last read MOVES (its count forced
+        // to exactly 0, memory.av's own `disowns`), and anything else
+        // was retained FIRST — a generic `.Retain` this walk already
+        // credited — so the count nets back by one, leaving this
+        // body's own claim on it unchanged and the fresh reference
+        // spent entirely on the callee.
         .Call(_, _, args) or .CallPtr(_, _, args) -> {
             let cargs = lent_args(step)
             let cdiags = flatten([view_protection(ctx, sim, i, cargs, ar) for ar in cargs])
+            let marks = callee_marks(ctx.types, ctx.reg_types, ctx.by_name, step)
+            for j, ar in cargs {
+                if consumed_mark(marks, j) && ctx.managed(ctx.reg_types[ar.index]) {
+                    if ctx.owning[ar.index] && dies_here(ctx.ins, ar, i) { sim.refs.set(ar.index, 0) } else { sim.refs.set(ar.index, sim.refs[ar.index] - 1) }
+                }
+            }
             Stepped { sim: sim, diags: cdiags, born: born, diverges: false, next: i + 1 }
         },
         .ScopeEnter(_) -> {
@@ -424,7 +514,9 @@ fn dead_read_diag(ctx: Ctx, sim: Sim, at: int, r: Reg) -> List<Diag> {
 /// not a use after release.
 fn birth_retain(ctx: Ctx, at: int, step: Ins) -> bool {
     match step {
-        .Retain(r) -> at > 0 && births(owning_def(ctx.ins, at - 1, ctx.reg_types, ctx.immortal, ctx.managed), r),
+        .Retain(r) -> at > 0 &&
+            defers_to_retain(ctx.ins, at - 1) &&
+            births(owning_def(ctx.ins, at - 1, ctx.reg_types, ctx.immortal, ctx.managed), r),
         rest -> false,
     }
 }
@@ -439,6 +531,15 @@ fn births(od: Reg?, r: Reg) -> bool {
 /// pass that decided it.
 fn last_read(ins: List<Ins>, src: Reg, at: int) -> bool {
     [j for j, step in ins if j > at && reads_of(step).any(same_reg(it, src))].is_empty()
+}
+
+/// `last_read`'s stricter twin, for a call whose OWN argument list
+/// may read `r` more than once (`f(ar, ar)` with two owned seats) —
+/// memory.av's `Lives.dies_at` requires exactly ONE read at `at`
+/// itself before either occurrence may move; `last_read` alone
+/// cannot see a second one riding beside it in the same instruction.
+fn dies_here(ins: List<Ins>, r: Reg, at: int) -> bool {
+    last_read(ins, r, at) && [x for x in reads_of(ins[at]) if same_reg(x, r)].length == 1
 }
 
 /// Every register `born` in a span, still alive when it closes —
