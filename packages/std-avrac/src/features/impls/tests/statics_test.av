@@ -4,6 +4,7 @@
 // so an enum's variant is never shadowed, and the pair is refused
 // where it is written.
 use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{analyze_source}
 
 /// A type with a static constructor and an ordinary method.
 fn pointed() -> string {
@@ -96,11 +97,28 @@ spec "features/impls/statics" {
                 "`P.of` takes 1 argument, found 2",
             )
         }
-        then "an unknown name under a type is still the variant law's word" {
-            refused_with(
-                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nP.nope().x",
-                "`P` is a record, not an enum",
+        then "an unknown static under a record names the fn and lists the ones it has" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n    static fn zero() -> P { P { x: 0 } }\n    fn twice() -> int { self.x * 2 }\n}\nP.nope().x",
             )
+            a.diagnostics.length == 1 &&
+                a.report().contains("error[type.unknown_prop]: `P` has no static fn `nope`") &&
+                a.report().contains("help: its static fns are `of`, `zero`")
+        }
+        then "an unknown static under a record, rendered whole" {
+            analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n    static fn zero() -> P { P { x: 0 } }\n}\nP.nope().x",
+            )
+                .report()
+                .starts_with(
+                    "error[type.unknown_prop]: `P` has no static fn `nope`\n  ╭─[<source>:6:1]\n6 │ P.nope().x\n  · ┬\n  · ╰── called here\n──╯\nhelp: its static fns are `of`, `zero`",
+                )
+        }
+        then "a record with no static fn is told how a record is built" {
+            let a = analyze_source("type P = { x: int }\nP.nope().x")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` has no static fn `nope`") &&
+                a.report().contains("build a record with `P { ... }`")
         }
     }
 }
