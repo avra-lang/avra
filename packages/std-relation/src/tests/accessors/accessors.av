@@ -233,6 +233,19 @@ fn nested() -> string {
     "${a.stable_hash() == moved.stable_hash()} ${a.stable_hash() != empty.stable_hash()} ${a.encoded().length == moved.encoded().length} ${held}"
 }
 
+/// A list field `@index`ed files its row under every element, each once.
+@relation
+type Labeled = { @key name: string, @index labels: List<string>, @index shades: List<Shade> }
+
+fn labeled() -> string {
+    let db = new_db()
+    let _ = Labeled.insert(db, name: "a", labels: ["x", "y", "x"], shades: [Shade.Red])
+    let _ = Labeled.insert(db, name: "b", labels: ["y"], shades: [Shade.Red, Shade.Green])
+    let before = "${Labeled.by_labels(db, "y").length}${Labeled.by_labels(db, "x").length}${Labeled.by_shades(db, Shade.Red).length}"
+    let _ = Labeled.insert(db, name: "a", labels: ["z"], shades: [])
+    "${before} ${Labeled.by_labels(db, "x").length}${Labeled.by_labels(db, "z").length}${Labeled.by_shades(db, Shade.Red).length}"
+}
+
 /// Two Dbs keep their own rows; a Db knows only the relations it
 /// reached, each once however often; a closed Db's rows are let go,
 /// every hash back to none and no relation joined again.
@@ -249,4 +262,4 @@ fn dbs() -> string {
     "${seen_in_b} ${reached} ${held} ${a.set_hashes().all(it == 0)} ${a.set_hashes().length}"
 }
 
-"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()} | ${nodes()} | ${hooked()} | ${nested()}"
+"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()} | ${nodes()} | ${hooked()} | ${nested()} | ${labeled()}"

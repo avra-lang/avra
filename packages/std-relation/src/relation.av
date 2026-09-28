@@ -110,12 +110,19 @@ export fn problems_under(t: Type, shapes: fn(string) -> NamedShape) -> List<Diag
 fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic> {
     let clashes = [answer_clash(t, f) for f in lookups(t) if marked(f, "unique") && marked(f, "index")]
     let taken = [lookup_collision(t, f) for f in content(t) if takes_key_lookup(t, f)]
-    let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(f.kind, shapes)]
+    let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(filed_kind(f.kind), shapes)]
+    let many = [many_valued(t, f) for f in lookups(t) if is_list(f.kind) && (marked(f, "key") || marked(f, "unique") || index_with(f, "grain"))]
     let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind, shapes)]
     let keyed_local = [key_local(t, f) for f in lookups(t) if marked(f, "key") && marked(f, "local")]
     let grains = [f for f in lookups(t) if index_with(f, "grain")]
     let more_grains = [grain_twice(t, f) for f in grains.slice(1, grains.length)]
-    clashes.concat(taken).concat(unfiled).concat(ids).concat(keyed_local).concat(more_grains)
+    clashes
+        .concat(taken)
+        .concat(unfiled)
+        .concat(ids)
+        .concat(keyed_local)
+        .concat(more_grains)
+        .concat(many)
 }
 
 /// Whether a field's own lookup would be named `by_key`, the name the
@@ -157,6 +164,16 @@ fn named_lookups(t: Type) -> List<Field> { [f for f in lookups(t) if names_a_loo
 fn key_indexes(t: Type) -> int { if key_fields(t).is_empty() { 0 } else { 1 } }
 
 /// Whether a kind files under an index key.
+/// The kind a lookup files by: a list's element — the row files under
+/// each — and any other kind itself.
+fn filed_kind(k: Kind) -> Kind {
+    match k { .List(elem) -> elem, rest -> k }
+}
+
+fn is_list(k: Kind) -> bool {
+    match k { .List(_) -> true, rest -> false }
+}
+
 fn files(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
     match k {
         .Int or .Bool or .Str -> true,
@@ -452,9 +469,18 @@ fn all_member(t: Type) -> Decls {
 
 /// The row's key in each index, in the store's index order.
 fn index_keys_member(t: Type) -> Decls {
-    let keyed = if key_fields(t).is_empty() { [] } else { [quote { text_key(${name(t.name)}.key_text(self.key())) }] }
-    let parts = keyed.concat([key_of(quote { self.${f.name} }, f.kind) for f in named_lookups(t)])
-    quote { fn index_keys() -> List<IndexKey> { [${..parts}] } }
+    let keyed = if key_fields(t).is_empty() { [] } else { [quote { [text_key(${name(t.name)}.key_text(self.key()))] }] }
+    let parts = keyed.concat([keys_of(f) for f in named_lookups(t)])
+    quote { fn index_keys() -> List<List<IndexKey>> { [${..parts}] } }
+}
+
+/// A field's keys in its index: its value's one, or one per element of
+/// a list.
+fn keys_of(f: Field) -> Code {
+    match f.kind {
+        .List(elem) -> quote { [${key_of(quote { x }, elem)} for x in self.${f.name}] },
+        rest -> quote { [${key_of(quote { self.${f.name} }, f.kind)}] },
+    }
 }
 
 /// A value's index key, by its kind.
@@ -480,7 +506,7 @@ fn key_of(e: Code, k: Kind) -> Code {
 fn insert_member(t: Type) -> Decls {
     let seats = [quote { fn _(${f.name}: ${f.ty}) {} } for f in content(t)]
     let inits = id_init(t).concat([quote { W { ${f.name}: ${name(f.name)} } } for f in content(t)])
-    let own = if key_fields(t).is_empty() { quote { rs.next_id() } } else { quote { rs.first_id(rs.bucket_of(0, keys[0])) ?? rs.next_id() } }
+    let own = if key_fields(t).is_empty() { quote { rs.next_id() } } else { quote { rs.first_id(rs.bucket_of(0, keys[0][0])) ?? rs.next_id() } }
     let stored = if ided(t) { quote { r with { id: ${minted_id(t, quote { own })} } } } else { quote { r } }
     let checks = unique_checks(t)
     if checks.is_empty() {
@@ -520,7 +546,7 @@ fn unique_checks(t: Type) -> List<Stmts> {
 
 fn unique_check(t: Type, f: Field, i: int) -> Stmts {
     quote {
-        let _ = unheld(rs.holder(${i}, keys[${i}], own), ${literal(t.name)}, ${literal(f.name)}, ${shown(quote { r.${f.name} }, f.kind)})?
+        let _ = unheld(rs.holder(${i}, keys[${i}][0], own), ${literal(t.name)}, ${literal(f.name)}, ${shown(quote { r.${f.name} }, f.kind)})?
     }
 }
 
@@ -604,7 +630,8 @@ fn names_a_lookup(f: Field) -> bool { marked(f, "unique") || marked(f, "index") 
 /// otherwise every row. Each member is whole in one template, so its
 /// parameters are named where they are declared.
 fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
-    match f.kind {
+    let k = filed_kind(f.kind)
+    match k {
         .Str -> if one {
             quote {
                 static fn ${n}(db: Db, v: string) -> ${t}? {
@@ -622,16 +649,16 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
         },
         rest -> if one {
             quote {
-                static fn ${n}(db: Db, v: ${f.ty}) -> ${t}? {
+                static fn ${n}(db: Db, v: ${k.spelled()}) -> ${t}? {
                     let rs = ${name(t.name)}.rows_in(db)
-                    rs.row(rs.first_id(rs.read_key(db, ${i}, ${key_of(quote { v }, f.kind)})) ?? -1)
+                    rs.row(rs.first_id(rs.read_key(db, ${i}, ${key_of(quote { v }, k)})) ?? -1)
                 }
             }
         } else {
             quote {
-                static fn ${n}(db: Db, v: ${f.ty}) -> List<${t}> {
+                static fn ${n}(db: Db, v: ${k.spelled()}) -> List<${t}> {
                     let rs = ${name(t.name)}.rows_in(db)
-                    rs.members(rs.read_key(db, ${i}, ${key_of(quote { v }, f.kind)}))
+                    rs.members(rs.read_key(db, ${i}, ${key_of(quote { v }, k)}))
                 }
             }
         },
@@ -701,15 +728,19 @@ fn encoded_member(t: Type) -> Decls {
     }
 }
 
-/// `decoded`: a record's octets read back into its row, field by field
-/// in declared order — `id` left for the store to mint, and a record with
-/// octets to spare refused, never half read. A row with `@local` columns
-/// reads back as its STORED type, which has none to read.
+/// `decoded`, when every stable column reads back. RECORDED TRIGGER:
+/// fires when a relation can be asked to be durable — that ask refuses
+/// a relation whose columns cannot read back, naming the column, never
+/// a silently undurable one — owner: ORM.
 fn decoded_members(t: Type) -> List<Decls> {
     if !stable(t).all((f: Field) -> decodable(f.kind)) { return [] }
     [decoded_member(t)]
 }
 
+/// `decoded`: a record's octets read back into its row, field by field
+/// in declared order — `id` left for the store to mint, and a record with
+/// octets to spare refused, never half read. A row with `@local` columns
+/// reads back as its STORED type, which has none to read.
 fn decoded_member(t: Type) -> Decls {
     let read = [quote { W { ${f.name}: ${read_value(f.kind)} } } for f in stable(t)]
     if localized(t) {
@@ -914,6 +945,15 @@ fn mark_args(t: Type, f: Field, mark: string) -> Diagnostic {
         f.at ?? t.at,
         "`${t.name}.${f.name}`'s `@${mark}` takes arguments it does not know — only `@index` takes any: `ordered`, `grain`, each once",
         "write `@${mark}` bare, or `@index(ordered)` / `@index(grain)`",
+    )
+}
+
+fn many_valued(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "many_valued",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is a list, so its row files under every element — a key, a `@unique` or a grain names ONE bucket",
+        "mark it `@index`, the lookup that answers every row holding a value",
     )
 }
 
