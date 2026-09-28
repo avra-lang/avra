@@ -51,11 +51,6 @@ type Emit = {
     externs: List<RtSig>,
     // the runtime's rows by name, built once per module
     rt: Map<string, RtSig>,
-    // a `ConstStr`'s own text, by its register — the only way an
-    // `once_slot` row's call finds which symbol's slot to answer,
-    // since the slot is named by an ORDINARY argument, never a
-    // payload of its own (llvm_emit.av's `once_slot_value`).
-    once_texts: Map<string, string>,
 }
 
 /// One open loop: where the back edge returns and where false exits.
@@ -79,11 +74,10 @@ fn mangled(name: string) -> string {
     "av_${name}"
 }
 
-/// An `once_slot` row's own slot global, named by the SYMBOL its call
-/// carries as an ordinary argument — one per `once fn`, distinct from
-/// that fn's own mangled name so the two never collide.
+/// A `once fn`'s own slot global — one per symbol, distinct from the
+/// fn's own mangled name so the two never collide.
 fn once_slot_name(sym: string) -> string {
-    "once\$${sym}"
+    "${mangled(sym)}.once"
 }
 
 /// WHAT A MODULE'S BODIES NAME — the bodies they call or take the address
@@ -410,7 +404,6 @@ fn emit_body(
         loops: [],
         externs: externs,
         rt: rt,
-        once_texts: {},
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { em.emit_ins(i) }

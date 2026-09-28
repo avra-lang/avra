@@ -126,15 +126,8 @@ fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
     out
 }
 
-/// Named directly, never through a registry lookup — this runs once
-/// per instruction across a whole-package check (memory.av's own
-/// `immortal_dst` carries the same law).
 fn immortal_dst(i: Ins) -> Reg? {
-    match i {
-        .ConstStr(dst, _) or .StaticAddr(dst, _) -> dst,
-        .CallRt(dst, callee, _) if callee == "avra_once_get" -> dst,
-        rest -> null,
-    }
+    match i { .ConstStr(dst, _) or .StaticAddr(dst, _) or .OnceRead(dst, _) -> dst, rest -> null }
 }
 
 /// `r` is an OWNING definition: a fresh, managed, non-immortal box —
@@ -467,7 +460,7 @@ fn dispatch(
         // malformed bracket, where doing nothing is the safe answer.
         // Every other shape is a plain define-or-read step, already
         // covered by `walk`'s own generic pass.
-        .ScopeExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or .LoopCond(_) or .LoopEnd or .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Extract(_, _, _) or .Load(_, _) or .Alloca(_) or .Pack(_, _) -> stepped(sim, born, i + 1),
+        .ScopeExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or .LoopCond(_) or .LoopEnd or .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Extract(_, _, _) or .Load(_, _) or .Alloca(_) or .Pack(_, _) -> stepped(sim, born, i + 1),
     }
 }
 

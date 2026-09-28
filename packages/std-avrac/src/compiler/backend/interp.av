@@ -669,6 +669,8 @@ impl Machine {
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
             .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
+            .OnceRead(d, sym) -> self.put_at(d, self.onces.get(sym) ?? Val.N, pc),
+            .OnceCommit(sym, value) -> self.once_committed(sym, value, pc),
             .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
             .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
             .ArmEnd(gives) -> self.merge_then(b, gives, pc),
@@ -1867,14 +1869,25 @@ impl Machine {
     }
 
     /// The once cache kept: the first answer wins for the run — this
-    /// read `.set(...)` unconditionally, LAST-WINS, contradicting its
-    /// own doc comment and the runtime's `avra_once_set`; eval and
-    /// native disagreed on a self-reentrant once fn until fixed here
-    /// to match both.
+    /// arm is unreachable now (lowering emits `OnceCommit`, never a
+    /// `CallRt` to this name), and it answered LAST-WINS with no
+    /// presence check, contradicting its own doc and the runtime's
+    /// `avra_once_set`; fixed to match both, found writing
+    /// `once_committed`'s fiber-race witness.
     fn once_set_val(vals: List<Val>) -> Val {
         let key = self.text_val(vals[0])
         if self.onces.get(key) == null { self.onces.set(key, vals[1]) }
         Val.I(0)
+    }
+
+    /// A compiled `once fn`'s slot, committed: this run's ONE table
+    /// (`self.onces`) is both the keyed cache and every fn's own
+    /// slot at once, so the first commit for `sym` wins and a later
+    /// one is silent — `OnceRead`'s own arm is what every later call
+    /// sees.
+    fn once_committed(sym: string, value: Reg, pc: int) -> int {
+        if self.onces.get(sym) == null { self.onces.set(sym, self.value(value)) }
+        pc + 1
     }
 
     fn insist_val(vals: List<Val>) -> Val {

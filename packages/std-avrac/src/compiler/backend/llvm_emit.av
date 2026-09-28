@@ -48,12 +48,22 @@ impl Emit {
         avra_llvm_build_call(self.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
     }
 
+    /// The slot's first write: settle the keyed table (unchanged —
+    /// `avra_once_slot_commit` calls straight through to
+    /// `avra_once_set`) and this fn's own global together, so every
+    /// `OnceRead` after this one sees whichever value won.
+    fn once_committed(sym: string, value: Reg) {
+        let slot = avra_llvm_once_slot(self.m, once_slot_name(sym))
+        let key = avra_llvm_build_text(self.b, sym.bytes(), sym.length, ".once_key")
+        let _ = self.call("avra_once_slot_commit", [key, self.vals[value.index], slot])
+    }
+
     fn emit_ins(i: Ins) {
         match i {
             .ConstInt(dst, v) -> self.define(self.const_int_value(dst, v)),
             .ConstFloat(_, bits) -> self.define(avra_llvm_const_double_bits(self.lc, bits)),
             .ConstBool(_, v) -> self.define(avra_llvm_const_int(avra_llvm_int1_type(self.lc), if v { 1 } else { 0 }, 0)),
-            .ConstStr(dst, s) -> self.const_str_defined(dst, s),
+            .ConstStr(_, s) -> self.define(avra_llvm_build_text(self.b, s.bytes(), s.length, ".str")),
             .Bin(_, op, a, x) -> self.define(self.binary_value(op, a, x)),
             .Un(_, op, src) -> self.define(self.un_value(op, self.vals[src.index])),
             .CallRtVoid(callee, args) -> self.void_rt_call(callee, args),
@@ -71,6 +81,16 @@ impl Emit {
                     ),
                 ),
             .StaticAddr(_, sym) -> self.define(avra_llvm_global_payload(self.m, mangled(sym))),
+            .OnceRead(dst, sym) -> self
+                .define(
+                    avra_llvm_build_load(
+                        self.b,
+                        self.reg_type(dst),
+                        avra_llvm_once_slot(self.m, once_slot_name(sym)),
+                        "once",
+                    ),
+                ),
+            .OnceCommit(sym, value) -> self.once_committed(sym, value),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
             .Release(r) -> self.released(r),
             .Retain(r) -> self.retained(r),
@@ -145,14 +165,6 @@ impl Emit {
     /// The next register's value — registers mint in instruction order.
     fn define(v: ptr) {
         self.vals.push(v)
-    }
-
-    /// A `ConstStr`'s own value, defined — and its TEXT kept beside
-    /// it, by the same register: the only way `once_slot_value` finds
-    /// which symbol a later `once_slot` row's key argument names.
-    fn const_str_defined(dst: Reg, s: string) {
-        self.once_texts.set("${dst.index}", s)
-        self.define(avra_llvm_build_text(self.b, s.bytes(), s.length, ".str"))
     }
 
     /// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,
@@ -233,35 +245,9 @@ impl Emit {
     /// A runtime call, generic over every callee declare_runtime names.
     /// The answer crosses back out of the slot it rode in.
     fn call_rt_value(dst: Reg, callee: string, args: List<Reg>) -> ptr {
-        if callee == "avra_once_get" { return self.once_slot_read(dst, args[0]) }
         let called = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
         self.unworded(self.answer_form(dst, callee), self.answered(callee, called))
-    }
-
-    /// An `once_slot` row's read: the current pointer in the
-    /// per-symbol global its own key argument names — a load, never
-    /// a call. Named directly: this runs once per `CallRt` across a
-    /// whole-package check, so a registry lookup here is not one
-    /// call's cost, it is every runtime call in the tree's.
-    fn once_slot_read(dst: Reg, key: Reg) -> ptr {
-        let slot = avra_llvm_once_slot(self.m, once_slot_name(self.once_slot_value(key)))
-        avra_llvm_build_load(self.b, self.reg_type(dst), slot, "once")
-    }
-
-    /// The compile-time text a `ConstStr` register carries — the only
-    /// way an `once_slot` row's call, at the argument it is handed,
-    /// finds which symbol's slot answers it. Every such argument is
-    /// lowered as a `ConstStr` (a `once fn`'s own symbol, a literal);
-    /// anything else is the lowering's law broken, not a value this
-    /// answers a guess for.
-    fn once_slot_value(key: Reg) -> string {
-        self.once_texts.get("${key.index}") ?? self.once_slot_defect()
-    }
-
-    fn once_slot_defect() -> string {
-        avra_trap("compiler defect: an `once_slot` row's key argument is not a compile-time text")
-        ""
     }
 
     /// HOW A CALLEE'S ANSWER CROSSES BACK: the destination's slot form,
@@ -326,22 +312,9 @@ impl Emit {
     }
 
     fn void_rt_call(callee: string, args: List<Reg>) {
-        if callee == "avra_once_set" { return self.once_slot_committed(callee, args) }
         if self.settled_valued(callee, args) { return }
         let _ = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
-    }
-
-    /// An `once_slot` row's write: settle the keyed table exactly as
-    /// the row's own C body always has (the credit and the immortal
-    /// flip happen there, unchanged), then read the table's own
-    /// winner back into THIS symbol's slot — so a losing racer's slot
-    /// still answers whichever value won, never its own.
-    fn once_slot_committed(callee: string, args: List<Reg>) {
-        let _ = self.call(callee, self.rt_args(callee, args))
-        let won = self.call("avra_once_get", self.rt_args("avra_once_get", [args[0]]))
-        let slot = avra_llvm_once_slot(self.m, once_slot_name(self.once_slot_value(args[0])))
-        let _ = avra_llvm_build_store(self.b, won, slot)
     }
 
     /// A VALUE ENUM'S CELL is its tag and word, never one pointer: its
