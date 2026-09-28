@@ -453,6 +453,9 @@ run_pipeline() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
 
     light "merge$suffix" merge_main_in "$branch_wt"
+    # A warm cache does not yet follow every edit a merge makes, so the
+    # merged tree starts cacheless; drop this once it does.
+    move_caches_aside "$branch_wt"
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
@@ -553,6 +556,11 @@ batch_branch="land/batch-integration"
 reset_batch_wt() {
     [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
     if [ ! -d "$batch_wt/.git" ] && [ ! -f "$batch_wt/.git" ]; then
+        # Whatever stands at the path and is not a worktree is moved aside.
+        if [ -e "$batch_wt" ]; then
+            mkdir -p "$trash"
+            mv "$batch_wt" "$trash/batch-tree-$$-$(date +%s)"
+        fi
         mkdir -p "$(dirname "$batch_wt")"
         git -C "$main_wt" worktree add -q --detach "$batch_wt" main ||
             { tool_failed "could not make the batch tree at $batch_wt"; return 1; }

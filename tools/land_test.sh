@@ -806,6 +806,8 @@ test_batch_tool_failure() {
 test_batch_stale_registration() {
     d="$(batch_repo batch-stale)"
     git -C "$d" worktree add -q -b land/batch-integration "$scratch/batch-stale-old" main > /dev/null 2>&1
+    # A leftover directory, not a worktree, standing at the batch path.
+    mkdir -p "$scratch/batch-stale-new/build"
     st=0
     ( cd "$d" && AVRA_LAND_LOCK="$scratch/batch-stale-lock" AVRA_LAND_BATCH_WT="$scratch/batch-stale-new" \
         AVRA_SLOTS_DIR="$scratch/batch-stale-slots" branch=x sh "$land" --call main_batch 0 a c ) \
