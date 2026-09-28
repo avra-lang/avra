@@ -6,7 +6,7 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
+use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId, qtrace}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
 use diagnostics.{Diag, render_among}
@@ -76,7 +76,7 @@ export type Derived = { entry: string?, want: Want, program: Program, lowered: L
 const EVERY_FILE: int = 1000000
 
 /// How many read files `--time` names before it counts the rest.
-const READ_NAMED: int = 12
+const READ_NAMED: int = 1000
 
 impl Derived {
     /// THE BUILD, by the workspace this derivation was made in — an
@@ -396,6 +396,17 @@ impl Workspace {
         let asked = self.asked_print(store, self.known_as(at), roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
         if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
+        for r in self.hold.read_files.get() {
+            qtrace("WATCH_HELD\tread_file\t${r.path}\t${r.why.says()}\n")
+        }
+        for fi in self.decls.files.get() {
+            let path = self.decls.file(fi.id).path
+            let why = self.hold.read_files.get().find((r) -> r.path == path)
+            let cls = if self.is_held(fi.id) { "held" } else if why != null { why!.why.says() } else { "no reason recorded" }
+            qtrace("WATCH_HELD\tfile\t${path}\t${cls}\n")
+        }
+        qtrace("WATCH_HELD\thold_asked\t${self.hold.hold_asked.get().length}\n")
+        for p in self.hold.hold_asked.get() { qtrace("WATCH_HELD\task\t${p}\n") }
         Derived {
             entry: at.entry,
             want: at.want,
