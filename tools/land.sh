@@ -59,7 +59,10 @@ Lands one branch, or a BATCH of several at once: merges them all into
 one scratch integration branch, builds and checks that ONCE, then
 fast-forwards main to it. A batch that fails BISECTS — it lands the
 largest subset that passes together and names the branch(es) that
-broke it, exiting non-zero when anything was excluded. Never pushes
+broke it, exiting non-zero when anything was excluded. The queue
+batches itself: whoever takes the lock lands every branch still queued
+behind it in the same run, and each waiter exits with its own
+branch's verdict. Never pushes
 anywhere, never rewrites a branch's own history.
 
   --dry-run   run every step but the final fast-forward merge.
@@ -187,12 +190,14 @@ acquire_lock() {
     {
         echo "pid=$$"
         echo "branch=$branch"
+        echo "dry_run=${dry_run:-0}"
         echo "time=$(date)"
     } > "$d/$ticket/info"
     echo "$$" > "$d/$ticket/pid"
 
     printed_wait=0
     while :; do
+        [ -f "$d/$ticket/verdict" ] && absorbed_exit "$d/$ticket"
         lowest="$(lowest_live_ticket)"
         [ "$lowest" = "$ticket" ] && return 0
         if [ "$printed_wait" -eq 0 ]; then
@@ -204,6 +209,57 @@ acquire_lock() {
 }
 release_lock() { [ -n "$ticket" ] && rm -rf "$(tickets_dir)/$ticket" 2>/dev/null; }
 
+# ── THE QUEUE BATCHES ITSELF ─────────────────────────────────────────
+# The lander that takes the lock absorbs every waiter queued behind it
+# that asked to land for real, and runs one batch over all their
+# branches: one build, one check, a bisection on failure. Each absorbed
+# waiter is handed its own branch's verdict and exits with it.
+
+# A ticket's `key=value` line.
+ticket_field() { sed -n "s/^$2=//p" "$1/info" 2>/dev/null | head -n 1; }
+
+# Marks every live, real waiter behind this ticket as absorbed and
+# prints its ticket number.
+absorb_waiters() {
+    d="$(tickets_dir)"
+    for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
+        pid="$(cat "$d/$t/pid" 2>/dev/null)"
+        if [ "$t" -gt "$ticket" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null &&
+            [ "$(ticket_field "$d/$t" dry_run)" = "0" ]; then
+            echo "$ticket" > "$d/$t/absorbed_by"
+            echo "$t"
+        fi
+    done
+}
+
+# Hands one absorbed waiter its verdict: the status first, the words
+# last, since the words' arrival is what the waiter watches for.
+give_verdict() {
+    echo "$2" > "$1/status"
+    printf '%s\n' "$3" > "$1/verdict.tmp"
+    mv "$1/verdict.tmp" "$1/verdict"
+}
+
+# An absorbed waiter's end: the batch that took its branch answered.
+absorbed_exit() {
+    cat "$1/verdict"
+    st="$(cat "$1/status" 2>/dev/null)"
+    release_lock
+    exit "${st:-1}"
+}
+
+# A holder leaving before it answered strands no waiter.
+release_absorbed() {
+    d="$(tickets_dir)"
+    for t in $absorbed; do
+        [ -f "$d/$t/verdict" ] || give_verdict "$d/$t" 1 "land: the batch that absorbed this branch stopped before a verdict — land again"
+    done
+}
+finish_lock() {
+    release_absorbed
+    release_lock
+}
+
 # A TRAP ON A SIGNAL RESUMES AFTER THE HANDLER, IT DOES NOT EXIT — a
 # `trap release_lock INT TERM` alone frees the ticket on Ctrl-C or a
 # kill, then the script carries straight on from wherever it was
@@ -212,7 +268,7 @@ release_lock() { [ -n "$ticket" ] && rm -rf "$(tickets_dir)/$ticket" 2>/dev/null
 # handler that exits afterward, at the conventional 128+signal code.
 release_lock_and_exit() {
     sig="$1"
-    release_lock
+    finish_lock
     case "$sig" in
         INT) exit 130 ;;
         *) exit 143 ;;
@@ -580,13 +636,59 @@ bisect_land() {
     bisect_land $combined
 }
 
-main_batch() {
+# ONE BATCH RUN over `branches`, the lock already held: sets `good` (the
+# branches it landed or would land), `culprits`, and `landed` (main's new
+# head, or empty), and `batch_note` (why nothing landed).
+batch_core() {
     dry_run="$1"
     shift
     branches="$*"
-    branch="batch($*)"
+    good=""
+    culprits=""
+    landed=""
+    batch_note=""
+    batch_base="$(git -C "$main_wt" rev-parse refs/heads/main)"
+    echo "land: batch of: $branches"
 
-    trap release_lock EXIT
+    # A whole batch failing is a truthful answer, never a script error.
+    good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
+    culprits="$(grep -h '^CULPRIT: ' "$(log_of batch-bisect-stderr)" 2>/dev/null | sed 's/^CULPRIT: //' | tr '\n' ' ')"
+    cat "$(log_of batch-bisect-stderr)" >&2
+
+    if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
+        batch_note="land: every branch in the batch failed — nothing to land"
+        return 0
+    fi
+    echo "land: green subset: $good"
+    if [ -n "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]; then
+        echo "land: culprit(s), excluded: $culprits"
+    fi
+    if [ "$dry_run" -eq 1 ]; then
+        batch_note="land: --dry-run — skipping the fast-forward"
+        return 0
+    fi
+    ff_log="$(log_of batch-ff)"
+    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
+        landed="$(git -C "$main_wt" rev-parse HEAD)"
+        return 0
+    fi
+    if main_moved_since "$batch_base"; then
+        batch_note="land: main moved during the batch — land it again once it settles"
+    else
+        batch_note="land: the fast-forward was refused and main did not move — git says: $(cat "$ff_log")"
+    fi
+}
+
+# Whether `b` is among the space-separated `set`.
+listed() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+
+main_batch() {
+    dry_run="$1"
+    shift
+    branch="batch($*)"
+    absorbed=""
+
+    trap finish_lock EXIT
     trap 'release_lock_and_exit INT' INT
     trap 'release_lock_and_exit TERM' TERM
     acquire_lock
@@ -596,48 +698,47 @@ main_batch() {
         echo "land: no worktree has 'main' checked out — \`git worktree list\`" >&2
         exit 1
     fi
-    for b in $branches; do
+    for b in "$@"; do
         if ! git -C "$main_wt" show-ref --verify --quiet "refs/heads/$b"; then
             echo "land: no branch '$b' — \`git branch --list\`" >&2
             exit 1
         fi
     done
-    echo "land: batch of: $branches"
-
-    # `|| true`: the whole batch can fail outright (every branch a
-    # culprit), which is bisect_land answering truthfully, not this
-    # script breaking — see the same note at bisect_land's own
-    # recursive calls.
-    good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
-    culprits="$(grep -h '^CULPRIT: ' "$(log_of batch-bisect-stderr)" 2>/dev/null | sed 's/^CULPRIT: //')"
-    cat "$(log_of batch-bisect-stderr)" >&2
-
-    if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
-        echo "land: every branch in the batch failed — nothing to land" >&2
+    batch_core "$dry_run" "$@"
+    if [ -n "$batch_note" ] && [ -z "$landed" ]; then
+        echo "$batch_note" >&2
+        [ "$dry_run" -eq 1 ] && [ -n "$good" ] && [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && exit 0
         exit 1
     fi
-
-    echo "land: green subset: $good"
-    if [ -n "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]; then
-        echo "land: culprit(s), excluded: $culprits"
-    fi
-
-    if [ "$dry_run" -eq 1 ]; then
-        echo "land: --dry-run — skipping the fast-forward"
-        echo "land: BATCH DRY RUN OK — would land [$good] as $(git -C "$batch_wt" rev-parse --short HEAD)"
-        [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && exit 0 || exit 1
-    fi
-
-    ff_log="$(log_of batch-ff)"
-    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
-        echo "LANDED $(git -C "$main_wt" rev-parse HEAD) — $good"
-    else
-        main_moved_since "$old_main_sha" || ff_refused "$ff_log"
-        echo "land: main moved during the batch — land it again once it settles" >&2
-        tail -30 "$ff_log" >&2
-        exit 1
-    fi
+    echo "LANDED $landed — $good"
     [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]
+}
+
+# The holder with absorbed waiters: one batch over its own branch and
+# theirs, each waiter handed its own branch's verdict.
+land_absorbed() {
+    d="$(tickets_dir)"
+    riders=""
+    for t in $absorbed; do riders="$riders $(ticket_field "$d/$t" branch)"; done
+    echo "land: absorbing the queue behind ticket $ticket:$riders"
+    batch_core 0 "$branch" $riders
+    for t in $absorbed; do
+        b="$(ticket_field "$d/$t" branch)"
+        if [ -n "$landed" ] && listed "$b" "$good"; then
+            give_verdict "$d/$t" 0 "LANDED $landed — in a batch with: $good"
+        elif listed "$b" "$culprits"; then
+            give_verdict "$d/$t" 1 "land: $b failed in a batch and was bisected out — logs: $scratch/logs"
+        else
+            give_verdict "$d/$t" 1 "${batch_note:-land: the batch did not land $b} — logs: $scratch/logs"
+        fi
+    done
+    if [ -n "$landed" ] && listed "$branch" "$good"; then
+        echo "LANDED $landed — in a batch with: $good"
+        exit 0
+    fi
+    listed "$branch" "$culprits" && echo "land: $branch failed in the batch and was bisected out" >&2
+    [ -n "$batch_note" ] && echo "$batch_note" >&2
+    exit 1
 }
 
 # ── MAIN ──────────────────────────────────────────────────────────────
@@ -656,8 +757,9 @@ main() {
         exit $?
     fi
     branch="${1:-}"
+    absorbed=""
 
-    trap release_lock EXIT
+    trap finish_lock EXIT
     trap 'release_lock_and_exit INT' INT
     trap 'release_lock_and_exit TERM' TERM
     acquire_lock
@@ -674,6 +776,11 @@ main() {
     fi
     echo "land: main worktree   $main_wt"
     echo "land: branch worktree $branch_wt ($branch)"
+
+    if [ "$dry_run" -eq 0 ]; then
+        absorbed="$(absorb_waiters | tr '\n' ' ')"
+        [ -n "$(printf '%s' "$absorbed" | tr -d '[:space:]')" ] && land_absorbed
+    fi
 
     run_pipeline ""
 
