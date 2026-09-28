@@ -1,7 +1,12 @@
 // The AST source projection: its output parses, reaches a fixed point
 // after one projection, and keeps the structure readers depend on.
 use @std.avrac.compiler.{parse_source}
-use @std.avrac.compiler.format.{render_statement, render_expression, render_source_of}
+use @std.avrac.compiler.format.{
+    render_statement,
+    render_expression,
+    render_source_of,
+    lossless_defect,
+}
 use @std.avrac.core.{Expr, Stmt, new_node_store}
 use @std.avrac.testing.{projected}
 
@@ -124,6 +129,29 @@ spec "printer fixture" {
 fail problem
 """,
             )
+        }
+    }
+    given "a spec's `given` blocks" {
+        then "a blank line between two `given` blocks stands where it was written" {
+            let source = "spec \"s\" {\n    given \"a\" {\n        then \"t1\" { true }\n    }\n\n    given \"b\" {\n        then \"t2\" { true }\n    }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
+        }
+        then "a comment between two `given` blocks stands at the `given`'s own depth, not the `then`'s" {
+            let source = "spec \"s\" {\n    given \"a\" {\n        then \"t1\" { true }\n    }\n    // between\n    given \"b\" {\n        then \"t2\" { true }\n    }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
+        }
+        then "the same blank line before a bare `then` (an empty group) already stood at the right depth" {
+            let source = "spec \"s\" {\n    then \"a\" { true }\n\n    then \"b\" { true }\n}"
+            let p = parse_source(source)
+            p.voices.list.is_empty() &&
+                render_source_of(p.store, p.stmts, source) == source &&
+                lossless_defect(source, render_source_of(p.store, p.stmts, source)) == null
         }
     }
     given "the expression surface" {

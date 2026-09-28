@@ -56,6 +56,12 @@ export const canonical_width: int = 100
 /// A width no line reaches, for a group that must stay on one line.
 const unbounded_width: int = 1000000000
 
+/// How far back of a `given` group's first case `given_split` looks
+/// for the wrapper's own opening brace — comfortably past the
+/// longest reasonable "given "…" {" header and the trivia beside it,
+/// never far enough to reach an EARLIER given's own body.
+const given_window: int = 2000
+
 /// The renderer with NO remarks — one statement, or one expression.
 ///
 /// A REMARK IS AN OFFSET INTO THE FILE IT WAS WRITTEN IN, and these
@@ -176,6 +182,11 @@ fn grouped_cases(cases: List<Case>) -> List<CaseGroup> {
         }
     }
     out
+}
+
+/// The last `{`'s own index in `s`, or -1.
+fn last_brace(s: string) -> int {
+    [i for i in 0..s.length if s.char_code(i) == 123].last() ?? -1
 }
 
 impl SourceText {
@@ -1090,18 +1101,65 @@ impl SourceText {
     /// wrapper, as the author wrote them — a spec the author wrote on
     /// one line keeps `given g { then n { … } }` as written, and a
     /// bare `then` (an empty group) wraps nothing.
+    ///
+    /// THE LEAD IS DRAINED AT THE WRAPPER'S OWN DEPTH, before `given`
+    /// prints, and ONLY UP TO THE WRAPPER'S OWN BRACE: two blank runs
+    /// can stand in the gap before a `given` — one before the
+    /// keyword, at THIS depth, one after its `{`, at the case's
+    /// deeper depth (a blank line kept for breathing room before the
+    /// first `then` — this file's own style) — and `given`'s own
+    /// span is nowhere recorded (`Case.span` covers `then` alone), so
+    /// `given_split` finds the brace in the TEXT instead. Draining
+    /// everything to `depth` in one sweep, as `then_line`'s own call
+    /// already did for the WHOLE gap, moves whichever run stands
+    /// after the brace one level too shallow. Without text
+    /// (`render_source`, no written form to keep) the split cannot be
+    /// found and the sweep is skipped; `then_line`'s own call still
+    /// reaches every remark, at its one depth.
     mut fn given_lines(g: CaseGroup, one_line: bool, depth: int) -> List<string> {
         if g.group.is_empty() { return self.then_line(g.cases[0], depth) }
+        let target = start_of(g.cases[0].span)
+        let lead = self.trivia_before(self.given_split(target), depth)
         let at = depth + 1
         let thens = flatten([self.then_line(c, at) for c in g.cases])
         if one_line && thens.length == 1 {
-            return [
-                source_line(depth, "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }"),
-            ]
+            return lead
+                .concat(
+                    [
+                        source_line(
+                            depth,
+                            "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }",
+                        ),
+                    ],
+                )
         }
-        [source_line(depth, "given ${quoted_text(g.group)} {")]
+        lead
+            .concat([source_line(depth, "given ${quoted_text(g.group)} {")])
             .concat(thens)
             .concat([source_line(depth, "}")])
+    }
+
+    /// Where a `given` wrapper's own leading trivia ends: its own
+    /// opening brace, the ONE real token standing between the two
+    /// gaps — `given`'s own span is nowhere recorded, so this looks
+    /// for the brace in the TEXT instead, the LAST one before
+    /// `target`. `near` bounds the search close to `target` (the
+    /// next unconsumed remark's own offset when one stands before
+    /// it, `target` itself otherwise) — never the file's start, so
+    /// an EARLIER given's own brace is never the one found — and the
+    /// window still reaches BACK of `near`, since a remark already
+    /// past the brace (the file's own style: a blank line kept right
+    /// after `given`'s `{`, before its first `then`) makes `near`
+    /// land on the far side of it. No text in hand, or nothing left
+    /// to drain, answers `target` itself — the sweep then finds
+    /// nothing before it, same as asking for nothing.
+    fn given_split(target: int) -> int {
+        let t? = self.text else { return target }
+        let near = if self.next < self.trivia.length { self.trivia[self.next].at } else { target }
+        let at = if near < target { near } else { target }
+        let lo = if at > given_window { at - given_window } else { 0 }
+        let rel = last_brace(t.substring(lo, target))
+        if rel < 0 { target } else { lo + rel + 1 }
     }
 
     /// The source a zero-seat lambda was written as — `defer e`'s and
