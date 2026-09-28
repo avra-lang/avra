@@ -48,7 +48,19 @@ use core.{
     At,
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
-use core.{Fingerprint, fp, list_cell, map_cell, same_type, touch, Table, new_table}
+use core.{
+    Fingerprint,
+    Exemplar,
+    fp,
+    list_cell,
+    map_cell,
+    same_type,
+    touch,
+    Table,
+    new_table,
+    list_eq,
+    opt_eq,
+}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -115,7 +127,13 @@ fn no_collect_index() -> CollectIndex {
 /// argument's literal text (a string/int/bool/identifier — anything else reads ""),
 /// and where it was written.
 @derive(Fingerprint)
+@derive(Exemplar)
 export type AnnotationFact = { name: string, args: List<string>, span: Span? }
+
+impl AnnotationFact {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> AnnotationFact { AnnotationFact { name: "", args: [], span: null } }
+}
 
 /// An argument's literal text, when it has one — a computed expression answers "".
 fn arg_text(store: NodeStore, e: ExprId) -> string {
@@ -144,6 +162,7 @@ fn annotation_fact(store: NodeStore, a: Annotation) -> AnnotationFact {
 /// record carries it and the decoder recomputes it — a field added and not encoded makes
 /// the two disagree and the module refuses to hold, instead of silently decoding a default.
 @derive(Fingerprint)
+@derive(Exemplar)
 export type DeclFacts = {
     external: bool,
     stat: bool,
@@ -183,6 +202,29 @@ export type DeclFacts = {
     /// type's layout, read from the parse at admission and from the record for a
     /// held file, so the seal index never reaches into a store the hold skipped.
     mut_seats: List<string> = [],
+}
+
+impl DeclFacts {
+    /// `@derive(Exemplar)`'s seed — every fact at its own zero.
+    static fn codec_zero() -> DeclFacts {
+        DeclFacts {
+            external: false,
+            stat: false,
+            is_grammar: false,
+            is_component: false,
+            span: null,
+            tparams: [],
+            bounds: [],
+            seats: [],
+            host: [],
+            annotated: false,
+            of: "",
+            instance: false,
+            doc: null,
+            annotations: [],
+            mut_seats: [],
+        }
+    }
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.

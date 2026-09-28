@@ -63,6 +63,8 @@ use core.{
     DeclId,
     TypeId,
     map_cell,
+    list_eq,
+    Exemplar,
 }
 use query.{Kernel, Key, Verdict as KernelVerdict, new_kernel, Relation, new_memo}
 use compiler.store.{Store, Stored, node_key}
@@ -77,7 +79,13 @@ use @std.meta.{derive}
 
 /// A file an answer's validity rides on: its path, and its content's
 /// digest at the moment the answer was captured.
+@derive(Exemplar)
 export type FileWitness = { path: string, digest: string }
+
+impl FileWitness {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> FileWitness { FileWitness { path: "", digest: "" } }
+}
 
 fn encoded_filewitness(w: FileWitness) -> string {
     joined([wire_escape(w.path), wire_escape(w.digest)], "\n")
@@ -100,11 +108,17 @@ fn decoded_filewitness(text: string) -> FileWitness? {
 /// many escaped, doubly-escaped (its own encoding, then the line
 /// escape) items — `core/wire.av`'s primitives, so any field, not only
 /// a trailing one, may hold embedded newlines safely.
+@derive(Exemplar)
 export type DocFacts = {
     root: string,
     listing_digest: string,
     answer: string,
     files: List<FileWitness>,
+}
+
+impl DocFacts {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> DocFacts { DocFacts { root: "", listing_digest: "", answer: "", files: [] } }
 }
 
 export fn encoded_docfacts(facts: DocFacts) -> string {

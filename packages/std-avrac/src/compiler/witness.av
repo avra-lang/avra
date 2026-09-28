@@ -57,6 +57,7 @@ use core.{
     module_path,
     same_file,
     sorted_texts,
+    Exemplar,
 }
 use query.{Key}
 use diagnostics.{Diag, located_files}
@@ -64,6 +65,7 @@ use features.{Decls, Decl, NameKind, name_kind_word, name_kind_of, Namespace}
 use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
 use @std.relation.{writer as stable_writer, reader as stable_reader, Writer, Reader, CodecFault}
 use @std.text.{parse_int}
+use @std.meta.{derive}
 
 // ── Stable names: a dense id means nothing in the next process ──
 
@@ -276,7 +278,13 @@ impl Walk {
 /// carries a `NodeStore` arena and a `program: fn() -> Program`
 /// closure, neither of which a durable row can hold (M5b's own future
 /// slice, COMPILER DB townhall §6.11).
+@derive(Exemplar)
 export type WitnessedCheck = { clean: bool, report: string }
+
+impl WitnessedCheck {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> WitnessedCheck { WitnessedCheck { clean: false, report: "" } }
+}
 
 /// The record-shape stamp a stored check carries (§6.6's record header
 /// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an

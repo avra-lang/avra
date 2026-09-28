@@ -17,8 +17,11 @@ use core.{
     filled,
     Static,
     ArenaRuns,
+    list_eq,
+    Exemplar,
 }
 use @std.errors.{Loc}
+use @std.meta.{derive}
 
 /// A settled (`const`) seat's VALUE carried into the unit it selects:
 /// the seat's index (past a method's receiver), its fingerprint (the
@@ -149,15 +152,36 @@ export fn expr_symbol(f: FileId, e: ExprId) -> string {
 /// share one shape because the evaluator represents both alike.
 /// `Absent` is the null value; `Gone` a slot under the runtime's absent
 /// mark — a nullable nullable's absence, apart from its present null.
+@derive(Exemplar)
 export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int), Octets(List<int>) }
 
+@derive(Exemplar)
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
+impl MetaMap {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> MetaMap { MetaMap { keys: [], values: [] } }
+}
+
+@derive(Exemplar)
 export type MetaHeap = { nodes: List<List<MetaVal>>, maps: List<MetaMap> }
+
+impl MetaHeap {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> MetaHeap { new_meta_heap() }
+}
 
 /// One transport for every value that crosses out of the evaluator.
 /// Const settlement and lifted calls share this type-driven tree.
+@derive(Exemplar)
 export type Settled = { answer: MetaVal, heap: MetaHeap, embeds: List<string> = [], fingerprint: int }
+
+impl Settled {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> Settled {
+        Settled { answer: MetaVal.Absent, heap: MetaHeap.codec_zero(), embeds: [], fingerprint: 0 }
+    }
+}
 
 /// What a LIFTED call answered, with the heap its records live in —
 /// the crossing's answer side, shared by validation and generated
