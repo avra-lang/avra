@@ -90,4 +90,43 @@ spec "features/lists — the comprehension planner" {
             ) == "0"
         }
     }
+    given "a join — a later head scanning a relation" {
+        then "an inner head narrows by an outer row's field" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n + s.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+        then "a value reading the inner row itself scans" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n + s.n for r in Row.all(1) for s in Row.all(2) if s.tag == s.tag].length",
+                    rows(),
+                ),
+            ) == "1"
+        }
+        then "a call handed the inner row with nothing narrowing it is refused" {
+            refused_in(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) if r.tag == \"a\" for s in Row.all(2) if ok(s)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "the same call beside the inner narrowing compare is a filter" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag && ok(s)].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+    }
 }
