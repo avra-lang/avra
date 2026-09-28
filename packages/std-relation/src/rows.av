@@ -58,8 +58,17 @@ fn same_key(a: IndexKey, b: IndexKey) -> bool {
 }
 
 /// One bucket's member ids, in id order — a function of the set, never
-/// of the order rows were written — and the sum of their finished hashes.
-type Bucket = { members: Cell<List<int>>, hash: Cell<int> }
+/// of the order rows were written — the sum of their finished hashes, and
+/// the revision it was last read in, by whom (-1: never).
+type Bucket = { members: Cell<List<int>>, hash: Cell<int>, read: Cell<Seen> }
+
+/// When a cell was last read, and the reader's token; revision -1 never.
+type Seen = { revision: int, reader: int }
+
+const unseen: Seen = Seen { revision: -1, reader: 0 }
+
+/// A read of `cell` in `family` recorded under `db`, and when and by whom.
+fn noted(db: Db, family: int, cell: int) -> Seen { Seen { revision: db.revision(), reader: db.read(family, cell) } }
 
 /// One index: each text and each slot maps to its bucket's id, the
 /// index knows every bucket it opened, and whether its buckets hash in
@@ -74,6 +83,8 @@ export type Rows<R> = {
     live: Cell<int>,
     indexes: List<Index>,
     buckets: Cell<List<Bucket>>,
+    family: Cell<int>,
+    read: Cell<Seen>,
 }
 
 /// An empty store with an index per flag, numbered in the order the
@@ -91,6 +102,8 @@ export fn rows<R>(ordered: List<bool>) -> Rows<R> {
         live: Cell.new(0),
         indexes: [empty_index(o) for o in ordered],
         buckets: buckets,
+        family: Cell.new(-1),
+        read: Cell.new(unseen),
     }
 }
 
@@ -144,6 +157,79 @@ impl Rows<R> {
     fn first_id(bucket: int) -> int? {
         if bucket < 0 { return null }
         self.buckets.get()[bucket].members.get().first()
+    }
+
+    // ── what a Db's owner records ──
+
+    /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
+    /// with the revision and the reader. Answers `b`.
+    fn seen(db: Db, b: int) -> int {
+        self.buckets.get()[b].read.set(noted(db, self.family.get(), b + 1))
+        b
+    }
+
+    /// The whole relation read under `db`: cell 0.
+    fn seen_whole(db: Db) { self.read.set(noted(db, self.family.get(), 0)) }
+
+    /// A key's bucket read under `db` — opened when absent, so a row filed
+    /// there later moves what this read saw.
+    fn read_key(db: Db, index: int, key: IndexKey) -> int { self.seen(db, self.opened_bucket(index, key)) }
+
+    /// `read_key`'s text twin, with no key boxed on a hit.
+    fn read_text(db: Db, index: int, v: string) -> int {
+        let b = self.indexes[index].texts.get().get(v) ?? self.opened_bucket(index, text_key(v))
+        self.seen(db, b)
+    }
+
+    /// Every live row, the whole relation recorded as read.
+    fn all_in(db: Db) -> List<R> {
+        self.seen_whole(db)
+        self.all()
+    }
+
+    /// The row at `id`, read through its bucket in the `grain` index, or
+    /// through the whole relation when there is no grain or no row.
+    fn got(db: Db, id: int, grain: int) -> R? {
+        let found? = self.row(id) else {
+            self.seen_whole(db)
+            return null
+        }
+        if grain < 0 {
+            self.seen_whole(db)
+        } else {
+            let _ = self.seen(db, self.bucket_of(grain, self.filed.get()[id][grain]))
+        }
+        found
+    }
+
+    /// `put`, under the WRITE-ONCE-AFTER-READ law: a write that moves a
+    /// cell some reader already read in this revision is refused, so a
+    /// producer ordered after its readers is heard, never stale.
+    fn put_in(db: Db, relation: string, id: int, row: R, hash: int, keys: List<IndexKey>) {
+        let now = db.revision()
+        if now >= 0 { self.late_check(db, relation, id, keys, now) }
+        self.put(id, row, hash, keys)
+    }
+
+    /// A write read before it lands, told to the owner: the first cell it
+    /// moves that a reader saw in revision `now`, else the whole relation.
+    fn late_check(db: Db, relation: string, id: int, keys: List<IndexKey>, now: int) {
+        let before: List<IndexKey> = if id < self.next_id() { self.filed.get()[id] } else { [] }
+        let touched = [self.bucket_of(i, k) for i, k in before]
+            .concat([self.bucket_of(i, k) for i, k in keys])
+        let late? = touched.find(it >= 0 && self.buckets.get()[it].read.get().revision == now) else {
+            let whole = self.read.get()
+            if whole.revision == now { db.refuse(late_write(relation, "the whole relation", db.reader(whole.reader))) }
+            return
+        }
+        db
+            .refuse(
+                late_write(
+                    relation,
+                    "bucket ${late}",
+                    db.reader(self.buckets.get()[late].read.get().reader),
+                ),
+            )
     }
 
     /// The row other than `own` filed under `key` in one index, if any.
@@ -253,7 +339,7 @@ impl Rows<R> {
         if found >= 0 { return found }
         let b = self.buckets.get().length
         let members: Cell<List<int>> = Cell.new([])
-        self.buckets.push(Bucket { members: members, hash: Cell.new(0) })
+        self.buckets.push(Bucket { members: members, hash: Cell.new(0), read: Cell.new(unseen) })
         let ix = self.indexes[index]
         ix.opened.push(b)
         match key {
@@ -265,4 +351,10 @@ impl Rows<R> {
         }
         b
     }
+}
+
+// ── voices ──
+
+fn late_write(relation: string, cell: string, reader: string) -> string {
+    "a `${relation}` row was filed into ${cell} after ${reader} read it this revision — a producer runs before its readers"
 }

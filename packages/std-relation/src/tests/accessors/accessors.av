@@ -3,7 +3,7 @@
 // every row, `get` and `all` — and each Db's rows its own.
 use @std.relation.{relation}
 use @std.meta.{dense}
-use @std.relation.db.{new_db, Db}
+use @std.relation.db.{new_db, Db, hooked_db, Hooks}
 use @std.relation.refused.{InsertRefused}
 
 /// Ided, keyless: every insert is a new row.
@@ -158,6 +158,46 @@ fn nodes() -> string {
     "${Node.by_shade(db, Shade.Green).length} ${Node.by_at(db, NodeId { index: 8 }).first()?.name ?? "-"} ${a.stable_hash() == moved.stable_hash()} ${back} ${none.name} ${a.id.index}${moved.id.index} ${Node.get(db, NodeId { index: 1 })?.name ?? "-"}"
 }
 
+/// A Db its owner armed: every read recorded — bucket `b` as cell
+/// `b + 1`, the whole relation as cell 0, a miss opening its bucket — the
+/// verifier answering live hashes, and a write into a cell read this
+/// revision refused, naming the reader.
+fn hooked() -> string {
+    let log: Cell<List<string>> = Cell.new([])
+    let heard: Cell<List<string>> = Cell.new([])
+    let verifiers: Cell<List<fn(int) -> int>> = Cell.new([])
+    let rev = Cell.new(1)
+    let db = hooked_db(
+        Hooks {
+            family: (v: fn(int) -> int) -> {
+                verifiers.push(v)
+                5
+            },
+            record: (f: int, cell: int) -> {
+                log.push("${f}.${cell}")
+                7
+            },
+            revision: () -> rev.get(),
+            reader: (token: int) -> "reader ${token}",
+            refused: (w: string) -> heard.push(w),
+        },
+    )
+    let _ = Note.insert(db, tag: "a", text: "1")
+    let _ = Note.by_tag(db, "a")
+    let _ = Note.insert(db, tag: "z", text: "2")
+    let clean = heard.get().length
+    let _ = Note.insert(db, tag: "a", text: "3")
+    let _ = Note.by_tag(db, "q")
+    let _ = Note.insert(db, tag: "q", text: "4")
+    rev.set(2)
+    let _ = Note.insert(db, tag: "a", text: "5")
+    let later = heard.get().length
+    let _ = Note.all(db)
+    let _ = Note.insert(db, tag: "m", text: "6")
+    let verify = verifiers.get()[0]
+    "${log.get().join(",")} ${clean} ${later} ${heard.get().length} ${verify(0) == db.set_hashes()[0]} ${verify(1) != 0} ${heard.get()[0]}"
+}
+
 /// Two Dbs keep their own rows; a Db knows only the relations it
 /// reached, each once however often; a closed Db's rows are let go,
 /// every hash back to none and no relation joined again.
@@ -174,4 +214,4 @@ fn dbs() -> string {
     "${seen_in_b} ${reached} ${held} ${a.set_hashes().all(it == 0)} ${a.set_hashes().length}"
 }
 
-"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()} | ${nodes()}"
+"${flags() catch e -> e.describe().message} | ${notes()} | ${accounts()} | ${tagged()} | ${dbs()} | ${plain_and_sites()} | ${sites()} | ${unique()} | ${nodes()} | ${hooked()}"

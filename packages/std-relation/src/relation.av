@@ -365,6 +365,13 @@ fn generated(t: Type) -> Decls {
     }
 }
 
+/// The index `get` records a row's read through: the `@index(grain)`
+/// field's, or -1 for the whole relation.
+fn grain_index(t: Type) -> int {
+    let base = key_indexes(t)
+    [base + j for j, f in named_lookups(t) if index_with(f, "grain")].first() ?? -1
+}
+
 /// An int with bit `i` set for each `i`.
 fn bits(at: List<int>) -> int {
     mut m = 0
@@ -390,12 +397,12 @@ fn store_member(t: Type) -> Decls {
 /// `get`: the row an id names under a Db.
 fn get_member(t: Type) -> Decls {
     let ty = t.fields.find(it.name == "id")?.ty ?? "int"
-    quote { static fn get(db: Db, id: ${ty}) -> ${t}? { ${name(t.name)}.rows_in(db).row(${id_int(t, quote { id })}) } }
+    quote { static fn get(db: Db, id: ${ty}) -> ${t}? { ${name(t.name)}.rows_in(db).got(db, ${id_int(t, quote { id })}, ${grain_index(t)}) } }
 }
 
 /// `all`: every live row under a Db, in id order.
 fn all_member(t: Type) -> Decls {
-    quote { static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all() } }
+    quote { static fn all(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).all_in(db) } }
 }
 
 /// The row's key in each index, in the store's index order.
@@ -439,7 +446,7 @@ fn insert_member(t: Type) -> Decls {
                 let keys = r.index_keys()
                 let own = ${own}
                 let stored = ${stored}
-                rs.put(own, stored, stored.stable_hash(), keys)
+                rs.put_in(db, ${literal(t.name)}, own, stored, stored.stable_hash(), keys)
                 stored
             }
         }
@@ -452,7 +459,7 @@ fn insert_member(t: Type) -> Decls {
             let own = ${own}
             ${checks}
             let stored = ${stored}
-            rs.put(own, stored, stored.stable_hash(), keys)
+            rs.put_in(db, ${literal(t.name)}, own, stored, stored.stable_hash(), keys)
             stored
         }
     }
@@ -501,7 +508,7 @@ fn key_members(t: Type) -> List<Decls> {
         quote {
             static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
                 let rs = ${name(t.name)}.rows_in(db)
-                rs.row(rs.first_id(rs.bucket_of_text(0, ${name(t.name)}.key_text(k))) ?? -1)
+                rs.row(rs.first_id(rs.read_text(db, 0, ${name(t.name)}.key_text(k))) ?? -1)
             }
         },
     ]
@@ -557,14 +564,14 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
             quote {
                 static fn ${n}(db: Db, v: string) -> ${t}? {
                     let rs = ${name(t.name)}.rows_in(db)
-                    rs.row(rs.first_id(rs.bucket_of_text(${i}, v)) ?? -1)
+                    rs.row(rs.first_id(rs.read_text(db, ${i}, v)) ?? -1)
                 }
             }
         } else {
             quote {
                 static fn ${n}(db: Db, v: string) -> List<${t}> {
                     let rs = ${name(t.name)}.rows_in(db)
-                    rs.members(rs.bucket_of_text(${i}, v))
+                    rs.members(rs.read_text(db, ${i}, v))
                 }
             }
         },
@@ -572,14 +579,14 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
             quote {
                 static fn ${n}(db: Db, v: ${f.ty}) -> ${t}? {
                     let rs = ${name(t.name)}.rows_in(db)
-                    rs.row(rs.first_id(rs.bucket_of(${i}, ${key_of(quote { v }, f.kind)})) ?? -1)
+                    rs.row(rs.first_id(rs.read_key(db, ${i}, ${key_of(quote { v }, f.kind)})) ?? -1)
                 }
             }
         } else {
             quote {
                 static fn ${n}(db: Db, v: ${f.ty}) -> List<${t}> {
                     let rs = ${name(t.name)}.rows_in(db)
-                    rs.members(rs.bucket_of(${i}, ${key_of(quote { v }, f.kind)}))
+                    rs.members(rs.read_key(db, ${i}, ${key_of(quote { v }, f.kind)}))
                 }
             }
         },
