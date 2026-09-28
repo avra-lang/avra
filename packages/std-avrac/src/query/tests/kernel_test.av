@@ -255,6 +255,53 @@ spec "query/db" {
                 db.cell(deeper)!.deps.length == 1
         }
     }
+    given "the frame-local last key" {
+        then "the outer frame's own last key survives a nested frame reading a different key" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let shared = Key { family: fam, arg: 0 }
+            let other = Key { family: fam, arg: 1 }
+            db.set_input(shared, 1)
+            db.set_input(other, 2)
+            let outer = Key { family: fam, arg: 2 }
+            let nested = Key { family: fam, arg: 3 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.record_dep(shared)
+            db.begin(nested)
+            db.record_dep(other)
+            db.record_dep(other)
+            db.settle(nested, 1)
+            db.record_dep(shared)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 1 && db.cell(nested)!.deps.length == 1
+        }
+        then "a deeper nested frame's own last key does not leak into any ancestor's, three levels unwinding" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let shared = Key { family: fam, arg: 0 }
+            db.set_input(shared, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            let deeper = Key { family: fam, arg: 3 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.begin(nested)
+            db.record_dep(shared)
+            db.begin(deeper)
+            db.record_dep(shared)
+            db.record_dep(shared)
+            db.settle(deeper, 1)
+            db.record_dep(shared)
+            db.settle(nested, 1)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.cell(outer)!.deps.length == 1 &&
+                db.cell(nested)!.deps.length == 1 &&
+                db.cell(deeper)!.deps.length == 1
+        }
+    }
 }
 
 spec "query/memo" {
