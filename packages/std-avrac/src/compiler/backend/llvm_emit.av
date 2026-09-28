@@ -48,6 +48,16 @@ impl Emit {
         avra_llvm_build_call(self.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
     }
 
+    /// The slot's first write: settle the keyed table (unchanged —
+    /// `avra_once_slot_commit` calls straight through to
+    /// `avra_once_set`) and this fn's own global together, so every
+    /// `OnceRead` after this one sees whichever value won.
+    fn once_committed(sym: string, value: Reg) {
+        let slot = avra_llvm_once_slot(self.m, once_slot_name(sym))
+        let key = avra_llvm_build_text(self.b, sym.bytes(), sym.length, ".once_key")
+        let _ = self.call("avra_once_slot_commit", [key, self.vals[value.index], slot])
+    }
+
     fn emit_ins(i: Ins) {
         match i {
             .ConstInt(dst, v) -> self.define(self.const_int_value(dst, v)),
@@ -71,6 +81,16 @@ impl Emit {
                     ),
                 ),
             .StaticAddr(_, sym) -> self.define(avra_llvm_global_payload(self.m, mangled(sym))),
+            .OnceRead(dst, sym) -> self
+                .define(
+                    avra_llvm_build_load(
+                        self.b,
+                        self.reg_type(dst),
+                        avra_llvm_once_slot(self.m, once_slot_name(sym)),
+                        "once",
+                    ),
+                ),
+            .OnceCommit(sym, value) -> self.once_committed(sym, value),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
             .Release(r) -> self.released(r),
             .Retain(r) -> self.retained(r),
