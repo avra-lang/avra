@@ -62,7 +62,7 @@ largest subset that passes together and names the branch(es) that
 broke it, exiting non-zero when anything was excluded. The queue
 batches itself: whoever takes the lock lands every branch still queued
 behind it in the same run, and each waiter exits with its own
-branch's verdict — opt-in, with AVRA_LAND_ABSORB=1. Never pushes
+branch's verdict; AVRA_LAND_ABSORB=0 lands one branch alone. Never pushes
 anywhere, never rewrites a branch's own history.
 
   --dry-run   run every step but the final fast-forward merge.
@@ -362,8 +362,9 @@ move_caches_aside() {
     printf '%s\n' "$found" | while read -r d; do
         [ -z "$d" ] && continue
         n=$((n + 1))
-        mv "$d" "$trash/avra-cache/cache-$n"
-        echo "land: moved $d -> $trash/avra-cache/cache-$n" >&2
+        to="$trash/avra-cache/cache-$$-$(date +%s)-$n"
+        mv "$d" "$to"
+        echo "land: moved $d -> $to" >&2
     done
 }
 
@@ -452,6 +453,9 @@ run_pipeline() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
 
     light "merge$suffix" merge_main_in "$branch_wt"
+    # A warm cache does not yet follow every edit a merge makes, so the
+    # merged tree starts cacheless; drop this once it does.
+    move_caches_aside "$branch_wt"
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
@@ -541,21 +545,34 @@ ff_refused() {
 # to main's CURRENT tip before every attempt, never removed and
 # re-added, since a bisection tries many attempts in one run. Its
 # path is overridable (AVRA_LAND_BATCH_WT) so a fixture never touches
-# the real one.
-batch_wt="${AVRA_LAND_BATCH_WT:-/tmp/avra-land-batch-wt}"
+# the real one. By default it stands beside main's own worktree, at a
+# physical path: a tree under a symlinked directory (/tmp is one) reads
+# every file path relative to the wrong root, and no baseline matches.
+batch_wt="${AVRA_LAND_BATCH_WT:-}"
 batch_branch="land/batch-integration"
 
 # Resets the integration worktree to main's current tip — creating it
 # first if this is the first attempt this process has made.
 reset_batch_wt() {
-    if [ ! -d "$batch_wt" ]; then
+    [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
+    if [ ! -d "$batch_wt/.git" ] && [ ! -f "$batch_wt/.git" ]; then
+        # Whatever stands at the path and is not a worktree is moved aside.
+        if [ -e "$batch_wt" ]; then
+            mkdir -p "$trash"
+            mv "$batch_wt" "$trash/batch-tree-$$-$(date +%s)"
+        fi
         mkdir -p "$(dirname "$batch_wt")"
-        git -C "$main_wt" worktree add -q -B "$batch_branch" "$batch_wt" main
-    else
-        git -C "$batch_wt" checkout -q -B "$batch_branch" main
+        git -C "$main_wt" worktree add -q --detach "$batch_wt" main ||
+            { tool_failed "could not make the batch tree at $batch_wt"; return 1; }
     fi
-    git -C "$batch_wt" reset -q --hard main
-    git -C "$batch_wt" clean -q -fd
+    # The batch branch may still be registered to an older tree.
+    git -C "$batch_wt" checkout -q -f --ignore-other-worktrees -B "$batch_branch" main ||
+        { tool_failed "could not check out the batch branch in $batch_wt"; return 1; }
+    git -C "$batch_wt" reset -q --hard main && git -C "$batch_wt" clean -q -fd ||
+        { tool_failed "could not reset the batch tree at $batch_wt"; return 1; }
+    # Each attempt merges different content: a cache kept from the last
+    # one describes files that are no longer there.
+    move_caches_aside "$batch_wt"
     seed_compiler "$batch_wt"
 }
 
@@ -582,7 +599,7 @@ try_integration() {
     label="$1"
     shift
     echo "land: batch attempt [$label]: $*" >&2
-    reset_batch_wt
+    reset_batch_wt || return 1
     for b in "$@"; do
         b_safe="$(printf '%s' "$b" | tr '/ ' '__')"
         if ! merge_ref_in "$batch_wt" "refs/heads/$b" > "$(log_of "batch-merge-$label-$b_safe")" 2>&1; then
@@ -683,7 +700,8 @@ batch_core() {
     landed=""
     batch_note=""
     batch_base="$(git -C "$main_wt" rev-parse refs/heads/main)"
-    echo "land: batch of: $branches"
+    [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
+    echo "land: batch of: $branches (tree $batch_wt)"
 
     # A whole batch failing is a truthful answer, never a script error.
     good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
@@ -818,10 +836,8 @@ main() {
     echo "land: main worktree   $main_wt"
     echo "land: branch worktree $branch_wt ($branch)"
 
-    # Absorbing the queue is opt-in until a batch runs the real keepers
-    # green: a batch tree's idioms paths, caches and rule self-tests
-    # differ from a branch's own tree.
-    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-0}" = "1" ]; then
+    # AVRA_LAND_ABSORB=0 lands this branch alone.
+    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-1}" = "1" ]; then
         absorbed="$(absorb_waiters | tr '\n' ' ')"
         [ -n "$(printf '%s' "$absorbed" | tr -d '[:space:]')" ] && land_absorbed
     fi

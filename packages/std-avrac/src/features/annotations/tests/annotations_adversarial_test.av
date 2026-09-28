@@ -45,7 +45,7 @@ fn sampled_use() -> string {
 /// itself, its ONE method's own NAME a hole, for the door a method
 /// call reads a generated declaration through.
 fn meta_probes() -> string {
-    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"frozen\", \"widened\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\nexport fn other_twin(f: Fn) -> List<Directive> { [Directive { twin: \"already\", name: f.name, at: f.at }] }\nexport trait Keyed {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n            type DeclKey = { module: string, x: int }\n            fn decl_probe() -> int { 41 }\n        } }]\n    }\n}\nexport trait MethodNamed {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n            impl T {\n                fn \${method_hole_name()}() -> int { 7 }\n            }\n        } }]\n    }\n}\nfn method_hole_name() -> string { \"probed\" }\n"
+    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"frozen\", \"widened\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn sampled(f: Fn, xs: List<int>) -> List<Directive> { [] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\nexport fn other_twin(f: Fn) -> List<Directive> { [Directive { twin: \"already\", name: f.name, at: f.at }] }\nexport trait Keyed {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n            type DeclKey = { module: string, x: int }\n            fn decl_probe() -> int { 41 }\n        } }]\n    }\n}\nexport trait MethodNamed {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n            impl T {\n                fn \${method_hole_name()}() -> int { 7 }\n            }\n        } }]\n    }\n}\nfn method_hole_name() -> string { \"probed\" }\nexport fn wrap_missing(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn not_it() -> int { 0 } } }] }\nexport fn wrap_bodiless(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}() -> int { 0 } } }] }\nexport fn wrap_mismatch(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(x: string) -> int { 0 } } }] }\nexport fn wrap_method(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(n: int) -> int { n } } }] }\n"
 }
 
 /// A source through the printer — the parse read back, so a mark's
@@ -275,6 +275,46 @@ spec "features/annotations — the compile-time call's laws" {
                         "use @std.meta.{same_twin}\n@same_twin\nfn raised_by(n: int) -> int { n }\nraised_by(1)",
                 ),
                 "`@same_twin` generates `raised_by`, which this file already declares",
+                1,
+            )
+        }
+        then "a WRAP whose source declares no fn of the annotated name is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_missing}\n@wrap_missing\nfn f() -> int { 1 }\nf()",
+                ),
+                "`@wrap_missing` asks to wrap `f`, and its `source` declares no fn of that name",
+                1,
+            )
+        }
+        then "a WRAP over a declaration with no body is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_bodiless}\n@wrap_bodiless\nextern fn f() -> int\n1",
+                ),
+                "`@wrap_bodiless` asks to wrap `f`, which has no body to move",
+                1,
+            )
+        }
+        then "a WRAP whose wrapper redeclares a different signature is refused" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_mismatch}\n@wrap_mismatch\nfn f(n: int) -> int { n }\nf(1)",
+                ),
+                "`@wrap_mismatch`'s wrapper for `f` does not redeclare its exact signature",
+                1,
+            )
+        }
+        then "a WRAP over a method is refused, not silently left unwrapped" {
+            refused_n(
+                packaged(
+                    directive_use() +
+                        "use @std.meta.{wrap_method}\ntype P = { a: int }\nimpl P {\n    @wrap_method\n    static fn m(n: int) -> int { n }\n}\nP.m(1)",
+                ),
+                "`@wrap_method` asks to wrap the method `m` — WRAP over a method is recorded, not landed",
                 1,
             )
         }

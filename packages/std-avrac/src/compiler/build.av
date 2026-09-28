@@ -18,7 +18,7 @@ use core.{
 }
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
-use @std.io.{read_bytes, remove}
+use @std.io.{read_bytes, make_dirs, remove}
 use @std.time.{now_ns}
 use compiler.backend.{
     emit_object,
@@ -78,8 +78,16 @@ impl Error for BuildError {
 }
 
 /// A build's result: the words that linked it, the binary, the warnings to
-/// speak, whether the kept binary was reused, and where a fresh one's time went.
-export type BuildOutcome = { binary: string, warnings: string, reused: bool, phases: string = "" }
+/// speak, whether the kept binary was reused, where a fresh one's time went,
+/// and its package's `.refuses` tests — a suite's alone; a lone file's build
+/// carries none.
+export type BuildOutcome = {
+    binary: string,
+    warnings: string,
+    reused: bool,
+    phases: string = "",
+    refuses: List<RefusesCall> = [],
+}
 
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
 /// where it stands for the link, and the source the link orders it by.
@@ -251,31 +259,41 @@ fn looks_like_tree(host: Host, dir: string) -> bool {
 /// its sources.
 export type Keyed = { named: string, beside: List<string> }
 
-/// A program built: its kept binary when these exact inputs were built
-/// before, else derived, compiled and linked now. A refusal is never kept.
+/// A program built beside its own source: its kept binary when these exact
+/// inputs were built before, else derived, compiled and linked now. A
+/// refusal is never kept.
 // LICENSED compiler.free_state_verb: THE ENTRY POINT — the one standard signature.
 export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<
     BuildOutcome,
     BuildError,
 > {
-    let binary = binary_name(entry)
-    let kept = ws.kept_binary(ws.program_key(entry, []), binary)
-    if kept != null { return .Ok(kept!) }
-    let d = diagnosed(ws.derived(entry, Want.Binary))?
-    let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(ws.root)])) }
-    if main.view.stmts.is_empty() { fail BuildError.Empty }
-    d
-        .linked(
-            ProgramModule {
-                main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
-            },
-            Keyed { named: entry, beside: [] },
-            binary,
-            tools,
-        )
+    ws.linked_program(entry, binary_name(entry), tools)
 }
 
 impl Workspace {
+    /// `build_program`, freed from where its binary lands — a `.refuses` test's
+    /// native leg wants its own binary under `build/`, never beside its source.
+    fn linked_program(entry: string, binary: string, tools: Toolchain) -> Result<
+        BuildOutcome,
+        BuildError,
+    > {
+        let kept = self.kept_binary(self.program_key(entry, []), binary)
+        if kept != null { return .Ok(kept!) }
+        let d = diagnosed(self.derived(entry, Want.Binary))?
+        let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
+        if main.view.stmts.is_empty() { fail BuildError.Empty }
+        let _ = make_dirs(dir_of(binary))
+        d
+            .linked(
+                ProgramModule {
+                    main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
+                },
+                Keyed { named: entry, beside: [] },
+                binary,
+                tools,
+            )
+    }
+
     /// A binary these exact inputs linked before, placed where a fresh one would
     /// be — with the warnings that build spoke.
     fn kept_binary(key: string, binary: string) -> BuildOutcome? {

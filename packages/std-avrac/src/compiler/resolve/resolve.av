@@ -217,7 +217,7 @@ impl ResolveCx {
             .push(
                 LFrame {
                     lam: lam,
-                    params: [keyed(pp.name.of, origin) for pp in params],
+                    params: [self.seat_key(pp, origin) for pp in params],
                     floor: self.overlays.length,
                 },
             )
@@ -272,6 +272,13 @@ impl ResolveCx {
         let _ = self.receivers.pop()
     }
 
+    /// A seat's key: its fn's origin, unless its name came through a
+    /// hole — then it binds where the code lands, as a holed pattern's
+    /// binder does.
+    fn seat_key(pp: Param, origin: FileId?) -> string {
+        keyed(pp.name.of, if self.view.holed_param(pp.id) { null } else { origin })
+    }
+
     mut fn walk_under(ps: List<Param>, body: ExprId) {
         let seats = written_seats(self.keywords, ps)
         let outer = self.scope
@@ -279,7 +286,7 @@ impl ResolveCx {
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.floors.push(self.overlays.length)
         self.marks.push([pp.promises for pp in seats])
-        self.scope = [keyed(pp.name.of, origin) for pp in seats]
+        self.scope = [self.seat_key(pp, origin) for pp in seats]
         self.walk(body)
         self.scope = outer
         let _ = self.marks.pop()

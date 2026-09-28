@@ -1411,7 +1411,7 @@ impl Workspace {
     /// never re-enters the namespace from inside a resolve).
     fn has_declares(f: FileId) -> bool {
         let p = self.parsed(f)
-        p.stmts.any((s: StmtId) -> !p.store.annotations_of(s).is_empty())
+        declaring_stmts(p).any((s: StmtId) -> !p.store.annotations_of(s).is_empty())
     }
 
     /// Whether any declaration carries a MARK — the same prefilter for
@@ -1421,7 +1421,7 @@ impl Workspace {
     /// refused anyway: nothing claims its marks.
     fn has_marks(f: FileId) -> bool {
         let p = self.parsed(f)
-        p.stmts.any((s: StmtId) -> !p.store.marks_written(s).is_empty())
+        declaring_stmts(p).any((s: StmtId) -> !p.store.marks_written(s).is_empty())
     }
 
     /// A declaration's signature, computed on first ask: the ONE place
@@ -1718,3 +1718,8 @@ fn is_warning(d: Diag) -> bool {
     !is_error(d)
 }
 
+/// Every statement that can carry an annotation or a mark: the file's
+/// own, and each impl block's methods.
+fn declaring_stmts(p: Parsed) -> List<StmtId> {
+    flatten([[s].concat(p.store.impl_parts(s)?.fns ?? []) for s in p.stmts])
+}
