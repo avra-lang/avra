@@ -155,12 +155,31 @@ export fn expr_symbol(f: FileId, e: ExprId) -> string {
 @derive(Exemplar)
 export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int), Octets(List<int>) }
 
-@derive(Exemplar)
+/// `keys`/`values` are PARALLEL — same length, paired by position —
+/// an invariant `@derive(Exemplar)`'s one-field-at-a-time samples
+/// cannot hold (varying `values` alone against a zero `keys: []`
+/// mints a map whose own encoder walks `keys` and silently drops the
+/// value that named no key). Hand-exemplared instead; the derive
+/// would need to see the correlation to vary the two together.
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
 impl MetaMap {
-    /// `@derive(Exemplar)`'s seed.
     static fn codec_zero() -> MetaMap { MetaMap { keys: [], values: [] } }
+
+    static fn exemplars() -> List<MetaMap> {
+        [
+            MetaMap.codec_zero(),
+            MetaMap { keys: ["k"], values: [MetaVal.Int(7)] },
+            MetaMap { keys: ["k1", "k2"], values: [MetaVal.Text("x"), MetaVal.Bool(true)] },
+        ]
+    }
+
+    static fn exemplar_labels() -> List<string> { ["empty", "one entry", "two entries"] }
+
+    fn codec_same(other: MetaMap) -> bool {
+        list_eq(self.keys, other.keys, (x, y) -> x == y) &&
+            list_eq(self.values, other.values, (x, y) -> x.codec_same(y))
+    }
 }
 
 @derive(Exemplar)
