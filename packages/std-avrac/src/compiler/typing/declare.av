@@ -5,6 +5,7 @@
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{
     Variant,
+    binds_type,
     counted,
     flatten,
     StmtId,
@@ -43,6 +44,7 @@ use features.{
     Decl,
     written_seats,
     declared_decl,
+    Namespace,
 }
 use compiler.{result_infers}
 use compiler.lower.{ordered_collect_members}
@@ -317,7 +319,7 @@ impl TypeCx {
     /// structural walk cannot resolve, both refuse — `_` never mints
     /// silently from an incomplete answer.
     mut fn inferred_answer(s: StmtId, ret: TypeRef) -> TypeId {
-        let ok = self.written_by(self.view.origin_of_stmt(s), self.stmt_loc(s), ret.args[0])
+        let ok = self.written_by(self.view.spanned_of_stmt(s), self.stmt_loc(s), ret.args[0])
         if self.view.types.shape_of(ok) is .Error { return ok }
         let d = self.decl_of(s)
         let members = self.view.decls.inferred_errors(d)
@@ -565,11 +567,13 @@ impl TypeCx {
     /// A statement's written type.
     mut fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
-        self.written_by(self.view.origin_of_stmt(s), self.stmt_loc(s), ann!)
+        self.written_by(self.view.spanned_of_stmt(s), self.stmt_loc(s), ann!)
     }
 
-    /// A written type, read in the namespace of the file that WROTE it
-    /// — a template's types are its own, as its names are.
+    /// A written type, read in the namespace of the file whose TEXT
+    /// wrote it — a template's types are its own even when a hole
+    /// named their statement; a hole-filled type is `spliced` and
+    /// reads where the code lands.
     mut fn written_by(origin: FileId?, at: Loc?, t: TypeRef) -> TypeId {
         let was = self.writer
         self.writer = if origin == null { null } else { self.written_in(origin!) }
@@ -761,12 +765,28 @@ impl TypeCx {
         self.view.types.intern(Type.App(target, name, parts))
     }
 
-    /// The declaration a type name stands for, in this file's scope.
-    /// A declared type by name — in the namespace of the file that wrote
-    /// the type being read.
+    /// A declared type by name: in the namespace of the file that wrote
+    /// the type being read, then where the code lands — generated code
+    /// may name the annotated file's neighbours — then among this
+    /// file's generated declarations.
     fn type_decl_named(name: string) -> DeclId? {
-        let writer? = self.writer else { return type_named(self.names, name) }
-        writer.type_decl(name)
+        let landed = () -> type_named(self.names, name) ?? self.generated_type(name)
+        let writer? = self.writer else { return landed() }
+        writer.type_decl(name) ?? landed()
+    }
+
+    /// A type one of this file's own generators declared — a name the
+    /// written namespace never held.
+    fn generated_type(name: string) -> DeclId? {
+        let generated = self.elsewhere.generated
+        let found: DeclId? = generated(name)
+        if found != null && binds_type(self.view.decls.decl(found!).kind) { found } else { null }
+    }
+
+    /// The namespace of the file that wrote a node.
+    fn written_in(origin: FileId) -> Namespace {
+        let written_in = self.elsewhere.written_in
+        written_in(origin)
     }
 
     /// Every declared slot of the instantiation, substituted and
