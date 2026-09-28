@@ -227,9 +227,15 @@ recover: $(COMPILER_OBJS)
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
+# Bootstrap hands out GEN-2. A change to lowering or memory reaches a
+# compiler's own body only when a compiler already carrying it compiles
+# that body, so the seed's gen-1 rebuilds once more.
 bootstrap: recover
-	@echo "bootstrap: rebuilding build/avra from source"
+	@echo "bootstrap: gen-1, the source compiled by the seed"
 	@$(MAKE) -s avra
+	@echo "bootstrap: gen-2, the source compiled by gen-1"
+	@$(MAKE) -s avra
+	@echo "bootstrap: build/avra is gen-2"
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
