@@ -46,8 +46,17 @@ export fn memory(l: Lowered) -> Lowered {
     // two instantiations of one source fn the same inferred marks
     // under different concrete seats, so the lookup is by the name
     // every `Ins.Call` already carries, built once for the program.
+    // A HELD CALLEE carries no body here (`drained`, compiler/lower/
+    // lower.av: "never asked for") — only a MARKS-ONLY STUB, `weak`
+    // with no `ins`, minted so this lookup can still see its declared
+    // `consumed` seats. It answers no instructions of its own, so it
+    // is read for `by_name` and dropped before `fns` leaves this pass
+    // — `held_stubs` (compiler/record.av) is the declaration a later
+    // emission actually links against; a second, empty-bodied one
+    // reaching emission is an unterminated LLVM function, not a body.
     let by_name = marks_by_name(l.fns)
-    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length, b.marks, by_name) } for b in l.fns]
+    let named = [b for b in l.fns if !(b.weak && b.ins.is_empty())]
+    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length, b.marks, by_name) } for b in named]
     let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0, l.entry.marks, by_name) }
     let out = l with { fns: fns, entry: entry }
     if !sound_checked() { return out }

@@ -71,7 +71,22 @@ export enum ReceiverEffect {
     Shared
 }
 
-export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect }
+export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect, answers: fn(TypeRegistry, TypeId) -> TypeId? }
+
+/// What a row answers on a receiver of this type, told from the
+/// receiver alone — for a pass that types no body. Null when only the
+/// call's own arguments decide it.
+export fn same_answer(_types: TypeRegistry, receiver: TypeId) -> TypeId? { receiver }
+export fn int_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(int) }
+export fn bool_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(bool) }
+export fn str_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(string) }
+export fn void_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(void) }
+export fn element_answer(types: TypeRegistry, receiver: TypeId) -> TypeId? { types.element(receiver) }
+export fn held_element_answer(types: TypeRegistry, receiver: TypeId) -> TypeId? {
+    let e? = types.element(receiver) else { return null }
+    types.type(e?)
+}
+export fn unknown_answer(_types: TypeRegistry, _receiver: TypeId) -> TypeId? { null }
 
 /// Whether the vocabulary's method of this name WRITES its receiver
 /// on this shape — the registry fact the receiver law reads.

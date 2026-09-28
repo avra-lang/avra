@@ -1,6 +1,6 @@
 // The red team's survivors, one `given` per attack class. Every case
 // here failed, or was silent, before its fix.
-use @std.relation.{relation_problems}
+use @std.relation.{relation_problems, problems_under, NamedShape}
 use tests.twins_a.{a_name, a_hash}
 use tests.twins_b.{b_name, b_hash}
 use @std.relation.stable.{reader}
@@ -32,6 +32,33 @@ fn refusals(t: Type) -> string {
     [d.kind ?? "?" for d in relation_problems(t)].join(",")
 }
 
+/// A field of kind `k` spelled `ty`, wearing `marks`.
+fn kinded(name: string, ty: string, k: Kind, marks: List<string>) -> Field {
+    Field {
+        name: name,
+        ty: ty,
+        at: null,
+        kind: k,
+        marks: [Mark { name: m, args: [], at: null } for m in marks],
+    }
+}
+
+/// The shapes a declaration table would answer: `NodeId` a dense id,
+/// `Shade` a tagged enum, anything else plain.
+fn shapes(n: string) -> NamedShape {
+    match n {
+        "NodeId" -> NamedShape.Dense("index"),
+        "Shade" -> NamedShape.Tagged(["Red", "Green"]),
+        rest -> NamedShape.Plain,
+    }
+}
+
+fn id_field(marks: List<string>) -> Field { kinded("at", "NodeId", Kind.Named("NodeId", []), marks) }
+
+fn shaped(fields: List<Field>) -> string {
+    [d.kind ?? "?" for d in problems_under(one_row(fields), shapes)].join(",")
+}
+
 /// What the reader answers for an int encoded as `octets`.
 fn int_read(octets: List<int>) -> string {
     match reader(octets.bytes()!).int() { .Ok(v) -> "${v}", .Err(f) -> f.word() }
@@ -61,6 +88,50 @@ spec "std/relation — adversarial" {
         }
         then "a field named `rows_in` collides with the generated accessor" {
             refusals(one_row([Field { name: "rows_in", ty: "int", at: null, kind: Kind.Int }])) == "name_collision"
+        }
+        then "a field named `key` is free while no field wears `@key`" {
+            refusals(one_row([marked_field("key", ["index"])])) == ""
+        }
+        then "a field named `key` collides with `key()` once another field wears `@key`" {
+            refusals(one_row([marked_field("handle", ["key"]), marked_field("key", [])])) == "name_collision"
+        }
+        then "a `key` lookup beside a `@key` field wears `by_key` twice, and speaks once" {
+            refusals(one_row([marked_field("handle", ["key"]), marked_field("key", ["unique"])])) == "lookup_collision"
+        }
+        then "a field named after another field's lookup collides with it" {
+            refusals(one_row([marked_field("ann", ["unique"]), marked_field("by_ann", [])])) == "name_collision"
+        }
+        then "a field named `db` collides with `insert`'s own Db seat" {
+            refusals(one_row([marked_field("db", [])])) == "seat_collision"
+        }
+        then "a field named `by_key` collides only when a key exists" {
+            refusals(one_row([marked_field("by_key", [])])) == "" &&
+                refusals(one_row([marked_field("a", ["key"]), marked_field("by_key", [])])) == "name_collision"
+        }
+    }
+    given "dense ids and tagged enums (decision 10)" {
+        then "an unmarked dense id is refused, at any depth" {
+            shaped([id_field([])]) == "dense_unmarked" &&
+                shaped([kinded("up", "NodeId?", Kind.Opt(Kind.Named("NodeId", [])), [])]) == "dense_unmarked" &&
+                shaped([kinded("kids", "List<NodeId>", Kind.List(Kind.Named("NodeId", [])), [])]) == "dense_unmarked"
+        }
+        then "a dense id marked `@local` is accepted, and may be indexed" {
+            shaped([id_field(["local"])]) == "" && shaped([id_field(["local", "index"])]) == ""
+        }
+        then "a `@dense` type may be the row's own `id`; any other named type may not" {
+            shaped([kinded("id", "NodeId", Kind.Named("NodeId", []), [])]) == "" &&
+                shaped([kinded("id", "Point", Kind.Named("Point", []), [])]) == "id_not_int"
+        }
+        then "`@key` with `@local` is refused — a key is the stable name" {
+            shaped([kinded("n", "int", Kind.Int, ["key", "local"])]) == "key_local"
+        }
+        then "a tagged enum is carried, and files in a lookup" {
+            shaped([kinded("shade", "Shade", Kind.Named("Shade", []), ["index"])]) == "" &&
+                shaped([kinded("shades", "List<Shade>", Kind.List(Kind.Named("Shade", [])), [])]) == ""
+        }
+        then "any other named type is still not carried, unless it is `@local`" {
+            shaped([kinded("p", "Point", Kind.Named("Point", []), [])]) == "kind_not_carried" &&
+                shaped([kinded("p", "Point", Kind.Named("Point", []), ["local"])]) == ""
         }
     }
     given "names against names: the marks" {

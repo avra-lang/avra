@@ -31,6 +31,14 @@ export fn bool_key(v: bool) -> IndexKey { IndexKey.Slot(if v { 1 } else { 0 }) }
 /// dense slot.
 export fn int_key(v: int) -> IndexKey { IndexKey.Text("${v}") }
 
+/// One key field as text no other split can spell: its length, then
+/// itself — `("ab", "c")` and `("a", "bc")` never meet.
+export fn key_part(v: string) -> string { "${v.length}:${v}" }
+
+export fn int_part(v: int) -> string { key_part("${v}") }
+
+export fn bool_part(v: bool) -> string { if v { "t" } else { "f" } }
+
 /// Whether two rows file under the same key in every index.
 fn same_keys(a: List<IndexKey>, b: List<IndexKey>) -> bool {
     a.length == b.length && [same_key(k, b[i]) for i, k in a].all(it)
@@ -114,6 +122,11 @@ impl Rows<R> {
     /// Every live row, in id order.
     fn all() -> List<R> { [r! for r in self.rows.get() if r != null] }
 
+    /// `bucket_of`'s text twin: the bucket a text files under in one
+    /// index, with no key boxed to ask — the read every lookup by a
+    /// string makes.
+    fn bucket_of_text(index: int, v: string) -> int { self.indexes[index].texts.get().get(v) ?? -1 }
+
     /// Every live row filed in a bucket, in filing order; none for -1.
     fn members(bucket: int) -> List<R> {
         if bucket < 0 { return [] }
@@ -124,6 +137,12 @@ impl Rows<R> {
     fn first_id(bucket: int) -> int? {
         if bucket < 0 { return null }
         self.buckets.get()[bucket].members.get().first()
+    }
+
+    /// The row other than `own` filed under `key` in one index, if any.
+    fn holder(index: int, key: IndexKey, own: int) -> int? {
+        let h? = self.first_id(self.bucket_of(index, key)) else { return null }
+        if h == own { null } else { h }
     }
 
     fn bucket_hash(bucket: int) -> int {
