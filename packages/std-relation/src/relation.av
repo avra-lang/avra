@@ -100,7 +100,7 @@ fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic
     let clashes = [answer_clash(t, f) for f in lookups(t) if marked(f, "unique") && marked(f, "index")]
     let taken = [lookup_collision(t, f) for f in content(t) if takes_key_lookup(t, f)]
     let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(f.kind, shapes)]
-    let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind)]
+    let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind, shapes)]
     let keyed_local = [key_local(t, f) for f in lookups(t) if marked(f, "key") && marked(f, "local")]
     clashes.concat(taken).concat(unfiled).concat(ids).concat(keyed_local)
 }
@@ -112,10 +112,11 @@ fn takes_key_lookup(t: Type, f: Field) -> bool {
 }
 
 /// Whether the store can mint an `id` of this kind.
-fn mints(k: Kind) -> bool {
+fn mints(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
     match k {
         .Int -> true,
-        .Float or .Bool or .Str or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+        .Named(n, _) -> match shapes(n) { .Dense(_) -> true, .Tagged(_) or .Plain -> false },
+        .Float or .Bool or .Str or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
 
@@ -357,7 +358,8 @@ fn store_member(t: Type) -> Decls {
 
 /// `get`: the row an id names under a Db.
 fn get_member(t: Type) -> Decls {
-    quote { static fn get(db: Db, id: int) -> ${t}? { ${name(t.name)}.rows_in(db).row(id) } }
+    let ty = t.fields.find(it.name == "id")?.ty ?? "int"
+    quote { static fn get(db: Db, id: ${ty}) -> ${t}? { ${name(t.name)}.rows_in(db).row(${id_int(t, quote { id })}) } }
 }
 
 /// `all`: every live row under a Db, in id order.
@@ -396,7 +398,7 @@ fn insert_member(t: Type) -> Decls {
     let seats = [quote { fn _(${f.name}: ${f.ty}) {} } for f in content(t)]
     let inits = id_init(t).concat([quote { W { ${f.name}: ${name(f.name)} } } for f in content(t)])
     let own = if key_fields(t).is_empty() { quote { rs.next_id() } } else { quote { rs.first_id(rs.bucket_of(0, keys[0])) ?? rs.next_id() } }
-    let stored = if ided(t) { quote { r with { id: own } } } else { quote { r } }
+    let stored = if ided(t) { quote { r with { id: ${minted_id(t, quote { own })} } } } else { quote { r } }
     let checks = unique_checks(t)
     if checks.is_empty() {
         return quote {
@@ -631,7 +633,28 @@ fn decoded_member(t: Type) -> Decls {
 
 /// A built row's `id` before the store mints it: zero, when it has one.
 fn id_init(t: Type) -> List<Code> {
-    if ided(t) { [quote { W { id: 0 } }] } else { [] }
+    if ided(t) { [quote { W { id: ${minted_id(t, quote { 0 })} } }] } else { [] }
+}
+
+/// The row's `id` at place `n`: the int itself, or a `@dense` id holding it.
+fn minted_id(t: Type, n: Code) -> Code {
+    let id? = t.fields.find(it.name == "id") else { return n }
+    match id.kind {
+        .Named(ty, _) -> match named_shape(ty) {
+            .Dense(f) -> quote { ${ty} { ..${[quote { W { ${f}: ${n} } }]} } },
+            .Tagged(_) or .Plain -> n,
+        },
+        rest -> n,
+    }
+}
+
+/// An `id` value's place: the int itself, or the one a `@dense` id holds.
+fn id_int(t: Type, e: Code) -> Code {
+    let id? = t.fields.find(it.name == "id") else { return e }
+    match id.kind {
+        .Named(ty, _) -> match named_shape(ty) { .Dense(f) -> quote { ${e}.${f} }, .Tagged(_) or .Plain -> e },
+        rest -> e,
+    }
 }
 
 /// Whether the row declares the `id` the store mints.
@@ -812,8 +835,8 @@ fn id_not_int(t: Type, f: Field) -> Diagnostic {
     refuse_as_at(
         "id_not_int",
         f.at ?? t.at,
-        "the store mints `id` as an int, and `${t.name}.id` is `${f.ty}`",
-        "declare `id: int`, or drop the field",
+        "the store mints `id` as an int or a `@dense` id, and `${t.name}.id` is `${f.ty}`",
+        "declare `id: int` or a `@dense` id type, or drop the field",
     )
 }
 

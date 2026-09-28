@@ -122,10 +122,11 @@ type NodeId = { index: int }
 
 enum Shade { Red, Green, Blue }
 
-/// A dense id stays `@local`; an enum hashes, encodes and files by its
+/// A dense id is the row's own id, minted in insert order and read by
+/// `get`, or stays `@local`; an enum hashes, encodes and files by its
 /// variant's name; a stored row carries no local column.
 @relation
-type Node = { id: int, @key name: string, @index shade: Shade, @local @index at: NodeId, @local up: NodeId?, tints: List<Shade> }
+type Node = { id: NodeId, @key name: string, @index shade: Shade, @local @index at: NodeId, @local up: NodeId?, tints: List<Shade> }
 
 fn nodes() -> string {
     let db = new_db()
@@ -154,7 +155,7 @@ fn nodes() -> string {
         .Ok(s) -> "${s.name} ${s.tints.length} ${s.shade == Shade.Green}",
         .Err(e) -> e.word(),
     }
-    "${Node.by_shade(db, Shade.Green).length} ${Node.by_at(db, NodeId { index: 8 }).first()?.name ?? "-"} ${a.stable_hash() == moved.stable_hash()} ${back} ${none.name}"
+    "${Node.by_shade(db, Shade.Green).length} ${Node.by_at(db, NodeId { index: 8 }).first()?.name ?? "-"} ${a.stable_hash() == moved.stable_hash()} ${back} ${none.name} ${a.id.index}${moved.id.index} ${Node.get(db, NodeId { index: 1 })?.name ?? "-"}"
 }
 
 /// Two Dbs keep their own rows; a Db knows only the relations it
