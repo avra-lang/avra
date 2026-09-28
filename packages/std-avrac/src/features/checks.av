@@ -1177,6 +1177,7 @@ impl TypeCx {
         if self.mut_place(subject) { return self.copy_laws(e, subject, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
         if root == null {
+            self.plain_thaw_law(subject)
             return self
                 .emit(
                     warning(
@@ -1203,6 +1204,7 @@ impl TypeCx {
                 )
         }
         self.boxed_law(root!)
+        if self.bare_let_stmt(root!) == null { self.plain_thaw_law(subject) }
         self
             .emit(
                 warning(
@@ -1220,11 +1222,29 @@ impl TypeCx {
     /// seed into a cell (thawed if the binary's own data) exactly as
     /// a `mut` local's is — the same law, spelled over a local the
     /// receiver law found rather than one the seat law already knew.
-    /// A parameter has no declaring statement to box; the per-call
-    /// thaw at its own write sites is what it keeps instead.
+    /// A parameter has no declaring statement to box; `plain_thaw_law`
+    /// is what it keeps instead.
     fn boxed_law(root: ExprId) {
         let s? = self.bare_let_stmt(root) else { return }
         if self.view.types.rides_pointer(self.type_at(root)) { self.facts.mark_boxed_local(s) }
+    }
+
+    /// A writing method's receiver with no cell behind it at all — a
+    /// bare value (no root: `P { x: 1 }.bump()`) or a parameter (a
+    /// root the seat law already owns, never a bare `let`): marked at
+    /// THIS call's own subject, so lowering thaws it once, right
+    /// here, before the callee ever sees it (walk.av's `reg_of`) —
+    /// the callee then asks no uniqueness of its own, since what it
+    /// receives already is. UNGATED, unlike `boxed_law`: a bounded
+    /// generic's receiver is still a type Var here, at the template's
+    /// own typing — asking its declaration for a shape it does not
+    /// have yet answers `false` for every instantiation, protecting
+    /// none of them. `writes` already answers the only question that
+    /// matters: a receiver with a writing method rides a pointer by
+    /// construction, so the resolved shape at lowering (`shape_at`,
+    /// per instantiation) is the only gate `plain_thawed` needs.
+    fn plain_thaw_law(subject: ExprId) {
+        self.facts.mark_plain_thaw(subject)
     }
 
     /// A plain (non-`mut`) `let` local's own declaring statement —

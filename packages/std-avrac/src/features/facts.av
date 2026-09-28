@@ -193,6 +193,11 @@ export type TypeFacts = {
     // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
     alias_copies: SideTable<bool>,
     thaws: SideTable<bool>,
+    // a writing method's receiver with no mut cell behind it at all —
+    // a parameter, or a value with no binding — thawed once at THIS
+    // call's own subject read, so the callee receives an already-
+    // unique box and needs no uniqueness of its own
+    plain_thaws: SideTable<bool>,
     // a value a `collect` keeps — checking's one answer, lowering's one read
     gathered: SideTable<bool>,
     // each `collect`'s kept values, so a re-typed one never re-walks its body
@@ -229,6 +234,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         warned: side_table("warned", lo, hi, false),
         alias_copies: side_table("alias_copies", lo, hi, false),
         thaws: side_table("thaws", lo, hi, false),
+        plain_thaws: side_table("plain_thaws", lo, hi, false),
         gathered: side_table("gathered", lo, hi, false),
         collections: side_table<List<ExprId>?>("collections", lo, hi, null),
         offers: side_table("offers", lo, hi, false),
@@ -355,6 +361,15 @@ impl TypeFacts {
         self.thaws.set(e.index, true)
     }
 
+    /// Whether this writing method's receiver has no cell behind it
+    /// at all — read once at the call, thawed before the callee ever
+    /// sees it.
+    fn wants_plain_thaw(e: ExprId) -> bool { self.plain_thaws.get(e.index) }
+
+    fn mark_plain_thaw(e: ExprId) {
+        self.plain_thaws.set(e.index, true)
+    }
+
     /// Whether a `collect` keeps this discarded value.
     fn keeps(e: ExprId) -> bool { self.gathered.get(e.index) }
 
@@ -414,6 +429,7 @@ impl TypeFacts {
         self.pattern_types.lay(other.pattern_types)
         self.alias_copies.lay(other.alias_copies)
         self.thaws.lay(other.thaws)
+        self.plain_thaws.lay(other.plain_thaws)
         self.gathered.lay(other.gathered)
         self.collections.lay(other.collections)
         self.offers.lay(other.offers)

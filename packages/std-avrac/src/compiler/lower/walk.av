@@ -19,12 +19,23 @@ impl LowerCx {
         let born = when {
             self.facts.wants_alias_copy(e) -> self.unique_box(e)
             self.facts.wants_thaw(e) -> self.thawed_box(e)
+            self.facts.wants_plain_thaw(e) -> self.plain_thawed(e)
             _ -> self.spelled_static(e) ?? semantics_of(self.dispatch, self.view.store.expr(e))
                 .lower(self, e)
         }
         let r = self.widened(e, self.narrowed(e, born))
         self.body.set_reg(e, r)
         r
+    }
+
+    /// A writing method's receiver with no cell behind it: its value,
+    /// computed the ordinary way, thawed once right here — before the
+    /// call ever sees it, so the callee needs no uniqueness of its
+    /// own (places.av's `unique_box` reads a method's receiver as
+    /// already the box, by design).
+    mut fn plain_thawed(e: ExprId) -> Reg {
+        let born = semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
+        self.box_thawed(self.shape_at(e), born)
     }
 
     /// A read a presence test PROVED — typing recorded the nullable
