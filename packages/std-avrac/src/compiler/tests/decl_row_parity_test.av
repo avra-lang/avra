@@ -1,0 +1,41 @@
+// S6 STEP (a)'s PARITY KEEPER: `DeclRow` carries the real shape. Every written
+// declaration's shadow row agrees with the hand table on every field the shadow does
+// not mark `@local` — name, kind, exported, owner, nested. The `@local` fields (file,
+// stmt, parent, root, lo, hi) are snapshotted at FIRST MINT and are not asserted equal
+// to the table's current values: `range_bodies` and `adopt` move lo/hi/parent after
+// mint, and a `@local` column carries no cross-process meaning by design (decl_rows.av)
+// — a shadow inserted once, keyless, was never going to track them.
+use core.{DeclId}
+use compiler.{Workspace}
+use features.{DeclRow, kind_word}
+
+fn parity_files() -> Map<string, string> {
+    {
+        "/w/src/a.av": "export fn f(n: int) -> int {\n    n + 1\n}\nexport type Box = { v: int }\nimpl Box {\n    fn get() -> int {\n        self.v\n    }\n}\n",
+    }
+}
+
+/// Every written declaration's stable fields, side by side with its shadow row —
+/// `null` where the shadow has no row at all.
+fn parity_lines(ws: Workspace) -> List<string> {
+    [stable_line(ws, d.id) for d in ws.decls.decls.get()]
+}
+
+fn stable_line(ws: Workspace, id: DeclId) -> string {
+    let x = ws.decls.decl(id)
+    let row? = DeclRow.get(ws.decls.decl_rows.get(), id) else { return "no-row" }
+    "${x.name == row.name} ${kind_word(x.kind) == kind_word(row.kind)} ${x.exported == row.exported} ${x.owner == row.owner} ${x.nested == row.nested}"
+}
+
+spec "compiler/decl_rows — the shadow agrees with the table on every stable field" {
+    then "fixture: the shadow holds a row for every written declaration" {
+        let ws = a_process_over(parity_files(), ["/w/src/a.av"], fresh_pack_path("parity_fixture"))
+        let _ = checked(ws, "/w/src/a.av")
+        !parity_lines(ws).is_empty() && !parity_lines(ws).any(it == "no-row")
+    }
+    then "every stable field agrees" {
+        let ws = a_process_over(parity_files(), ["/w/src/a.av"], fresh_pack_path("parity_agree"))
+        let _ = checked(ws, "/w/src/a.av")
+        parity_lines(ws).all(it == "true true true true true")
+    }
+}
