@@ -1,0 +1,31 @@
+//! S6, STEP (a): A SHADOW `@relation` OVER `Decl`, inserted beside the real table,
+//! read by nobody yet. `DeclRow` mirrors `Decl`'s own fields (decls.av) so a parity
+//! keeper can prove the derive carries the real shape before anything reads through
+//! it. `id`/`file`/`stmt`/`parent`/`root`/`lo`/`hi` are process-local (`@dense`,
+//! `@local`): a dense id, an offset or an arena index means nothing across processes,
+//! so none of them enters the stable hash. `file` keeps an `@index` so a reader can
+//! ask for a file's rows, the shape the grain law (S1) records against.
+//!
+//! NOT YET DECIDED: a `@key`. The real interning key is a built string
+//! (`decls_mint.av`'s `fresh_key`/`generated_key`), not a clean tuple of these
+//! columns — `owner` alone collides across files, and a generated declaration's key
+//! folds in its origin. Landing a `@key` here before that composite is designed risks
+//! a spurious uniqueness refusal on a real insert. `DeclRow` carries none until it is.
+use core.{DeclId, FileId, StmtId, ExprId, DeclKind}
+use @std.relation.{relation}
+
+@relation
+type DeclRow = {
+    id: DeclId,
+    @local file: FileId,
+    @local stmt: StmtId,
+    @index name: string,
+    kind: DeclKind,
+    exported: bool,
+    owner: string,
+    @local parent: DeclId?,
+    nested: bool,
+    @local root: ExprId?,
+    @local lo: int,
+    @local hi: int,
+}
