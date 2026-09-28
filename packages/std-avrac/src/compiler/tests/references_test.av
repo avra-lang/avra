@@ -134,6 +134,18 @@ spec "compiler/references — the relation and its Code facts" {
     }
 }
 
+/// `unused_of` over a template's own file, whose quotes nothing in the
+/// package splices.
+fn unused_in_templates(main: string) -> List<string> {
+    unused_of(
+        {
+            "/w/src/main.av": main,
+            "/w/src/lib.av": "export fn helper() -> int { 1 }\nexport fn other() -> int { 2 }\n",
+        },
+        ["/w/src/main.av", "/w/src/lib.av"],
+    )
+}
+
 spec "compiler/references — a written type names a declaration too" {
     given "an import read only through a fn's PARAMETER type" {
         then "unused_imports() is empty" {
@@ -271,6 +283,41 @@ spec "compiler/references — an annotation's own name is a use too (avra-8sb5.2
             let dead = unused_of(
                 {"/w/src/main.av": text, "/w/src/lib.av": "export fn other() { }\n"},
                 ["/w/src/main.av", "/w/src/lib.av"],
+            )
+            dead.length == 1 && dead.first() == "other"
+        }
+    }
+}
+
+spec "compiler/references — a template's names are this file's" {
+    given "an import CALLED only inside a quote nothing here splices" {
+        then "unused_imports() does not name it" {
+            unused_in_templates(
+                "use lib.{helper}\nfn t() { let q = quote { fn x() -> int { helper() } } }\n0\n",
+            )
+                .is_empty()
+        }
+    }
+    given "an import READ as a value only inside a quote" {
+        then "unused_imports() does not name it" {
+            unused_in_templates(
+                "use lib.{helper}\nfn t() { let q = quote { fn x() -> fn() -> int { helper } } }\n0\n",
+            )
+                .is_empty()
+        }
+    }
+    given "an import named only inside a NESTED quote" {
+        then "unused_imports() does not name it" {
+            unused_in_templates(
+                "use lib.{helper}\nfn t() { let q = quote { fn x() -> Code { quote { helper() } } } }\n0\n",
+            )
+                .is_empty()
+        }
+    }
+    given "an import beside it that no quote names" {
+        then "unused_imports() still names that one — a quote is not a blanket yes" {
+            let dead = unused_in_templates(
+                "use lib.{helper, other}\nfn t() { let q = quote { fn x() -> int { helper() } } }\n0\n",
             )
             dead.length == 1 && dead.first() == "other"
         }
