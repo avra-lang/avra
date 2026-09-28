@@ -160,8 +160,9 @@ impl Rows<R> {
     fn set_hash() -> int { self.set.get() }
 
     fn row(id: int) -> R? {
-        if id < 0 || id >= self.rows.get().length { return null }
-        self.rows.get()[id]
+        let held = self.rows.get()
+        if id < 0 || id >= held.length { return null }
+        held[id]
     }
 
     /// The bucket a key files under in one index, or -1 when nothing
@@ -199,6 +200,7 @@ impl Rows<R> {
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
+        if db.unheard() { return b }
         let reader = db.read(self.family.get(), b + 1)
         self.buckets.get()[b].read.mark(db.revision(), reader)
         b
@@ -206,6 +208,7 @@ impl Rows<R> {
 
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
+        if db.unheard() { return }
         let reader = db.read(self.family.get(), 0)
         self.read.mark(db.revision(), reader)
     }
@@ -235,7 +238,7 @@ impl Rows<R> {
         }
         if grain < 0 {
             self.seen_whole(db)
-        } else {
+        } else if !db.unheard() {
             let _ = self.seen(db, self.bucket_of(grain, self.filed.get()[id][grain][0]))
         }
         found
