@@ -691,7 +691,10 @@ linux_gate_step() {
     # not bootstrap just ran, is what keeps a warm persistent tree
     # (compiler cached, build/ synced) from failing `libs`'s link the
     # same way speed_base_tree once did for real.
-    body="export LLVM_PREFIX=/usr/lib/llvm-22; test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }"
+    # COLD: the gate asks whether the suites pass on Linux, so the
+    # Sprite tree's persistent .avra-cache goes first; warm behaviour
+    # is the warm gate's question.
+    body="export LLVM_PREFIX=/usr/lib/llvm-22; find . -maxdepth 4 -name .avra-cache -type d -prune -exec rm -rf {} +; test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }"
     for p in $pkgs; do
         body="$body; build/avra test 'packages/$p'; s=\$?; [ \$s -eq 0 ] || exit \$s"
     done

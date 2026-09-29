@@ -1496,6 +1496,25 @@ STUB
     chmod +x "$path"
 }
 
+test_linux_gate_runs_cold() {
+    d="$(git_repo linux-cold)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-cold-sprite.sh"
+    body_file="$scratch/linux-cold-body"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
+    chmod +x "$stub"
+    AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
+    body="$(cat "$body_file" 2>/dev/null)"
+    clear_at="$(printf '%s' "$body" | awk '{print index($0, "-name .avra-cache")}')"
+    test_at="$(printf '%s' "$body" | awk '{print index($0, "build/avra test")}')"
+    if [ "${clear_at:-0}" -gt 0 ] && [ "${test_at:-0}" -gt "$clear_at" ]; then
+        ok "linux-gate: the Sprite tree's .avra-cache is cleared before any suite runs"
+    else
+        bad "linux-gate: the Sprite command runs a suite over a warm cache — body: $body"
+    fi
+}
+
 test_linux_gate_pass() {
     d="$(git_repo linux-pass)"
     mkdir -p "$d/packages/pa/src"
@@ -1816,6 +1835,7 @@ run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
+run_test test_linux_gate_runs_cold
 run_test test_linux_gate_pass
 run_test test_linux_gate_fail
 run_test test_linux_gate_unreachable
