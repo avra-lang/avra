@@ -1,0 +1,31 @@
+// The `@input` law, judged on the Fn a derive receives: the same
+// signature shape `@query` answers to (query_test.av), spoken in
+// `@input`'s own words — so a refusal never reads as query.av's.
+use @std.relation.input.{input_problems}
+use @std.meta.{Fn, Param, Kind}
+
+// `seat`/`db_seat` are query_test.av's — this module's files share one
+// namespace, so they need no redeclaring here.
+
+fn input_checked(params: List<Param>, answer: string, answers: Kind) -> string {
+    [d.kind ?? "?" for d in input_problems(Fn { name: "q", params: params, answer: answer, at: null, answers: answers })]
+        .join(",")
+}
+
+spec "std/relation — @input's law" {
+    given "a fn over a Db" {
+        then "a Db, a carried argument and a carried answer are an input" {
+            input_checked([db_seat(), seat("path", "string", Kind.Str)], "string", Kind.Str) == ""
+        }
+        then "a first seat that is no Db is refused, in @input's own words" {
+            input_checked([seat("path", "string", Kind.Str)], "string", Kind.Str) == "input_db" &&
+                input_checked([], "string", Kind.Str) == "input_db"
+        }
+        then "an argument with no stable encoding is refused — an input's call is named by its arguments' hash" {
+            input_checked([db_seat(), seat("x", "float", Kind.Float)], "string", Kind.Str) == "input_arg"
+        }
+        then "an answer with no stable encoding is refused — an input's witness is its answer's hash" {
+            input_checked([db_seat()], "float", Kind.Float) == "input_answer"
+        }
+    }
+}

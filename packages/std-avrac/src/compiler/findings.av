@@ -4,7 +4,7 @@
 //! `Finding` names a RULE alone, never a compiler-law warning — no
 //! kind-matching needed to tell the two apart, the way the rendered
 //! `warning[kind]: …` text once required.
-use diagnostics.{Diag, SourceFile}
+use diagnostics.{Diag, SourceFile, new_source_file}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb, new_db as new_findings_db}
 
@@ -21,7 +21,19 @@ export fn findings_of(p: Program) -> List<Finding> {
 }
 
 fn file_findings(db: RelDb, a: Analysis) {
-    for d in rule_findings(analysed(a), a.view.stmts) { filed_finding(db, a.view.source, d) }
+    let src = current_source(db, a.view.source)
+    for d in rule_findings(analysed(a), a.view.stmts) { filed_finding(db, src, d) }
+}
+
+/// The file's line table, rebuilt over its CURRENT bytes — read
+/// through the declared `@input` (`compiler/inputs.av`'s `file_text`),
+/// never the parse's own copy, so a finding's trimmed line answers
+/// what the file holds right now. A read that fails (the file gone,
+/// unreadable) falls back to what the parse already held — never a
+/// worse answer than before this door existed.
+fn current_source(db: RelDb, src: SourceFile) -> SourceFile {
+    let text = file_text(db, src.file)
+    new_source_file(src.file, if text == "" { src.text } else { text })
 }
 
 /// A finding with no place to point (a locationless `Say` voice) rows
