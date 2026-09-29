@@ -115,6 +115,22 @@ spec "commands/cache" {
                 },
             ) == "held:   check_length's Reference rows: 0 held, 1 fresh"
         }
+        then "calls to two impls' same-named methods land on each impl, held as fresh" {
+            let root = cache_probe(
+                "twin_methods",
+                "use lib.{A, B}\nA { n: 1 }.s() + B { n: 2 }.s() + B { n: 3 }.s()\n",
+            )
+            let _ = make_dirs("${root}/src/lib")
+            let _ = write_text(
+                "${root}/src/lib/a.av",
+                "export type A = { n: int }\nexport type B = { n: int }\nimpl A {\n    fn s() -> int { self.n }\n}\nimpl B {\n    fn s() -> int { self.n }\n}\n",
+            )
+            let _ = holds_after_check(root)
+            match root_workspace(root).verify_held(null) {
+                .Ok(v) -> v.declarations > 0 && v.mismatches.is_empty(),
+                .Err(_) -> false,
+            }
+        }
         then "a module read by a held file agrees with a fresh reading, Reference rows included" {
             let root = lib_probe("agrees")
             let _ = holds_after_check(root)
