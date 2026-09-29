@@ -16,14 +16,15 @@ land="$here/land.sh"
 slot="$here/slot.sh"
 affected="$here/affected_packages.sh"
 
-# The Linux gate defaults ON for a real landing, and the speed gate
-# may (land.sh's own header) — a bare run_checks call in a fixture below must never
-# reach a live Sprite or run a real cold build. OFF here, by default;
+# The Linux, speed and warm gates default ON for a real landing
+# (land.sh's own header) — a bare run_checks call in a fixture below must never
+# reach a live Sprite or run a real compiler. OFF here, by default;
 # the fixtures that exercise these two gates re-arm them locally
 # (env-var prefix on that one command), each with its own stub.
 AVRA_LAND_LINUX=0
 AVRA_LAND_SPEED_GATE=0
-export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE
+AVRA_LAND_WARM_GATE=0
+export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
@@ -1459,7 +1460,7 @@ test_warm_gate_off() {
     AVRA_LAND_JOBS=2 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
         sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 0 \
         > "$scratch/warm-off.out" 2>&1
-    logged warm-off "skipped warm-reuse gate: AVRA_LAND_WARM_GATE is off" "warm-gate: off by default — skipped, and says so"
+    logged warm-off "skipped warm-reuse gate: AVRA_LAND_WARM_GATE is off" "warm-gate: AVRA_LAND_WARM_GATE=0 skips it, and says so"
 }
 
 test_warm_gate_prints_held_pass() {
