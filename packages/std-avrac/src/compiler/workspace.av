@@ -109,34 +109,36 @@ type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag
 /// The extern symbols of a declaration table of one size.
 type ExternNames = { decls: int, names: List<string> }
 
-/// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
-/// file's object key and text digest (record.av's key derivations), where
+/// PER-BUILD KEY MEMOIZATION: a module's interface digest and what it sees, a
+/// file's object key, the parts it digests, and its text digest (record.av's key derivations), where
 /// this compiler's store stands and this compiler's own print (build.av —
 /// `compiler_id` is never cleared: the running binary cannot move
-/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys`
-/// every record write, the rest only when a record's SEEN part (its
+/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
+/// `object_parts` every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
-    let no_view: Map<string, string> = {}
+    let no_view: Map<string, List<SeenPart>> = {}
     let no_object: Map<string, string> = {}
+    let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
     Keys {
         bytes_keys: Cell.new(no_bytes),
-        view_keys: Cell.new(no_view),
+        view_parts: Cell.new(no_view),
         object_keys: Cell.new(no_object),
+        object_parts: Cell.new(no_parts),
         text_digests: Cell.new(no_digests),
         store_root: Cell.new(""),
         compiler_id: Cell.new(""),
     }
 }
 
-/// WHAT IS HELD THIS BUILD: the files a build must parse (`homes` — a home
-/// an instantiation lowers from, or a file whose stored asks could not be
-/// read); the instantiations held files' bodies demand (`held_wants`); the
+/// WHAT IS HELD THIS BUILD: the files a build must parse, each with why
+/// (`forced` — a home an instantiation lowers from, a file a run reaches,
+/// one whose stored asks or rule findings could not be read); the instantiations held files' bodies demand (`held_wants`); the
 /// held files whose bodies this build asked for — a compile-time run reads
 /// a body, and a held file has none (`body_asks`, a Cell: the ask comes
 /// from inside a query); what each file's compile-time runs read
@@ -156,10 +158,12 @@ fn new_keys() -> Keys {
 /// declarations whose OWN row has been filled from the record, by
 /// DeclId — a module mints every identity at once, but fills each
 /// row on the ask that names it, so a row that names another still
-/// unfilled in the same module can fill it first (`row_filled`).
+/// unfilled in the same module can fill it first (`row_filled`); and what
+/// moved in each file's key when this build replaced its kept parts
+/// (`moved`).
 @identity
 type Hold = {
-    homes: Cell<Map<string, bool>>,
+    forced: Cell<Map<string, Reads>>,
     held_wants: Cell<List<Wanted>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<string>>>,
@@ -174,10 +178,11 @@ type Hold = {
     holds_settled: Cell<bool>,
     named_in: Cell<Map<string, List<string>>>,
     held_flat: Cell<List<TypeId>>,
+    moved: Cell<Map<string, List<PartMoved>>>,
 }
 
 fn new_hold() -> Hold {
-    let no_homes: Map<string, bool> = {}
+    let no_forced: Map<string, Reads> = {}
     let no_wants: List<Wanted> = []
     let no_runs: Map<string, List<string>> = {}
     let no_reads: List<string> = []
@@ -186,8 +191,9 @@ fn new_hold() -> Hold {
     let no_minted: Map<string, bool> = {}
     let no_named_in: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
+    let no_moved: Map<string, List<PartMoved>> = {}
     Hold {
-        homes: Cell.new(no_homes),
+        forced: Cell.new(no_forced),
         held_wants: Cell.new(no_wants),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
@@ -202,6 +208,7 @@ fn new_hold() -> Hold {
         holds_settled: Cell.new(false),
         named_in: Cell.new(no_named_in),
         held_flat: Cell.new(no_flat),
+        moved: Cell.new(no_moved),
     }
 }
 
@@ -827,6 +834,7 @@ fn built(
         args: List<ExprId>,
     ) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
+    ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.arm_audit()
     ws.load_packages(src)
     ws

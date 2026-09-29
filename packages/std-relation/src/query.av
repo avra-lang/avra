@@ -43,11 +43,27 @@ export fn query(f: Fn) -> Declared {
 
 /// Every way a fn breaks the query law: a first seat that is no `Db`, an
 /// argument or an answer with no stable encoding.
-export fn query_problems(f: Fn) -> List<Diagnostic> {
-    let first? = f.params.first() else { return [no_db(f)] }
-    if !is_db(first.kind) { return [no_db(f)] }
-    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !carried(p.kind, named_shape)]
-    let answer = if carried(f.answers, named_shape) { [] } else { [answer_not_carried(f)] }
+export fn query_problems(f: Fn) -> List<Diagnostic> { seat_problems(f, no_db, arg_not_carried, answer_not_carried) }
+
+/// The signature law `@query` and `@input` (input.av) share: a `Db`
+/// first, then arguments and an answer that each fold through the
+/// stable encoding. Each directive names its own three voices, so a
+/// refusal reads as ITS law, never a borrowed one. A SEAT NAMED LIKE A
+/// DECLARATION IN ITS OWN FILE CALLS THE DECLARATION: this file also
+/// declares top-level `no_db`/`arg_not_carried`/`answer_not_carried`,
+/// so these seats are spelled `voice_*` to stay distinct from them —
+/// under the shadowing names, every call here answered `@query`'s own
+/// words regardless of which fn a caller passed.
+export fn seat_problems(
+    f: Fn,
+    voice_no_db: fn(Fn) -> Diagnostic,
+    voice_arg: fn(Fn, Param) -> Diagnostic,
+    voice_answer: fn(Fn) -> Diagnostic,
+) -> List<Diagnostic> {
+    let first? = f.params.first() else { return [voice_no_db(f)] }
+    if !is_db(first.kind) { return [voice_no_db(f)] }
+    let args = [voice_arg(f, p) for p in f.params.slice(1, f.params.length) if !carried(p.kind, named_shape)]
+    let answer = if carried(f.answers, named_shape) { [] } else { [voice_answer(f)] }
     args.concat(answer)
 }
 

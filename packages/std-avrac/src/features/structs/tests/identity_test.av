@@ -1,20 +1,19 @@
 // `@identity`: every field of a marked type is a `Cell<…>`, or
 // another `@identity` type — the law compiler/typing/declare.av
-// holds over the compiler's own shared structures. `avra().check`
-// is the door that runs a lone source (`compiler/dev/witnesses.av`'s
-// own door) — an unpackaged file cannot resolve `use @std.meta`, so
-// `@identity` here names an unresolved callee (`resolve.unresolved`)
-// exactly as the golden witness does; the law reads the WRITTEN
-// annotation regardless, which is what these cases pin.
-use @std.avrac.compiler.{avra}
-use @std.avrac.diagnostics.{new_source_file}
+// holds over the compiler's own shared structures, judged by
+// DECLARATION: the annotation must resolve to `@std/meta`'s own
+// `identity`, never a bare compare of the word. Packaged rather than
+// a lone source, since a lone source cannot import `@std/meta`
+// (compiler/dev/witnesses.av's `identity_golden`) — `provided`
+// vendors the real package so the annotation genuinely resolves.
+use @std.avrac.testing.{provided}
 
-fn checked(source: string) -> string {
-    avra().check(new_source_file("identity_test.av", source))
+fn checked(main: string) -> string {
+    provided("use @std.meta.{identity}\n" + main, "").report()
 }
 
 spec "features/structs (identity)" {
-    given "a type marked `@identity`" {
+    given "a type marked `@identity`, resolved to `@std/meta`'s own" {
         then "a `Cell` field is accepted — no field of `G` is refused" {
             !checked("@identity\ntype G = { a: Cell<int> }\n1").contains("field `a`")
         }
@@ -38,6 +37,16 @@ spec "features/structs (identity)" {
     given "a type with no `@identity` mark" {
         then "a bare field is ordinary — the law never fires" {
             !checked("type P = { a: int, b: string }\n1").contains("type.identity_field")
+        }
+    }
+    given "a package's OWN fn named `identity`, never `@std/meta`'s" {
+        then "the law never fires — identity is a DECLARATION, not a word" {
+            !provided(
+                "fn identity(x: int) -> int { x }\n@identity\ntype Bad = { a: Cell<int>, b: int }\n1",
+                "",
+            )
+                .report()
+                .contains("type.identity_field")
         }
     }
 }
