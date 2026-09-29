@@ -17,22 +17,26 @@ use compiler.findings.{findings_text}
 
 /// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
 /// not yet clear the bar (at or under main's own ~5-6s keep phase).
-/// Two causes found and fixed so far, both by `sample`, neither by
-/// guessing: the OOM (store/pack.av's `slurped` read a pack
+/// Three causes found and fixed so far, every one by measurement —
+/// `sample` or `/usr/bin/time -l`'s instructions retired, never by
+/// guessing. The OOM: store/pack.av's `slurped` read a pack
 /// word-at-a-time into a `List<int>`, one `int` per BYTE — 2.3 GB of
 /// a 2.9 GB peak on one leaf-edit recheck of std-avrac; `read_bytes`
-/// now reads it straight into `Bytes`, RSS 2586 -> 758 MB, measured),
-/// and the dominant CPU cost (store/pack.av's `applied`, the
-/// pack-load frame-fold, rebuilding a list on every NAME/ROW frame —
-/// ~50% of all sampled time, all under `avra_rc_retain`/`array_clone`;
-/// `ScanState`'s staged lists are `Cell`s now, so a push mutates the
-/// one shared buffer instead of cloning it — `store.applied` is 0
-/// samples of the same scenario resampled). Still open: `reused_check`
-/// -> `decl_at_stable`'s validation cost, and `Pack.name_id` (the
-/// next-largest sampled site, ~8%, not yet chased). `holding` reads
-/// this alone — with it false, `self.pack` never attaches, so
-/// `reused_check` and `record_witness` (both `let pack? =
-/// self.pack.get() else { … }`) answer at once and every
+/// now reads it straight into `Bytes`, RSS 2586 -> 758 MB. The
+/// dominant CPU cost: `applied`, the pack-load frame-fold, rebuilt a
+/// list on every NAME/ROW frame — `ScanState`'s staged lists are
+/// `Cell`s now, so a push mutates the one shared buffer instead of
+/// cloning it. Instructions retired on the same edited recheck fell
+/// avg 1,343,930,562,787 -> 829,506,187,128 from those two (-38.3%).
+/// A third: `put`'s dead-byte accounting re-encoded an already-`get`
+/// materialized entry — every name resolved back through `map_find`
+/// — just to measure a length it already knew when it was decoded;
+/// `Slot.Loaded` now carries that length. Instructions retired fell
+/// again to avg 763,492,161,550 (-43.2% from the original baseline).
+/// Still open: `reused_check` -> `decl_at_stable`'s validation cost.
+/// `holding` reads this alone — with it false, `self.pack` never
+/// attaches, so `reused_check` and `record_witness` (both `let pack?
+/// = self.pack.get() else { … }`) answer at once and every
 /// witness-specific cost never runs: a normal compiler pays nothing
 /// for machinery it never reaches. Flip this once the follow-up
 /// ticket closes the speed gap.
