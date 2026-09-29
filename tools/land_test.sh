@@ -1116,6 +1116,18 @@ unlogged() {
     if grep -q "$2" "$scratch/$1.out"; then bad "$3"; cat "$scratch/$1.out"; else ok "$3"; fi
 }
 
+test_failed_run_restores_the_seed() {
+    d="$(batch_repo seed-restore)"
+    printf 'regenerated\n' > "$d/bootstrap/seed.ll"
+    sh "$land" --call restore_generated "$d" > "$scratch/seed-restore.out" 2>&1
+    if git -C "$d" diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources; then
+        ok "restore: a failed run's stranded seed is restored in the branch tree"
+    else
+        bad "restore: a failed run left its regenerated seed in the branch tree"
+    fi
+    if grep -q "restored the seed" "$scratch/seed-restore.out"; then ok "restore: says what it restored"; else bad "restore: restored silently"; fi
+}
+
 test_scratch_lifecycle() {
     d="$(batch_repo lifecycle)"
     git -C "$d" checkout -q -b dc main
@@ -1527,6 +1539,25 @@ STUB
     chmod +x "$path"
 }
 
+test_linux_gate_runs_cold() {
+    d="$(git_repo linux-cold)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-cold-sprite.sh"
+    body_file="$scratch/linux-cold-body"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
+    chmod +x "$stub"
+    AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
+    body="$(cat "$body_file" 2>/dev/null)"
+    clear_at="$(printf '%s' "$body" | awk '{print index($0, "-name .avra-cache")}')"
+    test_at="$(printf '%s' "$body" | awk '{print index($0, "build/avra test")}')"
+    if [ "${clear_at:-0}" -gt 0 ] && [ "${test_at:-0}" -gt "$clear_at" ]; then
+        ok "linux-gate: the Sprite tree's .avra-cache is cleared before any suite runs"
+    else
+        bad "linux-gate: the Sprite command runs a suite over a warm cache — body: $body"
+    fi
+}
+
 test_linux_gate_pass() {
     d="$(git_repo linux-pass)"
     mkdir -p "$d/packages/pa/src"
@@ -1872,6 +1903,7 @@ run_test test_run_checks_jobs_cap
 run_test test_run_checks_slash_label
 run_test test_job_wait_fails_closed_on_killed_job
 run_test test_compiler_untouched_skips_second_build_and_seedcheck
+run_test test_failed_run_restores_the_seed
 run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
 run_test test_timeline_lines_present
@@ -1897,6 +1929,7 @@ run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
+run_test test_linux_gate_runs_cold
 run_test test_linux_gate_pass
 run_test test_linux_gate_fail
 run_test test_linux_gate_unreachable
