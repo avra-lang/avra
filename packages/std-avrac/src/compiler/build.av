@@ -238,22 +238,26 @@ fn rolled(ws: Workspace, roll: string, lines: List<string>) {
     }
 }
 
-/// The HIGHEST ancestor that looks like a checkout. A lone file has no tree
-/// above it and is its own root.
+/// THE CHECKOUT: the NEAREST ancestor holding a `.git` — a worktree's own
+/// (`.git` is a file there) or a clone's (a directory), either one the
+/// boundary nothing climbs past. Only when NO ancestor carries a `.git` does
+/// the walk fall back to the HIGHEST `avra.toml`, for a tree with no git
+/// history yet. A lone file has no tree above it and is its own root.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, the checkout it stands in out.
 fn tree_root(ws: Workspace) -> string {
-    mut best = ws.root
+    mut manifest_root = ws.root
     mut up = dir_of(ws.root)
     while up != dir_of(up) {
-        if looks_like_tree(ws.host, up) { best = up }
+        if has_git(ws.host, up) { return up }
+        if has_manifest(ws.host, up) { manifest_root = up }
         up = dir_of(up)
     }
-    best
+    manifest_root
 }
 
-fn looks_like_tree(host: Host, dir: string) -> bool {
-    host.exists(joined_path(dir, ".git")) || host.exists(joined_path(dir, "avra.toml"))
-}
+fn has_git(host: Host, dir: string) -> bool { host.exists(joined_path(dir, ".git")) }
+
+fn has_manifest(host: Host, dir: string) -> bool { host.exists(joined_path(dir, "avra.toml")) }
 
 /// What names a kept program: its name among the root's, and the inputs beside
 /// its sources.
