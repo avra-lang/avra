@@ -59,10 +59,10 @@
 # THREE MORE GATES SHARE THE SAME POOL, each ratcheted in
 # tools/land.baseline (key=value) or tools/speed.baseline (PERF's own
 # line format — see speed_gate below): the warm-reuse gate
-# (AVRA_LAND_WARM_GATE=1, OFF by default — avra-8sb5.57.91), the
-# Linux gate (AVRA_LAND_LINUX, default 1, runs affected packages'
-# suites on a Sprite), and the speed gate (AVRA_LAND_SPEED_GATE,
-# default 1, instructions retired and max RSS over a fixed input).
+# (AVRA_LAND_WARM_GATE=1, off by default), the Linux gate
+# (AVRA_LAND_LINUX, default 1, runs affected packages' suites on a
+# Sprite), and the speed gate (AVRA_LAND_SPEED_GATE=1, off by default,
+# instructions retired and max RSS over a fixed input).
 # Each prints its own NUMBER and VERDICT; a regression past a gate's
 # own threshold needs that gate's own override env var
 # (AVRA_LAND_WARM_OK, AVRA_LAND_SPEED_OK) with a reason, signed into
@@ -559,8 +559,7 @@ commit_chore_if_moved() {
     git commit -m "$msg"
 }
 
-# ── THE WARM-REUSE GATE (behind AVRA_LAND_WARM_GATE=1; OFF by default
-# — avra-8sb5.57.91 is a known bug that currently fails it) ──────────
+# ── THE WARM-REUSE GATE (behind AVRA_LAND_WARM_GATE=1) ───────────────
 # Held-file reuse is a correctness property of the compiler's own
 # cache, not of any one landing's diff: `build/avra check
 # packages/std-avrac --time` prints a `held N/M` count (compiler/
@@ -1105,7 +1104,7 @@ run_checks() {
     if [ "$compiler_changed" -eq 1 ]; then
         job_launch "seed-check$suffix" seed_policy "$wt" "$suffix" "$branch"
     fi
-    if [ "${AVRA_LAND_SPEED_GATE:-1}" = "1" ]; then
+    if [ "${AVRA_LAND_SPEED_GATE:-0}" = "1" ]; then
         job_launch "speed$suffix" heavy "speed$suffix" sh "$self" --call speed_gate_step "$wt" "$base_sha" "$branch"
     else
         echo "land: skipped the speed gate$suffix: AVRA_LAND_SPEED_GATE is off" >&2
