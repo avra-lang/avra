@@ -112,10 +112,42 @@ branch="${branch:-}"
 
 # ── LOGS AND SCRATCH ─────────────────────────────────────────────────
 run_id="$$-$(date +%s)"
-scratch="${AVRA_LAND_SCRATCH:-/tmp/avra-land-scratch/$run_id}"
+scratch_root="${AVRA_LAND_SCRATCH_ROOT:-/tmp/avra-land-scratch}"
+# A re-exec (`--call`) inherits its caller's scratch, never mints one.
+scratch_owned=0
+if [ -z "${AVRA_LAND_SCRATCH:-}" ]; then scratch_owned=1; fi
+scratch="${AVRA_LAND_SCRATCH:-$scratch_root/$run_id}"
+export AVRA_LAND_SCRATCH="$scratch"
 mkdir -p "$scratch/logs"
 trash="$scratch/trash"
 mkdir -p "$trash"
+
+# Scratch a dead run left: its trash always goes; its logs go after a
+# day, so a failed run's logs outlive it long enough to be read.
+prune_dead_scratch() {
+    [ -d "$scratch_root" ] || return 0
+    for d in "$scratch_root"/*; do
+        [ -d "$d" ] || continue
+        [ "$d" = "$scratch" ] && continue
+        pid="$(basename "$d" | cut -d- -f1)"
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        kill -0 "$pid" 2>/dev/null && continue
+        if [ -n "$(find "$d" -maxdepth 0 -mtime +0 2>/dev/null)" ]; then rm -rf "$d"; else rm -rf "$d/trash"; fi
+    done
+}
+
+# This run's own scratch at exit: a green run leaves nothing, a failed
+# one keeps its logs and drops the rest.
+clean_own_scratch() {
+    [ "$scratch_owned" -eq 1 ] || return 0
+    if [ "$1" -eq 0 ]; then
+        rm -rf "$scratch"
+    else
+        rm -rf "$trash"
+        echo "land: this run's logs stay at $scratch/logs" >&2
+    fi
+}
+if [ "$scratch_owned" -eq 1 ]; then prune_dead_scratch; fi
 
 log_of() { echo "$scratch/logs/$1.log"; }
 
@@ -319,9 +351,11 @@ release_absorbed() {
     done
 }
 finish_lock() {
+    exit_st="${1:-$?}"
     release_absorbed
     release_lock
     echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
+    clean_own_scratch "$exit_st"
 }
 
 # A TRAP ON A SIGNAL RESUMES AFTER THE HANDLER, IT DOES NOT EXIT — a
@@ -332,7 +366,7 @@ finish_lock() {
 # handler that exits afterward, at the conventional 128+signal code.
 release_lock_and_exit() {
     sig="$1"
-    finish_lock
+    case "$sig" in INT) finish_lock 130 ;; *) finish_lock 143 ;; esac
     case "$sig" in
         INT) exit 130 ;;
         *) exit 143 ;;
@@ -536,6 +570,25 @@ chore_commit_message() {
     fi
 }
 
+# A ratchet baseline a gate advances, staged in this run's scratch and
+# applied to the landing tree only once every check is green — a run
+# that fails leaves no baseline behind, in any tree.
+stage_baseline() {
+    staged="$scratch/baseline/$2"
+    if [ ! -f "$staged" ]; then
+        mkdir -p "$scratch/baseline"
+        if [ -f "$1/tools/$2" ]; then cp "$1/tools/$2" "$staged"; else : > "$staged"; fi
+    fi
+    echo "$staged"
+}
+
+apply_staged_baselines() {
+    [ -d "$scratch/baseline" ] || return 0
+    for f in "$scratch/baseline"/*; do
+        [ -f "$f" ] && cp "$f" "$1/tools/$(basename "$f")"
+    done
+}
+
 commit_chore_if_moved() {
     wt="$1"
     label="${2:-$branch}"
@@ -577,7 +630,11 @@ commit_chore_if_moved() {
 warm_gate_edit_path="packages/std-avrac/src/compiler/format/receipt.av"
 
 warm_gate_step() {
-    wt="$1"
+    land_wt="$1"
+    wt="${AVRA_LAND_WARM_WT:-$(cd "$land_wt/.." && pwd -P)/$(basename "$land_wt")-warm}"
+    side_tree "$wt" "$land_wt" "$(git -C "$land_wt" rev-parse HEAD)" || return 1
+    mkdir -p "$wt/build"
+    cp "$land_wt/build/avra" "$wt/build/avra"
     cd "$wt"
     edit="$warm_gate_edit_path"
     backup="$scratch/warm-gate-orig"
@@ -616,7 +673,9 @@ warm_gate_step() {
     n="${nm%/*}"
     m="${nm#*/}"
 
-    old_floor="$(baseline_get "tools/land.baseline" warm_held_floor)"
+    cd "$land_wt"
+    floor_file="$(stage_baseline "$land_wt" land.baseline)"
+    old_floor="$(baseline_get "$floor_file" warm_held_floor)"
     # `st=$?` AFTER the assignment reads 0 unconditionally (the
     # assignment itself, once its substitution has run, always
     # "succeeds" as a shell command) — worse under `set -eu`, a
@@ -624,7 +683,7 @@ warm_gate_step() {
     # here, before `st=$?` is ever reached. `|| st=$?` on the
     # assignment itself is the only safe capture (heavy()'s own note).
     st=0
-    out="$(ratchet_check "tools/land.baseline" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
+    out="$(ratchet_check "$floor_file" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
     word="PASS"
     [ "$st" -ne 0 ] && word="FAIL"
     echo "land: warm-reuse: held $n/$m (floor ${old_floor:-none}) — $word ($out)"
@@ -690,28 +749,56 @@ linux_gate_step() {
 # the warm-reuse floor's alone.
 speed_base_wt=""
 
-# The base-sha tree, C-built once: `$1` is any worktree of the same
-# repo (a worktree can `git worktree add` a sibling of its own repo),
-# `$2` the base sha to fix the input at.
-speed_base_tree() {
-    src_wt="$1"
-    base_sha="$2"
-    if [ -e "$speed_base_wt" ] && [ ! -d "$speed_base_wt/.git" ] && [ ! -f "$speed_base_wt/.git" ]; then
+# A SIDE TREE: a worktree of its own at `$3`, beside the landing's.
+# A gate that moves a cache aside or edits a source does it THERE —
+# the landing tree is shared by every pool job, and a cache moved or a
+# file edited under a sibling's feet fails that sibling. `$1` is the
+# side tree's path, `$2` any worktree of the same repo.
+side_tree() {
+    side="$1"
+    src_wt="$2"
+    at_sha="$3"
+    if [ -e "$side" ] && [ ! -d "$side/.git" ] && [ ! -f "$side/.git" ]; then
         mkdir -p "$trash"
-        mv "$speed_base_wt" "$trash/speed-tree-$$-$(date +%s)"
+        mv "$side" "$trash/side-tree-$$-$(date +%s)"
     fi
-    if [ ! -d "$speed_base_wt/.git" ] && [ ! -f "$speed_base_wt/.git" ]; then
-        mkdir -p "$(dirname "$speed_base_wt")"
-        git -C "$src_wt" worktree add -q --detach "$speed_base_wt" "$base_sha" ||
-            { tool_failed "could not make the speed base tree at $speed_base_wt"; return 1; }
+    if [ ! -d "$side/.git" ] && [ ! -f "$side/.git" ]; then
+        mkdir -p "$(dirname "$side")"
+        git -C "$src_wt" worktree add -q --detach "$side" "$at_sha" ||
+            { tool_failed "could not make a side tree at $side"; return 1; }
     fi
-    if [ "$(git -C "$speed_base_wt" rev-parse HEAD)" != "$(git -C "$src_wt" rev-parse "$base_sha")" ]; then
-        git -C "$speed_base_wt" checkout -q -f --detach "$base_sha" ||
-            { tool_failed "could not check out $base_sha in the speed base tree"; return 1; }
-        git -C "$speed_base_wt" clean -q -fd
-        rm -f "$speed_base_wt/build/libavra_runtime.a"
+    if [ "$(git -C "$side" rev-parse HEAD)" != "$(git -C "$src_wt" rev-parse "$at_sha")" ]; then
+        git -C "$side" checkout -q -f --detach "$at_sha" ||
+            { tool_failed "could not check out $at_sha in the side tree $side"; return 1; }
+        git -C "$side" clean -q -fd
+        rm -f "$side/build/libavra_runtime.a"
     fi
-    move_caches_aside "$speed_base_wt"
+    move_caches_aside "$side"
+}
+
+# A COMPILER AND ITS RUNTIME ARE ONE PAIR: the candidate's product
+# links the candidate's runtime and backend objects, never the base
+# tree's — the input stays the base's source, only the toolchain moves.
+# Package C is the input's own and stays.
+pair_toolchain() {
+    for f in libavra_runtime.a llvm_wrapper.o ffi.o avra_hot.bc avra_hot.inc; do
+        [ -f "$1/build/$f" ] && cp "$1/build/$f" "$2/build/$f"
+    done
+    for c in "$1"/runtime/*.c; do
+        [ -f "$c" ] || continue
+        o="$(basename "$c" .c).o"
+        [ -f "$1/build/$o" ] && cp "$1/build/$o" "$2/build/$o"
+    done
+    return 0
+}
+
+# The speed gate's side tree, beside the landing tree `$1`.
+speed_side_path() { echo "${AVRA_LAND_SPEED_WT:-$(cd "$1/.." && pwd -P)/avra-land-speed-wt}"; }
+
+# The speed gate's side tree at `$2`, C-built once: `$1` is any
+# worktree of the same repo.
+speed_base_tree() {
+    side_tree "$speed_base_wt" "$1" "$2" || return 1
     if [ ! -f "$speed_base_wt/build/libavra_runtime.a" ]; then
         # `-o avra` skips avra's OWN prerequisites too (COMPILER_OBJS,
         # libavra_runtime.a among them) — `make objects` first is what
@@ -747,8 +834,8 @@ speed_one_run() {
         echo "land: speed: the $tag build failed (exit $st) — $log" >&2
         return 1
     fi
-    if ! grep -q 'held 0/' "$log"; then
-        tool_failed "the speed gate's $tag run was not cold — no 'held 0/' in $log"
+    if ! grep -q 'held 0/' "$log" || grep -q 'cache hit' "$log"; then
+        tool_failed "the speed gate's $tag run was not cold — a held file or a cached object in $log"
         return 1
     fi
     speed_run_instr="$(grep -oE '[0-9]+ +instructions retired' "$log" | awk '{print $1}' | head -1)"
@@ -885,15 +972,19 @@ speed_refresh() {
     # function-local scope — which clobbered this fn's own caller's
     # `wt` the first time this was written, before the rename.
     land_wt="$1"
-    cd "$land_wt"
-    cp build/avra build/avra.land
-    if ! speed_one_run "$land_wt" refresh; then
+    sha="$(git -C "$land_wt" rev-parse HEAD)"
+    [ -n "$speed_base_wt" ] || speed_base_wt="$(speed_side_path "$land_wt")"
+    if ! speed_base_tree "$land_wt" "$sha"; then
+        echo "land: speed: the refresh tree could not be made — the baseline was not advanced" >&2
+        return 0
+    fi
+    cp "$land_wt/build/avra" "$speed_base_wt/build/avra.land"
+    if ! speed_one_run "$speed_base_wt" refresh; then
         echo "land: speed: the refresh run failed — the baseline was not advanced" >&2
         return 0
     fi
-    sha="$(git -C "$land_wt" rev-parse HEAD)"
     reason="${AVRA_LAND_SPEED_OK:--}"
-    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_footprint" "$reason" >> "$land_wt/tools/speed.baseline"
+    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_footprint" "$reason" >> "$(stage_baseline "$land_wt" speed.baseline)"
     echo "land: speed: baseline advanced — $sha $speed_run_instr $speed_run_footprint $reason" >&2
 }
 
@@ -904,7 +995,7 @@ speed_gate_step() {
     land_wt="$1"
     base_sha="$2"
     label="${3:-$branch}"
-    speed_base_wt="${AVRA_LAND_SPEED_WT:-$(cd "$land_wt/.." && pwd -P)/avra-land-speed-wt}"
+    speed_base_wt="$(speed_side_path "$land_wt")"
     speed_base_tree "$land_wt" "$base_sha" || return 1
     cd "$land_wt"
     if [ ! -x build/avra ]; then
@@ -912,7 +1003,8 @@ speed_gate_step() {
         return 1
     fi
     st=0
-    speed_gate "$speed_base_wt" "$land_wt/build/avra" "$land_wt" "$label" || st=$?
+    pair_toolchain "$land_wt" "$speed_base_wt"
+    speed_gate "$speed_base_wt" "$land_wt/build/avra" "$speed_base_wt" "$label" || st=$?
     if [ "$st" -eq 0 ]; then
         speed_refresh "$land_wt"
     fi
@@ -932,8 +1024,11 @@ build_generation() {
     n="$2"
     cd "$wt"
     if [ ! -x build/avra ]; then
-        tool_failed "no standing compiler at $wt/build/avra"
-        return 1
+        echo "land: no standing compiler at $wt/build/avra — bootstrapping one from the seed" >&2
+        if ! heavy "bootstrap-$n" make bootstrap || [ ! -x build/avra ]; then
+            tool_failed "could not bootstrap a compiler at $wt/build/avra"
+            return 1
+        fi
     fi
     cp build/avra "build/avra.pre.$n" 2>/dev/null || true
     # Every C object, not only the runtime: a tree's own objects lag
@@ -1275,16 +1370,16 @@ check_phase() {
         return 1
     fi
 
-    # Every job in the pool above (seed-check, the warm-reuse gate,
-    # the speed gate) has now finished — a single commit, never one
-    # per gate, and never while a slower gate might still be writing.
-    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
-
     if [ "$compiler_changed" -eq 0 ]; then
         skipped "cache-attacks$suffix" "compiler source"
-        return 0
+    elif ! heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"; then
+        return 1
     fi
-    heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"
+
+    # Every check is green: the staged baselines land in the tree, and
+    # one commit carries them with the seed.
+    apply_staged_baselines "$wt"
+    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
 }
 
 # ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
