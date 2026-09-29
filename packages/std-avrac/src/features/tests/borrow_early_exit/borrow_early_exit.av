@@ -1,0 +1,43 @@
+// proves: A REGION ARM THAT LEAVES THE FUNCTION CANNOT REACH `last` — a
+// borrow read before a branch that empties the container and RETURNS
+// never meets that change, so it costs no retain; the same branch
+// REJOINING must still own its reference, since the change now stands
+// between the borrow and its read.
+type Bag = { rows: List<string> }
+
+/// Genuinely empties `b`'s rows — a real hazard for `xs`, a borrow taken
+/// from the list this call frees, unless `xs` owns its own reference.
+fn touched(mut b: Bag, xs: List<string>) -> int {
+    b.rows = []
+    xs.length
+}
+
+/// The emptying arm RETURNS — it can never reach `row.length`, so the
+/// borrow taken at `xs[0]` never needs its own reference.
+fn skips(mut b: Bag, guard: bool) -> int {
+    let xs = b.rows
+    let row = xs[0]
+    if guard {
+        touched(b, xs)
+        return 0 - 1
+    }
+    row.length
+}
+
+/// The emptying arm REJOINS — `row.length` runs after `b.rows` is gone,
+/// so the borrow at `xs[0]` must own its own reference or this reads
+/// freed memory.
+fn stays(mut b: Bag, guard: bool) -> int {
+    let xs = b.rows
+    let row = xs[0]
+    if guard {
+        touched(b, xs)
+    }
+    row.length
+}
+
+mut a = Bag { rows: ["kept-a"] }
+mut c = Bag { rows: ["kept-b"] }
+let r1 = skips(a, false)
+let r2 = stays(c, true)
+"${r1} ${r2}"

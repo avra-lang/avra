@@ -965,11 +965,14 @@ job_pool_reset() {
     mkdir -p "$scratch/jobs"
 }
 
+# A job's status file, its label made one path segment.
+job_status_file() { echo "$scratch/jobs/$(printf '%s' "$1" | tr '/ ' '__').status"; }
+
 job_running() {
     n=0
     while read -r pid label; do
         [ -z "$pid" ] && continue
-        [ -f "$scratch/jobs/$label.status" ] || n=$((n + 1))
+        [ -f "$(job_status_file "$label")" ] || n=$((n + 1))
     done < "$scratch/jobs.list"
     echo "$n"
 }
@@ -988,7 +991,8 @@ job_launch() {
     case "$cap" in ''|*[!0-9]*) cap=4 ;; esac
     [ "$cap" -ge 1 ] || cap=1
     while [ "$(job_running)" -ge "$cap" ]; do sleep 0.5; done
-    ( set +e; AVRA_LAND_PARALLEL_SLOT=1 "$@"; st=$?; echo "$st" > "$scratch/jobs/$label.status"; exit "$st" ) &
+    status_file="$(job_status_file "$label")"
+    ( set +e; AVRA_LAND_PARALLEL_SLOT=1 "$@"; st=$?; echo "$st" > "$status_file"; exit "$st" ) &
     echo "$! $label" >> "$scratch/jobs.list"
 }
 
