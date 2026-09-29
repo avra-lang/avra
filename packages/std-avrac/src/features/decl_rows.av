@@ -1,0 +1,35 @@
+//! S6, STEP (a): A SHADOW `@relation` OVER `Decl`, inserted beside the real table,
+//! read by nobody yet. `DeclRow` mirrors `Decl`'s own fields (decls.av) so a parity
+//! keeper can prove the derive carries the real shape before anything reads through
+//! it. `id`/`file`/`stmt`/`parent`/`root`/`lo`/`hi` are process-local (`@dense`,
+//! `@local`): a dense id, an offset or an arena index means nothing across processes,
+//! so none of them enters the stable hash. `file` keeps an `@index` so a reader can
+//! ask for a file's rows, the shape the grain law (S1) records against.
+//!
+//! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `File` is a
+//! relation and `file` stops being `@local` (decision 10(a)) — owner: ERRORS. That
+//! tuple, not the interning string, is the row's stable name (townhall doc §6,
+//! "same-(owner, name) siblings only"): the key and the name a witness stores a
+//! dependency under are one derivation, or a second caller gets a wrong answer. No
+//! `sibling` column exists on `Decl` yet — it is an ordinal among same-(owner, name)
+//! declarations, computed, not stored, and the shadow carries none until it does.
+//! `DeclRow` is keyless meanwhile: a rerun replaces the whole set, which is sound for
+//! a shadow inserted by one query (`mint`) and read by nobody.
+use core.{DeclId, FileId, StmtId, ExprId, DeclKind}
+use @std.relation.{relation}
+
+@relation
+export type DeclRow = {
+    id: DeclId,
+    @local file: FileId,
+    @local stmt: StmtId,
+    @index name: string,
+    kind: DeclKind,
+    exported: bool,
+    owner: string,
+    @local parent: DeclId?,
+    nested: bool,
+    @local root: ExprId?,
+    @local lo: int,
+    @local hi: int,
+}
