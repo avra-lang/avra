@@ -112,14 +112,10 @@ export type NodeStore = {
     body_starts: Cell<Map<string, int>>,
     block_voices: Cell<List<BlockVoice>>,
     foreign: Cell<List<ForeignRange>>,
-    // every ExprId bucketed by its own `tag_expr` (COMPILER DB
-    // townhall §6.11's `@index kind`), built once on first ask
-    kind_index: Cell<Map<string, Cell<List<int>>>?>,
 }
 
 export fn new_node_store(file: string = "") -> NodeStore {
     let no_file_doc: List<string>? = null
-    let no_kind_index: Map<string, Cell<List<int>>>? = null
     NodeStore {
         file: file,
         exprs: new_arena(),
@@ -155,7 +151,6 @@ export fn new_node_store(file: string = "") -> NodeStore {
         body_starts: map_cell(),
         block_voices: list_cell(),
         foreign: list_cell(),
-        kind_index: Cell.new(no_kind_index),
     }
 }
 
@@ -991,14 +986,17 @@ impl NodeStore {
 
     /// Every kind's own bucket of `ExprId`s, in arena order — built
     /// ONCE per file, on first ask (COMPILER DB townhall §6.11's
-    /// `@index kind`), kept behind `kind_index` (`NodeStore`'s
-    /// identity law): a copy of `self` still reads and grows the same
-    /// buckets. Keyed by `tag_expr`'s own int, `@derive(Matchable)`'s
-    /// variant-order tag — never a hand-kept mirror enum.
+    /// `@index kind`), kept behind `self.exprs.kind_index`
+    /// (`Arena`'s own identity law, never a new field on `NodeStore`
+    /// itself — a hot, constantly copied/dropped record costs one
+    /// retain/release per field per copy, DOGFOODING.md): a copy of
+    /// `self` still reads and grows the same buckets. Keyed by
+    /// `tag_expr`'s own int, `@derive(Matchable)`'s variant-order
+    /// tag — never a hand-kept mirror enum.
     fn expr_kind_buckets() -> Map<string, Cell<List<int>>> {
-        let built? = self.kind_index.get() else {
+        let built? = self.exprs.kind_index.get() else {
             let fresh = self.built_expr_kind_index()
-            self.kind_index.set(fresh)
+            self.exprs.kind_index.set(fresh)
             return fresh
         }
         built
