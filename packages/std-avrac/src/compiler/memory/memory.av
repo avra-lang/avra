@@ -30,6 +30,8 @@ use core.{
     same_reg,
     rt_owns,
     rt_lends,
+    rt_writes,
+    rt_aliases_arg0,
     rt_owned_twin,
     rt_reusing_twin,
     rt_moving_twin,
@@ -600,9 +602,23 @@ fn region_exit(ins: List<Ins>, k: int) -> int {
     found
 }
 
-/// A step that could CHANGE what the cell holds: a store to it, or
-/// any step handed the cell itself — a writing callee opens it
-/// there. A second load only reads it.
+/// A step that could CHANGE what the cell holds: a store to it, a
+/// runtime row that WRITES THROUGH the seat `slot` fills (the
+/// registry's own `writes` column — never "took `slot` as an
+/// operand", which an ORDINARY READ also does), or a writing row
+/// handed the cell itself under a different register. A second load
+/// only reads it.
+///
+/// A ROW THAT ONLY READS COSTS NOTHING HERE, THE SAME LAW THE
+/// CALLING CONVENTION ALREADY STATES FOR USER CALLS. `avra_array_get`
+/// reading `self`'s OTHER field a few lines past `slot`'s own read is
+/// not a change to `slot` — treating every operand-match as a change
+/// forced `self.record_kernel`'s own read to its owned twin merely
+/// because `self.record_items` was read afterward, in the same
+/// stretch, on the way to a call that never touched `record_kernel`
+/// at all (avra-8sb5.57.108). `writes_arg` asks the registry which
+/// SEAT a row changes; a row nobody has named there answers false,
+/// same polarity as `writes[j]`'s own default.
 ///
 /// EXACT IDENTITY IS COMPLETE ONLY WHEN `slot` IS A STABLE REGISTER —
 /// an `Alloca` destination or a param, which the pass never re-mints:
@@ -620,29 +636,38 @@ fn region_exit(ins: List<Ins>, k: int) -> int {
 /// pointer), so exact identity goes BLIND exactly where a write is
 /// about to free what this borrow rides. There the scan asks CELL_ROOT
 /// instead — is the write's own box the SAME STABLE IDENTITY `slot`
-/// traces back to.
+/// traces back to, asked whether or not `slot` ITSELF could be
+/// re-minted: `slot` may be a param (`self`), stable and never
+/// re-derived, while the WRITE still lands through a register `cell_root`
+/// must trace back to it — `avra_box_thawed(self)` answers the SAME
+/// box `self`'s own field read did, under a different register, and
+/// only `aliases_arg0` says so (`owns_result` alone stops the trace,
+/// right for an ordinary allocator and wrong for a thaw).
 fn changes_cell(defs: List<int>, ins: List<Ins>, i: Ins, slot: Reg) -> bool {
     if i is .Load { return false }
-    if reads_reg(i, slot) { return true }
-    if !rederivable(defs, ins, slot) { return false }
     match i {
-        .CallRtVoid(_, args) -> {
-            let box? = args.first() else { return false }
-            same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box))
-        },
-        rest -> false,
+        .CallRt(_, callee, args) -> writes_arg(callee, args, slot),
+        .CallRtVoid(callee, args) -> writes_arg(callee, args, slot) || aliased_write(defs, ins, callee, args, slot),
+        rest -> reads_reg(i, slot),
     }
 }
 
-/// Whether `r` could be RE-MINTED: read again by re-running whatever
-/// produced it, landing in a fresh register for the exact same box. An
-/// `Alloca` and a param are the two identities the pass hands out
-/// once and never re-derives — everything else (a `.Load`, a field
-/// read, a nested cell's own read) is read OFF some other value and
-/// comes back a different register the next time the same source runs.
-fn rederivable(defs: List<int>, ins: List<Ins>, r: Reg) -> bool {
-    let d = defs[r.index]
-    d >= 0 && !(ins[d] is .Alloca)
+/// Whether `callee`'s call writes through `slot` — matched at the
+/// SEAT the registry names, never at any other position a register
+/// happens to occupy: a row's promise is per-seat (`avra_map_set`
+/// writes its map, arg 0, and reads its key and value untouched).
+fn writes_arg(callee: string, args: List<Reg>, slot: Reg) -> bool {
+    for j, a in args { if same_reg(a, slot) && rt_writes(callee, j) { return true } }
+    false
+}
+
+/// The re-run-mints-a-fresh-register case: `slot` is not itself an
+/// argument, but this call's OWN first seat traces back to the SAME
+/// box `slot` does. Every writing row in the registry names its
+/// subject at seat 0, so that is the one seat this asks about.
+fn aliased_write(defs: List<int>, ins: List<Ins>, callee: string, args: List<Reg>, slot: Reg) -> bool {
+    let box? = args.first() else { return false }
+    rt_writes(callee, 0) && same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box))
 }
 
 /// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a
@@ -758,7 +783,9 @@ fn view_of(i: Ins) -> Reg? {
 }
 
 /// THE INVERSE OF `view_of`: the register a view was taken FROM —
-/// Extract's subject, or a lending row's first seat, the same
+/// Extract's subject, a lending row's first seat, or an ALIASING
+/// owned row's first seat (`avra_box_thawed`: owned, yet its answer
+/// may be the same box `writes` compares `slot` against) — the same
 /// subject `read_outlives` judges by.
 fn view_source(i: Ins) -> Reg? {
     extract_source(i) ?? lending_source(i)
@@ -769,7 +796,10 @@ fn extract_source(i: Ins) -> Reg? {
 }
 
 fn lending_source(i: Ins) -> Reg? {
-    match i { .CallRt(_, callee, args) if !rt_owns(callee) -> args.first(), rest -> null }
+    match i {
+        .CallRt(_, callee, args) if !rt_owns(callee) || rt_aliases_arg0(callee) -> args.first(),
+        rest -> null,
+    }
 }
 
 /// WHETHER THIS CALL IS HANDED `ar`'s ROOT: a write only ever lands

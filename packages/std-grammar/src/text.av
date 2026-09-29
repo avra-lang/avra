@@ -11,7 +11,7 @@
 use @std.errors.{Loc}
 use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
 use lexeme.{Lexeme}
-use lexing.{lex, LexToken}
+use lexing.{lex, LexToken, named_kinds}
 use parse.{parse_grammar, GrammarParse}
 use seed.{item, seq, alt, rule_def, rule_ref, lit, group}
 
@@ -142,11 +142,13 @@ fn dsl_token_text(t: LexToken) -> string {
 }
 
 fn dsl_lexeme() -> Lexeme<LexToken> {
+    let kinds = named_kinds(DSL_NOTATION, ["BREAK", "EOF"])
     Lexeme {
         lit_matches: (t: LexToken, text: string) -> t.text == text,
         is_eof: (t: LexToken) -> t.kind == "EOF",
         ends_statement: (t: LexToken) -> t.kind == "BREAK",
-        wears: (t: LexToken, term: string) -> t.kind == term,
+        kind_of: (term: string) -> kinds.index_of(term),
+        wears_kind: (t: LexToken, k: int) -> k >= 0 && t.kind == kinds[k],
         text: dsl_token_text,
         loc: (t: LexToken) -> t.loc,
         stated: (text: string, loc: Loc?) -> LexToken {

@@ -15,6 +15,7 @@ use @std.grammar.{
     LexToken,
     Lexeme,
     lex,
+    named_kinds,
     want,
 }
 use lexicon.{SQL}
@@ -919,11 +920,13 @@ fn dispatch(name: string, caps: List<Captured<LexToken, SqlNode>>, _at: Loc?) ->
 }
 
 fn sql_lexeme() -> Lexeme<LexToken> {
+    let kinds = named_kinds(SQL, ["EOF"])
     Lexeme {
         lit_matches: (t: LexToken, text: string) -> t.text == text,
         is_eof: (t: LexToken) -> t.kind == "EOF",
         ends_statement: (t: LexToken) -> false,
-        wears: (t: LexToken, term: string) -> t.kind == term,
+        kind_of: (term: string) -> kinds.index_of(term),
+        wears_kind: (t: LexToken, k: int) -> k >= 0 && t.kind == kinds[k],
         text: (t: LexToken) -> t.text,
         loc: (t: LexToken) -> t.loc,
         stated: (text: string, loc: Loc?) -> LexToken {

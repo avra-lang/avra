@@ -844,6 +844,9 @@ fn built(
         args: List<ExprId>,
     ) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
+    ws
+        .decls
+        .arm_recording(kernel, ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.arm_audit()
     ws.load_packages(src)
@@ -902,6 +905,7 @@ impl Workspace {
                     self.store.get()!,
                     module_path(segments_of(self.module_of(self.decls.file(f).path))),
                 )
+            self.decls.note_module_rows(self.decls.file(f).module_id, 2)
         }
     }
 
@@ -935,8 +939,12 @@ impl Workspace {
 
     fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
 
-    fn writes_ensured() {
+    /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
+    /// runs inside a resolve.
+    fn writes_ensured() -> bool {
+        if self.db.family_active(ordinal(Family.Resolved)) { return false }
         let _ = self.receivers()
+        true
     }
 
     fn consumed_ensured(d: DeclId) {
@@ -1353,13 +1361,20 @@ impl Workspace {
             .Reuse(value) -> { return items_of(value) },
             .Compute -> nothing(),
         }
+        self.decls.note_rows(f, 0)
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
-        items_of(
+        let out = items_of(
             self
                 .relation(Family.Items)
-                .finish(f.index, DbRow.Items(ids), fp(7, [self.item_print(d) for d in ids])),
+                .finish(
+                    f.index,
+                    DbRow.Items(ids),
+                    fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]),
+                ),
         )
+        self.decls.note_rows(f, 1)
+        out
     }
 
     /// The declaration behind an id.
@@ -1367,11 +1382,29 @@ impl Workspace {
         self.decls.decl(d)
     }
 
-    /// An item's print in the item tree's hash: its name, kind and
-    /// visibility.
-    fn item_print(d: DeclId) -> int {
-        let x = self.decl_at(d)
-        fp_str("${x.name}/${kind_word(x.kind)}/${x.exported}")
+    /// A declaration's STABLE row, as a reader of it can tell: its name, kind, owner,
+    /// visibility and parse facts — never a dense id, a span or a body, so an edit that
+    /// moves none of them moves nothing.
+    fn row_print(d: DeclId) -> int {
+        let x = self.decls.decl(d)
+        fp_list(
+            [
+                fp_str(x.name),
+                fp_str(kind_word(x.kind)),
+                fp_str("${x.exported}"),
+                fp_str(x.owner),
+                fp_str("${x.nested}"),
+                self.facts_print(d),
+            ],
+        )
+    }
+
+    /// The facts' derived fingerprint over every field but the positional ones, which
+    /// are nulled: a field added later is folded until someone says it is a position.
+    fn facts_print(d: DeclId) -> int {
+        let facts? = self.decls.facts_of(d) else { return 0 }
+        (facts with { span: null, annotations: [a with { span: null } for a in facts.annotations] })
+            .fingerprint()
     }
 
     /// A module's names, bound ONCE: every file's declarations in file
@@ -1615,15 +1648,15 @@ impl Workspace {
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
         // one, and the generated impl it is minting is not signed yet).
-        if blocks.any((b) -> self.registering(b)) { return self.decls.methods_of(target) }
-        if blocks.any((b) -> self.db.active(key(Family.Resolved, self.decls.decl(b).file.index))) { return self.decls.methods_of(target) }
+        if blocks.any((b) -> self.registering(b)) { return self.decls.registered_methods(target) }
+        if blocks.any((b) -> self.db.active(key(Family.Resolved, self.decls.decl(b).file.index))) { return self.decls.registered_methods(target) }
         let k = key(Family.Methods, target.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.methods_of(target) }
+        if !(self.db.ask(k) is .Compute) { return self.decls.registered_methods(target) }
         self.db.begin(k)
         for b in blocks {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
-        let out = self.decls.methods_of(target)
+        let out = self.decls.registered_methods(target)
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out

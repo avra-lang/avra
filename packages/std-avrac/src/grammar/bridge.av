@@ -75,10 +75,13 @@ fn token_is_eof(t: Token) -> bool { t.kind == TokenKind.Eof }
 
 fn token_ends_statement(t: Token) -> bool { t.kind == TokenKind.Break }
 
-fn token_wears(t: Token, term: string) -> bool {
-    let k? = term_kind(term) else { return false }
-    kind_is(t.kind, k)
+/// A terminal name's kind id: its place in `terminal_kinds`, -1 for a
+/// name Avra's lexer has no kind for.
+fn token_kind_of(term: string) -> int {
+    [i for i, k in terminal_kinds if k.name == term].first() ?? 0 - 1
 }
+
+fn token_wears_kind(t: Token, k: int) -> bool { k >= 0 && kind_is(t.kind, terminal_kinds[k].kind) }
 
 fn token_text(t: Token) -> string { t.text }
 
@@ -98,7 +101,8 @@ export fn avra_lexeme() -> Lexeme<Token> {
         lit_matches: token_lit_matches,
         is_eof: token_is_eof,
         ends_statement: token_ends_statement,
-        wears: token_wears,
+        kind_of: token_kind_of,
+        wears_kind: token_wears_kind,
         text: token_text,
         loc: token_loc,
         stated: token_stated,

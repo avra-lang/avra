@@ -355,6 +355,7 @@ impl Decls {
     fn facts_of(d: DeclId) -> DeclFacts? {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Facts(d)) }
         if d.index >= self.faces.get().length { return null }
+        self.rows_read(self.decls.get()[d.index].file)
         self.faces.get()[d.index]
     }
 
@@ -518,6 +519,21 @@ impl Decls {
             self.impls.push(Cell.new(no_is))
             self.faces.push(null)
             if kind is .Impl { self.note_impl(name, id) }
+            let _ = DeclRow
+                .insert(
+                    self.decl_rows.get(),
+                    file: f,
+                    stmt: s,
+                    name: name,
+                    kind: kind,
+                    exported: exported,
+                    owner: owner,
+                    parent: parent,
+                    nested: nested,
+                    root: root,
+                    lo: 0,
+                    hi: 0,
+                )
         } else {
             self.decls.set_at(id.index, d)
         }
@@ -641,7 +657,7 @@ impl Decls {
                 s,
                 name,
                 DeclKind.Const,
-                false,
+                store.is_exported(s),
                 "",
                 null,
                 false,
@@ -675,7 +691,10 @@ impl Decls {
         let name = store.declared_name(s) ?? ""
         let key = generated_key(f, "${tag}\$${name}")
         let body: ExprId? = store.fn_parts(s)?.body
-        let d = self.mint(key, f, s, name, kind, false, "", null, false, body)
+        // THE COPIER ALREADY CARRIED THE MARK (rebuild.av's `mark_exported`,
+        // at the splice) — the decl table reads it here rather than
+        // spelling a second, wrong answer.
+        let d = self.mint(key, f, s, name, kind, store.is_exported(s), "", null, false, body)
         self.note_provenance(d, ann, name, at)
         let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
         mut cursor = lo
