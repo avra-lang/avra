@@ -258,7 +258,9 @@ lowest_live_ticket() {
     d="$(tickets_dir)"
     lowest=""
     for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
-        pid="$(cat "$d/$t/pid" 2>/dev/null)"
+        # A ticket is made before its pid is written: an absent pid is
+        # a waiter mid-arrival, never a reason to stop scanning.
+        pid="$(cat "$d/$t/pid" 2>/dev/null)" || pid=""
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             [ -z "$lowest" ] && lowest="$t"
         elif [ -n "$pid" ]; then
