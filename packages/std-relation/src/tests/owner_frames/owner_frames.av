@@ -1,0 +1,65 @@
+// proves: a Db's owner names its own running query through the `running`
+// hook, and a read or write outside any `@query` lands in that query's
+// frame — a second owner of one key refused, a read of a relation the
+// query wrote refused — while with no query running a read is free, in
+// both engines
+use @std.relation.{relation}
+use @std.relation.db.{Db, hooked_db, Hooks}
+
+@relation
+type Fact = { @key name: string, n: int }
+
+@relation
+type Tag = { tag: string }
+
+once fn current() -> Cell<int> { Cell.new(0 - 1) }
+
+once fn heard() -> Cell<List<string>> { Cell.new([]) }
+
+once fn families() -> Cell<int> { Cell.new(0) }
+
+fn next_family() -> int {
+    let f = families().get()
+    families().set(f + 1)
+    f
+}
+
+fn noted(w: string) {
+    let h = heard()
+    h.push(w)
+}
+
+fn none() {}
+
+fn running_now() -> int { current().get() }
+
+/// A Db whose owner runs its own queries, its refusals heard.
+fn owner_db() -> Db {
+    hooked_db(
+        Hooks {
+            family: (_v: fn(int) -> int) -> next_family(),
+            record: (_f: int, _c: int) -> 0,
+            revision: () -> -1,
+            reader: (_t: int) -> "a read",
+            refused: noted,
+            opened: (_f: int, _c: int) -> -1,
+            settled: (_f: int, _c: int) -> none(),
+            running: running_now,
+        },
+    )
+}
+
+fn run() -> string {
+    let db = owner_db()
+    current().set(7)
+    let _ = Fact.insert(db, name: "a", n: 1)
+    current().set(8)
+    let _ = Fact.insert(db, name: "a", n: 2)
+    let _ = Tag.insert(db, tag: "t")
+    let _ = Tag.all(db)
+    current().set(0 - 1)
+    let free = Tag.all(db).length
+    "${heard().get().length} ${free} | ${heard().get().join(" | ")}"
+}
+
+run()

@@ -15,7 +15,8 @@ extern fn avra_trap(message: string)
 /// A Db: its dense id, whether it is closed, each relation's hooks once
 /// reached in it, the hooks its owner armed it with (quiet when it has no
 /// owner), and the queries it runs — how many writes it has seen, each
-/// query call's dense cell, each owner's run count, and the frames open now.
+/// query call's dense cell, each owner's run count, the frames open now,
+/// and a frame per query of the OWNER's own that touched it, by its cell.
 export type Db = {
     id: int,
     closed: Cell<bool>,
@@ -28,6 +29,9 @@ export type Db = {
     cells: Cell<Map<string, int>>,
     runs: Cell<List<int>>,
     running: Cell<List<Frame>>,
+    owner_frames: Cell<Map<string, Frame>>,
+    last_query: Cell<int>,
+    last_frame: Cell<Frame?>,
 }
 
 /// One query call running: its owner cell, which run of it this is, and
@@ -42,7 +46,9 @@ type Frame = { owner: int, run: int, wrote: Cell<List<int>>, read: Cell<List<int
 /// recorded; `reader` names a token; `refused` hears a write the
 /// law of the store refuses; `opened` gives the owner's verdict on a
 /// query cell — 1 reuse, 0 compute, -1 no opinion, the Db's own count of
-/// writes deciding — and `settled` hears the cell settle.
+/// writes deciding — `settled` hears the cell settle, and `running` names
+/// the owner's own query running now, -1 when none: asked only when a row
+/// is read or written outside a `@query`, never per query.
 export type Hooks = {
     family: fn(fn(int) -> int) -> int,
     record: fn(int, int) -> int,
@@ -51,6 +57,7 @@ export type Hooks = {
     refused: fn(string) -> void,
     opened: fn(int, int) -> int,
     settled: fn(int, int) -> void,
+    running: fn() -> int,
 }
 
 /// A Db nothing records: families counted in this process, no reader,
@@ -65,6 +72,7 @@ export fn quiet_hooks() -> Hooks {
         refused: trapped,
         opened: (_family: int, _cell: int) -> -1,
         settled: (_family: int, _cell: int) -> no_word(),
+        running: () -> 0 - 1,
     }
 }
 
@@ -103,6 +111,8 @@ fn made(hooks: Hooks, quiet: bool) -> Db {
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
     let running: Cell<List<Frame>> = Cell.new([])
+    let owner_frames: Cell<Map<string, Frame>> = Cell.new({})
+    let no_frame: Frame? = null
     Db {
         id: id,
         closed: Cell.new(false),
@@ -115,6 +125,9 @@ fn made(hooks: Hooks, quiet: bool) -> Db {
         cells: cells,
         runs: runs,
         running: running,
+        owner_frames: owner_frames,
+        last_query: Cell.new(0 - 1),
+        last_frame: Cell.new(no_frame),
     }
 }
 
@@ -133,7 +146,7 @@ impl Db {
     /// A read of `cell` in `family` recorded, answering the reader's token
     /// — refused when the running query wrote that relation.
     fn read(family: int, cell: int) -> int {
-        let top? = self.running.get().last() else { return self.recorded(family, cell) }
+        let top? = self.frame() else { return self.recorded(family, cell) }
         if top.wrote.get().contains(family) { self.refuse(self_read()) }
         if !top.read.get().contains(family) { top.read.push(family) }
         self.recorded(family, cell)
@@ -148,24 +161,60 @@ impl Db {
     /// read that relation.
     fn wrote(family: int) {
         self.writes.set(self.writes.get() + 1)
-        let top? = self.running.get().last() else { return }
+        let top? = self.frame() else { return }
         if top.read.get().contains(family) { self.refuse(self_read()) }
         if !top.wrote.get().contains(family) { top.wrote.push(family) }
     }
 
     /// Who a write belongs to: the running query's run, or no one.
     fn stamp() -> Stamp {
-        let top? = self.running.get().last() else { return unowned }
+        let top? = self.frame() else { return unowned }
         Stamp { owner: top.owner, run: top.run }
     }
 
     /// The running query's owner cell, when one runs.
-    fn running_owner() -> int? { self.running.get().last()?.owner }
+    fn running_owner() -> int? { self.frame()?.owner }
+
+    /// The frame a read or write lands in: the innermost `@query` running
+    /// here, else the owner's own running query's, made on its first touch.
+    fn frame() -> Frame? {
+        let top = self.running.get().last()
+        if top != null { return top }
+        let ask = self.hooks.running
+        let query = ask()
+        if query < 0 { return null }
+        // the owner query read last is the one reading again, almost always
+        if query == self.last_query.get() { return self.last_frame.get() }
+        let found = self.owner_frame(query)
+        self.last_query.set(query)
+        self.last_frame.set(found)
+        found
+    }
+
+    /// The owner query's frame, made on its first touch.
+    fn owner_frame(query: int) -> Frame {
+        let owner = self.interned("owner:${query}")
+        let known = self.owner_frames.get().get("${owner}")
+        if known != null { return known! }
+        let wrote: List<int> = []
+        let read: List<int> = []
+        let made = Frame {
+            owner: owner,
+            run: self.runs.get()[owner],
+            wrote: Cell.new(wrote),
+            read: Cell.new(read),
+        }
+        self.owner_frames.put("${owner}", made)
+        made
+    }
 
     /// A query call's dense cell: its family and its arguments' hash,
     /// interned here — 0 is no one.
-    fn cell(family: int, args: int) -> int {
-        let key = "${family}:${args}"
+    fn cell(family: int, args: int) -> int { self.interned("${family}:${args}") }
+
+    /// An owner's dense cell under `key` — a `@query` call's, or an owner
+    /// query's, apart by their keys' spelling.
+    fn interned(key: string) -> int {
         let known? = self.cells.get().get(key) else {
             let made = self.runs.get().length
             self.cells.put(key, made)
