@@ -1,9 +1,17 @@
-//! `avra explain db [<package>]` / `why <entry>` / `dependents <name>` —
-//! the compiler's own durable pack, made visible: `compiler/store/explain.av`
-//! and `compiler/explain_names.av` hold the logic, this file is CLI wiring
-//! and text formatting alone.
+//! `avra cache` / `cache why <entry>` / `dependents <name>` / `changed <entry>` /
+//! `held [<file>]` — the compiler's own durable cache, made visible:
+//! `compiler/store/explain.av` and `compiler/explain_names.av` hold the logic,
+//! this file is CLI wiring and text formatting alone.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{Workspace, build_cache_root, key_family, shown_name, matching_names}
+use @std.avrac.compiler.{
+    Workspace,
+    build_cache_root,
+    key_family,
+    shown_name,
+    matching_names,
+    FileHold,
+    Want,
+}
 use @std.avrac.compiler.store.{
     Pack,
     pack_at,
@@ -14,30 +22,51 @@ use @std.avrac.compiler.store.{
     family_groups,
     WitnessNode,
     Held,
+    Change,
+    changed,
+    moved_leaves,
 }
 use @std.avrac.core.{flatten}
 use @std.io.{is_dir}
-use @std.path.{joined_path}
+use @std.path.{joined_path, relative_path}
 
-type ExplainCmd = {}
+type CacheCmd = {}
 
-impl Runnable for ExplainCmd {
+/// What `avra cache` was asked: the pack's summary, or one of its questions.
+export enum CacheMode { Summary, Why, Dependents, Changed, Held }
+
+/// The mode a word names — the summary when there is none, and nothing for
+/// a word no mode answers to.
+export fn cache_mode(word: string) -> CacheMode? {
+    match word {
+        "" -> CacheMode.Summary,
+        "why" -> CacheMode.Why,
+        "dependents" -> CacheMode.Dependents,
+        "changed" -> CacheMode.Changed,
+        "held" -> CacheMode.Held,
+        _ -> null,
+    }
+}
+
+impl Runnable for CacheCmd {
     fn run(args: CliResult) -> int {
-        let mode = args.arg("mode")
-        when {
-            mode == "db" -> explained_db(args.arg("target"))
-            mode == "why" -> explained_why(args.arg("target"))
-            mode == "dependents" -> explained_dependents(args.arg("target"))
-            _ -> {
-                eprintln("avra: `explain` takes `db`, `why` or `dependents`, not `${mode}`")
-                1
-            }
+        let target = args.arg("target")
+        let mode? = cache_mode(args.arg("mode")) else {
+            eprintln(unknown_mode(args.arg("mode")))
+            return 1
+        }
+        match mode {
+            .Summary -> summarized_pack(),
+            .Why -> explained_why(target),
+            .Dependents -> explained_dependents(target),
+            .Changed -> explained_changed(target),
+            .Held -> explained_held(target),
         }
     }
 }
 
-fn pack_root(target: string) -> string {
-    if target == "" { here() } else { rooted(target) }
+fn unknown_mode(word: string) -> string {
+    "avra: `cache` takes no mode for the summary, or `why`, `dependents`, `changed` or `held` — not `${word}`"
 }
 
 fn pack_for(ws: Workspace) -> Pack {
@@ -57,10 +86,10 @@ fn package_dir(root: string) -> string {
     if is_dir(joined_path(root, "src")) { joined_path(root, "src") } else { root }
 }
 
-// ── `avra explain db` ──
+// ── `avra cache` ──
 
-fn explained_db(target: string) -> int {
-    let s = summarized(pack_for(root_workspace(pack_root(target))), key_family)
+fn summarized_pack() -> int {
+    let s = summarized(pack_for(root_workspace(here())), key_family)
     println(
         "db: ${s.entries} ${entry_word(s.entries)}, ${s.payload_bytes} payload byte${plural(s.payload_bytes)}",
     )
@@ -111,14 +140,14 @@ fn more_line(prefix: string, total: int, listed: int) -> List<string> {
 /// Why a query did not name exactly one thing: `mode` is the verb asked,
 /// `noun` what it wants, `total` how many names the pack could answer with.
 fn refusal(mode: string, noun: string, query: string, matched: int, total: int) -> string {
-    if query == "" { return "avra: `explain ${mode}` needs ${noun} — this package's pack holds ${holds(total)}" }
+    if query == "" { return "avra: `cache ${mode}` needs ${noun} — this package's pack holds ${holds(total)}" }
     if matched == 0 { return "avra: nothing in this package's pack matches `${query}` — it holds ${holds(total)}" }
     "avra: ${matched} match `${query}` — name one exactly:"
 }
 
 fn holds(held: int) -> string { if held == 0 { "none yet" } else { "${held}:" } }
 
-// ── `avra explain why` ──
+// ── `avra cache why` ──
 
 fn explained_why(query: string) -> int {
     let ws = admitted_workspace(here())
@@ -177,7 +206,84 @@ fn held_word(h: Held) -> string {
     }
 }
 
-// ── `avra explain dependents` ──
+// ── `avra cache changed` ──
+
+fn explained_changed(query: string) -> int {
+    let ws = admitted_workspace(here())
+    let pack = pack_for(ws)
+    let stored = [e.name for e in real_entries(pack)]
+    let named = if query == "" { stored } else { matching_names(stored, query) }
+    if named.length != 1 {
+        eprintln(refusal("changed", "an entry", query, named.length, stored.length))
+        for line in listing("changed:   ", named) { eprintln(line) }
+        return 1
+    }
+    let found = changed(pack, named[0], [], (n: string) -> ws.edge_current_hash(n))
+    println("changed: ${shown_name(named[0])}")
+    let leaf? = moved_leaves(found).first() else {
+        println("changed:   nothing it read has moved — it would be reused")
+        return 0
+    }
+    println(
+        "changed:   first moved: ${shown_name(leaf.name)} (recorded ${leaf.recorded_hash}, now ${leaf.found_hash})",
+    )
+    for line in flatten([change_lines(c, 1) for c in found]) { println(line) }
+    0
+}
+
+fn change_lines(c: Change, depth: int) -> List<string> {
+    [change_line(c, depth)].concat(flatten([change_lines(u, depth + 1) for u in c.under]))
+}
+
+fn change_line(c: Change, depth: int) -> string {
+    let mark = if c.under.is_empty() { "moved" } else { "via" }
+    "changed: ${indent(depth)}${mark} ${shown_name(c.name)} (${c.recorded_hash} -> ${c.found_hash})"
+}
+
+// ── `avra cache held` ──
+
+fn explained_held(query: string) -> int {
+    let root = here()
+    let rows = match root_workspace(root).hold_report(Want.Diagnostics) {
+        .Ok(found) -> found,
+        .Err(why) -> {
+            eprintln(why)
+            return 1
+        },
+    }
+    if query == "" { return held_summary(root, rows) }
+    let named = [h for h in rows if relative_path(root, h.path).contains(query)]
+    if named.length != 1 {
+        eprintln(refusal("held", "a file", query, named.length, rows.length))
+        for line in listing("held:   ", [relative_path(root, h.path) for h in named]) { eprintln(line) }
+        return 1
+    }
+    for line in hold_lines(root, named[0]) { println(line) }
+    0
+}
+
+/// Every file's hold, counted, and each read one with why.
+fn held_summary(root: string, rows: List<FileHold>) -> int {
+    let read = [h for h in rows if !h.held]
+    println(
+        "held: ${rows.length} file${plural(rows.length)} a check reads, ${rows.length - read.length} held, ${read.length} read",
+    )
+    for h in read { for line in hold_lines(root, h) { println(line) } }
+    0
+}
+
+fn hold_lines(root: string, h: FileHold) -> List<string> {
+    let head = "held: ${relative_path(root, h.path)} — ${hold_word(h)}"
+    [head].concat(["held:   missing ${m}" for m in h.missing])
+}
+
+fn hold_word(h: FileHold) -> string {
+    if h.held { return "held" }
+    let why? = h.why else { return "read: no record of its module is kept — it was never built here" }
+    "read: ${why.says()}"
+}
+
+// ── `avra cache dependents` ──
 
 fn explained_dependents(query: string) -> int {
     let pack = pack_for(root_workspace(here()))
@@ -202,14 +308,13 @@ fn explained_dependents(query: string) -> int {
     0
 }
 
-export command explain {
-    description: "The compiler's own durable pack, made visible: `db` for its size and shape by family, `why <entry>` for one entry's witness tree, `dependents <name>` for what a change to a name would recompute"
+export command cache {
+    description: "The compiler's durable cache, made visible: with no mode, its size and shape by family; `why <entry>` for one entry's witness tree, `dependents <name>` for what a change to a name would recompute, `changed <entry>` for what moved under it down to the rows that moved, `held [<file>]` for whether a check holds each file and why not"
     arg mode {
-        description: "`db`, `why` or `dependents`"
-        required: true
+        description: "none for the summary, or `why`, `dependents`, `changed` or `held`"
     }
     arg target {
-        description: "for `db`, a package path (the current one when absent); for `why` and `dependents`, a name as `Family(argument)` or any part of it that names exactly one"
+        description: "for `why`, `dependents` and `changed`, a name as `Family(argument)` or any part of it that names exactly one; for `held`, part of a file's path (every read file when absent)"
     }
-    run: ExplainCmd {}
+    run: CacheCmd {}
 }

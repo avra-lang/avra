@@ -1,10 +1,10 @@
-//! What `avra explain` renders — the pack made visible (P7: the cache
+//! What `avra cache` renders — the pack made visible (P7: the cache
 //! is never a black box). Pure reads over `Pack`. What a name MEANS —
 //! its family, an edge's hash right now — is asked of a fn the caller
 //! passes, so this stays below `compiler/witness.av`, which owns the
 //! naming and already imports the pack
 //! (docs/2026_09_26_COMPILER_DB_TOWNHALL.md, §7.2 N6).
-use core.{distinct}
+use core.{distinct, flatten}
 
 /// The four ways a recorded edge can answer once it is re-asked: the
 /// hash found now is the one recorded, it moved (a recomputation is
@@ -72,6 +72,43 @@ fn witness_node(
         found_hash: found_hash,
         children: children,
     }
+}
+
+/// WHAT MOVED UNDER AN ENTRY: one recorded edge whose hash is not what
+/// it was, with what moved under it in turn. A change with nothing under
+/// it is a LEAF — an input, or a row whose own edges all still match, so
+/// the row itself is where the move happened.
+export type Change = { name: string, recorded_hash: int, found_hash: int, under: List<Change> }
+
+/// The edges of `name`'s stored entry whose hashes moved, each followed
+/// down to the rows that moved themselves. `current` answers a name's
+/// hash NOW when it can be re-derived; else the pack's stored entry
+/// answers. A name met twice on one path is not followed again.
+export fn changed(pack: Pack, name: string, seen: List<string>, current: fn(string) -> int?) -> List<
+    Change,
+> {
+    let entry? = pack.get(name) else { return [] }
+    [c for e in entry.edges for c in moved(pack, e, seen.concat([name]), current)]
+}
+
+/// One edge, when its hash moved.
+fn moved(pack: Pack, e: Edge, seen: List<string>, current: fn(string) -> int?) -> List<Change> {
+    if seen.contains(e.name) { return [] }
+    let now = current(e.name) ?? pack.get(e.name)?.hash ?? 0
+    if now == e.hash { return [] }
+    [
+        Change {
+            name: e.name,
+            recorded_hash: e.hash,
+            found_hash: now,
+            under: changed(pack, e.name, seen, current),
+        },
+    ]
+}
+
+/// The leaves under `cs`, in the order the walk meets them.
+export fn moved_leaves(cs: List<Change>) -> List<Change> {
+    flatten([if c.under.is_empty() { [c] } else { moved_leaves(c.under) } for c in cs])
 }
 
 /// Every name this pack ever interned that also has its own stored

@@ -654,6 +654,10 @@ export enum Reads {
     Unholdable
     RunBy(string)
     Undecodable(string)
+    Reached
+    BodyAsked
+    AsksUnread
+    Unruled
 }
 
 export type ReadFile = { path: string, why: Reads }
@@ -669,6 +673,10 @@ impl Reads {
             .Unholdable -> "it declares what a record cannot carry",
             .RunBy(by) -> "its bodies run while ${by} compiles",
             .Undecodable(why) -> "its module's record refused whole: ${why}",
+            .Reached -> "a program the evaluator runs reaches it",
+            .BodyAsked -> "a compile-time run called one of its bodies",
+            .AsksUnread -> "what its bodies ask could not be read back",
+            .Unruled -> "a check wants its rule findings, and none were kept",
         }
     }
 }
@@ -686,7 +694,8 @@ fn read_why(
     want: Want,
 ) -> Reads? {
     if is_entry { return Reads.Entry }
-    if ws.hold.homes.get().get(f) != null { return Reads.Home }
+    let forced: Reads? = ws.hold.forced.get().get(f)
+    if forced != null { return forced! }
     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
     if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)
