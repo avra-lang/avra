@@ -158,11 +158,18 @@ fn emptied_group() -> string {
 fn grandchild_is_stopped() -> Result<string, ProcessError> {
     // the child prints its grandchild's pid and exits; the grandchild
     // holds our pipe past the grace, so the run is truncated — and the
-    // grandchild is stopped with the group, never left behind
+    // grandchild is stopped with the group, never left behind. A kill
+    // lands when the grandchild is next scheduled, and a killed process
+    // nobody has reaped is a zombie: the probe waits up to two seconds,
+    // far under the five the grandchild would sleep if it were missed
     let o = shell("sleep 5 & echo \$!")? with { drain_grace: ms(200) }
     let out = o.run()?
     let pid = out.stdout.trim()
-    let probe = text(shell("kill -0 ${pid} 2>/dev/null && echo alive || echo dead")?)?
+    let probe = text(
+        shell(
+            "for i in 1 2 3 4 5 6 7 8 9 10; do ps -o stat= -p ${pid} | grep -qv Z || { echo dead; exit; }; sleep 0.2; done; echo alive",
+        )?,
+    )?
     "${out.truncated}/${probe.trim()}"
 }
 

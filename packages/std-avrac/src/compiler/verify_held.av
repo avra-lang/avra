@@ -1,5 +1,6 @@
 //! `--verify-held` (avra-8sb5.57.69) — every held declaration diffed against
-//! a fresh parse+sign of its file, field by field. P7: a hold that decoded a
+//! a fresh parse+sign of its file, field by field, and the Reference rows
+//! naming it counted on both sides. P7: a hold that decoded a
 //! declaration wrong surfaces far from its cause — a seat-mark width
 //! mismatch as 127 second-order type errors (.67), a dropped `consumed` bit
 //! as a segfault (.66) — this names the declaration and the field directly.
@@ -117,6 +118,29 @@ fn decl_mismatches(path: string, warm_ws: Workspace, wid: DeclId, fresh_ws: Work
             ),
         )
         .concat(sig_mismatches(path, warm_ws, wd, wid, fresh_ws, fd, fid))
+        .concat(ref_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid))
+}
+
+/// HOW MANY REFERENCE ROWS NAME THE DECLARATION: a held file's own uses ride
+/// its record's `ref` lines, so a hold that dropped them answers fewer than a
+/// fresh reading of the same program.
+fn ref_mismatches(
+    path: string,
+    name: string,
+    warm_ws: Workspace,
+    wid: DeclId,
+    fresh_ws: Workspace,
+    fid: DeclId,
+) -> List<HeldMismatch> {
+    some_list(
+        maybe_mismatch(
+            path,
+            name,
+            "Reference rows",
+            "${warm_ws.decls.refs_of(wid).length}",
+            "${fresh_ws.decls.refs_of(fid).length}",
+        ),
+    )
 }
 
 fn identity_mismatches(path: string, wd: Decl, fd: Decl) -> List<HeldMismatch> {
