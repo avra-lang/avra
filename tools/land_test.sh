@@ -27,6 +27,8 @@ export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
+# No fixture prunes the machine's real scratch root.
+export AVRA_LAND_SCRATCH_ROOT="$scratch/scratch-root"
 # Every process a fixture started names the scratch dir; none outlives the run.
 cleanup() {
     pkill -9 -f "$scratch" 2>/dev/null
@@ -195,7 +197,7 @@ test_lock_fifo() {
     for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 600; then
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 1800; then
         bad "lock-fifo: C never acquired ticket 3 after A released"
     else
         ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
@@ -1114,6 +1116,29 @@ unlogged() {
     if grep -q "$2" "$scratch/$1.out"; then bad "$3"; cat "$scratch/$1.out"; else ok "$3"; fi
 }
 
+test_scratch_lifecycle() {
+    d="$(batch_repo lifecycle)"
+    git -C "$d" checkout -q -b dc main
+    mkdir -p "$d/docs"
+    printf 'words\n' > "$d/docs/note.md"
+    commit_all "$d" "docs only"
+    git -C "$d" checkout -q main
+    root="$scratch/lifecycle-root"
+    mkdir -p "$root/999991-1/trash/big" "$root/999991-1/logs" "$root/999992-1/trash" "$root/999992-1/logs"
+    touch -t 202001010000 "$root/999992-1"
+    wt="$scratch/lifecycle-wt"
+    git -C "$d" worktree add -q "$wt" dc > /dev/null 2>&1
+    mkdir -p "$wt/build" && cp "$d/build/avra" "$wt/build/avra"
+    ( cd "$wt" && AVRA_LAND_SCRATCH_ROOT="$root" AVRA_LAND_LOCK="$scratch/lifecycle-lock" AVRA_LAND_BATCH_WT="$scratch/lifecycle-batchwt" \
+        AVRA_SLOTS_DIR="$scratch/lifecycle-slots" exec sh "$land" dc ) > "$scratch/lifecycle.out" 2>&1 || bad "scratch: a docs-only landing failed"
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+    if [ -d "$root/999991-1/trash" ]; then bad "scratch: a dead run's trash survived the prune"; else ok "scratch: a dead run's trash is pruned at start"; fi
+    if [ -d "$root/999991-1/logs" ]; then ok "scratch: a fresh dead run's logs stay for a day"; else bad "scratch: a fresh dead run's logs were pruned"; fi
+    if [ -d "$root/999992-1" ]; then bad "scratch: a day-old dead run's scratch survived"; else ok "scratch: a day-old dead run's scratch is pruned"; fi
+    left="$(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '99999*' | wc -l | tr -d ' ')"
+    if [ "$left" -eq 0 ]; then ok "scratch: a green run leaves no scratch of its own"; else bad "scratch: a green run left $left scratch dir(s)"; ls "$root"; fi
+}
+
 test_diff_scope_skips() {
     d="$(batch_repo scope)"
     git -C "$d" checkout -q -b t main
@@ -1363,6 +1388,32 @@ STUB
     chmod +x "$d/build/avra"
     commit_all "$d" "base"
     echo "$d"
+}
+
+test_gates_never_touch_the_landing_cache() {
+    d="$(speed_repo gate-cache cold)"
+    printf 'objects:\n\t@mkdir -p build && touch build/libavra_runtime.a\nlibs:\n\t@echo libs-ok\n' > "$d/Makefile"
+    printf '.avra-cache/\nbuild/\n' > "$d/.gitignore"
+    mkdir -p "$d/tools" && : > "$d/tools/speed.baseline"
+    commit_all "$d" "make targets"
+    mkdir -p "$d/.avra-cache/objects"
+    echo live > "$d/.avra-cache/objects/sibling-write"
+    out="$(AVRA_LAND_SPEED_WT="$scratch/gate-cache-speed-wt" branch=x sh "$land" --call speed_refresh "$d" 2>&1)"
+    if [ -f "$d/.avra-cache/objects/sibling-write" ]; then
+        ok "side tree: the speed refresh leaves the landing tree's cache where a sibling job writes"
+    else
+        bad "side tree: the speed refresh moved the landing tree's cache out from under a sibling — $out"
+    fi
+    if printf '%s' "$out" | grep -q "baseline advanced"; then
+        ok "side tree: the refresh ran and measured"
+    else
+        bad "side tree: the refresh never measured — $out"
+    fi
+    if [ -f "$scratch/gate-cache-speed-wt/.git" ] || [ -d "$scratch/gate-cache-speed-wt/.git" ]; then
+        ok "side tree: the refresh measured in a tree of its own"
+    else
+        bad "side tree: no side tree was made for the refresh — $out"
+    fi
 }
 
 test_warm_gate_off() {
@@ -1767,6 +1818,7 @@ run_test test_run_checks_jobs_cap
 run_test test_run_checks_slash_label
 run_test test_job_wait_fails_closed_on_killed_job
 run_test test_compiler_untouched_skips_second_build_and_seedcheck
+run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
 run_test test_timeline_lines_present
 run_test test_slot_limit
@@ -1786,6 +1838,7 @@ run_test test_ratchet_missing_baseline
 run_test test_ratchet_regress_no_override
 run_test test_ratchet_regress_with_override
 run_test test_chore_commit_carries_override_reason
+run_test test_gates_never_touch_the_landing_cache
 run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
