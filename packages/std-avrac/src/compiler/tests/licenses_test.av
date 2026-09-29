@@ -1,0 +1,62 @@
+//! `compiler/licenses.av`'s SITE LICENSE: a native rule's own finding
+//! reads a `// LICENSED <id>` comment, a colon and its reason, on
+//! the line directly above it, before it is even reported
+//! (CLAUDE.md's exemption law) — never a citation for a different
+//! rule, an empty or missing reason, or a line further up than the
+//! one right above.
+use compiler.{analyze_source, site_licensed}
+
+fn licensed_line(text: string, line: int, id: string) -> bool {
+    let a = analyze_source(text)
+    site_licensed(a.view.store, a.view.source, line, id)
+}
+
+spec "compiler/licenses — a rule's own site license" {
+    given "(a) a `// LICENSED <id>: <reason>` directly above the site" {
+        then "the finding for that exact id is silenced" {
+            licensed_line("// LICENSED test.a: a reason\nlet x = 1\n", 2, "test.a")
+        }
+    }
+    given "(b) the line above licenses a DIFFERENT rule" {
+        then "this rule's finding is not silenced" {
+            !licensed_line("// LICENSED test.b: a reason\nlet x = 1\n", 2, "test.a")
+        }
+    }
+    given "(c) the license's reason is empty or missing" {
+        then "an empty reason after the colon silences nothing" {
+            !licensed_line("// LICENSED test.a:\nlet x = 1\n", 2, "test.a")
+        }
+        then "no colon at all silences nothing" {
+            !licensed_line("// LICENSED test.a\nlet x = 1\n", 2, "test.a")
+        }
+    }
+    given "(d) a correct license two lines up, not directly above" {
+        then "it does not count" {
+            !licensed_line("// LICENSED test.a: a reason\n\nlet x = 1\n", 3, "test.a")
+        }
+    }
+    given "(e) one licensed line, asked about two different rules" {
+        then "the rule it names is silenced" {
+            licensed_line("// LICENSED test.a: a reason\nlet x = 1\n", 2, "test.a")
+        }
+        then "a different rule's finding on that SAME line is not" {
+            !licensed_line("// LICENSED test.a: a reason\nlet x = 1\n", 2, "test.b")
+        }
+    }
+    given "compiler.repeated_projection, licensed at its own site" {
+        then "avra check reports nothing for it there" {
+            !findings_of_source(
+                "type P = { xs: List<int> }\nfn f(p: P) -> bool {\n    // LICENSED compiler.repeated_projection: a probe fixture\n    p.xs.contains(1) && p.xs.contains(1)\n}\nf(P { xs: [1] })\n",
+            )
+                .any(it.rule == "compiler.repeated_projection")
+        }
+    }
+    given "the same site, licensed for a different rule entirely" {
+        then "avra check still reports compiler.repeated_projection" {
+            findings_of_source(
+                "type P = { xs: List<int> }\nfn f(p: P) -> bool {\n    // LICENSED structs.index_compared: names a different rule\n    p.xs.contains(1) && p.xs.contains(1)\n}\nf(P { xs: [1] })\n",
+            )
+                .any(it.rule == "compiler.repeated_projection")
+        }
+    }
+}

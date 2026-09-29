@@ -146,15 +146,18 @@ export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
     }
 }
 
-/// A rule's own INDEX: the root kind EVERY pattern of every arm
-/// shares, since the pass tries a rule only at nodes of that kind —
-/// absence ("any node") when any pattern cannot narrow or two
-/// disagree.
-export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
+/// A rule's own INDEX: the root kind EVERY pattern narrows to — each
+/// arm, each `or` alternative — so the pass tries the rule at a node
+/// of ANY of them, never at every node just because two arms
+/// disagree. Absence ("any node") only when a SINGLE pattern cannot
+/// narrow at all; may repeat a kind when two patterns share one, and
+/// the caller reads it as a set.
+export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> List<int>? {
     let pats = flatten([a.pats for a in arms])
-    let first? = pats.first() else { return null }
-    let k? = pat_root_kind(store, first) else { return null }
-    if pats.all(pat_root_kind(store, it) == k) { k } else { null }
+    if pats.is_empty() { return null }
+    let kinds = [pat_root_kind(store, p) for p in pats]
+    if kinds.any(it == null) { return null }
+    [k! for k in kinds]
 }
 
 /// One pattern's own INDEX: when it is a

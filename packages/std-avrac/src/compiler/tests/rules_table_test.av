@@ -1,0 +1,33 @@
+// A rule's own root-kind index: a rule whose arms narrow to
+// DIFFERENT kinds sits under every one of them, never folded to
+// "any node" just because two arms disagree.
+use @std.avrac.compiler.{rules, rule_index, any_root, rule_id, RuleEntry}
+
+fn found(id: string) -> RuleEntry { rules.find(rule_id(it) == id)! }
+
+spec "compiler/rules_table (a rule sits in every arm's own bucket)" {
+    given "compiler.repeated_projection, whose two arms narrow to `&&` and `||`" {
+        then "its root carries both kinds, distinct, never any_root" {
+            let r = found("compiler.repeated_projection")
+            r.root.length == 2 && r.root[0] != r.root[1] && !r.root.contains(any_root)
+        }
+        then "the index finds it under EITHER kind" {
+            let r = found("compiler.repeated_projection")
+            let idx = rule_index()
+            idx.at(r.root[0]).any(rule_id(it) == "compiler.repeated_projection") &&
+                idx.at(r.root[1]).any(rule_id(it) == "compiler.repeated_projection")
+        }
+    }
+    given "structs.index_compared, whose two arms narrow to `==` and `!=`" {
+        then "its root carries both kinds, distinct, never any_root" {
+            let r = found("structs.index_compared")
+            r.root.length == 2 && r.root[0] != r.root[1] && !r.root.contains(any_root)
+        }
+        then "the index finds it under EITHER kind" {
+            let r = found("structs.index_compared")
+            let idx = rule_index()
+            idx.at(r.root[0]).any(rule_id(it) == "structs.index_compared") &&
+                idx.at(r.root[1]).any(rule_id(it) == "structs.index_compared")
+        }
+    }
+}
