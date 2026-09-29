@@ -731,11 +731,40 @@ warm_gate_step() {
 # trailing "sprite-build: … -> exit N" line — which a REAL remote
 # command failure, guarded by `|| status=$?`, always reaches. Absence
 # of that line is the tell.
+# THE IDLEST SPRITE FIRST: every Sprite in the pool is asked, in
+# parallel, for its load and free memory; the answer orders them by
+# load per core, then free memory, with any that did not answer last.
+# Each probe is one exec under a timeout, and each answer is printed.
+sprites_by_load() {
+    probe="${AVRA_LAND_SPRITE_PROBE:-sprite_probe}"
+    d="$(mktemp -d "${TMPDIR:-/tmp}/avra-sprite-load.XXXXXX")"
+    for s in "$@"; do
+        ( "$probe" "$s" > "$d/$s" 2>/dev/null || : ) &
+    done
+    wait
+    for s in "$@"; do
+        read -r load cores avail < "$d/$s" 2>/dev/null || load=""
+        if [ -n "$load" ] && [ -n "$cores" ] && [ -n "$avail" ]; then
+            echo "land-linux: $s load $load on $cores cores, $avail MB free" >&2
+            awk -v s="$s" -v l="$load" -v c="$cores" -v a="$avail" 'BEGIN { printf "%012.4f %012d %s\n", l / c, 999999999 - a, s }'
+        else
+            echo "land-linux: $s did not answer its load probe" >&2
+            printf '%012.4f %012d %s\n' 99999 999999999 "$s"
+        fi
+    done | sort | awk '{ print $3 }' | tr '\n' ' '
+    rm -rf "$d"
+}
+
+# One Sprite's load, cores and MB free, as three words.
+sprite_probe() {
+    timeout 30 sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); l=$1; c=$(nproc); a=$(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo); echo "$l $c $a"'
+}
+
 linux_gate_step() {
     wt="$1"
     shift
     pkgs="$*"
-    sprites="${AVRA_LAND_SPRITE:-avra-idioms-pay avra-comptime}"
+    sprites="$(sprites_by_load ${AVRA_LAND_SPRITE:-avra-idioms-pay avra-comptime})"
     sprite_build="${AVRA_LAND_SPRITE_BUILD:-$tools_dir/sprite-build.sh}"
     # `-o avra` skips avra's OWN prerequisites too (libavra_runtime.a
     # among them, COMPILER_OBJS) — `make objects` first, whether or
@@ -773,6 +802,7 @@ linux_gate_step() {
         sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
         cat "$out"
         if grep -q '^land-linux: body started' "$out"; then
+            echo "land-linux: ran on $sprite"
             return "$st"
         fi
         echo "land: linux: the Sprite $sprite failed before the command ran (exit $st)" >&2

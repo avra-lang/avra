@@ -1774,6 +1774,31 @@ test_linux_gate_runs_warm() {
     fi
 }
 
+# The Linux leg's Sprites run idlest first: load per core, then free
+# memory, with a Sprite that did not answer last.
+test_sprites_by_load() {
+    probe="$scratch/sprite-probe.sh"
+    cat > "$probe" <<'PROBE'
+#!/bin/sh
+case "$1" in
+    busy) echo "12.0 8 2000" ;;
+    idle) echo "0.10 8 7000" ;;
+    small) echo "0.10 2 7000" ;;
+    roomy) echo "0.10 8 7500" ;;
+    *) exit 1 ;;
+esac
+PROBE
+    chmod +x "$probe"
+    got="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load busy gone idle 2>/dev/null)"
+    [ "$got" = "idle busy gone " ] && ok "sprite-load: idlest first, the unanswered last" || bad "sprite-load: ordered '$got'"
+    got="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load small idle 2>/dev/null)"
+    [ "$got" = "idle small " ] && ok "sprite-load: load is read per core" || bad "sprite-load: per-core order '$got'"
+    got="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load idle roomy 2>/dev/null)"
+    [ "$got" = "roomy idle " ] && ok "sprite-load: equal load breaks on free memory" || bad "sprite-load: memory tie-break '$got'"
+    err="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load busy gone 2>&1 >/dev/null)"
+    case "$err" in *"busy load 12.0 on 8 cores, 2000 MB free"*"gone did not answer"*) ok "sprite-load: every answer is printed" ;; *) bad "sprite-load: silent ($err)" ;; esac
+}
+
 # A landing that reached the compiler leaves main's checkout holding the
 # landing's compiler and runtime; one that did not leaves main's alone;
 # a process running main's old binary keeps its file.
@@ -2320,6 +2345,7 @@ run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
+run_test test_sprites_by_load
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
