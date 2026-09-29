@@ -1404,6 +1404,11 @@ test_gates_never_touch_the_landing_cache() {
     else
         bad "side tree: the speed refresh moved the landing tree's cache out from under a sibling — $out"
     fi
+    if git -C "$d" diff --quiet -- tools/speed.baseline; then
+        ok "staged: the refresh leaves the landing tree's baseline untouched until every check is green"
+    else
+        bad "staged: the refresh wrote the landing tree's baseline mid-run"
+    fi
     if printf '%s' "$out" | grep -q "baseline advanced"; then
         ok "side tree: the refresh ran and measured"
     else
@@ -1583,10 +1588,13 @@ speed_repo() {
     mkdir -p "$d/build" "$d/packages/cli/src"
     held_line="held 0/5"
     [ "$mode" = "warm" ] && held_line="held 5/5"
+    hit_line=""
+    [ "$mode" = "objhit" ] && hit_line='echo "time: lower+emit · cache hit"'
     cat > "$d/build/avra" <<STUB
 #!/bin/sh
 if [ "\$1" = "build" ]; then
     echo "time: parse 1ms, $held_line, attempt 1"
+    $hit_line
     exit 0
 fi
 exit 0
@@ -1640,6 +1648,21 @@ test_speed_gate_regress_with_override() {
         ok "speed-gate: the override reason is queued for the chore commit"
     else
         bad "speed-gate: the override reason was not queued"
+    fi
+}
+
+test_speed_gate_object_hit_tool_failure() {
+    d="$(speed_repo speed-objhit objhit)"
+    mkdir -p "$d/tools"
+    scr="$scratch/speed-objhit-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label > "$scratch/speed-objhit.out" 2>&1
+    if [ -f "$scr/tool-failure" ] && grep -q "was not cold" "$scr/tool-failure"; then
+        ok "speed-gate: a cached object under 'held 0/' is still not cold — a TOOL failure"
+    else
+        bad "speed-gate: a run reusing cached objects was measured as cold"
+        cat "$scratch/speed-objhit.out"
     fi
 }
 
@@ -1849,6 +1872,7 @@ run_test test_linux_gate_unreachable
 run_test test_speed_gate_improve
 run_test test_speed_gate_regress_no_override
 run_test test_speed_gate_regress_with_override
+run_test test_speed_gate_object_hit_tool_failure
 run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order

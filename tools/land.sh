@@ -570,6 +570,25 @@ chore_commit_message() {
     fi
 }
 
+# A ratchet baseline a gate advances, staged in this run's scratch and
+# applied to the landing tree only once every check is green — a run
+# that fails leaves no baseline behind, in any tree.
+stage_baseline() {
+    staged="$scratch/baseline/$2"
+    if [ ! -f "$staged" ]; then
+        mkdir -p "$scratch/baseline"
+        if [ -f "$1/tools/$2" ]; then cp "$1/tools/$2" "$staged"; else : > "$staged"; fi
+    fi
+    echo "$staged"
+}
+
+apply_staged_baselines() {
+    [ -d "$scratch/baseline" ] || return 0
+    for f in "$scratch/baseline"/*; do
+        [ -f "$f" ] && cp "$f" "$1/tools/$(basename "$f")"
+    done
+}
+
 commit_chore_if_moved() {
     wt="$1"
     label="${2:-$branch}"
@@ -655,7 +674,8 @@ warm_gate_step() {
     m="${nm#*/}"
 
     cd "$land_wt"
-    old_floor="$(baseline_get "tools/land.baseline" warm_held_floor)"
+    floor_file="$(stage_baseline "$land_wt" land.baseline)"
+    old_floor="$(baseline_get "$floor_file" warm_held_floor)"
     # `st=$?` AFTER the assignment reads 0 unconditionally (the
     # assignment itself, once its substitution has run, always
     # "succeeds" as a shell command) — worse under `set -eu`, a
@@ -663,7 +683,7 @@ warm_gate_step() {
     # here, before `st=$?` is ever reached. `|| st=$?` on the
     # assignment itself is the only safe capture (heavy()'s own note).
     st=0
-    out="$(ratchet_check "tools/land.baseline" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
+    out="$(ratchet_check "$floor_file" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
     word="PASS"
     [ "$st" -ne 0 ] && word="FAIL"
     echo "land: warm-reuse: held $n/$m (floor ${old_floor:-none}) — $word ($out)"
@@ -798,8 +818,8 @@ speed_one_run() {
         echo "land: speed: the $tag build failed (exit $st) — $log" >&2
         return 1
     fi
-    if ! grep -q 'held 0/' "$log"; then
-        tool_failed "the speed gate's $tag run was not cold — no 'held 0/' in $log"
+    if ! grep -q 'held 0/' "$log" || grep -q 'cache hit' "$log"; then
+        tool_failed "the speed gate's $tag run was not cold — a held file or a cached object in $log"
         return 1
     fi
     speed_run_instr="$(grep -oE '[0-9]+ +instructions retired' "$log" | awk '{print $1}' | head -1)"
@@ -948,7 +968,7 @@ speed_refresh() {
         return 0
     fi
     reason="${AVRA_LAND_SPEED_OK:--}"
-    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_footprint" "$reason" >> "$land_wt/tools/speed.baseline"
+    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_footprint" "$reason" >> "$(stage_baseline "$land_wt" speed.baseline)"
     echo "land: speed: baseline advanced — $sha $speed_run_instr $speed_run_footprint $reason" >&2
 }
 
@@ -967,7 +987,7 @@ speed_gate_step() {
         return 1
     fi
     st=0
-    speed_gate "$speed_base_wt" "$land_wt/build/avra" "$land_wt" "$label" || st=$?
+    speed_gate "$speed_base_wt" "$land_wt/build/avra" "$speed_base_wt" "$label" || st=$?
     if [ "$st" -eq 0 ]; then
         speed_refresh "$land_wt"
     fi
@@ -1333,16 +1353,16 @@ check_phase() {
         return 1
     fi
 
-    # Every job in the pool above (seed-check, the warm-reuse gate,
-    # the speed gate) has now finished — a single commit, never one
-    # per gate, and never while a slower gate might still be writing.
-    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
-
     if [ "$compiler_changed" -eq 0 ]; then
         skipped "cache-attacks$suffix" "compiler source"
-        return 0
+    elif ! heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"; then
+        return 1
     fi
-    heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"
+
+    # Every check is green: the staged baselines land in the tree, and
+    # one commit carries them with the seed.
+    apply_staged_baselines "$wt"
+    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
 }
 
 # ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
