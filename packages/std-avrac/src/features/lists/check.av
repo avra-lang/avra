@@ -172,16 +172,20 @@ fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>)
     }
 }
 
-/// THE PLANNER'S LAWS over a comprehension scanning a relation whole: a
+/// THE PLANNER'S LAWS over each head scanning a relation whole: a
 /// lookup it narrows to must file by the field's own type, and with no
-/// lookup to narrow to, no filter may hand a row to a call — nothing
-/// narrows the set it would run over.
+/// lookup to narrow to, no filter in its region may hand its row to a
+/// call — nothing narrows the set it would run over.
 fn plan_laws(mut cx: TypeCx, clauses: List<CompClause>) {
-    let scan? = relation_scan(cx.view, cx.names, clauses) else { return }
+    for scan in relation_scans(cx.view, cx.names, clauses) { scan_laws(cx, clauses, scan) }
+}
+
+/// One scanned head's laws.
+fn scan_laws(mut cx: TypeCx, clauses: List<CompClause>, scan: Scan) {
     let plans = comp_plans(cx.view, cx.names, clauses, scan)
     let plan? = plans
         .find((p: Plan) -> !could_be_null(cx.view.types.seen_shape(cx.type_at(p.value)))) else {
-        let rest? = residual(cx.view, cx.names, clauses) else { return }
+        let rest? = residual(cx.dispatch, cx.view, cx.names, clauses, scan) else { return }
         return cx.emit(unnarrowed(cx.loc_of(rest), cx.view.decls.decl(scan.relation).name))
     }
     if !lookup_fits(cx, scan, plan) {
