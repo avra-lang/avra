@@ -311,6 +311,16 @@ export type Workspace = {
     /// such edge, on every file a process validates. Shares
     /// `leaf_memo_revision`'s staleness stamp.
     decl_by_stable: Cell<Map<string, DeclId>>,
+    /// A DECLARATION'S CONTENT HASH (`stable_sig_hash`/
+    /// `stable_methods_hash`, witness.av), MEMOIZED — `shape_line`
+    /// walks a signature's whole type wire and `stable_methods_hash`
+    /// sorts every method's own wire, neither cheap, and a process
+    /// validating many files' witnesses asks the SAME frequently-used
+    /// declaration's Sig or Methods edge over and over. Keyed
+    /// `"sig:${d.index}"`/`"methods:${d.index}"` — the tag keeps the
+    /// two families in one table without colliding. Shares
+    /// `leaf_memo_revision`'s staleness stamp.
+    stable_hash_memo: Cell<Map<string, int>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -755,6 +765,7 @@ fn built(
     let no_edge_ids: Map<string, int> = {}
     let no_visible: Map<string, List<int>> = {}
     let no_decls_by_stable: Map<string, DeclId> = {}
+    let no_stable_hashes: Map<string, int> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -772,6 +783,7 @@ fn built(
         edge_id_by_key: Cell.new(no_edge_ids),
         visible_memo_sets: Cell.new(no_visible),
         decl_by_stable: Cell.new(no_decls_by_stable),
+        stable_hash_memo: Cell.new(no_stable_hashes),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),

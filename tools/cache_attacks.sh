@@ -669,6 +669,58 @@ printf '// moved\n' >> $R/rs/src/main.av
 rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
 
+# A DURABLE WITNESS, PINNED — under AVRA_WITNESS_PIN=1 only: the
+# `--time` field reads `witnessed 0/N` BOTH when the compile-time
+# switch is off (nothing ever attempted) and when it is on and the
+# Sig-hash bug makes every attempt fail, so the text alone cannot
+# tell vacuous apart from broken. AVRA_WITNESS_PIN names which this
+# binary is — set it only when `build/avra` was built with
+# `witness_enabled: bool = true` — and unset (the gate's own runs)
+# it skips the step outright rather than guess from the count.
+# A LEAF edit — one file nothing else imports — must not cost every
+# OTHER file its witness: `witnessed` must cover every file but the
+# one edited. A `Sig`/`Methods` edge hashed from a `TypeId`/`DeclId`'s
+# raw registry index (core/types.av's and core/nodes.av's own "means
+# nothing outside this process") drifts between processes though the
+# declaration's own text never changed, refusing every unrelated
+# file's witness; a `rules_key` no witnessed path ever writes
+# collapses `held` the same way.
+mkdir -p $R/wr/src
+printf '[package]\nname = "rt-wr"\nversion = "0.1.0"\n' > $R/wr/avra.toml
+cat > $R/wr/src/leaf.av <<'AV'
+export fn leaf_only() -> int { 1 }
+AV
+for n in 1 2 3 4 5 6; do
+cat > $R/wr/src/other$n.av <<AV
+export fn other_fn_$n() -> int { $n }
+AV
+done
+cat > $R/wr/src/main.av <<'AV'
+use other1.{other_fn_1}
+use other2.{other_fn_2}
+use other3.{other_fn_3}
+use other4.{other_fn_4}
+use other5.{other_fn_5}
+use other6.{other_fn_6}
+export fn two(a: int) -> int { a + other_fn_1() + other_fn_2() + other_fn_3() + other_fn_4() + other_fn_5() + other_fn_6() }
+println("${two(1)}")
+AV
+if [ "${AVRA_WITNESS_PIN:-}" = "1" ]; then
+    rm -rf .avra-cache
+    ./avra check $R/wr >$R/wr.first.log 2>&1
+    printf '\nexport fn leaf_only_added() -> int { 2 }\n' >> $R/wr/src/leaf.av
+    wr_line=$(./avra check --time $R/wr 2>&1 | grep '^time:')
+    steps=$((steps+1))
+    wn=$(printf '%s\n' "$wr_line" | grep -oE 'witnessed [0-9]+/[0-9]+' | head -1)
+    got=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\1#')
+    total=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\2#')
+    # N-2: the edited leaf (its own Parsed edge legitimately moved) and
+    # `main.av` (the entry) are the only files this fixture's shape
+    # ever costs a witness — six unrelated files and the prelude must
+    # all still answer `Reused`.
+    want=$((total - 2))
+    [ "$got" -ge "$want" ] || { fails=$((fails+1)); echo "FAIL  a leaf edit did not reuse every unrelated file's witness: $wn (wanted >= $want)"; }
+fi
 # A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
 # NEVER AS A GAP: `members.av` declares two exported named
 # instances of `widget` (a component whose one field is `run: fn(int) ->
