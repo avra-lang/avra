@@ -160,17 +160,15 @@ export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> List<int>? {
     [k! for k in kinds]
 }
 
-/// One pattern's own INDEX: when it is a
-/// `Pat.Quote`, rooted (`quote_pat_root`) and folded to its shallow
-/// kind (`shallow_at` — Expr vs Stmt AND which variant, one int) —
-/// absence for a rule the index cannot narrow (a first arm that is
-/// not a quote, a multi-statement body with no single root, a ROOT
-/// whose own kids hold a run hole, or a ROOT whose own NAME or TYPE
-/// field is a lone hole): a target's index is folded plain, over
-/// arbitrary code with no run and no hole of its own, so a root
-/// folded BLIND to one field's length, text or written type could
-/// never agree with it — "any node" is the honest narrowing, not a
-/// closer miss.
+/// One pattern's own INDEX: when it is a `Pat.Quote`, rooted
+/// (`quote_pat_root`), its root folded to its shallow kind
+/// (`shallow_at` — Expr vs Stmt, which variant, and every field). A
+/// ROOT whose own NAME or TYPE field is a lone hole, or whose own kids
+/// hold a run hole, folds to its KIND alone (`kind_at`): a subject is
+/// indexed by its raw fold, which a root blind to one field could never
+/// agree with, and by its kind, which it always does. Absence ("any
+/// node") only when nothing narrows: not a quote, no single root, or a
+/// root that IS a hole.
 fn pat_root_kind(store: NodeStore, p: PatId) -> int? {
     let body? = match store.pat(p) { .Quote(b) -> b, rest -> null } else { return null }
     let at? = quote_pat_root(store, body) else { return null }
@@ -178,18 +176,11 @@ fn pat_root_kind(store: NodeStore, p: PatId) -> int? {
     // is the placeholder's own fold — meaningless, and never a real
     // subject's; "any node" is what a bare-hole root means
     if quote_hole_at(store, at) != null { return null }
-    // a root whose own NAME or TYPE field is a lone hole (a for
-    // loop's own variable, a method call's own name, a let's own
-    // annotation) folds that field's spelling into `shallow_at`
-    // exactly as any written text would — `quote_pat_shape` reads
-    // this same seat as an OPEN field and folds it BLIND
-    // (`typed_node_shallow_at`) for this reason, but a real subject
-    // is indexed by its own RAW `shallow_at`, that field included, so
-    // a bare fold here could never agree with one either; "any node"
-    // is the honest narrowing, not a closer miss
-    if !own_hole_indices(store, at).is_empty() { return null }
+    // a root with a hole in its own field, or a run among its kids, is
+    // known by its kind alone
+    if !own_hole_indices(store, at).is_empty() { return store.kind_at(at) }
     let holes = quote_pat_holes(store, body)
-    if store.kids_at(at).any(is_run_kid(store, it, holes)) { return null }
+    if store.kids_at(at).any(is_run_kid(store, it, holes)) { return store.kind_at(at) }
     store.shallow_at(at)
 }
 

@@ -1,9 +1,28 @@
 // A rule's own root-kind index: a rule whose arms narrow to
 // DIFFERENT kinds sits under every one of them, never folded to
 // "any node" just because two arms disagree.
-use @std.avrac.compiler.{rules, rule_index, any_root, rule_id, RuleEntry}
+use @std.avrac.compiler.{rules, rule_index, any_root, rule_id, RuleEntry, rules_indexed}
+use features.{Code, Fix}
 
 fn found(id: string) -> RuleEntry { rules.find(rule_id(it) == id)! }
+
+fn never_fires(_c: Code) -> Fix? { null }
+
+/// A rule that fires on nothing, filed under `root`.
+fn filed_rule(name: string, root: List<int>) -> RuleEntry {
+    RuleEntry {
+        name: name,
+        module: "t",
+        run: never_fires,
+        root: root,
+        doc: "",
+        fixes: [],
+        keeps: [],
+        law: [],
+    }
+}
+
+fn rule_names(rs: List<RuleEntry>) -> string { [r.name for r in rs].join(",") }
 
 spec "compiler/rules_table (a rule sits in every arm's own bucket)" {
     given "compiler.repeated_projection, whose two arms narrow to `&&` and `||`" {
@@ -28,6 +47,27 @@ spec "compiler/rules_table (a rule sits in every arm's own bucket)" {
             let idx = rule_index()
             idx.at(r.root[0]).any(rule_id(it) == "structs.index_compared") &&
                 idx.at(r.root[1]).any(rule_id(it) == "structs.index_compared")
+        }
+    }
+    given "a node looked up by its shallow fold and its kind" {
+        then "a rule filed under both keys answers once, and an any-node rule once" {
+            let idx = rules_indexed(
+                [
+                    filed_rule("both", [11, 22]),
+                    filed_rule("any", [any_root]),
+                    filed_rule("other", [33]),
+                ],
+            )
+            rule_names(idx.at_node(11, 22)) == "both,any"
+        }
+        then "a rule filed under the kind alone answers at every fold of that kind" {
+            let idx = rules_indexed([filed_rule("kinded", [22]), filed_rule("any", [any_root])])
+            rule_names(idx.at_node(99, 22)) == "kinded,any" &&
+                rule_names(idx.at_node(98, 22)) == "kinded,any"
+        }
+        then "a node of neither key meets the any-node rules alone" {
+            let idx = rules_indexed([filed_rule("kinded", [22]), filed_rule("any", [any_root])])
+            rule_names(idx.at_node(99, 77)) == "any"
         }
     }
 }
