@@ -57,11 +57,11 @@ fn edge_verdicts(pack: Pack, ws: Workspace) -> List<Held> {
 
 spec "compiler/store/explain — over a real Analysis entry" {
     given "one file checked by a first process" {
-        then "the pack holds that entry plus its file's own Items row, and its edges name Parsed and Sig dependencies" {
+        then "the pack holds that entry plus an Items row for it AND for the callee it resolves, and its edges name Parsed and Sig dependencies" {
             let s = summarized(left_behind(fresh_pack_path("explain_shape")), key_family)
             [f.family for f in s.families].contains("Analysis") &&
                 [f.family for f in s.families].contains("Items") &&
-                s.entries == 2 &&
+                s.entries == 3 &&
                 [r.family for r in s.referenced].contains("Parsed") &&
                 [r.family for r in s.referenced].contains("Sig")
         }
@@ -123,12 +123,13 @@ spec "compiler/store/explain — dependents of a real name" {
             let found = dependents(pack, sig)
             found.length == 1 && found[0].name == entry.name
         }
-        then "the dependents of the callee's Parsed name group under the one Analysis family" {
+        then "the dependents of the callee's Parsed name group under Analysis and its own Items row" {
             let pack = left_behind(fresh_pack_path("dependents_family"))
             let entry? = the_entry(pack) else { return false }
             let parsed? = edge_named_for(entry, "Parsed", "/w/src/a.av") else { return false }
             let groups = family_groups([e.name for e in dependents(pack, parsed)], key_family)
-            groups.length == 1 && groups[0].family == "Analysis"
+            let families = [g.family for g in groups]
+            groups.length == 2 && families.contains("Analysis") && families.contains("Items")
         }
         then "a name the pack has never heard of has none" {
             dependents(left_behind(fresh_pack_path("dependents_none")), "nothing").is_empty()

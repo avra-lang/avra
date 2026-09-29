@@ -246,6 +246,21 @@ spec "compiler/witness — a file's own item set, recorded once and validated ro
                 same_verdict_as_fresh(v, fresh_check(after, names, "/w/src/b.av"))
         }
     }
+    given "the kernel's revision moves after a row's verdict is already memoized" {
+        then "the memoized verdict is forgotten, never carried across the bump" {
+            let a = "export fn f() -> int {\n    1\n}\n"
+            let names = ["/w/src/a.av"]
+            let path = fresh_pack_path("recorded_revision_bump")
+            let ws = a_process_over({"/w/src/a.av": a}, names, path)
+            let _ = checked(ws, "/w/src/a.av")
+            let ik = Key { family: items_ordinal(), arg: ws.file_id("/w/src/a.av").index }
+            let sname = ws.stable_key_name(ik)
+            let _ = ws.row_current_hash(ik)
+            let memoized = ws.row_current_memo(sname) != null
+            ws.db.kernel.bump()
+            memoized && ws.row_current_memo(sname) == null && !ws.row_known_stale(sname)
+        }
+    }
 }
 
 spec "compiler/witness — the package's own avra.toml" {
