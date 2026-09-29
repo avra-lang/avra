@@ -1,0 +1,35 @@
+//! THE FINDINGS RELATION — one row per rule hit: the rule that fired,
+//! the file it fired in, and the source line it named, trimmed. A row
+//! exists only where `rule_findings` (rule_pass.av) fired, so a
+//! `Finding` names a RULE alone, never a compiler-law warning — no
+//! kind-matching needed to tell the two apart, the way the rendered
+//! `warning[kind]: …` text once required.
+use diagnostics.{Diag, SourceFile}
+use @std.relation.{relation}
+use @std.relation.db.{Db as RelDb, new_db as new_findings_db}
+
+@relation
+export type Finding = { @index rule: string, @index file: string, text: string }
+
+/// Every rule finding across `p`, as relation rows — built fresh each
+/// ask, never carried across processes (the durable form is future
+/// work, §3.3 of the compiler-DB townhall doc).
+export fn findings_of(p: Program) -> List<Finding> {
+    let db = new_findings_db()
+    for a in p.files { file_findings(db, a) }
+    Finding.all(db)
+}
+
+fn file_findings(db: RelDb, a: Analysis) {
+    for d in rule_findings(analysed(a), a.view.stmts) { filed_finding(db, a.view.source, d) }
+}
+
+/// A finding with no place to point (a locationless `Say` voice) rows
+/// nothing — a baseline site is always a source line, never a bare
+/// claim.
+fn filed_finding(db: RelDb, src: SourceFile, d: Diag) {
+    let loc? = d.primary.loc else { return }
+    let line = src.linecol(loc.lo).line
+    let _ = Finding
+        .insert(db, rule: d.kind, file: loc.file ?? src.file, text: src.line_text(line).trim())
+}
