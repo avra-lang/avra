@@ -852,6 +852,38 @@ export enum RtHost {
 /// the answering kind would make every `!` unwrap read as an escape.
 /// Empty means the row keeps nothing, which is 82 of 86 rows.
 ///
+/// `writes[j]` says seat `j`'s OWN CONTENTS CHANGE: a push, a set, a
+/// release, an in-place reusing transform — anything a caller must
+/// treat as invalidating a borrow taken from that seat before the
+/// call, since a view read out of it may now be stale or dangling.
+/// This is a THIRD axis from `keeps` and `lends`: `keeps` asks
+/// whether the CALLEE holds a reference past the call (an escape),
+/// `lends` asks whether the ANSWER still rides the SUBJECT's own
+/// reference; `writes` asks whether the SEAT'S OWN BOX is a
+/// different value after the call than before it. A row that only
+/// reads (`avra_array_get`), or only retains without touching
+/// contents (`avra_rc_retain`), leaves every seat's `writes` false —
+/// the pass must never guess from whether a seat is merely an
+/// OPERAND, since that also matches an ordinary read. Empty means
+/// the row writes through nothing.
+///
+/// `aliases_arg0` says an OWNED answer MAY BE THE SAME BOX as seat 0,
+/// not a fresh one — `avra_box_thawed`'s fast path is a retain of `p`
+/// itself, answering `p`; only the rare immortal-data case clones.
+/// `owns_result` alone stops `cell_root`'s trace at a row like this
+/// (an ordinary allocator's answer never aliases its argument, so the
+/// trace is right to stop there), which lost the identity a later
+/// write through the ANSWER needed to compare against the seat's own
+/// box — `self.names = fresh(0)` inside a `mut` method thaws `self`
+/// first, writes through the THAW's answer, and a borrow taken from
+/// `self` a line earlier read as safe with nothing between them,
+/// corrupting `old.first()` after the field it pointed into was
+/// freed (avra-8sb5.57.108). False for every row nobody has marked —
+/// the safe default here is on the SAME side as `owns_result`
+/// stopping the trace, since a wrongly-continued trace would compare
+/// two boxes that are not the same and answer safe when the seat
+/// changed.
+///
 /// `inert` says the C body reads its text as BYTES it was handed and
 /// resolves nothing outside the program — no path, no name, no
 /// command, no environment key, and no C-string call that stops at a
@@ -878,7 +910,7 @@ export enum RtHost {
 /// evaluation may.
 export enum Reach { Pure, Embed, Lookup, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false }
 
 /// WHICH BOX a `Ptr` seat takes — and, in `answer`, which box a `Ptr`
 /// ANSWER hands back. A pointer says only that a header
