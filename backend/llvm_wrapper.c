@@ -838,17 +838,37 @@ static int native_target_ready(void) {
 
 // THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
 // compiler carries is linked into a module before its passes, every
-// definition AVAILABLE EXTERNALLY — the optimizer may inline it and emits
-// none, so a call it keeps resolves to the runtime library's own. The
-// leaves take the module's target, never the one clang compiled them for,
-// so the inliner finds them compatible. AVRA_INLINE_RUNTIME=0 keeps them
-// calls — a leaf's return address then names its caller exactly.
+// KEPT definition AVAILABLE EXTERNALLY — the optimizer may inline it and
+// emits none, so a call it keeps resolves to the runtime library's own.
+// The leaves take the module's target, never the one clang compiled them
+// for, so the inliner finds them compatible. AVRA_INLINE_RUNTIME=0 keeps
+// them all calls — a leaf's return address then names its caller exactly.
 static int hot_off = 0;
 
 __attribute__((constructor))
 static void hot_settled(void) {
     const char* v = getenv("AVRA_INLINE_RUNTIME");
     hot_off = v != NULL && strcmp(v, "0") == 0;
+}
+
+// NOT EVERY HOT LEAF PAYS FOR ITS OWN INLINING: `hot_linked` runs once
+// per FILE MODULE, so a kept leaf's body is a cost the optimizer and
+// codegen pay again in every module it lands in, not once — the bigger,
+// branchier or more COMPOSED a leaf's body, the more that multiplies.
+// `avra_rc_retain` and `avra_rc_release` are the two leaves nearly every
+// managed touch calls, and the smallest bodies here (a load, a branch,
+// an increment or decrement); `avra_array_len` is one load, cheaper
+// inlined than called. The rest stay ordinary calls, resolved against
+// the runtime library the way every runtime row is: the tagged wrappers
+// are a branch onto retain/release, already inlined once inside the
+// library's own compile; `avra_array_get` is a bounds check into a
+// noreturn trap; `avra_array_get_owned` and `avra_box_thawed` are each a
+// COMPOSITION of a leaf already kept, so inlining them too pays for that
+// leaf's body a second time at every call site.
+static int hot_keep(const char* name) {
+    return strcmp(name, "avra_rc_retain") == 0
+        || strcmp(name, "avra_rc_release") == 0
+        || strcmp(name, "avra_array_len") == 0;
 }
 
 static void hot_linked(LLVMModuleRef m) {
@@ -859,11 +879,19 @@ static void hot_linked(LLVMModuleRef m) {
     int bad = LLVMParseBitcodeInContext2(ctx, buf, &hot);
     LLVMDisposeMemoryBuffer(buf);
     if (bad) return;
-    for (LLVMValueRef f = LLVMGetFirstFunction(hot); f; f = LLVMGetNextFunction(f)) {
-        if (LLVMIsDeclaration(f)) continue;
+    LLVMValueRef f = LLVMGetFirstFunction(hot);
+    while (f) {
+        LLVMValueRef next = LLVMGetNextFunction(f);
+        if (LLVMIsDeclaration(f)) { f = next; continue; }
+        // A dropped leaf is ERASED, not left at its own linkage: linking
+        // it in as a second External definition of a symbol the caller
+        // module already declares would give every module its own copy
+        // of the body — worse than before this file existed.
+        if (!hot_keep(LLVMGetValueName(f))) { LLVMDeleteFunction(f); f = next; continue; }
         LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-cpu", 10);
         LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-features", 15);
         if (LLVMGetLinkage(f) == LLVMExternalLinkage) LLVMSetLinkage(f, LLVMAvailableExternallyLinkage);
+        f = next;
     }
     LLVMSetTarget(hot, LLVMGetTarget(m));
     LLVMSetDataLayout(hot, LLVMGetDataLayoutStr(m));
