@@ -1,0 +1,23 @@
+#!/bin/sh
+# Refuses a commit whose staged Avra files are not canonical.
+# The fix is printed: `build/avra fmt --write <files>`.
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.av')
+[ -n "$files" ] || exit 0
+if [ ! -x build/avra ]; then
+    echo "pre-commit: no build/avra in this worktree — formatting NOT checked" >&2
+    exit 0
+fi
+# The staged text is what gets committed, so the check reads it, never the
+# working tree: each staged blob is written to a scratch copy at its path.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/avra-precommit.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+for f in $files; do
+    mkdir -p "$scratch/$(dirname "$f")"
+    git show ":$f" > "$scratch/$f"
+done
+out=$(cd "$scratch" && "$OLDPWD/build/avra" fmt --check $files 2>&1)
+status=$?
+[ "$status" -eq 0 ] && exit 0
+echo "$out" >&2
+echo "pre-commit: staged Avra is not canonical — run: build/avra fmt --write $(echo $files)" >&2
+exit 1
