@@ -30,6 +30,10 @@ scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
 # No fixture prunes the machine's real scratch root.
 export AVRA_LAND_SCRATCH_ROOT="$scratch/scratch-root"
+# No fixture takes a machine-wide build slot a live landing waits on.
+export AVRA_SLOTS_DIR="$scratch/slots"
+# No fixture probes a real Sprite: an empty answer keeps the pool's order.
+export AVRA_LAND_SPRITE_PROBE=true
 # Every process a fixture started names the scratch dir; none outlives the run.
 cleanup() {
     pkill -9 -f "$scratch" 2>/dev/null
@@ -72,11 +76,38 @@ tests_running() {
     echo "$n"
 }
 
+# A fixture runs under AVRA_LAND_TEST_FIXTURE_S seconds; past it the
+# fixture and everything it started are killed and it fails, naming
+# itself, so no fixture can hold the run.
+fixture_timed() {
+    limit="${AVRA_LAND_TEST_FIXTURE_S:-300}"
+    "$1" &
+    fpid=$!
+    waited=0
+    while kill -0 "$fpid" 2>/dev/null; do
+        if [ "$waited" -ge "$limit" ]; then
+            fixture_kill "$fpid"
+            wait "$fpid" 2>/dev/null
+            echo "FAIL  $1: timed out after ${limit}s"
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$fpid"
+}
+
+fixture_kill() {
+    for kid in $(pgrep -P "$1" 2>/dev/null); do fixture_kill "$kid"; done
+    kill -KILL "$1" 2>/dev/null
+    :
+}
+
 run_test() {
     name="$1"
     cap="${AVRA_LAND_TEST_JOBS:-8}"
     while [ "$(tests_running)" -ge "$cap" ]; do sleep 0.2; done
-    ( set +e; "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
+    ( set +e; fixture_timed "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
     echo "$! $name" >> "$scratch/test-jobs.list"
 }
 
@@ -1774,6 +1805,70 @@ test_linux_gate_runs_warm() {
     fi
 }
 
+# A remote leg that goes silent after its body starts is moved to the
+# next Sprite within its quiet window, and its remote run is stopped; one
+# that answers slowly but steadily is left to finish; one past the leg's
+# cap is moved too; every Sprite failing as a tool is a TOOL verdict.
+test_linux_watchdog() {
+    d="$(git_repo linux-watch)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    probe="$scratch/watch-probe.sh"
+    printf '#!/bin/sh\ncase "$1" in first) echo "0.1 8 7000" ;; *) echo "0.2 8 7000" ;; esac\n' > "$probe"
+    chmod +x "$probe"
+    stops="$scratch/watch-stops"
+    : > "$stops"
+    stopper="$scratch/watch-stop.sh"
+    printf '#!/bin/sh\necho "$1 $2" >> "%s"\n' "$stops" > "$stopper"
+    chmod +x "$stopper"
+    stub="$scratch/watch-sprite.sh"
+    cat > "$stub" <<'STUB'
+#!/bin/sh
+mode="$(cat "$WATCH_MODES/$1" 2>/dev/null)"
+echo "land-linux: body started"
+case "$mode" in
+    silent) sleep 60 ;;
+    steady) for i in 1 2 3 4 5 6; do echo "land-linux: progress $i"; sleep 1; done ;;
+    endless) i=0; while :; do i=$((i + 1)); echo "land-linux: progress $i"; sleep 1; done ;;
+    *) : ;;
+esac
+exit 0
+STUB
+    chmod +x "$stub"
+    modes="$scratch/watch-modes"
+    mkdir -p "$modes"
+    run_leg() {
+        WATCH_MODES="$modes" AVRA_LAND_WATCH_POLL_S=1 AVRA_LAND_LINUX_QUIET_S=3 AVRA_LAND_LINUX_CAP_S="$1" \
+            AVRA_LAND_SPRITE="first second" AVRA_LAND_SPRITE_PROBE="$probe" AVRA_LAND_SPRITE_STOP="$stopper" \
+            AVRA_LAND_SCRATCH="$scratch/watch-run" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1
+    }
+    echo silent > "$modes/first"; echo ok > "$modes/second"
+    t0=$(date +%s); out="$(run_leg 60)"; st=$?; wall=$(( $(date +%s) - t0 ))
+    case "$out" in *"no progress on first"*"moved to second"*"ran on second"*) ok "watchdog: a silent Sprite is moved to the next" ;; *) bad "watchdog: silent leg not moved ($out)" ;; esac
+    [ "$st" -eq 0 ] && [ "$wall" -lt 20 ] && ok "watchdog: the move happens within the window (${wall}s)" || bad "watchdog: silent leg took ${wall}s, exit $st"
+    grep -q "^first linux-watch" "$stops" && ok "watchdog: the silent Sprite's remote run is stopped" || bad "watchdog: no remote stop ($(cat "$stops"))"
+    echo steady > "$modes/first"
+    out="$(run_leg 60)"; st=$?
+    case "$out" in *"ran on first"*) [ "$st" -eq 0 ] && ok "watchdog: a slow but steady Sprite is left to finish" || bad "watchdog: steady leg exit $st" ;; *) bad "watchdog: steady leg was moved ($out)" ;; esac
+    echo endless > "$modes/first"
+    out="$(run_leg 4)"
+    case "$out" in *"first ran past the leg's"*"moved to second"*"ran on second"*) ok "watchdog: a leg past its cap is moved" ;; *) bad "watchdog: capped leg not moved ($out)" ;; esac
+    echo silent > "$modes/first"; echo silent > "$modes/second"
+    rm -f "$scratch/watch-run/tool-failure"
+    out="$(run_leg 60)"; st=$?
+    if [ "$st" -ne 0 ] && grep -q "no Linux Sprite could run the suites" "$scratch/watch-run/tool-failure" 2>/dev/null; then ok "watchdog: every Sprite silent is a TOOL verdict"; else bad "watchdog: all-silent verdict exit $st, $(cat "$scratch/watch-run/tool-failure" 2>/dev/null)"; fi
+}
+
+# A local step past its hard cap is killed and names itself as a TOOL failure.
+test_step_cap() {
+    rm -f "$scratch/cap-run/tool-failure"
+    t0=$(date +%s)
+    AVRA_LAND_SCRATCH="$scratch/cap-run" AVRA_LAND_WATCH_POLL_S=1 AVRA_LAND_STEP_CAP_S=2 AVRA_LAND_PARALLEL_SLOT=1 sh "$land" --call heavy slowstep sleep 30 > /dev/null 2>&1
+    st=$?
+    wall=$(( $(date +%s) - t0 ))
+    if [ "$st" -ne 0 ] && [ "$wall" -lt 15 ] && grep -q "the step slowstep ran past its" "$scratch/cap-run/tool-failure" 2>/dev/null; then ok "step-cap: a step past its cap is a TOOL failure naming it (${wall}s)"; else bad "step-cap: exit $st after ${wall}s, $(cat "$scratch/cap-run/tool-failure" 2>/dev/null)"; fi
+}
+
 # The Linux leg's Sprites run idlest first: load per core, then free
 # memory, with a Sprite that did not answer last.
 test_sprites_by_load() {
@@ -2346,6 +2441,8 @@ run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
 run_test test_sprites_by_load
+run_test test_linux_watchdog
+run_test test_step_cap
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing

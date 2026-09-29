@@ -202,19 +202,28 @@ heavy() {
     echo "land: $name …" >&2
     t_start="$(date +%s)"
     st=0
+    # A HARD CAP per step: past it the step is killed and the landing
+    # stops as a TOOL failure naming it. The Linux leg is bounded by its
+    # own per-Sprite cap instead.
+    step_cap="${AVRA_LAND_STEP_CAP_S:-2700}"
+    case "$name" in linux*) step_cap=0 ;; esac
     if [ "${AVRA_LAND_PARALLEL_SLOT:-0}" = "1" ]; then
         # A step running inside the parallel job pool (job_launch) is
         # already bounded by AVRA_LAND_JOBS — the machine-wide slot.sh(2)
         # gate is for a landing that runs ONE heavy step at a time, which
         # this one no longer does. memcap still applies, per step.
-        sh "$tools_dir/capped.sh" "$log" 2000000 \
+        capped_step "$step_cap" sh "$tools_dir/capped.sh" "$log" 2000000 \
             sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
     else
-        sh "$tools_dir/capped.sh" "$log" 2000000 \
+        capped_step "$step_cap" sh "$tools_dir/capped.sh" "$log" 2000000 \
             sh "$tools_dir/slot.sh" 2 \
             sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
     fi
     timeline_emit "$name" "$t_start" "$st"
+    if [ "$st" -eq 124 ] && [ "$step_cap" -gt 0 ]; then
+        tool_failed "the step $name ran past its $((step_cap / 60)) min cap"
+        return 1
+    fi
     if [ "$st" -eq 0 ]; then
         echo "land: $name OK" >&2
         return 0
@@ -222,6 +231,13 @@ heavy() {
     # 137 is the memory cap's kill: a finding about the change, never a retry.
     fail_report "$name" "$st" "$log"
     return "$st"
+}
+
+# A command under a hard cap of `$1` seconds (0: none).
+capped_step() {
+    cap="$1"
+    shift
+    if [ "$cap" -gt 0 ]; then watched "$cap" 0 true "$@"; else "$@"; fi
 }
 
 # A step's exit status is read as `cmd || st=$?`: after `if cmd; then …
@@ -731,11 +747,68 @@ warm_gate_step() {
 # trailing "sprite-build: … -> exit N" line — which a REAL remote
 # command failure, guarded by `|| status=$?`, always reaches. Absence
 # of that line is the tell.
+# A WATCHED COMMAND: `watched <cap_s> <quiet_s> <progress_fn> <cmd…>`
+# runs the command and polls it every AVRA_LAND_WATCH_POLL_S seconds,
+# noticing its exit within a second. Past `cap_s` seconds it is killed and
+# answers 124; with `quiet_s` above 0, a `progress_fn` answer that has
+# not changed for `quiet_s` seconds kills it too and answers 125. An
+# empty progress answer measures nothing yet and never trips. Otherwise
+# the command's own status.
+watched() {
+    cap_s="$1"
+    quiet_s="$2"
+    progress_fn="$3"
+    shift 3
+    poll="${AVRA_LAND_WATCH_POLL_S:-10}"
+    "$@" &
+    wpid=$!
+    w0="$(date +%s)"
+    wlast=""
+    wlast_t="$w0"
+    wnext=$((w0 + poll))
+    while kill -0 "$wpid" 2>/dev/null; do
+        sleep 1
+        kill -0 "$wpid" 2>/dev/null || break
+        wnow="$(date +%s)"
+        [ "$wnow" -ge "$wnext" ] || continue
+        wnext=$((wnow + poll))
+        if [ $((wnow - w0)) -ge "$cap_s" ]; then
+            kill_tree "$wpid"
+            wait "$wpid" 2>/dev/null
+            return 124
+        fi
+        [ "$quiet_s" -gt 0 ] || continue
+        wp="$("$progress_fn")"
+        if [ -z "$wp" ] || [ "$wp" != "$wlast" ]; then
+            wlast="$wp"
+            wlast_t="$wnow"
+        elif [ $((wnow - wlast_t)) -ge "$quiet_s" ]; then
+            kill_tree "$wpid"
+            wait "$wpid" 2>/dev/null
+            return 125
+        fi
+    done
+    wst=0
+    wait "$wpid" || wst=$?
+    return "$wst"
+}
+
+# A process and every descendant, children first.
+kill_tree() {
+    for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
+    kill -TERM "$1" 2>/dev/null
+    sleep 1
+    kill -KILL "$1" 2>/dev/null
+    :
+}
+
 # THE IDLEST SPRITE FIRST: every Sprite in the pool is asked, in
 # parallel, for its load and free memory; the answer orders them by
 # load per core, then free memory, with any that did not answer last.
-# Each probe is one exec under a timeout, and each answer is printed.
+# Each probe is one exec under a timeout, and each answer is printed; a
+# pool of one is not probed.
 sprites_by_load() {
+    if [ "$#" -le 1 ]; then echo "$* "; return 0; fi
     probe="${AVRA_LAND_SPRITE_PROBE:-sprite_probe}"
     d="$(mktemp -d "${TMPDIR:-/tmp}/avra-sprite-load.XXXXXX")"
     for s in "$@"; do
@@ -777,7 +850,10 @@ linux_gate_step() {
     # The first word the body says is the boundary: before it, a failure
     # is the Sprite's (unreachable, reset, a sync that died); after it,
     # the branch's own.
-    body="echo 'land-linux: body started'; export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
+    # A HEARTBEAT: every 30 s the body prints how many bytes its logs
+    # hold, so the watcher reads progress as a number that grows, never
+    # as time passing.
+    body="echo 'land-linux: body started'; d=\$(mktemp -d); ( while sleep 30; do echo \"land-linux: progress \$(cat /tmp/land-linux-*.log \"\$d\"/*.log 2>/dev/null | wc -c)\"; done ) & hb=\$!; trap 'pkill -P \$hb 2>/dev/null; kill \$hb 2>/dev/null' EXIT; export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
     # The suites run in parallel on the Sprite, the longest first; each
     # keeps its own log and status, and every failure is printed after
     # all have finished. The cap is AVRA_LAND_SPRITE_JOBS when set, else
@@ -791,25 +867,71 @@ linux_gate_step() {
     done
     body="$body; pkgs='$first $rest'; cap='${AVRA_LAND_SPRITE_JOBS:-}'; per=${AVRA_LAND_SPRITE_SUITE_MB:-1800}; meminfo='${AVRA_LAND_SPRITE_MEMINFO:-/proc/meminfo}'"
     body="$body"'; if [ -z "$cap" ]; then avail=$(awk '"'"'/^MemAvailable:/ { print int($2 / 1024) }'"'"' "$meminfo" 2>/dev/null); cap=$(( ${avail:-0} / per )); [ "$cap" -ge 1 ] || cap=1; [ "$cap" -le 4 ] || cap=4; fi; echo "land-linux: $cap suites at once"'
-    body="$body"'; d=$(mktemp -d); for p in $pkgs; do while [ "$(jobs -r | wc -l)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & done; wait; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
+    body="$body"'; running() { n=0; for q in $pids; do kill -0 "$q" 2>/dev/null && n=$((n + 1)); done; echo "$n"; }; pids=""; for p in $pkgs; do while [ "$(running)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & pids="$pids $!"; done; wait $pids; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
 
-    # A Sprite that fails before the body starts is a TOOL failure that
-    # names it; the next Sprite in the list is tried.
+    # A Sprite that fails before the body starts, that stops making
+    # progress, or that runs past the leg's cap is a TOOL failure that
+    # names it; its remote run is stopped and the next Sprite is tried.
+    # A failure after the body started is the branch's.
     tried=""
+    leg_cap="${AVRA_LAND_LINUX_CAP_S:-1500}"
+    leg_quiet="${AVRA_LAND_LINUX_QUIET_S:-300}"
+    slug="$(basename "$wt")"
     for sprite in $sprites; do
         out="$scratch/linux-sprite-$sprite.out"
+        linux_out="$out"
         st=0
-        sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
+        watched "$leg_cap" "$leg_quiet" linux_progress sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
         cat "$out"
-        if grep -q '^land-linux: body started' "$out"; then
+        next="$(next_after "$sprite" $sprites)"
+        if [ "$st" -eq 125 ]; then
+            echo "land-linux: no progress on $sprite for $((leg_quiet / 60)) min — moved to ${next:-no other Sprite}"
+            stop_remote "$sprite" "$slug"
+        elif [ "$st" -eq 124 ]; then
+            echo "land-linux: $sprite ran past the leg's $((leg_cap / 60)) min cap — moved to ${next:-no other Sprite}"
+            stop_remote "$sprite" "$slug"
+        elif grep -q '^land-linux: body started' "$out"; then
             echo "land-linux: ran on $sprite"
             return "$st"
+        else
+            echo "land: linux: the Sprite $sprite failed before the command ran (exit $st)" >&2
         fi
-        echo "land: linux: the Sprite $sprite failed before the command ran (exit $st)" >&2
         tried="$tried $sprite"
     done
     tool_failed "no Linux Sprite could run the suites (tried:$tried)"
     return 1
+}
+
+# The leg's progress: the heartbeat's last byte count once the body has
+# started, nothing measurable before it (a sync and a compiler advance
+# print nothing while they work; the leg's cap bounds them).
+linux_progress() {
+    grep -q '^land-linux: body started' "$linux_out" 2>/dev/null || return 0
+    grep '^land-linux: progress ' "$linux_out" | tail -1 | awk '{ print $3 }'
+    grep -c '' "$linux_out"
+}
+
+# The Sprite after `$1` in the rest of the list.
+next_after() {
+    want="$1"
+    shift
+    seen=0
+    for s in "$@"; do
+        [ "$seen" -eq 1 ] && { echo "$s"; return 0; }
+        [ "$s" = "$want" ] && seen=1
+    done
+    :
+}
+
+# Stops a leg's run on the Sprite: the runner sprite-build started for
+# this tree, and every process under it.
+stop_remote() {
+    remote_stop="${AVRA_LAND_SPRITE_STOP:-sprite_stop}"
+    "$remote_stop" "$1" "$2" || echo "land: linux: could not stop the run on $1" >&2
+}
+
+sprite_stop() {
+    timeout 60 sprite exec -s "$1" -- sh -c 'kids() { for c in $(ps -o pid= --ppid "$1"); do kids "$c"; echo "$c"; done; }; for r in $(pgrep -f "\.avra-run-$0\.sh"); do t="$(kids "$r") $r"; kill -TERM $t 2>/dev/null; sleep 2; kill -KILL $t 2>/dev/null; done; :' "$2"
 }
 
 # ── THE SPEED GATE (PERF's method): instructions retired and peak memory footprint
@@ -1463,7 +1585,7 @@ linux_launch() {
         return 0
     fi
     linux_suffix="$4"
-    ( heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
+    ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
     linux_pid=$!
 }
 
