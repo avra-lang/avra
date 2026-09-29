@@ -1380,6 +1380,7 @@ linux_launch() {
         skipped "the Linux gate$4" "affected package"
         return 0
     fi
+    linux_suffix="$4"
     ( heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
     linux_pid=$!
 }
@@ -1395,6 +1396,7 @@ linux_collect() {
     fi
     lst=0
     wait "$linux_pid" || lst=$?
+    grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     return "$lst"
 }
 
