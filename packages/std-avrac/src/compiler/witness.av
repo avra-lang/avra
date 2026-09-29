@@ -61,7 +61,9 @@ use core.{
     Exemplar,
     list_eq,
     opt_eq,
+    debug,
 }
+use @std.io.{env}
 use query.{Key}
 use diagnostics.{Diag, located_files, DiagFacts, diag_facts_of, Severity}
 use features.{Decls, Decl, NameKind, name_kind_word, name_kind_of, Namespace}
@@ -195,8 +197,8 @@ fn reading_of(fam: Family) -> Reading {
         .Parsed or .Sig or .MethodDiags or .Syntax -> Reading.Itself,
         .Namespace -> Reading.ItselfAndBelow,
         .Visible -> Reading.Replaced,
-        .Items -> Reading.Recorded,
-        .Source or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
+        .Folded -> Reading.Recorded,
+        .Source or .Items or .Resolved or .Methods or .Typed or .ConstTyped or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
     }
 }
 
@@ -255,6 +257,12 @@ type Walk = {
 fn new_walk() -> Walk {
     Walk { visited: map_cell(), emitted: map_cell(), named: list_cell(), inside: Cell.new(false) }
 }
+
+// TEMPORARY (COMPILER DB townhall §6.5a family selection) — see
+// `Workspace.ec_walk`'s block for the whole mechanism.
+type EcState = { visited: Cell<Map<string, bool>>, emitted: Cell<Map<string, bool>> }
+
+once fn ec_flag() -> string? { env("AVRA_EDGES_CUT") }
 
 impl Walk {
     /// How a family reads here: inside a `Visible` the module's names stand
@@ -530,7 +538,11 @@ impl Workspace {
     /// answer is committed with its witness before it is handed back.
     fn witnessed_check(f: FileId) -> WitnessedOutcome {
         let name = self.witness_name(f)
-        let reused? = self.reused_check(name) else { return WitnessedOutcome.Recomputed(self.settled_check(f, name)) }
+        let reused? = self.reused_check(name) else {
+            let out = self.settled_check(f, name)
+            self.ec_report(f)
+            return WitnessedOutcome.Recomputed(out)
+        }
         WitnessedOutcome.Reused(reused)
     }
 
@@ -577,7 +589,7 @@ impl Workspace {
             .Sig -> self.current_sig_hash(inner),
             .Manifest -> self.current_manifest_hash(inner),
             .Methods -> self.current_methods_hash(inner),
-            .Items -> self.current_items_hash(inner),
+            .Folded -> self.current_folded_hash(inner),
             rest -> null,
         }
     }
@@ -594,13 +606,13 @@ impl Workspace {
     /// A `Recorded` key's edge, validated ROOT-DOWN rather than by
     /// re-deriving its value: `row_current_hash` loads the key's own
     /// row and trusts its stored fingerprint once every direct dep it
-    /// names is itself current — never by calling `self.items(f)`
-    /// fresh, which would force a parse (§6.5's "validation never
-    /// materializes").
-    fn current_items_hash(inner: StableId) -> int? {
+    /// names is itself current — never by calling `self.folded(f)`
+    /// fresh, which would force the whole pipeline to that point
+    /// (§6.5's "validation never materializes").
+    fn current_folded_hash(inner: StableId) -> int? {
         if inner.kind != "file" || inner.parts.length < 1 { return null }
         if !self.host.exists(inner.parts[0]) { return null }
-        self.row_current_hash(key(Family.Items, self.file_id(inner.parts[0]).index))
+        self.row_current_hash(key(Family.Folded, self.file_id(inner.parts[0]).index))
     }
 
     /// A `Recorded` key's row, validated once per process however many
@@ -647,6 +659,87 @@ impl Workspace {
             h? -> self.recorded_current.put(sname, h)
             null -> self.recorded_stale.put(sname, true)
         }
+    }
+
+    // ── TEMPORARY (COMPILER DB townhall §6.5a family selection):
+    // shadow-walks today's `.Below` flattening a second way, charging
+    // each leaf to the HIGHEST `.Below`-family key on its path —
+    // never mutating the real walk, never touching the pack. Under
+    // AVRA_EDGES_CUT, `witnessed_check` runs it once per file and
+    // prints the cumulative table; inert otherwise. Stripped once the
+    // numbers are pulled.
+    fn ec_wanted() -> bool { ec_flag() != null }
+
+    fn ec_below_candidate_ords() -> List<int> {
+        // family_at's ordinals, NOT the enum's declaration order:
+        // LiftLowered sits at 24, MethodDiags (Itself, not a
+        // candidate) at 23 — Source, Items, Resolved, Methods, Typed,
+        // ConstTyped, Folded, Analysis, Settled, Lowered, Lifted,
+        // Manifest, Receivers, Expanded, Plain, References, Failures,
+        // HeldSig, Raised, LiftLowered.
+        [0, 2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24]
+    }
+
+    fn ec_report(f: FileId) {
+        if !self.ec_wanted() { return }
+        let st = EcState { visited: map_cell(), emitted: map_cell() }
+        let total = self.ec_walk(key(Family.Analysis, f.index), st, [])
+        debug("EDGES_CUT file=${self.decls.file(f).path} total_leaves=${total}\n")
+        for ord in self.ec_below_candidate_ords() {
+            let absorbed = self.ec_absorbed.get().get("${ord}") ?? 0
+            let points = self.ec_cut_counts.get().get("${ord}") ?? 0
+            debug(
+                "EDGES_CUT_TOTAL family=${family_word(family_at(ord))} absorbed=${absorbed} cut_points=${points} edges_cut=${absorbed - points}\n",
+            )
+        }
+    }
+
+    fn ec_mark_cut(ord: int, name: string) {
+        let ak = "${ord}"
+        self.ec_cut_counts.put(ak, (self.ec_cut_counts.get().get(ak) ?? 0) + 1)
+    }
+
+    fn ec_absorb_all(crossed: List<int>) {
+        for ord in crossed {
+            let ak = "${ord}"
+            self.ec_absorbed.put(ak, (self.ec_absorbed.get().get(ak) ?? 0) + 1)
+        }
+    }
+
+    fn ec_leaf(st: EcState, name: string, crossed: List<int>) -> int {
+        if st.emitted.get().get(name) != null { return 0 }
+        st.emitted.put(name, true)
+        self.ec_absorb_all(crossed)
+        1
+    }
+
+    fn ec_below(st: EcState, k: Key, crossed: List<int>) -> int {
+        mut total = 0
+        for d in self.db.deps_of(k) { total = total + self.ec_walk(d, st, crossed) }
+        total
+    }
+
+    fn ec_below_or_itself(st: EcState, k: Key, name: string, crossed: List<int>) -> int {
+        if self.db.deps_of(k).is_empty() { self.ec_leaf(st, name, crossed) } else { self.ec_below(st, k, crossed) }
+    }
+
+    fn ec_walk(k: Key, st: EcState, crossed: List<int>) -> int {
+        let name = self.stable_key_name(k)
+        if st.visited.get().get(name) != null { return 0 }
+        st.visited.put(name, true)
+        let ord = k.family
+        let crossed2 = if self.ec_below_candidate_ords().contains(ord) && !crossed.contains(ord) {
+            self.ec_mark_cut(ord, name)
+            crossed.concat([ord])
+        } else {
+            crossed
+        }
+        // Parsed/Sig/MethodDiags/Syntax read Itself; Namespace reads
+        // ItselfAndBelow; everything else (Replaced included) is
+        // walked as Below for this shadow accounting.
+        if [1, 6, 24, 25].contains(ord) { return self.ec_leaf(st, name, crossed2) }
+        if ord == 3 { return self.ec_leaf(st, name, crossed2) + self.ec_below(st, k, crossed2) }
+        self.ec_below_or_itself(st, k, name, crossed2)
     }
 
     /// What a `Parsed` edge holds: the parse's structural hash.

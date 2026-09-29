@@ -143,7 +143,7 @@ spec "compiler/witness — an added file is a read that returned nothing" {
 
 spec "compiler/witness — a callee that changes or goes away" {
     given "a callee's return type changes List<int> -> List<string>; the caller is unchanged" {
-        then "the caller's verdict is the fresh one (a type error), and the Parsed edge names the callee's file" {
+        then "the caller's verdict is the fresh one (a type error), and the Folded edge names the callee's file" {
             let a1 = "export fn f() -> List<int> {\n    [1]\n}\n"
             let a2 = "export fn f() -> List<string> {\n    [\"s\"]\n}\n"
             let b = "export fn g() -> int {\n    f()[0] + 1\n}\n"
@@ -157,7 +157,7 @@ spec "compiler/witness — a callee that changes or goes away" {
             let second = a_process_over(after, names, path)
             let _ = checked(second, "/w/src/a.av")
             let v = verdict(second, path, "/w/src/b.av")
-            refused_family(v, "Parsed") &&
+            refused_family(v, "Folded") &&
                 same_verdict_as_fresh(v, fresh_check(after, names, "/w/src/b.av"))
         }
     }
@@ -192,7 +192,7 @@ spec "compiler/witness — a dep whose subject is gone answers unresolved" {
         let f = ws.file_id("/w/src/e.av")
         ws.edge_current_hash(ws.stable_key_name(Key { family: parsed_ordinal(), arg: f.index })) != null
     }
-    then "a removed callee decl's Sig edge answers unresolved" {
+    then "a removed callee decl's Folded edge answers unresolved" {
         let a1 = "export fn f() -> int {\n    1\n}\nexport fn k() -> int {\n    3\n}\n"
         let a2 = "export fn k() -> int {\n    3\n}\n"
         let b = "export fn g() -> int {\n    f() + 1\n}\n"
@@ -204,7 +204,7 @@ spec "compiler/witness — a dep whose subject is gone answers unresolved" {
         let _ = checked(first, "/w/src/b.av")
         let after: Map<string, string> = {"/w/src/a.av": a2, "/w/src/b.av": b}
         let second = a_process_over(after, names, path)
-        refusing_families(second, path, "/w/src/b.av").contains("Sig")
+        refusing_families(second, path, "/w/src/b.av").contains("Folded")
     }
     then "a removed type's Methods name answers unresolved" {
         let t = "export type T = { v: int }\n"
@@ -228,21 +228,21 @@ spec "compiler/witness — a dep whose subject is gone answers unresolved" {
     }
 }
 
-spec "compiler/witness — a file's own item set, recorded once and validated root-down" {
-    given "an unrelated declaration joins the file, its own call unchanged" {
-        then "the file's own Items edge refuses, and the verdict is the fresh one (still clean)" {
-            let a = "export fn f() -> int {\n    1\n}\n"
-            let b1 = "export fn g() -> int {\n    f() + 1\n}\n"
-            let b2 = "export fn g() -> int {\n    f() + 1\n}\nexport fn unrelated() -> int {\n    2\n}\n"
-            let names = ["/w/src/a.av", "/w/src/b.av"]
-            let path = fresh_pack_path("refusal_items_self")
-            let before: Map<string, string> = {"/w/src/a.av": a, "/w/src/b.av": b1}
+spec "compiler/witness — a file's own Folded row, recorded once and validated root-down" {
+    given "a callee in another module changes its body, the same signature" {
+        then "the caller's Folded edge refuses (not Sig, not Parsed), and the verdict is the fresh one" {
+            let a1 = "export fn f() -> int {\n    41\n}\n"
+            let a2 = "export fn f() -> int {\n    42\n}\n"
+            let b = "use util.{f}\n\nexport fn g() -> int {\n    f() + 1\n}\n"
+            let names = ["/w/src/util/a.av", "/w/src/b.av"]
+            let path = fresh_pack_path("refusal_folded_callee")
+            let before: Map<string, string> = {"/w/src/util/a.av": a1, "/w/src/b.av": b}
             let first = a_process_over(before, names, path)
-            let _ = checked(first, "/w/src/a.av")
+            let _ = checked(first, "/w/src/util/a.av")
             let _ = checked(first, "/w/src/b.av")
-            let after: Map<string, string> = {"/w/src/a.av": a, "/w/src/b.av": b2}
+            let after: Map<string, string> = {"/w/src/util/a.av": a2, "/w/src/b.av": b}
             let v = verdict(a_process_over(after, names, path), path, "/w/src/b.av")
-            refused_family(v, "Items") &&
+            refused_family(v, "Folded") &&
                 same_verdict_as_fresh(v, fresh_check(after, names, "/w/src/b.av"))
         }
     }
@@ -253,9 +253,9 @@ spec "compiler/witness — a file's own item set, recorded once and validated ro
             let path = fresh_pack_path("recorded_revision_bump")
             let ws = a_process_over({"/w/src/a.av": a}, names, path)
             let _ = checked(ws, "/w/src/a.av")
-            let ik = Key { family: items_ordinal(), arg: ws.file_id("/w/src/a.av").index }
-            let sname = ws.stable_key_name(ik)
-            let _ = ws.row_current_hash(ik)
+            let fk = Key { family: folded_ordinal(), arg: ws.file_id("/w/src/a.av").index }
+            let sname = ws.stable_key_name(fk)
+            let _ = ws.row_current_hash(fk)
             let memoized = ws.row_current_memo(sname) != null
             ws.db.kernel.bump()
             memoized && ws.row_current_memo(sname) == null && !ws.row_known_stale(sname)
