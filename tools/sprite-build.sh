@@ -134,6 +134,20 @@ staging="/home/sprite/.avra-sprite-$slug.tar"
 info_remote="/home/sprite/.avra-info-$slug.sh"
 run_remote="/home/sprite/.avra-run-$slug.sh"
 
+# A Sprite waking from sleep answers before its home is mounted, and a
+# first exec can drop its connection: wait until /home/sprite stands.
+sprite_ready() {
+    i=0
+    while [ $i -lt 30 ]; do
+        sprite -s "$sprite" exec --no-port-forward -- sh -c 'test -d /home/sprite' >/dev/null 2>&1 && return 0
+        i=$((i + 1))
+        sleep 4
+    done
+    echo "sprite-build: $sprite never readied /home/sprite after 120s" >&2
+    return 1
+}
+sprite_ready || exit 3
+
 sprite -s "$sprite" file push "$provision_script" "/home/sprite/.avra-provision.sh" >/dev/null
 
 # RT1: what the persistent tree and the shared cache already hold, so
