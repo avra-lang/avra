@@ -19,12 +19,12 @@ export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
 /// table's rules tried at every node whose root-kind index admits
 /// it.
 export fn rule_candidates(a: Analysed, stmts: List<StmtId>) -> List<Candidate> {
-    let entries = rules
-    flatten([stmt_candidates(a, entries, s) for s in stmts])
+    let index = rule_index()
+    flatten([stmt_candidates(a, index, s) for s in stmts])
 }
 
-fn stmt_candidates(a: Analysed, entries: List<RuleEntry>, s: StmtId) -> List<Candidate> {
-    flatten([node_candidates(a, entries, at) for at in every_at(a.view.store, At.Stmt(s))])
+fn stmt_candidates(a: Analysed, index: RuleIndex, s: StmtId) -> List<Candidate> {
+    flatten([node_candidates(a, index, at) for at in every_at(a.view.store, At.Stmt(s))])
 }
 
 /// Every node under (and including) `root`, children before owner —
@@ -49,9 +49,8 @@ fn quote_pattern(store: NodeStore, at: At) -> bool {
     match at { .Pat(id) -> store.pat(id) is .Quote, _ -> false }
 }
 
-fn node_candidates(a: Analysed, entries: List<RuleEntry>, at: At) -> List<Candidate> {
-    let shallow = a.view.store.shallow_at(at)
-    flatten([one_candidate(a, at, r) for r in rules_at(entries, shallow)])
+fn node_candidates(a: Analysed, index: RuleIndex, at: At) -> List<Candidate> {
+    flatten([one_candidate(a, at, r) for r in index.at(a.view.store.shallow_at(at))])
 }
 
 fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {
