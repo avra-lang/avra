@@ -88,7 +88,7 @@ The compiler answers to its own name:
 ./avra ir packages/std-avrac/corpus/branch.av   # the memory-annotated IR
 ./avra test packages/std-avrac                  # its cases and its corpus, both engines
 ./avra grammar                # the assembled language
-./avra explain F2000          # any diagnostic code
+./avra docs type.method        # any diagnostic kind
 ```
 
 Every layer is inspectable (P7) — the grammar, the IR, the LLVM

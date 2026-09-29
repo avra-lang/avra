@@ -1,0 +1,51 @@
+//! `avra cache` — the pack's modes by their words, one spelling each, and
+//! `held` answering a check's hold file by file.
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+use @std.avrac.compiler.{Want, FileHold}
+use commands.{cache_mode, CacheMode, checked_at, root_workspace}
+
+/// A package root of one file under `src/`, holding `text` — its own path
+/// each run, so nothing an earlier run kept answers for it.
+fn cache_probe(name: string, text: string) -> string {
+    let root = "/tmp/avra-cache-test/${name}-${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", text)
+    root
+}
+
+/// The package's holds as a check asks them, after a check has run.
+fn holds_after_check(root: string) -> List<FileHold> {
+    let _ = checked_at(root)
+    root_workspace(root).hold_report(Want.Diagnostics) catch []
+}
+
+fn main_hold(rows: List<FileHold>) -> FileHold? { rows.find(it.path.ends_with("/src/main.av")) }
+
+spec "commands/cache" {
+    given "a mode's word" {
+        then "no word is the summary" {
+            cache_mode("") == CacheMode.Summary
+        }
+        then "each question answers to its own word" {
+            ["why", "dependents", "changed", "held"].all(cache_mode(it) != null)
+        }
+        then "the retired spellings name no mode" {
+            cache_mode("db") == null && cache_mode("explain") == null
+        }
+    }
+    given "a package a check has just read" {
+        then "every file is held" {
+            let rows = holds_after_check(cache_probe("all_held", "let a = 1\na\n"))
+            !rows.is_empty() && rows.all(it.held)
+        }
+        then "an edited file is read, because its text moved" {
+            let root = cache_probe("edited", "let a = 1\na\n")
+            let _ = holds_after_check(root)
+            let _ = write_text("${root}/src/main.av", "let a = 2\na\n")
+            let h = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])
+            h != null && !h!.held && h!.why != null && h!.why!.says() == "its text moved"
+        }
+    }
+}
