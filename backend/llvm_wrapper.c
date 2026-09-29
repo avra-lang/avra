@@ -855,20 +855,21 @@ static void hot_settled(void) {
 // per FILE MODULE, so a kept leaf's body is a cost the optimizer and
 // codegen pay again in every module it lands in, not once — the bigger,
 // branchier or more COMPOSED a leaf's body, the more that multiplies.
-// `avra_rc_retain` and `avra_rc_release` are the two leaves nearly every
-// managed touch calls, and the smallest bodies here (a load, a branch,
-// an increment or decrement); `avra_array_len` is one load, cheaper
-// inlined than called. The rest stay ordinary calls, resolved against
-// the runtime library the way every runtime row is: the tagged wrappers
-// are a branch onto retain/release, already inlined once inside the
-// library's own compile; `avra_array_get` is a bounds check into a
-// noreturn trap; `avra_array_get_owned` and `avra_box_thawed` are each a
-// COMPOSITION of a leaf already kept, so inlining them too pays for that
-// leaf's body a second time at every call site.
+// Which leaves are worth that is a per-leaf question, settled by a
+// same-input differential census over `check`'s own instruction count,
+// one leaf dropped at a time from the full carried set (perf-notes):
+// dropping `avra_array_get`/`avra_array_get_owned` alone costs +8.7
+// points — this compiler's own body leans on array reads constantly,
+// so losing their inlining anywhere is the whole regression. Dropping
+// `avra_box_thawed` or the tagged retain/release wrappers costs under
+// 0.1 point each — they buy the smaller module every dropped leaf
+// buys, and nothing measurable back, so they stay dropped.
 static int hot_keep(const char* name) {
     return strcmp(name, "avra_rc_retain") == 0
         || strcmp(name, "avra_rc_release") == 0
-        || strcmp(name, "avra_array_len") == 0;
+        || strcmp(name, "avra_array_len") == 0
+        || strcmp(name, "avra_array_get") == 0
+        || strcmp(name, "avra_array_get_owned") == 0;
 }
 
 static void hot_linked(LLVMModuleRef m) {
