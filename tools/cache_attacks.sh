@@ -414,6 +414,22 @@ if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
     echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
 fi
 
+# RULE FINDINGS ARE A CHECK'S WANT: a build keeps none and prints none; a check
+# after that build reads no rule row, so it runs the rules over the file (a miss,
+# never a wrong answer) and speaks what a cold check speaks; a check held on a
+# check's rows speaks the same again.
+mkdir -p $R/rw/src
+printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
+printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
+rm -rf .avra-cache; rw_cold=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); case "$rw_cold" in *unmutated_mut*) ;; *) fails=$((fails+1)); echo "FAIL  the rule fixture draws no finding cold, so it attacks nothing" ;; esac
+rm -rf .avra-cache; rw_build=$(./avra build $R/rw 2>&1)
+steps=$((steps+1)); case "$rw_build" in *unmutated_mut*) fails=$((fails+1)); echo "FAIL  a build printed a rule finding" ;; esac
+rw_after=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check after a build speaks otherwise than a cold check"; }
+rw_held=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check held on a check's rows speaks otherwise than a cold check"; }
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
