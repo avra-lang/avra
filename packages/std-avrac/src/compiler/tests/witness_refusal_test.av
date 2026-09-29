@@ -228,6 +228,26 @@ spec "compiler/witness — a dep whose subject is gone answers unresolved" {
     }
 }
 
+spec "compiler/witness — a file's own item set, recorded once and validated root-down" {
+    given "an unrelated declaration joins the file, its own call unchanged" {
+        then "the file's own Items edge refuses, and the verdict is the fresh one (still clean)" {
+            let a = "export fn f() -> int {\n    1\n}\n"
+            let b1 = "export fn g() -> int {\n    f() + 1\n}\n"
+            let b2 = "export fn g() -> int {\n    f() + 1\n}\nexport fn unrelated() -> int {\n    2\n}\n"
+            let names = ["/w/src/a.av", "/w/src/b.av"]
+            let path = fresh_pack_path("refusal_items_self")
+            let before: Map<string, string> = {"/w/src/a.av": a, "/w/src/b.av": b1}
+            let first = a_process_over(before, names, path)
+            let _ = checked(first, "/w/src/a.av")
+            let _ = checked(first, "/w/src/b.av")
+            let after: Map<string, string> = {"/w/src/a.av": a, "/w/src/b.av": b2}
+            let v = verdict(a_process_over(after, names, path), path, "/w/src/b.av")
+            refused_family(v, "Items") &&
+                same_verdict_as_fresh(v, fresh_check(after, names, "/w/src/b.av"))
+        }
+    }
+}
+
 spec "compiler/witness — the package's own avra.toml" {
     given "the manifest's text changes between processes" {
         then "the Manifest edge refuses, and the file recomputes" {

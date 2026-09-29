@@ -321,6 +321,21 @@ export type Workspace = {
     /// two families in one table without colliding. Shares
     /// `leaf_memo_revision`'s staleness stamp.
     stable_hash_memo: Cell<Map<string, int>>,
+    /// A `Recorded`-family key's own row, written once per process
+    /// (COMPILER DB townhall §6.5a): its direct edges and a
+    /// fingerprint over them, staged the first time a walk meets it —
+    /// every later walk that meets the same key reads this memo
+    /// instead of re-expanding its deps. Shares `leaf_memo_revision`'s
+    /// staleness stamp.
+    recorded_rows: Cell<Map<string, bool>>,
+    /// A `Recorded` key's root-down validation, memoized per process:
+    /// a key validates once, however many edges name it. `recorded_current`
+    /// holds a validated key's trusted hash; `recorded_stale` holds the
+    /// keys that failed (a missing row counts as failed) — two tables,
+    /// never one `int?` field, so "not yet checked" and "checked and
+    /// stale" are never the same absence.
+    recorded_current: Cell<Map<string, int>>,
+    recorded_stale: Cell<Map<string, bool>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -766,6 +781,9 @@ fn built(
     let no_visible: Map<string, List<int>> = {}
     let no_decls_by_stable: Map<string, DeclId> = {}
     let no_stable_hashes: Map<string, int> = {}
+    let no_recorded_rows: Map<string, bool> = {}
+    let no_recorded_current: Map<string, int> = {}
+    let no_recorded_stale: Map<string, bool> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -784,6 +802,9 @@ fn built(
         visible_memo_sets: Cell.new(no_visible),
         decl_by_stable: Cell.new(no_decls_by_stable),
         stable_hash_memo: Cell.new(no_stable_hashes),
+        recorded_rows: Cell.new(no_recorded_rows),
+        recorded_current: Cell.new(no_recorded_current),
+        recorded_stale: Cell.new(no_recorded_stale),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),

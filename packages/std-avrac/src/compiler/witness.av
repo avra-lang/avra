@@ -181,8 +181,12 @@ fn family_from_word(w: string) -> Family? { families().find((f: Family) -> famil
 /// `Below`: a relay point, whose own deps stand in for it (kept as
 /// itself only when it read nothing). `Replaced`: a file's `Visible`, whose
 /// module-content deps stand aside for the names it was asked. `Nothing`: a
-/// dep that stands aside there.
-enum Reading { Itself, ItselfAndBelow, Below, Replaced, Nothing }
+/// dep that stands aside there. `Recorded`: a relay point that stops
+/// the walk here too, like `Itself` — but unlike a plain leaf, its OWN
+/// direct deps are worth a row of their own (COMPILER DB townhall
+/// §6.5a): recorded once per process, root-down validated, never
+/// flattened into every caller that reaches it.
+enum Reading { Itself, ItselfAndBelow, Below, Replaced, Nothing, Recorded }
 
 /// A REGISTRY over every family, spelled by arm, so a new family cannot
 /// be read into a witness without someone deciding how.
@@ -191,7 +195,8 @@ fn reading_of(fam: Family) -> Reading {
         .Parsed or .Sig or .MethodDiags or .Syntax -> Reading.Itself,
         .Namespace -> Reading.ItselfAndBelow,
         .Visible -> Reading.Replaced,
-        .Source or .Items or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
+        .Items -> Reading.Recorded,
+        .Source or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
     }
 }
 
@@ -388,6 +393,14 @@ fn loc_same(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi =
 /// needs them apart to write `rules_key` (avra-8sb5.57.55).
 fn witnessed_check_shape() -> int { 3 }
 
+/// The wire-shape stamp a `Recorded` key's own row carries — a
+/// different NAME SPACE than `witnessed_check_shape()`'s entirely
+/// (a row's name always carries its `Recorded` family's own word,
+/// never a file witness's), so nothing could decode one as the
+/// other even by accident; this stamp is a second belt, not the
+/// only guard.
+fn recorded_row_shape() -> int { 1 }
+
 fn encoded_witnessed_check(c: WitnessedCheck) -> Bytes {
     let w = stable_writer()
     w.bool(c.clean)
@@ -564,6 +577,7 @@ impl Workspace {
             .Sig -> self.current_sig_hash(inner),
             .Manifest -> self.current_manifest_hash(inner),
             .Methods -> self.current_methods_hash(inner),
+            .Items -> self.current_items_hash(inner),
             rest -> null,
         }
     }
@@ -575,6 +589,64 @@ impl Workspace {
         if inner.kind != "file" || inner.parts.length < 1 { return null }
         if !self.host.exists(inner.parts[0]) { return null }
         self.parsed_edge_hash(self.file_id(inner.parts[0]))
+    }
+
+    /// A `Recorded` key's edge, validated ROOT-DOWN rather than by
+    /// re-deriving its value: `row_current_hash` loads the key's own
+    /// row and trusts its stored fingerprint once every direct dep it
+    /// names is itself current — never by calling `self.items(f)`
+    /// fresh, which would force a parse (§6.5's "validation never
+    /// materializes").
+    fn current_items_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        if !self.host.exists(inner.parts[0]) { return null }
+        self.row_current_hash(key(Family.Items, self.file_id(inner.parts[0]).index))
+    }
+
+    /// A `Recorded` key's row, validated once per process however many
+    /// edges name it: `recorded_current` holds a validated key's
+    /// trusted hash, `recorded_stale` the keys that failed — checked
+    /// before `settled_row_hash` pays for the real walk.
+    fn row_current_hash(k: Key) -> int? {
+        let sname = self.stable_key_name(k)
+        if self.row_known_stale(sname) { return null }
+        let cached? = self.row_current_memo(sname) else {
+            let fresh = self.settled_row_hash(sname)
+            self.row_current_remember(sname, fresh)
+            return fresh
+        }
+        cached
+    }
+
+    /// A row's fingerprint, trusted once it exists (a missing row is a
+    /// MISMATCH, never "nothing to check") and every edge it names —
+    /// each asked through the ordinary `edge_current` door, so an edge
+    /// naming ANOTHER `Recorded` key recurses through `row_current_hash`
+    /// itself — is still current.
+    fn settled_row_hash(sname: string) -> int? {
+        let pack? = self.pack.get() else { return null }
+        let entry? = pack.get(sname) else { return null }
+        if entry.fingerprint != recorded_row_shape() { return null }
+        if !entry.edges.all((e: Edge) -> self.edge_current(e)) { return null }
+        entry.hash
+    }
+
+    fn row_known_stale(sname: string) -> bool {
+        if self.leaf_memo_stale() { return false }
+        self.recorded_stale.get().get(sname) ?? false
+    }
+
+    fn row_current_memo(sname: string) -> int? {
+        if self.leaf_memo_stale() { return null }
+        self.recorded_current.get().get(sname)
+    }
+
+    fn row_current_remember(sname: string, fresh: int?) {
+        self.ensure_memo_fresh()
+        match fresh {
+            h? -> self.recorded_current.put(sname, h)
+            null -> self.recorded_stale.put(sname, true)
+        }
     }
 
     /// What a `Parsed` edge holds: the parse's structural hash.
@@ -875,6 +947,40 @@ impl Workspace {
         [self.edge_at(id) for id in ids]
     }
 
+    /// A `Recorded` key's OWN row, written once per process: its
+    /// direct edges — `expanded_edges` over the key itself, so a
+    /// nested `Recorded` dep is again one edge, never walked through —
+    /// and a fingerprint over them. `expanded_edges` already reads
+    /// `self.db.deps_of(root)` fresh each call, so this is O(the
+    /// key's own direct edges), never the flattened closure below it.
+    fn ensure_row(k: Key) {
+        let sname = self.stable_key_name(k)
+        if self.row_recorded(sname) { return }
+        let pack? = self.pack.get() else { return }
+        let row_edges = self.expanded_edges(k)
+        pack
+            .put(
+                PackEntry {
+                    fingerprint: recorded_row_shape(),
+                    name: sname,
+                    hash: self.edge_hash_of(k),
+                    edges: row_edges,
+                    payload: "".bytes(),
+                },
+            )
+        self.row_remember(sname)
+    }
+
+    fn row_recorded(sname: string) -> bool {
+        if self.leaf_memo_stale() { return false }
+        self.recorded_rows.get().get(sname) ?? false
+    }
+
+    fn row_remember(sname: string) {
+        self.ensure_memo_fresh()
+        self.recorded_rows.put(sname, true)
+    }
+
     /// The process-wide edge table: every distinct edge is interned
     /// once and answered everywhere else as a small int id, so
     /// `edge_id_by_key`, `visible_memo_sets` and every caller's own
@@ -953,7 +1059,18 @@ impl Workspace {
             .Below -> self.below_or_itself(k, walk),
             .Replaced -> self.replaced_or_below(k, walk),
             .Nothing -> [],
+            .Recorded -> self.recorded_leaf(k, walk),
         }
+    }
+
+    /// A `Recorded` key stops the walk here, the same shape as
+    /// `Itself` — one edge for the caller — but first ensures the
+    /// key's OWN row exists (`ensure_row`): recorded once per process,
+    /// so every later walk that meets this same key pays a memo
+    /// check, never a fresh expansion of its deps.
+    fn recorded_leaf(k: Key, walk: Walk) -> List<Key> {
+        self.ensure_row(k)
+        walk.once(k)
     }
 
     fn below_or_itself(k: Key, walk: Walk) -> List<Key> {
@@ -999,11 +1116,17 @@ impl Workspace {
             let no_visible: Map<string, List<int>> = {}
             let no_decls: Map<string, DeclId> = {}
             let no_hashes: Map<string, int> = {}
+            let no_rows: Map<string, bool> = {}
+            let no_current: Map<string, int> = {}
+            let no_stale: Map<string, bool> = {}
             self.edge_table.set(no_table)
             self.edge_id_by_key.set(no_ids)
             self.visible_memo_sets.set(no_visible)
             self.decl_by_stable.set(no_decls)
             self.stable_hash_memo.set(no_hashes)
+            self.recorded_rows.set(no_rows)
+            self.recorded_current.set(no_current)
+            self.recorded_stale.set(no_stale)
             self.leaf_memo_revision.set(self.db.revision())
         }
     }

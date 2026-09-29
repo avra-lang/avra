@@ -27,11 +27,25 @@ fn left_behind(path: string) -> Pack {
     pack_at(path, "witness-test")
 }
 
-fn the_entry(pack: Pack) -> Entry? { real_entries(pack).first() }
+/// The file's own `Analysis` entry — never a bare `.first()`: since
+/// witness.av's `Items` prototype (COMPILER DB townhall §6.5a) a
+/// `Recorded` key like `Items` gets its own row too, so a pack can
+/// hold more than one real entry now, and the one these tests mean
+/// is always the file's checked answer, found by family.
+fn the_entry(pack: Pack) -> Entry? { real_entries(pack).find((e: Entry) -> key_family(e.name) == "Analysis") }
 
 /// The first edge of `entry` whose name is in `family`.
 fn edge_named(entry: Entry, family: string) -> string? {
     [e.name for e in entry.edges if key_family(e.name) ?? "" == family].first()
+}
+
+/// The edge of `entry` in `family` naming `path` — for `Parsed`
+/// specifically, `entry` now carries one for the callee's file AND
+/// one for its own (its `Items` row leans on that second one too),
+/// so a name-blind `.first()` answers whichever the walk met first.
+fn edge_named_for(entry: Entry, family: string, path: string) -> string? {
+    [e.name for e in entry.edges if key_family(e.name) ?? "" == family && shown_name(e.name).contains(path)]
+        .first()
 }
 
 /// Every edge of the pack's one entry, re-asked against what `ws`
@@ -43,10 +57,11 @@ fn edge_verdicts(pack: Pack, ws: Workspace) -> List<Held> {
 
 spec "compiler/store/explain — over a real Analysis entry" {
     given "one file checked by a first process" {
-        then "the pack holds that one entry, grouped as an Analysis, and its edges name Parsed and Sig dependencies" {
+        then "the pack holds that entry plus its file's own Items row, and its edges name Parsed and Sig dependencies" {
             let s = summarized(left_behind(fresh_pack_path("explain_shape")), key_family)
-            [f.family for f in s.families].join(",") == "Analysis" &&
-                s.entries == 1 &&
+            [f.family for f in s.families].contains("Analysis") &&
+                [f.family for f in s.families].contains("Items") &&
+                s.entries == 2 &&
                 [r.family for r in s.referenced].contains("Parsed") &&
                 [r.family for r in s.referenced].contains("Sig")
         }
@@ -108,10 +123,10 @@ spec "compiler/store/explain — dependents of a real name" {
             let found = dependents(pack, sig)
             found.length == 1 && found[0].name == entry.name
         }
-        then "the dependents of a Parsed name group under the one Analysis family" {
+        then "the dependents of the callee's Parsed name group under the one Analysis family" {
             let pack = left_behind(fresh_pack_path("dependents_family"))
             let entry? = the_entry(pack) else { return false }
-            let parsed? = edge_named(entry, "Parsed") else { return false }
+            let parsed? = edge_named_for(entry, "Parsed", "/w/src/a.av") else { return false }
             let groups = family_groups([e.name for e in dependents(pack, parsed)], key_family)
             groups.length == 1 && groups[0].family == "Analysis"
         }
