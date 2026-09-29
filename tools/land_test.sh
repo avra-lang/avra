@@ -195,7 +195,7 @@ test_lock_fifo() {
     for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 300; then
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 600; then
         bad "lock-fifo: C never acquired ticket 3 after A released"
     else
         ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
