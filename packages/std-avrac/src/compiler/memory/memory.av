@@ -33,6 +33,7 @@ use core.{
     rt_moving_twin,
     reversed,
     flatten,
+    opens_region,
 }
 use compiler.lower.{Lowered, Body}
 use compiler.soundness.{checked}
@@ -489,6 +490,10 @@ fn borrow_outlives(
 /// be that scope's. A bracket opened since the load nests inside the cell's
 /// life and is read through; a LOOP opened since runs again, so its whole body
 /// is the stretch — a change after the last use meets that use next turn.
+///
+/// A REGION ARM THAT LEAVES THE FUNCTION CANNOT REACH `last`: nothing in it
+/// stands on any path to a use past its own close, so the scan skips straight
+/// there instead of reading what the arm did on its way out.
 fn leaves_or_changes(defs: List<int>, ins: List<Ins>, at: int, last: int, slot: Reg) -> bool {
     mut depth = 0
     mut loops = 0
@@ -506,9 +511,46 @@ fn leaves_or_changes(defs: List<int>, ins: List<Ins>, at: int, last: int, slot: 
         } else if depth == 0 && turns(i) {
             return true
         }
-        k = k + 1
+        k = skip_diverging_arm(ins, k, last) ?? k + 1
     }
     false
+}
+
+/// An arm's own close (`ArmEnd`, or `RegionEnd` for the last arm) and
+/// whether that arm's own top level — nothing nested inside a further
+/// `if`, `switch`, loop or scope — reaches `.FnExit` before it. A
+/// `.FnExit` behind a nested bracket is conditional on THAT bracket, not
+/// the arm, so only a top-level one makes the arm leave unconditionally.
+type ArmExit = { diverges: bool, boundary: int }
+
+fn arm_exit(ins: List<Ins>, from: int) -> ArmExit {
+    mut depth = 0
+    mut diverges = false
+    mut j = from
+    mut found = 0 - 1
+    while found < 0 {
+        let step = ins[j]
+        if depth == 0 && (step is .ArmEnd || step is .RegionEnd) {
+            found = j
+        } else {
+            if depth == 0 && step is .FnExit { diverges = true }
+            if opens(step) { depth = depth + 1 }
+            if closes(step) { depth = depth - 1 }
+            j = j + 1
+        }
+    }
+    ArmExit { diverges: diverges, boundary: found }
+}
+
+/// `k` just opened a region (`IfStart`/`SwitchStart`) or closed one arm
+/// (`ArmEnd`) — the next arm begins at `k + 1`. When that arm diverges,
+/// its interior is dead to everything from its own close onward, so the
+/// scan may jump straight to that close — UNLESS `last` itself sits
+/// inside the arm, where what happens before that read still matters.
+fn skip_diverging_arm(ins: List<Ins>, k: int, last: int) -> int? {
+    if !(opens_region(ins[k]) || ins[k] is .ArmEnd) { return null }
+    let exit = arm_exit(ins, k + 1)
+    if exit.diverges && (last <= k || last >= exit.boundary) { exit.boundary } else { null }
 }
 
 /// One of the borrows taken from the load.

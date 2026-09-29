@@ -19,9 +19,11 @@
 # whoever next scans past it, so a dead contender never blocks the
 # ones behind it. Two landings never interleave a merge, a rebuild
 # and a fast-forward. `slot.sh` is the OTHER limiter, machine-wide and
-# finer: every heavy command this script runs (a build, a test, `make
-# idioms`) takes a slot first, so a landing shares the machine with
-# whatever else is building, rather than owning it.
+# finer: a build and cache-attacks each take a slot first, so a
+# landing shares the machine with whatever else is building rather
+# than owning it. The parallel checks phase (run_checks) is bounded by
+# AVRA_LAND_JOBS instead — slot.sh's "2" was sized for a landing that
+# ran one heavy step at a time, which that phase deliberately does not.
 #
 # EVERY HEAVY COMMAND'S LOG IS CAPPED (tools/capped.sh) so a runaway
 # does not fill the disk — the law `make avra`'s own 43 GB log paid
@@ -36,7 +38,17 @@
 # ONE compile-and-copy cycle — TWICE when the merge touched
 # packages/std-avrac, packages/cli, packages/std-meta or runtime/,
 # since a compiler change only reaches the product on the SECOND
-# build.
+# build. A compiler-untouched batch skips that second build AND
+# seed-check outright — a seed whose compiler-relevant files never
+# moved compiles HEAD exactly as it did on the landing before this one.
+#
+# ONCE THE BUILD IS DONE, every affected package's tests, idioms
+# (scoped the same way — see run_checks), fmt-lossless and (when the
+# compiler changed) seed-check run TOGETHER, bounded by AVRA_LAND_JOBS
+# (default 4, env-overridable). cache-attacks stands apart, sequential:
+# it clears the shared .avra-cache as its own first act, which a
+# concurrently-reading check would read as a vanished store, not a
+# real failure.
 #
 # `sh tools/land.sh --call <function> [args...]` calls one function
 # below directly, standing where the real script stands (so `$0`-based
@@ -49,6 +61,18 @@ LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
 AVRA_WATCH_HELD=1
 export AVRA_WATCH_HELD
+
+# AVRA_LAND_JOBS bounds how many of a LANDING'S OWN heavy steps run at
+# once (default 4) — a package's tests, idioms, fmt-lossless and
+# seed-check, once the build is done. Sized for a 16 GB / 8-core
+# machine shared with other sessions, never the whole box. This
+# replaces slot.sh's machine-wide "2" for exactly these steps: that
+# gate was sized for a landing that ran ONE heavy thing at a time and
+# left room for one more elsewhere; running several of a landing's own
+# steps together is what it was never asked to allow. memcap still caps
+# every one of them individually (`heavy()`, unchanged) — AVRA_LAND_JOBS
+# is the count, memcap is the ceiling, and both apply.
+: "${AVRA_LAND_JOBS:=4}"
 
 usage() {
     cat <<'EOF'
@@ -82,6 +106,19 @@ mkdir -p "$trash"
 
 log_of() { echo "$scratch/logs/$1.log"; }
 
+# ── THE TIMELINE — every step's own start offset and duration ────────
+# `t0` is this run's own start; every heavy() and light() step reports
+# against it. A --call fixture never installs finish_lock, so it never
+# prints a total — only a real landing (main/main_batch) does, once.
+t0="$(date +%s)"
+timeline_emit() {
+    name="$1"
+    start="$2"
+    status="$3"
+    now="$(date +%s)"
+    echo "land: timeline: $name start=+$((start - t0))s dur=$((now - start))s exit=$status" >&2
+}
+
 # Prints a step's failure — never exits itself, so a caller that means
 # to catch it (`build_generation`'s own restore) still can.
 fail_report() {
@@ -104,10 +141,21 @@ heavy() {
     log="$(log_of "$name")"
     # Progress goes to stderr: batch mode reads a function's stdout as its value.
     echo "land: $name …" >&2
+    t_start="$(date +%s)"
     st=0
-    sh "$tools_dir/capped.sh" "$log" 2000000 \
-        sh "$tools_dir/slot.sh" 2 \
-        sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
+    if [ "${AVRA_LAND_PARALLEL_SLOT:-0}" = "1" ]; then
+        # A step running inside the parallel job pool (job_launch) is
+        # already bounded by AVRA_LAND_JOBS — the machine-wide slot.sh(2)
+        # gate is for a landing that runs ONE heavy step at a time, which
+        # this one no longer does. memcap still applies, per step.
+        sh "$tools_dir/capped.sh" "$log" 2000000 \
+            sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
+    else
+        sh "$tools_dir/capped.sh" "$log" 2000000 \
+            sh "$tools_dir/slot.sh" 2 \
+            sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
+    fi
+    timeline_emit "$name" "$t_start" "$st"
     if [ "$st" -eq 0 ]; then
         echo "land: $name OK" >&2
         return 0
@@ -130,8 +178,10 @@ light() {
     shift 2
     log="$(log_of "$name")"
     echo "land: $name …" >&2
+    t_start="$(date +%s)"
     st=0
     ( "$body" "$@" ) > "$log" 2>&1 || st=$?
+    timeline_emit "$name" "$t_start" "$st"
     if [ "$st" -ne 0 ]; then
         fail_report "$name" "$st" "$log"
         return "$st"
@@ -258,6 +308,7 @@ release_absorbed() {
 finish_lock() {
     release_absorbed
     release_lock
+    echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
 }
 
 # A TRAP ON A SIGNAL RESUMES AFTER THE HANDLER, IT DOES NOT EXIT — a
@@ -425,27 +476,147 @@ build_generation() {
     heavy "build-$n-libs" make -o avra libs
 }
 
-# ── AFFECTED-PACKAGE TESTS ─────────────────────────────────────────────
-# THE AFFECTED PACKAGES' TESTS, TOGETHER WITH `make idioms` — ALL
-# SEQUENTIAL: two avra processes compiling into one .avra-cache AT
-# ONCE corrupt it (avra-8sb5.57.41 — tried as a concurrent batch here
-# first, and both suites failed to link with undefined av_ symbols).
-# Parallelize once concurrent writers into one store are safe; until
-# then every affected package's suite runs one at a time, then idioms.
+# ── THE PARALLEL JOB POOL — bounded by AVRA_LAND_JOBS, private to this
+# run. The write race that once forced every check to run one at a
+# time (avra-8sb5.57.41) is fixed (content-keyed objects, publish by
+# rename); a job's own slot is freed by a STATUS FILE, never `kill -0`
+# on its pid — a finished-but-unwaited child is still a live pid to
+# `kill -0` (a zombie), so polling pids would never see a slot free.
+# Whether a landing reaches the compiler: its C, its seed, or any
+# package the cli (the compiler's root) imports, however deep — the
+# closure affected_packages.sh already computes names packages/cli
+# exactly then.
+compiler_reached() {
+    case "$4" in *"runtime/"*|*"bootstrap/"*) return 0 ;; esac
+    reached="$(sh "$tools_dir/affected_packages.sh" "$2" "$3" "$1" 2>/dev/null)" || return 0
+    printf '%s\n' "$reached" | grep -qxE '(packages/)?cli'
+}
+
+job_pool_reset() {
+    : > "$scratch/jobs.list"
+    rm -rf "$scratch/jobs"
+    mkdir -p "$scratch/jobs"
+}
+
+# A job's status file, its label made one path segment.
+job_status_file() { echo "$scratch/jobs/$(printf '%s' "$1" | tr '/ ' '__').status"; }
+
+job_running() {
+    n=0
+    while read -r pid label; do
+        [ -z "$pid" ] && continue
+        [ -f "$(job_status_file "$label")" ] || n=$((n + 1))
+    done < "$scratch/jobs.list"
+    echo "$n"
+}
+
+# job_launch <label> <command...> — backgrounds <command...>, waiting
+# for a free slot first. `set +e` inside the subshell: `;`-joined under
+# an inherited errexit ends the subshell at the command's own failure,
+# before the status file is written — the same trap capped.sh's own
+# capture guards against, one level up. AVRA_LAND_PARALLEL_SLOT tells a
+# nested heavy() call to skip the machine-wide slot.sh(2) gate, which
+# this pool replaces for its own jobs.
+job_launch() {
+    label="$1"
+    shift
+    cap="$AVRA_LAND_JOBS"
+    case "$cap" in ''|*[!0-9]*) cap=4 ;; esac
+    [ "$cap" -ge 1 ] || cap=1
+    while [ "$(job_running)" -ge "$cap" ]; do sleep 0.5; done
+    status_file="$(job_status_file "$label")"
+    ( set +e; AVRA_LAND_PARALLEL_SLOT=1 "$@"; st=$?; echo "$st" > "$status_file"; exit "$st" ) &
+    echo "$! $label" >> "$scratch/jobs.list"
+}
+
+# Waits for every launched job, fail-closed: a wait whose status cannot
+# be read counts as a failure, never a pass (`wait … || st=$?`, never
+# `st=$?` after an else-less `if`).
+job_wait_all() {
+    : > "$scratch/jobs.result"
+    overall=0
+    while read -r pid label; do
+        [ -z "$pid" ] && continue
+        st=0
+        wait "$pid" || st=$?
+        echo "$label $st" >> "$scratch/jobs.result"
+        [ "$st" -ne 0 ] && overall=1
+    done < "$scratch/jobs.list"
+    return "$overall"
+}
+
+# Every failed job, named with its log path — printed once every job
+# is collected, so no two failures' own output can interleave (the
+# "land: FAILED at '<name>' (exit N) — log: …" shape other tools grep
+# for stays exactly as fail_report already writes it).
+report_parallel_failures() {
+    while read -r label st; do
+        [ "$st" -eq 0 ] && continue
+        fail_report "$label" "$st" "$(log_of "$label")"
+    done < "$scratch/jobs.result"
+}
+
+# One package's idioms check — `--call`-invoked (never a bare function
+# name) because heavy() hands its command to memcap.sh, a SEPARATE
+# process that never sourced this script and knows no shell function.
+idioms_step() {
+    wt="$1"
+    shift
+    cd "$wt"
+    st=0
+    for pkg in "$@"; do
+        ./build/avra check "packages/$pkg" --baseline tools/idioms.baseline || st=1
+    done
+    return "$st"
+}
+
+# ── AFFECTED-PACKAGE TESTS, IDIOMS, FMT-LOSSLESS AND SEED-CHECK — ONE
+# PARALLEL BATCH, bounded by AVRA_LAND_JOBS. cache-attacks stands
+# apart, sequential: it `rm -rf`s the shared .avra-cache as its own
+# first line (tools/cache_attacks.sh), and a store yanked out from
+# under a concurrently-reading test or idioms job is a spurious
+# failure, not a finding — a different hazard than the write race the
+# content-keyed/rename-publish fix closed.
+#
+# IDIOMS OVER `affected` IS SOUND, NOT JUST FASTER: the baseline lists
+# sites per FILE, so an untouched package's own files cannot gain one.
+# Checking a package also reports its DEPENDENCIES' sites, so a changed
+# dependency can change findings in every DEPENDENT — but `affected`
+# already closes over exactly that (every touched package, plus every
+# package that depends on one, to a fixed point), the same reasoning
+# `affected_packages.sh` already applies for tests. A package outside
+# that closure depends on nothing that changed, so nothing it is
+# checked over changed either. A compiler change makes `affected` every
+# package already (affected_packages.sh's own compiler_changed case),
+# so this needs no separate "checked everything" branch.
 run_checks() {
     wt="$1"
     base_sha="$2"
     head_sha="$3"
     suffix="$4"
+    compiler_changed="$5"
+    has_av="${6:-1}"
     affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt")"
 
-    fails=0
+    job_pool_reset
     for pkg in $affected; do
-        heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg" || fails=1
+        job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
     done
-    heavy "idioms$suffix" sh -c "cd '$wt' && make idioms" || fails=1
+    if [ "$has_av" -eq 1 ]; then
+        job_launch "idioms$suffix" heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $affected
+        job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
+    else
+        skipped "idioms and fmt-lossless$suffix" ".av file"
+    fi
+    if [ "$compiler_changed" -eq 1 ]; then
+        job_launch "seed-check$suffix" seed_policy "$wt" "$suffix" "$branch"
+    fi
 
-    [ "$fails" -eq 0 ]
+    if ! job_wait_all; then
+        echo "land: a parallel check failed:" >&2
+        report_parallel_failures
+        return 1
+    fi
 }
 
 # ── THE WHOLE PIPELINE, RUN ONCE AND RE-RUN ONCE ON A LOST RACE ───────
@@ -461,34 +632,65 @@ run_pipeline() {
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
+    check_phase "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix" "$diff_files"
+}
+
+# ── WHAT A DIFF CAN AFFECT DECIDES WHAT RUNS ──────────────────────────
+# Every step a diff cannot affect is skipped, and says so. A diff of
+# tools/ and docs/ alone runs land_test.sh (when tools/ moved) and
+# nothing else; no .av file skips idioms and fmt-lossless; a compiler
+# the diff does not reach skips the second build, seed-check and
+# cache-attacks.
+diff_touches() { printf '%s\n' "$1" | grep -qE "$2"; }
+diff_beyond() { printf '%s\n' "$1" | grep -vE "$2" | grep -q .; }
+skipped() { echo "land: skipped $1: diff touches no $2" >&2; }
+
+check_phase() {
+    wt="$1"
+    base_sha="$2"
+    head_sha="$3"
+    suffix="$4"
+    diff="$5"
+    if ! diff_beyond "$diff" '^(tools|docs)/'; then
+        skipped "builds and package checks$suffix" "code outside tools/ or docs/"
+        if diff_touches "$diff" '^tools/'; then
+            heavy "land-test$suffix" sh -c "cd '$wt' && sh tools/land_test.sh"
+            return
+        fi
+        skipped "land-test$suffix" "tools/"
+        return 0
+    fi
     compiler_changed=0
-    case "$diff_files" in
-        *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
-    esac
+    if compiler_reached "$wt" "$base_sha" "$head_sha" "$diff"; then compiler_changed=1; fi
     echo "land: compiler changed in this landing: $compiler_changed" >&2
+    has_av=0
+    if diff_touches "$diff" '\.av$'; then has_av=1; fi
 
     # A SUBSHELL each: `build_generation`'s own `cd "$wt"` must not
     # leak into the steps after it.
-    if ! ( build_generation "$branch_wt" "1$suffix" ); then
+    if ! ( build_generation "$wt" "1$suffix" ); then
         echo "land: build generation 1$suffix failed" >&2
         return 1
     fi
     if [ "$compiler_changed" -eq 1 ]; then
-        if ! ( build_generation "$branch_wt" "2$suffix" ); then
+        if ! ( build_generation "$wt" "2$suffix" ); then
             echo "land: build generation 2$suffix failed" >&2
             return 1
         fi
+    else
+        skipped "the second build and seed-check$suffix" "compiler source"
     fi
 
-    if ! run_checks "$branch_wt" "$old_main_sha" "$new_branch_sha" "$suffix"; then
-        echo "land: a check failed (an affected package's tests, or idioms)" >&2
+    if ! run_checks "$wt" "$base_sha" "$head_sha" "$suffix" "$compiler_changed" "$has_av"; then
+        echo "land: a check failed (an affected package's tests, idioms, fmt-lossless, or seed-check)" >&2
         return 1
     fi
 
-    heavy "fmt-lossless$suffix" sh -c "cd '$branch_wt' && make fmt-lossless"
-    heavy "cache-attacks$suffix" sh -c "cd '$branch_wt' && make cache-attacks"
-
-    seed_policy "$branch_wt" "$suffix"
+    if [ "$compiler_changed" -eq 0 ]; then
+        skipped "cache-attacks$suffix" "compiler source"
+        return 0
+    fi
+    heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"
 }
 
 # ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
@@ -502,18 +704,27 @@ run_pipeline() {
 # land failure — it is the ordinary signal to refresh — so it runs
 # quietly, capped and slotted like any heavy step, but through its own
 # name; only a check that STILL fails after a fresh emit is fatal.
+# `label` is the landing branch's own name, taken as an argument (never
+# the global `branch`) so a call through job_launch — a fork of this
+# same process, never a `--call` re-exec — reads the right one even
+# when nothing exported `branch` into a re-exec's environment.
 seed_policy() {
     wt="$1"
     suffix="$2"
+    label="${3:-$branch}"
     log1="$(log_of "seed-check$suffix")"
     echo "land: seed-check (first pass) …" >&2
-    if sh "$tools_dir/capped.sh" "$log1" 2000000 sh "$tools_dir/slot.sh" 2 sh -c "cd '$wt' && make seed-check"; then
+    t_start="$(date +%s)"
+    st=0
+    sh "$tools_dir/capped.sh" "$log1" 2000000 sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" sh -c "cd '$wt' && make seed-check" || st=$?
+    timeline_emit "seed-check$suffix" "$t_start" "$st"
+    if [ "$st" -eq 0 ]; then
         echo "land: seed-check passed on the first try — seed already matches HEAD, no emit" >&2
         return 0
     fi
     echo "land: seed-check failed on the first try — the seed lags HEAD; re-emitting" >&2
     heavy "seed-emit$suffix" sh -c "cd '$wt' && make seed"
-    light "seed-commit$suffix" commit_seed_if_moved "$wt" "$branch"
+    light "seed-commit$suffix" commit_seed_if_moved "$wt" "$label"
     heavy "seed-check-2$suffix" sh -c "cd '$wt' && make seed-check"
     echo "land: seed-check passed after a fresh emit" >&2
 }
@@ -613,19 +824,7 @@ try_integration() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
     new_sha="$(git -C "$batch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$batch_wt" diff --name-only "$old_main_sha...$new_sha")"
-    compiler_changed=0
-    case "$diff_files" in
-        *"packages/std-avrac/"*|*"packages/cli/"*|*"packages/std-meta/"*|*"runtime/"*) compiler_changed=1 ;;
-    esac
-
-    if ! ( build_generation "$batch_wt" "batch-1-$label" ); then return 1; fi
-    if [ "$compiler_changed" -eq 1 ]; then
-        if ! ( build_generation "$batch_wt" "batch-2-$label" ); then return 1; fi
-    fi
-    if ! run_checks "$batch_wt" "$old_main_sha" "$new_sha" "-batch-$label"; then return 1; fi
-    if ! heavy "batch-fmt-lossless-$label" sh -c "cd '$batch_wt' && make fmt-lossless"; then return 1; fi
-    if ! heavy "batch-cache-attacks-$label" sh -c "cd '$batch_wt' && make cache-attacks"; then return 1; fi
-    if ! seed_policy "$batch_wt" "-batch-$label"; then return 1; fi
+    if ! check_phase "$batch_wt" "$old_main_sha" "$new_sha" "-batch-$label" "$diff_files"; then return 1; fi
     echo "land: batch attempt [$label] GREEN: $*" >&2
     return 0
 }

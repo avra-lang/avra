@@ -16,10 +16,11 @@ fn rows() -> string {
         "    @plans(\"n\")\n" +
         "    static fn by_n(db: int, v: string) -> List<Row> { [] }\n" +
         "}\n" +
-        "export fn ok(r: Row) -> bool { r.n > 0 }\n"
+        "export fn ok(r: Row) -> bool { r.n > 0 }\n" +
+        "export fn same(r: Row) -> Row { r }\n"
 }
 
-fn row_use() -> string { "use @x.c.{Row, ok}\n" }
+fn row_use() -> string { "use @x.c.{Row, ok, same}\n" }
 
 spec "features/lists — the comprehension planner" {
     given "a declared lookup" {
@@ -51,6 +52,35 @@ spec "features/lists — the comprehension planner" {
                 "this filter hands `Row`'s rows to a call, and no declared index narrows the scan it would run over",
             )
         }
+        then "a row handed through another call is refused, at the call it reaches first" {
+            let p = provided(row_use() + "[r for r in Row.all(1) if ok(same(r))].length", rows())
+            refused_in(p, "this filter hands `Row`'s rows to a call") &&
+                p.report().contains("main.av:2:30]")
+        }
+        then "a call under `!` is refused" {
+            refused_in(
+                provided(row_use() + "[r for r in Row.all(1) if !ok(r)].length", rows()),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "a call on one side of `||` is refused — a disjunction narrows nothing" {
+            refused_in(
+                provided(
+                    row_use() + "[r for r in Row.all(1) if r.tag == \"a\" || ok(r)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "a call reading a row field under `!` beside a narrowing compare is a filter" {
+            answered(
+                provided(
+                    row_use() +
+                        "fn big(n: int) -> bool { n > 5 }\n[r for r in Row.all(1) if r.tag == \"a\" && !big(r.n)].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
         then "the same call beside a narrowing compare is a filter on the narrowed rows" {
             answered(
                 provided(
@@ -58,6 +88,84 @@ spec "features/lists — the comprehension planner" {
                     rows(),
                 ),
             ) == "0"
+        }
+    }
+    given "a join — a later head scanning a relation" {
+        then "an inner head narrows by an outer row's field" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n + s.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+        then "a value reading the inner row itself scans" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n + s.n for r in Row.all(1) for s in Row.all(2) if s.tag == s.tag].length",
+                    rows(),
+                ),
+            ) == "1"
+        }
+        then "a call handed the inner row with nothing narrowing it is refused" {
+            refused_in(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) if r.tag == \"a\" for s in Row.all(2) if ok(s)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "the same call beside the inner narrowing compare is a filter" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag && ok(s)].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+    }
+    given "a join's adversarial shapes" {
+        then "a call handed the outer row after the inner head is refused" {
+            refused_in(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag && ok(r)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+        then "a third head narrows by the second's row" {
+            answered(
+                provided(
+                    row_use() +
+                        "[r.n for r in Row.all(1) for s in Row.all(2) if s.tag == r.tag for t in Row.all(3) if t.tag == s.tag].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+        then "an indexed outer head's row is read at its own place" {
+            answered(
+                provided(
+                    row_use() +
+                        "[i for i, r in Row.all(1) for s in Row.all(2) if s.tag == r.tag].length",
+                    rows(),
+                ),
+            ) == "0"
+        }
+        then "a row a lambda captures is handed to the call taking the lambda" {
+            refused_in(
+                provided(
+                    row_use() + "[r for r in Row.all(1) if [1].any((x: int) -> x == r.n)].length",
+                    rows(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
         }
     }
 }

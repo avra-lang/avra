@@ -15,13 +15,12 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
 /// turn opened inside the one before it, straight from the emission
 /// vocabulary's loop verbs; a filter wraps the rest in a void region
 /// guarded by its condition. The innermost turn pushes the element
-/// straight into the box — no intermediate list per outer element.
+/// straight into the box — no intermediate list per outer element. A
+/// head the planner narrows reads its lookup where its turn opens.
 fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> Reg {
-    let plan: Plan? = narrowing(cx, clauses)
-    if plan != null { narrowed(cx, clauses, plan!) }
     let size = cx.box_size(0)
     let dst = cx.grown_box(cx.shape_at(e), size, [])
-    lower_clauses(cx, dst, elem, clauses, 0, [])
+    lower_clauses(cx, dst, elem, clauses, 0, [], narrowings(cx, clauses))
     dst
 }
 
@@ -38,6 +37,7 @@ fn lower_clauses(
     clauses: List<CompClause>,
     at: int,
     regs: List<Reg>,
+    plans: List<Plan>,
 ) {
     if at >= clauses.length {
         cx.bind_patterns(elem, regs)
@@ -49,44 +49,44 @@ fn lower_clauses(
             // Keyed by the SOURCE alone — the one anchor resolve bound
             // this clause's names to, range bound included.
             cx.bind_patterns(source, regs)
+            let plan: Plan? = plans.find(it.head == at)
+            if plan != null { narrowed(cx, source, regs, plan!) }
             let w = if hi == null { cx.opened(source, elem_type(cx, source)) } else { cx.counted(source, hi!) }
             cx.turn_open(w)
             let here = cx.turn_index(w)
             let v = if hi == null { cx.turn_elem(w, here) } else { here }
             let next_regs = if index == null { regs.concat([v]) } else { regs.concat([here, v]) }
-            lower_clauses(cx, dst, elem, clauses, at + 1, next_regs)
+            lower_clauses(cx, dst, elem, clauses, at + 1, next_regs, plans)
             cx.turn_close(w)
         },
         .Filter(cond) -> {
             cx.bind_patterns(cond, regs)
             cx
-                .void_region(cx.reg_of(cond)) { cx -> lower_clauses(cx, dst, elem, clauses, at + 1, regs) }
+                .void_region(cx.reg_of(cond)) { cx -> lower_clauses(cx, dst, elem, clauses, at + 1, regs, plans) }
         },
     }
 }
 
-/// The lookup a comprehension over a relation narrows to, when one
+/// The lookup each head scanning a relation narrows to, where one
 /// answers a conjunct whose value cannot be null.
-fn narrowing(cx: LowerCx, clauses: List<CompClause>) -> Plan? {
-    let scan? = relation_scan(cx.view, cx.names, clauses) else { return null }
-    comp_plans(cx.view, cx.names, clauses, scan)
-        .find((p: Plan) -> !could_be_null(cx.view.types.seen_shape(cx.type_at(p.value))))
+fn narrowings(cx: LowerCx, clauses: List<CompClause>) -> List<Plan> {
+    [p for s in relation_scans(cx.view, cx.names, clauses) for p in narrowing(cx, clauses, s)]
 }
 
-/// The first head's source answered by the lookup: its register seeded
-/// with `lookup(db, value)` — the operands first — so the walk opens
-/// over the narrowed rows and the whole set is never read.
-fn narrowed(mut cx: LowerCx, clauses: List<CompClause>, plan: Plan) {
-    let source = head_source_of(clauses[0])
+fn narrowing(cx: LowerCx, clauses: List<CompClause>, scan: Scan) -> List<Plan> {
+    [p for p in comp_plans(cx.view, cx.names, clauses, scan) if !could_be_null(cx.view.types.seen_shape(cx.type_at(p.value)))]
+        .slice(0, 1)
+}
+
+/// The head's source read through its lookup: the value, written in a
+/// filter, reads only earlier heads' binders, bound here.
+fn narrowed(mut cx: LowerCx, source: ExprId, regs: List<Reg>, plan: Plan) {
+    cx.bind_patterns(plan.cond, regs)
     let db = cx.reg_of(plan.db)
     let value = cx.reg_of(plan.value)
     let rows = cx
         .call_decl_at(source, cx.method_symbol(plan.lookup, source, cx.type_at(source)), [db, value])
     cx.body.set_reg(source, rows)
-}
-
-fn head_source_of(c: CompClause) -> ExprId {
-    match c { .Head(_, _, source, _) -> source, .Filter(cond) -> cond }
 }
 
 /// A `collect`: an empty list, grown by each kept value as its

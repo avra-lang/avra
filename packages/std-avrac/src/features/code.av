@@ -8,6 +8,7 @@
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
 use core.{
+    mark_at,
     At,
     ExprId,
     StmtId,
@@ -577,10 +578,23 @@ impl Code {
             .decls
             .methods_of(target)
             .find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else {
-            return []
+            return self
+                .valued_call_roots(self.of.view.decls.field_type_named(self.of.facts.type_at(subject), name), args)
         }
         // seat 0 is the receiver; a method's own arguments start at 1.
         self.marked_arg_roots(m, args, 1)
+    }
+
+    /// A call THROUGH a fn value writes where its fn type's own marks
+    /// say, exactly as a declared callee's seats do.
+    fn valued_call_roots(callee: TypeId?, args: List<ExprId>) -> List<ExprId> {
+        let t? = callee else { return [] }
+        match self.of.view.types.shape_of(t) {
+            .Fn(_, marks, _) -> flatten(
+                [some_list(self.of.view.store.place_root(a)) for j, a in args if mark_at(marks, j).mutable],
+            ),
+            rest -> [],
+        }
     }
 
     /// `args`, seat-ordered (a named argument fills the seat its name
@@ -676,6 +690,7 @@ impl Code {
     }
 
     fn import_rows_at(id: StmtId) -> List<Ref> {
+        if self.of.view.store.use_parts(id) == null { return [] }
         [r for r in self.of.view.decls.refs_in_file(self.of.view.file) if r.kind is .Import && matches_stmt(r.at, id)]
     }
 
