@@ -14,7 +14,9 @@
 //! `@key` fields together are the row's stable name; `@unique` is a
 //! constraint an insert answers as a `Result`; `@index` is a lookup
 //! that answers a list, and files a list field's row under every
-//! element. `@local` marks a column this process alone reads — out of
+//! element and a nullable field's only when present — a null is in no
+//! bucket, so `@unique` holds among present values and a `@key` or a
+//! grain is never nullable. `@local` marks a column this process alone reads — out of
 //! the stable hash and the codec, so a `<T>Stored` row (what
 //! `decoded` answers) has none. A field is an `int`, a `bool`, a
 //! `string`, an enum (carried by its variant's name), a record of
@@ -129,6 +131,7 @@ fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic
     let many = [many_valued(t, f) for f in lookups(t) if is_list(f.kind) && (marked(f, "key") || marked(f, "unique") || index_with(f, "grain"))]
     let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind, shapes)]
     let keyed_local = [key_local(t, f) for f in lookups(t) if marked(f, "key") && marked(f, "local")]
+    let null_one = [null_bucket(t, f) for f in lookups(t) if is_opt(f.kind) && (marked(f, "key") || index_with(f, "grain"))]
     let grains = [f for f in lookups(t) if index_with(f, "grain")]
     let more_grains = [grain_twice(t, f) for f in grains.slice(1, grains.length)]
     clashes
@@ -136,6 +139,7 @@ fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic
         .concat(unfiled)
         .concat(ids)
         .concat(keyed_local)
+        .concat(null_one)
         .concat(more_grains)
         .concat(many)
 }
@@ -183,9 +187,14 @@ fn key_indexes(t: Type) -> int { if key_fields(t).is_empty() { 0 } else { 1 } }
 
 /// Whether a kind files under an index key.
 /// The kind a lookup files by: a list's element — the row files under
-/// each — and any other kind itself.
+/// each — a nullable's value — the row files under it only when present
+/// — and any other kind itself.
 fn filed_kind(k: Kind) -> Kind {
-    match k { .List(elem) -> elem, rest -> k }
+    match k { .List(elem) -> elem, .Opt(inner) -> inner, rest -> k }
+}
+
+fn is_opt(k: Kind) -> bool {
+    match k { .Opt(_) -> true, rest -> false }
 }
 
 fn is_list(k: Kind) -> bool {
@@ -524,11 +533,12 @@ fn index_keys_member(t: Type) -> Decls {
     quote { fn index_keys() -> List<List<IndexKey>> { [${..parts}] } }
 }
 
-/// A field's keys in its index: its value's one, or one per element of
-/// a list.
+/// A field's keys in its index: its value's one, one per element of a
+/// list, or a nullable's one when present and none when null.
 fn keys_of(f: Field) -> Code {
     match f.kind {
         .List(elem) -> quote { [${key_of(quote { x }, elem)} for x in self.${f.name}] },
+        .Opt(inner) -> quote { [${key_of(quote { x! }, inner)} for x in [self.${f.name}] if x != null] },
         rest -> quote { [${key_of(quote { self.${f.name} }, f.kind)}] },
     }
 }
@@ -596,8 +606,15 @@ fn unique_checks(t: Type) -> List<Stmts> {
 }
 
 fn unique_check(t: Type, f: Field, i: int) -> Stmts {
-    quote {
-        let _ = unheld(rs.holder(${i}, keys[${i}][0], own), ${literal(t.name)}, ${literal(f.name)}, ${shown(quote { r.${f.name} }, f.kind)})?
+    match f.kind {
+        .Opt(inner) -> quote {
+            if r.${f.name} != null {
+                let _ = unheld(rs.holder(${i}, keys[${i}][0], own), ${literal(t.name)}, ${literal(f.name)}, ${shown(quote { r.${f.name}! }, inner)})?
+            }
+        },
+        rest -> quote {
+            let _ = unheld(rs.holder(${i}, keys[${i}][0], own), ${literal(t.name)}, ${literal(f.name)}, ${shown(quote { r.${f.name} }, f.kind)})?
+        },
     }
 }
 
@@ -1063,6 +1080,15 @@ fn answer_clash(t: Type, f: Field) -> Diagnostic {
         f.at ?? t.at,
         "`${t.name}.${f.name}` is `@unique` and `@index` — `by_${f.name}` answers one row or every row, never both",
         "keep `@unique` for one row, or `@index` for every row",
+    )
+}
+
+fn null_bucket(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "null_bucket",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` may be null, and a null is in no bucket — a key or a grain names ONE",
+        "mark a field that is always present, or `@index` this one plainly",
     )
 }
 
