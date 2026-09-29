@@ -311,6 +311,16 @@ export type Workspace = {
     /// such edge, on every file a process validates. Shares
     /// `leaf_memo_revision`'s staleness stamp.
     decl_by_stable: Cell<Map<string, DeclId>>,
+    /// A DECLARATION'S CONTENT HASH (`stable_sig_hash`/
+    /// `stable_methods_hash`, witness.av), MEMOIZED — `shape_line`
+    /// walks a signature's whole type wire and `stable_methods_hash`
+    /// sorts every method's own wire, neither cheap, and a process
+    /// validating many files' witnesses asks the SAME frequently-used
+    /// declaration's Sig or Methods edge over and over. Keyed
+    /// `"sig:${d.index}"`/`"methods:${d.index}"` — the tag keeps the
+    /// two families in one table without colliding. Shares
+    /// `leaf_memo_revision`'s staleness stamp.
+    stable_hash_memo: Cell<Map<string, int>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -755,6 +765,7 @@ fn built(
     let no_edge_ids: Map<string, int> = {}
     let no_visible: Map<string, List<int>> = {}
     let no_decls_by_stable: Map<string, DeclId> = {}
+    let no_stable_hashes: Map<string, int> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -772,6 +783,7 @@ fn built(
         edge_id_by_key: Cell.new(no_edge_ids),
         visible_memo_sets: Cell.new(no_visible),
         decl_by_stable: Cell.new(no_decls_by_stable),
+        stable_hash_memo: Cell.new(no_stable_hashes),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
@@ -1418,7 +1430,9 @@ impl Workspace {
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
         visible_of(
-            self.relation(Family.Visible).finish(f.index, DbRow.Visible(out), self.db.revision()),
+            self
+                .relation(Family.Visible)
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r))),
         )
     }
 
@@ -1473,7 +1487,9 @@ impl Workspace {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
         resolved_of(
-            self.relation(Family.Resolved).finish(f.index, DbRow.Resolved(out), self.db.revision()),
+            self
+                .relation(Family.Resolved)
+                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
         )
     }
 
@@ -1727,7 +1743,11 @@ impl Workspace {
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
-        typed_of(self.relation(Family.Typed).finish(d.index, DbRow.Typed(out), self.db.revision()))
+        typed_of(
+            self
+                .relation(Family.Typed)
+                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r))),
+        )
     }
 
     /// A file's bodies as one table: Main's facts first (its range
@@ -1745,16 +1765,42 @@ impl Workspace {
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
         mut spoken: List<Diag> = []
-        for d in self.bodies_of(f) {
+        let bodies = self.bodies_of(f)
+        for d in bodies {
             let facts = self.typed(d)
             out.absorb(facts)
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
+        // DERIVED, AND LAZY: `folded_facts` is entirely `absorb`ed
+        // from each body's own `typed(d)`, already asked above — so
+        // its own fingerprints, in the same order, are folded
+        // content, never re-walked. LAZY because reading them back
+        // through `value_hash_of` would otherwise force every one of
+        // those folds on every cold compile, the moment this file's
+        // Folded settles — this closure runs only when `Folded`
+        // ITSELF has a prior settle to compare against
+        // (query/kernel.av's `settle_lazy`), so on a cold compile,
+        // where Folded's own settle is always its first, nothing
+        // here ever runs (CLAUDE.md, "the key a remembered value
+        // settles on and the name its result is stored under are
+        // one derivation").
+        let ws = self
         folded_of(
             self
                 .relation(Family.Folded)
-                .finish(f.index, DbRow.Folded(folded_facts), self.db.revision()),
+                .finish_lazy(
+                    f.index,
+                    DbRow.Folded(folded_facts),
+                    (r: DbRow) -> fp(
+                        122,
+                        [
+                            fp_list(
+                                [dep_hash_fp(ws.db.value_hash_of(key(Family.Typed, d.index))) for d in bodies],
+                            ),
+                        ],
+                    ),
+                ),
         )
     }
 

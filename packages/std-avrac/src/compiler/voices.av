@@ -21,6 +21,11 @@ use core.{
     same_file,
     TypeRef,
     spelled,
+    Binding,
+    SeatMark,
+    Static,
+    StaticBox,
+    DeclId,
 }
 use features.{
     Unsettled,
@@ -31,6 +36,16 @@ use features.{
     FileView,
     spelled_type,
     BlockGrammar,
+    Namespace,
+    BoundNames,
+    NameFacts,
+    TypeFacts,
+    Cap,
+    Asked as NullableAsk,
+    ParamScope,
+    Sub,
+    Wanted,
+    SeatValue,
 }
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind, Annotation as MetaAnnotation}
@@ -38,10 +53,11 @@ use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
-use diagnostics.{Diag, refusal}
-use @std.errors.{Loc}
+use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
+use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use @std.testing.{words}
 use compiler.store.{Store, Stored, store_at}
+use compiler.lower.{Unit}
 
 // ── voices ──
 
@@ -591,4 +607,304 @@ fn names_near(text: string, at: int) -> List<string> {
 /// A component word nobody imported, and the `use` that brings it.
 fn import_it(spelled: string) -> string {
     "a component's word opens its block only where it is imported — `use ${spelled}`"
+}
+
+// ── EARLY-CUTOFF CONTENT FINGERPRINTS (avra-8sb5.57.106) ──
+// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis` and `Lowered`
+// once settled on `self.db.revision()` — a build-wide counter — so
+// an edit anywhere read as "changed" through them and every
+// dependent recomputed. These fold the WHOLE value each family
+// actually produces, the law `sig_hash`/`parsed_fingerprint` already
+// keep. Every helper below has exactly one literal `fp(` site, so a
+// shape folded from more than one place (an absent/present pair, a
+// bound name entry) is named once and called, never re-spelled.
+
+fn bool_fp(b: bool) -> int {
+    if b { 1 } else { 0 }
+}
+
+fn opt_type_fp(t: TypeId?) -> int {
+    if t == null { fp(126, []) } else { fp(127, [t!.fingerprint()]) }
+}
+
+fn type_list_fp(xs: List<TypeId>) -> int {
+    fp_list([x.fingerprint() for x in xs])
+}
+
+fn opt_type_list_fp(xs: List<TypeId>?) -> int {
+    if xs == null { fp(128, []) } else { fp(129, [type_list_fp(xs!)]) }
+}
+
+fn opt_seat_marks_fp(ms: List<SeatMark>?) -> int {
+    if ms == null { fp(130, []) } else { fp(131, [fp_list([m.fingerprint() for m in ms!])]) }
+}
+
+fn opt_asked_fp(a: NullableAsk?) -> int {
+    if a == null { fp(132, []) } else { fp(133, [a!.fingerprint()]) }
+}
+
+fn opt_sub_fp(s: Sub?) -> int {
+    if s == null { fp(134, []) } else { fp(135, [s!.fingerprint()]) }
+}
+
+fn opt_param_scope_fp(s: ParamScope?) -> int {
+    if s == null { fp(136, []) } else { fp(137, [s!.fingerprint()]) }
+}
+
+fn opt_expr_list_fp(xs: List<ExprId>?) -> int {
+    if xs == null { fp(138, []) } else { fp(139, [fp_list([x.fingerprint() for x in xs!])]) }
+}
+
+fn opt_binding_fp(b: Binding?) -> int {
+    if b == null { fp(140, []) } else { fp(141, [b!.fingerprint()]) }
+}
+
+fn opt_cap_fp(c: Cap?) -> int {
+    if c == null { fp(142, []) } else { fp(143, [c!.fingerprint()]) }
+}
+
+/// A file's typing table, folded field by field — every SideTable's
+/// own placement and cells, and the voices it earned. `hungry` and
+/// `starved` are a body's own working state, spoken before its facts
+/// settle (`absorb`'s own comment); folding them anyway costs
+/// nothing and keeps this ONE fold honest about covering the WHOLE
+/// returned value rather than a hand-picked subset of it.
+export fn type_facts_fp(t: TypeFacts) -> int {
+    fp(
+        144,
+        [
+            t.of_expr.folded((v: TypeId) -> v.fingerprint()),
+            t.widens.folded(opt_type_fp),
+            t.narrows.folded(opt_type_fp),
+            t.asks.folded(opt_asked_fp),
+            t.substs.folded(opt_sub_fp),
+            t.lambda_params.folded(opt_type_list_fp),
+            t.lambda_marks.folded(opt_seat_marks_fp),
+            t.captures.folded(opt_type_list_fp),
+            t.wants.folded(opt_type_fp),
+            t.hungry.folded(bool_fp),
+            t.starved.folded(opt_type_fp),
+            t.scopes.folded(opt_param_scope_fp),
+            t.pattern_types.folded(type_list_fp),
+            t.binding_types.folded(opt_type_fp),
+            t.boxed_locals.folded(bool_fp),
+            t.warned.folded(bool_fp),
+            t.alias_copies.folded(bool_fp),
+            t.thaws.folded(bool_fp),
+            t.plain_thaws.folded(bool_fp),
+            t.gathered.folded(bool_fp),
+            t.collections.folded(opt_expr_list_fp),
+            t.offers.folded(bool_fp),
+            t.spreads.folded(bool_fp),
+            t.null_tails.folded(bool_fp),
+            voices_fp(t.voices),
+        ],
+    )
+}
+
+/// A file's name resolution, folded field by field: what each
+/// expression bound to, what each lambda captured, the two per-expr
+/// read marks, the namespace it resolved in, and its voices.
+export fn name_facts_fp(n: NameFacts) -> int {
+    fp(
+        145,
+        [
+            n.bindings.folded(opt_binding_fp),
+            n.captures.folded(opt_cap_fp),
+            n.mut_reads.folded(bool_fp),
+            n.settled_reads.folded(bool_fp),
+            namespace_fp(n.names),
+            voices_fp(n.voices),
+        ],
+    )
+}
+
+/// A bound-name table's content: each table's ordered *_names list
+/// names the keys — a `Map`'s own iteration order never reaches
+/// output — paired with the id it bound.
+fn named_id_fp(name: string, id: int) -> int {
+    fp(146, [fp_str(name), id])
+}
+
+export fn bound_names_fp(b: BoundNames) -> int {
+    fp(
+        147,
+        [
+            fp_list([named_id_fp(n, b.fns.get(n)?.index ?? -1) for n in b.fn_names]),
+            fp_list([named_id_fp(n, b.types.get(n)?.index ?? -1) for n in b.type_names]),
+            fp_list([named_id_fp(n, b.syntaxes.get(n)?.index ?? -1) for n in b.syntax_names]),
+        ],
+    )
+}
+
+fn opt_bound_names_fp(b: BoundNames?) -> int {
+    if b == null { fp(148, []) } else { fp(149, [bound_names_fp(b!)]) }
+}
+
+/// A namespace's bound content: what `fn_decl`/`type_decl`/`syntax_decl`
+/// read — the module's shared winners (`base`) plus this file's own
+/// tables. NEVER `reads`: that Cell holds a durable witness's own
+/// audit trail, mutated fresh at every ask, not program content a
+/// dependent reads back.
+export fn namespace_fp(ns: Namespace) -> int {
+    fp(
+        150,
+        [
+            opt_bound_names_fp(ns.base),
+            bound_names_fp(
+                BoundNames {
+                    fns: ns.fns,
+                    types: ns.types,
+                    syntaxes: ns.syntaxes,
+                    syntax_names: ns.syntax_names,
+                    fn_names: ns.fn_names,
+                    type_names: ns.type_names,
+                },
+            ),
+            voices_fp(ns.voices),
+        ],
+    )
+}
+
+fn severity_fp(s: Severity) -> int {
+    match s { .Error -> fp(151, []), .Warning -> fp(152, []) }
+}
+
+fn opt_str_fp(s: string?) -> int {
+    if s == null { fp(153, []) } else { fp(154, [fp_str(s!)]) }
+}
+
+fn loc_fp(l: Loc) -> int {
+    fp(155, [opt_str_fp(l.file), l.lo, l.hi])
+}
+
+fn opt_loc_fp(l: Loc?) -> int {
+    if l == null { fp(156, []) } else { fp(157, [loc_fp(l!)]) }
+}
+
+fn frame_fp(f: Frame) -> int {
+    fp(158, [opt_str_fp(f.label), opt_loc_fp(f.loc)])
+}
+
+fn edit_fp(e: Edit) -> int {
+    fp(159, [loc_fp(e.loc), fp_str(e.replacement)])
+}
+
+fn confidence_fp(c: Confidence) -> int {
+    match c { .High -> fp(160, []), .Medium -> fp(161, []), .Low -> fp(162, []) }
+}
+
+fn suggestion_fp(s: Suggestion) -> int {
+    fp(
+        163,
+        [confidence_fp(s.confidence), fp_str(s.description), fp_list([edit_fp(e) for e in s.edits])],
+    )
+}
+
+/// A live `Diag`'s content, through its wire-safe twin — `cause`,
+/// the one field `Diag` cannot fold (a `dyn Error?` has no
+/// `fingerprint()`), is already flattened there into the same lines
+/// the renderer would print for it.
+export fn diag_fp(d: Diag) -> int {
+    let df = diag_facts_of(d)
+    fp(
+        164,
+        [
+            fp_str(df.kind),
+            severity_fp(df.severity),
+            frame_fp(df.primary),
+            fp_list([frame_fp(fr) for fr in df.secondary]),
+            fp_list([fp_str(s) for s in df.cause_lines]),
+            fp_str(df.message),
+            opt_str_fp(df.help),
+            fp_list([suggestion_fp(s) for s in df.suggestions]),
+        ],
+    )
+}
+
+export fn voices_fp(v: Voices) -> int {
+    fp(165, [fp_list([diag_fp(d) for d in v.list])])
+}
+
+fn opt_decl_id_fp(d: DeclId?) -> int {
+    if d == null { fp(166, []) } else { fp(167, [d!.fingerprint()]) }
+}
+
+fn opt_expr_id_fp(e: ExprId?) -> int {
+    if e == null { fp(168, []) } else { fp(169, [e!.fingerprint()]) }
+}
+
+/// A compile-time seat value's content: `fp` is already the seat's
+/// own canonical fingerprint string (`settle_symbol`'s currency), so
+/// this adds only what that string does not carry — the type it
+/// wears and the crossed value itself, walked through its heap.
+fn seat_value_fp(v: SeatValue) -> int {
+    fp(170, [v.index, fp_str(v.fp), v.ty.fingerprint(), meta_hash(v.heap, v.value)])
+}
+
+fn wanted_fp(w: Wanted) -> int {
+    fp(
+        171,
+        [
+            w.file.fingerprint(),
+            opt_decl_id_fp(w.decl),
+            fp_str(w.name),
+            opt_sub_fp(w.sub),
+            fp_list([seat_value_fp(s) for s in w.seats]),
+            opt_expr_id_fp(w.root),
+        ],
+    )
+}
+
+/// A settled aggregate's octets, walked byte by byte — bounded by
+/// the blob's own size, which is what laying it out already cost.
+fn bytes_fp(b: Bytes) -> int {
+    fp_list([b.at(i) for i in 0..b.length])
+}
+
+fn static_box_fp(b: StaticBox) -> int {
+    match b {
+        .Slots(cells) -> fp(172, [fp_list([c.fingerprint() for c in cells])]),
+        .Table(keys, values) -> fp(173, [fp_list([fp_str(k) for k in keys]), fp_list([v.fingerprint() for v in values])]),
+        .Octets(o) -> fp(174, [bytes_fp(o)]),
+    }
+}
+
+fn opt_file_id_fp(f: FileId?) -> int {
+    if f == null { fp(175, []) } else { fp(176, [f!.fingerprint()]) }
+}
+
+fn static_fp(s: Static) -> int {
+    fp(177, [fp_str(s.name), fp_list([static_box_fp(b) for b in s.boxes]), opt_file_id_fp(s.file)])
+}
+
+/// One lowered unit's content: its bodies (`Body` already derives
+/// `Fingerprint`), the instantiations it asked for, its voices, and
+/// the static data it laid out.
+export fn unit_fp(u: Unit) -> int {
+    fp(
+        178,
+        [
+            fp_list([b.fingerprint() for b in u.bodies]),
+            fp_list([wanted_fp(w) for w in u.wants]),
+            voices_fp(u.voices),
+            fp_list([static_fp(s) for s in u.statics]),
+        ],
+    )
+}
+
+/// A dependency's own settled hash, read back for a DERIVED fold
+/// (Folded's over each body's Typed, Analysis's over Resolved and
+/// Folded) — arity-distinguished from absence, never coalesced into a
+/// plain int a real fold could also answer (CLAUDE.md, "an encoding
+/// spends the empty value"). Absence here means one of two things,
+/// neither worth telling apart at this reader: no cell yet, or a
+/// cell `settle_lazy` wrote whose OWN fold nothing has asked for
+/// before now — the DERIVED fold reads it anyway, since folding "a
+/// dependency changed and I do not yet know its shape" IS what
+/// asking the cutoff question means, and the query kernel's own
+/// discipline (ask before compute) guarantees the dependency was
+/// asked, hence settled, before this read runs.
+export fn dep_hash_fp(h: int?) -> int {
+    if h == null { fp(179, []) } else { fp(180, [h!]) }
 }

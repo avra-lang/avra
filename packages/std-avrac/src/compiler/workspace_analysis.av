@@ -14,6 +14,8 @@ use core.{
     spelled,
     module_path,
     fp_str,
+    fp,
+    fp_list,
     joined,
 }
 use @std.path.{dir_of}
@@ -148,8 +150,37 @@ impl Workspace {
             .Compute -> nothing(),
         }
         let out = self.analyzed(f)
+        // DERIVED, LAZY, never re-walked: `analyzed` just asked
+        // `resolved` and `folded` above (their own fingerprints
+        // fresh once asked), so this adds only what an `Analysis`
+        // carries beyond them — every diagnostic in pipeline order,
+        // `sig_diagnostics` and `method_diagnostics` included. `view`
+        // and `program` are left out: `view` is shared/derived state
+        // (the workspace's own Decls/TypeRegistry, `p.store` already
+        // covered by `Parsed`/`Resolved`/`Folded`), and `program` is
+        // a CLOSURE — structurally unfoldable — whose behavior is a
+        // pure fn of `f`'s own stable path, never independent
+        // content. LAZY because reading Resolved's/Folded's hash
+        // back would otherwise force THEIR folds (and, through
+        // Folded's own derivation, every body's Typed) on every cold
+        // compile; this closure runs only when Analysis itself has a
+        // prior settle to compare against.
+        let ws = self
         analysis_of(
-            self.relation(Family.Analysis).finish(f.index, DbRow.Analysis(out), self.db.revision()),
+            self
+                .relation(Family.Analysis)
+                .finish_lazy(
+                    f.index,
+                    DbRow.Analysis(out),
+                    (r: DbRow) -> fp(
+                        1,
+                        [
+                            dep_hash_fp(ws.db.value_hash_of(key(Family.Resolved, f.index))),
+                            dep_hash_fp(ws.db.value_hash_of(key(Family.Folded, f.index))),
+                            fp_list([diag_fp(d) for d in analysis_of(r).diagnostics]),
+                        ],
+                    ),
+                ),
         )
     }
 
@@ -227,10 +258,11 @@ impl Workspace {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
+        let out = self.lower_requested(self.asks.get()[id])
         lowered_of(
             self
                 .relation(fam)
-                .finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()),
+                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
     }
 

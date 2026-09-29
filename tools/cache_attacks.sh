@@ -650,6 +650,50 @@ rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/n
 lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
+# `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/`Lowered`
+# settle on a CONTENT fingerprint now, never `db.revision()` — a build-wide
+# counter that read every edit anywhere as "changed" through them. These pin
+# two of the fields the fold covers: a lambda's CAPTURE (NameFacts/TypeFacts)
+# and a WARNING'S OWN PRESENCE (voices) — an edit to either must still reach
+# a caller held across the edit, whether that caller is the program's own
+# printed answer or the check output the file itself earns.
+mkdir -p $R/cutfp/src
+printf '[package]\nname = "rt-cutfp"\nversion = "0.1.0"\n' > $R/cutfp/avra.toml
+cat > $R/cutfp/src/main.av <<'AV'
+fn make_adder(n: int) -> fn(int) -> int {
+    (x: int) -> x + n
+}
+mut unused = 1
+let add = make_adder(5)
+println("cutfp ${add(10)}")
+AV
+S "cold cutfp: a closure capture and an unmutated mut sit in one file" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 15" ] || { fails=$((fails+1)); echo "FAIL  cold cutfp printed '$got', wanted 'cutfp 15'"; }
+cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+[ "$cutfp_warn0" = "1" ] || { fails=$((fails+1)); echo "FAIL  cutfp's cold check did not find the unmutated_mut warning it was written to earn"; }
+
+# THE CAPTURE MOVES: the closure now closes over a DIFFERENT computation —
+# its TypeFacts/NameFacts captures column changes though the file's declared
+# NAMES do not, so a Namespace-level cache alone would miss it.
+ed $R/cutfp/src/main.av 'x + n' 'x + n + 1'
+S "cutfp: the closure's capture computation moves" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 16" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16' — a captured value's edit did not propagate"; }
+
+# THE WARNING MOVES, THE PROGRAM'S OWN VALUE ALSO MOVES: `mut unused`
+# becomes read, so the unmutated_mut voice must vanish from a held file's
+# own check — voices ride no program output, so only the diagnostic text
+# can catch a dropped fold.
+ed $R/cutfp/src/main.av 'mut unused = 1' 'mut unused = 1
+unused = unused + 1'
+ed $R/cutfp/src/main.av 'println("cutfp ${add(10)}")' 'println("cutfp ${add(10)} ${unused}")'
+S "cutfp: a voice-only edit — the warning is earned no longer, the closure is untouched" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 16 2" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16 2'"; }
+cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+[ "$cutfp_warn1" = "0" ] || { fails=$((fails+1)); echo "FAIL  cutfp's warm check still finds unmutated_mut after the local was written — a stale voices fold"; }
+
 # A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
 # STRUCTURAL one (Reach) is persisted as ready; a const that traps while
 # settling never is, so its file never holds and the trap never goes quiet.
@@ -666,8 +710,60 @@ printf '// moved\n' >> $R/rs/src/main.av
 rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
 
+# A DURABLE WITNESS, PINNED — under AVRA_WITNESS_PIN=1 only: the
+# `--time` field reads `witnessed 0/N` BOTH when the compile-time
+# switch is off (nothing ever attempted) and when it is on and the
+# Sig-hash bug makes every attempt fail, so the text alone cannot
+# tell vacuous apart from broken. AVRA_WITNESS_PIN names which this
+# binary is — set it only when `build/avra` was built with
+# `witness_enabled: bool = true` — and unset (the gate's own runs)
+# it skips the step outright rather than guess from the count.
+# A LEAF edit — one file nothing else imports — must not cost every
+# OTHER file its witness: `witnessed` must cover every file but the
+# one edited. A `Sig`/`Methods` edge hashed from a `TypeId`/`DeclId`'s
+# raw registry index (core/types.av's and core/nodes.av's own "means
+# nothing outside this process") drifts between processes though the
+# declaration's own text never changed, refusing every unrelated
+# file's witness; a `rules_key` no witnessed path ever writes
+# collapses `held` the same way.
+mkdir -p $R/wr/src
+printf '[package]\nname = "rt-wr"\nversion = "0.1.0"\n' > $R/wr/avra.toml
+cat > $R/wr/src/leaf.av <<'AV'
+export fn leaf_only() -> int { 1 }
+AV
+for n in 1 2 3 4 5 6; do
+cat > $R/wr/src/other$n.av <<AV
+export fn other_fn_$n() -> int { $n }
+AV
+done
+cat > $R/wr/src/main.av <<'AV'
+use other1.{other_fn_1}
+use other2.{other_fn_2}
+use other3.{other_fn_3}
+use other4.{other_fn_4}
+use other5.{other_fn_5}
+use other6.{other_fn_6}
+export fn two(a: int) -> int { a + other_fn_1() + other_fn_2() + other_fn_3() + other_fn_4() + other_fn_5() + other_fn_6() }
+println("${two(1)}")
+AV
+if [ "${AVRA_WITNESS_PIN:-}" = "1" ]; then
+    rm -rf .avra-cache
+    ./avra check $R/wr >$R/wr.first.log 2>&1
+    printf '\nexport fn leaf_only_added() -> int { 2 }\n' >> $R/wr/src/leaf.av
+    wr_line=$(./avra check --time $R/wr 2>&1 | grep '^time:')
+    steps=$((steps+1))
+    wn=$(printf '%s\n' "$wr_line" | grep -oE 'witnessed [0-9]+/[0-9]+' | head -1)
+    got=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\1#')
+    total=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\2#')
+    # N-2: the edited leaf (its own Parsed edge legitimately moved) and
+    # `main.av` (the entry) are the only files this fixture's shape
+    # ever costs a witness — six unrelated files and the prelude must
+    # all still answer `Reused`.
+    want=$((total - 2))
+    [ "$got" -ge "$want" ] || { fails=$((fails+1)); echo "FAIL  a leaf edit did not reuse every unrelated file's witness: $wn (wanted >= $want)"; }
+fi
 # A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
-# NEVER AS A GAP (avra-8sb5.57.100): `members.av` declares two exported named
+# NEVER AS A GAP: `members.av` declares two exported named
 # instances of `widget` (a component whose one field is `run: fn(int) ->
 # int`, the same shape `rule`'s `run: fn(Code) -> Fix?` is) — each an
 # `is_instance` const. `table.av`'s `collect` reads `it.run` for each,
@@ -717,7 +813,7 @@ got_cl1=$($R/cl/src/main 2>&1)
 # editing a rule's actual match logic and rebuilding the compiler warm
 # re-derives that rule's finding, cleanly, no refusal — was witnessed
 # directly against compiler/features/enums/idioms.av's `bool_variant_match`
-# (avra-8sb5.57.100's own receipt), not against a synthetic fixture here.
+# itself, not against a synthetic fixture here.
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.

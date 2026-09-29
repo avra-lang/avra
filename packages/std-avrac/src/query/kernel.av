@@ -33,7 +33,12 @@ export enum Verdict {
 /// revisions it last CHANGED and was last VERIFIED, and its answer's
 /// hash. The last-reader stamp `record_dep` dedupes against lives
 /// apart, in `KernelState.stamps` — a repeat read never touches this.
-type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+/// `value_hash` is NULL for a cell `settle_lazy` wrote whose fold was
+/// never asked — its OWN state, never a sentinel a real fold could
+/// equal (CLAUDE.md, "an encoding spends the empty value"): the
+/// common case, since a key's first-ever settle has no prior to
+/// compare against and nobody asks a fold to be thrown away unread.
+type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int? }
 
 /// A fresh cell for an input: no deps, changed and verified as of
 /// `rev` alike (it was just set, so this revision is both).
@@ -385,7 +390,13 @@ impl Kernel {
     }
 
     /// A settled cell's own value hash — an edge's other half, read
-    /// back once the dep it names has itself settled.
+    /// back once the dep it names has itself settled. NULL both for
+    /// no cell at all and for one `settle_lazy` wrote whose fold was
+    /// never asked — a reader that must tell those apart has no
+    /// business forcing a fold nothing else needed; a reader that
+    /// only composes this into ANOTHER fold should fold the absence
+    /// itself as one more part (the arity law), never coalesce it
+    /// into a plain int a real hash could also answer.
     fn value_hash_of(key: Key) -> int? {
         state_cell(self.snapshot(), key)?.value_hash
     }
@@ -406,6 +417,41 @@ impl Kernel {
 
     fn settle(key: Key, value_hash: int) {
         mut s = self.snapshot()
+        let deps = self.closed_frame(s)
+        self
+            .settled(
+                s,
+                key,
+                deps,
+                kept_since(state_cell(s, key), value_hash) ?? state_revision(s),
+                value_hash,
+            )
+    }
+
+    /// Like `settle`, but `fingerprint` is called AT MOST ONCE, and
+    /// only when a PRIOR cell stands to compare it against — a fresh
+    /// key (every key, on a cold compile: nothing has ever settled
+    /// it before) costs nothing, since there is nothing yet to cut
+    /// off against. A prior cell whose OWN hash was never asked (its
+    /// one and only settle before this one, the same fresh case one
+    /// key up) reads as unknown and this settle answers changed —
+    /// conservative, never wrong, and the last imprecise transition:
+    /// the hash THIS settle writes is always real, so every
+    /// comparison after it is exact.
+    fn settle_lazy(key: Key, fingerprint: fn() -> int) {
+        mut s = self.snapshot()
+        let deps = self.closed_frame(s)
+        let prior? = state_cell(s, key) else {
+            self.settled(s, key, deps, state_revision(s), null)
+            return
+        }
+        let value_hash = fingerprint()
+        self.settled(s, key, deps, kept_since(prior, value_hash) ?? state_revision(s), value_hash)
+    }
+
+    /// Closes the open query frame: its read deps, with the frame's
+    /// restores replayed and its stacks popped.
+    fn closed_frame(mut s: KernelState) -> List<Key> {
         let deps: List<Key> = s.pending.pop().get()
         let restored: Cell<List<Restore>>? = s.restore.pop()
         let _ = s.open.pop()
@@ -415,22 +461,11 @@ impl Kernel {
         let _ = fl.pop()
         self.frame_last.set(fl)
         if restored != null { for r in restored!.get() { restore_one(s, r) } }
-        let prior? = state_cell(s, key) else {
-            write_cell(
-                s,
-                key,
-                QueryCell {
-                    deps: deps,
-                    changed_at: state_revision(s),
-                    verified_at: state_revision(s),
-                    value_hash: value_hash,
-                },
-            )
-            self.replace(s)
-            if self.audit.on.get() { self.judged() }
-            return
-        }
-        let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
+        deps
+    }
+
+    /// Writes a settled cell, verified this revision, and publishes it.
+    fn settled(mut s: KernelState, key: Key, deps: List<Key>, changed: int, value_hash: int?) {
         write_cell(
             s,
             key,
@@ -578,6 +613,12 @@ fn state_slot(s: KernelState, key: Key) -> int {
 /// guard against, unlike a `QueryCell`.
 fn restore_one(mut s: KernelState, r: Restore) {
     write_stamp(s, r.key, r.previous)
+}
+
+/// The revision a prior cell last changed at, when its hash matches —
+/// absent when there is no prior or the answer moved.
+fn kept_since(prior: QueryCell?, value_hash: int) -> int? {
+    if prior?.value_hash == value_hash { prior?.changed_at } else { null }
 }
 
 fn state_cell(s: KernelState, key: Key) -> QueryCell? {
