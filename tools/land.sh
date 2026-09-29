@@ -112,10 +112,42 @@ branch="${branch:-}"
 
 # ── LOGS AND SCRATCH ─────────────────────────────────────────────────
 run_id="$$-$(date +%s)"
-scratch="${AVRA_LAND_SCRATCH:-/tmp/avra-land-scratch/$run_id}"
+scratch_root="${AVRA_LAND_SCRATCH_ROOT:-/tmp/avra-land-scratch}"
+# A re-exec (`--call`) inherits its caller's scratch, never mints one.
+scratch_owned=0
+if [ -z "${AVRA_LAND_SCRATCH:-}" ]; then scratch_owned=1; fi
+scratch="${AVRA_LAND_SCRATCH:-$scratch_root/$run_id}"
+export AVRA_LAND_SCRATCH="$scratch"
 mkdir -p "$scratch/logs"
 trash="$scratch/trash"
 mkdir -p "$trash"
+
+# Scratch a dead run left: its trash always goes; its logs go after a
+# day, so a failed run's logs outlive it long enough to be read.
+prune_dead_scratch() {
+    [ -d "$scratch_root" ] || return 0
+    for d in "$scratch_root"/*; do
+        [ -d "$d" ] || continue
+        [ "$d" = "$scratch" ] && continue
+        pid="$(basename "$d" | cut -d- -f1)"
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        kill -0 "$pid" 2>/dev/null && continue
+        if [ -n "$(find "$d" -maxdepth 0 -mtime +0 2>/dev/null)" ]; then rm -rf "$d"; else rm -rf "$d/trash"; fi
+    done
+}
+
+# This run's own scratch at exit: a green run leaves nothing, a failed
+# one keeps its logs and drops the rest.
+clean_own_scratch() {
+    [ "$scratch_owned" -eq 1 ] || return 0
+    if [ "$1" -eq 0 ]; then
+        rm -rf "$scratch"
+    else
+        rm -rf "$trash"
+        echo "land: this run's logs stay at $scratch/logs" >&2
+    fi
+}
+if [ "$scratch_owned" -eq 1 ]; then prune_dead_scratch; fi
 
 log_of() { echo "$scratch/logs/$1.log"; }
 
@@ -319,9 +351,11 @@ release_absorbed() {
     done
 }
 finish_lock() {
+    exit_st="${1:-$?}"
     release_absorbed
     release_lock
     echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
+    clean_own_scratch "$exit_st"
 }
 
 # A TRAP ON A SIGNAL RESUMES AFTER THE HANDLER, IT DOES NOT EXIT — a
@@ -332,7 +366,7 @@ finish_lock() {
 # handler that exits afterward, at the conventional 128+signal code.
 release_lock_and_exit() {
     sig="$1"
-    finish_lock
+    case "$sig" in INT) finish_lock 130 ;; *) finish_lock 143 ;; esac
     case "$sig" in
         INT) exit 130 ;;
         *) exit 143 ;;
@@ -932,8 +966,11 @@ build_generation() {
     n="$2"
     cd "$wt"
     if [ ! -x build/avra ]; then
-        tool_failed "no standing compiler at $wt/build/avra"
-        return 1
+        echo "land: no standing compiler at $wt/build/avra — bootstrapping one from the seed" >&2
+        if ! heavy "bootstrap-$n" make bootstrap || [ ! -x build/avra ]; then
+            tool_failed "could not bootstrap a compiler at $wt/build/avra"
+            return 1
+        fi
     fi
     cp build/avra "build/avra.pre.$n" 2>/dev/null || true
     # Every C object, not only the runtime: a tree's own objects lag
