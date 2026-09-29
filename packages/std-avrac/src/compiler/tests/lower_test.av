@@ -206,6 +206,9 @@ spec "compiler/lower" {
         then "a VIEW whose root the SAME call also receives takes its own reference at the read instead" {
             render_ir(ir_of(viewed_seat_with_root())).contains("avra_array_get_owned")
         }
+        then "a call in a SIBLING branch the value's last use never reaches is no barrier to it" {
+            !render_ir(ir_of(cross_branch_call())).contains("avra_array_get_owned")
+        }
     }
     given "THE LAW: nullability never allocates" {
         // The one exception, pinned so it cannot widen: a FLAT record
@@ -442,6 +445,16 @@ fn viewed_seat() -> string {
 /// read takes its own reference rather than riding `b`'s.
 fn viewed_seat_with_root() -> string {
     "type B = { xs: List<string> }\nfn n(b: B, xs: List<string>) -> int { xs.length }\nlet b = B { xs: [\"a\" + \"b\"] }\nn(b, b.xs)"
+}
+
+/// `rows_read`'s own shape: a Cell load's dependent (`state`) is read once
+/// before a branch, then again inside EACH arm — one arm's last use sits
+/// beside an unrelated call, the other arm's last use has none. The call
+/// and that use never occur on the same executed path (each arm's own
+/// check is `state`'s last read on ITS path), so it is no barrier to
+/// either: the Cell field stays a view, taking no reference of its own.
+fn cross_branch_call() -> string {
+    "type Kernel = { tag: int }\ntype Decls = { rows_state: Cell<List<int>>, kernel: Cell<Kernel> }\nimpl Kernel {\n    fn touch(i: int) { }\n}\nimpl Decls {\n    fn rows_read(f: int) {\n        let state = self.rows_state.get()\n        if f >= state.length { return }\n        if state[f] == 1 {\n            self.kernel.get().touch(f)\n        } else if state[f] == 2 {\n        }\n    }\n}\nlet d = Decls { rows_state: Cell.new([1, 2, 3]), kernel: Cell.new(Kernel { tag: 0 }) }\nd.rows_read(0)"
 }
 
 /// No `@lent` seat of any call in the slice is retained: each stands.
