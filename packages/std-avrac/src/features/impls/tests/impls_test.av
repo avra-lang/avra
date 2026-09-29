@@ -26,6 +26,17 @@ fn counter() -> string {
     "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn get() -> int { self.n }\n}\n"
 }
 
+/// A holder handing its field to a type's static fns and to a reader
+/// on a local — no seat anywhere is written.
+fn handed() -> string {
+    "type D = { id: int }\ntype R = { n: int }\nimpl R {\n    static fn make() -> R { R { n: 0 } }\n    static fn take(d: D, v: int) -> int { d.id + v }\n    fn peek(d: D, v: int) -> int { self.n + d.id + v }\n}\ntype H = { d: D, t: int }\n"
+}
+
+/// The holder's `mint`, run once through a `let`.
+fn minted(body: string) -> string {
+    "${handed()}impl H {\n    fn mint(v: int) -> int {\n        ${body}\n    }\n}\nlet h = H { d: D { id: 5 }, t: 0 }\nh.mint(1)"
+}
+
 /// The standard receiver.
 fn boxy() -> string {
     "type P = { x: int, y: int }\nimpl P {\n    fn area() -> int {\n        self.x * self.y\n    }\n    fn scaled(k: int) -> P {\n        P { x: self.x * k, y: self.y * k }\n    }\n}\n"
@@ -121,6 +132,18 @@ spec "features/impls" {
                 "type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2",
             )
             a.diagnostics.length == 1 && a.report().contains("`fill` writes through it")
+        }
+        then "a field handed to a type's static fn draws no warning" {
+            let a = analyze_source(minted("R.take(self.d, v)"))
+            a.diagnostics.is_empty() && a.ran() == "6"
+        }
+        then "a field handed to a reader on a local bound to a static fn's answer draws no warning" {
+            let a = analyze_source(minted("let rs = R.make()\n        rs.peek(self.d, v)"))
+            a.diagnostics.is_empty() && a.ran() == "6"
+        }
+        then "a field handed to a reader on a local bound to a construction draws no warning" {
+            let a = analyze_source(minted("let rs = R { n: 2 }\n        rs.peek(self.d, v)"))
+            a.diagnostics.is_empty() && a.ran() == "8"
         }
         then "mutual recursion with no write is not writing" {
             let a = analyze_source(

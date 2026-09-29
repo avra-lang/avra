@@ -30,6 +30,7 @@ use core.{
     fp,
     fp_list,
     fp_str,
+    mix_final,
     joined,
     flatten,
     sorted_texts,
@@ -71,7 +72,7 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use @std.meta.{Diagnostic}
+use @std.meta.{Diagnostic, identity}
 use core.{StmtId}
 use diagnostics.{
     SourceFile,
@@ -115,6 +116,7 @@ type ExternNames = { decls: int, names: List<string> }
 /// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys`
 /// every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
+@identity
 type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
@@ -155,6 +157,7 @@ fn new_keys() -> Keys {
 /// DeclId — a module mints every identity at once, but fills each
 /// row on the ask that names it, so a row that names another still
 /// unfilled in the same module can fill it first (`row_filled`).
+@identity
 type Hold = {
     homes: Cell<Map<string, bool>>,
     held_wants: Cell<List<Wanted>>,
@@ -207,6 +210,7 @@ fn new_hold() -> Hold {
 /// load, the mint, the fill, the object key): whether it has been loaded
 /// into declarations yet, its raw text, split into lines, tab-split into
 /// fields, and each file's place within it (record.av's `Placed`).
+@identity
 type Records = {
     loaded_records: Cell<Map<string, bool>>,
     record_texts: Cell<Map<string, string>>,
@@ -240,9 +244,19 @@ fn new_records() -> Records {
 /// Every dense family's value table now lives on `Db.families`, one
 /// slot per family ordinal (`Workspace.relation`, below); `sigs` and
 /// `methods` live in the declaration table itself.
+///
+/// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
+/// type, so a copy of the workspace still reads and writes the same
+/// build.
+@identity
 export type Workspace = {
+    // plain for its identity: the host capability table, set once at
+    // construction and never reassigned
     host: Host,
+    // plain for its identity: the tree's root path, set once at construction
     root: string,
+    // plain for its identity: the assembled grammar and features,
+    // set once at construction and never reassigned
     lang: Language,
     db: Db,
     decls: Decls,
@@ -293,11 +307,14 @@ export type Workspace = {
     defects: Cell<List<Diag>>,
     package_rows: Cell<List<Package>>,
     package_voices: Cell<List<Diag>>,
+    // plain for its identity: a build-wide config flag, set once at construction
     lone: bool,
-    // a directory of programs: every file its own module
+    // plain for its identity: a directory of programs, every file
+    // its own module — set once at construction
     per_file: bool,
     // one-shot, its captures ended: nothing it hands out is kept
     closed: Cell<bool>,
+    // plain for its identity: the injected clock fn, set once at construction
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
     /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
@@ -442,6 +459,12 @@ enum Family {
     /// asked in ITS bracket, so every file's `Analysis` depends on them
     /// whichever file ran the scan first
     MethodDiags
+    /// a declaration's own syntax (COMPILER DB townhall §6.11): the
+    /// fold of its expr/stmt range's fingerprints, keyed by DeclId so
+    /// an edit to one declaration in a file cuts off before a
+    /// neighbour's reader — a query reading another declaration's
+    /// nodes depends on this, never on the file's whole `Parsed`
+    Syntax
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -454,6 +477,17 @@ fn parsed_fingerprint(s: DbRow) -> int {
 
 fn key(f: Family, arg: int) -> Key {
     Key { family: ordinal(f), arg: arg }
+}
+
+/// `Family.Syntax`'s own fold: the declaration's expr range and its
+/// declaring statement, each avalanched (`mix_final`, splitmix64's
+/// finalizer) before folding through `fp_list` — `fp`'s own inner mix
+/// is linear, so summing raw fingerprints would carry over whatever
+/// structure made two of them collide; avalanching first breaks that
+/// (CLAUDE.md's arity law) and `fp_list` keeps the fold order-sensitive.
+fn syntax_hash(store: NodeStore, x: Decl) -> int {
+    let exprs = [mix_final(store.expr_fingerprint(ExprId { index: i })) for i in x.lo..x.hi]
+    fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
 }
 
 fn ordinal(f: Family) -> int {
@@ -483,6 +517,7 @@ fn ordinal(f: Family) -> int {
         .Raised -> 22,
         .MethodDiags -> 23,
         .LiftLowered -> 24,
+        .Syntax -> 25,
     }
 }
 
@@ -515,6 +550,7 @@ fn family_word(f: Family) -> string {
         .Raised -> "Raised",
         .MethodDiags -> "MethodDiags",
         .LiftLowered -> "LiftLowered",
+        .Syntax -> "Syntax",
     }
 }
 
@@ -559,6 +595,7 @@ fn family_at(i: int) -> Family {
         22 -> Family.Raised,
         23 -> Family.MethodDiags,
         24 -> Family.LiftLowered,
+        25 -> Family.Syntax,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
@@ -572,7 +609,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`
 /// and to `ordinal`; nothing below can notice the day only this
 /// number moves alone, or only stays still alone.
-const family_count: int = 25
+const family_count: int = 26
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -725,6 +762,7 @@ fn built(
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
@@ -934,6 +972,7 @@ impl Workspace {
             .HeldSig -> touch(self.held_sig(module_at(arg))),
             .Raised -> touch(self.raised_by(decl_at_arg(arg))),
             .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
+            .Syntax -> touch(self.syntax(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1555,6 +1594,30 @@ impl Workspace {
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
+    }
+
+    /// A declaration's own syntax, DECLARATION-GRAIN (COMPILER DB
+    /// townhall §6.11): the fold of its expr/stmt range's fingerprints.
+    /// Depends on the file's `Parsed` alone, so an edit ANYWHERE in the
+    /// file recomputes this — but `settle`'s early cutoff pins
+    /// `changed_at` whenever the fold comes out the same, which it does
+    /// for every OTHER declaration in the file. A caller that reads
+    /// another declaration's nodes calls this to depend on THAT
+    /// declaration's syntax, never on the whole file's `Parsed` — one
+    /// edge per file would retype every declaration on any edit. The
+    /// declaration's OWN query (the one this decl's own body is typed,
+    /// signed or lowered under) never calls this for itself: reading
+    /// the nodes it is itself the pass for is its computation, not a
+    /// Db read.
+    fn syntax(d: DeclId) -> int {
+        let k = key(Family.Syntax, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        let _ = self.parsed(x.file)
+        let h = syntax_hash(self.decls.store(d), x)
+        self.db.settle(k, h)
+        h
     }
 
     /// Whether an impl block written under the target's NAME can mean

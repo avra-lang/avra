@@ -1,0 +1,65 @@
+// `Family.Syntax` (COMPILER DB townhall §6.11, M5b slice 1):
+// declaration-grain, not file-grain. Two workspaces over the same
+// two-declaration file, one with `a`'s body edited and `b`'s left
+// alone, stand in for "the same compile, before and after an edit" —
+// the shape every other family's cutoff is tested by in this suite
+// (witness_test.av's own `a_process`/`a_process_over` pattern), since
+// a `Workspace`'s own `Family.Source` is a once-read input (query/
+// memo.av's `input`) and never live-edited in place.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId}
+
+fn syntax_workspace(main: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+fn syntax_decl_named(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.decls.get() if x.name == name][0]
+}
+
+/// `a`'s own body is the only thing this varies; `b` never moves.
+fn syntax_source(a_body: string) -> string {
+    "fn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    2\n}\n"
+}
+
+fn syntax_of(ws: Workspace, name: string) -> int {
+    let _ = ws.items(ws.file_id("/w/src/main.av"))
+    ws.syntax(syntax_decl_named(ws, name))
+}
+
+spec "compiler/workspace — Family.Syntax is declaration-grain (M5b slice 1)" {
+    given "two declarations in one file, `a` edited and `b` untouched" {
+        then "`b`'s syntax hash does not move — the cutoff the decl grain exists for" {
+            syntax_of(syntax_workspace(syntax_source("1")), "b") == syntax_of(syntax_workspace(syntax_source("1 + 1")), "b")
+        }
+        then "`a`'s own syntax hash moves with its own edited body" {
+            syntax_of(syntax_workspace(syntax_source("1")), "a") != syntax_of(syntax_workspace(syntax_source("1 + 1")), "a")
+        }
+        then "an edit that only reindents `a` still moves nothing for `b`" {
+            syntax_of(syntax_workspace(syntax_source("1")), "b") == syntax_of(
+                syntax_workspace("fn a() -> int {\n\n    1\n}\nfn b() -> int {\n    2\n}\n"),
+                "b",
+            )
+        }
+    }
+    given "the same, unedited source" {
+        then "asking twice in the same workspace answers the same hash — no drift from re-asking" {
+            let ws = syntax_workspace(syntax_source("1"))
+            let _ = ws.items(ws.file_id("/w/src/main.av"))
+            let a = syntax_decl_named(ws, "a")
+            ws.syntax(a) == ws.syntax(a)
+        }
+    }
+}
