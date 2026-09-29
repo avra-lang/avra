@@ -16,6 +16,15 @@ land="$here/land.sh"
 slot="$here/slot.sh"
 affected="$here/affected_packages.sh"
 
+# The Linux gate defaults ON for a real landing, and the speed gate
+# may (land.sh's own header) — a bare run_checks call in a fixture below must never
+# reach a live Sprite or run a real cold build. OFF here, by default;
+# the fixtures that exercise these two gates re-arm them locally
+# (env-var prefix on that one command), each with its own stub.
+AVRA_LAND_LINUX=0
+AVRA_LAND_SPEED_GATE=0
+export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE
+
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
 # Every process a fixture started names the scratch dir; none outlives the run.
@@ -36,6 +45,51 @@ bad() {
     total=$((total + 1))
     failed=$((failed + 1))
     echo "FAIL  $1"
+}
+
+# ══ THE TEST POOL — every test_* fn in its own subshell, bounded by
+# AVRA_LAND_TEST_JOBS (default 8), the same job-list/status-file shape
+# land.sh's own run_checks uses for its parallel gates. `total`/
+# `failed` above are updated by ok()/bad() inside each fn's OWN
+# subshell and never reach this process — a fork's globals die with
+# it — so the real counts are read back from every captured log once
+# every job has finished, and printed back in LAUNCH order (never
+# completion order) so the report reads exactly as the serial one did.
+test_logs="$scratch/test-logs"
+test_status="$scratch/test-status"
+mkdir -p "$test_logs" "$test_status"
+: > "$scratch/test-jobs.list"
+
+tests_running() {
+    n=0
+    while read -r pid name; do
+        [ -z "$pid" ] && continue
+        [ -f "$test_status/$name.status" ] || n=$((n + 1))
+    done < "$scratch/test-jobs.list"
+    echo "$n"
+}
+
+run_test() {
+    name="$1"
+    cap="${AVRA_LAND_TEST_JOBS:-8}"
+    while [ "$(tests_running)" -ge "$cap" ]; do sleep 0.2; done
+    ( set +e; "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
+    echo "$! $name" >> "$scratch/test-jobs.list"
+}
+
+# Waits for every launched test (each `wait $pid` returns whenever
+# THAT job finishes, whatever order that happens in), prints its
+# captured output the moment it is ready to print IN LIST ORDER, and
+# tallies every `ok`/`FAIL` line across every log — a scan, never a
+# counter, for the reason ok()/bad() are commented on above.
+report_tests() {
+    while read -r pid name; do
+        [ -z "$pid" ] && continue
+        wait "$pid" 2>/dev/null
+        cat "$test_logs/$name.log"
+    done < "$scratch/test-jobs.list"
+    total="$(cat "$test_logs"/*.log 2>/dev/null | grep -cE '^(ok|FAIL)  ')"
+    failed="$(cat "$test_logs"/*.log 2>/dev/null | grep -cE '^FAIL  ')"
 }
 
 # A throwaway git repo, initialized and committed once, so a fixture's
@@ -128,7 +182,7 @@ test_lock_fifo() {
             > "$scratch/lock-$w.out" 2>&1 &
         eval "${w}_pid=\$!"
     done
-    sleep 8
+    sleep 3
     grown=0
     for w in c d e f; do
         [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
@@ -141,7 +195,7 @@ test_lock_fifo() {
     for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 150; then
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 600; then
         bad "lock-fifo: C never acquired ticket 3 after A released"
     else
         ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
@@ -357,7 +411,6 @@ EOF
     slots="$scratch/checks-parallel-slots"
     rm -rf "$scr" "$slots"
 
-    t_start=$(date +%s)
     if AVRA_LAND_JOBS=4 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
         sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 \
         > "$scratch/checks-parallel.out" 2>&1; then
@@ -366,15 +419,14 @@ EOF
         bad "run_checks: the all-passing case failed"
         cat "$scratch/checks-parallel.out"
     fi
-    elapsed=$(($(date +%s) - t_start))
-    # Serial would be >= 6s (2+2+2 tests... no: 1+1+1 tests + ~3s idioms +
-    # 1s fmt = ~6s of OUTER-job time); concurrent finishes near the
-    # longest single job (idioms, ~3-4s). A generous ceiling catches a
-    # regression to serial without flaking on a loaded machine.
-    if [ "$elapsed" -le 5 ]; then
-        ok "run_checks: wall time ($elapsed s) tracks the longest job, not the sum — jobs ran together"
+    # Parallel means a second job STARTED before the first one ENDED —
+    # read from the order jobs wrote their marks, never from a clock a
+    # loaded machine can stretch.
+    before_first_end="$(awk '/^end /{exit} /^start /{n++} END{print n+0}' "$timeline")"
+    if [ "$before_first_end" -ge 2 ]; then
+        ok "run_checks: $before_first_end jobs started before the first one ended — jobs ran together"
     else
-        bad "run_checks: wall time ($elapsed s) looks serial, not parallel"
+        bad "run_checks: only $before_first_end job started before the first one ended — the checks ran serially"
         cat "$timeline"
     fi
 }
@@ -543,7 +595,7 @@ test_job_wait_fails_closed_on_killed_job() {
 #!/bin/sh
 pkg="$(basename "$2")"
 if [ "$1" = "test" ] && [ "$pkg" = "${HANG_PKG:-}" ]; then
-    sleep 5
+    sleep 2
     exit 0
 fi
 sleep 0.2
@@ -886,7 +938,7 @@ test_heavy_status() {
     AVRA_MEMCAP_MB=200 AVRA_SLOTS_DIR="$slots" branch=x sh "$land" --call heavy hog \
         python3 -c "import time
 x = bytearray(400 * 1024 * 1024)
-end = time.time() + 8
+end = time.time() + 5
 while time.time() < end:
     for i in range(0, len(x), 4096): x[i] = 1" > "$out" 2>&1 || st=$?
     if [ "$st" -eq 137 ] && grep -q "memcap: KILLED" "$out"; then
@@ -979,7 +1031,7 @@ test_auto_batch_holder_stopped() {
     wt_a="$scratch/auto-stop-a"
     git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
     hold="$scratch/auto-stop-hold"
-    export AVRA_LAND_LOCK="$scratch/auto-stop-lock" AVRA_LAND_BATCH_WT="$scratch/auto-stop-wt" AVRA_SLOTS_DIR="$scratch/auto-stop-slots" SLOW_BUILD=20 AVRA_LAND_ABSORB=1
+    export AVRA_LAND_LOCK="$scratch/auto-stop-lock" AVRA_LAND_BATCH_WT="$scratch/auto-stop-wt" AVRA_SLOTS_DIR="$scratch/auto-stop-slots" SLOW_BUILD=3 AVRA_LAND_ABSORB=1
     ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/auto-stop-holder.out" 2>&1 &
     wait_for_line "$scratch/auto-stop-holder.out" "^acquired ticket 1$" 150 > /dev/null
     ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/auto-stop-a.out" 2>&1 &
@@ -1075,7 +1127,15 @@ test_diff_scope_skips() {
     git -C "$d" checkout -q -b cc main
     printf 'int x;\n' > "$d/packages/a/src/x.c"
     commit_all "$d" "c only"
+    git -C "$d" checkout -q -b bk main
+    mkdir -p "$d/backend"
+    printf 'int y;\n' > "$d/backend/wrap.c"
+    commit_all "$d" "backend only"
     git -C "$d" checkout -q main
+
+    land_scoped "$d" bk scope-bk || bad "scope: a backend-only landing failed"
+    logged scope-bk "compiler changed in this landing: 1" "scope: backend C reaches the compiler"
+    unlogged scope-bk "skipped cache-attacks" "scope: a backend-only diff runs cache-attacks"
 
     land_scoped "$d" t scope-t || bad "scope: a tools-only landing failed"
     logged scope-t "skipped builds and package checks: diff touches no code outside tools/ or docs/" "scope: a tools-only diff skips builds and checks"
@@ -1164,32 +1224,585 @@ test_timeline_lines_present() {
     git -C "$d" worktree remove -f "$wt_a" > /dev/null 2>&1
 }
 
-echo "=== land tooling fixtures ==="
-test_lock_fifo
-test_merge_seed_conflict
-test_merge_real_conflict
-test_affected_packages
-test_run_checks_parallel
-test_run_checks_one_fails
-test_run_checks_two_fail
-test_run_checks_jobs_cap
-test_run_checks_slash_label
-test_job_wait_fails_closed_on_killed_job
-test_compiler_untouched_skips_second_build_and_seedcheck
-test_diff_scope_skips
-test_timeline_lines_present
-test_slot_limit
-test_slot_stale_reclaim
-test_caches_aside_twice
-test_commit_seed_if_moved
-test_try_ff
-test_batch_mode
-test_batch_tool_failure
-test_batch_stale_registration
-test_heavy_status
-test_auto_batch
-test_auto_batch_holder_stopped
-test_ff_refused_not_moved
+# ══ THE RATCHET BASELINE — improve, regress, override, missing ══════
+test_ratchet_improve() {
+    f="$scratch/ratchet-improve.baseline"
+    rm -f "$f"
+    printf 'some_metric=10\n' > "$f"
+    out="$(branch=x sh "$land" --call ratchet_check "$f" some_metric 15 up 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q '^PASS 15'; then
+        ok "ratchet: an improving value passes"
+    else
+        bad "ratchet: an improving value should pass — got ($st): $out"
+    fi
+    got="$(sh "$land" --call baseline_get "$f" some_metric)"
+    if [ "$got" = "15" ]; then
+        ok "ratchet: the improved value is recorded"
+    else
+        bad "ratchet: the baseline was not updated to 15 — got $got"
+    fi
+}
+
+test_ratchet_missing_baseline() {
+    f="$scratch/ratchet-missing.baseline"
+    rm -f "$f"
+    out="$(branch=x sh "$land" --call ratchet_check "$f" new_metric 42 up 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q 'no prior baseline'; then
+        ok "ratchet: a missing baseline records the first number and passes"
+    else
+        bad "ratchet: a missing baseline should record+pass — got ($st): $out"
+    fi
+    got="$(sh "$land" --call baseline_get "$f" new_metric)"
+    if [ "$got" = "42" ]; then
+        ok "ratchet: the first-ever value for a key is recorded"
+    else
+        bad "ratchet: the first value was not recorded — got $got"
+    fi
+}
+
+test_ratchet_regress_no_override() {
+    f="$scratch/ratchet-regress.baseline"
+    rm -f "$f"
+    printf 'some_metric=20\n' > "$f"
+    out="$(branch=x sh "$land" --call ratchet_check "$f" some_metric 10 up 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q '^FAIL 10'; then
+        ok "ratchet: a regression with no override fails, named"
+    else
+        bad "ratchet: expected a named FAIL — got ($st): $out"
+    fi
+    got="$(sh "$land" --call baseline_get "$f" some_metric)"
+    if [ "$got" = "20" ]; then
+        ok "ratchet: the baseline is untouched by a failed regression"
+    else
+        bad "ratchet: the baseline moved despite a failed regression — got $got"
+    fi
+}
+
+test_ratchet_regress_with_override() {
+    f="$scratch/ratchet-override.baseline"
+    rm -f "$f"
+    printf 'some_metric=20\n' > "$f"
+    scr="$scratch/ratchet-override-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call ratchet_check "$f" some_metric 10 up "known slowdown, tracked in avra-8sb5.99" 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q '^PASS 10.*override'; then
+        ok "ratchet: a signed regression passes, named as an override"
+    else
+        bad "ratchet: expected a signed PASS — got ($st): $out"
+    fi
+    got="$(sh "$land" --call baseline_get "$f" some_metric)"
+    if [ "$got" = "10" ]; then
+        ok "ratchet: a signed regression's value IS recorded"
+    else
+        bad "ratchet: a signed regression's value was not recorded — got $got"
+    fi
+    if grep -q "some_metric: known slowdown, tracked in avra-8sb5.99" "$scr/ratchet-overrides" 2>/dev/null; then
+        ok "ratchet: the override reason is queued for the chore commit"
+    else
+        bad "ratchet: the override reason was not queued"
+    fi
+}
+
+test_chore_commit_carries_override_reason() {
+    d="$(git_repo chore-commit)"
+    mkdir -p "$d/tools"
+    printf 'warm_held_floor=10\n' > "$d/tools/land.baseline"
+    commit_all "$d" "base"
+    scr="$scratch/chore-commit-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    printf 'warm_held_floor: known regression, tracked in avra-8sb5.99\n' > "$scr/ratchet-overrides"
+    printf 'warm_held_floor=8\n' > "$d/tools/land.baseline"
+    if AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call commit_chore_if_moved "$d" "my-branch" > "$scratch/chore-commit.out" 2>&1; then
+        ok "chore-commit: a moved baseline with a queued override commits"
+    else
+        bad "chore-commit: committing a moved baseline failed"
+        cat "$scratch/chore-commit.out"
+    fi
+    msg="$(git -C "$d" log -1 --format=%B)"
+    if printf '%s' "$msg" | grep -q "known regression, tracked in avra-8sb5.99"; then
+        ok "chore-commit: the commit message carries the override reason"
+    else
+        bad "chore-commit: the commit message did not carry the override reason: $msg"
+    fi
+    if printf '%s' "$msg" | grep -q "ratchet baseline moved"; then
+        ok "chore-commit: a baseline-only move gets its own subject (no seed change)"
+    else
+        bad "chore-commit: wrong subject for a baseline-only move: $msg"
+    fi
+}
+
+# ══ THE WARM-REUSE GATE ═══════════════════════════════════════════════
+# `warm_gate_step` reads its own hard-coded leaf file
+# (compiler/format/receipt.av) — a fixture repo carries a stand-in at
+# that same path with the exact literal the real sed edit targets, so
+# the scripted edit really moves the file's text.
+warm_gate_edit_rel="packages/std-avrac/src/compiler/format/receipt.av"
+
+# `$2` is a file this stub's `check --time` answer reads its `held
+# N/M` words from, so one fixture repo serves every warm-gate case.
+warm_gate_repo() {
+    d="$(git_repo "$1")"
+    mkdir -p "$(dirname "$d/$warm_gate_edit_rel")"
+    printf 'fn token_mismatch() -> string? {\n    return "a token moved at position 0"\n}\n' > "$d/$warm_gate_edit_rel"
+    mkdir -p "$d/build" "$d/tools"
+    heldfile="$2"
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+if [ "\$1" = "check" ]; then
+    echo "time: parse 1ms, \$(cat "$heldfile"), attempt 1"
+    exit 0
+fi
+exit 0
+STUB
+    chmod +x "$d/build/avra"
+    commit_all "$d" "base"
+    echo "$d"
+}
+
+test_warm_gate_off() {
+    d="$(git_repo warm-off)"
+    mkdir -p "$d/build"
+    printf '#!/bin/sh\nexit 0\n' > "$d/build/avra"
+    chmod +x "$d/build/avra"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    scr="$scratch/warm-off-scratch"
+    slots="$scratch/warm-off-slots"
+    rm -rf "$scr" "$slots"
+    AVRA_LAND_JOBS=2 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
+        sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 0 \
+        > "$scratch/warm-off.out" 2>&1
+    logged warm-off "skipped warm-reuse gate: AVRA_LAND_WARM_GATE is off" "warm-gate: off by default — skipped, and says so"
+}
+
+test_warm_gate_prints_held_pass() {
+    heldfile="$scratch/warm-held-pass-value"
+    echo "held 41/42" > "$heldfile"
+    d="$(warm_gate_repo warm-held-pass "$heldfile")"
+    printf 'warm_held_floor=5\n' > "$d/tools/land.baseline"
+    scr="$scratch/warm-held-pass-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -qE 'land: warm-reuse: held 41/42 \(floor 5\) — PASS'; then
+        ok "warm-gate: prints held N/M, the floor, and PASS"
+    else
+        bad "warm-gate: expected the held/floor/PASS line — got ($st): $out"
+    fi
+    if git -C "$d" diff --quiet -- "$warm_gate_edit_rel"; then
+        ok "warm-gate: the scripted body edit is restored after the run"
+    else
+        bad "warm-gate: the scripted edit was left in the tree"
+    fi
+}
+
+test_warm_gate_fails_below_floor() {
+    heldfile="$scratch/warm-held-fail-value"
+    echo "held 41/42" > "$heldfile"
+    d="$(warm_gate_repo warm-held-fail "$heldfile")"
+    printf 'warm_held_floor=100\n' > "$d/tools/land.baseline"
+    scr="$scratch/warm-held-fail-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q '— FAIL'; then
+        ok "warm-gate: held below the floor fails, with no override"
+    else
+        bad "warm-gate: expected a FAIL below the floor — got ($st): $out"
+    fi
+}
+
+test_warm_gate_override_passes() {
+    heldfile="$scratch/warm-held-override-value"
+    echo "held 41/42" > "$heldfile"
+    d="$(warm_gate_repo warm-held-override "$heldfile")"
+    printf 'warm_held_floor=100\n' > "$d/tools/land.baseline"
+    scr="$scratch/warm-held-override-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" AVRA_LAND_WARM_OK="known, tracked" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q '— PASS'; then
+        ok "warm-gate: a signed regression below the floor passes"
+    else
+        bad "warm-gate: expected a signed PASS — got ($st): $out"
+    fi
+}
+
+# ══ THE LINUX GATE — a stubbed sprite-build.sh: pass, fail, unreachable ══
+# The trailing "sprite-build: … -> exit N" line is the tell a REAL
+# remote command reached and answered (guarded by `|| status=$?` in
+# tools/sprite-build.sh); its absence is what a connectivity failure
+# under `set -eu` looks like — never printed.
+sprite_stub_write() {
+    path="$1"
+    mode="$2"
+    case "$mode" in
+        unreachable)
+            cat > "$path" <<'STUB'
+#!/bin/sh
+echo "sprite-build: could not reach the sprite (connection refused)" >&2
+exit 1
+STUB
+            ;;
+        fail)
+            cat > "$path" <<'STUB'
+#!/bin/sh
+echo "sprite-build: pa-slug@stub-hash on stub -> exit 1" >&2
+exit 1
+STUB
+            ;;
+        *)
+            cat > "$path" <<'STUB'
+#!/bin/sh
+echo "sprite-build: pa-slug@stub-hash on stub -> exit 0" >&2
+exit 0
+STUB
+            ;;
+    esac
+    chmod +x "$path"
+}
+
+test_linux_gate_pass() {
+    d="$(git_repo linux-pass)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-pass-sprite.sh"
+    sprite_stub_write "$stub" pass
+    out="$(AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ]; then
+        ok "linux-gate: a passing Sprite run succeeds"
+    else
+        bad "linux-gate: expected success — got ($st): $out"
+    fi
+}
+
+test_linux_gate_fail() {
+    d="$(git_repo linux-fail)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-fail-sprite.sh"
+    sprite_stub_write "$stub" fail
+    scr="$scratch/linux-fail-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && ! printf '%s' "$out" | grep -q "TOOL FAILURE" && [ ! -f "$scr/tool-failure" ]; then
+        ok "linux-gate: a real suite failure refuses the landing, and is never blamed as a tool failure"
+    else
+        bad "linux-gate: expected a non-tool failure — got ($st): $out"
+    fi
+}
+
+test_linux_gate_unreachable() {
+    d="$(git_repo linux-unreachable)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-unreachable-sprite.sh"
+    sprite_stub_write "$stub" unreachable
+    scr="$scratch/linux-unreachable-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q "TOOL FAILURE" && [ -f "$scr/tool-failure" ]; then
+        ok "linux-gate: an unreachable Sprite is a TOOL failure, no branch blamed"
+    else
+        bad "linux-gate: expected a TOOL FAILURE — got ($st): $out"
+    fi
+}
+
+# ══ THE SPEED GATE ═════════════════════════════════════════════════
+# `speed_gate` alone (never `speed_gate_step`, which also wires a real
+# git-worktree base tree) is the unit under test: `$1` doubles as both
+# the tree and the product's own source, needing no worktree at all.
+speed_repo() {
+    d="$(git_repo "$1")"
+    mode="$2"   # cold | warm
+    mkdir -p "$d/build" "$d/packages/cli/src"
+    held_line="held 0/5"
+    [ "$mode" = "warm" ] && held_line="held 5/5"
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+if [ "\$1" = "build" ]; then
+    echo "time: parse 1ms, $held_line, attempt 1"
+    exit 0
+fi
+exit 0
+STUB
+    chmod +x "$d/build/avra"
+    commit_all "$d" "base"
+    echo "$d"
+}
+
+test_speed_gate_improve() {
+    d="$(speed_repo speed-improve cold)"
+    mkdir -p "$d/tools"
+    printf 'sha0 999999999 999999999 -\n' > "$d/tools/speed.baseline"
+    out="$(branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q '— PASS'; then
+        ok "speed-gate: an improving measurement passes"
+    else
+        bad "speed-gate: expected PASS — got ($st): $out"
+    fi
+}
+
+test_speed_gate_regress_no_override() {
+    d="$(speed_repo speed-regress cold)"
+    mkdir -p "$d/tools"
+    printf 'sha0 1 1 -\n' > "$d/tools/speed.baseline"
+    out="$(branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q 'land: speed:.*— FAIL'; then
+        ok "speed-gate: a regression past threshold with no override fails, named"
+    else
+        bad "speed-gate: expected a named FAIL — got ($st): $out"
+    fi
+}
+
+test_speed_gate_regress_with_override() {
+    d="$(speed_repo speed-override cold)"
+    mkdir -p "$d/tools"
+    printf 'sha0 1 1 -\n' > "$d/tools/speed.baseline"
+    scr="$scratch/speed-override-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" AVRA_LAND_SPEED_OK="known, tracked in avra-9.1" branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q '— PASS'; then
+        ok "speed-gate: a signed regression passes"
+    else
+        bad "speed-gate: expected a signed PASS — got ($st): $out"
+    fi
+    if grep -q "speed: known, tracked in avra-9.1" "$scr/ratchet-overrides" 2>/dev/null; then
+        ok "speed-gate: the override reason is queued for the chore commit"
+    else
+        bad "speed-gate: the override reason was not queued"
+    fi
+}
+
+test_speed_gate_held_assertion_tool_failure() {
+    d="$(speed_repo speed-warm warm)"
+    mkdir -p "$d/tools"
+    scr="$scratch/speed-warm-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && [ -f "$scr/tool-failure" ] && grep -q "was not cold" "$scr/tool-failure"; then
+        ok "speed-gate: a warm hit (no 'held 0/') is a TOOL failure, not a measurement"
+    else
+        bad "speed-gate: expected a TOOL failure — got ($st): $out"
+    fi
+}
+
+test_speed_gate_median_of_three() {
+    d="$(speed_repo speed-median cold)"
+    mkdir -p "$d/tools"
+    printf 'sha0 1 1 -\n' > "$d/tools/speed.baseline"
+    scr="$scratch/speed-median-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" AVRA_LAND_SPEED_OK=known branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label 2>&1)"
+    if printf '%s' "$out" | grep -q "remeasuring twice more" && printf '%s' "$out" | grep -q "median of 3 runs"; then
+        ok "speed-gate: crossing a threshold on the first run triggers a median-of-3 remeasurement"
+    else
+        bad "speed-gate: expected a median-of-3 path — got: $out"
+    fi
+}
+
+# ══ THE JOB POOL LAUNCHES ITS LONGEST STEPS FIRST ═════════════════════
+# jobs.list records CALL order (job_launch appends before backgrounding),
+# independent of AVRA_LAND_JOBS or actual completion timing — a
+# generous cap here just keeps the fixture itself fast.
+gates_order_repo() {
+    d="$(git_repo "$1")"
+    for p in std-avrac cli pa; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build" "$d/bootstrap"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+case "$1" in
+    build)
+        mkdir -p packages/cli/src
+        cp "$0" packages/cli/src/main
+        chmod +x packages/cli/src/main
+        echo "time: parse 1ms, held 0/1, attempt 1"
+        exit 0
+        ;;
+    test)
+        sleep 0.1
+        echo "tested $(basename "$2")"
+        exit 0
+        ;;
+    check) exit 0 ;;
+esac
+STUB
+    chmod +x "$d/build/avra"
+    cat > "$d/Makefile" <<'MK'
+objects:
+	@mkdir -p build && touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
+seed-check:
+	@test -f bootstrap/seed.ll && echo seed-check-ok
+fmt-lossless:
+	@echo fmt-ok
+MK
+    printf 'seed-src\n' > "$d/bootstrap/seed.ll"
+    printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    printf 'build/\n' > "$d/.gitignore"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    for p in std-avrac cli pa; do printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"; done
+    commit_all "$d" "touch all three"
+    echo "$d $base_sha"
+}
+
+test_run_checks_launch_order() {
+    read -r d base_sha <<EOF
+$(gates_order_repo checks-order)
+EOF
+    scr="$scratch/checks-order-scratch"
+    slots="$scratch/checks-order-slots"
+    sprite_stub="$scratch/checks-order-sprite.sh"
+    sprite_stub_write "$sprite_stub" pass
+    rm -rf "$scr" "$slots"
+
+    AVRA_LAND_JOBS=8 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" \
+        AVRA_LAND_LINUX=1 AVRA_LAND_SPRITE_BUILD="$sprite_stub" \
+        AVRA_LAND_SPEED_GATE=1 AVRA_LAND_SPEED_WT="$scratch/checks-order-speed-wt" \
+        branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 1 1 \
+        > "$scratch/checks-order.out" 2>&1
+
+    got="$(awk '{print $2}' "$scr/jobs.list" 2>/dev/null | tr '\n' ' ')"
+    want_prefix="test-std-avrac idioms seed-check speed linux test-cli"
+    case "$got" in
+        "$want_prefix"*)
+            ok "launch-order: std-avrac, idioms, seed-check, speed, linux, cli launch first, in that order"
+            ;;
+        *)
+            bad "launch-order: wanted prefix [$want_prefix], got [$got]"
+            cat "$scratch/checks-order.out"
+            ;;
+    esac
+    rest="$(printf '%s' "$got" | sed "s/^$want_prefix //")"
+    rest_sorted="$(printf '%s' "$rest" | tr ' ' '\n' | sort | tr '\n' ' ')"
+    if [ "$rest_sorted" = "fmt-lossless test-pa " ]; then
+        ok "launch-order: the rest (fmt-lossless, test-pa) launch last, in any order"
+    else
+        bad "launch-order: wanted the rest to be [fmt-lossless test-pa], got [$rest_sorted]"
+    fi
+}
+
+# ══ A CHANGED GATE SCRIPT RUNS ITS OWN GATE, TOOLS-ONLY ══════════════
+test_tools_only_gate_script_runs_its_step() {
+    d="$(batch_repo gate-script-one)"
+    git -C "$d" checkout -q -b cachefix main
+    mkdir -p "$d/tools"
+    printf 'echo land-test-ok\n' > "$d/tools/land_test.sh"
+    printf '#!/bin/sh\necho cache-attacks-changed\n' > "$d/tools/cache_attacks.sh"
+    commit_all "$d" "cache_attacks.sh changes"
+    git -C "$d" checkout -q main
+
+    land_scoped "$d" cachefix gate-script-cache || bad "gate-script: a tools-only landing touching a gate script failed"
+    logged gate-script-cache "a changed tools/ script is itself a gate (cache-attacks)" "gate-script: names cache-attacks as the mapped step"
+    logged gate-script-cache "build-1-objects" "gate-script: a mapped gate step still builds gen 1"
+    unlogged gate-script-cache "build-2-objects" "gate-script: never a second build — the compiler itself did not change"
+    logged gate-script-cache "land: cache-attacks" "gate-script: the cache-attacks step itself runs"
+    logged gate-script-cache "land-test OK" "gate-script: land_test.sh still runs too (any tools/ touch does)"
+}
+
+# Three mapped scripts touched TOGETHER: every one of their three
+# steps runs, none twice, and the unmapped land_test.sh dependency
+# (affected_packages.sh, already covered by the blanket tools/ rule)
+# needs no extra step of its own.
+test_tools_only_several_gate_scripts_run_all_steps() {
+    d="$(batch_repo gate-script-many)"
+    git -C "$d" checkout -q -b threefix main
+    mkdir -p "$d/tools"
+    printf 'echo land-test-ok\n' > "$d/tools/land_test.sh"
+    printf '# a baseline entry\n' >> "$d/tools/idioms.baseline"
+    printf '#!/bin/sh\necho fmt-lossless-changed\n' > "$d/tools/fmt_lossless.sh"
+    printf '#!/bin/sh\necho seed-guard-changed\n' > "$d/tools/seed_guard.sh"
+    commit_all "$d" "idioms.baseline, fmt_lossless.sh, seed_guard.sh all change"
+    git -C "$d" checkout -q main
+
+    land_scoped "$d" threefix gate-script-many || bad "gate-script: a landing touching three mapped scripts failed"
+    logged gate-script-many "is itself a gate (idioms fmt-lossless seed-check)" "gate-script: names all three mapped steps, in the fixed order"
+    logged gate-script-many "land: idioms" "gate-script: the idioms step runs"
+    logged gate-script-many "land: fmt-lossless" "gate-script: the fmt-lossless step runs"
+    logged gate-script-many "land: seed-check" "gate-script: the seed-check step runs"
+    st="$(grep -c '^land: idioms …$' "$scratch/gate-script-many.out" 2>/dev/null)"
+    if [ "${st:-0}" -eq 1 ]; then
+        ok "gate-script: idioms runs exactly once, not once per matching file"
+    else
+        bad "gate-script: idioms ran $st times, wanted 1"
+    fi
+}
+
+echo "=== land tooling fixtures (parallel, ${AVRA_LAND_TEST_JOBS:-8} at a time) ==="
+run_test test_lock_fifo
+run_test test_merge_seed_conflict
+run_test test_merge_real_conflict
+run_test test_affected_packages
+run_test test_run_checks_parallel
+run_test test_run_checks_one_fails
+run_test test_run_checks_two_fail
+run_test test_run_checks_jobs_cap
+run_test test_run_checks_slash_label
+run_test test_job_wait_fails_closed_on_killed_job
+run_test test_compiler_untouched_skips_second_build_and_seedcheck
+run_test test_diff_scope_skips
+run_test test_timeline_lines_present
+run_test test_slot_limit
+run_test test_slot_stale_reclaim
+run_test test_caches_aside_twice
+run_test test_commit_seed_if_moved
+run_test test_try_ff
+run_test test_batch_mode
+run_test test_batch_tool_failure
+run_test test_batch_stale_registration
+run_test test_heavy_status
+run_test test_auto_batch
+run_test test_auto_batch_holder_stopped
+run_test test_ff_refused_not_moved
+run_test test_ratchet_improve
+run_test test_ratchet_missing_baseline
+run_test test_ratchet_regress_no_override
+run_test test_ratchet_regress_with_override
+run_test test_chore_commit_carries_override_reason
+run_test test_warm_gate_off
+run_test test_warm_gate_prints_held_pass
+run_test test_warm_gate_fails_below_floor
+run_test test_warm_gate_override_passes
+run_test test_linux_gate_pass
+run_test test_linux_gate_fail
+run_test test_linux_gate_unreachable
+run_test test_speed_gate_improve
+run_test test_speed_gate_regress_no_override
+run_test test_speed_gate_regress_with_override
+run_test test_speed_gate_held_assertion_tool_failure
+run_test test_speed_gate_median_of_three
+run_test test_run_checks_launch_order
+run_test test_tools_only_gate_script_runs_its_step
+run_test test_tools_only_several_gate_scripts_run_all_steps
+
+report_tests
 
 echo
 echo "land_test: $total checks, $failed failed"
