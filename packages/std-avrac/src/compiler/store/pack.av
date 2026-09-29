@@ -24,6 +24,7 @@
 //! `int` PER BYTE, an 8x-16x blowup measured turning a leaf-edit
 //! recheck's pack read into 2.3 GB of the run's 2.9 GB peak
 //! (avra-8sb5.57.55's OOM).
+use core.{list_cell}
 use @std.io.{read_bytes, write_bytes, truncate_to, AppendFile, opened_for_append}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
@@ -205,9 +206,20 @@ fn name_for(s: ScanState, id: int) -> string? {
     null
 }
 
+/// `NameDef`/`Entry` PUSH — a pack replays one frame per NAME and per
+/// ROW, so a `concat([x])` fold here copies the whole staged list on
+/// every single frame: O(n²) over a pack's frame count, measured as
+/// the dominant cost (41% of an edited recheck's wall time, all in
+/// `avra_rc_retain` under `array_append`) of loading a pack with
+/// thousands of interned names. `committed` still concats once per
+/// COMMIT frame — batching two already-built lists, the right shape.
 fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
     match frame {
-        .NameDef(name) -> s with { stage_by_id: s.stage_by_id.concat([name]) },
+        .NameDef(name) -> {
+            mut ids = s.stage_by_id
+            ids.push(name)
+            s with { stage_by_id: ids }
+        },
         .Entry(body) -> staged_entry(s, body),
         .Commit -> committed(s, pos_after),
     }
@@ -216,7 +228,9 @@ fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
 fn staged_entry(s: ScanState, body: Bytes) -> ScanState {
     let id? = decoded_name_id(body) else { return s with { broken: true } }
     let name? = name_for(s, id) else { return s with { broken: true } }
-    s with { stage_entries: s.stage_entries.concat([StagedEntry { name: name, body: body }]) }
+    mut entries = s.stage_entries
+    entries.push(StagedEntry { name: name, body: body })
+    s with { stage_entries: entries }
 }
 
 fn committed(s: ScanState, pos_after: int) -> ScanState {
