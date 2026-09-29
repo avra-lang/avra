@@ -3,15 +3,7 @@
 //! `compiler/store/explain.av` and `compiler/explain_names.av` hold the logic,
 //! this file is CLI wiring and text formatting alone.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{
-    Workspace,
-    build_cache_root,
-    key_family,
-    shown_name,
-    matching_names,
-    FileHold,
-    Want,
-}
+use @std.avrac.compiler.{Workspace, key_family, shown_name, matching_names, FileHold, Want}
 use @std.avrac.compiler.store.{
     Pack,
     pack_at,
@@ -70,7 +62,7 @@ fn unknown_mode(word: string) -> string {
 }
 
 fn pack_for(ws: Workspace) -> Pack {
-    pack_at(joined_path(build_cache_root(ws), "pack.bin"), ws.compiler_id())
+    pack_at(ws.pack_path(), ws.compiler_id())
 }
 
 /// The workspace every recorded edge can be re-derived in: each file
@@ -274,7 +266,9 @@ fn held_summary(root: string, rows: List<FileHold>) -> int {
 
 fn hold_lines(root: string, h: FileHold) -> List<string> {
     let head = "held: ${relative_path(root, h.path)} — ${hold_word(h)}"
-    [head].concat(["held:   missing ${m}" for m in h.missing])
+    [head]
+        .concat(["held:   missing ${m}" for m in h.missing])
+        .concat(["held:   moved ${m.part}: ${m.was} -> ${m.now}" for m in h.moved])
 }
 
 fn hold_word(h: FileHold) -> string {

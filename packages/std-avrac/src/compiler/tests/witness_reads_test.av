@@ -3,6 +3,7 @@
 // process over a pack the first wrote; `verdict` names the edges that refused.
 // `fresh_check`, `verdict`, `refused_family`, `same_verdict_as_fresh`, `edge_count`
 // are witness_fixtures.av's own.
+use diagnostics.{DiagFacts}
 
 /// `a` calls `helper` from `b`; `c` is a sibling `a` never names.
 fn trio(b_body: string, c_body: string) -> Map<string, string> {
@@ -74,12 +75,22 @@ fn typo_files(b_name: string) -> Map<string, string> {
     }
 }
 
+/// The one diagnostic's own words — enough to tell two suggestions
+/// apart without rendering (`WitnessedCheck.diagnostics` is
+/// structured facts now, never a rendered string).
+fn diag_words(fs: List<DiagFacts>) -> string {
+    let f? = fs.first() else { return "" }
+    "${f.message}|${f.help ?? ""}"
+}
+
 spec "compiler/witness — a name that answered nothing depends on the whole scope" {
-    then "fixture: a's report offers a suggestion, and the suggestion moves when the near name is renamed" {
+    then "fixture: a's diagnostic offers a suggestion, and the suggestion moves when the near name is renamed" {
         let names = ["/w/src/a.av", "/w/src/b.av"]
         let before = fresh_check(typo_files("helper"), names, "/w/src/a.av")
         let after = fresh_check(typo_files("helperz"), names, "/w/src/a.av")
-        !before.clean && !after.clean && before.report != after.report
+        !before.clean &&
+            !after.clean &&
+            diag_words(before.diagnostics) != diag_words(after.diagnostics)
     }
     then "the VisibleScope edge refuses when a name near the missing one is renamed elsewhere" {
         let names = ["/w/src/a.av", "/w/src/b.av"]

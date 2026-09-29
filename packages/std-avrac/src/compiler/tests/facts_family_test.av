@@ -1,0 +1,72 @@
+// M5b slice 4 (COMPILER DB townhall §6.11): NameFacts/TypeFacts
+// (features/facts.av) stay SideTable-backed, dense over a file's or a
+// declaration's own range. Nothing reads them except through
+// `resolved(f)`, `typed(d)` and `folded(f)` (compiler/workspace.av) —
+// there is no second, raw path to a SideTable's cells — and those
+// three are ordinary `Relation<T>` family accessors, the same
+// mechanism `syntax(d)` uses (syntax_receivers_test.av). So a FOREIGN
+// whole-program pass that reads another file's names or another
+// file's folded types already records the Kernel dependency for
+// free, at the grain the family itself keys by: `Resolved`/`Folded`
+// are FILE-grain (name resolution and the per-file fold are whole-file
+// computations; there is no finer window to key by), matching
+// `resolved`/`folded`'s own `arg: f.index`. `references()` is the
+// whole-program reader this pins: it never owns `Resolved`/`Folded`
+// (its own family is `References`, arg 0), so every file it visits is
+// a foreign read, proven here by its recorded dep list rather than by
+// reading the pass's source.
+//
+// `Family` and `key`/`ordinal` are compiler-internal (no `export`), so
+// this file names their stable, append-only ordinals directly, as
+// syntax_receivers_test.av already does: `Resolved` is 5, `Folded` is
+// 10, `References` is 19 (compiler/workspace.av's `ordinal`).
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{FileId}
+use query.{Key}
+
+fn references_key() -> Key { Key { family: 19, arg: 0 } }
+
+fn resolved_key(f: FileId) -> Key { Key { family: 5, arg: f.index } }
+
+fn folded_key(f: FileId) -> Key { Key { family: 10, arg: f.index } }
+
+fn facts_workspace(main: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+spec "compiler/references — a foreign resolved/folded read depends on their own file, not per node (M5b slice 4)" {
+    given "references() over a file with two fns, one calling the other" {
+        then "its dependency list names the file's Resolved directly" {
+            let ws = facts_workspace("fn a() -> int {\n    1\n}\nfn b() -> int {\n    a()\n}\n")
+            let f = ws.file_id("/w/src/main.av")
+            let _ = ws.items(f)
+            let _ = ws.references()
+            ws
+                .db
+                .deps_of(references_key())
+                .any((k: Key) -> k.family == resolved_key(f).family && k.arg == resolved_key(f).arg)
+        }
+        then "its dependency list names the file's Folded directly, never a per-declaration Typed" {
+            let ws = facts_workspace("fn a() -> int {\n    1\n}\nfn b() -> int {\n    a()\n}\n")
+            let f = ws.file_id("/w/src/main.av")
+            let _ = ws.items(f)
+            let _ = ws.references()
+            ws
+                .db
+                .deps_of(references_key())
+                .any((k: Key) -> k.family == folded_key(f).family && k.arg == folded_key(f).arg)
+        }
+    }
+}

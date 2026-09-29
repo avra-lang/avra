@@ -90,7 +90,7 @@ use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
-use compiler.store.{Store, Pack}
+use compiler.store.{Store, Pack, Edge}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
@@ -109,25 +109,27 @@ type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag
 /// The extern symbols of a declaration table of one size.
 type ExternNames = { decls: int, names: List<string> }
 
-/// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
-/// file's object key and text digest (record.av's key derivations), where
+/// PER-BUILD KEY MEMOIZATION: a module's interface digest and what it sees, a
+/// file's object key, the parts it digests, and its text digest (record.av's key derivations), where
 /// this compiler's store stands and this compiler's own print (build.av —
 /// `compiler_id` is never cleared: the running binary cannot move
-/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys`
-/// every record write, the rest only when a record's SEEN part (its
+/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
+/// `object_parts` every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
-    let no_view: Map<string, string> = {}
+    let no_view: Map<string, List<SeenPart>> = {}
     let no_object: Map<string, string> = {}
+    let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
     Keys {
         bytes_keys: Cell.new(no_bytes),
-        view_keys: Cell.new(no_view),
+        view_parts: Cell.new(no_view),
         object_keys: Cell.new(no_object),
+        object_parts: Cell.new(no_parts),
         text_digests: Cell.new(no_digests),
         store_root: Cell.new(""),
         compiler_id: Cell.new(""),
@@ -156,7 +158,9 @@ fn new_keys() -> Keys {
 /// declarations whose OWN row has been filled from the record, by
 /// DeclId — a module mints every identity at once, but fills each
 /// row on the ask that names it, so a row that names another still
-/// unfilled in the same module can fill it first (`row_filled`).
+/// unfilled in the same module can fill it first (`row_filled`); and what
+/// moved in each file's key when this build replaced its kept parts
+/// (`moved`).
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -174,6 +178,7 @@ type Hold = {
     holds_settled: Cell<bool>,
     named_in: Cell<Map<string, List<string>>>,
     held_flat: Cell<List<TypeId>>,
+    moved: Cell<Map<string, List<PartMoved>>>,
 }
 
 fn new_hold() -> Hold {
@@ -186,6 +191,7 @@ fn new_hold() -> Hold {
     let no_minted: Map<string, bool> = {}
     let no_named_in: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
+    let no_moved: Map<string, List<PartMoved>> = {}
     Hold {
         forced: Cell.new(no_forced),
         held_wants: Cell.new(no_wants),
@@ -202,6 +208,7 @@ fn new_hold() -> Hold {
         holds_settled: Cell.new(false),
         named_in: Cell.new(no_named_in),
         held_flat: Cell.new(no_flat),
+        moved: Cell.new(no_moved),
     }
 }
 
@@ -269,6 +276,40 @@ export type Workspace = {
     /// default, exactly as `store` is: nothing durable is asked for
     /// unless something asks.
     pack: Cell<Pack?>,
+    /// HOW MANY FILES THIS DERIVATION'S `says` (derive.av) ANSWERED FROM
+    /// A WITNESS, never recomputing — `Derived.witnessed`'s own count,
+    /// the way `Hold`'s tables answer `Derived.held`.
+    witness_hits: Cell<int>,
+    /// A WITNESS EDGE-WALK'S OWN INTERN TABLE, MEMOIZED FOR THE WHOLE
+    /// PROCESS (compiler/witness.av's `interned_edge`/`edge_id_of_key`/
+    /// `visible_edge_ids`) — every distinct edge lives ONCE, in
+    /// `edge_table`, referenced everywhere else by its small int id,
+    /// never by the `Edge` record or its stable-name string: a flat
+    /// per-key LEAF SET (files x graph_size, kept whole) is what a
+    /// deep graph turns into O(keys x leaves) of retained memory — the
+    /// walk itself stays a plain per-file DFS (`leaf_keys`, no cross-
+    /// file cache), cheap once each leaf's OWN id is a memoized O(1)
+    /// lookup. Stamped with the Kernel's own revision so a value from
+    /// an earlier revision (a long-lived process re-checking after an
+    /// edit) is never reused past it.
+    leaf_memo_revision: Cell<int>,
+    edge_table: Cell<List<Edge>>,
+    edge_id_by_key: Cell<Map<string, int>>,
+    /// A FILE'S `Visible` EDGES, as ids into `edge_table` — every
+    /// witnessed file that imports the same module rebuilt its whole
+    /// NameRead edge list (one entry per name that module answered)
+    /// from scratch otherwise.
+    visible_memo_sets: Cell<Map<string, List<int>>>,
+    /// EVERY DECLARATION'S STABLE NAME, MEMOIZED ONCE FOR THE WHOLE
+    /// PROCESS (compiler/witness.av's `decl_at_stable`) — built the
+    /// first time a validation asks for one, keyed the same way
+    /// `Decls.stable_decl_name` spells it. Without this, resolving
+    /// one Sig or Methods edge back to a `DeclId` scanned its file's
+    /// whole declaration list, and `stable_match`'s own
+    /// `sibling_index` scanned it AGAIN per candidate — paid by every
+    /// such edge, on every file a process validates. Shares
+    /// `leaf_memo_revision`'s staleness stamp.
+    decl_by_stable: Cell<Map<string, DeclId>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -712,6 +753,10 @@ fn built(
     let no_defects: List<Diag> = []
     let no_store: Store? = null
     let no_pack: Pack? = null
+    let no_edge_table: List<Edge> = []
+    let no_edge_ids: Map<string, int> = {}
+    let no_visible: Map<string, List<int>> = {}
+    let no_decls_by_stable: Map<string, DeclId> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -723,6 +768,12 @@ fn built(
         decls: language_decls(lang),
         store: Cell.new(no_store),
         pack: Cell.new(no_pack),
+        witness_hits: Cell.new(0),
+        leaf_memo_revision: Cell.new(-1),
+        edge_table: Cell.new(no_edge_table),
+        edge_id_by_key: Cell.new(no_edge_ids),
+        visible_memo_sets: Cell.new(no_visible),
+        decl_by_stable: Cell.new(no_decls_by_stable),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
