@@ -1765,11 +1765,42 @@ test_linux_gate_runs_warm() {
     else
         ok "linux-gate: the Sprite tree keeps its warm cache"
     fi
-    if printf '%s' "$body" | grep -q 'land-linux: test pa'; then
+    if printf '%s' "$body" | grep -q 'land-linux: test'; then
         ok "linux-gate: each Sprite suite prints its own seconds"
     else
         bad "linux-gate: the Sprite command times no suite — body: $body"
     fi
+}
+
+# The Sprite's own command, RUN against a stub tree: suites overlap, and a
+# failing one is named with its log after every suite has finished.
+test_linux_gate_suites_run_in_parallel() {
+    d="$(git_repo linux-par)"
+    for p in pa pb pc; do mkdir -p "$d/packages/$p/src"; done
+    commit_all "$d" "base"
+    stub="$scratch/linux-par-sprite.sh"
+    body_file="$scratch/linux-par-body"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
+    chmod +x "$stub"
+    AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa pb pc > /dev/null 2>&1
+    tree="$scratch/linux-par-tree"
+    rm -rf "$tree"
+    mkdir -p "$tree/build"
+    printf '#!/bin/sh\ncase "$2" in\n    packages/pb) echo "pb broke here"; sleep 2; exit 1 ;;\n    *) sleep 2; exit 0 ;;\nesac\n' > "$tree/build/avra"
+    chmod +x "$tree/build/avra"
+    printf 'objects:\n\t@true\nlibs:\n\t@true\n' > "$tree/Makefile"
+    t0=$(date +%s)
+    st=0
+    ( cd "$tree" && bash -c "$(cat "$body_file")" ) > "$scratch/linux-par.out" 2>&1 || st=$?
+    wall=$(( $(date +%s) - t0 ))
+    if [ "$wall" -lt 5 ]; then ok "linux-gate: the Sprite suites overlap (${wall}s for three 2s suites)"; else bad "linux-gate: the Sprite suites ran serially (${wall}s)"; fi
+    if [ "$st" -ne 0 ] && grep -q "land-linux: FAILED pb" "$scratch/linux-par.out" && grep -q "pb broke here" "$scratch/linux-par.out"; then
+        ok "linux-gate: a failing Sprite suite is named with its log"
+    else
+        bad "linux-gate: a failing Sprite suite was not named ($st)"
+        cat "$scratch/linux-par.out"
+    fi
+    if grep -q "land-linux: test pc" "$scratch/linux-par.out"; then ok "linux-gate: a failure does not stop the other suites"; else bad "linux-gate: a failure stopped the other suites"; fi
 }
 
 test_linux_gate_starts_before_the_builds() {
@@ -2197,6 +2228,7 @@ run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
+run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing

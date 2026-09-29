@@ -3,10 +3,11 @@
 // edge that refused, not merely that something did. `fresh_pack_path`, `a_process_over`
 // and `checked` are witness_test.av's own (one shared namespace).
 use @std.avrac.compiler.{avra, new_workspace}
-use compiler.{Workspace, WitnessedCheck, WitnessedOutcome, name_parts}
+use compiler.{Workspace, WitnessedCheck, WitnessedOutcome, name_parts, rule_findings, analysed}
 use core.{DeclId, joined, sorted_texts}
 use compiler.host.{memory_host}
 use compiler.store.{pack_at}
+use diagnostics.{DiagFacts, diag_facts_of}
 
 /// `Family.Parsed`'s, `Family.Namespace`'s, `Family.Sig`'s, `Family.Methods`'s and `Family.Manifest`'s ordinals (workspace.av's `ordinal`), the one
 /// way a test builds a `Key` without reaching a `compiler`-private enum. Pinned by name in
@@ -26,7 +27,8 @@ fn fresh_check(files: Map<string, string>, names: List<string>, path: string) ->
     let ws = new_workspace(memory_host(files, names), "/w", avra())
     for p in names { let _ = ws.items(ws.file_id(p)) }
     let a = ws.analysis(ws.file_id(path))
-    WitnessedCheck { clean: a.clean(), report: a.report() }
+    let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
+    WitnessedCheck { clean: a.clean(), diagnostics: [diag_facts_of(d) for d in ds] }
 }
 
 /// A process over the given files and a real `avra.toml`, opened onto the shared pack.
@@ -84,7 +86,20 @@ fn decl_in_file(ws: Workspace, file: string, name: string) -> DeclId {
     [d.id for d in ws.decls.decls.get() if d.name == name && ws.decls.file(d.file).path == file][0]
 }
 
-/// Whether a second process's verdict is the fresh, un-witnessed one.
+/// Whether a second process's verdict is the fresh, un-witnessed one —
+/// by identity (kind, severity, message), never a rendered string: a
+/// `Diag`'s render depends on the sources the comparing process has
+/// loaded, which is exactly what a witnessed row must NOT bake in
+/// (render_test.av's own fidelity tests cover the render path itself).
+fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
+    a.kind == b.kind && a.severity == b.severity && a.message == b.message
+}
+
+fn same_facts(a: List<DiagFacts>, b: List<DiagFacts>) -> bool {
+    a.length == b.length && [i for i in 0..a.length if !same_diag_facts(a[i], b[i])].is_empty()
+}
+
 fn same_verdict_as_fresh(v: Verdict, fresh: WitnessedCheck) -> bool {
-    v.outcome.value().clean == fresh.clean && v.outcome.value().report == fresh.report
+    v.outcome.value().clean == fresh.clean &&
+        same_facts(v.outcome.value().diagnostics, fresh.diagnostics)
 }
