@@ -1055,7 +1055,7 @@ fn collect_field_reg(
         if a.view.decls.takes_a_decl(fnty) { return decl_crossed_reg(lo, fnty, d.id) }
         return collect_fn_reg(lo, d.id, fnty)
     }
-    if is_root_kind_path(path) { return lo.const_int(component_root_kind(a.view.decls, d)) }
+    if is_root_kind_path(path) { return int_list_box(lo, component_root_kind(a.view.decls, d)) }
     mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(
         lo,
         a,
@@ -1085,22 +1085,22 @@ fn is_root_kind_path(path: List<Plain>) -> bool {
     path.length == 1 && path[0].of == "root_kind"
 }
 
-/// A component instance's ROOT-KIND INDEX: its one-seat fn field's
-/// WRITTEN arms, first arm's pattern, folded (`core.root_kind_of`) —
-/// `any_root` when the field is not there, is not an arms body, or
-/// the index cannot narrow. Read off the PARSED body, never the
-/// built value `component_field_reg` reads: the index is a fact
-/// about what was WRITTEN, settled once at lowering, the same door
-/// `rule`'s own hand-built version once opened by hand
+/// A component instance's ROOT-KIND INDICES: its one-seat fn field's
+/// WRITTEN arms, every pattern's own kind (`core.root_kind_of`) —
+/// `[any_root]` when the field is not there, is not an arms body,
+/// or a single pattern cannot narrow. Read off the PARSED body,
+/// never the built value `component_field_reg` reads: the index is
+/// a fact about what was WRITTEN, settled once at lowering, the same
+/// door `rule`'s own hand-built version once opened by hand
 /// (docs/2026_09_22_COLLECTIONS.md §5 — nodes touched, never nodes
 /// × rules).
-export fn component_root_kind(decls: Decls, d: Decl) -> int {
+export fn component_root_kind(decls: Decls, d: Decl) -> List<int> {
     let store = decls.store_of(d.file)
-    let v? = store.stmt_value(d.stmt) else { return any_root }
-    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return any_root }
-    let parts? = store.lambda_parts(block) else { return any_root }
-    let arms? = match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null } else { return any_root }
-    root_kind_of(store, arms) ?? any_root
+    let v? = store.stmt_value(d.stmt) else { return [any_root] }
+    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return [any_root] }
+    let parts? = store.lambda_parts(block) else { return [any_root] }
+    let arms? = match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null } else { return [any_root] }
+    root_kind_of(store, arms) ?? [any_root]
 }
 
 /// `mark` — the one field an `.Annotated` kind's declarations may
@@ -1147,6 +1147,11 @@ fn mark_part_reg(mut lo: LowerCx, m: AnnotationFact, part: string) -> Reg {
 fn string_list_box(mut lo: LowerCx, texts: List<string>) -> Reg {
     let regs = [lo.const_str(t) for t in texts]
     lo.grown_box(Type.List(lo.view.types.type(string)), lo.box_size(regs.length), regs)
+}
+
+fn int_list_box(mut lo: LowerCx, ns: List<int>) -> Reg {
+    let regs = [lo.const_int(n) for n in ns]
+    lo.grown_box(Type.List(lo.view.types.type(int)), lo.box_size(regs.length), regs)
 }
 
 /// `it.field` over a `.Component` kind, when `field` is not one of
@@ -1196,7 +1201,9 @@ export fn collect_field_text(decls: Decls, d: Decl, path: List<Plain>) -> string
     if word == "module" { return decls.short_module_of(d.id) }
     if word == "file" { return decls.file(d.file).path }
     if word == "doc" { return joined(doc_first_paragraph(decls.doc_of(d.id) ?? []), " ") }
-    if is_root_kind_path(path) { return "${component_root_kind(decls, d)}" }
+    // `root_kind` answers a LIST now (every kind its patterns narrow
+    // to), which has no single scalar worth sorting text by — the
+    // generic silence every other non-text field already answers.
     ""
 }
 
