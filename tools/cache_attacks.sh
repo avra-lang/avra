@@ -625,6 +625,59 @@ printf '// moved\n' >> $R/rs/src/main.av
 rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
 
+# A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
+# NEVER AS A GAP (avra-8sb5.57.100): `members.av` declares two exported named
+# instances of `widget` (a component whose one field is `run: fn(int) ->
+# int`, the same shape `rule`'s `run: fn(Code) -> Fix?` is) — each an
+# `is_instance` const. `table.av`'s `collect` reads `it.run` for each,
+# calling it by its `instance_unit` symbol. Editing `table.av` ALONE forces
+# the collect fresh while `widget.av`/`members.av` stay held; without a
+# declaration for a held member's symbol the link traps "nothing declares
+# ... — the program is not closed" (witnessed: packages/std-avrac/src/
+# compiler/interface.av's `Workspace.stub_of`/`instance_stub`, reused by
+# `held_stubs`, is what a held FN's own symbol already goes through — the
+# fix is keeping a gathered member's structural refusal the same way).
+mkdir -p $R/cl/src
+printf '[package]\nname = "rt-cl"\nversion = "0.1.0"\n' > $R/cl/avra.toml
+cat > $R/cl/src/widget.av <<'AV'
+export component widget {
+    run: fn(int) -> int
+}
+AV
+cat > $R/cl/src/members.av <<'AV'
+use widget.{widget}
+
+export widget one { n -> n + 1 }
+export widget two { n -> n + 2 }
+AV
+cat > $R/cl/src/table.av <<'AV'
+use widget.{widget}
+type Entry = { name: string, ran: fn(int) -> int }
+export collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name
+AV
+cat > $R/cl/src/main.av <<'AV'
+use table.{entries}
+println("cl ${entries.length} ${entries[0].name}=${entries[0].ran(10)} ${entries[1].name}=${entries[1].ran(10)}")
+AV
+S "cold cl: a fresh collect reads two members' closures" cl
+S "no-op cl" cl
+ed $R/cl/src/table.av 'type Entry = { name: string, ran: fn(int) -> int }' 'type Entry = { name: string, ran: fn(int) -> int }
+// moved'
+S "cl: table.av alone moves — widget.av/members.av stay held, the fresh collect body must reference their closures as externs" cl
+got_cl1=$($R/cl/src/main 2>&1)
+[ "$got_cl1" = "cl 2 one=11 two=12" ] || { fails=$((fails+1)); echo "FAIL  cl (collect fresh, members held) printed '$got_cl1', wanted 'cl 2 one=11 two=12'"; }
+# A MEMBER'S OWN BODY EDIT, while the collect's own file stays held, is NOT
+# pinned here: on a brand-new tiny package it trips a pre-existing, GENERAL
+# held-collect/held-instance gap (a stale interface read that the "hold was
+# refused, rebuilt from sources" safety net catches and self-heals — right
+# answer, wasted work — reproduced with a plain DATA-only component too, no
+# `run: fn`/structural-refusal involved, so it is not this ticket's exclusion
+# and not touched here). The REAL requirement this scenario stands for —
+# editing a rule's actual match logic and rebuilding the compiler warm
+# re-derives that rule's finding, cleanly, no refusal — was witnessed
+# directly against compiler/features/enums/idioms.av's `bool_variant_match`
+# (avra-8sb5.57.100's own receipt), not against a synthetic fixture here.
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
