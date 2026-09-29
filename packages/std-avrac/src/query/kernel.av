@@ -417,43 +417,15 @@ impl Kernel {
 
     fn settle(key: Key, value_hash: int) {
         mut s = self.snapshot()
-        let deps: List<Key> = s.pending.pop().get()
-        let restored: Cell<List<Restore>>? = s.restore.pop()
-        let _ = s.open.pop()
-        let _ = s.reading.pop()
-        mut fl = self.frame_last.get()
-        let _ = fl.pop()
-        let _ = fl.pop()
-        self.frame_last.set(fl)
-        if restored != null { for r in restored!.get() { restore_one(s, r) } }
-        let prior? = state_cell(s, key) else {
-            write_cell(
+        let deps = self.closed_frame(s)
+        self
+            .settled(
                 s,
                 key,
-                QueryCell {
-                    deps: deps,
-                    changed_at: state_revision(s),
-                    verified_at: state_revision(s),
-                    value_hash: value_hash,
-                },
+                deps,
+                kept_since(state_cell(s, key), value_hash) ?? state_revision(s),
+                value_hash,
             )
-            self.replace(s)
-            if self.audit.on.get() { self.judged() }
-            return
-        }
-        let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
-        write_cell(
-            s,
-            key,
-            QueryCell {
-                deps: deps,
-                changed_at: changed,
-                verified_at: state_revision(s),
-                value_hash: value_hash,
-            },
-        )
-        self.replace(s)
-        if self.audit.on.get() { self.judged() }
     }
 
     /// Like `settle`, but `fingerprint` is called AT MOST ONCE, and
@@ -468,6 +440,18 @@ impl Kernel {
     /// comparison after it is exact.
     fn settle_lazy(key: Key, fingerprint: fn() -> int) {
         mut s = self.snapshot()
+        let deps = self.closed_frame(s)
+        let prior? = state_cell(s, key) else {
+            self.settled(s, key, deps, state_revision(s), null)
+            return
+        }
+        let value_hash = fingerprint()
+        self.settled(s, key, deps, kept_since(prior, value_hash) ?? state_revision(s), value_hash)
+    }
+
+    /// Closes the open query frame: its read deps, with the frame's
+    /// restores replayed and its stacks popped.
+    fn closed_frame(mut s: KernelState) -> List<Key> {
         let deps: List<Key> = s.pending.pop().get()
         let restored: Cell<List<Restore>>? = s.restore.pop()
         let _ = s.open.pop()
@@ -477,23 +461,11 @@ impl Kernel {
         let _ = fl.pop()
         self.frame_last.set(fl)
         if restored != null { for r in restored!.get() { restore_one(s, r) } }
-        let prior? = state_cell(s, key) else {
-            write_cell(
-                s,
-                key,
-                QueryCell {
-                    deps: deps,
-                    changed_at: state_revision(s),
-                    verified_at: state_revision(s),
-                    value_hash: null,
-                },
-            )
-            self.replace(s)
-            if self.audit.on.get() { self.judged() }
-            return
-        }
-        let value_hash = fingerprint()
-        let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
+        deps
+    }
+
+    /// Writes a settled cell, verified this revision, and publishes it.
+    fn settled(mut s: KernelState, key: Key, deps: List<Key>, changed: int, value_hash: int?) {
         write_cell(
             s,
             key,
@@ -641,6 +613,12 @@ fn state_slot(s: KernelState, key: Key) -> int {
 /// guard against, unlike a `QueryCell`.
 fn restore_one(mut s: KernelState, r: Restore) {
     write_stamp(s, r.key, r.previous)
+}
+
+/// The revision a prior cell last changed at, when its hash matches —
+/// absent when there is no prior or the answer moved.
+fn kept_since(prior: QueryCell?, value_hash: int) -> int? {
+    if prior?.value_hash == value_hash { prior?.changed_at } else { null }
 }
 
 fn state_cell(s: KernelState, key: Key) -> QueryCell? {
