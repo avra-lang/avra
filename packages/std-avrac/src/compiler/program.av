@@ -7,6 +7,8 @@ use core.{
     Expr,
     Stmt,
     StmtId,
+    StmtStart,
+    statement_after,
     ExprId,
     Span,
     Param,
@@ -308,8 +310,9 @@ impl Decls {
 /// next real statement to redeem it — is not forced onto whatever
 /// statement happens to follow; it survives as a remark instead.
 fn attach_docs(store: NodeStore, docs: List<DocComment>) {
+    let starts = store.stmt_starts()
     for doc in docs {
-        let target = doc_target(store, doc)
+        let target = doc_target(store, starts, doc)
         if target == null {
             store.orphan_doc(doc.lines, doc.line_ats)
         } else {
@@ -325,8 +328,8 @@ fn attach_docs(store: NodeStore, docs: List<DocComment>) {
 /// keyword can precede. A `@word` anchor is ambiguous at the lexer,
 /// so it claims a statement only when the parse recorded an
 /// ANNOTATION starting at that exact offset; a MARK never does.
-fn doc_target(store: NodeStore, doc: DocComment) -> StmtId? {
-    let target? = store.statement_after(doc.before) else { return null }
+fn doc_target(store: NodeStore, starts: List<StmtStart>, doc: DocComment) -> StmtId? {
+    let target? = statement_after(starts, doc.before) else { return null }
     if !doc.pkg { return target }
     if store.annotations_of(target).any(it.span != null && it.span!.lo == doc.before) { target } else { null }
 }
