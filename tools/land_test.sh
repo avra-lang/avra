@@ -1571,7 +1571,7 @@ STUB
     chmod +x "$path"
 }
 
-test_linux_gate_runs_cold() {
+test_linux_gate_runs_warm() {
     d="$(git_repo linux-cold)"
     mkdir -p "$d/packages/pa/src"
     commit_all "$d" "base"
@@ -1581,12 +1581,15 @@ test_linux_gate_runs_cold() {
     chmod +x "$stub"
     AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
     body="$(cat "$body_file" 2>/dev/null)"
-    clear_at="$(printf '%s' "$body" | awk '{print index($0, "-name .avra-cache")}')"
-    test_at="$(printf '%s' "$body" | awk '{print index($0, "build/avra test")}')"
-    if [ "${clear_at:-0}" -gt 0 ] && [ "${test_at:-0}" -gt "$clear_at" ]; then
-        ok "linux-gate: the Sprite tree's .avra-cache is cleared before any suite runs"
+    if printf '%s' "$body" | grep -q -- '-name .avra-cache'; then
+        bad "linux-gate: the Sprite command clears the tree's warm cache — body: $body"
     else
-        bad "linux-gate: the Sprite command runs a suite over a warm cache — body: $body"
+        ok "linux-gate: the Sprite tree keeps its warm cache"
+    fi
+    if printf '%s' "$body" | grep -q 'land-linux: test pa'; then
+        ok "linux-gate: each Sprite suite prints its own seconds"
+    else
+        bad "linux-gate: the Sprite command times no suite — body: $body"
     fi
 }
 
@@ -1594,7 +1597,7 @@ test_linux_gate_starts_before_the_builds() {
     d="$(batch_repo linux-early)"
     stub="$scratch/linux-early-sprite.sh"
     mark="$scratch/linux-early-mark"
-    printf '#!/bin/sh\ndate +%%s%%N > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$mark" > "$stub"
+    printf '#!/bin/sh\ndate +%%s%%N > "%s"\necho "land-linux: test pa 3s"\necho "sprite-build: stub -> exit 0" >&2\n' "$mark" > "$stub"
     chmod +x "$stub"
     wt="$scratch/linux-early-wt"
     git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
@@ -1610,6 +1613,11 @@ test_linux_gate_starts_before_the_builds() {
     else
         bad "linux-early: the Linux gate waited for the local builds (linux OK at line ${linux_ok:-none}, build-1 done at ${b1_done:-none})"
         cat "$scratch/linux-early.out"
+    fi
+    if grep -q "land: linux: test pa 3s" "$scratch/linux-early.out"; then
+        ok "linux-early: the Sprite's phase times reach the landing log"
+    else
+        bad "linux-early: the Sprite's phase times never reached the landing log"
     fi
 }
 
@@ -2007,7 +2015,7 @@ run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
-run_test test_linux_gate_runs_cold
+run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
 run_test test_linux_gate_pass

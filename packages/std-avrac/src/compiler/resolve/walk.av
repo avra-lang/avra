@@ -303,13 +303,23 @@ impl ResolveCx {
         self.facts.names.type_decl(name)
     }
 
-    /// A callee resolves in the fn namespace alone.
+    /// A callee is a READ, so it resolves the SAME WAY any other name
+    /// does: innermost scope outward, and a declaration only where no
+    /// binding does. A call is not a second namespace a local can
+    /// never reach into — a param, a `let`, a `for` binder, a lambda
+    /// param, a match binder and a capture all shadow a same-named fn
+    /// for a call exactly as they do for a plain read.
     mut fn use_call(e: ExprId, name: string) {
         if self.met(e) { return }
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
         if self.refused_name(name, self.loc_of(e)) { return }
         let origin: FileId? = self.view.origin_of(e)
+        let local: Binding? = self.local_binding(keyed(name, origin))
+        if local != null {
+            self.bind_use(e, local!)
+            return
+        }
         let names = self.names_in(origin)
         let found: DeclId? = names.fn_decl(name)
         if found != null {
@@ -321,15 +331,6 @@ impl ResolveCx {
         let gen: DeclId? = self.generated_named(name, origin)
         if gen != null {
             self.bind_use(e, Binding.Decl(gen!))
-            return
-        }
-        // no declared fn wears the name: the call may go through a
-        // fn-typed LOCAL value (typing judges its shape). Declared
-        // fns stay first — a pattern bind shadows READS, never the
-        // call (the pinned arm law).
-        let local: Binding? = self.local_binding(keyed(name, origin))
-        if local != null {
-            self.bind_use(e, local!)
             return
         }
         // A NAMED TYPE CONSTRUCTS BY CALL — `UserId(5)`. The type

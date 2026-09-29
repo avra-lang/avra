@@ -9,17 +9,30 @@
 //!     type Call = { id: int, @index caller: string, @index callee: string, line: int }
 //!
 //! THE VOCABULARY, shared with `@std/db`'s `@model`: a field named `id`
-//! is an `int` the store mints, so it never enters a hash or a record;
+//! is an `int` the store mints, or a `@dense` type (`use
+//! @std.meta.{dense}`, a record of one int) the store mints instead;
 //! `@key` fields together are the row's stable name; `@unique` is a
 //! constraint an insert answers as a `Result`; `@index` is a lookup
-//! that answers a list. A field is an `int`, a `bool`, a `string`, or a
-//! nullable or list of those — a typed id, an enum, a `float` or a type
-//! parameter is refused by name.
+//! that answers a list, and files a list field's row under every
+//! element. `@local` marks a column this process alone reads — out of
+//! the stable hash and the codec, so a `<T>Stored` row (what
+//! `decoded` answers) has none. A field is an `int`, a `bool`, a
+//! `string`, an enum (carried by its variant's name), a record of
+//! those, or a nullable or list of them — a `float`, a named type or a
+//! type parameter is refused by name unless the field is `@local`,
+//! which carries any type.
 //!
-//! Rows only arrive: a keyed insert replaces the row its key names, and
-//! a keyless one appends, so key a row you will update. Nothing removes
-//! a row but closing its Db. RECORDED TRIGGER: removal arrives with
-//! `@query`, whose rerun replaces the rows it owns — owner: ORM.
+//! `@query` (`use @std.relation.{query}`) wraps a fn over a Db: its
+//! answer is kept per call and rerun once a write touches a relation
+//! it read, and the rows it writes are its own — replaced on rerun,
+//! refused if another query writes the same key, refused itself if it
+//! reads a relation it writes (read the last run's rows with
+//! `Rel.prior(db)` instead).
+//!
+//! Rows only arrive outside a `@query`: a keyed insert replaces the row
+//! its key names, and a keyless one appends, so key a row you will
+//! update by hand. Nothing removes a row but closing its Db or a
+//! `@query`'s own rerun.
 //!
 //! Stands ALONE with `@std/meta` and its own package: the file that
 //! types this derive must not also carry code the annotated file's
@@ -629,20 +642,23 @@ fn localized(t: Type) -> bool { content(t).any(marked(it, "local")) }
 
 /// The STORED row: the stable columns alone, what a record read back from
 /// disk can honestly hold. A `@local` column is this process's own, so a
-/// stored row has none to read.
+/// stored row has none to read. EXPORTED ALWAYS, like `key_record`'s own
+/// below: `Type` carries no flag saying whether `t` itself is exported, and
+/// a private relation makes this unreachable anyway, while a plugin's own
+/// exported relation needs `decoded`'s answer nameable outside its package.
 fn stored_record(t: Type) -> List<Decls> {
     if !localized(t) { return [] }
     let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in stable(t)]
-    [quote { type ${t}Stored = { ..${fields} } }]
+    [quote { export type ${t}Stored = { ..${fields} } }]
 }
 
 /// The key record: the `@key` fields as a value to hold, hash and look
-/// up by.
+/// up by — exported always, `by_key`'s own argument nameable the same way.
 fn key_record(t: Type) -> List<Decls> {
     let keys = key_fields(t)
     if keys.is_empty() { return [] }
     let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in keys]
-    [quote { type ${t}Key = { ..${fields} } }]
+    [quote { export type ${t}Key = { ..${fields} } }]
 }
 
 /// One key field's text, by its kind.
