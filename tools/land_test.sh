@@ -139,6 +139,19 @@ wait_for_line() {
     return 1
 }
 
+test_ticket_scan_survives_an_arriving_waiter() {
+    lockdir="$scratch/ticket-arrival"
+    rm -rf "$lockdir"
+    mkdir -p "$lockdir/tickets/1"
+    st=0
+    out="$(AVRA_LAND_LOCK="$lockdir" branch=x sh "$land" --call lowest_live_ticket 2>&1)" || st=$?
+    if [ "$st" -eq 0 ]; then
+        ok "lock: a ticket whose pid is not written yet does not end the scan"
+    else
+        bad "lock: the scan died silently ($st) on a ticket mid-arrival — $out"
+    fi
+}
+
 test_lock_fifo() {
     lockdir="$scratch/lock-fifo"
     rm -rf "$lockdir"
@@ -1936,6 +1949,7 @@ test_tools_only_several_gate_scripts_run_all_steps() {
 }
 
 echo "=== land tooling fixtures (parallel, ${AVRA_LAND_TEST_JOBS:-8} at a time) ==="
+run_test test_ticket_scan_survives_an_arriving_waiter
 run_test test_lock_fifo
 run_test test_merge_seed_conflict
 run_test test_merge_real_conflict

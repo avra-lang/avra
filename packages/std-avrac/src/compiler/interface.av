@@ -373,13 +373,26 @@ impl Workspace {
             [line for line in prior_lines if line.starts_with("import\t")]
                 .concat(["import\t${d.text()}" for d in fresh]),
         )
+        // A FRESH FILE'S OWN OUTGOING REFERENCES, kept beside its
+        // declarations — never inside `iface_digest`'s own fold, since a
+        // dependent needs to know only that this attempt's `references()`
+        // can still answer for this file once it is held, not WHAT it
+        // referenced. A held file's own `ref` lines ride forward through
+        // `kept`/`f.lines` untouched, exactly as its declaration lines do.
+        let refs = flatten(
+            [self.ref_lines(path, self.file_refs(self.file_id(path))) for path in files if !self.is_held(self.file_id(path))],
+        )
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
         let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${joined(self.ran_by(store, f.path), "|")}\t${f.iface}" for f in parts]
         let iface = digest_of(joined(sorted_texts([f.iface for f in parts]), "\n"))
         joined(
-            ["iface\t${iface}"].concat(here).concat(read).concat(flatten([f.lines for f in parts])),
+            ["iface\t${iface}"]
+                .concat(here)
+                .concat(refs)
+                .concat(read)
+                .concat(flatten([f.lines for f in parts])),
             "\n",
         )
     }
