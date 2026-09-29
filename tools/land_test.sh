@@ -411,7 +411,6 @@ EOF
     slots="$scratch/checks-parallel-slots"
     rm -rf "$scr" "$slots"
 
-    t_start=$(date +%s)
     if AVRA_LAND_JOBS=4 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
         sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 \
         > "$scratch/checks-parallel.out" 2>&1; then
@@ -420,15 +419,14 @@ EOF
         bad "run_checks: the all-passing case failed"
         cat "$scratch/checks-parallel.out"
     fi
-    elapsed=$(($(date +%s) - t_start))
-    # Serial would be >= 6s (2+2+2 tests... no: 1+1+1 tests + ~3s idioms +
-    # 1s fmt = ~6s of OUTER-job time); concurrent finishes near the
-    # longest single job (idioms, ~3-4s). A generous ceiling catches a
-    # regression to serial without flaking on a loaded machine.
-    if [ "$elapsed" -le 5 ]; then
-        ok "run_checks: wall time ($elapsed s) tracks the longest job, not the sum — jobs ran together"
+    # Parallel means a second job STARTED before the first one ENDED —
+    # read from the order jobs wrote their marks, never from a clock a
+    # loaded machine can stretch.
+    before_first_end="$(awk '/^end /{exit} /^start /{n++} END{print n+0}' "$timeline")"
+    if [ "$before_first_end" -ge 2 ]; then
+        ok "run_checks: $before_first_end jobs started before the first one ended — jobs ran together"
     else
-        bad "run_checks: wall time ($elapsed s) looks serial, not parallel"
+        bad "run_checks: only $before_first_end job started before the first one ended — the checks ran serially"
         cat "$timeline"
     fi
 }
