@@ -165,7 +165,7 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let at_ty = avrac_self(cx, "At")
     let shape_ty = avrac_self(cx, "Shape")
     let open_ty = avrac_self(cx, "Open")
-    let store_ty = avrac_self(cx, "SyntaxArena")
+    let store_ty = avrac_self_any(cx, ["SyntaxArena", "NodeStore"])
     let of_ty = avrac_self(cx, "Analysed")
     let view_ty = avrac_self(cx, "FileView")
     let of = cx.field_named(v, vty, "of", of_ty)
@@ -203,7 +203,7 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
             cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")),
             avrac_self(cx, "FileView"),
             "store",
-            avrac_self(cx, "SyntaxArena"),
+            avrac_self_any(cx, ["SyntaxArena", "NodeStore"]),
         )
     let carried = cx.carried_of(answer, cx.type(List<List<at_ty>>?))
     let list_at_ty = cx.type(List<at_ty>)
@@ -362,6 +362,17 @@ fn untagged(mut cx: LowerCx, ty: TypeId, tyname: string) -> Reg {
 fn avrac_self(mut cx: LowerCx, name: string) -> TypeId {
     let d? = cx.view.decls.avrac_named(name) else { return avrac_type_missing(cx, name) }
     cx.view.decls.self_type_of(d)
+}
+
+/// A self-lookup across a rename: the speed gate runs a candidate
+/// compiler over the base tree's own source, which lags the
+/// candidate's own rename until a landing refreshes the baseline
+/// (avra-8sb5.57.18.4). Tries every name in order, oldest first.
+fn avrac_self_any(mut cx: LowerCx, names: List<string>) -> TypeId {
+    let hit? = names.find((n: string) -> cx.view.decls.avrac_named(n) != null) else {
+        return avrac_type_missing(cx, names[0])
+    }
+    cx.view.decls.self_type_of(cx.view.decls.avrac_named(hit)!)
 }
 
 fn avrac_type_missing(mut cx: LowerCx, name: string) -> TypeId {
