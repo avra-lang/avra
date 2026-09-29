@@ -564,10 +564,35 @@ fn arm_exit(ins: List<Ins>, from: int) -> ArmExit {
 /// its interior is dead to everything from its own close onward, so the
 /// scan may jump straight to that close — UNLESS `last` itself sits
 /// inside the arm, where what happens before that read still matters.
+///
+/// A NON-diverging arm skips too, on a NARROWER condition (.93): `last`
+/// sits in a SIBLING arm of this same region. Arms are mutually
+/// exclusive — at most one executes — so a use in one is never on the
+/// path a call in another took, whether or not that other arm diverges.
+/// This does NOT cover `last` sitting AFTER the whole region (past its
+/// own merge): reaching there, this arm's fall-through IS the path, so
+/// its own contents still matter — `region_exit` is what tells the two
+/// apart from `exit.boundary` (this arm's own close) alone.
 fn skip_diverging_arm(ins: List<Ins>, k: int, last: int) -> int? {
     if !(opens_region(ins[k]) || ins[k] is .ArmEnd) { return null }
     let exit = arm_exit(ins, k + 1)
-    if exit.diverges && (last <= k || last >= exit.boundary) { exit.boundary } else { null }
+    if exit.diverges && (last <= k || last >= exit.boundary) { return exit.boundary }
+    if !exit.diverges && last >= exit.boundary && last < region_exit(ins, k) { return exit.boundary }
+    null
+}
+
+/// The region's own close (`RegionEnd`) a chain of arms starting at `k`
+/// eventually reaches, walking past every `ArmEnd` in between — the
+/// merge point sitting PAST a call in one arm is no barrier to a use
+/// held in another, sibling arm.
+fn region_exit(ins: List<Ins>, k: int) -> int {
+    mut at = k
+    mut found = 0 - 1
+    while found < 0 {
+        let exit = arm_exit(ins, at + 1)
+        if ins[exit.boundary] is .RegionEnd { found = exit.boundary } else { at = exit.boundary }
+    }
+    found
 }
 
 /// A step that could CHANGE what the cell holds: a store to it, or
