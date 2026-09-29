@@ -146,7 +146,18 @@ export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
     }
 }
 
-/// A rule's own INDEX: its first arm's pattern, when it is a
+/// A rule's own INDEX: the root kind EVERY pattern of every arm
+/// shares, since the pass tries a rule only at nodes of that kind —
+/// absence ("any node") when any pattern cannot narrow or two
+/// disagree.
+export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
+    let pats = flatten([a.pats for a in arms])
+    let first? = pats.first() else { return null }
+    let k? = pat_root_kind(store, first) else { return null }
+    if pats.all(pat_root_kind(store, it) == k) { k } else { null }
+}
+
+/// One pattern's own INDEX: when it is a
 /// `Pat.Quote`, rooted (`quote_pat_root`) and folded to its shallow
 /// kind (`shallow_at` — Expr vs Stmt AND which variant, one int) —
 /// absence for a rule the index cannot narrow (a first arm that is
@@ -157,10 +168,8 @@ export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
 /// folded BLIND to one field's length, text or written type could
 /// never agree with it — "any node" is the honest narrowing, not a
 /// closer miss.
-export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
-    let a? = arms.first() else { return null }
-    let p0? = a.pats.first() else { return null }
-    let body? = match store.pat(p0) { .Quote(b) -> b, rest -> null } else { return null }
+fn pat_root_kind(store: NodeStore, p: PatId) -> int? {
+    let body? = match store.pat(p) { .Quote(b) -> b, rest -> null } else { return null }
     let at? = quote_pat_root(store, body) else { return null }
     // a root that IS the whole hole binds any subject, so its index
     // is the placeholder's own fold — meaningless, and never a real
