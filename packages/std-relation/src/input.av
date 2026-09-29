@@ -1,0 +1,114 @@
+//! `@input` — a fn over a Db whose value the DRIVER sets: the world
+//! outside the Db (a file's bytes, an environment variable), read once
+//! per call under its own cell and refreshed only by an explicit write.
+//! Its written body is the fallback loader a first read runs; a second
+//! generated fn, `set_<name>`, is how a driver pushes a value it
+//! already holds. Either way the value's hash is what decides whether
+//! anything downstream sees a change: two writes of identical bytes
+//! settle as one, so a `@query` reading this input keeps its kept
+//! answer, and only a changed hash invalidates it (COMPILER DB
+//! townhall §7.2, N7).
+//!
+//!     @input
+//!     fn file_text(db: Db, path: string) -> string { read_text(path) catch "" }
+//!
+//!     set_file_text(db, path, edited_text)   // the driver's own push
+use @std.meta.{Fn, Param, Directive, Declared, Diagnostic, Decls, Code, name, wrapped, refuse_as_at}
+use stable.{stable_hasher}
+
+/// `@input`: the accessor, the setter and the input's contract, from
+/// one reading.
+export fn input(f: Fn) -> Declared {
+    let problems = input_problems(f)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    let store = store_name(f)
+    Declared {
+        made: [
+            Directive {
+                twin: "",
+                name: store,
+                at: f.at,
+                source: quote { once fn ${store}() -> InputSlot<${f.answer}> { input_slot() } },
+            },
+            Directive { twin: "", name: f.name, at: f.at, wraps: true, source: accessor(f) },
+            Directive { twin: "", name: setter_name(f), at: f.at, source: setter(f) },
+        ],
+        problems: [],
+    }
+}
+
+/// Every way a fn breaks the input law — the same signature `@query`
+/// answers to (query.av's `seat_problems`), spoken in `@input`'s own
+/// words.
+export fn input_problems(f: Fn) -> List<Diagnostic> { seat_problems(f, input_no_db, input_arg_not_carried, input_answer_not_carried) }
+
+/// The fn holding an input's staged value.
+fn store_name(f: Fn) -> string { "${f.name}_input" }
+
+/// The driver's own setter: `set_file_text`, over `db.file_text`.
+fn setter_name(f: Fn) -> string { "set_${f.name}" }
+
+/// The accessor under the written name: loads once, on the first ask.
+fn accessor(f: Fn) -> Decls {
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    let args = [name(p.name) for p in f.params]
+    let db = name(f.params[0].name)
+    quote {
+        fn ${f.name}(..${seats}) -> ${f.answer} {
+            let m = ${store_name(f)}()
+            let cell = m.cell(${db}, ${args_hash(f)})
+            m.read(${db}, cell, () -> ${wrapped(f)}(${..args}), ${answer_hash(f)})
+        }
+    }
+}
+
+/// The setter: the driver's own value, over the same cell the accessor
+/// reads — an edit and its answer share one identity.
+fn setter(f: Fn) -> Decls {
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+        .concat([quote { fn _(value: ${f.answer}) {} }])
+    let db = name(f.params[0].name)
+    quote {
+        fn ${setter_name(f)}(..${seats}) -> void {
+            let m = ${store_name(f)}()
+            let cell = m.cell(${db}, ${args_hash(f)})
+            let _ = m.write(${db}, cell, value, ${answer_hash(f)})
+        }
+    }
+}
+
+/// The answer's own stable hash, one value folded alone — an input's
+/// witness (COMPILER DB townhall's own words: "an input's witness is
+/// its content hash").
+fn answer_hash(f: Fn) -> Code {
+    quote { (v: ${f.answer}) -> ${hashed(quote { stable_hasher(0) }, quote { v }, f.answers)}.finish() }
+}
+
+// ── voices ──
+
+fn input_no_db(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "input_db",
+        f.at,
+        "`@input fn ${f.name}` takes the `Db` its value is staged under as its first seat",
+        "write `fn ${f.name}(db: Db, …)`",
+    )
+}
+
+fn input_arg_not_carried(f: Fn, p: Param) -> Diagnostic {
+    refuse_as_at(
+        "input_arg",
+        p.at ?? f.at,
+        "`${f.name}`'s seat `${p.name}` is `${p.ty}`, which has no stable encoding — an input's call is named by its arguments' hash",
+        "take an int, a bool, a string, a tagged enum or a nested record of those",
+    )
+}
+
+fn input_answer_not_carried(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "input_answer",
+        f.at,
+        "`${f.name}` answers `${f.answer}`, which has no stable encoding — an input's witness is its answer's hash",
+        "answer an int, a bool, a string, a tagged enum or a nested record of those",
+    )
+}

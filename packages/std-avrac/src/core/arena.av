@@ -3,13 +3,24 @@
 //! typed id.
 use @std.meta.{identity}
 
-/// ONE IDENTITY: both tables are `Cell`s, so a copy of the arena
-/// appends into the same storage as the original.
+/// ONE IDENTITY: every table is a `Cell`, so a copy of the arena
+/// appends into the same storage as the original. `kind_index` is
+/// `Expr`'s alone (COMPILER DB townhall §6.11's `@index kind`,
+/// `core/store.av`'s `exprs_by_kind`) — a `Stmt`/`Pat` arena carries
+/// the field unbuilt, never populated, at the cost of one always-null
+/// slot rather than a field on `NodeStore` itself, which every one of
+/// its ~30 sibling fields would pay a retain/release for on every
+/// copy and drop.
 @identity
-export type Arena<N> = { nodes: Cell<List<N>>, spans: Cell<List<Span?>> }
+export type Arena<N> = {
+    nodes: Cell<List<N>>,
+    spans: Cell<List<Span?>>,
+    kind_index: Cell<Map<string, Cell<List<int>>>?>,
+}
 
 export fn new_arena<N>() -> Arena<N> {
-    Arena { nodes: list_cell<N>(), spans: list_cell<Span?>() }
+    let no_kind_index: Map<string, Cell<List<int>>>? = null
+    Arena { nodes: list_cell<N>(), spans: list_cell<Span?>(), kind_index: Cell.new(no_kind_index) }
 }
 
 impl Arena {

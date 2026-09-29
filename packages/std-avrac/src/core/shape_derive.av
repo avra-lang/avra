@@ -19,8 +19,27 @@
 //! code (`shallow_part`'s catch-all); `kids`'s catch-all can afford
 //! to stay silent because THAT refusal already closes the hole.
 //!
+//! `tag_*` answers a node's own variant, no payload, as its
+//! declaration-order INDEX — the same `at` `shallow_*` already folds
+//! in, read back bare (COMPILER DB townhall §6.11's `@index kind`: a
+//! pass keys a bucket by this int instead of matching every node's
+//! payload by hand). It is the SAME exhaustive walk over `t.variants`
+//! as `shallow_*`/`kids_*`, so a variant this derive's owner gains
+//! gains a tag the same build, never a hand-kept mirror to fall
+//! behind it.
+//!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, name}
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Code,
+    Arms,
+    name,
+    as_code,
+    int_node,
+}
 
 /// The compiler's derive for the structural matcher.
 export trait Matchable {
@@ -37,6 +56,9 @@ export trait Matchable {
                 }
                 fn ${kids_of(t.name)}(node: ${t}) -> List<At> {
                     match node { ${[kids_case(v) for v in t.variants]} }
+                }
+                fn ${tag_of(t.name)}(node: ${t}) -> int {
+                    match node { ${[tag_case(v, j) for j, v in t.variants]} }
                 }
             }
         },
@@ -96,6 +118,14 @@ fn shallow_part(f: Field) -> Code {
     }
 }
 
+/// One variant's tag arm — the same INDEX `shallow_case` folds,
+/// answered bare instead of mixed into a fingerprint.
+fn tag_case(v: MetaVariant, at: int) -> Arms {
+    let lit = as_code(int_node(at))
+    if v.fields.is_empty() { return quote { .${v} -> ${lit} } }
+    quote { .${v}(${binders(v)}) -> ${lit} }
+}
+
 /// One variant's kids arm.
 fn kids_case(v: MetaVariant) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> [] } }
@@ -143,3 +173,4 @@ fn kind_of(owner: string) -> string {
 
 fn shallow_of(owner: string) -> string { "shallow_${kind_of(owner)}" }
 fn kids_of(owner: string) -> string { "kids_${kind_of(owner)}" }
+fn tag_of(owner: string) -> string { "tag_${kind_of(owner)}" }

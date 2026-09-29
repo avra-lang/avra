@@ -1,0 +1,32 @@
+#!/bin/sh
+# Refuses a commit whose staged Avra files are not canonical.
+# The fix is printed: `build/avra fmt --write <files>`.
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.av')
+[ -n "$files" ] || exit 0
+if [ ! -x build/avra ]; then
+    echo "pre-commit: no build/avra in this worktree — formatting NOT checked" >&2
+    exit 0
+fi
+# What is checked is the STAGED text, read where the file stands, so its
+# package and every sublanguage it uses resolve as they do for the real file.
+# A file whose working copy differs from the index is checked through a hidden
+# sibling holding the staged text.
+checked=""
+siblings=""
+trap 'for s in $siblings; do rm -f "$s"; done' EXIT
+for f in $files; do
+    if git diff --quiet -- "$f"; then
+        checked="$checked $f"
+    else
+        s="$(dirname "$f")/.staged-$(basename "$f")"
+        git show ":$f" > "$s"
+        siblings="$siblings $s"
+        checked="$checked $s"
+    fi
+done
+out=$(build/avra fmt --check $checked 2>&1)
+status=$?
+[ "$status" -eq 0 ] && exit 0
+echo "$out" >&2
+echo "pre-commit: staged Avra is not canonical — run: build/avra fmt --write $(echo $files)" >&2
+exit 1
