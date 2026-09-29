@@ -338,11 +338,21 @@ impl TypeCx {
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
-        let ptypes = [self.param_type(s, pp) for pp in seats]
+        let d = self.decl_of(s)
+        // `seat_types_so_far`, never `seats`: this IS the natural signing —
+        // triggering the hook here would ask it of an extern too (declare_fn
+        // routes both through this one fn), and the hook derives params by
+        // walking the STATEMENT structurally, which does not know an
+        // extern's shape the way this fn's own `fparams` argument already
+        // does (widthless-adjusted, from declare_fn). Reuse failures.av's
+        // early ask if it beat this fn here; otherwise type them now, from
+        // the argument this fn was handed, and record for that early asker.
+        let ptypes = self.view.decls.seat_types_so_far(d) ?? self.typed_seats(s, fparams, null)
+        self.view.decls.record_seat_types(d, ptypes)
         let rt = self.answer_type(s, owner, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
-        self.view.decls.record_seats(self.decl_of(s), [pp.promises for pp in seats])
+        self.view.decls.record_seats(d, [pp.promises for pp in seats])
         self.keep_boxed(seats, ptypes)
         self.declare(s, DeclSig.Fn(sig))
     }
@@ -425,6 +435,17 @@ impl TypeCx {
     fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
         self.typeless_param(s, pp.name.of)
+    }
+
+    /// A fn's whole SEAT LIST, typed — the receiver's type first when there is
+    /// one, then the written parameters in order. The ONE fold every seat-declaring
+    /// site (a free fn, an inherent method, a trait member) shares, called before
+    /// `answer_type`: an inferred `Result<T, _>` answer may ask any `_`-declared
+    /// fn's own seats mid-fixpoint, and they must already be typed by then.
+    fn typed_seats(s: StmtId, params: List<Param>, receiver: TypeId?) -> List<TypeId> {
+        let ptypes = [self.param_type(s, pp) for pp in written_seats(self.keywords, params)]
+        let r? = receiver else { return ptypes }
+        [r].concat(ptypes)
     }
 
     fn typeless_param(s: StmtId, name: string) -> TypeId {
