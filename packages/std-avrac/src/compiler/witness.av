@@ -75,6 +75,7 @@ use @std.relation.stable.{
     Reader,
     CodecFault,
     written_list,
+    text_hash,
 }
 use @std.text.{parse_int}
 use @std.meta.{derive}
@@ -772,16 +773,62 @@ impl Workspace {
         match family_at(k.family) {
             .Parsed -> self.parsed_edge_hash(FileId { index: k.arg }) ?? 0,
             .Namespace -> self.namespace_digest(ModuleId { index: k.arg }),
+            .Sig -> self.stable_sig_hash(DeclId { index: k.arg }),
+            .Methods -> self.stable_methods_hash(DeclId { index: k.arg }),
             rest -> self.db.value_hash_of(k) ?? 0,
         }
+    }
+
+    /// A signature's hash BY CONTENT, never `value_hash_of`'s generic
+    /// `@derive(Fingerprint)` answer — that answer folds every `TypeId`
+    /// it holds through the type's OWN fingerprint, which is its raw
+    /// registry INDEX (core/types.av: "opaque handle... never
+    /// inspected" — true only within one process). Two processes
+    /// intern the same types in different orders, so an index-based
+    /// fingerprint drifts between them though nothing in the
+    /// signature's own text changed, refusing a `Sig` edge for a
+    /// declaration the edit never touched. The wire form
+    /// (`shape_line`, record.av) is what `iface_digest` already
+    /// trusts across processes for this exact reason — a type's
+    /// SHAPE, not its slot.
+    /// MEMOIZED — `shape_line` walks a whole signature's type wire
+    /// fresh on every call, and many files' witnesses ask the SAME
+    /// frequently used declaration's Sig edge.
+    fn stable_sig_hash(d: DeclId) -> int {
+        let mkey = "sig:${d.index}"
+        let cached? = self.stable_hash_memo_at(mkey) else {
+            let h = self.fresh_sig_hash(d)
+            self.stable_hash_memo_remember(mkey, h)
+            return h
+        }
+        cached
+    }
+
+    fn fresh_sig_hash(d: DeclId) -> int {
+        let sig? = self.sig(d) else { return 0 }
+        let x = self.decls.decl(d)
+        let layout = if x.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d)) { "boxed" } else { "struct" }
+        text_hash(shape_line(self, sig, layout))
+    }
+
+    /// `key`'s hash if this process already computed one — its own fn
+    /// for the reason `decl_lookup_memo` is: a read held across
+    /// `stable_hash_memo_remember`'s write clones the whole map.
+    fn stable_hash_memo_at(mkey: string) -> int? {
+        if self.leaf_memo_stale() { return null }
+        self.stable_hash_memo.get().get(mkey)
+    }
+
+    fn stable_hash_memo_remember(mkey: string, h: int) {
+        self.ensure_memo_fresh()
+        self.stable_hash_memo.put(mkey, h)
     }
 
     fn current_sig_hash(inner: StableId) -> int? {
         if inner.kind != "decl" || inner.parts.length < 4 { return null }
         let sibling? = parse_int(inner.parts[3]) else { return null }
         let d? = self.decl_at_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
-        let _ = self.sig(d)
-        self.db.value_hash_of(key(Family.Sig, d.index))
+        self.stable_sig_hash(d)
     }
 
     fn current_manifest_hash(inner: StableId) -> int? {
@@ -795,12 +842,23 @@ impl Workspace {
     /// declaration in the whole table — builtins included — so a
     /// type's method clashes are a dependency of every file's own
     /// `Analysis`, whether or not that file names the type at all.
+    ///
+    /// BY CONTENT, the same law `stable_sig_hash` pays: `methods(d)`
+    /// answers `List<DeclId>`, and `DeclId` carries the same warning
+    /// `TypeId` does (core/nodes.av: "int means nothing outside this
+    /// process") — `value_hash_of` would fold each method's raw index,
+    /// not its identity. `decl_wire` (interface.av) is the stable name
+    /// a method answers to; sorted, since the SET of methods is what
+    /// this edge means, not the table's own encounter order.
     fn current_methods_hash(inner: StableId) -> int? {
         if inner.kind != "decl" || inner.parts.length < 4 { return null }
         let sibling? = parse_int(inner.parts[3]) else { return null }
         let d? = self.decl_at_stable(inner.parts[0], inner.parts[1], inner.parts[2], sibling) else { return null }
-        let _ = self.methods(d)
-        self.db.value_hash_of(key(Family.Methods, d.index))
+        self.stable_methods_hash(d)
+    }
+
+    fn stable_methods_hash(d: DeclId) -> int {
+        text_hash(joined(sorted_texts([self.decls.decl_wire(m) for m in self.methods(d)]), "\n"))
     }
 
     /// `root`'s deps, expanded to the families this file can
@@ -940,10 +998,12 @@ impl Workspace {
             let no_ids: Map<string, int> = {}
             let no_visible: Map<string, List<int>> = {}
             let no_decls: Map<string, DeclId> = {}
+            let no_hashes: Map<string, int> = {}
             self.edge_table.set(no_table)
             self.edge_id_by_key.set(no_ids)
             self.visible_memo_sets.set(no_visible)
             self.decl_by_stable.set(no_decls)
+            self.stable_hash_memo.set(no_hashes)
             self.leaf_memo_revision.set(self.db.revision())
         }
     }
