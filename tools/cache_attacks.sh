@@ -579,6 +579,22 @@ rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/n
 lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
+# A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
+# STRUCTURAL one (Reach) is persisted as ready; a const that traps while
+# settling never is, so its file never holds and the trap never goes quiet.
+mkdir -p $R/rs/src
+printf '[package]\nname = "rt-rs"\nversion = "0.1.0"\n' > $R/rs/avra.toml
+printf 'export const x: int = x + 1\n' > $R/rs/src/bad.av
+cat > $R/rs/src/main.av <<'AV'
+use bad.{x}
+println("${x}")
+AV
+rm -rf .avra-cache; rs_cold=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); case "$rs_cold" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  the trap fixture draws no diagnostic cold, so it attacks nothing" ;; esac
+printf '// moved\n' >> $R/rs/src/main.av
+rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

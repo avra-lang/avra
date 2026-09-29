@@ -102,6 +102,21 @@ impl Unsettled {
             .Spoken or .Recursive -> "",
         }
     }
+
+    /// A STRUCTURAL refusal is a FACT ABOUT THE CONST, stable across rebuilds:
+    /// `Reach` means the initializer touches the world, and no amount of
+    /// re-settling turns a value that reaches the world into one that does
+    /// not — the const stays a runtime `once` load, correct either way, so
+    /// the verdict itself is worth keeping. Every other refusal SPEAKS a
+    /// diagnostic (a budget spent, a trap, an unreadable param, this file's
+    /// own laws) and must re-speak on the next warm build, so it stays
+    /// hold-gating rather than cached.
+    fn structural() -> bool {
+        match self {
+            .Reach(_) -> true,
+            .Budget(_) or .Trap(_) or .Param(_) or .Spoken or .Recursive -> false,
+        }
+    }
 }
 
 /// What a settlement runs: a `const`'s initializer, or an expression

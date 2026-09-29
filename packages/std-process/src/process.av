@@ -823,7 +823,8 @@ impl Command {
 
 /// One child in flight: its handle, its deadline (or none below
 /// zero), the landings each stream has given, what stdin still owes
-/// it, and the verdicts that have become true. The buffers live HERE
+/// it, and the verdicts that have become true — `expired` when the
+/// deadline had passed at launch, so nothing it says is captured. The buffers live HERE
 /// now — the C holds descriptors and nothing else.
 type Stage = {
     h: int,
@@ -841,6 +842,7 @@ type Stage = {
     stopped: bool = false,
     timed: bool = false,
     truncated: bool = false,
+    expired: bool = false,
 }
 
 /// One stream's landings, taken until it has nothing more to give.
@@ -898,6 +900,7 @@ fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
         Stage {
             h: h,
             deadline: if t < 0 { 0 - 1 } else { now_ms() + t },
+            expired: t == 0,
             feed: stdin_bytes(c.stdin),
             cap: c.max_capture,
         },
@@ -956,7 +959,7 @@ fn poured(s: Stage) -> Stage {
 /// `timed` is the witness of which branch was taken: nothing else sets
 /// it, and a stage that is already timed never reaches a sweep.
 fn paced(s: Stage, waited: bool) -> Stage {
-    if past(s) { return swept(s) with { timed: true } }
+    if past(s) { return heard(s) with { timed: true } }
     ticked(s, if waited { 0 } else { turn_ms })
 }
 
@@ -1042,7 +1045,7 @@ fn pumped(start: Stage, grace_ms: int) -> Stage {
     mut s = start
     while !s.stopped && !s.timed && !s.capped_out && !s.capped_err {
         if past(s) {
-            s = swept(s) with { timed: true }
+            s = heard(s) with { timed: true }
         } else {
             s = ticked(s, turn_ms)
         }
@@ -1061,7 +1064,14 @@ fn past(s: Stage) -> bool {
 /// caller's.
 fn stopped_tree(s: Stage) -> Stage {
     let _ = avra_proc_signal(s.h, sigkill, 1)
-    swept(s) with { truncated: true }
+    heard(s) with { truncated: true }
+}
+
+/// What a stage has said, swept — except a stage EXPIRED at launch:
+/// anything it wrote came after its deadline, and sweeping it would make
+/// the answer a race between the child and this process's scheduler.
+fn heard(s: Stage) -> Stage {
+    if s.expired { s } else { swept(s) }
 }
 
 /// The grace WAITED OUT after the child is gone: a grandchild may
