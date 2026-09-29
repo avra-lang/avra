@@ -1102,6 +1102,141 @@ test_batch_stale_registration() {
     fi
 }
 
+# ══ DROP BY FILE: A NAMED-FILE FAILURE SKIPS THE HALVING ═════════════
+# batch_repo's own fmt-lossless stub always passes; this variant's
+# WALKS packages/**/*.av for a "BAD-FMT" marker and prints each one it
+# finds (bare, one per line — fmt --check's own differing-list shape)
+# before failing, real enough to name a file with no real compiler.
+# Branches p, q, r each touch only their own package's file; whichever
+# carry the marker are the ones drop-by-file should find.
+dropfile_repo() {
+    d="$(git_repo "$1")"
+    for p in p q r; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/bootstrap"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+case "$1" in
+    build)
+        mkdir -p packages/cli/src
+        cp "$0" packages/cli/src/main
+        chmod +x packages/cli/src/main
+        exit 0
+        ;;
+    test)
+        echo "tested $(basename "$2")"
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "$d/build/avra"
+    cat > "$d/Makefile" <<'MK'
+build/libavra_runtime.a:
+	@touch build/libavra_runtime.a
+objects:
+	@touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
+idioms:
+	@echo idioms-ok
+fmt-lossless:
+	@bad=0; for f in $$(find packages -name '*.av' 2>/dev/null); do \
+	  if grep -q 'BAD-FMT' "$$f" 2>/dev/null; then echo "$$f"; bad=1; fi; \
+	done; \
+	if [ "$$bad" -eq 1 ]; then echo "fmt --check: 3 examined, 1 differing, 0 refused"; exit 1; fi; \
+	echo "fmt --check: 3 examined, 0 differing, 0 refused"
+cache-attacks:
+	@echo cache-attacks-ok
+seed:
+	@echo seed-src > bootstrap/seed.ll
+	@echo seed-src > bootstrap/seed.sources
+seed-check:
+	@test -f bootstrap/seed.ll && echo seed-check-ok
+MK
+    printf 'seed-src\n' > "$d/bootstrap/seed.ll"
+    printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    printf 'build/\n' > "$d/.gitignore"
+    commit_all "$d" "base"
+
+    for p in p q r; do
+        git -C "$d" checkout -q -b "$p" main
+        printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
+        commit_all "$d" "$p's own change"
+    done
+    git -C "$d" checkout -q main
+    echo "$d"
+}
+
+# Marks a branch's own file BAD-FMT, in place.
+mark_bad_fmt() {
+    d="$1"
+    branch="$2"
+    git -C "$d" checkout -q "$branch"
+    printf '// BAD-FMT\nexport fn seed_%s() -> int { 1 }\n' "$branch" > "$d/packages/$branch/src/lib.av"
+    commit_all "$d" "$branch, badly formatted"
+    git -C "$d" checkout -q main
+}
+
+test_batch_drop_by_file() {
+    d="$(dropfile_repo drop-one)"
+    mark_bad_fmt "$d" p
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/drop-one-lock" AVRA_LAND_BATCH_WT="$scratch/drop-one-wt" \
+        AVRA_SLOTS_DIR="$scratch/drop-one-slots" branch=x sh "$land" --call main_batch 0 p q r ) \
+        > "$scratch/drop-one.out" 2>&1 || st=$?
+
+    if [ "$st" -ne 0 ] && grep -q "^LANDED" "$scratch/drop-one.out"; then
+        ok "drop-by-file: still lands the clean branches despite the culprit"
+    else
+        bad "drop-by-file: did not land the clean branches ($st)"
+        cat "$scratch/drop-one.out"
+    fi
+    logged drop-one "CULPRIT: p" "drop-by-file: names p as the culprit"
+    logged drop-one "every named file traces to one branch" "drop-by-file: says it dropped by file, not by bisecting"
+    # `\]: ` (not `] GREEN:`) picks only the pre-run announcement, never
+    # the separate "… GREEN: …" success line for the same attempt.
+    attempts="$(grep -c 'land: batch attempt \[.*\]: ' "$scratch/drop-one.out")"
+    if [ "$attempts" -eq 2 ]; then
+        ok "drop-by-file: exactly two attempts — the failing one and the drop retry"
+    else
+        bad "drop-by-file: expected 2 batch attempts, saw $attempts"
+        cat "$scratch/drop-one.out"
+    fi
+    unlogged drop-one "bisect-2-" "drop-by-file: no half-split bisection ran"
+    unlogged drop-one "recombine-" "drop-by-file: no recombination ran"
+    main_q="$(git -C "$d" show main:packages/q/src/lib.av 2>/dev/null)"
+    main_p="$(git -C "$d" show main:packages/p/src/lib.av 2>/dev/null)"
+    if printf '%s' "$main_q" | grep -q "int { 1 }" && ! printf '%s' "$main_p" | grep -q "BAD-FMT"; then
+        ok "drop-by-file: main carries q's change but not p's"
+    else
+        bad "drop-by-file: main's content does not match q-in, p-out"
+    fi
+}
+
+test_batch_drop_by_file_ambiguous_falls_back() {
+    d="$(dropfile_repo drop-two)"
+    mark_bad_fmt "$d" p
+    mark_bad_fmt "$d" q
+    st=0
+    ( cd "$d" && AVRA_LAND_LOCK="$scratch/drop-two-lock" AVRA_LAND_BATCH_WT="$scratch/drop-two-wt" \
+        AVRA_SLOTS_DIR="$scratch/drop-two-slots" branch=x sh "$land" --call main_batch 0 p q r ) \
+        > "$scratch/drop-two.out" 2>&1 || st=$?
+
+    unlogged drop-two "every named file traces to one branch" "drop-two: two branches' files are named — drop-by-file does not guess"
+    logged drop-two "bisect-2-" "drop-two: falls back to the ordinary half-split bisection"
+    logged drop-two "CULPRIT: p" "drop-two: p is isolated as a culprit"
+    logged drop-two "CULPRIT: q" "drop-two: q is isolated as a culprit"
+    if [ "$st" -ne 0 ] && grep -q "^LANDED" "$scratch/drop-two.out"; then
+        ok "drop-two: still lands r despite two culprits"
+    else
+        bad "drop-two: did not land r ($st)"
+        cat "$scratch/drop-two.out"
+    fi
+}
+
 # ══ COMPILER-UNTOUCHED: NO SECOND BUILD, NO SEED-CHECK ═══════════════
 # `batch_repo`'s packages (a, b, c) live outside packages/std-avrac,
 # packages/cli, packages/std-meta and runtime/, so landing one alone
@@ -1222,6 +1357,50 @@ test_diff_scope_skips() {
     land_scoped "$d" a scope-a || bad "scope: an .av landing failed"
     logged scope-a "idioms" "scope: an .av diff runs idioms"
     logged scope-a "skipped cache-attacks: diff touches no compiler source" "scope: a compiler-untouched diff skips cache-attacks"
+}
+
+# ══ FAIL FAST: fmt-lossless RUNS BEFORE ANY BUILD ═════════════════════
+# A landing whose Makefile's fmt-lossless target fails stops there —
+# with the STANDING compiler, before build-1 ever starts.
+test_fmt_lossless_fails_before_build() {
+    d="$(batch_repo fmtfail)"
+    git -C "$d" checkout -q -b bad main
+    printf 'export fn seed_a() -> int { 2 }\n' > "$d/packages/a/src/lib.av"
+    cat > "$d/Makefile" <<'MK'
+build/libavra_runtime.a:
+	@touch build/libavra_runtime.a
+objects:
+	@touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
+idioms:
+	@echo idioms-ok
+fmt-lossless:
+	@echo "packages/a/src/lib.av"
+	@echo "fmt --check: 3 examined, 1 differing, 0 refused"
+	@exit 1
+cache-attacks:
+	@echo cache-attacks-ok
+seed:
+	@echo seed-src > bootstrap/seed.ll
+	@echo seed-src > bootstrap/seed.sources
+seed-check:
+	@test -f bootstrap/seed.ll && echo seed-check-ok
+MK
+    commit_all "$d" "fmt-lossless now fails"
+    git -C "$d" checkout -q main
+
+    land_scoped "$d" bad fmtfail-bad
+    st=$?
+    if [ "$st" -ne 0 ]; then
+        ok "fmt-fail: a broken fmt-lossless stops the landing"
+    else
+        bad "fmt-fail: the landing succeeded despite fmt-lossless failing"
+        cat "$scratch/fmtfail-bad.out"
+    fi
+    logged fmtfail-bad "FAILED at 'fmt-lossless-fast" "fmt-fail: the usual FAILED line names the pre-build step"
+    unlogged fmtfail-bad "build-1" "fmt-fail: no build ran before the fmt failure"
+    unlogged fmtfail-bad "land: idioms" "fmt-fail: idioms never got to run either"
 }
 
 test_compiler_untouched_skips_second_build_and_seedcheck() {
@@ -1984,6 +2163,7 @@ run_test test_failed_run_restores_the_seed
 run_test test_landing_keeps_the_warm_cache
 run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
+run_test test_fmt_lossless_fails_before_build
 run_test test_timeline_lines_present
 run_test test_slot_limit
 run_test test_slot_stale_reclaim
@@ -1993,6 +2173,8 @@ run_test test_try_ff
 run_test test_batch_mode
 run_test test_batch_tool_failure
 run_test test_batch_stale_registration
+run_test test_batch_drop_by_file
+run_test test_batch_drop_by_file_ambiguous_falls_back
 run_test test_heavy_status
 run_test test_auto_batch
 run_test test_auto_batch_holder_stopped
