@@ -57,7 +57,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         catches
             .all(
                 (c: ErrorSite) -> ws
-                    .error_sites_within(c.at)
+                    .error_sites_within(c.owner, c.at)
                     .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
             )
     }
@@ -140,7 +140,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let f = decl_named(ws, "via_if")
         let _ = ws.raised_by(f)
         let c = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(c.at)
+        let inside = ws.error_sites_within(c.owner, c.at)
         inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
     }
     then "a re-raise inside a `match` inside the arm is found, `within` the catch" {
@@ -149,7 +149,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let f = decl_named(ws, "via_match")
         let _ = ws.raised_by(f)
         let c = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(c.at)
+        let inside = ws.error_sites_within(c.owner, c.at)
         inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
     }
     then "a catch nested in a catch's arm is `within` the outer catch, and chain descends into it" {
@@ -158,7 +158,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let f = decl_named(ws, "via_nested_catch")
         let _ = ws.raised_by(f)
         let outer = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(outer.at)
+        let inside = ws.error_sites_within(outer.owner, outer.at)
         let tree = ws.chain(outer, [])
         inside.length == 1 &&
             inside[0].how is .Catch &&
@@ -180,7 +180,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         catches
             .all(
                 (c: ErrorSite) -> ws
-                    .error_sites_within(c.at)
+                    .error_sites_within(c.owner, c.at)
                     .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
             )
     }
