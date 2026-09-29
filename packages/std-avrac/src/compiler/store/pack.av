@@ -24,6 +24,7 @@
 //! `int` PER BYTE, an 8x-16x blowup measured turning a leaf-edit
 //! recheck's pack read into 2.3 GB of the run's 2.9 GB peak
 //! (avra-8sb5.57.55's OOM).
+use core.{list_cell}
 use @std.io.{read_bytes, write_bytes, truncate_to, AppendFile, opened_for_append}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
@@ -173,11 +174,23 @@ type StagedEntry = { name: string, body: Bytes }
 /// The scan's running answer, folded one frame at a time. Frames since
 /// the last `Commit` are staged, separately from what a reader may
 /// already trust, so a transaction that never closes leaves no trace.
+///
+/// `stage_by_id`/`stage_entries` are CELLS, not plain lists: `applied`
+/// runs once per NAME and per ROW frame — a pack can carry thousands
+/// — and the caller's own `s` (`walked`'s loop) still stands for the
+/// argument across the call (CLAUDE.md's borrowing law), so a plain
+/// field read into a `mut` local and pushed is never uniquely held —
+/// `push` clones the whole list first, same O(n²) a `concat([x])` fold
+/// has, just under `avra_cell_unique` instead of `avra_array_concat`.
+/// A Cell's identity survives being read: pushing through it mutates
+/// the one shared buffer regardless of how many bindings hold `s`.
+/// Measured: the dominant cost of a leaf-edit recheck (41% of wall
+/// time, all retains under the clone) collapses to noise.
 type ScanState = {
     by_id: List<string>,
     slots: Map<string, Slot>,
-    stage_by_id: List<string>,
-    stage_entries: List<StagedEntry>,
+    stage_by_id: Cell<List<string>>,
+    stage_entries: Cell<List<StagedEntry>>,
     committed_len: int,
     broken: bool,
 }
@@ -185,12 +198,11 @@ type ScanState = {
 fn empty_scan(committed_len: int) -> ScanState {
     let no_by_id: List<string> = []
     let no_slots: Map<string, Slot> = {}
-    let no_stage: List<StagedEntry> = []
     ScanState {
         by_id: no_by_id,
         slots: no_slots,
-        stage_by_id: no_by_id,
-        stage_entries: no_stage,
+        stage_by_id: list_cell(),
+        stage_entries: list_cell(),
         committed_len: committed_len,
         broken: false,
     }
@@ -201,13 +213,17 @@ fn empty_scan(committed_len: int) -> ScanState {
 fn name_for(s: ScanState, id: int) -> string? {
     if id < s.by_id.length { return s.by_id[id] }
     let j = id - s.by_id.length
-    if j >= 0 && j < s.stage_by_id.length { return s.stage_by_id[j] }
+    let staged = s.stage_by_id.get()
+    if j >= 0 && j < staged.length { return staged[j] }
     null
 }
 
 fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
     match frame {
-        .NameDef(name) -> s with { stage_by_id: s.stage_by_id.concat([name]) },
+        .NameDef(name) -> {
+            s.stage_by_id.push(name)
+            s
+        },
         .Entry(body) -> staged_entry(s, body),
         .Commit -> committed(s, pos_after),
     }
@@ -216,18 +232,22 @@ fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
 fn staged_entry(s: ScanState, body: Bytes) -> ScanState {
     let id? = decoded_name_id(body) else { return s with { broken: true } }
     let name? = name_for(s, id) else { return s with { broken: true } }
-    s with { stage_entries: s.stage_entries.concat([StagedEntry { name: name, body: body }]) }
+    s.stage_entries.push(StagedEntry { name: name, body: body })
+    s
 }
 
+/// Once per COMMIT frame, far rarer than a name or a row: batching two
+/// already-built lists with `concat` here is the right shape, and
+/// fresh cells for the next transaction cost nothing a commit does
+/// not already pay.
 fn committed(s: ScanState, pos_after: int) -> ScanState {
     mut slots = s.slots
-    for se in s.stage_entries { slots.set(se.name, Slot.OnDisk(se.body)) }
-    let no_stage: List<StagedEntry> = []
+    for se in s.stage_entries.get() { slots.set(se.name, Slot.OnDisk(se.body)) }
     ScanState {
-        by_id: s.by_id.concat(s.stage_by_id),
+        by_id: s.by_id.concat(s.stage_by_id.get()),
         slots: slots,
-        stage_by_id: [],
-        stage_entries: no_stage,
+        stage_by_id: list_cell(),
+        stage_entries: list_cell(),
         committed_len: pos_after,
         broken: false,
     }
