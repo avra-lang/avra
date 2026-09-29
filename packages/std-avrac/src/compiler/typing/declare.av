@@ -24,6 +24,7 @@ use core.{
     width_words,
     qtrace,
     FileId,
+    Scoped,
 }
 use diagnostics.{refusal}
 use features.{
@@ -45,6 +46,7 @@ use features.{
     written_seats,
     declared_decl,
     Namespace,
+    AnnotationFact,
 }
 use compiler.{result_infers}
 use compiler.lower.{ordered_collect_members}
@@ -180,12 +182,54 @@ impl TypeCx {
         }
         let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
+        if self.marks_identity(record) { self.identity_law(s, owner, names, types) }
         let sig = StructSig {
             names: [t.of for t in names],
             types: types,
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
         }
         self.declare(s, DeclSig.Record(sig))
+    }
+
+    /// AN IDENTITY'S TABLES ARE SHARED BY EVERY COPY: a field a
+    /// writing path could open unique — anything but a `Cell`, or
+    /// another `@identity` type — would fork them the moment one
+    /// copy's write stops reaching the other.
+    fn identity_law(s: StmtId, owner: string, names: List<Scoped>, types: List<TypeId>) {
+        for j, ty in types {
+            let field = names[j].of
+            if !self.identity_field_ok(ty) && !identity_licensed(owner, field) {
+                self.non_identity_field(s, field, ty)
+            }
+        }
+    }
+
+    /// A `Cell<…>`, or a declared type itself carrying `@identity` —
+    /// the two shapes a write through a path can never fork.
+    fn identity_field_ok(ty: TypeId) -> bool {
+        match self.view.types.shape_of(ty) {
+            .Cell(_) -> true,
+            .Struct(d, _) or .App(d, _, _) -> self.marks_identity(d),
+            rest -> false,
+        }
+    }
+
+    /// Whether a declaration carries `@identity`.
+    fn marks_identity(d: DeclId) -> bool {
+        self.view.decls.annotations_of(d).any((a: AnnotationFact) -> a.name == "identity")
+    }
+
+    fn non_identity_field(s: StmtId, field: string, found: TypeId) {
+        self
+            .emit(
+                refusal(
+                    "type.identity_field",
+                    self.stmt_loc(s),
+                    identity_field_law,
+                    "field `${field}` is `${self.view.types.name_of(found)}`",
+                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `identity_plain` in compiler/typing/declare.av",
+                ),
+            )
     }
 
     /// A default's signature: a body of no parameters answering its
@@ -294,11 +338,21 @@ impl TypeCx {
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
-        let ptypes = [self.param_type(s, pp) for pp in seats]
+        let d = self.decl_of(s)
+        // `seat_types_so_far`, never `seats`: this IS the natural signing —
+        // triggering the hook here would ask it of an extern too (declare_fn
+        // routes both through this one fn), and the hook derives params by
+        // walking the STATEMENT structurally, which does not know an
+        // extern's shape the way this fn's own `fparams` argument already
+        // does (widthless-adjusted, from declare_fn). Reuse failures.av's
+        // early ask if it beat this fn here; otherwise type them now, from
+        // the argument this fn was handed, and record for that early asker.
+        let ptypes = self.view.decls.seat_types_so_far(d) ?? self.typed_seats(s, fparams, null)
+        self.view.decls.record_seat_types(d, ptypes)
         let rt = self.answer_type(s, owner, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
-        self.view.decls.record_seats(self.decl_of(s), [pp.promises for pp in seats])
+        self.view.decls.record_seats(d, [pp.promises for pp in seats])
         self.keep_boxed(seats, ptypes)
         self.declare(s, DeclSig.Fn(sig))
     }
@@ -362,10 +416,16 @@ impl TypeCx {
     /// seat, and a flat record is a value in a register with no
     /// identity to write through, so a one-field record would break
     /// where a two-field one works. Sealing is sticky, so it holds
-    /// however late the record itself is typed.
+    /// however late the record itself is typed — BUT a held record's
+    /// own row must land FIRST (`declared_first`), or its "was flat"
+    /// belief never reaches `held_flat` and a stale held object (built
+    /// before this seat existed) survives unrefused.
     fn keep_boxed(seats: List<Param>, ptypes: List<TypeId>) {
         for j, pp in seats {
-            if pp.promises.mutable { self.view.types.unflatten(ptypes[j]) }
+            if pp.promises.mutable {
+                self.view.decls.declared_first(ptypes[j])
+                self.view.types.unflatten(ptypes[j])
+            }
         }
     }
 
@@ -375,6 +435,17 @@ impl TypeCx {
     fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
         self.typeless_param(s, pp.name.of)
+    }
+
+    /// A fn's whole SEAT LIST, typed — the receiver's type first when there is
+    /// one, then the written parameters in order. The ONE fold every seat-declaring
+    /// site (a free fn, an inherent method, a trait member) shares, called before
+    /// `answer_type`: an inferred `Result<T, _>` answer may ask any `_`-declared
+    /// fn's own seats mid-fixpoint, and they must already be typed by then.
+    fn typed_seats(s: StmtId, params: List<Param>, receiver: TypeId?) -> List<TypeId> {
+        let ptypes = [self.param_type(s, pp) for pp in written_seats(self.keywords, params)]
+        let r? = receiver else { return ptypes }
+        [r].concat(ptypes)
     }
 
     fn typeless_param(s: StmtId, name: string) -> TypeId {
@@ -956,6 +1027,35 @@ impl TypeCx {
             .Const or .Collect or .Trait or .Syntax or .Main or .Builtin -> nothing(),
         }
     }
+}
+
+const identity_field_law: string = "an identity's tables are shared by every copy — its fields are `Cell`s"
+
+/// A field an `@identity` type carries plain, reviewed here rather
+/// than wrapped: a scalar or a fn value set once at construction and
+/// never reassigned, so no writing path ever reaches it to fork it.
+/// Each is also noted at its field (`// plain for its identity: …`);
+/// this table is what the law reads.
+type PlainField = { of: string, field: string }
+
+const identity_plain: List<PlainField> = [
+    PlainField { of: "NodeStore", field: "file" },
+    PlainField { of: "Decls", field: "rows" },
+    PlainField { of: "Workspace", field: "host" },
+    PlainField { of: "Workspace", field: "root" },
+    PlainField { of: "Workspace", field: "lang" },
+    PlainField { of: "Workspace", field: "lone" },
+    PlainField { of: "Workspace", field: "per_file" },
+    PlainField { of: "Workspace", field: "clock" },
+    PlainField { of: "Fixpoint", field: "family" },
+    PlainField { of: "Fixpoint", field: "bottom" },
+    PlainField { of: "Fixpoint", field: "join" },
+    PlainField { of: "Fixpoint", field: "fp" },
+    PlainField { of: "Fixpoint", field: "turn_cap" },
+]
+
+fn identity_licensed(owner: string, field: string) -> bool {
+    identity_plain.any((p: PlainField) -> p.of == owner && p.field == field)
 }
 
 /// The remedy for a type parameter whose name is taken.

@@ -233,6 +233,12 @@ spec "compiler/lower" {
             text.contains("= pack ") && text.contains(".0") && text.contains(".1")
         }
     }
+    given "a once fn answers from its own slot" {
+        then "`avra ir` shows the slot read and its one commit, and no table call" {
+            let text = render_ir(ir_of("once fn tag() -> string {\n    \"a\" + \"b\"\n}\ntag()"))
+            text.contains(" = once ") && text.contains(" <- r") && !text.contains("avra_once_get")
+        }
+    }
     given "the runtime registry, indexed by name" {
         then "every row is in the index under its name, and nothing else is" {
             let index = rt_index()
@@ -670,4 +676,27 @@ spec "a mut cell's type" {
             cell_settles(body_of(render_ir(l), "drop")) >= 2
         }
     }
+}
+
+spec "a region arm that leaves the function" {
+    given "a borrow read before a branch that empties the container and RETURNS" {
+        then "the arm never reaches the read after it, so the borrow costs no retain" {
+            let l = ir_of(early_exit_borrow())
+            let skips: Body? = l.fns.find(it.name == "skips")
+            skips != null && !skips!.ins.any(is_owned_get(it))
+        }
+    }
+    given "the same branch REJOINING instead of returning" {
+        then "the change now stands between the borrow and its read, so it stays owned" {
+            let l = ir_of(early_exit_borrow())
+            let stays: Body? = l.fns.find(it.name == "stays")
+            stays != null && stays!.ins.any(is_owned_get(it))
+        }
+    }
+}
+
+/// A borrow taken before a branch that empties the container it was
+/// read from — once by a branch that RETURNS, once by one that REJOINS.
+fn early_exit_borrow() -> string {
+    "type Bag = { rows: List<string> }\nfn touched(mut b: Bag, xs: List<string>) -> int {\n    b.rows = []\n    xs.length\n}\nfn skips(mut b: Bag, guard: bool) -> int {\n    let xs = b.rows\n    let row = xs[0]\n    if guard {\n        touched(b, xs)\n        return 0 - 1\n    }\n    row.length\n}\nfn stays(mut b: Bag, guard: bool) -> int {\n    let xs = b.rows\n    let row = xs[0]\n    if guard {\n        touched(b, xs)\n    }\n    row.length\n}\nmut a = Bag { rows: [\"kept-a\"] }\nmut c = Bag { rows: [\"kept-b\"] }\nskips(a, false) + stays(c, true)"
 }

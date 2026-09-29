@@ -17,8 +17,11 @@ use core.{
     filled,
     Static,
     ArenaRuns,
+    list_eq,
+    Exemplar,
 }
 use @std.errors.{Loc}
+use @std.meta.{derive}
 
 /// A settled (`const`) seat's VALUE carried into the unit it selects:
 /// the seat's index (past a method's receiver), its fingerprint (the
@@ -149,15 +152,53 @@ export fn expr_symbol(f: FileId, e: ExprId) -> string {
 /// share one shape because the evaluator represents both alike.
 /// `Absent` is the null value; `Gone` a slot under the runtime's absent
 /// mark — a nullable nullable's absence, apart from its present null.
+@derive(Exemplar)
 export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int), Octets(List<int>) }
 
+/// `keys`/`values` are PARALLEL — same length, paired by position —
+/// an invariant `@derive(Exemplar)`'s one-field-at-a-time samples
+/// cannot hold (varying `values` alone against a zero `keys: []`
+/// mints a map whose own encoder walks `keys` and silently drops the
+/// value that named no key). Hand-exemplared instead; the derive
+/// would need to see the correlation to vary the two together.
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
+impl MetaMap {
+    static fn exemplars() -> List<MetaMap> {
+        [
+            MetaMap { keys: [], values: [] },
+            MetaMap { keys: ["k"], values: [MetaVal.Int(7)] },
+            MetaMap { keys: ["k1", "k2"], values: [MetaVal.Text("x"), MetaVal.Bool(true)] },
+        ]
+    }
+
+    static fn exemplar_labels() -> List<string> { ["empty", "one entry", "two entries"] }
+
+    fn codec_same(other: MetaMap) -> bool {
+        list_eq(self.keys, other.keys, (x, y) -> x == y) &&
+            list_eq(self.values, other.values, (x, y) -> x.codec_same(y))
+    }
+}
+
+@derive(Exemplar)
 export type MetaHeap = { nodes: List<List<MetaVal>>, maps: List<MetaMap> }
+
+impl MetaHeap {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> MetaHeap { new_meta_heap() }
+}
 
 /// One transport for every value that crosses out of the evaluator.
 /// Const settlement and lifted calls share this type-driven tree.
+@derive(Exemplar)
 export type Settled = { answer: MetaVal, heap: MetaHeap, embeds: List<string> = [], fingerprint: int }
+
+impl Settled {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> Settled {
+        Settled { answer: MetaVal.Absent, heap: MetaHeap.codec_zero(), embeds: [], fingerprint: 0 }
+    }
+}
 
 /// What a LIFTED call answered, with the heap its records live in —
 /// the crossing's answer side, shared by validation and generated
@@ -225,13 +266,19 @@ export enum Origin {
 /// past the table's end is written here. EACH TABLE IS A `Cell`: a bare
 /// list reaches a copy at every write, so marking n nodes through the
 /// record copied the whole table n times.
-export type Origins = { exprs: Cell<List<Origin>>, stmts: Cell<List<Origin>>, pats: Cell<List<Origin>> }
+export type Origins = {
+    exprs: Cell<List<Origin>>,
+    stmts: Cell<List<Origin>>,
+    pats: Cell<List<Origin>>,
+    params: Cell<List<Origin>>,
+}
 
 export fn no_origins() -> Origins {
     let a: List<Origin> = []
     let b: List<Origin> = []
     let c: List<Origin> = []
-    Origins { exprs: Cell.new(a), stmts: Cell.new(b), pats: Cell.new(c) }
+    let d: List<Origin> = []
+    Origins { exprs: Cell.new(a), stmts: Cell.new(b), pats: Cell.new(c), params: Cell.new(d) }
 }
 
 impl Origins {
@@ -242,6 +289,13 @@ impl Origins {
     fn at(rows: List<Origin>, i: int) -> FileId? {
         if i >= rows.length { return null }
         match rows[i] { .Written(f) -> f, .Here or .Spanned(_) -> null }
+    }
+
+    /// Whether a row came through a hole — its name resolves where the
+    /// code lands. A pronoun's param has no row.
+    fn holed(rows: List<Origin>, i: int) -> bool {
+        if i < 0 || i >= rows.length { return false }
+        match rows[i] { .Spanned(_) -> true, .Here or .Written(_) -> false }
     }
 
     /// The file whose TEXT a node's span indexes, when the table
@@ -264,8 +318,11 @@ export type Generation = { runs: ArenaRuns, at: Span? }
 export type Provenance = { ann: string, original: string, at: Span?, template: Loc? = null }
 
 /// One generated fn's materializer inputs, gathered from a written
-/// declaration and its Declares annotation.
-export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: List<ExprId>, ret: TypeId, tparams: List<Param>, params: List<Param>, answer: TypeRef, original: string, at: Span? }
+/// declaration and its Declares annotation. `annotated` is the
+/// WRITTEN declaration's own id — a fn's or a METHOD's, which no
+/// namespace lookup by NAME would reach (a method binds no name in
+/// either fn namespace) — WRAP asks for it directly.
+export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: List<ExprId>, ret: TypeId, tparams: List<Param>, params: List<Param>, answer: TypeRef, original: string, at: Span?, annotated: DeclId }
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.

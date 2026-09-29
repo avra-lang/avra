@@ -19,6 +19,7 @@ use core.{
     StmtId,
     ExprId,
     PatId,
+    ParamId,
     Span,
     NodeStore,
     TypeRegistry,
@@ -47,7 +48,19 @@ use core.{
     At,
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
-use core.{Fingerprint, fp, list_cell, map_cell, same_type, touch, Table, new_table}
+use core.{
+    Fingerprint,
+    Exemplar,
+    fp,
+    list_cell,
+    map_cell,
+    same_type,
+    touch,
+    Table,
+    new_table,
+    list_eq,
+    opt_eq,
+}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -67,7 +80,9 @@ use features.{
     Origins,
     no_origins,
 }
-use @std.meta.{Diagnostic, derive}
+use @std.meta.{Diagnostic, derive, identity}
+use @std.relation.{relation}
+use @std.relation.db.{Db as RelDb, new_db}
 
 /// A file's path facts — known at first mention, before its parse.
 /// `test` is the caller's structural fact (the package's own test
@@ -114,7 +129,13 @@ fn no_collect_index() -> CollectIndex {
 /// argument's literal text (a string/int/bool/identifier — anything else reads ""),
 /// and where it was written.
 @derive(Fingerprint)
+@derive(Exemplar)
 export type AnnotationFact = { name: string, args: List<string>, span: Span? }
+
+impl AnnotationFact {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> AnnotationFact { AnnotationFact { name: "", args: [], span: null } }
+}
 
 /// An argument's literal text, when it has one — a computed expression answers "".
 fn arg_text(store: NodeStore, e: ExprId) -> string {
@@ -143,6 +164,7 @@ fn annotation_fact(store: NodeStore, a: Annotation) -> AnnotationFact {
 /// record carries it and the decoder recomputes it — a field added and not encoded makes
 /// the two disagree and the module refuses to hold, instead of silently decoding a default.
 @derive(Fingerprint)
+@derive(Exemplar)
 export type DeclFacts = {
     external: bool,
     stat: bool,
@@ -182,6 +204,29 @@ export type DeclFacts = {
     /// type's layout, read from the parse at admission and from the record for a
     /// held file, so the seal index never reaches into a store the hold skipped.
     mut_seats: List<string> = [],
+}
+
+impl DeclFacts {
+    /// `@derive(Exemplar)`'s seed — every fact at its own zero.
+    static fn codec_zero() -> DeclFacts {
+        DeclFacts {
+            external: false,
+            stat: false,
+            is_grammar: false,
+            is_component: false,
+            span: null,
+            tparams: [],
+            bounds: [],
+            seats: [],
+            host: [],
+            annotated: false,
+            of: "",
+            instance: false,
+            doc: null,
+            annotations: [],
+            mut_seats: [],
+        }
+    }
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -262,8 +307,17 @@ fn no_facts() -> DeclFacts {
 /// ever answers about a `DeclId`, which is what crosses files.
 export enum UseKind { Call, MethodCall, Read, Write, Import, TypeUse }
 
-export type Ref = { decl: DeclId, file: FileId, at: At, kind: UseKind }
+/// `decl` and `file` are `@dense` ids — their ints mean nothing
+/// outside this process, so both are `@local`, indexed for
+/// `by_decl`/`by_file`. `at` names a position (an `ExprId`/`StmtId`
+/// union), local for the same reason; `kind` alone is stable.
+@relation
+export type Ref = { @local @index decl: DeclId, @local @index file: FileId, @local at: At, kind: UseKind }
 
+/// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
+/// type, so a copy of `Decls` still reads and writes the tables the
+/// workspace built.
+@identity
 export type Decls = {
     types: TypeRegistry,
     /// OUTER-TABLE GROWTH, SHARED: `mint`/`file_id`/`module_id` run
@@ -309,6 +363,17 @@ export type Decls = {
     held_values: Cell<Map<string, Settled>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
+    /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
+    /// `sigs` carries, so this memo carries no self-recursion risk. Whichever
+    /// caller asks first (`seats`'s hook, or the fn's own natural signing)
+    /// types them through the one real signing context; every later ask reuses
+    /// the answer.
+    seat_types: Cell<List<List<TypeId>?>>,
+    seat_ensure: Cell<fn(DeclId) -> void>,
+    /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
+    /// arms hears each read that skipped the Kernel, while `auditing` is on.
+    auditing: Cell<bool>,
+    audit_hook: Cell<fn(Bypassed) -> void>,
 
     // a GENERATED declaration's origin — null for every written one
     provenance: Cell<List<Provenance?>>,
@@ -350,6 +415,10 @@ export type Decls = {
     // inside `mint`, behind the same captured hooks.
     impls_by_name: Cell<Map<string, List<DeclId>>>,
     ensure: Cell<fn(DeclId) -> void>,
+    // the workspace's held-row hook: fills a held declaration's own
+    // record row before a fact it fills (an impl's target among them)
+    // is read
+    ensure_target: Cell<fn(DeclId) -> void>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
@@ -363,6 +432,8 @@ export type Decls = {
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: Cell<List<DeclId>>,
+    // plain for its identity: the language's own builtin rows, built
+    // once at workspace construction and never written after
     rows: List<TypeRow>,
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
@@ -382,12 +453,11 @@ export type Decls = {
     // evidence is local to its own body alone.
     consumed: Cell<List<List<bool>?>>,
     ensure_consumed: Cell<fn(DeclId) -> void>,
-    /// THE REFERENCES RELATION — every file's own rows, dense by
-    /// FileId, replaced whole when `references.av`'s pass re-settles
-    /// that file; and the SAME rows, dense by the DeclId they name,
-    /// folded at settle.
-    refs_by_file: Cell<List<List<Ref>>>,
-    refs_by_decl: Cell<List<List<Ref>>>,
+    /// THE REFERENCES RELATION's own rows, under the one Db they
+    /// live in — replaced whole (a fresh Db) when `references.av`'s
+    /// pass re-settles the program; `Ref.by_decl`/`Ref.by_file` are
+    /// the readers, never a hand-kept index.
+    refs_db: Cell<RelDb>,
     /// Whether a HELD file stood in the workspace the last time the
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
@@ -423,6 +493,8 @@ fn no_failures_ensure() {}
 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
+
+fn no_audit(_r: Bypassed) {}
 
 /// Whether a scope gathers from every file of the owner's package.
 fn admits_package(scope: CollectScope) -> bool {
@@ -462,6 +534,7 @@ export fn new_decls() -> Decls {
     let no_faces: List<DeclFacts?> = []
     let no_keys: Map<string, DeclId> = {}
     let no_sigs: List<DeclSig?> = []
+    let no_seat_types: List<List<TypeId>?> = []
     let no_provenance: List<Provenance?> = []
     let empty_marks: List<List<Diagnostic>?> = []
     let no_targets: List<DeclId?> = []
@@ -477,8 +550,6 @@ export fn new_decls() -> Decls {
     let no_written_seats: List<Cell<List<bool>>> = []
     let empty_consumed: List<List<bool>?> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
-    let no_refs_by_file: List<List<Ref>> = []
-    let no_refs_by_decl: List<List<Ref>> = []
     let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
@@ -489,6 +560,8 @@ export fn new_decls() -> Decls {
         mains: Cell.new(no_mains),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
+        auditing: Cell.new(false),
+        audit_hook: Cell.new(no_audit),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
         ensure_package: Cell.new(no_store),
@@ -507,6 +580,8 @@ export fn new_decls() -> Decls {
         held_values: map_cell(),
         keys: Cell.new(no_keys),
         sigs: Cell.new(no_sigs),
+        seat_types: Cell.new(no_seat_types),
+        seat_ensure: Cell.new(no_ensure),
         provenance: Cell.new(no_provenance),
         marks: Cell.new(empty_marks),
         ensure_marks: Cell.new(no_marks),
@@ -517,6 +592,7 @@ export fn new_decls() -> Decls {
         impls: Cell.new(no_impls),
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
+        ensure_target: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
         ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
@@ -533,8 +609,7 @@ export fn new_decls() -> Decls {
         consumed: Cell.new(empty_consumed),
         ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
-        refs_by_file: Cell.new(no_refs_by_file),
-        refs_by_decl: Cell.new(no_refs_by_decl),
+        refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
         mut_seat_index: map_cell(),
@@ -585,7 +660,24 @@ impl Decls {
     // ── files ──
 
     /// A path's identity — minted at first mention.
-    fn decl(d: DeclId) -> Decl { self.decls.get()[d.index] }
+    fn decl(d: DeclId) -> Decl {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+        self.decls.get()[d.index]
+    }
+
+    /// One audited read, told to the hook — which reads the tables itself, so the
+    /// audit is off while it runs.
+    fn audited(r: Bypassed) {
+        self.auditing.set(false)
+        (self.audit_hook.get())(r)
+        self.auditing.set(true)
+    }
+
+    /// The workspace arms the audit once, when `AVRA_DEP_AUDIT` asks.
+    fn arm_audit(hook: fn(Bypassed) -> void) {
+        self.audit_hook.set(hook)
+        self.auditing.set(true)
+    }
 
     /// A generated declaration's origin, or null for a written one.
     fn provenance_of(d: DeclId) -> Provenance? { self.provenance.get()[d.index] }
@@ -633,7 +725,7 @@ impl Decls {
         pats: List<PatId>,
         origin: FileId,
     ) {
-        self.mark_origin(f, exprs, stmts, pats, Origin.Written(origin))
+        self.mark_origin(f, exprs, stmts, pats, [], Origin.Written(origin))
     }
 
     /// A HOLED node's own name resolves HERE, but its span still
@@ -646,9 +738,10 @@ impl Decls {
         exprs: List<ExprId>,
         stmts: List<StmtId>,
         pats: List<PatId>,
+        params: List<ParamId>,
         origin: FileId,
     ) {
-        self.mark_origin(f, exprs, stmts, pats, Origin.Spanned(origin))
+        self.mark_origin(f, exprs, stmts, pats, params, Origin.Spanned(origin))
     }
 
     fn mark_origin(
@@ -656,6 +749,7 @@ impl Decls {
         exprs: List<ExprId>,
         stmts: List<StmtId>,
         pats: List<PatId>,
+        params: List<ParamId>,
         mark: Origin,
     ) {
         let known = self.origins.get()[f.index]
@@ -671,6 +765,10 @@ impl Decls {
             while known.pats.get().length <= p.index { known.pats.push(Origin.Here) }
             known.pats.set_at(p.index, mark)
         }
+        for p in params {
+            while known.params.get().length <= p.index { known.params.push(Origin.Here) }
+            known.params.set_at(p.index, mark)
+        }
     }
 
     /// The file a generated node's own NAME resolves in, when it is
@@ -679,6 +777,10 @@ impl Decls {
     fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].exprs.get(), e.index) }
     fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].stmts.get(), s.index) }
     fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].pats.get(), p.index) }
+
+    /// Whether a seat's name came through a hole, so it binds where the
+    /// code lands rather than where its fn's template was written.
+    fn holed_param(f: FileId, p: ParamId) -> bool { self.origins.get()[f.index].holed(self.origins.get()[f.index].params.get(), p.index) }
 
     /// The file whose TEXT a generated node's span indexes, when it
     /// is another than this one — non-null for a written OR a holed
@@ -989,15 +1091,43 @@ impl Decls {
     /// `d` itself belongs to) and must not recurse back into it —
     /// null answers "not settled yet," never "not there is an error."
     fn sig_so_far(d: DeclId) -> DeclSig? {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
         self.sigs.get()[d.index]
     }
+
+    /// A fn's own PARAMETERS — asking it IS the query, exactly as `sig` is,
+    /// with one difference: the answer never depends on inference, so this
+    /// carries none of `sig`'s self-recursion hazard. A caller mid-`d`'s-own
+    /// answer inference (failures.av's fixpoint) may ask this safely; asking
+    /// `sig` there cannot be, since the answer is what it would be computing.
+    fn seats(d: DeclId) -> List<TypeId> {
+        if self.seat_types.get()[d.index] == null { (self.seat_ensure.get())(d) }
+        self.seat_types.get()[d.index] ?? []
+    }
+
+    /// `seats`' table read alone, NEVER triggering the hook: for the fn's
+    /// own natural signing (`declare_sig`, `seated_answer`), which already
+    /// holds the correct `fparams` to type itself — an extern's among them,
+    /// which the hook cannot derive (it walks the statement structurally,
+    /// and `fn_parts` does not recognize an extern's shape). Null answers
+    /// "not yet typed by an early asker," never "there are none."
+    fn seat_types_so_far(d: DeclId) -> List<TypeId>? { self.seat_types.get()[d.index] }
+
+    /// Records a fn's own parameters — the receiver's first when it has
+    /// one, in the same order `sig`'s own `FnSig.params` wears. Idempotent:
+    /// whichever caller's ask lands first (`seats`'s hook, or the fn's own
+    /// natural `declare_sig`/`declare_method`/`declare_trait_sig`) records
+    /// here, and the other finds it already settled.
+    fn record_seat_types(d: DeclId, ts: List<TypeId>) { self.seat_types.set_at(d.index, ts) }
 
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them
     /// once every declaration it will ever ask about is signed; a
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
+        self.auditing.set(false)
         self.ensure.set(no_ensure)
+        self.seat_ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
@@ -1014,6 +1144,16 @@ impl Decls {
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId) -> void) {
         self.ensure.set(ensure)
+    }
+
+    /// The workspace arms the seats hook once.
+    fn arm_seats(ensure: fn(DeclId) -> void) {
+        self.seat_ensure.set(ensure)
+    }
+
+    /// The workspace arms the held-row hook once.
+    fn arm_target(ensure: fn(DeclId) -> void) {
+        self.ensure_target.set(ensure)
     }
 
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
@@ -1385,6 +1525,7 @@ impl Decls {
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Written(d)) }
         let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
@@ -1418,6 +1559,7 @@ impl Decls {
     /// A `_`-declared fn's growing error set, as the fixpoint found it
     /// so far — deduped by type identity, the pass's own read, hook-free.
     fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
         self.inferred_errs.at(d.index) ?? []
     }
 
@@ -1502,8 +1644,7 @@ impl Decls {
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
         (self.ensure_refs.get())()
-        let rows = self.refs_by_decl.get()
-        if d.index < rows.length { rows[d.index] } else { [] }
+        Ref.by_decl(self.refs_db.get(), d)
     }
 
     /// Every CALL or METHOD CALL naming `d`.
@@ -1542,28 +1683,13 @@ impl Decls {
     /// One file's own rows, as `references.av`'s pass wrote them.
     fn refs_in_file(f: FileId) -> List<Ref> {
         (self.ensure_refs.get())()
-        let rows = self.refs_by_file.get()
-        if f.index < rows.length { rows[f.index] } else { [] }
+        Ref.by_file(self.refs_db.get(), f)
     }
 
-    /// `references.av`'s own write door: one file's rows, replacing
-    /// whatever it held.
-    fn set_file_refs(f: FileId, rows: List<Ref>) {
-        mut cur = self.refs_by_file.get()
-        while cur.length <= f.index { cur.push([]) }
-        cur.set(f.index, rows)
-        self.refs_by_file.set(cur)
-    }
-
-    /// `references.av`'s own settle: every row, folded by the
-    /// declaration it names.
-    fn settle_refs(all: List<Ref>) {
-        let no_row: List<Ref> = []
-        mut idx: List<List<Ref>> = filled(self.decls.get().length, no_row)
-        for r in all {
-            if r.decl.index < idx.length { idx.set(r.decl.index, idx[r.decl.index].concat([r])) }
-        }
-        self.refs_by_decl.set(idx)
+    /// `references.av`'s own write door: the whole relation, replacing
+    /// whatever Db it held with a freshly filled one.
+    fn settle_refs(db: RelDb) {
+        self.refs_db.set(db)
     }
 
     /// The workspace arms the references hook once.
@@ -1581,6 +1707,7 @@ impl Decls {
     }
 
     fn target_of(impl_decl: DeclId) -> DeclId? {
+        (self.ensure_target.get())(impl_decl)
         let held: DeclId? = self.targets.get()[impl_decl.index]
         held
     }
@@ -1914,7 +2041,16 @@ impl Decls {
     }
 
     /// A type's registered methods, as they stand — the hook-free read.
-    fn methods_of(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
+    fn methods_of(target: DeclId) -> List<DeclId> {
+        if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
+        self.methods.get()[target.index].get()
+    }
+
+    /// Every method a type declares, its table filled first.
+    fn declared_methods(target: DeclId) -> List<DeclId> {
+        (self.ensure_methods.get())(target)
+        self.methods_of(target)
+    }
 
     /// The workspace arms the method-table hook once.
     fn arm_methods(ensure: fn(DeclId) -> void) {

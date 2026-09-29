@@ -113,6 +113,11 @@ impl Workspace {
         if x.root == null { return Summary { own: filled(n, false), edges: [] } }
         let receiver: TypeId? = self.receiver_type(x)
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
+        // `Receivers` is never `d`'s own owner — it is the whole-program
+        // pass reading every fn's body — so this read of `d`'s nodes is
+        // FOREIGN and depends on `d`'s own syntax (COMPILER DB townhall
+        // §6.11 rule 2), never on the whole file's `Parsed`.
+        touch(self.syntax(d))
         mut cx = Survey {
             ws: self,
             decls: self.decls,
@@ -228,7 +233,7 @@ impl Survey {
 
     mut fn method_evidence(mp: MethodParts) {
         let seat: int? = self.seat_of(mp.subject)
-        let ty: TypeId? = self.shape().place_type(mp.subject)
+        let ty: TypeId? = self.shape().value_type(mp.subject)
         // A SUBJECT THIS PASS CANNOT TYPE: every seat-rooted argument is
         // taken as written — the conservative side, so the never-written
         // warning never contradicts the seat law at a call. A subject it
@@ -239,7 +244,7 @@ impl Survey {
             return
         }
         match self.shape().callee_of(ty!, mp.name) {
-            .Row(writes) if writes -> self.mark(seat),
+            .Row(writes, _) if writes -> self.mark(seat),
             .Method(d) -> {
                 self.flow(seat, d, 0)
                 self.feed(d, mp.args, 1)
@@ -250,7 +255,7 @@ impl Survey {
                 if self.decls.declares_writing(d) { self.mark(seat) }
                 self.feed(d, mp.args, 1)
             },
-            .Row(_) or .None -> nothing(),
+            .Row(_, _) or .None -> nothing(),
         }
     }
 

@@ -482,6 +482,21 @@ LLVMValueRef avra_llvm_build_alloca(LLVMBuilderRef b, LLVMTypeRef ty, const char
     if (LLVMGetTypeKind(ty) == LLVMPointerTypeKind) {
         LLVMBuildStore(entry_builder, LLVMConstNull(ty), alloca);
     }
+    // A struct-typed cell needs the same zeroing, whole, padding
+    // included: `avra_cell_release` reads the cell's first word raw,
+    // and a per-field `LLVMConstNull` store leaves inter-field padding
+    // (an i1 tag's alignment gap before the pointer that follows it)
+    // untouched — read as that pointer, on a settle before the seed
+    // store ever writes it.
+    if (LLVMGetTypeKind(ty) == LLVMStructTypeKind) {
+        LLVMBuildMemSet(
+            entry_builder,
+            alloca,
+            LLVMConstInt(LLVMInt8TypeInContext(LLVMGetTypeContext(ty)), 0, 0),
+            LLVMSizeOf(ty),
+            8
+        );
+    }
     LLVMDisposeBuilder(entry_builder);
     return alloca;
 }
@@ -680,6 +695,22 @@ LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
     return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
 }
 
+// A `once fn`'s OWN SLOT: one raw pointer word, null-initialized,
+// private to this module — UNHEADERED, unlike every other global
+// here, because nothing walks it as a box; it holds the ADDRESS
+// `OnceRead`/`OnceCommit` load and store through. Idempotent by
+// name, so a fn's read and its own commit answer the SAME global.
+LLVMValueRef avra_llvm_once_slot(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (g) { return g; }
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(ctx, 0);
+    g = LLVMAddGlobal(m, ptr_ty, name);
+    LLVMSetInitializer(g, LLVMConstPointerNull(ptr_ty));
+    LLVMSetLinkage(g, LLVMPrivateLinkage);
+    return g;
+}
+
 // ── Calls ──
 
 LLVMValueRef avra_llvm_build_call(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMValueRef fn_val, LLVMValueRef* args, int count, const char* name) {
@@ -807,17 +838,38 @@ static int native_target_ready(void) {
 
 // THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
 // compiler carries is linked into a module before its passes, every
-// definition AVAILABLE EXTERNALLY — the optimizer may inline it and emits
-// none, so a call it keeps resolves to the runtime library's own. The
-// leaves take the module's target, never the one clang compiled them for,
-// so the inliner finds them compatible. AVRA_INLINE_RUNTIME=0 keeps them
-// calls — a leaf's return address then names its caller exactly.
+// KEPT definition AVAILABLE EXTERNALLY — the optimizer may inline it and
+// emits none, so a call it keeps resolves to the runtime library's own.
+// The leaves take the module's target, never the one clang compiled them
+// for, so the inliner finds them compatible. AVRA_INLINE_RUNTIME=0 keeps
+// them all calls — a leaf's return address then names its caller exactly.
 static int hot_off = 0;
 
 __attribute__((constructor))
 static void hot_settled(void) {
     const char* v = getenv("AVRA_INLINE_RUNTIME");
     hot_off = v != NULL && strcmp(v, "0") == 0;
+}
+
+// NOT EVERY HOT LEAF PAYS FOR ITS OWN INLINING: `hot_linked` runs once
+// per FILE MODULE, so a kept leaf's body is a cost the optimizer and
+// codegen pay again in every module it lands in, not once — the bigger,
+// branchier or more COMPOSED a leaf's body, the more that multiplies.
+// Which leaves are worth that is a per-leaf question, settled by a
+// same-input differential census over `check`'s own instruction count,
+// one leaf dropped at a time from the full carried set (perf-notes):
+// dropping `avra_array_get`/`avra_array_get_owned` alone costs +8.7
+// points — this compiler's own body leans on array reads constantly,
+// so losing their inlining anywhere is the whole regression. Dropping
+// `avra_box_thawed` or the tagged retain/release wrappers costs under
+// 0.1 point each — they buy the smaller module every dropped leaf
+// buys, and nothing measurable back, so they stay dropped.
+static int hot_keep(const char* name) {
+    return strcmp(name, "avra_rc_retain") == 0
+        || strcmp(name, "avra_rc_release") == 0
+        || strcmp(name, "avra_array_len") == 0
+        || strcmp(name, "avra_array_get") == 0
+        || strcmp(name, "avra_array_get_owned") == 0;
 }
 
 static void hot_linked(LLVMModuleRef m) {
@@ -828,11 +880,19 @@ static void hot_linked(LLVMModuleRef m) {
     int bad = LLVMParseBitcodeInContext2(ctx, buf, &hot);
     LLVMDisposeMemoryBuffer(buf);
     if (bad) return;
-    for (LLVMValueRef f = LLVMGetFirstFunction(hot); f; f = LLVMGetNextFunction(f)) {
-        if (LLVMIsDeclaration(f)) continue;
+    LLVMValueRef f = LLVMGetFirstFunction(hot);
+    while (f) {
+        LLVMValueRef next = LLVMGetNextFunction(f);
+        if (LLVMIsDeclaration(f)) { f = next; continue; }
+        // A dropped leaf is ERASED, not left at its own linkage: linking
+        // it in as a second External definition of a symbol the caller
+        // module already declares would give every module its own copy
+        // of the body — worse than before this file existed.
+        if (!hot_keep(LLVMGetValueName(f))) { LLVMDeleteFunction(f); f = next; continue; }
         LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-cpu", 10);
         LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-features", 15);
         if (LLVMGetLinkage(f) == LLVMExternalLinkage) LLVMSetLinkage(f, LLVMAvailableExternallyLinkage);
+        f = next;
     }
     LLVMSetTarget(hot, LLVMGetTarget(m));
     LLVMSetDataLayout(hot, LLVMGetDataLayoutStr(m));

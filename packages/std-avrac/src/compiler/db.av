@@ -54,6 +54,7 @@
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
 use core.{
+    wire_fields,
     digest_of,
     joined,
     sorted_texts,
@@ -63,6 +64,8 @@ use core.{
     DeclId,
     TypeId,
     map_cell,
+    list_eq,
+    Exemplar,
 }
 use query.{Kernel, Key, Verdict as KernelVerdict, new_kernel, Relation, new_memo}
 use compiler.store.{Store, Stored, node_key}
@@ -73,18 +76,29 @@ use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
 use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
 use @std.text.{parse_int}
-use @std.meta.{derive}
+use @std.meta.{derive, identity}
 
 /// A file an answer's validity rides on: its path, and its content's
 /// digest at the moment the answer was captured.
+@derive(Exemplar)
 export type FileWitness = { path: string, digest: string }
+
+impl FileWitness {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> FileWitness { FileWitness { path: "", digest: "" } }
+}
 
 fn encoded_filewitness(w: FileWitness) -> string {
     joined([wire_escape(w.path), wire_escape(w.digest)], "\n")
 }
 
+/// `wire_fields` (core/text.av), never a bare `split("\n")`: split
+/// drops a TRAILING empty segment, so a witness whose `digest` is ""
+/// read back one field short and refused as undecodable — a
+/// witness of an empty file being the case that stayed unreachable
+/// until a decoder was asked for it.
 fn decoded_filewitness(text: string) -> FileWitness? {
-    let lines = text.split("\n")
+    let lines = wire_fields(text, "\n")
     if lines.length < 2 { return null }
     FileWitness { path: wire_unescape(lines[0]), digest: wire_unescape(lines[1]) }
 }
@@ -100,11 +114,17 @@ fn decoded_filewitness(text: string) -> FileWitness? {
 /// many escaped, doubly-escaped (its own encoding, then the line
 /// escape) items — `core/wire.av`'s primitives, so any field, not only
 /// a trailing one, may hold embedded newlines safely.
+@derive(Exemplar)
 export type DocFacts = {
     root: string,
     listing_digest: string,
     answer: string,
     files: List<FileWitness>,
+}
+
+impl DocFacts {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> DocFacts { DocFacts { root: "", listing_digest: "", answer: "", files: [] } }
 }
 
 export fn encoded_docfacts(facts: DocFacts) -> string {
@@ -118,7 +138,7 @@ export fn encoded_docfacts(facts: DocFacts) -> string {
 }
 
 export fn decoded_docfacts(text: string) -> DocFacts? {
-    let lines = text.split("\n")
+    let lines = wire_fields(text, "\n")
     if lines.length < 4 { return null }
     let count? = parse_int(lines[3]) else { return null }
     if lines.length < 4 + count { return null }
@@ -512,6 +532,7 @@ fn lifted_of(r: DbRow) -> LiftResult {
 /// `Receivers`, `References`, `Failures`, `HeldSig` — their answers
 /// live elsewhere, or run through the Kernel's verbs directly) still
 /// gets a slot, just an empty one.
+@identity
 export type Db = { kernel: Kernel, rows: Cell<Map<string, DbRow>>, families: Cell<List<Relation<DbRow>>> }
 
 export fn new_db(kernel: Kernel) -> Db {

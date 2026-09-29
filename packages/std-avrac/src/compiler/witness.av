@@ -21,13 +21,17 @@
 //! safe direction, never a wrongly-trusted reuse. Widening it to the
 //! rest of the 23 is the next slice's work, family by family.
 //!
-//! TWO LAWS an edge's hash keeps. A `Parsed` edge covers the source TEXT
-//! as well as the parse's structure, because a report renders positions
-//! and source lines the structure does not carry. A `Namespace` edge
-//! covers the module's file list and bound names, because a witness
-//! records what was read and an ADDED file is a read that returned
-//! nothing. A dep whose subject is gone — a file the host no longer has,
-//! a package ordinal past the packages — answers unresolvable.
+//! THREE LAWS an edge's hash keeps. A `Parsed` edge is the parse's
+//! STRUCTURE, which is all a file that reads another's declarations
+//! reads of it: a comment or a reindent in a callee moves no caller. A
+//! file's TEXT is its own edge (`Source`), held for the file itself and
+//! for every file a frame of its report points into — a report renders
+//! its positions and source lines, which the structure does not carry.
+//! A `Namespace` edge covers the module's file list and bound names,
+//! because a witness records what was read and an ADDED file is a read
+//! that returned nothing. A dep whose subject is gone — a file the host
+//! no longer has, a package ordinal past the packages — answers
+//! unresolvable.
 //!
 //! A FILE'S NAMESPACE is read by NAME. `Visible(f)`, the witnessed file's
 //! or any file it reaches, stands for the names that namespace was asked,
@@ -39,6 +43,7 @@
 //! when it moves a name that was read. Everything else `Visible(f)` reads
 //! (the manifest, the file's own text) is read as anywhere.
 use core.{
+    wire_fields,
     DeclId,
     FileId,
     ModuleId,
@@ -53,11 +58,15 @@ use core.{
     module_path,
     same_file,
     sorted_texts,
+    Exemplar,
+    list_eq,
+    opt_eq,
 }
 use query.{Key}
+use diagnostics.{Diag, located_files, DiagFacts, diag_facts_of, Severity}
 use features.{Decls, Decl, NameKind, name_kind_word, name_kind_of, Namespace}
 use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
-use diagnostics.{DiagFacts, diag_facts_of}
+use @std.errors.{Frame, Loc}
 use @std.path.{joined_path}
 use @std.relation.stable.{
     writer as stable_writer,
@@ -68,6 +77,7 @@ use @std.relation.stable.{
     written_list,
 }
 use @std.text.{parse_int}
+use @std.meta.{derive}
 
 // ── Stable names: a dense id means nothing in the next process ──
 
@@ -87,17 +97,9 @@ fn stable_line(kind: string, parts: List<string>) -> string {
 type StableId = { kind: string, parts: List<string> }
 
 fn parsed_stable(s: string) -> StableId {
-    let lines = stable_fields(s)
+    let lines = wire_fields(s, "\n")
     let kind = lines.first() ?? ""
     StableId { kind: kind, parts: [wire_unescape(lines[i]) for i in 1..lines.length] }
-}
-
-/// A `stable_line`'s fields, an empty last one included: `split` drops a
-/// trailing empty segment, so a name ending in an empty field (the root
-/// module's) would read back one field short.
-fn stable_fields(s: string) -> List<string> {
-    let lines = s.split("\n")
-    if s.ends_with("\n") { lines.concat([""]) } else { lines }
 }
 
 /// `stable_key_name`'s inverse: the family's own word, and the arg it
@@ -116,6 +118,10 @@ export fn name_parts(name: string) -> KeyName? {
 }
 
 export fn stable_file_name(path: string) -> string { stable_line("file", [path]) }
+
+/// A key over one file, by the file's path: the ONE spelling of a file-keyed
+/// edge's name.
+fn file_key(word: string, path: string) -> string { stable_line("key", [word, stable_file_name(path)]) }
 
 export fn stable_module_name(name: string) -> string { stable_line("module", [name]) }
 
@@ -181,7 +187,7 @@ enum Reading { Itself, ItselfAndBelow, Below, Replaced, Nothing }
 /// be read into a witness without someone deciding how.
 fn reading_of(fam: Family) -> Reading {
     match fam {
-        .Parsed or .Sig or .MethodDiags -> Reading.Itself,
+        .Parsed or .Sig or .MethodDiags or .Syntax -> Reading.Itself,
         .Namespace -> Reading.ItselfAndBelow,
         .Visible -> Reading.Replaced,
         .Source or .Items or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised -> Reading.Below,
@@ -303,6 +309,64 @@ impl Walk {
 /// slice, COMPILER DB townhall §6.11).
 export type WitnessedCheck = { clean: bool, diagnostics: List<DiagFacts> }
 
+impl WitnessedCheck {
+    /// Hand-written, not `@derive(Exemplar)`: a `DiagFacts` nests
+    /// `@std/errors`' `Frame`/`Suggestion`, foreign shapes no derive
+    /// reaches (core/exemplar_derive.av's own doc — a named field
+    /// "must derive `Exemplar` too, or hand-write both").
+    static fn codec_zero() -> WitnessedCheck { WitnessedCheck { clean: false, diagnostics: [] } }
+
+    static fn exemplars() -> List<WitnessedCheck> {
+        [
+            WitnessedCheck.codec_zero(),
+            WitnessedCheck.codec_zero() with { clean: true },
+            WitnessedCheck.codec_zero() with { diagnostics: [sample_diag_facts()] },
+        ]
+    }
+
+    static fn exemplar_labels() -> List<string> { ["baseline", "field clean", "field diagnostics"] }
+
+    fn codec_same(other: WitnessedCheck) -> bool {
+        self.clean == other.clean && list_eq(self.diagnostics, other.diagnostics, diag_facts_same)
+    }
+}
+
+/// One non-zero `DiagFacts`, for `WitnessedCheck`'s own exemplar —
+/// every field at a value a dropped-field decode cannot produce.
+fn sample_diag_facts() -> DiagFacts {
+    DiagFacts {
+        kind: "x.y",
+        severity: Severity.Warning,
+        primary: Frame { label: "l", loc: null },
+        secondary: [],
+        cause_lines: ["c"],
+        message: "m",
+        help: "h",
+        suggestions: [],
+    }
+}
+
+/// Field by field, the same law `@derive(Exemplar)` would state —
+/// hand-written since `DiagFacts` nests foreign shapes.
+fn diag_facts_same(a: DiagFacts, b: DiagFacts) -> bool {
+    a.kind == b.kind &&
+        severity_same(a.severity, b.severity) &&
+        frame_same(a.primary, b.primary) &&
+        list_eq(a.secondary, b.secondary, frame_same) &&
+        list_eq(a.cause_lines, b.cause_lines, (x, y) -> x == y) &&
+        a.message == b.message &&
+        a.help == b.help &&
+        a.suggestions.length == b.suggestions.length
+}
+
+fn severity_same(a: Severity, b: Severity) -> bool {
+    match a { .Error -> b is .Error, .Warning -> b is .Warning }
+}
+
+fn frame_same(a: Frame, b: Frame) -> bool { a.label == b.label && opt_eq(a.loc, b.loc, loc_same) }
+
+fn loc_same(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
+
 /// The record-shape stamp a stored check carries (§6.6's record header
 /// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an
 /// entry written in another shape is refused rather than decoded.
@@ -360,15 +424,12 @@ impl Workspace {
         let fam = family_at(k.family)
         let word = family_word(fam)
         match fam {
-            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> stable_line(
-                "key",
-                [word, stable_file_name(self.decls.file(FileId { index: k.arg }).path)],
-            ),
+            .Source or .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> file_key(word, self.decls.file(FileId { index: k.arg }).path),
             .Namespace or .HeldSig -> stable_line(
                 "key",
                 [word, stable_module_name(self.decls.module_name(ModuleId { index: k.arg }))],
             ),
-            .Sig or .Methods or .Typed or .ConstTyped or .Raised -> stable_line("key", [word, self.decls.stable_decl_name(DeclId { index: k.arg })]),
+            .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax -> stable_line("key", [word, self.decls.stable_decl_name(DeclId { index: k.arg })]),
             // `Manifest` keys by package ordinal (`packages.av`'s
             // `manifest(i)`), which shifts when a dependency row is added
             // or removed; its NAME is the package's root.
@@ -481,6 +542,7 @@ impl Workspace {
         let fam? = family_from_word(word) else { return null }
         match fam {
             .Parsed -> self.current_parsed_hash(inner),
+            .Source -> self.current_source_hash(inner),
             .Namespace -> self.current_namespace_hash(inner),
             .MethodDiags -> self.current_method_diags_hash(inner),
             .Sig -> self.current_sig_hash(inner),
@@ -499,13 +561,39 @@ impl Workspace {
         self.parsed_edge_hash(self.file_id(inner.parts[0]))
     }
 
-    /// What a `Parsed` edge holds: the parse's structural hash beside the
-    /// digest of the text it read.
+    /// What a `Parsed` edge holds: the parse's structural hash.
     fn parsed_edge_hash(f: FileId) -> int? {
         let _ = self.parsed(f)
-        let structure? = self.db.value_hash_of(key(Family.Parsed, f.index)) else { return null }
-        let text? = self.db.value_hash_of(key(Family.Source, f.index)) else { return null }
-        fp_list([structure, text])
+        self.db.value_hash_of(key(Family.Parsed, f.index))
+    }
+
+    /// A file's text as it stands now, or null for a file the host lacks —
+    /// asking never mints one.
+    fn current_source_hash(inner: StableId) -> int? {
+        if inner.kind != "file" || inner.parts.length < 1 { return null }
+        if !self.host.exists(inner.parts[0]) { return null }
+        self.source_hash_of(self.file_id(inner.parts[0]))
+    }
+
+    fn source_hash_of(f: FileId) -> int? {
+        let _ = self.parsed(f)
+        self.db.value_hash_of(key(Family.Source, f.index))
+    }
+
+    /// The text `f`'s answer reads: its own, and that of every other file
+    /// a frame of its diagnostics locates into — a rendering shows source
+    /// lines at those offsets. A file the host lacks holds no hash, so its
+    /// edge refuses.
+    fn text_edges(f: FileId, ds: List<Diag>) -> List<Edge> {
+        let own = self.decls.file(f).path
+        let named = flatten([located_files(d) for d in ds])
+        let paths = [own].concat([p for p in named if p != own])
+        [Edge { name: file_key(family_word(Family.Source), p), hash: self.text_hash_at(p) } for i, p in paths if paths.index_of(p) == i]
+    }
+
+    fn text_hash_at(path: string) -> int {
+        if !self.host.exists(path) { return 0 }
+        self.source_hash_of(self.file_id(path)) ?? 0
     }
 
     /// A file's own namespace as it stands now, or null for a file the
@@ -866,7 +954,9 @@ impl Workspace {
     /// longer costs a whole-pack rewrite per file the way it once did.
     fn record_witness(f: FileId, name: string, out: WitnessedCheck) {
         let pack? = self.pack.get() else { return }
-        let edges = self.expanded_edges(key(Family.Analysis, f.index))
+        let edges = self
+            .expanded_edges(key(Family.Analysis, f.index))
+            .concat(self.text_edges(f, self.analysis(f).diagnostics))
         pack
             .put(
                 PackEntry {

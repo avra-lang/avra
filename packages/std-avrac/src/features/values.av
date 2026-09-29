@@ -483,8 +483,23 @@ impl LowerCx {
             .Str -> self.streq(Type.Bool, a, b),
             .Bytes -> self.bytes_eq(Type.Bool, a, b),
             .Opt(_) -> self.same_through(a, ty, b, ty),
-            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Struct(_, _) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void -> self.bin(Type.Bool, BinOp.Eq, a, b),
+            .Struct(_, _) -> self.same_field(a, b, ty),
+            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void -> self.bin(Type.Bool, BinOp.Eq, a, b),
         }
+    }
+
+    /// A record of ONE field compared by that field, with the field's own
+    /// equality, all the way down — typing admitted no other record.
+    mut fn same_field(a: Reg, b: Reg, ty: TypeId) -> Reg {
+        let sty = self.seen(ty)
+        let sig? = self.fields_of(sty) else {
+            self.defect("a compared record with no fields survived typing")
+            return self.const_bool(false)
+        }
+        let field = sig.types[0]
+        let fa = self.field_read(a, sty, 0, field)
+        let fb = self.field_read(b, sty, 0, field)
+        self.same_value(fa, fb, field)
     }
 
     /// EQUALITY THROUGH PRESENCE, `v` the nullable side: both absent,
@@ -945,6 +960,8 @@ impl LowerCx {
                         ),
                 )
         }
+        // a nullable's hollow is its absence, in its own layout
+        if nullable(self.view.types.seen_shape(inner)) { return self.absent_of(inner) }
         if self.view.types.travels_wide(inner) { return self.pack(inner, [self.hollow_of(f) for f in self.view.types.flat_fields(inner)]) }
         if self.view.types.seen_shape(inner) is .Bool {
             // LICENSED — `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
@@ -1037,6 +1054,11 @@ export fn capture_lane(j: int) -> int {
 /// flag — takes a one-slot BOX. That box is the ONE nullable that
 /// allocates, and the exception the law "nullability never allocates"
 /// carries.
+/// Whether a shape is a nullable's.
+fn nullable(t: Type) -> bool {
+    match t { .Opt(_) -> true, _ -> false }
+}
+
 enum Repr {
     Niche
     Pair

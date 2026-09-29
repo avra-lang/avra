@@ -176,7 +176,9 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// record has fields, an enum has variants. `doc`/`annotations` read
 /// as `Fn`'s. `module` is the declaring module fully qualified, as
 /// `use` spells it from outside its package (`@std.avrac.compiler`).
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "" }
+/// `over` is a NAMED type's shape — `type Code = string` stands over
+/// `string` — and `Unspelled` for a record or an enum.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled("") }
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
@@ -227,6 +229,29 @@ export type Trait = { name: string, at: Loc? }
 export fn deprecated(what: Named, note: string) -> List<Diagnostic> {
     [warn("`${what.name}` is deprecated — ${note}")]
 }
+
+/// The fn answers every row of a relation — a comprehension scanning
+/// its answer may be narrowed to a sibling `@plans` lookup. A marker the
+/// compiler's planner reads.
+export fn plans_all(_f: Fn) {}
+
+/// The fn answers the rows whose `field` holds a value — `by_f(db, v)`
+/// for `@index f`. The planner lowers `[r for r in T.all(db) if r.f ==
+/// v]` to it, and holds the field's type to the lookup's argument.
+export fn plans(_f: Fn, _field: string) {}
+
+/// The type is a PROCESS-LOCAL DENSE ID — a record of one int, minted
+/// in order and meaningful in no other process. A marker the derives
+/// read (`type_named(n)?.annotations`): nothing durable may hash or
+/// encode one.
+export fn dense(_t: Type) {}
+
+/// The type is an IDENTITY: every copy of it must go on reading and
+/// writing the same tables, so a field a writing path could open
+/// unique would fork them. A marker the compiler's own checker reads
+/// (`compiler/typing/declare.av`): every field of a type carrying
+/// `@identity` is a `Cell<…>`, or another `@identity` type.
+export fn identity(_t: Type) {}
 
 /// A file's text, read at compile time beside the source. Into a
 /// `string` const only — a boxed const is built at run time, where
@@ -355,7 +380,24 @@ export fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs])
 /// it. A twin's name must be SPELLABLE — never a `$`-mangle. (NOT
 /// `Decl`: that name is the compiler's own declaration — a collision
 /// would arm a counterfeit.)
-export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }
+///
+/// `wraps: true` asks for the OTHER shape: `source` declares a fn
+/// under the annotated fn's OWN written name — the WRAPPER, written
+/// by the derive author — and the compiler moves the WRITTEN body to
+/// a private sibling (`wrapped`, below) so the written name resolves
+/// to the wrapper from every caller, itself included. `@query`'s
+/// memoization wants this, and so does tracing and timing — never
+/// both `wraps` and a `twin` in one directive.
+export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null, wraps: bool = false }
+
+/// The private sibling `wraps: true` moved the written body to, as a
+/// callable reference the wrapper's own template splices at a NAME
+/// seat: `${wrapped(f)}(args)` for a free fn, `self.${wrapped(f)}(args)`
+/// for a method — the receiver is the wrapper's own to write, since a
+/// bound method is never a value (only its NAME crosses a `.Name`
+/// seat). The mangling is the one both sides agree on; a `Code` answer
+/// cannot fill a `.Name` seat, which is why this hands back a `Fn`.
+export fn wrapped(f: Fn) -> Fn { f with { name: "${f.name}\$body" } }
 
 /// The OTHER answer a Declares-effect fn may give, beside a bare
 /// `List<Directive>` — the same effect, a second shape, for an

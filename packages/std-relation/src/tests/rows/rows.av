@@ -2,9 +2,10 @@
 // `id` never enters either, swapping values between fields moves the
 // hash, two relations holding the same values never share one, nested
 // lists and nullables encode with their counts and presence flags, and
-// a relation of only key fields is a relation
+// a relation of only key fields is a relation, and every record reads
+// back to its row — a truncated or overlong one refused
 use @std.relation.{relation}
-use @std.relation.stable.{reader}
+use @std.relation.stable.{reader, CodecFault}
 
 @relation
 type Call = { id: int, @index caller: string, @index callee: string, line: int }
@@ -47,4 +48,25 @@ let checks = [
     Call.relation_name().ends_with(".Call"),
 ]
 
-"${Call.relation_name()} ${[if ok { "y" } else { "n" } for ok in checks].join("")} ${call_head(c)} ${c.encoded().length} ${same_but_id.encoded().length} ${full.encoded().length} ${plain.encoded().length} ${emptied.encoded().length}"
+/// Whether a Tagged row survives its own record, hash for hash.
+fn tagged_back(x: Tagged) -> bool {
+    match Tagged.decoded(x.encoded()) {
+        .Ok(back) -> back.stable_hash() == x.stable_hash() && back.name == x.name,
+        .Err(_) -> false,
+    }
+}
+
+fn fault_of(r: Result<Call, CodecFault>) -> string {
+    match r { .Ok(_) -> "ok", .Err(f) -> f.word() }
+}
+
+let back = match Call.decoded(c.encoded()) {
+    .Ok(r) -> "${r.id} ${r.caller}->${r.callee} ${r.line} ${r.stable_hash() == c.stable_hash()}",
+    .Err(f) -> f.word(),
+}
+let backs = [tagged_back(full), tagged_back(plain), tagged_back(emptied)]
+let short = fault_of(Call.decoded(c.encoded().slice(0, 2)))
+let empty = fault_of(Call.decoded("".bytes()))
+let spare = fault_of(Call.decoded([c.encoded(), "x".bytes()].bytes()))
+
+"${Call.relation_name()} ${[if ok { "y" } else { "n" } for ok in checks].join("")} ${call_head(c)} ${c.encoded().length} ${same_but_id.encoded().length} ${full.encoded().length} ${plain.encoded().length} ${emptied.encoded().length} | ${back} ${[if ok { "y" } else { "n" } for ok in backs].join("")} ${short} ${empty} ${spare}"

@@ -4,7 +4,16 @@
 //! graph (workspace.av); this is its snapshot.
 use core.{ExprId, TypeId, At, joined, FileId, Binding}
 use diagnostics.{Diag, SourceFile, render, has_errors}
-use features.{Decls, NameFacts, TypeFacts, FileView, Code, Analysed}
+use features.{
+    Decls,
+    NameFacts,
+    TypeFacts,
+    FileView,
+    Code,
+    Analysed,
+    no_owner_spans,
+    no_assign_roots,
+}
 use compiler.lower.{Lowered}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
@@ -84,7 +93,9 @@ impl Analysis {
     }
 }
 
-/// What every pass reads of a file.
+/// What every pass reads of a file. `owner_spans`/`assign_roots`
+/// start empty — this call is the only mint, so every analysis of
+/// this file gets its own.
 export fn file_view(lang: Language, p: Parsed, decls: Decls, f: FileId) -> FileView {
     FileView {
         file: f,
@@ -94,6 +105,8 @@ export fn file_view(lang: Language, p: Parsed, decls: Decls, f: FileId) -> FileV
         decls: decls,
         types: decls.types,
         lang: lang.rows,
+        owner_spans: no_owner_spans(),
+        assign_roots: no_assign_roots(),
     }
 }
 

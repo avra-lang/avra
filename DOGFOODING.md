@@ -677,6 +677,22 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       ask of every such decoder whether its encoder can emit an empty
       tail. Not ratcheted: no grep tells a decoder from any other split.
 
+- compiler.publish_by_rename (unratcheted) A PATH OTHER PROCESSES READ IS
+      PUBLISHED, NEVER WRITTEN. A linker unlinks and re-creates its output,
+      and a placed row is written at mode 0644, so writing a shared path in
+      place shows a reader — a peer building the same package, the suite's
+      own re-exec — the file missing, half-written or not yet executable:
+      a package's suite binary was seen non-executable in 5 of 6 warm
+      rounds, the window between the place and the mode set after it.
+      `staged_beside` names a path no other process names, the file is
+      finished THERE (linked, placed, mode set), and `published` renames
+      it on in one step. THE SMELL: a verb that writes a path and then
+      adjusts it — a mode, a stamp, a second write. THE IDIOM: adjust the
+      staged file, then rename. A guard that samples the path proves it:
+      tools/witness_parallel_build.sh reads mode and size in one `stat`
+      while runs repeat, and a poller that read nothing is no witness.
+      Not ratcheted: no grep tells a path others read from one nobody does.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
@@ -1501,6 +1517,23 @@ added, over the FULL FILE instead of one field list. Diff the
 restored content against the merged HEAD before trusting it, on
 every restore, not only when a conflict marker would have warned —
 the merge's own diff already names the ground truth to check against.
+
+## A fixture stands where the real thing stands, or it tests the stand-in
+
+A keeper's fixture builds a small stand-in tree, and every place the
+stand-in differs from the real tree is a place the keeper is not
+tested. land.sh's batch fixtures passed 44/44 while every real batch
+failed: the stub repo COMMITTED its fake `build/avra`, so each fresh
+worktree carried a compiler, where the real tree ignores `build/` and
+a fresh worktree has none. The same fixtures had no idioms baseline,
+no warm cache, no `@fixes` rules and no symlinked `/tmp` path — four
+more differences, and a real batch failed on each of them in turn.
+The stand-in is written to make the fixture run, so it quietly
+supplies whatever the code under test forgot to. Give the stand-in the
+real tree's absences (an ignored `build/`, an empty cache, a physical
+path), and before trusting a keeper built on stubs, run it once
+through the real thing — one real branch through the real pipeline
+is the receipt a green fixture cannot be.
 
 ## Proven but awaiting their first honest use
 

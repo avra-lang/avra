@@ -42,14 +42,22 @@ void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted);
 int64_t avra_array_get(void* arr, int64_t i);
 void* avra_array_get_owned(void* arr, int64_t i);
 int64_t avra_array_len(void* arr);
+void* avra_box_thawed(void* p);
 
 // AVRA_RC_GUARD, settled at load.
 extern int avra_rc_guard_on;
 
-void avra_retain_noted(void* p, int32_t rc, void* ra);
+// Each guarded tail is WHOLE: the fast path hands over live values
+// only (a pointer, a header already in hand) and computes nothing for
+// the call — the return address and the increment are the callee's
+// to make, out of line, so a hot leaf's guarded branch costs the fast
+// path a single untaken test and nothing else.
+void avra_retain_noted(void* p, Header* h);
 void avra_release_guarded(void* p, Header* h);
 void avra_release_dead(void* p, int32_t kind);
 int64_t avra_get_guarded(void* arr, int64_t i);
+void* avra_get_owned_guarded(void* arr, int64_t i);
 __attribute__((noreturn)) void avra_trap_bounds(int64_t i, int64_t len);
+void* avra_box_thawed_cloned(void* p, void* ra);
 
 #endif

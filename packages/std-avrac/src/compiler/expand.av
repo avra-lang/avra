@@ -18,11 +18,13 @@ use core.{
     Type,
     same_file,
     FnParts,
+    ImplParts,
     TypeRef,
     source_spelled,
     named_ref,
     spelled,
     Scoped,
+    DeclKind,
 }
 use features.{
     Unsettled,
@@ -40,6 +42,7 @@ use features.{
     spelled_type,
     DeclareWork,
     Generation,
+    Decl,
 }
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
 use @std.meta.{
@@ -130,13 +133,71 @@ impl Workspace {
     }
 
     /// One directive: a `source` is generated CODE parsed and admitted
-    /// beside the original, and a `twin` mints a fn beside it.
+    /// beside the original, a `twin` mints a fn beside it, and
+    /// `wraps` REPLACES what the original compiles to instead of
+    /// adding beside it — mutually exclusive with both.
     fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<
         DeclId,
     > {
         let ann = self.decls.decl(w.ann).name
+        if directive.wraps { return self.wrap_directive(f, w, directive, ann) }
         let source? = directive.source else { return self.twinned(f, w, directive, ann, vis) }
         self.admit_code(f, source.node, ann, w.at, vis)
+    }
+
+    /// A WRAP directive over the annotated declaration. An expansion
+    /// re-runs until its answer settles, and a wrap already run answers
+    /// the declarations it made, never splicing a second wrapper.
+    fn wrap_directive(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
+        let done? = self.decls.wrap_body_of(f, w.annotated) else { return self.wrapped_anew(f, w, directive, ann) }
+        [done, w.annotated]
+    }
+
+    /// A WRAP not yet run over the annotated declaration — a fn's or a
+    /// METHOD's, told apart by `orig.kind` (never re-derived from a
+    /// name: a method binds no name in either fn namespace). A
+    /// bodiless signature (an extern, a trait member) has no body to
+    /// relocate; a `source` naming no matching fn has no wrapper to
+    /// install — both refuse, naming themselves. The signature the
+    /// wrapper redeclares is checked word for word before it lands.
+    fn wrapped_anew(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
+        let at = loc_at(self.decls.file(f).path, w.at)
+        let orig = self.decls.decl(w.annotated)
+        if orig.root == null {
+            self.decls.speak_expansion(f, [wrap_bodiless(ann, w.original, at)])
+            return []
+        }
+        if !wraps_free(orig.kind) {
+            self.decls.speak_expansion(f, [wrap_method(ann, w.original, at)])
+            return []
+        }
+        let source? = directive.source else {
+            self.decls.speak_expansion(f, [wrap_missing(ann, w.original, at)])
+            return []
+        }
+        let store = self.decls.store_of(f)
+        // THE WRAPPER'S OWN RANGE, never the written declaration's:
+        // the splice lands at the arena's CURRENT edge, past every
+        // statement the file's own parse already allocated — so a
+        // range anchored at the written floor would swallow whatever
+        // sits between (another decl, Main's own runtime statements),
+        // and one anchored at the written ceiling would miss the
+        // wrapper's own nodes entirely. Fresh, like any other
+        // generated declaration's.
+        let lo = store.exprs.count()
+        let spliced = self.spliced_stmts(f, source.node)
+        let found? = wrap_target_stmt(store, spliced, w.original) else {
+            self.decls.speak_expansion(f, [wrap_missing(ann, w.original, at)])
+            return []
+        }
+        if !wrap_signature_matches(store, found, w) {
+            self.decls.speak_expansion(f, [wrap_mismatch(ann, w.original, at)])
+            return []
+        }
+        let hi = store.exprs.count()
+        self
+            .decls
+            .mint_wrap(f, w.annotated, found, store.fn_parts(found)?.body, lo, hi, ann, w.original, w.at)
     }
 
     /// The fn a directive asks for beside the original, when it asks.
@@ -166,13 +227,15 @@ impl Workspace {
     /// A written fn's Declares annotation, as the materializer's
     /// inputs — nothing when the annotation is not a generator.
     fn declared_work(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclareWork> {
+        if self.decls.is_wrap_body(f, d) { return [] }
         let x = self.decls.decl(d)
-        let anns = p.store.annotations_of(x.stmt)
+        let written = self.written_stmt(f, d)
+        let anns = p.store.annotations_of(written)
         if anns.is_empty() { return [] }
         // A code directive needs no declaration shape; a twin walks a
         // FN, so a type's twin reads empty seats and a `void` answer.
-        let parts: FnParts? = p.store.fn_parts(x.stmt)
-        let params = if parts == null { [] } else { p.store.declared_params(x.stmt) }
+        let parts: FnParts? = p.store.fn_parts(written)
+        let params = if parts == null { [] } else { p.store.declared_params(written) }
         let tparams: List<Param> = parts?.tparams ?? []
         let answer: TypeRef = parts?.ret ?? named_ref("void")
         mut out: List<DeclareWork> = []
@@ -198,7 +261,7 @@ impl Workspace {
                                     .push(
                                         DeclareWork {
                                             ann: ann_decl,
-                                            stmt: x.stmt,
+                                            stmt: written,
                                             callee: a.callee,
                                             args: a.args,
                                             ret: sig.ret,
@@ -206,7 +269,8 @@ impl Workspace {
                                             params: params,
                                             answer: answer,
                                             original: x.name,
-                                            at: a.span ?? p.store.stmt_span(x.stmt),
+                                            at: a.span ?? p.store.stmt_span(written),
+                                            annotated: d,
                                         },
                                     )
                             }
@@ -216,6 +280,12 @@ impl Workspace {
             }
         }
         out
+    }
+
+    /// The statement a declaration was written as: a wrapped fn's is
+    /// the one its moved body rides, since its own now names the wrapper.
+    fn written_stmt(f: FileId, d: DeclId) -> StmtId {
+        self.decls.decl(self.decls.wrap_body_of(f, d) ?? d).stmt
     }
 
     /// Whether a return type is `List<Directive>` — the Declares cue.
@@ -550,7 +620,9 @@ impl Workspace {
         let arms = rb.arms(copied_arms)
         if !same_file(origin, f) {
             self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin)
-            self.decls.note_spanned(f, rb.holed_exprs, rb.holed_stmts, rb.holed_pats, origin)
+            self
+                .decls
+                .note_spanned(f, rb.holed_exprs, rb.holed_stmts, rb.holed_pats, rb.holed_params, origin)
         }
         // a node the template's own sublanguage minted keeps THAT
         // library as its origin, not the template's file
@@ -684,6 +756,7 @@ impl Workspace {
                     doc: self.decl_doc_text(d),
                     annotations: self.decl_annotations(v, d),
                     module: self.decls.qualified_module(d),
+                    over: self.named_over(d),
                 },
                 heap,
             ),
@@ -753,7 +826,7 @@ impl Workspace {
     fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
         MetaParam {
             name: p.name.of,
-            ty: typed_text(self.decls.types, p.ty),
+            ty: written_spelling(p.ty),
             mutable: p.promises.mutable,
             settled: p.promises.settled,
             at: placed(v, v.store.param_id_span(p.id)),
@@ -764,7 +837,7 @@ impl Workspace {
     /// A fn's answer, spelled from its declared TypeRef — a store read
     /// alone, so crossing a declaration needs no typed facts.
     fn crossed_answer(v: FileView, s: StmtId) -> string {
-        typed_text(self.decls.types, v.store.fn_parts(s)?.ret)
+        written_spelling(v.store.fn_parts(s)?.ret)
     }
 
     /// A record's fields as `Field` values: the spelling the program
@@ -819,6 +892,13 @@ impl Workspace {
         kind_of(self.decls.types, sig.ret)
     }
 
+    /// A named type's shape — `type Code = string` stands over `string` —
+    /// and nothing for any other declaration.
+    fn named_over(d: DeclId) -> Kind {
+        let sig? = self.decls.sig(d) else { return no_kind() }
+        match sig { .Named(n) -> kind_of(self.decls.types, n.of), rest -> no_kind() }
+    }
+
     fn field_kinds(d: DeclId) -> List<Kind> {
         let sig? = self.decls.sig(d)?.record_sig() else { return [] }
         [kind_of(self.decls.types, t) for t in sig.types]
@@ -828,3 +908,67 @@ impl Workspace {
 /// A lifted call's absent answer — nothing crossed, in a heap of
 /// its own.
 fn absent_lifted() -> Lifted { Lifted { answer: MetaVal.Absent, heap: new_meta_heap() } }
+
+/// The ONE statement among a WRAP directive's spliced source that
+/// redeclares the annotated fn's own name — a bare top-level `fn`,
+/// whether the annotated declaration is a free fn or a method: the
+/// DECL TABLE alone says which (`owner`/`parent`/`kind` ride the
+/// annotated declaration, untouched), so the wrapper's own template
+/// never has to name — or even know — the owner type. A method
+/// nested inside a spliced `impl` block is found too, for a template
+/// that prefers writing one.
+fn wrap_target_stmt(store: NodeStore, stmts: List<StmtId>, name: string) -> StmtId? {
+    let top? = stmts.find((s: StmtId) -> is_free_fn_named(store, s, name)) else {
+        let members = flatten([store.impl_parts(s)?.fns ?? [] for s in stmts])
+        return members.find((m: StmtId) -> store.fn_parts(m)?.name == name)
+    }
+    top
+}
+
+fn is_free_fn_named(store: NodeStore, s: StmtId, name: string) -> bool {
+    let k? = store.declared_kind(s) else { return false }
+    k is .Fn && store.fn_parts(s)?.name == name
+}
+
+/// Whether a WRAP directive's wrapper redeclares the annotated fn's
+/// EXACT signature: params word for word (name, spelling, `mut`,
+/// `const`, default PRESENCE) in order, and the answer type's own
+/// spelling. Compared as WRITTEN — expansion runs before typing, so
+/// this is the only signature either side has yet.
+fn wrap_signature_matches(store: NodeStore, found: StmtId, w: DeclareWork) -> bool {
+    let parts? = store.fn_parts(found) else { return false }
+    same_tparams(w.tparams, parts.tparams) &&
+        same_params(w.params, store.declared_params(found)) &&
+        spelled(w.answer) == spelled(parts.ret)
+}
+
+fn same_tparams(a: List<Param>, b: List<Param>) -> bool {
+    a.length == b.length && [j for j, p in a if p.name.of != b[j].name.of].is_empty()
+}
+
+fn same_params(a: List<Param>, b: List<Param>) -> bool {
+    a.length == b.length && [j for j, p in a if !same_param(p, b[j])].is_empty()
+}
+
+fn same_param(a: Param, b: Param) -> bool {
+    a.name.of == b.name.of &&
+        param_ty_spelling(a) == param_ty_spelling(b) &&
+        a.promises.mutable == b.promises.mutable &&
+        a.promises.settled == b.promises.settled &&
+        (a.default == null) == (b.default == null)
+}
+
+fn param_ty_spelling(p: Param) -> string {
+    let ty? = p.ty else { return "" }
+    spelled(ty)
+}
+
+/// Whether WRAP reaches a declaration of this kind: a free fn's
+/// callers reach the wrapper; a method's call dispatch is not yet
+/// taught the repoint.
+fn wraps_free(kind: DeclKind) -> bool {
+    match kind {
+        .Fn -> true,
+        .Method or .Const or .Collect or .CollectEnum or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin -> false,
+    }
+}

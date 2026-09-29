@@ -1396,6 +1396,13 @@ registry is the idiom engine's spec, written by dogfooding.
   only, and only when that statement IS an expression, and
   an interpolation hole prints scalars and strings only — a list
   is shown through `join`, an index or `length`.
+  A program whose proof is a TRAP gets `<name>.refuses` (the voice it
+  must speak) instead of `.expected`; `avra test` runs it as a CHILD
+  in both engines and passes it only on exit 2 with that voice on
+  stderr. Either marker makes its file a PROGRAM, not a module file:
+  the entry's law (`lower.entry_only`) never refuses its statements,
+  so `avra run`/`build` on one program test works beside its siblings
+  (`Workspace.is_program`, suite.av — discovery reads the same markers).
 
 - The CLI: each subcommand is ONE file in
   `packages/cli/src/commands/`, exporting `command <name> { … }` —
@@ -1784,11 +1791,19 @@ Wants the typer does not carry yet:
 - `join` over a list that is not text: `[1, 2].join(",")` is F2005
   "`join` reads a list of text, this one holds `int`" — map to text
   first.
-- `==` between lists, `contains`/`index_of` over structs or enums:
-  F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
-  value — scalars and text for now, this list holds `K`" (a nullable
-  of either scans through presence) — spell
-  the scan (`xs.any(same(it))`). ENUMS SPLIT ON THE PAYLOAD, which
+- `==`/`!=`, `contains`/`index_of` and a literal pattern share ONE
+  equality: a scalar, text, a tagged enum, or a record of ONE such
+  field, compared by that field (a one-field record inside one
+  compares through), so `Id { n: 1 } == Id { n: 1 }` answers true
+  and `[a, c].contains(b)` finds it. Everything else refuses:
+  a record of two fields is F2000 "`==` compares by value — a
+  scalar, text, a tagged enum, or a record of one such field" with
+  help "compare a field instead"; two different one-field types, or
+  one against its own field's scalar, is "`==` compares matching
+  types, found `Id` and `Other`"; the list scan is F2005 "`contains`
+  scans by value — … — and this list holds `Pair`" (a nullable of
+  a comparable type scans through presence) — spell the scan
+  (`xs.any(same(it))`). Probed at d11ea0f. ENUMS SPLIT ON THE PAYLOAD, which
   nobody had written down: a payload-FREE enum compares fine
   (`.Timeout == .Refused` answers false), and one CARRYING a payload
   is F2000 with the help "match on it instead — only an enum carrying

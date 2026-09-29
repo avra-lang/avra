@@ -9,7 +9,7 @@
 //!   ──╯
 //!   help: a `let` names its value
 use core.{joined, flatten}
-use @std.errors.{Loc, Error, Suggestion, Confidence}
+use @std.errors.{Loc, Frame, Error, Suggestion, Confidence}
 use @std.text.{repeat}
 
 fn severity_word(s: Severity) -> string {
@@ -104,6 +104,20 @@ fn causes_of(e: dyn Error?, depth: int = cause_chain_cap) -> List<string> {
 /// The whole diagnostic as terminal text — the kind is the bracket.
 export fn render(d: Diag, src: SourceFile) -> string {
     render_with(diag_facts_of(d), (l: Loc) -> src)
+}
+
+/// The file a frame's position is an offset into: none when the frame has
+/// no place or its place names no file.
+fn frame_files(f: Frame) -> List<string> {
+    let at? = f.loc else { return [] }
+    let name? = at.file else { return [] }
+    [name]
+}
+
+/// Every file a diagnostic's frames locate into, in frame order: the
+/// files whose text a rendering reads offsets of.
+export fn located_files(d: Diag) -> List<string> {
+    flatten([frame_files(f) for f in [d.primary].concat(d.secondary)])
 }
 
 /// The diagnostic rendered over MANY sources — each frame's window

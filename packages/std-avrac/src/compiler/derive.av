@@ -135,6 +135,15 @@ fn spoken(texts: List<string>) -> string { joined([text for text in texts if !te
 /// Where what a file said lives: beside its object, under the object's key.
 fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
 
+/// Where a file's rule findings live, beside what it said — kept only by
+/// a derivation that wants diagnostics, since nothing a build makes reads
+/// them.
+fn rules_key(okey: string) -> string { node_key(Stored.Warn, ["rules", okey]) }
+
+/// What a parsed file says now: its `Said`, and its rule findings when
+/// the want asks for them.
+type Spoken = { said: Said, rules: string? }
+
 /// A `Said` as its row: the case count, a line per case, then the warnings.
 fn said_wire(s: Said) -> string {
     joined(
@@ -289,6 +298,15 @@ impl Workspace {
         want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
+    /// The held files a diagnostics want must read after all: the ones whose
+    /// rule findings were never kept, since only a check keeps them.
+    fn unruled(store: Store, want: Want) -> List<string> {
+        match want {
+            .Diagnostics -> [path for path in held_paths(self) if !store.has(Stored.Warn, rules_key(self.held_okey(store, path)))],
+            .Binary -> [],
+        }
+    }
+
     /// A fresh workspace's attempt — a restart never inherits a hold.
     fn again(at: Attempt) -> Result<Derived, string> {
         // NOT `mut`: `anew`'s own hooks already capture this box
@@ -312,6 +330,7 @@ impl Workspace {
     fn tried(at: Attempt) -> Result<Derived, Turn> {
         mut clock = self.marking()
         let store = self.holding(at)?
+        at.having_read(self.unruled(store, at.want))?
         clock.mark("load")
         self.admit_all()
         clock.mark("admit")
@@ -388,7 +407,7 @@ impl Workspace {
         let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
         if !adrift.is_empty() { fail at.adrift(adrift) }
         for a in p.files { self.keep_asks(store, lo, a) }
-        let said? = self.all_said(store, p) else { fail at.unheld("what a held file said could not be read") }
+        let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         // A FINAL commit for whatever the last file staged: `says`
         // (below) commits after EVERY file now that `Pack.commit`
         // appends (O(the batch), store/pack.av) rather than rewriting
@@ -521,9 +540,19 @@ impl Workspace {
 
     /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
     /// compile-time runs read — and what THAT file's runs read, since it runs too.
+    /// A CANDIDATE EXCLUDED THIS WAY NAMES WHY, seeded or discovered alike: the
+    /// seed already carries its own `RunBy` (record.av's `load_interface`), so
+    /// the noting below is the same one the worklist does for what IT finds,
+    /// never a second law.
     fn settle_holds(store: Store) {
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
+        for rf in self.hold.read_seeds.get() {
+            if self.hold.hold_asked.get().contains(rf.path) &&
+                !self.hold.read_files.get().any(it.path == rf.path) {
+                self.hold.read_files.push(rf)
+            }
+        }
         mut at = 0
         while at < reads.length {
             for path in kept_runs(
@@ -567,34 +596,48 @@ impl Workspace {
     /// What every file said, in file order: a parsed file's KEPT, a held file's
     /// as the store kept it — null when a held row cannot be read. A file the
     /// table knows and nothing read said nothing.
-    fn all_said(store: Store, p: Program) -> List<Said>? {
-        // EVERY LOADED SOURCE, ONCE FOR THE WHOLE PASS: `says` renders
-        // through it per file, and gathering it per file (734 files'
-        // worth of SourceFile, 734 times) is exactly the O(n²) that
-        // turned std-avrac's "keep" phase from ~10s into 700+s
+    fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
+        // EVERY LOADED SOURCE, ONCE FOR THE WHOLE PASS, AND ONLY WHEN A
+        // WITNESSED ANSWER MIGHT NEED IT: `says` renders a reused row's
+        // `DiagFacts` through it per file, and gathering it per file (734
+        // files' worth of SourceFile, 734 times) is exactly the O(n²)
+        // that turned std-avrac's "keep" phase from ~10s into 700+s
         // (measured; the hot path was @std.text.codepoints under
         // avra_release_dead — line-start construction, paid again for
-        // every file on every file).
-        let sources = p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()])
-        mut fresh: Map<string, Said> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(a, sources)) }
-        let said = [self.file_said(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
+        // every file on every file). `witness_enabled` is a compile-time
+        // constant, so a build with it false pays nothing here.
+        let sources: List<SourceFile> = if witness_enabled { p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()]) } else { [] }
+        mut fresh: Map<string, Spoken> = {}
+        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want, sources)) }
+        let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
 
-    /// What a parsed file says now: its witnessed answer
-    /// (compiler/witness.av), reused when a still-current one exists —
-    /// `Family.Analysis` already covers exactly this file's own
-    /// diagnostics AND its rule findings (`settled_check`'s `ds`, the
-    /// same pair this fn used to compute by hand), so a HELD file's
-    /// `Said` row carries both and a later hold answers them alike. A
-    /// reused row is rendered here, fresh, the same way a freshly
-    /// computed one is — `render_facts_among` picks each frame's window
-    /// from `sources`, `all_said`'s own, gathered once for the whole
-    /// pass — never from whichever process happened to settle the
+    /// What a parsed file says now. Under `.Binary` no rule ever runs
+    /// (a build reads no lint) — `p.warned(a.diagnostics)` alone, exactly
+    /// as before witnessing existed. Under `.Diagnostics`, `witness_enabled`
+    /// picks the answer: OFF, the plain answer plus `rule_findings`,
+    /// kept apart under its own key (`file_said`) so a HELD file answers
+    /// them alike; ON, the WITNESSED answer (compiler/witness.av), reused
+    /// when a still-current one exists — `Family.Analysis` already covers
+    /// exactly this file's own diagnostics AND its rule findings
+    /// (`settled_check`'s `ds`, witness.av) MERGED, so a witnessed `Said`
+    /// carries both at once and `rules` stays null (nothing left to keep
+    /// apart). A reused row is rendered here, fresh, the same way a
+    /// freshly computed one is — `render_facts_among` picks each frame's
+    /// window from `sources`, `all_said`'s own, gathered once for the
+    /// whole pass — never from whichever process happened to settle the
     /// witness.
-    fn says(a: Analysis, sources: List<SourceFile>) -> Said {
+    fn says(p: Program, a: Analysis, want: Want, sources: List<SourceFile>) -> Spoken {
+        let cases = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)]
+        if want is .Binary {
+            return Spoken { said: Said { path: a.view.source.file, warnings: p.warned(a.diagnostics), cases: cases }, rules: null }
+        }
+        if !witness_enabled {
+            let said = Said { path: a.view.source.file, warnings: p.warned(a.diagnostics), cases: cases }
+            return Spoken { said: said, rules: p.warned(rule_findings(analysed(a), a.view.stmts)) }
+        }
         let outcome = self.witnessed_check(a.view.file)
         if outcome.reused() {
             self.witness_hits.set(self.witness_hits.get() + 1)
@@ -607,23 +650,29 @@ impl Workspace {
         }
         let facts = outcome.value().diagnostics
         let warned = [f for f in facts if f.severity is .Warning]
-        Said {
-            path: a.view.source.file,
-            warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
-            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
+        Spoken {
+            said: Said {
+                path: a.view.source.file,
+                warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
+                cases: cases,
+            },
+            rules: null,
         }
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there
-    /// when it did not.
-    fn file_said(store: Store, path: string, fresh: Said?) -> Said? {
-        let key = said_key(self.held_okey(store, path))
-        if fresh == null {
-            let kept? = store.get(Stored.Warn, key) else { return null }
-            return said_of(path, kept)
+    /// when it did not — its rule findings beside it under a diagnostics want.
+    fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
+        let okey = self.held_okey(store, path)
+        let told? = fresh else {
+            let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
+            let said? = said_of(path, kept) else { return null }
+            return held_said(store, okey, said, want)
         }
-        let _ = store.keep_once(Stored.Warn, key, said_wire(fresh!))
-        fresh
+        let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
+        let rules? = told.rules else { return told.said }
+        let _ = store.keep_once(Stored.Warn, rules_key(okey), rules)
+        told.said with { warnings: spoken([told.said.warnings, rules]) }
     }
 }
 
@@ -631,6 +680,18 @@ impl Workspace {
 fn boxed_name(parts: List<string>, path: string) -> string? {
     let row? = read_row(parts) else { return null }
     if row.shape is .Boxed && row.path == path { row.name } else { null }
+}
+
+/// A held file's `Said` under `want`: a diagnostics want reads its rule
+/// findings beside it, and `stands_in` held it only where they were kept.
+fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
+    match want {
+        .Diagnostics -> {
+            let rules? = store.get(Stored.Warn, rules_key(okey)) else { return null }
+            said with { warnings: spoken([said.warnings, rules]) }
+        },
+        .Binary -> said,
+    }
 }
 
 // ── The voices ──

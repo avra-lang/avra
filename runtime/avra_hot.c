@@ -1,6 +1,10 @@
 // THE HOT LEAVES (runtime/avra_hot.h says why they stand apart): a
 // count, a release, a slot read. Each fast path is a load, a test and
-// a store; every slow one is a tail call into avra_runtime.c.
+// a store; every slow one is a tail call into avra_runtime.c, and the
+// call is handed only values already live at the site — a return
+// address or an incremented count computed HERE would be computed
+// again in every one of the 395 copies this file is inlined into; the
+// callee, compiled once, computes its own.
 #include "avra_hot.h"
 
 void avra_rc_retain(void* p) {
@@ -8,8 +12,8 @@ void avra_rc_retain(void* p) {
     if (h == 0 || h->kind < 0) return;
     CENSUS(g_rc_retains++);
     CENSUS(note_retain(__builtin_return_address(0)));
+    if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(p, h); return; }
     h->rc++;
-    if (__builtin_expect(avra_rc_guard_on, 0)) avra_retain_noted(p, h->rc, __builtin_return_address(0));
 }
 
 void avra_rc_release(void* p) {
@@ -49,13 +53,34 @@ int64_t avra_array_get(void* arr, int64_t i) {
 }
 
 // A managed read is an owned +1: the reader's scope releases it,
-// the pointer stays shared. The bounds trap is avra_array_get's.
+// the pointer stays shared. Composing avra_array_get and
+// avra_rc_retain would inline BOTH of their guard tests and BOTH of
+// their header checks into every copy; the guard is asked once here,
+// and the fast path is the two fast paths fused, never their sum.
 void* avra_array_get_owned(void* arr, int64_t i) {
-    void* v = (void*)(uintptr_t)avra_array_get(arr, i);
-    avra_rc_retain(v);
+    CENSUS(g_list_gets++);
+    if (__builtin_expect(avra_rc_guard_on, 0)) return avra_get_owned_guarded(arr, i);
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(i < 0 || i >= a->len, 0)) avra_trap_bounds(i, a->len);
+    void* v = (void*)(uintptr_t)a->data[i];
+    Header* h = avra_hdr(v);
+    if (h != 0 && h->kind >= 0) { CENSUS(g_rc_retains++); h->rc++; }
     return v;
 }
 
 int64_t avra_array_len(void* arr) {
     return ((AvraArray*)arr)->len;
+}
+
+// The no-cell law with no cell to hold the answer — a method's
+// receiver, a borrowed parameter. Overwhelmingly not the binary's own
+// data, so the fast path is a retain; the rare clone is a tail call,
+// out of line, with the caller's own return address carried across it
+// so the clone log names the write site and not this leaf.
+void* avra_box_thawed(void* p) {
+    Header* h = avra_hdr(p);
+    if (__builtin_expect(h != 0 && IS_IMMORTAL(h->kind), 0))
+        return avra_box_thawed_cloned(p, __builtin_return_address(0));
+    avra_rc_retain(p);
+    return p;
 }

@@ -1,0 +1,599 @@
+//! THE CODEC KEEPER — a record's wire ENCODER and its DECODER agree,
+//! checked by machine. Nothing else in the tree compares them: three
+//! disagreements landed the same day (avra-8sb5.57.67) — a seat mark
+//! written three characters wide and read one wide, `SeatMark.consumed`
+//! never encoded, a record-shape stamp never compared — and a warm
+//! cache served wrong code, silently, until something else noticed.
+//!
+//! ONE REGISTRY, `codec_pairs()`: every row names its encode fn, its
+//! decode fn, its exemplars and its equality. `decode(encode(x))` is
+//! compared to `x` FIELD BY FIELD (`@derive(Exemplar)`'s `codec_same`,
+//! or a hand-written one) — never `encode(decode(encode(x))) ==
+//! encode(x)`, which is idempotence and passes when a field is
+//! dropped both times (CLAUDE.md, "a check can pass because of the
+//! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
+//! an encoder/decoder-shaped pair the tree carries that this registry
+//! does not name.
+use core.{SeatMark, TypeId, Type, DeclKind, list_eq}
+use features.{DeclFacts, AnnotationFact, Settled, MetaHeap, Wanted, SeatValue, MetaVal, kind_word}
+use compiler.{avra, new_workspace, Workspace}
+use compiler.host.{memory_host}
+
+// ── THE HARNESS ─────────────────────────────────────────────────────
+
+/// One registered pair: its name (both fn names, `encoder/decoder`),
+/// and a thunk that runs every exemplar through it — a fn so the
+/// registry can hold rows of DIFFERENT concrete types in one list.
+export type CodecCheck = { pair: string, run: fn() -> List<string> }
+
+/// A pair built from a type's own `@derive(Exemplar)` samples.
+fn derived<T, W>(
+    pair: string,
+    exemplars: List<T>,
+    labels: List<string>,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T?,
+    same: fn(T, T) -> bool,
+) -> CodecCheck {
+    CodecCheck {
+        pair: pair,
+        run: () -> codec_disagreements(pair, exemplars, labels, encode, decode, same),
+    }
+}
+
+fn codec_disagreements<T, W>(
+    pair: string,
+    exemplars: List<T>,
+    labels: List<string>,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T?,
+    same: fn(T, T) -> bool,
+) -> List<string> {
+    let raw = [codec_one(pair, label_at(labels, i), exemplars[i], encode, decode, same) for i in 0..exemplars.length]
+    [m! for m in raw if m != null]
+}
+
+fn label_at(labels: List<string>, i: int) -> string {
+    if i < labels.length { labels[i] } else { "exemplar ${i}" }
+}
+
+fn codec_one<T, W>(
+    pair: string,
+    label: string,
+    value: T,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T?,
+    same: fn(T, T) -> bool,
+) -> string? {
+    let wire = encode(value)
+    let back? = decode(wire) else { return "${pair}: exemplar \\`${label}\\` failed to decode its own wire" }
+    if same(value, back) { return null }
+    "${pair}: exemplar \\`${label}\\` round-tripped to a different value"
+}
+
+/// `derived`'s twin for a decoder that never answers absent — it
+/// falls back to a plain default on bad input rather than failing
+/// (`mark_of_word`, `unpacked`, `doc_of_wire`'s own `T` IS `List<string>?`
+/// already, so ITS decode answers that type directly, never a second
+/// layer of `?`). The only question left is whether the value survived.
+fn derived_total<T, W>(
+    pair: string,
+    exemplars: List<T>,
+    labels: List<string>,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T,
+    same: fn(T, T) -> bool,
+) -> CodecCheck {
+    CodecCheck {
+        pair: pair,
+        run: () -> total_disagreements(pair, exemplars, labels, encode, decode, same),
+    }
+}
+
+fn total_disagreements<T, W>(
+    pair: string,
+    exemplars: List<T>,
+    labels: List<string>,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T,
+    same: fn(T, T) -> bool,
+) -> List<string> {
+    let raw = [total_one(pair, label_at(labels, i), exemplars[i], encode, decode, same) for i in 0..exemplars.length]
+    [m! for m in raw if m != null]
+}
+
+fn total_one<T, W>(
+    pair: string,
+    label: string,
+    value: T,
+    encode: fn(T) -> W,
+    decode: fn(W) -> T,
+    same: fn(T, T) -> bool,
+) -> string? {
+    let back = decode(encode(value))
+    if same(value, back) { return null }
+    "${pair}: exemplar \\`${label}\\` round-tripped to a different value"
+}
+
+// ── ADAPTERS — a decoder whose own shape does not match `fn(W) -> T?`
+// (a `mut` seat, a bound method, extra context) gets ONE free-fn
+// wrapper here, never a re-implementation. ──
+
+/// `heap_from_wire`'s seat is `mut WireReader`, a different TYPE from
+/// `fn(string) -> MetaHeap?` (CLAUDE.md, "a fn type carries its
+/// seats' contract") — and `heap_wire` writes no envelope of its own
+/// (it is always framed by a caller), so the reader starts at 0, not
+/// `wire_reader`'s 2.
+fn heap_from_wire_wire(raw: string) -> MetaHeap? {
+    mut r = WireReader { raw: raw, pos: 0 }
+    heap_from_wire(r)
+}
+
+// ── A FIXTURE WORKSPACE — the codecs that cross `TypeId`/`FileId`
+// need a real `Decls`/`TypeRegistry` to intern into; this is that
+// one, held to scalars and structural types so no declaration needs
+// admitting (`compiler/tests/fn_wire_marks_test.av`'s own shape). Its
+// own verbs live on `Workspace` (`style.free_state_verb`). ──
+
+fn codec_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() { 1 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+impl Workspace {
+    /// `interface_type`'s own decode never answers absent (a broken
+    /// wire falls back to the error type), so it joins the "total"
+    /// side too.
+    fn codec_interface_type_total(w: string) -> TypeId { self.interface_type(w) }
+
+    /// Every scalar, plus one composite of each structural shape — a
+    /// `Fn` with every seat mark on, since that is exactly what
+    /// widened (avra-8sb5.57.67), and a `Union` since it canonicalizes
+    /// its own members on intern.
+    fn codec_type_exemplars() -> List<TypeId> {
+        let i = self.decls.types.type(int)
+        let b = self.decls.types.type(bool)
+        let marks = [
+            SeatMark { mutable: true, settled: false },
+            SeatMark { mutable: false, settled: true, unshared: true, consumed: true },
+        ]
+        [
+            i,
+            self.decls.types.type(float),
+            b,
+            self.decls.types.type(string),
+            self.decls.types.intern(Type.Bytes),
+            self.decls.types.intern(Type.Ptr),
+            self.decls.types.intern(Type.Void),
+            self.decls.types.intern(Type.Null),
+            self.decls.types.intern(Type.EmptyList),
+            self.decls.types.intern(Type.EmptyMap),
+            self.decls.types.intern(Type.Error),
+            self.decls.types.type(List<int>),
+            self.decls.types.type(int?),
+            self.decls.types.type(Map<string, int>),
+            self.decls.types.type(Result<int, bool>),
+            self.decls.types.intern(Type.Fn([i, b], marks, i)),
+            self.decls.types.union_of([i, b]),
+        ]
+    }
+
+    fn codec_same_type_shape(a: TypeId, b: TypeId) -> bool {
+        self.decls.type_wire(a) == self.decls.type_wire(b)
+    }
+
+    /// A handful of `Wanted` rows — `decl: null`/`sub: null`
+    /// throughout: a real `DeclId` needs an admitted declaration this
+    /// fixture does not carry (`fn_wire_marks_test.av`'s own fixture
+    /// stops there too), so `sub_wire`/`decl_wire` are covered only as
+    /// far as their OWN decoder never runs (`sub_mark == "+"`) —
+    /// `seat_wire`'s shape is exercised in full through a seat
+    /// carrying a real `TypeId`.
+    fn codec_wanted_exemplars() -> List<Wanted> {
+        let i = self.decls.types.type(int)
+        let seat = SeatValue {
+            index: 0,
+            fp: "7",
+            ty: i,
+            value: MetaVal.Int(9),
+            heap: MetaHeap.codec_zero(),
+        }
+        [
+            Wanted {
+                file: self.file_id("/w/src/main.av"),
+                decl: null,
+                name: "plain",
+                sub: null,
+                seats: [],
+                root: null,
+            },
+            Wanted {
+                file: self.file_id("/w/src/main.av"),
+                decl: null,
+                name: "seated",
+                sub: null,
+                seats: [seat],
+                root: null,
+            },
+        ]
+    }
+
+    fn codec_wanted_batches() -> List<List<Wanted>> {
+        let no_wanted: List<Wanted> = []
+        [no_wanted, self.codec_wanted_exemplars()]
+    }
+
+    fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
+        self.wanted_wire(a) == self.wanted_wire(b)
+    }
+}
+
+fn type_exemplar_labels() -> List<string> {
+    [
+        "int",
+        "float",
+        "bool",
+        "string",
+        "bytes",
+        "ptr",
+        "void",
+        "null",
+        "empty_list",
+        "empty_map",
+        "error",
+        "list",
+        "opt",
+        "map",
+        "res",
+        "fn_with_marks",
+        "union",
+    ]
+}
+
+fn wanted_batch_labels() -> List<string> {
+    ["empty", "no-seat and one-seat rows"]
+}
+
+// ── `DbRow` — its decoder needs the KIND alongside the wire (the
+// payload carries no tag of its own; the durable key does), so it is
+// not `fn(W) -> T?` shaped and stands outside `derived`. ──
+
+fn dbrow_exemplars() -> List<DbRow> {
+    [
+        DbRow.Sig("n", "text"),
+        DbRow.Warn("n", "warn\ntext"),
+        DbRow.Scan("n", "1"),
+        DbRow.Canon("n", ""),
+        DbRow.Licenses("n", "a.av\t7\tstyle.thing"),
+        DbRow.Decl("n", docfacts_sample()),
+    ]
+}
+
+fn docfacts_sample() -> DocFacts {
+    DocFacts.codec_zero() with { answer: "rendered text" }
+}
+
+fn dbrow_check() -> CodecCheck {
+    CodecCheck { pair: "db.encoded/decoded (DbRow)", run: dbrow_disagreements }
+}
+
+fn dbrow_disagreements() -> List<string> {
+    let raw = [dbrow_one(r) for r in dbrow_exemplars()]
+    [m! for m in raw if m != null]
+}
+
+fn dbrow_one(r: DbRow) -> string? {
+    let wire = encoded(r)
+    let back? = decoded(r.kind(), r.key(), wire) else { return "db.encoded/decoded (DbRow): exemplar \\`${r.kind().tag()}\\` failed to decode" }
+    if dbrow_same(r, back) { return null }
+    "db.encoded/decoded (DbRow): exemplar \\`${r.kind().tag()}\\` round-tripped to a different value"
+}
+
+fn dbrow_same(a: DbRow, b: DbRow) -> bool {
+    match a {
+        .Decl(name, facts) -> match b {
+            .Decl(name_b, facts_b) -> name == name_b && facts.codec_same(facts_b),
+            rest -> false,
+        },
+        .Sig(name, text) -> match b { .Sig(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        .Warn(name, text) -> match b { .Warn(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        .Scan(name, text) -> match b { .Scan(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        .Canon(name, text) -> match b { .Canon(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        .Licenses(name, text) -> match b { .Licenses(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
+        rest -> false,
+    }
+}
+
+// ── `packed`/`unpacked` — length-prefixed, safe against ANY bytes in
+// an element (its own doc: "never searched for") — hand-exemplared
+// with the separators it exists to survive (`;`, `~`, `:`), an empty
+// element, and an empty list. ──
+
+/// Every list pair's sample whose last element is empty — the value a
+/// decoder that splits a joined line reads back one field short.
+const empty_last_label = "an empty last element"
+
+fn packed_exemplars() -> List<List<string>> {
+    let no_strings: List<string> = []
+    [
+        no_strings,
+        [""],
+        ["a"],
+        ["a", "", "b"],
+        ["a", ""],
+        ["has;semi", "has~tilde", "has:colon"],
+        ["tab\tand\nnewline"],
+    ]
+}
+
+fn packed_labels() -> List<string> {
+    [
+        "empty",
+        "one empty element",
+        "one element",
+        "an empty element in the middle",
+        empty_last_label,
+        "wire punctuation inside elements",
+        "tab and newline inside an element",
+    ]
+}
+
+// ── `list_field`/`read_list` — record.av's own doc: "Reserved for
+// text this build already knows carries no `~`" (a type spelling, a
+// parameter name), unlike `packed`. Exemplared inside that contract —
+// `~` is the one byte this pair never promises to survive. ──
+
+fn list_field_exemplars() -> List<List<string>> {
+    let no_strings: List<string> = []
+    [
+        no_strings,
+        [""],
+        ["a"],
+        ["a", "", "b"],
+        ["a", ""],
+        ["List<int>", "string?", "fn(int) -> bool"],
+    ]
+}
+
+fn list_field_labels() -> List<string> {
+    [
+        "empty",
+        "one empty element",
+        "one element",
+        "a middle element left empty",
+        empty_last_label,
+        "type spellings",
+    ]
+}
+
+fn same_string_list(a: List<string>, b: List<string>) -> bool {
+    list_eq(a, b, (x, y) -> x == y)
+}
+
+// ── `doc_wire`/`doc_of_wire` — `List<string>?`, present vs absent. ──
+
+fn doc_wire_exemplars() -> List<List<string>?> {
+    let none: List<string>? = null
+    let no_lines: List<string> = []
+    [none, no_lines, [""], ["one line"], ["line one", ""], ["line one", "line two, with a comma"]]
+}
+
+fn doc_wire_labels() -> List<string> {
+    ["absent", "present, empty", "one empty line", "one line", "an empty last line", "two lines"]
+}
+
+fn same_opt_string_list(a: List<string>?, b: List<string>?) -> bool {
+    (a == null) == (b == null) && (a == null || same_string_list(a!, b!))
+}
+
+// ── `annotations_wire`/`annotations_of_wire` — `List<AnnotationFact>`,
+// over the field's own derived exemplars. ──
+
+fn annotations_wire_exemplars() -> List<List<AnnotationFact>> {
+    let none: List<AnnotationFact> = []
+    [none, [AnnotationFact.exemplars()[0]], AnnotationFact.exemplars()]
+}
+
+fn annotations_wire_labels() -> List<string> {
+    ["empty", "one", "every exemplar"]
+}
+
+fn same_annotation_list(a: List<AnnotationFact>, b: List<AnnotationFact>) -> bool {
+    list_eq(a, b, (x, y) -> x.codec_same(y))
+}
+
+// ── `kind_word`/`kind_of_word` — a record line's "kind" column, for
+// the shapes that actually READ it back: `Fn`/`Extern`/`Opaque` alone
+// (`record.av`'s `declared_kind`). `Record`/`Named`/`Alias` also
+// encode through `kind_word` (all three collapse to "type"), but
+// their DeclKind comes back from the SHAPE column instead — `kind_of_
+// word` has no `"type"` arm at all — so those three sit outside this
+// pair's own contract and are left out of its exemplars. ──
+
+fn decl_kind_exemplars() -> List<DeclKind> {
+    [
+        DeclKind.Fn,
+        DeclKind.Enum,
+        DeclKind.Trait,
+        DeclKind.Syntax,
+        DeclKind.Method,
+        DeclKind.Default,
+        DeclKind.Impl,
+        DeclKind.Main,
+        DeclKind.Case,
+        DeclKind.Const,
+        DeclKind.Collect,
+        DeclKind.CollectEnum,
+        DeclKind.Builtin,
+    ]
+}
+
+fn decl_kind_labels() -> List<string> {
+    [
+        "fn",
+        "enum",
+        "trait",
+        "syntax",
+        "method",
+        "default",
+        "impl",
+        "main",
+        "case",
+        "const",
+        "collect",
+        "collect_enum",
+        "builtin",
+    ]
+}
+
+fn kind_of_word_total(w: string) -> DeclKind {
+    kind_of_word(w) ?? DeclKind.Builtin
+}
+
+fn same_decl_kind(a: DeclKind, b: DeclKind) -> bool { a == b }
+
+// ── THE REGISTRY ─────────────────────────────────────────────────────
+
+export fn codec_pairs() -> List<CodecCheck> {
+    let ws = codec_workspace()
+    [
+        derived_total(
+            "record.kind_word/kind_of_word",
+            decl_kind_exemplars(),
+            decl_kind_labels(),
+            kind_word,
+            kind_of_word_total,
+            same_decl_kind,
+        ),
+        derived_total(
+            "record.mark_word/mark_of_word",
+            SeatMark.exemplars(),
+            SeatMark.exemplar_labels(),
+            mark_word,
+            mark_of_word,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived_total(
+            "record.annotation_wire/annotation_of_wire",
+            AnnotationFact.exemplars(),
+            AnnotationFact.exemplar_labels(),
+            annotation_wire,
+            annotation_of_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "record.facts_block/facts_unblocked",
+            DeclFacts.exemplars(),
+            DeclFacts.exemplar_labels(),
+            facts_block,
+            facts_unblocked,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "db.encoded_filewitness/decoded_filewitness",
+            FileWitness.exemplars(),
+            FileWitness.exemplar_labels(),
+            encoded_filewitness,
+            decoded_filewitness,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "db.encoded_docfacts/decoded_docfacts",
+            DocFacts.exemplars(),
+            DocFacts.exemplar_labels(),
+            encoded_docfacts,
+            decoded_docfacts,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "witness.encoded_witnessed_check/decoded_witnessed_check",
+            WitnessedCheck.exemplars(),
+            WitnessedCheck.exemplar_labels(),
+            encoded_witnessed_check,
+            decoded_witnessed_check,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "settlement_wire.settled_wire/settled_from_wire",
+            Settled.exemplars(),
+            Settled.exemplar_labels(),
+            settled_wire,
+            settled_from_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "settlement_wire.heap_wire/heap_from_wire",
+            MetaHeap.exemplars(),
+            MetaHeap.exemplar_labels(),
+            heap_wire,
+            heap_from_wire_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived_total(
+            "record.packed/unpacked",
+            packed_exemplars(),
+            packed_labels(),
+            packed,
+            unpacked,
+            same_string_list,
+        ),
+        derived_total(
+            "record.list_field/read_list",
+            list_field_exemplars(),
+            list_field_labels(),
+            list_field,
+            read_list,
+            same_string_list,
+        ),
+        derived_total(
+            "record.doc_wire/doc_of_wire",
+            doc_wire_exemplars(),
+            doc_wire_labels(),
+            doc_wire,
+            doc_of_wire,
+            same_opt_string_list,
+        ),
+        derived_total(
+            "record.annotations_wire/annotations_of_wire",
+            annotations_wire_exemplars(),
+            annotations_wire_labels(),
+            annotations_wire,
+            annotations_of_wire,
+            same_annotation_list,
+        ),
+        derived_total(
+            "interface.type_wire/interface_type",
+            ws.codec_type_exemplars(),
+            type_exemplar_labels(),
+            (t) -> ws.decls.type_wire(t),
+            (w) -> ws.codec_interface_type_total(w),
+            (x, y) -> ws.codec_same_type_shape(x, y),
+        ),
+        derived(
+            "interface.type_wire/settlement_wire.type_from_wire",
+            ws.codec_type_exemplars(),
+            type_exemplar_labels(),
+            (t) -> ws.decls.type_wire(t),
+            (w) -> ws.type_from_wire(w),
+            (x, y) -> ws.codec_same_type_shape(x, y),
+        ),
+        derived(
+            "settlement_wire.wanted_list_wire/wanted_list_from_wire",
+            ws.codec_wanted_batches(),
+            wanted_batch_labels(),
+            (xs) -> ws.wanted_list_wire(xs),
+            (w) -> ws.wanted_list_from_wire(w),
+            (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
+        ),
+        dbrow_check(),
+    ]
+}
