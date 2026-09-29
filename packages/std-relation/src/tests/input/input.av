@@ -1,0 +1,54 @@
+// proves: `@input` stages a value once and holds it, `set_<name>` is the
+// driver's own refresh, an unchanged re-set costs a dependent `@query`
+// no recompute, and a changed one does — even one whose fingerprinted
+// STRUCTURE (a line count) reads the same before and after, the cache
+// attack an early-cutoff hash over the derived answer alone would miss.
+use @std.relation.{query, input}
+use @std.relation.db.{Db, new_db}
+use @std.io.{read_text, write_text, make_dirs, remove, env_or}
+
+@input
+fn file_text(_db: Db, path: string) -> string { read_text(path) catch "" }
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+/// A file's own line count, read through the input alone — never the
+/// disk directly.
+@query
+fn lines(db: Db, path: string) -> int {
+    let r = runs()
+    r.set(r.get() + 1)
+    file_text(db, path).split("\n").length
+}
+
+let dir = "${env_or("TMPDIR", "/tmp")}/avra-input-corpus"
+let _ = make_dirs(dir)
+let path = "${dir}/a.txt"
+let _ = remove(path)
+let _ = write_text(path, "one\ntwo")
+
+let db = new_db()
+let first = lines(db, path)
+let cached = lines(db, path)
+let cached_runs = runs().get()
+
+// the driver re-sets IDENTICAL bytes: no write, no recompute
+set_file_text(db, path, "one\ntwo")
+let restated = lines(db, path)
+let restated_runs = runs().get()
+
+// the driver sets DIFFERENT bytes over the SAME line count — the
+// input's own content hash still catches the edit
+set_file_text(db, path, "one \ntwo")
+let attacked = lines(db, path)
+let attacked_runs = runs().get()
+
+// a genuine structural change
+set_file_text(db, path, "one\ntwo\nthree")
+let grown = lines(db, path)
+let grown_runs = runs().get()
+
+let _ = remove(path)
+let _ = remove(dir)
+
+"${first}${cached}${restated}${attacked}${grown} ${cached_runs}${restated_runs}${attacked_runs}${grown_runs}"

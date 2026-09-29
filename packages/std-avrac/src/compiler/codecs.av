@@ -461,11 +461,71 @@ fn kind_of_word_total(w: string) -> DeclKind {
 
 fn same_decl_kind(a: DeclKind, b: DeclKind) -> bool { a == b }
 
+/// A file's key parts, the root module's empty name and an empty
+/// seen module's among them.
+fn key_parts_exemplars() -> List<KeyParts> {
+    [
+        KeyParts { module: "", path: "src/main.av", text: "t0", runs: [], seen: [] },
+        KeyParts {
+            module: "lib.deep",
+            path: "src/lib/deep/a.av",
+            text: "t1",
+            runs: ["r0", "r1"],
+            seen: [
+                SeenPart { module: "", bytes_key: "b0", files: 1 },
+                SeenPart { module: "io", bytes_key: "b1", files: 0 },
+            ],
+        },
+    ]
+}
+
+fn key_parts_labels() -> List<string> { ["the root module, nothing seen", "a nested module seeing the root"] }
+
+fn same_key_parts(a: KeyParts, b: KeyParts) -> bool {
+    a.module == b.module &&
+        a.path == b.path &&
+        a.text == b.text &&
+        list_eq(a.runs, b.runs, (x: string, y: string) -> x == y) &&
+        list_eq(a.seen, b.seen, same_seen)
+}
+
+fn seen_exemplars() -> List<List<SeenPart>> {
+    [
+        [],
+        [
+            SeenPart { module: "", bytes_key: "b0", files: 0 },
+            SeenPart { module: "io", bytes_key: "b1", files: 3 },
+        ],
+    ]
+}
+
+fn seen_labels() -> List<string> { ["nothing seen", "the root module and one other"] }
+
+fn same_seen_list(a: List<SeenPart>, b: List<SeenPart>) -> bool { list_eq(a, b, same_seen) }
+
+fn same_seen(a: SeenPart, b: SeenPart) -> bool { a.module == b.module && a.bytes_key == b.bytes_key && a.files == b.files }
+
 // ── THE REGISTRY ─────────────────────────────────────────────────────
 
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
+        derived(
+            "record.parts_wire/parts_of",
+            key_parts_exemplars(),
+            key_parts_labels(),
+            parts_wire,
+            parts_of,
+            same_key_parts,
+        ),
+        derived(
+            "record.seen_wire/seen_of",
+            seen_exemplars(),
+            seen_labels(),
+            seen_wire,
+            seen_of,
+            same_seen_list,
+        ),
         derived_total(
             "record.kind_word/kind_of_word",
             decl_kind_exemplars(),

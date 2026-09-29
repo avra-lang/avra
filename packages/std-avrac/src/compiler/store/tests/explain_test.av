@@ -1,4 +1,4 @@
-// `avra explain`'s own logic (compiler/store/explain.av): a witness
+// `avra cache`'s own logic (compiler/store/explain.av): a witness
 // tree over a pack plus a caller-supplied live check, and the pack's own
 // shape grouped by a caller-supplied family — built directly against
 // `Pack` via `pack_at`/`put`/`commit`, never through the CLI.
@@ -15,6 +15,8 @@ use compiler.store.{
     family_groups,
     Held,
     FamilyCount,
+    changed,
+    moved_leaves,
 }
 
 fn explain_dir(name: string) -> string { "/tmp/avra-explain-test/${name}" }
@@ -247,6 +249,70 @@ spec "compiler/store/explain — what depends on a name" {
         then "family_groups files each name under its family, in first-seen order" {
             let gs = family_groups(["alpha.x", "beta.z", "alpha.y", "loose"], stub_family)
             ["${g.family}=${g.names.join("+")}" for g in gs].join(";") == "alpha=alpha.x+alpha.y;beta=beta.z;(other)=loose"
+        }
+    }
+}
+
+spec "compiler/store/explain — what changed under an entry" {
+    given "an entry whose every edge still matches" {
+        then "nothing moved" {
+            let p = pack_at(explain_fresh("changed_none"), "cid")
+            p.put(witness_entry("b", 10, []))
+            p.put(witness_entry("root", 0, [witness_edge("b", 10)]))
+            changed(p, "root", [], no_live).is_empty()
+        }
+    }
+    given "an input that moved under a row that moved because of it" {
+        then "the chain names the row, and the leaf is the input" {
+            let p = pack_at(explain_fresh("changed_chain"), "cid")
+            p.put(witness_entry("src", 7, []))
+            p.put(witness_entry("mid", 20, [witness_edge("src", 5)]))
+            p.put(witness_entry("root", 0, [witness_edge("mid", 10)]))
+            let found = changed(p, "root", [], no_live)
+            let leaves = moved_leaves(found)
+            found.length == 1 &&
+                found[0].name == "mid" &&
+                found[0].recorded_hash == 10 &&
+                found[0].found_hash == 20 &&
+                leaves.length == 1 &&
+                leaves[0].name == "src" &&
+                leaves[0].recorded_hash == 5 &&
+                leaves[0].found_hash == 7
+        }
+    }
+    given "a row that moved while its own edges all match" {
+        then "the row itself is the leaf" {
+            let p = pack_at(explain_fresh("changed_self"), "cid")
+            p.put(witness_entry("src", 7, []))
+            p.put(witness_entry("mid", 20, [witness_edge("src", 7)]))
+            p.put(witness_entry("root", 0, [witness_edge("mid", 10)]))
+            let leaves = moved_leaves(changed(p, "root", [], no_live))
+            leaves.length == 1 && leaves[0].name == "mid"
+        }
+    }
+    given "an edge a live check re-derives" {
+        then "the live hash is what it is judged by" {
+            let p = pack_at(explain_fresh("changed_live"), "cid")
+            p
+                .put(
+                    witness_entry(
+                        "root",
+                        0,
+                        [witness_edge("live-moved", 10), witness_edge("live-held", 10)],
+                    ),
+                )
+            let found = changed(p, "root", [], stub_live)
+            found.length == 1 && found[0].name == "live-moved" && found[0].found_hash == 99
+        }
+    }
+    given "rows that name each other" {
+        then "a name already on the path is not followed again" {
+            let p = pack_at(explain_fresh("changed_cycle"), "cid")
+            p.put(witness_entry("a", 2, [witness_edge("b", 1)]))
+            p.put(witness_entry("b", 2, [witness_edge("a", 1)]))
+            p.put(witness_entry("root", 0, [witness_edge("a", 1)]))
+            let found = changed(p, "root", [], no_live)
+            found.length == 1 && found[0].under.length == 1 && found[0].under[0].under.is_empty()
         }
     }
 }
