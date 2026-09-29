@@ -23,8 +23,8 @@
 //! answer null for exactly the fns the edge exists to reach.
 use core.{
     DeclId,
+    Expr,
     ExprId,
-    ExprKind,
     StmtId,
     TypeId,
     TypeRef,
@@ -259,11 +259,17 @@ fn fail_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
     [v for v in fail_values(store) if v.index >= lo && v.index < hi]
 }
 
+/// `Propagate`'s own tag — `tag_expr` reads only the variant, so the
+/// payload here is a placeholder never inspected.
+fn propagate_tag(store: NodeStore) -> int {
+    store.tag_expr(Expr.Propagate(ExprId { index: 0 }))
+}
+
 /// M5b PREP (COMPILER DB townhall §6.11): a bucket lookup over the
 /// `Expr` arena relation's `@index kind`, scoped to the decl's own
 /// `@index decl` range — never a hand-matched sweep of every node.
 fn propagate_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
-    flatten([propagate_value(store, e) for e in store.exprs_by_kind(lo, hi, ExprKind.Propagate)])
+    flatten([propagate_value(store, e) for e in store.exprs_by_kind(lo, hi, propagate_tag(store))])
 }
 
 fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
