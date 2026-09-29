@@ -1774,6 +1774,29 @@ test_linux_gate_runs_warm() {
     fi
 }
 
+# A landing that reached the compiler leaves main's checkout holding the
+# landing's compiler and runtime; one that did not leaves main's alone;
+# a process running main's old binary keeps its file.
+test_refresh_main_compiler() {
+    src="$scratch/refresh-src"
+    dst="$scratch/refresh-dst"
+    rm -rf "$src" "$dst"
+    mkdir -p "$src/build" "$dst/build"
+    printf 'new\n' > "$src/build/avra"
+    chmod +x "$src/build/avra"
+    printf 'newlib\n' > "$src/build/libavra_runtime.a"
+    printf 'old\n' > "$dst/build/avra"
+    exec 9< "$dst/build/avra"
+    out="$(compiler_changed=0 sh "$land" --call refresh_main_compiler "$src" "$dst" 2>&1)"
+    if [ "$(cat "$dst/build/avra")" = old ] && [ -z "$out" ]; then ok "refresh: a landing that reached no compiler leaves main's alone"; else bad "refresh: moved main's compiler with compiler_changed=0 ($out)"; fi
+    out="$(compiler_changed=1 sh "$land" --call refresh_main_compiler "$src" "$dst" 2>&1)"
+    if [ "$(cat "$dst/build/avra")" = new ] && [ "$(cat "$dst/build/libavra_runtime.a")" = newlib ]; then ok "refresh: main's compiler and runtime are the landing's"; else bad "refresh: main's compiler was not replaced"; fi
+    case "$out" in *"refreshed main's compiler"*) ok "refresh: the refresh announces itself" ;; *) bad "refresh: silent ($out)" ;; esac
+    if [ "$(cat <&9)" = old ]; then ok "refresh: an open reader of the old binary keeps its file"; else bad "refresh: the old binary was overwritten in place"; fi
+    exec 9<&-
+    if [ -x "$dst/build/avra" ]; then ok "refresh: the new compiler stays executable"; else bad "refresh: the new compiler lost its mode"; fi
+}
+
 # The Sprite's cap, unpinned, is what its MemAvailable holds per suite,
 # between 1 and 4; an unreadable meminfo runs one suite at a time.
 test_linux_gate_cap_reads_memory() {
@@ -2296,6 +2319,7 @@ run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
+run_test test_refresh_main_compiler
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
