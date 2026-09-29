@@ -76,9 +76,10 @@ fn same_key(a: IndexKey, b: IndexKey) -> bool {
 /// the revision it was last read in, by whom (-1: never).
 type Bucket = { members: Cell<List<int>>, hash: Cell<int>, read: ReadMark }
 
-/// When a cell was last read, and the reader's token — revision -1 never;
-/// two cells written in place, so a read allocates nothing.
-type ReadMark = { revision: Cell<int>, reader: Cell<int> }
+/// When a cell was last read, the reader's token, and the frame that read
+/// it (its owner cell and run) — revision -1 never; cells written in
+/// place, so a read allocates nothing.
+type ReadMark = { revision: Cell<int>, reader: Cell<int>, owner: Cell<int>, run: Cell<int> }
 
 /// Who wrote a row: the query cell that owns it and which of its runs —
 /// owner 0 is no query.
@@ -87,15 +88,28 @@ export type Stamp = { owner: int, run: int }
 export const unowned: Stamp = Stamp { owner: 0, run: 0 }
 
 /// A cell never read.
-fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(0) } }
+fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(0), owner: Cell.new(0), run: Cell.new(0) } }
 
 impl ReadMark {
     /// A read in `revision` by `reader`, written in place — and only
     /// while a revision is live, the one time the late-write law asks.
-    fn mark(revision: int, reader: int) {
+    fn mark(revision: int, reader: int, owner: int, run: int) {
         if revision < 0 { return }
         self.revision.set(revision)
         self.reader.set(reader)
+        self.owner.set(owner)
+        self.run.set(run)
+    }
+
+    /// Whether this frame already read here in `revision` — its edge
+    /// stands, so a repeat records nothing new. A frame is its OWN owner
+    /// and run: a nested frame's read never stands for its caller's.
+    fn read_by(revision: int, owner: int, run: int) -> bool {
+        revision >= 0 &&
+            owner != 0 &&
+            self.revision.get() == revision &&
+            self.owner.get() == owner &&
+            self.run.get() == run
     }
 }
 
@@ -201,16 +215,25 @@ impl Rows<R> {
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
         if db.unheard() { return b }
-        let reader = db.read(self.family.get(), b + 1)
-        self.buckets.get()[b].read.mark(db.revision(), reader)
+        self.recorded_at(db, b + 1, self.buckets.get()[b].read)
         b
     }
 
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
         if db.unheard() { return }
-        let reader = db.read(self.family.get(), 0)
-        self.read.mark(db.revision(), reader)
+        self.recorded_at(db, 0, self.read)
+    }
+
+    /// Cell `cell` read under `db`, told to the owner once per frame per
+    /// revision: a repeat by the frame whose read already stands is free.
+    fn recorded_at(db: Db, cell: int, mark: ReadMark) {
+        let now = db.revision()
+        let f = db.frame()
+        let owner = f?.owner ?? 0
+        let run = f?.run ?? 0
+        if mark.read_by(now, owner, run) { return }
+        mark.mark(now, db.read(self.family.get(), cell), owner, run)
     }
 
     /// A key's bucket read under `db` — opened when absent, so a row filed

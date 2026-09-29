@@ -247,7 +247,12 @@ impl Workspace {
         )
     }
 
-    /// A module's exported declarations, in file and declaration order.
+    /// A module's WRITTEN exported declarations, in file and declaration
+    /// order — `items`, never `expanded`: eagerly expanding every
+    /// annotated file of every module a `use` line ever names would pay
+    /// each derive's comptime run again on every cache miss `surface`'s
+    /// own coarse key (by `packages().length`) invites, for a name
+    /// nothing ever asks for. `surface`'s map is this alone.
     fn exported_decls(m: ModulePath) -> List<Decl> {
         [self.decl_at(id) for id in flatten([self.items(self.file_id(f)) for f in self.module_files(m)]) if self.is_exported(id)]
     }
@@ -256,7 +261,8 @@ impl Workspace {
         self.decl_at(id).exported
     }
 
-    /// A module's exported names.
+    /// A module's exported names, WRITTEN ones only — the fast, eager
+    /// map every `use` line reads first.
     fn surface(m: ModulePath) -> Map<string, DeclId> {
         let slot = "${self.packages().length}\t${m.text()}"
         let known: Map<string, DeclId>? = self.surfaces.get().get(slot)
@@ -265,6 +271,36 @@ impl Workspace {
         for d in self.exported_decls(m) { out.set(d.name, d.id) }
         self.surfaces.put(slot, out)
         out
+    }
+
+    /// A GENERATED export, asked only once the written surface has
+    /// missed: a derive's own top-level type or fn (`${t}Key`) is
+    /// invisible to `items` (`expanded` mints it under its own family,
+    /// after the file's directives have run), and expanding a whole
+    /// module to answer one name is the two-tier lookup's own shape —
+    /// `generated_named` does the same for a name used inside the file
+    /// that made it; this is that door for a name reached from another
+    /// package. A HELD file never expands (its record already carries
+    /// its generated declarations whole — `methods`'s own guard, one
+    /// door over) and a file with no annotation at all cannot have
+    /// made one, so both are skipped before `expanded` runs.
+    fn generated_export(m: ModulePath, item: string) -> DeclId? {
+        let found? = self.generated_exported_decls(m).find((d: Decl) -> d.name == item) else { return null }
+        found.id
+    }
+
+    /// Every GENERATED export a module's files answer — the `not_exported`
+    /// help's other half, read only while composing that message.
+    fn generated_exported_decls(m: ModulePath) -> List<Decl> {
+        [self.decl_at(id) for id in flatten([self.expanded_exports(self.file_id(f)) for f in self.module_files(m)])]
+    }
+
+    /// A file's own generated, exported declarations — empty without a
+    /// parse for a file that carries no annotation, and empty outright
+    /// for a held one.
+    fn expanded_exports(f: FileId) -> List<DeclId> {
+        if self.is_held(f) || !(self.has_declares(f) || self.has_marks(f)) { return [] }
+        [d for d in self.expanded(f) if self.is_exported(d)]
     }
 
     /// One `use a.b.{x, y}`: a package root must exist, a named package
@@ -290,7 +326,7 @@ impl Workspace {
         mut diags: List<Diag> = []
         mut listed: List<string> = []
         for j, item in u.items {
-            let id: DeclId? = surf.get(item)
+            let id: DeclId? = surf.get(item) ?? self.generated_export(m, item)
             if listed.contains(item) {
                 diags.push(listed_twice(at, item))
             } else if id == null {
@@ -311,7 +347,11 @@ impl Workspace {
             self.host.exists(m.file_under(pkg!.src))
     }
 
+    /// Written names, then generated ones — the `not_exported` help's
+    /// own list, so a mistyped item still sees a derive's own export
+    /// named beside the rest.
     fn exported_names(m: ModulePath) -> List<string> {
         [d.name for d in self.exported_decls(m)]
+            .concat([d.name for d in self.generated_exported_decls(m)])
     }
 }
