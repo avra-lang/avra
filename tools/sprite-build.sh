@@ -18,16 +18,18 @@
 # packages/cli and the std packages its `use` graph actually reaches —
 # never every packages/std-*, and never a package's tests/, which
 # `avra build` never reads), lives under /home/sprite/avra-compilers/
-# <hash>/. Before the caller's command runs, a stale or missing
-# build/avra is restored from that cache when a matching entry exists;
-# after the command, a build/avra the cache does not yet hold is
-# advanced and stored. THE FIXED-POINT INVARIANT: only a compiler
-# built by `make avra` run twice more from whatever the command leaves
-# behind — the same two-generation climb `make bootstrap`'s gen-2
-# takes from the seed — is cached; a binary that fails either build is
-# never stored. Not verified by diffing the binary: this toolchain's
-# linker embeds a build id that differs between two builds of the same
-# source, so byte equality would refuse a real fixed point.
+# <hash>/. A stale or missing build/avra is restored from that cache,
+# or — when this exact hash was never cached — ADVANCED AND CACHED,
+# BEFORE the caller's command runs: a stale build/avra already on disk
+# would otherwise pass the caller's own `test -x build/avra` and the
+# command would test the PREVIOUS compiler. THE FIXED-POINT INVARIANT:
+# only a compiler built by `make avra` run twice more (or `make
+# bootstrap` from nothing) — the same two-generation climb `make
+# bootstrap`'s gen-2 takes from the seed — is cached; a binary that
+# fails either build is never stored. Not verified by diffing the
+# binary: this toolchain's linker embeds a build id that differs
+# between two builds of the same source, so byte equality would refuse
+# a real fixed point.
 #
 # The command runs in the synced tree and its exit status comes
 # straight back; a --receipt is written for the CALLER's worktree,
@@ -229,44 +231,33 @@ if [ "$do_restore" = 1 ]; then
     fi
 fi
 
-if [ "$do_prebuild" = 1 ]; then
-    test -x build/avra || make avra
-fi
-
-# THE TIMED RUN: the caller's own command, isolated from our own
-# bookkeeping below — nothing past this point writes to its stdout or
-# stderr.
-set +e
-start=$(date +%s.%N)
-"$@"
-status=$?
-end=$(date +%s.%N)
-set -e
-wall=$(awk -v a="$start" -v b="$end" 'BEGIN{printf "%.1f", b-a}')
-
 # ONLY A FIXED POINT IS CACHED: `make bootstrap` reaches gen-2 by
 # recovering from the seed and then running `make avra` twice, so
-# running `make avra` twice more from WHATEVER build/avra the command
-# leaves behind reaches the same generation relative to the current
-# source — the first pass compiles the new source with a compiler that
-# may still be one generation behind it, the second compiles it with a
-# compiler that already reflects it. Attempted regardless of the
-# command's own exit status — a compiler earlier in the chain may be
-# good even when a later test step is not.
-# NOT VERIFIED BY DIFFING THE BINARY: this toolchain's linker embeds a
-# build id (or similar) that differs byte-for-byte between two
-# otherwise-identical builds — confirmed by building an unchanged tree
-# twice and comparing, same length, first difference at byte 321 — so
-# byte equality is a false negative here, not a stronger check.
-store_result=none
-if [ "$do_store" = 1 ] && [ -x build/avra ]; then
+# running `make avra` twice more from an EXISTING build/avra reaches
+# the same generation relative to the current source — the first pass
+# compiles the new source with a compiler that may still be one
+# generation behind it, the second compiles it with a compiler that
+# already reflects it. With no build/avra at all, `make bootstrap` is
+# that same climb from the seed. NOT VERIFIED BY DIFFING THE BINARY:
+# this toolchain's linker embeds a build id (or similar) that differs
+# byte-for-byte between two otherwise-identical builds — confirmed by
+# building an unchanged tree twice and comparing, same length, first
+# difference at byte 321 — so byte equality is a false negative here,
+# not a stronger check.
+advance_and_cache() {
     set +e
-    make -s avra > "/tmp/.avra-fplog-$$" 2>&1
-    mk1=$?
-    make -s avra >> "/tmp/.avra-fplog-$$" 2>&1
-    mk2=$?
+    if [ -x build/avra ]; then
+        make -s avra > "/tmp/.avra-adv-$$" 2>&1
+        a1=$?
+        make -s avra >> "/tmp/.avra-adv-$$" 2>&1
+        a2=$?
+    else
+        make bootstrap > "/tmp/.avra-adv-$$" 2>&1
+        a1=$?
+        a2=$a1
+    fi
     set -e
-    if [ "$mk1" = 0 ] && [ "$mk2" = 0 ]; then
+    if [ "$a1" = 0 ] && [ "$a2" = 0 ] && [ -x build/avra ]; then
         cache="/home/sprite/avra-compilers/$chash"
         tmp="/home/sprite/avra-compilers/.tmp-$chash-$$"
         rm -rf "$tmp"
@@ -282,7 +273,41 @@ if [ "$do_store" = 1 ] && [ -x build/avra ]; then
     else
         store_result=unverified
     fi
-    rm -f "/tmp/.avra-fplog-$$"
+    rm -f "/tmp/.avra-adv-$$"
+}
+
+# THE COMMAND MUST RUN ON THE COMPILER IT IS TESTING: a hash the cache
+# does not hold yet is advanced and cached BEFORE the timed run, not
+# after — a `build/avra` already on disk from a stale hash would
+# otherwise pass `test -x build/avra` in the caller's own command and
+# the command would run on the PREVIOUS compiler.
+store_result=none
+if [ "$do_store" = 1 ]; then
+    advance_and_cache
+fi
+
+if [ "$do_prebuild" = 1 ]; then
+    test -x build/avra || make avra
+fi
+
+# THE TIMED RUN: the caller's own command, isolated from our own
+# bookkeeping below — nothing past this point writes to its stdout or
+# stderr.
+set +e
+start=$(date +%s.%N)
+"$@"
+status=$?
+end=$(date +%s.%N)
+set -e
+wall=$(awk -v a="$start" -v b="$end" 'BEGIN{printf "%.1f", b-a}')
+
+# A SECOND ATTEMPT ONLY COVERS A COMMAND THAT BUILT THE COMPILER
+# ITSELF: the pre-command advance above already cached this hash on
+# the ordinary path, so this runs only when that attempt failed and
+# the caller's own command (its own `make bootstrap` fallback, say)
+# leaves a build/avra the cache still does not hold.
+if [ "$do_store" = 1 ] && [ "$store_result" != built ] && [ -x build/avra ]; then
+    advance_and_cache
 fi
 
 {
