@@ -1420,7 +1420,9 @@ impl Workspace {
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
         visible_of(
-            self.relation(Family.Visible).finish(f.index, DbRow.Visible(out), namespace_fp(out)),
+            self
+                .relation(Family.Visible)
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r))),
         )
     }
 
@@ -1475,7 +1477,9 @@ impl Workspace {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
         resolved_of(
-            self.relation(Family.Resolved).finish(f.index, DbRow.Resolved(out), name_facts_fp(out)),
+            self
+                .relation(Family.Resolved)
+                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
         )
     }
 
@@ -1729,7 +1733,11 @@ impl Workspace {
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
-        typed_of(self.relation(Family.Typed).finish(d.index, DbRow.Typed(out), type_facts_fp(out)))
+        typed_of(
+            self
+                .relation(Family.Typed)
+                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r))),
+        )
     }
 
     /// A file's bodies as one table: Main's facts first (its range
@@ -1754,24 +1762,31 @@ impl Workspace {
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
-        // DERIVED: `folded_facts` is entirely `absorb`ed from each
-        // body's own `typed(d)`, already asked above — so its own
-        // fingerprints, in the same order, are folded content, never
-        // re-walked. An unchanged fold cuts the wave off here exactly
-        // when every one of them did (CLAUDE.md, "the key a
-        // remembered value settles on and the name its result is
-        // stored under are one derivation").
+        // DERIVED, AND LAZY: `folded_facts` is entirely `absorb`ed
+        // from each body's own `typed(d)`, already asked above — so
+        // its own fingerprints, in the same order, are folded
+        // content, never re-walked. LAZY because reading them back
+        // through `value_hash_of` would otherwise force every one of
+        // those folds on every cold compile, the moment this file's
+        // Folded settles — this closure runs only when `Folded`
+        // ITSELF has a prior settle to compare against
+        // (query/kernel.av's `settle_lazy`), so on a cold compile,
+        // where Folded's own settle is always its first, nothing
+        // here ever runs (CLAUDE.md, "the key a remembered value
+        // settles on and the name its result is stored under are
+        // one derivation").
+        let ws = self
         folded_of(
             self
                 .relation(Family.Folded)
-                .finish(
+                .finish_lazy(
                     f.index,
                     DbRow.Folded(folded_facts),
-                    fp(
+                    (r: DbRow) -> fp(
                         122,
                         [
                             fp_list(
-                                [self.db.value_hash_of(key(Family.Typed, d.index)) ?? 0 for d in bodies],
+                                [dep_hash_fp(ws.db.value_hash_of(key(Family.Typed, d.index))) for d in bodies],
                             ),
                         ],
                     ),

@@ -33,7 +33,12 @@ export enum Verdict {
 /// revisions it last CHANGED and was last VERIFIED, and its answer's
 /// hash. The last-reader stamp `record_dep` dedupes against lives
 /// apart, in `KernelState.stamps` — a repeat read never touches this.
-type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+/// `value_hash` is NULL for a cell `settle_lazy` wrote whose fold was
+/// never asked — its OWN state, never a sentinel a real fold could
+/// equal (CLAUDE.md, "an encoding spends the empty value"): the
+/// common case, since a key's first-ever settle has no prior to
+/// compare against and nobody asks a fold to be thrown away unread.
+type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int? }
 
 /// A fresh cell for an input: no deps, changed and verified as of
 /// `rev` alike (it was just set, so this revision is both).
@@ -385,7 +390,13 @@ impl Kernel {
     }
 
     /// A settled cell's own value hash — an edge's other half, read
-    /// back once the dep it names has itself settled.
+    /// back once the dep it names has itself settled. NULL both for
+    /// no cell at all and for one `settle_lazy` wrote whose fold was
+    /// never asked — a reader that must tell those apart has no
+    /// business forcing a fold nothing else needed; a reader that
+    /// only composes this into ANOTHER fold should fold the absence
+    /// itself as one more part (the arity law), never coalesce it
+    /// into a plain int a real hash could also answer.
     fn value_hash_of(key: Key) -> int? {
         state_cell(self.snapshot(), key)?.value_hash
     }
@@ -430,6 +441,59 @@ impl Kernel {
             if self.audit.on.get() { self.judged() }
             return
         }
+        let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
+        write_cell(
+            s,
+            key,
+            QueryCell {
+                deps: deps,
+                changed_at: changed,
+                verified_at: state_revision(s),
+                value_hash: value_hash,
+            },
+        )
+        self.replace(s)
+        if self.audit.on.get() { self.judged() }
+    }
+
+    /// Like `settle`, but `fingerprint` is called AT MOST ONCE, and
+    /// only when a PRIOR cell stands to compare it against — a fresh
+    /// key (every key, on a cold compile: nothing has ever settled
+    /// it before) costs nothing, since there is nothing yet to cut
+    /// off against. A prior cell whose OWN hash was never asked (its
+    /// one and only settle before this one, the same fresh case one
+    /// key up) reads as unknown and this settle answers changed —
+    /// conservative, never wrong, and the last imprecise transition:
+    /// the hash THIS settle writes is always real, so every
+    /// comparison after it is exact. `avra-8sb5.57.106`: the six
+    /// families this backs no longer force a fold nothing asks for.
+    fn settle_lazy(key: Key, fingerprint: fn() -> int) {
+        mut s = self.snapshot()
+        let deps: List<Key> = s.pending.pop().get()
+        let restored: Cell<List<Restore>>? = s.restore.pop()
+        let _ = s.open.pop()
+        let _ = s.reading.pop()
+        mut fl = self.frame_last.get()
+        let _ = fl.pop()
+        let _ = fl.pop()
+        self.frame_last.set(fl)
+        if restored != null { for r in restored!.get() { restore_one(s, r) } }
+        let prior? = state_cell(s, key) else {
+            write_cell(
+                s,
+                key,
+                QueryCell {
+                    deps: deps,
+                    changed_at: state_revision(s),
+                    verified_at: state_revision(s),
+                    value_hash: null,
+                },
+            )
+            self.replace(s)
+            if self.audit.on.get() { self.judged() }
+            return
+        }
+        let value_hash = fingerprint()
         let changed = if prior.value_hash == value_hash { prior.changed_at } else { state_revision(s) }
         write_cell(
             s,

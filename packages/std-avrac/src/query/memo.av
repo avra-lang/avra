@@ -84,6 +84,13 @@ impl Relation {
         self.settle(arg, value, fingerprint)
     }
 
+    /// `finish`'s lazy twin: `fingerprint` folds `value` only when the
+    /// kernel finds a prior settle to compare it against — never on a
+    /// key's first-ever settle, the common case on a cold compile.
+    fn finish_lazy(arg: int, value: T, fingerprint: fn(T) -> int) -> T {
+        self.settle_lazy(arg, value, fingerprint)
+    }
+
     fn begin(arg: int) { self.kernel.begin(self.query_key(arg)) }
 
     /// Whether the query at `arg` is in flight — asked by a query that
@@ -101,6 +108,18 @@ impl Relation {
         self.kernel.settle(self.query_key(arg), fingerprint)
         self.values.keep(arg, value)
         if traced() { qtrace("Q\tsettle\t${self.family}\t${arg}\t${fingerprint}\n") }
+        value
+    }
+
+    /// `settle`'s lazy twin: `fingerprint` runs at most once, only
+    /// when the kernel's own cell already stands (query/kernel.av's
+    /// `settle_lazy`) — traced by reading the hash back rather than
+    /// by holding what `fingerprint` answered, since it may never run.
+    fn settle_lazy(arg: int, value: T, fingerprint: fn(T) -> int) -> T {
+        let key = self.query_key(arg)
+        self.kernel.settle_lazy(key, () -> fingerprint(value))
+        self.values.keep(arg, value)
+        if traced() { qtrace("Q\tsettle\t${self.family}\t${arg}\t${self.kernel.value_hash_of(key) ?? -1}\n") }
         value
     }
 
