@@ -294,12 +294,21 @@ impl TypeCx {
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
-        let ptypes = self.typed_seats(s, fparams, null)
-        self.view.decls.record_seat_types(self.decl_of(s), ptypes)
+        let d = self.decl_of(s)
+        // `seat_types_so_far`, never `seats`: this IS the natural signing —
+        // triggering the hook here would ask it of an extern too (declare_fn
+        // routes both through this one fn), and the hook derives params by
+        // walking the STATEMENT structurally, which does not know an
+        // extern's shape the way this fn's own `fparams` argument already
+        // does (widthless-adjusted, from declare_fn). Reuse failures.av's
+        // early ask if it beat this fn here; otherwise type them now, from
+        // the argument this fn was handed, and record for that early asker.
+        let ptypes = self.view.decls.seat_types_so_far(d) ?? self.typed_seats(s, fparams, null)
+        self.view.decls.record_seat_types(d, ptypes)
         let rt = self.answer_type(s, owner, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
-        self.view.decls.record_seats(self.decl_of(s), [pp.promises for pp in seats])
+        self.view.decls.record_seats(d, [pp.promises for pp in seats])
         self.keep_boxed(seats, ptypes)
         self.declare(s, DeclSig.Fn(sig))
     }

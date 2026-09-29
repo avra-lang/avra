@@ -3,7 +3,19 @@
 //! target (the receiver typed as the target at seat 0), the impl-for
 //! contract (every trait method, exactly, nothing beyond), the orphan
 //! rule, and the voices these laws speak.
-use core.{StmtId, ExprId, TypeId, DeclId, FnParts, ImplParts, Type, TypeRef, filled, same_decl, Param}
+use core.{
+    StmtId,
+    ExprId,
+    TypeId,
+    DeclId,
+    FnParts,
+    ImplParts,
+    Type,
+    TypeRef,
+    filled,
+    same_decl,
+    Param,
+}
 use core.{SeatMark, plain_mark}
 use diagnostics.{refusal, warning}
 use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig, method_row, property_row}
@@ -21,7 +33,7 @@ impl TypeCx {
         // scope for it, so a signature naming `Self` does not resolve.
         if self.view.store.is_static(f) {
             self.record_receiver_word(f, [])
-            self.seated_answer(f, self.typed_seats(f, fp.params, null), fp.name, fp.ret)
+            self.seated_answer(f, fp.params, null, fp.name, fp.ret)
             // A BODIED ASSOCIATED FN IS ONE DEFINITION FOR THE WHOLE
             // TRAIT, never per-signatory, so it is a method of the
             // trait's OWN name — `Foo.make(…)`, no implementor in
@@ -33,7 +45,7 @@ impl TypeCx {
         self.record_receiver_word(f, [plain_mark])
         // `Self` is in scope for the sig's annotations
         self.enter_target_scope(contract)
-        self.seated_answer(f, self.typed_seats(f, fp.params, self.impl_self_type(contract)), fp.name, fp.ret)
+        self.seated_answer(f, fp.params, self.impl_self_type(contract), fp.name, fp.ret)
         self.leave_tscope()
     }
 
@@ -304,8 +316,14 @@ impl TypeCx {
     /// A fn's typed seats recorded, then its answer typed and the whole signature
     /// declared — the ONE spelling every seat-declaring site shares (the literal
     /// three of them wrote alike, compiler.duplicated_literal's own finding).
-    fn seated_answer(f: StmtId, ptypes: List<TypeId>, name: string, ret: TypeRef) {
-        self.view.decls.record_seat_types(self.decl_of(f), ptypes)
+    /// `seat_types_so_far`, never `seats`: this IS the natural signing (a method
+    /// or trait member is never an extern, so `params`/`receiver` already say
+    /// everything `typed_seats` needs — no structural re-derivation wanted).
+    /// Reuses failures.av's early ask if it beat this fn here.
+    fn seated_answer(f: StmtId, params: List<Param>, receiver: TypeId?, name: string, ret: TypeRef) {
+        let d = self.decl_of(f)
+        let ptypes = self.view.decls.seat_types_so_far(d) ?? self.typed_seats(f, params, receiver)
+        self.view.decls.record_seat_types(d, ptypes)
         self.declare(f, DeclSig.Fn(FnSig { params: ptypes, ret: self.answer_type(f, name, ret) }))
     }
 
@@ -317,7 +335,7 @@ impl TypeCx {
         // params both start at the written seats.
         let receiverless = self.view.store.is_static(f)
         self.record_receiver_word(f, if receiverless { [] } else { [plain_mark] })
-        self.seated_answer(f, self.typed_seats(f, fp.params, if receiverless { null } else { ty }), fp.name, fp.ret)
+        self.seated_answer(f, fp.params, if receiverless { null } else { ty }, fp.name, fp.ret)
     }
 
     /// THE RECEIVER'S CONTRACT, judged once the body is typed: a
