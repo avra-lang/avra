@@ -440,6 +440,13 @@ steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || { fails=$((fails+1)); echo "
 rw_held=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check held on a check's rows speaks otherwise than a cold check"; }
 
+# A CHECK THAT HOLDS SOME FILES AND READS OTHERS AFTER A BUILD: the held ones
+# with no rule row are read again (a miss), and the check stands.
+rm -rf .avra-cache; lib_cold=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
+rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/null 2>&1
+lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

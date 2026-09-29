@@ -278,9 +278,15 @@ impl Workspace {
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
         if !s.has(Stored.Warn, said_key(okey)) || !s.has(Stored.Unit, self.asks_key(okey)) { return false }
+        want is .Diagnostics || s.has(Stored.Obj, okey)
+    }
+
+    /// The held files a diagnostics want must read after all: the ones whose
+    /// rule findings were never kept, since only a check keeps them.
+    fn unruled(store: Store, want: Want) -> List<string> {
         match want {
-            .Diagnostics -> s.has(Stored.Warn, rules_key(okey)),
-            .Binary -> s.has(Stored.Obj, okey),
+            .Diagnostics -> [path for path in held_paths(self) if !store.has(Stored.Warn, rules_key(self.held_okey(store, path)))],
+            .Binary -> [],
         }
     }
 
@@ -307,6 +313,7 @@ impl Workspace {
     fn tried(at: Attempt) -> Result<Derived, Turn> {
         mut clock = self.marking()
         let store = self.holding(at)?
+        at.having_read(self.unruled(store, at.want))?
         clock.mark("load")
         self.admit_all()
         clock.mark("admit")
