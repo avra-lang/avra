@@ -49,6 +49,7 @@ use core.{
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use @std.relation.db.{Db, new_db}
+use @std.relation.rows.{Rows}
 use core.{
     Fingerprint,
     Exemplar,
@@ -398,6 +399,18 @@ export type Decls = {
     /// bounds (length 0)" in the whole-package suite. `record_kernel` above already
     /// pays this; `decl_rows` pays it the same way.
     decl_rows: Cell<Db>,
+    /// `File`/`Module`'s own rows, pinned once at construction — a
+    /// `Cell`, `decl_rows`'s own reason: `Rows<T>` is not itself
+    /// `@identity`, and an `@identity` type's field must be a `Cell` or
+    /// another `@identity` (`type.identity_field`;
+    /// compiler/tests/file_module_relation_test.av's pinned-handle spec
+    /// is the witness that the pin still sees a row inserted after it
+    /// was taken). `file(f)`/`module_name(m)` read through these
+    /// directly, unrecorded: the kernel records a query's dependency on
+    /// `File`/`Module`, never a by-id fetch, so the hand-table read
+    /// this replaces recorded nothing either.
+    file_rows: Cell<Rows<File>>,
+    module_rows: Cell<Rows<Module>>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
     rows_state: Cell<List<int>>,
@@ -584,6 +597,7 @@ export fn new_decls() -> Decls {
     let no_written_seats: List<Cell<List<bool>>> = []
     let empty_consumed: List<List<bool>?> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
+    let db = new_db()
     let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
@@ -597,7 +611,9 @@ export fn new_decls() -> Decls {
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
         record_kernel: Cell.new(new_kernel()),
-        decl_rows: Cell.new(new_db()),
+        decl_rows: Cell.new(db),
+        file_rows: Cell.new(File.rows_in(db)),
+        module_rows: Cell.new(Module.rows_in(db)),
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         rows_state: list_cell(),
@@ -758,7 +774,7 @@ impl Decls {
 
     /// Every file of a module, once its held rows are minted.
     fn note_module_rows(m: ModuleId, state: int) {
-        for f in self.module_files.get()[m.index].get() { self.note_rows(f, state) }
+        for f in self.files_of_module(m) { self.note_rows(f, state) }
     }
 
     /// A generated declaration's origin, or null for a written one.
@@ -1126,7 +1142,8 @@ impl Decls {
         let key = "${pkg}.${name}"
         let known: DeclId? = self.meta_ids.get().get(key)
         if known != null { return known }
-        let ms = [ModuleId { index: j } for j, m in self.modules.get() if self.package_named(m) == pkg]
+        let modules = Module.all(self.decl_rows.get())
+        let ms = [r.id for r in modules if self.package_named(r.name) == pkg]
         let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
         let found: DeclId? = ds
             .find(
@@ -1141,9 +1158,7 @@ impl Decls {
 
     /// One module's own declarations, across its files.
     fn module_decls(m: ModuleId) -> List<DeclId> {
-        flatten(
-            [self.file_decls.get()[f.index].get() for f in self.module_files.get()[m.index].get()],
-        )
+        flatten([self.file_decls.get()[f.index].get() for f in self.files_of_module(m)])
     }
 
     /// Whether a declaration IS `@std/meta`'s export of `name` — by
@@ -1997,7 +2012,7 @@ impl Decls {
         let prov? = self.template_provenance(d) else { return self.decl(d).file }
         let loc? = prov.template else { return self.decl(d).file }
         let path? = loc.file else { return self.decl(d).file }
-        self.paths.get().get(path) ?? self.decl(d).file
+        self.known_file_id(path) ?? self.decl(d).file
     }
 
     /// `d`'s own provenance, or its nearest ancestor's. `note_provenance`

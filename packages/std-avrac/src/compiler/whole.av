@@ -61,8 +61,8 @@ impl Workspace {
     fn each_open_file(act: fn(FileId) -> void) -> List<FileId> {
         mut out: List<FileId> = []
         mut i = 0
-        while i < self.decls.files.get().length {
-            let fi = self.decls.files.get()[i]
+        while i < self.decls.file_count() {
+            let fi = self.decls.file(file_at(i))
             if !self.is_held(fi.id) {
                 act(fi.id)
                 out.push(fi.id)
@@ -107,7 +107,7 @@ impl Workspace {
 
     /// Every case of every file, in file and declaration order.
     fn cases() -> List<TestCase> {
-        flatten([self.file_cases(fi.id) for fi in self.decls.files.get()])
+        flatten([self.file_cases(fi.id) for fi in self.decls.all_files()])
     }
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
@@ -124,9 +124,10 @@ impl Workspace {
     /// module's type, so every name must exist before any held shape is filled.
     fn admit_all() {
         mut i = 0
-        while i < self.decls.files.get().length {
+        while i < self.decls.file_count() {
+            let id = file_at(i)
             // a held file's declarations are minted when something reads them
-            if !self.is_held(self.decls.files.get()[i].id) { let _ = self.items(self.decls.files.get()[i].id) }
+            if !self.is_held(id) { let _ = self.items(id) }
             i = i + 1
         }
     }
