@@ -1116,6 +1116,18 @@ unlogged() {
     if grep -q "$2" "$scratch/$1.out"; then bad "$3"; cat "$scratch/$1.out"; else ok "$3"; fi
 }
 
+test_failed_run_restores_the_seed() {
+    d="$(batch_repo seed-restore)"
+    printf 'regenerated\n' > "$d/bootstrap/seed.ll"
+    sh "$land" --call restore_generated "$d" > "$scratch/seed-restore.out" 2>&1
+    if git -C "$d" diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources; then
+        ok "restore: a failed run's stranded seed is restored in the branch tree"
+    else
+        bad "restore: a failed run left its regenerated seed in the branch tree"
+    fi
+    if grep -q "restored the seed" "$scratch/seed-restore.out"; then ok "restore: says what it restored"; else bad "restore: restored silently"; fi
+}
+
 test_scratch_lifecycle() {
     d="$(batch_repo lifecycle)"
     git -C "$d" checkout -q -b dc main
@@ -1872,6 +1884,7 @@ run_test test_run_checks_jobs_cap
 run_test test_run_checks_slash_label
 run_test test_job_wait_fails_closed_on_killed_job
 run_test test_compiler_untouched_skips_second_build_and_seedcheck
+run_test test_failed_run_restores_the_seed
 run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
 run_test test_timeline_lines_present
