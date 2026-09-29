@@ -254,7 +254,7 @@ fn seen_part(text: string) -> string {
 /// `mut cache` is what lets its write land in the caller's map. NOT for a
 /// `make` that itself needs a `mut` seat on the value the cache lives in — a
 /// lambda's capture is a copy, and a copy cannot fill a `mut` seat (F2048);
-/// `bytes_key_cached`/`obj_key_cached`/`view_key` below stay hand-written.
+/// `bytes_key_cached`/`obj_key_cached`/`view_parts` below stay hand-written.
 fn memoized<T>(mut cache: Map<string, T>, key: string, make: fn() -> T) -> T {
     let known: T? = cache.get(key)
     if known != null { return known! }
@@ -280,7 +280,7 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
     let key = "${m.text()}\t${path}"
     let known: string? = ws.keys.object_keys.get().get(key)
     if known != null { return known! }
-    let made = obj_key_of(ws, store, m, path)
+    let made = key_of_parts(ws.key_parts_cached(store, m, path))
     ws.keys.object_keys.put(key, made)
     made
 }
@@ -523,11 +523,13 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
     // files'. Only a moved interface or import list moves what other modules see.
     let no_object: Map<string, string> = {}
     ws.keys.object_keys.set(no_object)
+    let no_parts: Map<string, KeyParts> = {}
+    ws.keys.object_parts.set(no_parts)
     if seen_moved {
         let no_bytes: Map<string, string> = {}
-        let no_view: Map<string, string> = {}
+        let no_view: Map<string, List<SeenPart>> = {}
         ws.keys.bytes_keys.set(no_bytes)
-        ws.keys.view_keys.set(no_view)
+        ws.keys.view_parts.set(no_view)
         let no_imports: Map<string, List<string>> = {}
         ws.import_lists.set(no_imports)
     }
@@ -898,36 +900,182 @@ export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
 /// text, the texts its compile-time runs read, and the interfaces its bodies can see.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    mut d = new_digest()
-    d = digest_text(d, m.text())
-    if path != "" {
-        d = digest_text(d, path)
-        d = digest_text(d, ws.text_digest(path))
-    }
-    // an object that bakes a compile-time run's answer in reads the TEXT the run read
-    for ran in kept_runs(record_places(ws, store, m).get(path)) { d = digest_text(d, if ws.host.exists(ran) { ws.text_digest(ran) } else { "" }) }
-    digest_key(digest_text(d, view_key(ws, store, m)))
+    key_of_parts(ws.key_parts(store, m, path))
 }
+
+/// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
+/// digest of each text its compile-time runs read ("" for one that is gone), and
+/// every module its bodies can see with that module's interface key and how many
+/// files it held. The key is these parts' digest, so a key and the parts it is
+/// shown as never disagree.
+export type KeyParts = { module: string, path: string, text: string, runs: List<string>, seen: List<SeenPart> }
+
+/// A module a file sees: its name, its interface's bytes key, its file count.
+export type SeenPart = { module: string, bytes_key: string, files: int }
+
+impl Workspace {
+    /// A file's key parts, derived.
+    fn key_parts(store: Store, m: ModulePath, path: string) -> KeyParts {
+        KeyParts {
+            module: m.text(),
+            path: path,
+            text: if path == "" { "" } else { self.text_digest(path) },
+            // an object that bakes a compile-time run's answer in reads the TEXT the run read
+            runs: [if self.host.exists(ran) { self.text_digest(ran) } else { "" } for ran in kept_runs(record_places(self, store, m).get(path))],
+            seen: self.view_parts(store, m),
+        }
+    }
+
+    /// `key_parts`, remembered beside the key it digests to — cleared with it.
+    fn key_parts_cached(store: Store, m: ModulePath, path: string) -> KeyParts {
+        let key = "${m.text()}\t${path}"
+        let known: KeyParts? = self.keys.object_parts.get().get(key)
+        if known != null { return known! }
+        let made = self.key_parts(store, m, path)
+        self.keys.object_parts.put(key, made)
+        made
+    }
+
+    /// The modules a module's files see, each with its interface key and file
+    /// count — memoized for the build, since every file of a module sees the same ones.
+    fn view_parts(store: Store, m: ModulePath) -> List<SeenPart> {
+        let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
+        if known != null { return known! }
+        let made = [self.seen_part_of(store, module_path(dep.split("."))) for dep in seen_modules(self, store, m)]
+        self.keys.view_parts.put(m.text(), made)
+        made
+    }
+
+    fn seen_part_of(store: Store, m: ModulePath) -> SeenPart {
+        SeenPart {
+            module: m.text(),
+            bytes_key: bytes_key_cached(self, store, m),
+            files: self.module_files(m).length,
+        }
+    }
+}
+
+/// The key a file's parts digest to.
+fn key_of_parts(k: KeyParts) -> string {
+    mut d = new_digest()
+    d = digest_text(d, k.module)
+    if k.path != "" {
+        d = digest_text(d, k.path)
+        d = digest_text(d, k.text)
+    }
+    for r in k.runs { d = digest_text(d, r) }
+    digest_key(digest_text(d, seen_digest(k.seen)))
+}
+
+/// Where a file's key parts are kept: under its PATH, so the parts a key was made
+/// of the last time the file was kept can be read when its key no longer is.
+export fn parts_key(path: string) -> string { node_key(Stored.Unit, ["parts", path]) }
+
+/// A file's key parts as a row: a line per part, its fields apart by tabs.
+export fn parts_wire(k: KeyParts) -> string {
+    joined(
+        ["module\t${k.module}", "path\t${k.path}", "text\t${k.text}"]
+            .concat(["run\t${r}" for r in k.runs])
+            .concat(seen_lines(k.seen)),
+        "\n",
+    )
+}
+
+/// Where a module's seen interfaces are kept: one row a module's files share.
+export fn seen_key(module: string) -> string { node_key(Stored.Unit, ["seen", module]) }
+
+/// The modules a module's files see, as a row: a line each.
+export fn seen_wire(seen: List<SeenPart>) -> string { joined(seen_lines(seen), "\n") }
+
+fn seen_lines(seen: List<SeenPart>) -> List<string> { ["seen\t${s.module}\t${s.bytes_key}\t${s.files}" for s in seen] }
+
+/// `seen_wire`, read back — the empty row is nothing seen, and null for a row
+/// that is not one.
+export fn seen_of(raw: string) -> List<SeenPart>? {
+    if raw.is_empty() { return [] }
+    let seen = [if r.length == 4 && r[0] == "seen" { seen_row(r) } else { null } for r in [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]]
+    if seen.any(it == null) { return null }
+    [s! for s in seen]
+}
+
+/// `parts_wire`, read back — null for a row that is not one.
+export fn parts_of(raw: string) -> KeyParts? {
+    let rows = [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]
+    let module? = field_named(rows, "module") else { return null }
+    let path? = field_named(rows, "path") else { return null }
+    let text? = field_named(rows, "text") else { return null }
+    let seen = [seen_row(r) for r in rows if r.length == 4 && r[0] == "seen"]
+    if seen.any(it == null) { return null }
+    KeyParts {
+        module: module,
+        path: path,
+        text: text,
+        runs: [r[1] for r in rows if r.length == 2 && r[0] == "run"],
+        seen: [s! for s in seen],
+    }
+}
+
+fn field_named(rows: List<List<string>>, name: string) -> string? {
+    let row? = rows.find(it.length == 2 && it[0] == name) else { return null }
+    row[1]
+}
+
+fn seen_row(r: List<string>) -> SeenPart? {
+    let files? = parse_int(r[3]) else { return null }
+    SeenPart { module: r[1], bytes_key: r[2], files: files }
+}
+
+/// ONE PART OF A KEY THAT MOVED: what it is, and how it read then and reads now.
+export type PartMoved = { part: string, was: string, now: string }
+
+/// What moved between a key's parts then and now — its text, what its runs read,
+/// and each module it sees whose interface moved, came or went.
+export fn parts_moved(was: KeyParts, now: KeyParts) -> List<PartMoved> {
+    let text = if was.text == now.text { [] } else { [PartMoved { part: "its text", was: was.text, now: now.text }] }
+    let runs = if joined(was.runs, ",") == joined(now.runs, ",") {
+        []
+    } else {
+        [
+            PartMoved {
+                part: "what its compile-time runs read",
+                was: joined(was.runs, ","),
+                now: joined(now.runs, ","),
+            },
+        ]
+    }
+    text.concat(runs).concat(seen_list_moved(was.seen, now.seen))
+}
+
+/// What moved between the modules seen then and now: each whose interface
+/// moved, came or went.
+export fn seen_list_moved(was: List<SeenPart>, now: List<SeenPart>) -> List<PartMoved> {
+    let seen = [m for s in now for m in seen_moved(was.find(it.module == s.module), s)]
+    seen
+        .concat(
+            [PartMoved { part: "module ${s.module}", was: seen_words(s), now: "no longer seen" } for s in was if !now.any(it.module == s.module)],
+        )
+}
+
+fn seen_moved(was: SeenPart?, now: SeenPart) -> List<PartMoved> {
+    let prior? = was else { return [PartMoved { part: "module ${now.module}", was: "not seen", now: seen_words(now) }] }
+    if prior.bytes_key == now.bytes_key && prior.files == now.files { return [] }
+    [
+        PartMoved {
+            part: "module ${now.module}'s interface",
+            was: seen_words(prior),
+            now: seen_words(now),
+        },
+    ]
+}
+
+fn seen_words(s: SeenPart) -> string { "bytes ${s.bytes_key}, ${s.files} file${if s.files == 1 { "" } else { "s" }}" }
+
+/// The interfaces a module's files see, as one digest.
+fn seen_digest(seen: List<SeenPart>) -> string { digest_of(joined([s.bytes_key for s in seen], "\n")) }
 
 /// The files a record says one file's compile-time runs read.
 fn kept_runs(at: Placed?) -> List<string> {
     if at == null || at!.file.length < 4 { [] } else { at!.file[3].split("|") }
-}
-
-/// THE INTERFACES A MODULE'S FILES SEE, as one digest — memoized for the build, since
-/// every file of a module sees the same ones.
-// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
-fn view_key(ws: Workspace, store: Store, m: ModulePath) -> string {
-    let known: string? = ws.keys.view_keys.get().get(m.text())
-    if known != null { return known! }
-    let made = digest_of(
-        joined(
-            [bytes_key_cached(ws, store, module_path(dep.split("."))) for dep in seen_modules(ws, store, m)],
-            "\n",
-        ),
-    )
-    ws.keys.view_keys.put(m.text(), made)
-    made
 }
 
 /// The modules a module's record says it imports — memoized for the build.

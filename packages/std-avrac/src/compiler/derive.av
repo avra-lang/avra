@@ -74,8 +74,9 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
 
 /// One file's hold: held, or read with why (null for a file no record
-/// knows), and the stored rows a read-for-want-of-rows file lacks.
-export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string> }
+/// knows), the stored rows a read-for-want-of-rows file lacks, and what
+/// moved in its key since it was last kept.
+export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string>, moved: List<PartMoved> }
 
 /// A stored row by what it keeps, and whether the store has it.
 type StoreRow = { says: string, kept: bool }
@@ -308,11 +309,25 @@ impl Workspace {
     }
 
     fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
-        if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [] } }
+        if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [], moved: [] } }
         let why: Reads? = d.read.find(it.path == path)?.why
         let unkept = why != null && why! is .Unkept
         let missing = if unkept { self.missing_rows(d.store, self.held_okey(d.store, path), d.want) } else { [] }
-        FileHold { path: path, held: false, why: why, missing: missing }
+        FileHold {
+            path: path,
+            held: false,
+            why: why,
+            missing: missing,
+            moved: self.parts_moved_at(path),
+        }
+    }
+
+    /// What this build found moved in a file's key: its own parts, then the
+    /// modules its module sees.
+    fn parts_moved_at(path: string) -> List<PartMoved> {
+        let moved = self.hold.moved.get()
+        (moved.get(parts_key(path)) ?? [])
+            .concat(moved.get(seen_key(self.module_path_of(path).text())) ?? [])
     }
 
     /// The rows standing in for a file under `want` that the store lacks, by
@@ -524,7 +539,7 @@ impl Workspace {
     /// are declared now — by name, since an edit moves ordinals.
     fn kept_boxed(store: Store, f: FileId) -> List<DeclId> {
         let path = self.decls.file(f).path
-        let found = [boxed_name(parts, path) for parts in record_fields(self, store, module_path(self.module_of(path).split(".")))]
+        let found = [boxed_name(parts, path) for parts in record_fields(self, store, self.module_path_of(path))]
         let names = [n! for n in found if n != null]
         [d for d in self.decls.decls_of_file(f) if self.names_record(d, names)]
     }
@@ -554,7 +569,7 @@ impl Workspace {
     fn home_moved(store: Store, path: string) -> bool {
         if path.is_empty() || !self.host.exists(path) { return false }
         !written_from(
-            record_places(self, store, module_path(self.module_of(path).split("."))).get(path),
+            record_places(self, store, self.module_path_of(path)).get(path),
             self.text_digest(path),
         )
     }
@@ -577,8 +592,7 @@ impl Workspace {
         mut at = 0
         while at < reads.length {
             for path in kept_runs(
-                record_places(self, store, module_path(self.module_of(reads[at]).split(".")))
-                    .get(reads[at]),
+                record_places(self, store, self.module_path_of(reads[at])).get(reads[at]),
             ) {
                 if !reads.contains(path) {
                     reads.push(path)
@@ -640,6 +654,39 @@ impl Workspace {
         }
     }
 
+    /// A read file's key parts: its own under its path, the modules it sees
+    /// under its module — each rewritten only when it moved, and what moved
+    /// noted in the hold under the row's key.
+    fn keep_parts(store: Store, path: string) {
+        let now = self.key_parts_cached(store, self.module_path_of(path), path)
+        let own = now with { seen: [] }
+        let kept = store.get(Stored.Unit, parts_key(path))
+        let was = parts_of(kept ?? "")
+        self
+            .keep_moved(
+                store,
+                parts_key(path),
+                parts_wire(own),
+                if was == null { [] } else { parts_moved(was!, own) },
+            )
+        let seen = store.get(Stored.Unit, seen_key(now.module))
+        let seen_was = seen_of(seen ?? "")
+        self
+            .keep_moved(
+                store,
+                seen_key(now.module),
+                seen_wire(now.seen),
+                if seen == null || seen_was == null { [] } else { seen_list_moved(seen_was!, now.seen) },
+            )
+    }
+
+    /// A parts row kept when it moved, what moved noted under its key.
+    fn keep_moved(store: Store, key: string, wire: string, moved: List<PartMoved>) {
+        if store.get(Stored.Unit, key) == wire { return }
+        if !moved.is_empty() { self.hold.moved.put(key, moved) }
+        let _ = store.keep(Stored.Unit, key, wire, [])
+    }
+
     /// One file's `Said`: kept under its key when it parsed, read from there
     /// when it did not — its rule findings beside it under a diagnostics want.
     fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
@@ -650,6 +697,7 @@ impl Workspace {
             return held_said(store, okey, said, want)
         }
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
+        self.keep_parts(store, path)
         let rules? = told.rules else { return told.said }
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules)
         told.said with { warnings: spoken([told.said.warnings, rules]) }
