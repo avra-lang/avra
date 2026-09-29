@@ -59,7 +59,7 @@
 # THREE MORE GATES SHARE THE SAME POOL, each ratcheted in
 # tools/land.baseline (key=value) or tools/speed.baseline (PERF's own
 # line format — see speed_gate below): the warm-reuse gate
-# (AVRA_LAND_WARM_GATE=1, off by default), the Linux gate
+# (AVRA_LAND_WARM_GATE, default 1), the Linux gate
 # (AVRA_LAND_LINUX, default 1, runs affected packages' suites on a
 # Sprite), and the speed gate (AVRA_LAND_SPEED_GATE=1, off by default,
 # instructions retired and peak memory footprint over a fixed input).
@@ -258,7 +258,9 @@ lowest_live_ticket() {
     d="$(tickets_dir)"
     lowest=""
     for t in $(ls "$d" 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
-        pid="$(cat "$d/$t/pid" 2>/dev/null)"
+        # A ticket is made before its pid is written: an absent pid is
+        # a waiter mid-arrival, never a reason to stop scanning.
+        pid="$(cat "$d/$t/pid" 2>/dev/null)" || pid=""
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             [ -z "$lowest" ] && lowest="$t"
         elif [ -n "$pid" ]; then
@@ -454,13 +456,10 @@ merge_ref_in() {
 merge_main_in() { merge_ref_in "$1" "refs/heads/main"; }
 
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
-# avra-8sb5.57.25 (compiler print folded into every durable key) and
-# avra-8sb5.57.24 (a held module's record decoder now enforces its own
-# fingerprint, so a test-then-check sequence in one tree no longer
-# indexes a stale shape) are BOTH closed, on main — nothing in the
-# pipeline forces a cache sweep any more. Kept as a callable utility
-# (land_test.sh's own fixture still exercises it, and it is a
-# reasonable manual escape hatch), just not wired into a landing.
+# A landing tree keeps its warm cache: every durable key carries the
+# compiler's print and each held record its own fingerprint. A gate
+# whose question is COLD (the speed gate) moves its own side tree's
+# cache aside with this.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
@@ -1223,15 +1222,6 @@ run_checks() {
     else
         echo "land: skipped the speed gate$suffix: AVRA_LAND_SPEED_GATE is off" >&2
     fi
-    if [ "${AVRA_LAND_LINUX:-1}" = "1" ]; then
-        if [ -n "$(printf '%s' "$affected" | tr -d '[:space:]')" ]; then
-            job_launch "linux$suffix" heavy "linux$suffix" sh "$self" --call linux_gate_step "$wt" $affected
-        else
-            skipped "the Linux gate$suffix" "affected package"
-        fi
-    else
-        echo "land: skipped the Linux gate$suffix: AVRA_LAND_LINUX is off" >&2
-    fi
     if listed cli "$affected"; then
         job_launch "test-cli$suffix" heavy "test-cli$suffix" sh -c "cd '$wt' && build/avra test packages/cli"
     fi
@@ -1245,7 +1235,7 @@ run_checks() {
     if [ "$has_av" -eq 1 ]; then
         job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
     fi
-    if [ "${AVRA_LAND_WARM_GATE:-0}" = "1" ]; then
+    if [ "${AVRA_LAND_WARM_GATE:-1}" = "1" ]; then
         job_launch "warm-reuse$suffix" heavy "warm-reuse$suffix" sh "$self" --call warm_gate_step "$wt"
     else
         echo "land: skipped warm-reuse gate$suffix: AVRA_LAND_WARM_GATE is off" >&2
@@ -1265,9 +1255,6 @@ run_pipeline() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
 
     light "merge$suffix" merge_main_in "$branch_wt"
-    # A warm cache does not yet follow every edit a merge makes, so the
-    # merged tree starts cacheless; drop this once it does.
-    move_caches_aside "$branch_wt"
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
@@ -1366,6 +1353,57 @@ check_phase() {
     has_av=0
     if diff_touches "$diff" '\.av$'; then has_av=1; fi
 
+    linux_launch "$wt" "$base_sha" "$head_sha" "$suffix"
+    st=0
+    local_checks "$wt" "$base_sha" "$head_sha" "$suffix" || st=$?
+    linux_collect "$st" || st=1
+    [ "$st" -eq 0 ] || return 1
+
+    # Every check is green: the staged baselines land in the tree, and
+    # one commit carries them with the seed.
+    apply_staged_baselines "$wt"
+    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
+}
+
+# THE LINUX GATE RUNS REMOTELY, so it takes no local slot and starts
+# before the local builds: the Sprite builds its own compiler from the
+# merged tree while this machine builds ours.
+linux_pid=""
+linux_launch() {
+    linux_pid=""
+    if [ "${AVRA_LAND_LINUX:-1}" != "1" ]; then
+        echo "land: skipped the Linux gate$4: AVRA_LAND_LINUX is off" >&2
+        return 0
+    fi
+    linux_pkgs="$(sh "$tools_dir/affected_packages.sh" "$2" "$3" "$1" 2>/dev/null)" || linux_pkgs=""
+    if [ -z "$(printf '%s' "$linux_pkgs" | tr -d '[:space:]')" ]; then
+        skipped "the Linux gate$4" "affected package"
+        return 0
+    fi
+    ( heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
+    linux_pid=$!
+}
+
+# The Linux gate's verdict, once the local checks are done; a local
+# failure stops it rather than waiting it out.
+linux_collect() {
+    [ -n "$linux_pid" ] || return 0
+    if [ "$1" -ne 0 ]; then
+        kill "$linux_pid" 2>/dev/null
+        wait "$linux_pid" 2>/dev/null
+        return 0
+    fi
+    lst=0
+    wait "$linux_pid" || lst=$?
+    return "$lst"
+}
+
+# Builds, the local pool and cache-attacks.
+local_checks() {
+    wt="$1"
+    base_sha="$2"
+    head_sha="$3"
+    suffix="$4"
     # A SUBSHELL each: `build_generation`'s own `cd "$wt"` must not
     # leak into the steps after it.
     if ! ( build_generation "$wt" "1$suffix" ); then
@@ -1391,11 +1429,6 @@ check_phase() {
     elif ! heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks"; then
         return 1
     fi
-
-    # Every check is green: the staged baselines land in the tree, and
-    # one commit carries them with the seed.
-    apply_staged_baselines "$wt"
-    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
 }
 
 # ── THE SEED POLICY: CHECK FIRST, EMIT ONLY ON FAILURE ────────────────
@@ -1490,9 +1523,6 @@ reset_batch_wt() {
         { tool_failed "could not check out the batch branch in $batch_wt"; return 1; }
     git -C "$batch_wt" reset -q --hard main && git -C "$batch_wt" clean -q -fd ||
         { tool_failed "could not reset the batch tree at $batch_wt"; return 1; }
-    # Each attempt merges different content: a cache kept from the last
-    # one describes files that are no longer there.
-    move_caches_aside "$batch_wt"
     seed_compiler "$batch_wt"
 }
 

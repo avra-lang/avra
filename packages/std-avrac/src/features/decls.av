@@ -363,6 +363,13 @@ export type Decls = {
     held_values: Cell<Map<string, Settled>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
+    /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
+    /// `sigs` carries, so this memo carries no self-recursion risk. Whichever
+    /// caller asks first (`seats`'s hook, or the fn's own natural signing)
+    /// types them through the one real signing context; every later ask reuses
+    /// the answer.
+    seat_types: Cell<List<List<TypeId>?>>,
+    seat_ensure: Cell<fn(DeclId) -> void>,
     /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
@@ -527,6 +534,7 @@ export fn new_decls() -> Decls {
     let no_faces: List<DeclFacts?> = []
     let no_keys: Map<string, DeclId> = {}
     let no_sigs: List<DeclSig?> = []
+    let no_seat_types: List<List<TypeId>?> = []
     let no_provenance: List<Provenance?> = []
     let empty_marks: List<List<Diagnostic>?> = []
     let no_targets: List<DeclId?> = []
@@ -572,6 +580,8 @@ export fn new_decls() -> Decls {
         held_values: map_cell(),
         keys: Cell.new(no_keys),
         sigs: Cell.new(no_sigs),
+        seat_types: Cell.new(no_seat_types),
+        seat_ensure: Cell.new(no_ensure),
         provenance: Cell.new(no_provenance),
         marks: Cell.new(empty_marks),
         ensure_marks: Cell.new(no_marks),
@@ -1085,6 +1095,31 @@ impl Decls {
         self.sigs.get()[d.index]
     }
 
+    /// A fn's own PARAMETERS — asking it IS the query, exactly as `sig` is,
+    /// with one difference: the answer never depends on inference, so this
+    /// carries none of `sig`'s self-recursion hazard. A caller mid-`d`'s-own
+    /// answer inference (failures.av's fixpoint) may ask this safely; asking
+    /// `sig` there cannot be, since the answer is what it would be computing.
+    fn seats(d: DeclId) -> List<TypeId> {
+        if self.seat_types.get()[d.index] == null { (self.seat_ensure.get())(d) }
+        self.seat_types.get()[d.index] ?? []
+    }
+
+    /// `seats`' table read alone, NEVER triggering the hook: for the fn's
+    /// own natural signing (`declare_sig`, `seated_answer`), which already
+    /// holds the correct `fparams` to type itself — an extern's among them,
+    /// which the hook cannot derive (it walks the statement structurally,
+    /// and `fn_parts` does not recognize an extern's shape). Null answers
+    /// "not yet typed by an early asker," never "there are none."
+    fn seat_types_so_far(d: DeclId) -> List<TypeId>? { self.seat_types.get()[d.index] }
+
+    /// Records a fn's own parameters — the receiver's first when it has
+    /// one, in the same order `sig`'s own `FnSig.params` wears. Idempotent:
+    /// whichever caller's ask lands first (`seats`'s hook, or the fn's own
+    /// natural `declare_sig`/`declare_method`/`declare_trait_sig`) records
+    /// here, and the other finds it already settled.
+    fn record_seat_types(d: DeclId, ts: List<TypeId>) { self.seat_types.set_at(d.index, ts) }
+
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them
     /// once every declaration it will ever ask about is signed; a
@@ -1092,6 +1127,7 @@ impl Decls {
     fn disarm() {
         self.auditing.set(false)
         self.ensure.set(no_ensure)
+        self.seat_ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
@@ -1108,6 +1144,11 @@ impl Decls {
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId) -> void) {
         self.ensure.set(ensure)
+    }
+
+    /// The workspace arms the seats hook once.
+    fn arm_seats(ensure: fn(DeclId) -> void) {
+        self.seat_ensure.set(ensure)
     }
 
     /// The workspace arms the held-row hook once.
