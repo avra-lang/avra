@@ -1774,6 +1774,33 @@ test_linux_gate_runs_warm() {
     fi
 }
 
+# The Sprite's cap, unpinned, is what its MemAvailable holds per suite,
+# between 1 and 4; an unreadable meminfo runs one suite at a time.
+test_linux_gate_cap_reads_memory() {
+    d="$(git_repo linux-cap)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-cap-sprite.sh"
+    body_file="$scratch/linux-cap-body"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "land-linux: body started"\n' "$body_file" > "$stub"
+    chmod +x "$stub"
+    tree="$scratch/linux-cap-tree"
+    rm -rf "$tree"
+    mkdir -p "$tree/build"
+    printf '#!/bin/sh\nexit 0\n' > "$tree/build/avra"
+    chmod +x "$tree/build/avra"
+    printf 'objects:\n\t@true\nlibs:\n\t@true\n' > "$tree/Makefile"
+    for pair in "5600000:3" "900000:1" "99000000:4" "missing:1"; do
+        kb="${pair%%:*}"
+        want="${pair##*:}"
+        mem="$scratch/linux-cap-meminfo-$kb"
+        if [ "$kb" = missing ]; then mem="$scratch/linux-cap-no-such-file"; else printf 'MemTotal: 99 kB\nMemAvailable: %s kB\n' "$kb" > "$mem"; fi
+        AVRA_LAND_SPRITE_MEMINFO="$mem" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
+        got="$( cd "$tree" && bash -c "$(cat "$body_file")" 2>&1 | sed -n 's/^land-linux: \([0-9]*\) suites at once$/\1/p' )"
+        if [ "$got" = "$want" ]; then ok "linux-gate: MemAvailable $kb kB caps at $want suites"; else bad "linux-gate: MemAvailable $kb kB capped at '$got' suites, wanted $want"; fi
+    done
+}
+
 # The Sprite's own command, RUN against a stub tree: suites overlap, and a
 # failing one is named with its log after every suite has finished.
 test_linux_gate_suites_run_in_parallel() {
@@ -1784,7 +1811,7 @@ test_linux_gate_suites_run_in_parallel() {
     body_file="$scratch/linux-par-body"
     printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "land-linux: body started"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
     chmod +x "$stub"
-    AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa pb pc > /dev/null 2>&1
+    AVRA_LAND_SPRITE_JOBS=3 AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa pb pc > /dev/null 2>&1
     tree="$scratch/linux-par-tree"
     rm -rf "$tree"
     mkdir -p "$tree/build"
@@ -2268,6 +2295,7 @@ run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
+run_test test_linux_gate_cap_reads_memory
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
