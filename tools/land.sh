@@ -1107,7 +1107,7 @@ run_checks() {
     if [ "$compiler_changed" -eq 1 ]; then
         job_launch "seed-check$suffix" seed_policy "$wt" "$suffix" "$branch"
     fi
-    if [ "${AVRA_LAND_SPEED_GATE:-0}" = "1" ]; then
+    if [ "${AVRA_LAND_SPEED_GATE:-1}" = "1" ]; then
         job_launch "speed$suffix" heavy "speed$suffix" sh "$self" --call speed_gate_step "$wt" "$base_sha" "$branch"
     else
         echo "land: skipped the speed gate$suffix: AVRA_LAND_SPEED_GATE is off" >&2
