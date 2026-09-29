@@ -7,6 +7,12 @@
 //! call ENTERS, `@code` a body's address taken as a value, `@host` a
 //! hosted fn's name.
 //!
+//! `reads_reg`/`reads_some` are `reads_of`'s ALLOCATION-FREE siblings —
+//! the same operands, asked "is one of them `r`"/"is there one at all"
+//! instead of collected into a `List<Reg>` a scanning pass would throw
+//! away at every step. One definition of what an instruction reads;
+//! three ways to ask it.
+//!
 //! THE OWNERSHIP ROLES ARE THE SAME CHANNEL, a second fact on that
 //! payload's marks: `@owns` is the register that owns a reference
 //! when its value is managed, `@view` the register that is a VIEW of
@@ -67,6 +73,22 @@ trait Roles {
                 quote {
             export fn seat_regs_role(i: ${t}) -> List<Reg> {
                 match i { ${[answering(v, holding(v, "seats"), quote { [] }) for v in t.variants]} }
+            }
+         },
+            ),
+            made(
+                t,
+                quote {
+            export fn reads_reg_role(i: ${t}, r: Reg) -> bool {
+                match i { ${[arm(v, ored(reg_preds(v))) for v in t.variants]} }
+            }
+         },
+            ),
+            made(
+                t,
+                quote {
+            export fn reads_some_role(i: ${t}) -> bool {
+                match i { ${[arm(v, if operands(v).is_empty() { quote { false } } else { quote { true } }) for v in t.variants]} }
             }
          },
             ),
@@ -226,6 +248,47 @@ fn reg_list(elem: Kind, b: string) -> Code? {
 fn reg_opt(inner: Kind, b: string) -> Code? {
     if !reg_kind(inner) { return null }
     quote { some_list(${name(b)}) }
+}
+
+/// `operand`'s PREDICATE twin: the same payload, asked whether it IS
+/// `r` instead of collected into a list — so `reads_reg` answers with
+/// no `List<Reg>` built on either side of the generated code.
+fn reg_pred(f: Field, b: string) -> Code? {
+    if reg_kind(f.kind) { return quote { same_reg(${name(b)}, r) } }
+    match f.kind {
+        .List(elem) -> reg_list_pred(elem, b),
+        .Opt(inner) -> reg_opt_pred(inner, b),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Named(_, _) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+fn reg_list_pred(elem: Kind, b: string) -> Code? {
+    if !reg_kind(elem) { return null }
+    quote { ${name(b)}.any(same_reg(it, r)) }
+}
+
+fn reg_opt_pred(inner: Kind, b: string) -> Code? {
+    if !reg_kind(inner) { return null }
+    quote { ${name(b)} != null && same_reg(${name(b)}!, r) }
+}
+
+/// `operands`' predicate twin.
+fn reg_preds(v: MetaVariant) -> List<Code> {
+    let bs = binders(v)
+    let defines = holding(v, "dst")
+    flatten([some_list(reg_pred(f, bs[j])) for j, f in v.fields if read_at(defines, j)])
+}
+
+/// The predicates joined by `||`, short-circuiting — `false` for a
+/// variant with none.
+fn ored(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { false } }
+    mut all = parts[0]
+    for p in parts.slice(1, parts.length) {
+        let sofar = all
+        all = quote { ${sofar} || ${p} }
+    }
+    all
 }
 
 /// THE RUNS AS ONE LIST. Each part is itself a LIST expression, and a
