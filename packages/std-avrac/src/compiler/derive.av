@@ -17,14 +17,18 @@ use compiler.host.{no_source}
 /// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
 /// not yet clear the bar (at or under main's own ~5-6s keep phase;
 /// measured 95-150s, dominated by `reused_check`'s validation —
-/// `decl_at_stable`'s cost is down but not enough, and the OOM
-/// on some edits is unexplained). `holding` reads this alone — with
-/// it false, `self.pack` never attaches, so `reused_check` and
+/// `decl_at_stable`'s cost is down but not enough). The OOM a leaf
+/// edit hit is explained and fixed (store/pack.av's `slurped` read a
+/// pack word-at-a-time into a `List<int>`, one `int` per BYTE —
+/// 2.3 GB of a 2.9 GB peak on one leaf-edit recheck of std-avrac;
+/// `read_bytes` now reads it straight into `Bytes`, peak 2.3 GB, RSS
+/// 2586 -> 758 MB, measured). `holding` reads this alone — with it
+/// false, `self.pack` never attaches, so `reused_check` and
 /// `record_witness` (both `let pack? = self.pack.get() else { … }`)
 /// answer at once and every witness-specific cost (`expanded_edges`,
 /// `decl_at_stable`, `Pack.put`/`commit`) never runs: a normal
 /// compiler pays nothing for machinery it never reaches. Flip this
-/// once the follow-up ticket closes the gap.
+/// once the follow-up ticket closes the speed gap.
 const witness_enabled: bool = false
 
 /// What a command wants of a program. A file's warnings stand in for it

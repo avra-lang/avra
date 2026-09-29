@@ -18,11 +18,12 @@
 //!
 //! A pack from another compiler, or another format version, is never
 //! read — it answers as empty, and the next write starts a fresh log
-//! over it. `avra_mmap_slice` cannot cross to Avra as `Bytes` (its row
-//! carries no evaluator arm to build the box), so the whole file is
-//! read through `avra_mmap_word_at`'s eight-byte stride instead, with
-//! `@std/io`'s `read_bytes` for the tail under eight bytes it cannot
-//! reach.
+//! over it. The whole file is read through `@std/io`'s `read_bytes`
+//! (chunked straight into `Bytes` — `drained`'s own doc), never
+//! word-at-a-time into a `List<int>`: that shape spends one 8-byte
+//! `int` PER BYTE, an 8x-16x blowup measured turning a leaf-edit
+//! recheck's pack read into 2.3 GB of the run's 2.9 GB peak
+//! (avra-8sb5.57.55's OOM).
 use @std.io.{read_bytes, write_bytes, truncate_to, AppendFile, opened_for_append}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
@@ -281,46 +282,15 @@ fn scanned(compiler_id: string, raw: Bytes) -> Loaded {
     walked(r, raw)
 }
 
-extern fn avra_mmap_open(path: string) -> ptr?
-extern fn avra_mmap_len(h: ptr) -> int
-extern fn avra_mmap_word_at(h: ptr, i: int) -> int
-extern fn avra_mmap_close(h: ptr)
-
-fn byte_of(w: int, j: int) -> int {
-    (w >> 8 * (7 - j)) & 255
-}
-
-/// The mapped file's whole content. `avra_mmap_word_at` has no
-/// single-byte form and traps under eight bytes from its end, so a
-/// file that short reads through `@std/io` instead — mmap's stride
-/// buys nothing there, and a pack's header alone is longer.
-fn slurped(path: string, h: ptr, len: int) -> Bytes {
-    if len < 8 {
-        return match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    }
-    mut out: List<int> = []
-    // LICENSED loops.index_walk: a stride of eight, `StableHasher.octets`'s own —
-    // no element walk answers "the next aligned word".
-    mut at = 0
-    while at + 8 <= len {
-        let w = avra_mmap_word_at(h, at)
-        for j in 0..8 { out.push(byte_of(w, j)) }
-        at = at + 8
-    }
-    if at < len {
-        let w = avra_mmap_word_at(h, len - 8)
-        let short = len - at
-        for j in 0..short { out.push(byte_of(w, 8 - short + j)) }
-    }
-    out.bytes()!
+/// The file's whole content, or empty for one that cannot be read —
+/// `scanned` reads an empty `Bytes` the same way it reads a missing
+/// pack, at the magic-header check.
+fn slurped(path: string) -> Bytes {
+    match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
 }
 
 fn loaded(path: string, compiler_id: string) -> Loaded {
-    let h? = avra_mmap_open(path) else { return empty_loaded() }
-    let len = avra_mmap_len(h)
-    let raw = slurped(path, h, len)
-    avra_mmap_close(h)
-    scanned(compiler_id, raw)
+    scanned(compiler_id, slurped(path))
 }
 
 fn reverse_index(names_by_id: List<string>) -> Map<string, int> {
