@@ -22,7 +22,7 @@ export enum Want { Diagnostics, Binary }
 /// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, and how many times the records moved under it.
-type Attempt = { entry: string?, want: Want, parse: List<string> = [], homes: bool = false, hold: bool = true, moved: int = 0 }
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0 }
 
 /// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
 /// the refusal. It rides the failure channel, so a phase that finds the question
@@ -34,10 +34,10 @@ enum Turn {
 
 impl Attempt {
     /// The same attempt, reading these files too.
-    fn reading(more: List<string>) -> Attempt { self with { parse: self.parse.concat(more) } }
+    fn reading(more: List<ReadFile>) -> Attempt { self with { parse: self.parse.concat(more) } }
 
     /// STANDS when nothing more must be read — else the attempt that reads it.
-    fn having_read(more: List<string>) -> Result<int, Turn> {
+    fn having_read(more: List<ReadFile>) -> Result<int, Turn> {
         if more.is_empty() { .Ok(0) } else { .Err(Turn.Again(self.reading(more))) }
     }
 
@@ -72,6 +72,13 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
 export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
+
+/// One file's hold: held, or read with why (null for a file no record
+/// knows), and the stored rows a read-for-want-of-rows file lacks.
+export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string> }
+
+/// A stored row by what it keeps, and whether the store has it.
+type StoreRow = { says: string, kept: bool }
 
 /// What an attempt that holds nothing is about to read, as a count.
 const EVERY_FILE: int = 1000000
@@ -255,7 +262,7 @@ impl Workspace {
     fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
 
     /// `derived`, with files read whatever the store holds for them.
-    fn derived_reading(entry: string?, want: Want, parse: List<string>) -> Result<Derived, string> {
+    fn derived_reading(entry: string?, want: Want, parse: List<ReadFile>) -> Result<Derived, string> {
         let held = self.attempted(Attempt { entry: entry, want: want, parse: parse })
         if held is .Ok { return self.checked_whole(held?) }
         if held_paths(self).is_empty() { return held }
@@ -277,7 +284,7 @@ impl Workspace {
 
     /// The derivation with every instantiation lowered: the homes read, and
     /// `parse` with them.
-    fn whole(d: Derived, parse: List<string>) -> Result<Derived, string> {
+    fn whole(d: Derived, parse: List<ReadFile>) -> Result<Derived, string> {
         if d.unlowered.is_empty() { return d }
         self.again(Attempt { entry: d.entry, want: d.want, parse: parse, homes: true })
     }
@@ -291,11 +298,48 @@ impl Workspace {
         want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
+    /// ONE FILE'S HOLD, as this package's derivation under `want` decided it:
+    /// held, or read with why — and for a file nothing kept stands in for,
+    /// which of its rows the store is missing.
+    fn hold_report(want: Want) -> Result<List<FileHold>, string> {
+        let d = self.derived(null, want)?
+        let ws = d.program.ws
+        [ws.file_hold(d, fi.path, fi.id) for fi in ws.decls.files.get()]
+    }
+
+    fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
+        if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [] } }
+        let why: Reads? = d.read.find(it.path == path)?.why
+        let unkept = why != null && why! is .Unkept
+        let missing = if unkept { self.missing_rows(d.store, self.held_okey(d.store, path), d.want) } else { [] }
+        FileHold { path: path, held: false, why: why, missing: missing }
+    }
+
+    /// The rows standing in for a file under `want` that the store lacks, by
+    /// what each keeps.
+    fn missing_rows(store: Store, okey: string, want: Want) -> List<string> {
+        let rows = [
+            StoreRow { says: "what it said", kept: store.has(Stored.Warn, said_key(okey)) },
+            StoreRow {
+                says: "what its bodies ask",
+                kept: store.has(Stored.Unit, self.asks_key(okey)),
+            },
+            match want {
+                .Diagnostics -> StoreRow {
+                    says: "its rule findings",
+                    kept: store.has(Stored.Warn, rules_key(okey)),
+                },
+                .Binary -> StoreRow { says: "its object", kept: store.has(Stored.Obj, okey) },
+            },
+        ]
+        [r.says for r in rows if !r.kept]
+    }
+
     /// The held files a diagnostics want must read after all: the ones whose
     /// rule findings were never kept, since only a check keeps them.
-    fn unruled(store: Store, want: Want) -> List<string> {
+    fn unruled(store: Store, want: Want) -> List<ReadFile> {
         match want {
-            .Diagnostics -> [path for path in held_paths(self) if !store.has(Stored.Warn, rules_key(self.held_okey(store, path)))],
+            .Diagnostics -> [ReadFile { path: path, why: Reads.Unruled } for path in held_paths(self) if !store.has(Stored.Warn, rules_key(self.held_okey(store, path)))],
             .Binary -> [],
         }
     }
@@ -345,7 +389,7 @@ impl Workspace {
         self.attach_store(store)
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
-        for path in homes.concat(at.parse) { self.hold.homes.put(path, true) }
+        for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
             for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
@@ -503,7 +547,7 @@ impl Workspace {
     /// THE HELD FILES THIS ATTEMPT ASKED A BODY OF: a compile-time run reached
     /// them, and the next attempt reads them. The file that ran them keeps the
     /// list in its record, so a later derivation reads them with it.
-    fn bodies_asked() -> List<string> { distinct(self.hold.body_asks.get()) }
+    fn bodies_asked() -> List<ReadFile> { [ReadFile { path: path, why: Reads.BodyAsked } for path in distinct(self.hold.body_asks.get())] }
 
     /// Whether a remembered home still stands and is no longer the text its
     /// module's record was written from.
