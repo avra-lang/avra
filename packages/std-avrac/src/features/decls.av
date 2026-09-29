@@ -758,7 +758,7 @@ impl Decls {
 
     /// Every file of a module, once its held rows are minted.
     fn note_module_rows(m: ModuleId, state: int) {
-        for f in self.module_files.get()[m.index].get() { self.note_rows(f, state) }
+        for f in self.files_of_module(m) { self.note_rows(f, state) }
     }
 
     /// A generated declaration's origin, or null for a written one.
@@ -1126,7 +1126,8 @@ impl Decls {
         let key = "${pkg}.${name}"
         let known: DeclId? = self.meta_ids.get().get(key)
         if known != null { return known }
-        let ms = [ModuleId { index: j } for j, m in self.modules.get() if self.package_named(m) == pkg]
+        let modules = Module.all(self.decl_rows.get())
+        let ms = [r.id for r in modules if self.package_named(r.name) == pkg]
         let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
         let found: DeclId? = ds
             .find(
@@ -1141,9 +1142,7 @@ impl Decls {
 
     /// One module's own declarations, across its files.
     fn module_decls(m: ModuleId) -> List<DeclId> {
-        flatten(
-            [self.file_decls.get()[f.index].get() for f in self.module_files.get()[m.index].get()],
-        )
+        flatten([self.file_decls.get()[f.index].get() for f in self.files_of_module(m)])
     }
 
     /// Whether a declaration IS `@std/meta`'s export of `name` — by
@@ -1997,7 +1996,7 @@ impl Decls {
         let prov? = self.template_provenance(d) else { return self.decl(d).file }
         let loc? = prov.template else { return self.decl(d).file }
         let path? = loc.file else { return self.decl(d).file }
-        self.paths.get().get(path) ?? self.decl(d).file
+        self.known_file_id(path) ?? self.decl(d).file
     }
 
     /// `d`'s own provenance, or its nearest ancestor's. `note_provenance`

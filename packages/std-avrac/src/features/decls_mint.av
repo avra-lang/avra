@@ -27,41 +27,60 @@ use core.{
 use diagnostics.{Diag}
 use features.{generated_key, Decl, no_origins}
 
+/// A `File` row read back as the hand shape every other pass still
+/// wants — the relation and `FileInfo` name `module` differently, and
+/// carry it either side of that name.
+fn file_info(r: File) -> FileInfo { FileInfo { id: r.id, path: r.path, module_id: r.module, test: r.test } }
+
 impl Decls {
 
     fn file_id(path: string, module: string, test: bool) -> FileId {
-        let known: FileId? = self.paths.get().get(path)
-        if known != null { return known! }
-        let id = FileId { index: self.files.get().length }
-        let m = self.module_id(module)
-        self.paths.put(path, id)
-        self.files.push(FileInfo { id: id, path: path, module_id: m, test: test })
-        self.module_files.get()[m.index].push(id)
-        self.stores.push(null)
-        self.decl_ids.push(Cell.new(side_table<DeclId?>("decl_ids", 0, 0, null)))
-        let no_decls: List<DeclId> = []
-        self.file_decls.push(Cell.new(no_decls))
-        self.generations.push([])
-        self.origins.push(no_origins())
-        let no_voices: List<Diag> = []
-        self.expansion_voices.push(Cell.new(no_voices))
-        self.mains.push(null)
-        id
+        let known? = self.known_file_id(path) else {
+            let m = self.module_id(module)
+            let id = File.insert(self.decl_rows.get(), path: path, module: m, test: test).id
+            self.paths.put(path, id)
+            self.files.push(FileInfo { id: id, path: path, module_id: m, test: test })
+            self.module_files.get()[m.index].push(id)
+            self.stores.push(null)
+            self.decl_ids.push(Cell.new(side_table<DeclId?>("decl_ids", 0, 0, null)))
+            let no_decls: List<DeclId> = []
+            self.file_decls.push(Cell.new(no_decls))
+            self.generations.push([])
+            self.origins.push(no_origins())
+            let no_voices: List<Diag> = []
+            self.expansion_voices.push(Cell.new(no_voices))
+            self.mains.push(null)
+            return id
+        }
+        known
+    }
+
+    /// The FileId a path already names — the relation's own `@index
+    /// path`, recorded as read; null before anything mints it.
+    fn known_file_id(path: string) -> FileId? {
+        File.by_path(self.decl_rows.get(), path).first()?.id
     }
 
     /// A module's identity — minted at first mention.
     fn module_id(module: string) -> ModuleId {
-        let known: ModuleId? = self.module_ids.get().get(module)
-        if known != null { return known! }
-        let m = ModuleId { index: self.modules.get().length }
-        self.module_ids.put(module, m)
-        self.modules.push(module)
-        let no_files: List<FileId> = []
-        self.module_files.push(Cell.new(no_files))
-        m
+        let known? = self.known_module_id(module) else {
+            let m = Module.insert(self.decl_rows.get(), name: module).id
+            self.module_ids.put(module, m)
+            self.modules.push(module)
+            let no_files: List<FileId> = []
+            self.module_files.push(Cell.new(no_files))
+            return m
+        }
+        known
     }
 
-    fn module_name(m: ModuleId) -> string { self.modules.get()[m.index] }
+    /// The ModuleId a dotted name already names — the relation's own
+    /// `@index name`, recorded as read; null before anything mints it.
+    fn known_module_id(module: string) -> ModuleId? {
+        Module.by_name(self.decl_rows.get(), module).first()?.id
+    }
+
+    fn module_name(m: ModuleId) -> string { Module.get(self.decl_rows.get(), m)!.name }
 
     /// A file's Main: its run-time statements as one declaration.
     fn main_of(f: FileId) -> DeclId? {
@@ -69,7 +88,28 @@ impl Decls {
         held
     }
 
-    fn file(f: FileId) -> FileInfo { self.files.get()[f.index] }
+    fn file(f: FileId) -> FileInfo { file_info(File.get(self.decl_rows.get(), f)!) }
+
+    /// Every minted file — the relation's whole set, recorded as read.
+    fn all_files() -> List<FileInfo> {
+        [file_info(r) for r in File.all(self.decl_rows.get())]
+    }
+
+    /// How many files are minted — the whole relation's own cell,
+    /// recorded the same way `all_files` records it, without building
+    /// the list: `file(f)` and the whole-program walks that bound
+    /// themselves by this answer are both hot.
+    fn file_count() -> int {
+        let rs = File.rows_in(self.decl_rows.get())
+        rs.seen_whole(self.decl_rows.get())
+        rs.live.get()
+    }
+
+    /// Every file of a module, in mint order — the relation's own
+    /// `@local @index module`, recorded as read.
+    fn files_of_module(m: ModuleId) -> List<FileId> {
+        [r.id for r in File.by_module(self.decl_rows.get(), m)]
+    }
 
     fn store_of(f: FileId) -> NodeStore {
         if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }

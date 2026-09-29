@@ -336,7 +336,7 @@ impl Workspace {
     fn hold_report(want: Want) -> Result<List<FileHold>, string> {
         let d = self.derived(null, want)?
         let ws = d.program.ws
-        [ws.file_hold(d, fi.path, fi.id) for fi in ws.decls.files.get()]
+        [ws.file_hold(d, fi.path, fi.id) for fi in ws.decls.all_files()]
     }
 
     fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
@@ -542,7 +542,7 @@ impl Workspace {
             asked: asked,
             held: held_paths(self).length,
             witnessed: self.witness_hits.get(),
-            files: self.decls.files.get().length,
+            files: self.decls.file_count(),
             turns: at.moved,
             spans: spans,
             read: self.hold.read_files.get(),
@@ -559,7 +559,7 @@ impl Workspace {
     /// not hold — and, for all it can tell, EVERY file when it holds none.
     fn reads_ahead() -> int {
         let held = held_paths(self).length
-        if held == 0 { EVERY_FILE } else { self.decls.files.get().length - held }
+        if held == 0 { EVERY_FILE } else { self.decls.file_count() - held }
     }
 
     /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
@@ -688,10 +688,10 @@ impl Workspace {
         // avra_release_dead — line-start construction, paid again for
         // every file on every file). `witness_enabled` is a compile-time
         // constant, so a build with it false pays nothing here.
-        let sources: List<SourceFile> = if witness_enabled { p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()]) } else { [] }
+        let sources: List<SourceFile> = if witness_enabled { p.manifests.concat([self.source(fi.id) for fi in self.decls.all_files()]) } else { [] }
         mut fresh: Map<string, Spoken> = {}
         for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want, sources)) }
-        let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
+        let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.all_files() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
