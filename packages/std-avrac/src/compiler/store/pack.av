@@ -153,9 +153,12 @@ export type Edge = { name: string, hash: int }
 export type Entry = { name: string, fingerprint: int, hash: int, edges: List<Edge>, payload: Bytes }
 
 /// The newest state for one name: already turned into an `Entry`
-/// (freshly `put`, or read once already), or still the frame's raw
-/// body — untouched since the scan that found it.
-enum Slot { Loaded(Entry), OnDisk(Bytes) }
+/// (freshly `put`, or read once already) WITH the on-disk length its
+/// current form would free if it dies — carried so a later `put`'s
+/// dead-byte accounting never has to re-encode names into ids just
+/// to learn a length it already knew at materialization — or still
+/// the frame's raw body, untouched since the scan that found it.
+enum Slot { Loaded(Entry, int), OnDisk(Bytes) }
 
 fn resolved(name: string, names_by_id: List<string>, d: DecodedBody) -> Entry {
     Entry {
@@ -412,7 +415,7 @@ impl Pack {
         let edges = [EdgeId { name_id: self.interned(e.name), hash: e.hash } for e in entry.edges]
         let body = encoded_entry(name_id, entry.fingerprint, entry.hash, edges, entry.payload)
         write_frame(self.pending, entry_tag(), body)
-        self.slots.put(entry.name, Slot.Loaded(entry))
+        self.slots.put(entry.name, Slot.Loaded(entry, framed_len(entry_tag(), body)))
         // An OVERWRITE ages the OLD frame into dead weight — its own
         // ON-DISK size (tag, checksum and all, matching what `disk_len`
         // counts), never the new one's, so a shrinking entry (a long
@@ -420,8 +423,7 @@ impl Pack {
         // entry's worth of work, so `garbage_heavy` still answers in
         // O(1) without re-walking the whole pack.
         if old != null {
-            let dead = framed_len(entry_tag(), self.entry_body(entry.name, old!))
-            self.dead_bytes.set(self.dead_bytes.get() + dead)
+            self.dead_bytes.set(self.dead_bytes.get() + dead_frame_len(old!))
         }
     }
 
@@ -435,7 +437,7 @@ impl Pack {
     /// pack's own committed state, decoded once and kept.
     fn get(name: string) -> Entry? {
         let slot? = self.slot_at(name) else { return null }
-        match slot { .Loaded(e) -> e, .OnDisk(body) -> self.materialized(name, body) }
+        match slot { .Loaded(e, _) -> e, .OnDisk(body) -> self.materialized(name, body) }
     }
 
     fn materialized(name: string, body: Bytes) -> Entry? {
@@ -443,7 +445,7 @@ impl Pack {
         let _ = r.int()
         let rest? = decoded_rest(r) else { return null }
         let entry = resolved(name, self.by_id.get(), rest)
-        self.slots.put(name, Slot.Loaded(entry))
+        self.slots.put(name, Slot.Loaded(entry, framed_len(entry_tag(), body)))
         entry
     }
 
@@ -621,7 +623,7 @@ impl Pack {
     fn entry_body(name: string, slot: Slot) -> Bytes {
         match slot {
             .OnDisk(body) -> body,
-            .Loaded(entry) -> encoded_entry(
+            .Loaded(entry, _) -> encoded_entry(
                 self.names.get().get(name)!,
                 entry.fingerprint,
                 entry.hash,
@@ -630,6 +632,19 @@ impl Pack {
             ),
         }
     }
+}
+
+/// The bytes a slot's CURRENT on-disk form would free if it dies —
+/// `OnDisk`'s own length, or `Loaded`'s length AS RECORDED AT
+/// MATERIALIZATION, never re-derived: re-deriving it from a `Loaded`
+/// entry means resolving every edge's name back to an id through
+/// `map_find`, the same cost `interned` already paid once to mint
+/// them. `put`'s dead-byte accounting hit exactly this — a file's
+/// witness read once for `reused_check`'s validation, materializing
+/// its slot, then overwritten by the recompute `put` that follows,
+/// paying a full re-encode just to measure a length it already knew.
+fn dead_frame_len(slot: Slot) -> int {
+    match slot { .OnDisk(body) -> framed_len(entry_tag(), body), .Loaded(_, len) -> len }
 }
 
 fn commit_frame() -> Bytes {
