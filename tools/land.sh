@@ -1433,8 +1433,17 @@ linux_launch() {
         return 0
     fi
     linux_suffix="$4"
+    linux_wt="$1"
     ( heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
     linux_pid=$!
+}
+
+# Whether a failed Linux leg ran against a seed this landing has since
+# re-emitted: the leg synced the tree before seed-check moved the seed,
+# so a Sprite whose compiler cannot read HEAD had no seed that could.
+linux_saw_old_seed() {
+    [ "$2" -ne 0 ] || return 1
+    ! git -C "$1" diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources 2>/dev/null
 }
 
 # The Linux gate's verdict, once the local checks are done; a local
@@ -1449,6 +1458,12 @@ linux_collect() {
     lst=0
     wait "$linux_pid" || lst=$?
     grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
+    if linux_saw_old_seed "$linux_wt" "$lst"; then
+        echo "land: linux: the leg ran before the seed was re-emitted — once more, with the new seed" >&2
+        lst=0
+        heavy "linux-reseeded$linux_suffix" sh "$self" --call linux_gate_step "$linux_wt" $linux_pkgs || lst=$?
+        grep -h '^land-linux: ' "$(log_of "linux-reseeded$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
+    fi
     return "$lst"
 }
 
