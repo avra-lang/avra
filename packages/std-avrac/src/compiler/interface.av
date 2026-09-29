@@ -13,13 +13,15 @@ use core.{
     Type,
     TypeId,
     DeclId,
+    DeclKind,
     FileId,
     StmtId,
     ExprId,
     SeatMark,
 }
 use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word}
-use compiler.lower.{Body}
+use features.collects.{gathered_members}
+use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
 /// One file's lines in its module's record, and the digest of what a caller can see of them.
@@ -27,6 +29,11 @@ type FileLines = { path: string, lines: List<string>, iface: string }
 
 impl Workspace {
 
+    /// EVERY MODULE'S CONSTS, KEPT: a settled value under its key, or — for a
+    /// const whose settlement is STRUCTURALLY refused (`Unsettled.structural`,
+    /// `Reach`) — the refusal itself, since that verdict is as stable as a
+    /// value and is what lets the file hold. A non-structural refusal SPEAKS a
+    /// diagnostic elsewhere and stays unkept, so the next build asks again.
     fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
         mut count = 0
         for m in modules {
@@ -46,13 +53,69 @@ impl Workspace {
                                     )
                                 count = count + 1
                             },
-                            .Err(_) -> { let _ = 0 },
+                            .Err(_) -> {
+                                // `settled` collapses a reused refusal to `.Spoken` so a
+                                // diagnostic never repeats — ask the relation directly for
+                                // the const's one real verdict, `Spoken` or not.
+                                let verdict = self
+                                    .settle_verdict(d.file, SettleRoot.Const(d.stmt), [])
+                                if verdict != null {
+                                    match verdict! {
+                                        .Refused(why) -> {
+                                            // a gathered member stays unkept: `lower_collect`
+                                            // calls each member's closures by symbol, which
+                                            // a held member's object cannot answer.
+                                            if why.structural() && !self.collected(d) {
+                                                let _ = store
+                                                    .keep(
+                                                        Stored.Unit,
+                                                        key,
+                                                        reach_wire(why.words()),
+                                                        [obj_key_of(self, store, m, path)],
+                                                    )
+                                                count = count + 1
+                                            }
+                                        },
+                                        .Held(_) -> { let _ = 0 },
+                                    }
+                                }
+                            },
                         }
                     }
                 }
             }
         }
         count
+    }
+
+    /// WHETHER SOME `collect` IN THE WORKSPACE GATHERS `d` — asked the SAME
+    /// WAY `lower_collect` enumerates a collect's members (`gathered_members`),
+    /// never by `d`'s own name or component word: a structural question about
+    /// what `lower_collect` will need to reference by symbol, not a spelling.
+    fn collected(d: Decl) -> bool {
+        let collects = self
+            .decls
+            .decls_of_kind(DeclKind.Collect)
+            .concat(self.decls.decls_of_kind(DeclKind.CollectEnum))
+        collects.any((c) -> self.collect_members_of(c).any(same_decl(it.id, d.id)))
+    }
+
+    /// One `collect`'s (or `collect enum`'s) own members — `[]` for a
+    /// declaration this door was never meant to see, which stays honest
+    /// since `decls_of_kind` already filtered to the two kinds that hold parts.
+    fn collect_members_of(c: Decl) -> List<Decl> {
+        match c.kind {
+            .Collect -> {
+                let p? = self.decls.store_of(c.file).collect_parts(c.stmt) else { return [] }
+                gathered_members(self.decls, p.kind, p.scope, c.file)
+            },
+            .CollectEnum -> {
+                let p? = self.decls.store_of(c.file).collect_enum_parts(c.stmt) else { return [] }
+                gathered_members(self.decls, p.kind, p.scope, c.file)
+            },
+            // `decls_of_kind` already narrowed `c` to these two kinds.
+            rest -> [],
+        }
     }
 
     fn const_rows_ready(store: Store, m: ModulePath, path: string, rows: List<List<string>>) -> bool {
@@ -90,16 +153,18 @@ impl Workspace {
     fn fill_const(store: Store, m: ModulePath, row: Row, f: FileId, stmt: StmtId, id: DeclId) {
         let ty = self.interface_type(row.of_wire())
         self.decls.record_const_type(f, stmt, ty)
-        // a held const has no initializer to settle again: its kept value is the
-        // only one, and a row that does not give it back is a defect said
-        let value: Settled? = settled_from_wire(
-            store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? "",
-        )
-        if value == null {
-            return self
-                .defect("a held const's value did not decode — `${row.name}` in ${row.path}")
+        // a held const has no initializer to settle again: its kept row is the
+        // only one, and one that decodes as neither a value nor a structural
+        // refusal is a defect said
+        let raw = store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? ""
+        let value? = settled_from_wire(raw) else {
+            let words? = reach_from_wire(raw) else {
+                return self
+                    .defect("a held const's value did not decode — `${row.name}` in ${row.path}")
+            }
+            return self.decls.remember_held_reach(id, words)
         }
-        self.decls.remember_held_value(id, value!)
+        self.decls.remember_held_value(id, value)
     }
 
     fn fill_aims(row: Row, id: DeclId) {
@@ -458,11 +523,13 @@ impl Workspace {
 impl Workspace {
 
     /// What a held file's OBJECT answers to, as a caller's module must name it: a
-    /// fn by its signature, a declared instance's unit by the type it builds. A
-    /// NESTED declaration joins no namespace, so no symbol names it.
+    /// fn by its signature, a declared instance's unit by the type it builds, a
+    /// collect's synthesized aggregate by its own answer type. A NESTED
+    /// declaration joins no namespace, so no symbol names it.
     fn stub_of(d: Decl) -> Body? {
         if d.nested { return null }
         if self.decls.is_instance(d.id) { return self.instance_stub(d) }
+        if d.kind is .Collect { return self.collect_own_stub(d) }
         let s? = self.sig(d.id) else { return null }
         match s {
             .Fn(sig) -> Body {
@@ -487,6 +554,22 @@ impl Workspace {
             name: self.decls.instance_unit(d.id).name,
             params: [],
             ret: built,
+            gives: null,
+            ins: [],
+            reg_types: [],
+            file: d.file,
+        }
+    }
+
+    /// A held collect's own symbol, under the same answer type `lower_collect`
+    /// gives its body when fresh (`collect_answer_type`, compiler/lower/
+    /// lower.av) — a read calls it the same way whether the file that
+    /// declares it is held or not.
+    fn collect_own_stub(d: Decl) -> Body {
+        Body {
+            name: self.decls.symbol(d.id),
+            params: [],
+            ret: collect_answer_type(self.decls, d.file, d.stmt),
             gives: null,
             ins: [],
             reg_types: [],

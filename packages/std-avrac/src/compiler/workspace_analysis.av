@@ -310,6 +310,18 @@ impl Workspace {
         self.settled_at(self.settle_id(f, root, seats))
     }
 
+    /// THE TRUE VERDICT BEHIND A CONST, NEVER `.Spoken`: `settled` collapses a
+    /// reused refusal to `.Spoken` so a diagnostic never repeats, so a caller
+    /// that needs the REASON (to decide whether it is worth remembering, not
+    /// whether to speak) asks here instead — after `settled` has run once for
+    /// the same id, so the relation already holds the id's one real verdict.
+    fn settle_verdict(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Settlement? {
+        match self.relation(Family.Settled).ask(self.settle_id(f, root, seats)) {
+            .Reuse(held) -> settled_of(held),
+            .Compute or .Cycle -> null,
+        }
+    }
+
     /// `paths` joined to what `reader`'s compile-time runs read.
     fn read_by(reader: string, paths: List<string>) {
         self.hold.runs.put(reader, distinct((self.hold.runs.get().get(reader) ?? []).concat(paths)))
@@ -434,7 +446,10 @@ impl Workspace {
                 }
                 let d? = self.decls.decl_of(ask.file, s) else { return .Err(Unsettled.Trap("a held const names no declaration")) }
                 self.fill_ensured(d)
-                let v? = self.decls.held_value(d) else { return .Err(Unsettled.Trap("a held const's value did not decode")) }
+                let v? = self.decls.held_value(d) else {
+                    let words? = self.decls.held_reach(d) else { return .Err(Unsettled.Trap("a held const's value did not decode")) }
+                    return .Err(Unsettled.Reach(words))
+                }
                 .Ok(v)
             },
             .Expr(e) -> self.settlement_of(ask.file, e, ask.name, ask.seats),
