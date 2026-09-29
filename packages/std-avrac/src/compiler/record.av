@@ -841,16 +841,27 @@ fn payload_of(ws: Workspace, arm: string) -> List<TypeId> {
 /// THE DECLARATION KIND a record's shape and kind column name. `Struct`/`Boxed`
 /// are always a `Record` and `Named` always `Named` — their kind column reads
 /// "type" either way, so the SHAPE alone tells them apart; every other shape
-/// reads its kind from the kind column, which is theirs to spell.
+/// reads its kind from the kind column, which is theirs to spell — an `Enum`'s
+/// says whether a `collect enum` made it.
 fn declared_kind(shape: Shape, word: string) -> DeclKind? {
     match shape {
         .Struct or .Boxed -> .Record,
-        .Enum -> .Enum,
+        .Enum -> enum_kind(word),
         .Named -> .Named,
         .Alias -> .Alias,
         .Const -> .Const,
         .Aims -> .Impl,
         .Fn or .Extern or .Opaque -> kind_of_word(word),
+    }
+}
+
+/// The kind an `Enum` shape's kind column names — an enum or a `collect enum`,
+/// and nothing else.
+fn enum_kind(word: string) -> DeclKind? {
+    let k? = kind_of_word(word) else { return null }
+    match k {
+        .Enum or .CollectEnum -> k,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
     }
 }
 

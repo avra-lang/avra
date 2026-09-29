@@ -416,22 +416,40 @@ fn budgeted_machine(l: Lowered, budgets: Budgets, named: fn(string) -> Lifted = 
     fresh_machine(l, named) with { budget: budgets.steps, asked: budgets.steps, bytes: budgets.bytes }
 }
 
-/// The first row a compile-time call reaches that it may not, with
-/// the body it sits in. Embed is admitted only to calls whose result
-/// crosses back into compiler-owned data.
-fn world_reached(l: Lowered, permits_embed: bool) -> string? {
+/// The first body (post-order over `l.fns`, the entry last) that
+/// reaches a row it may not, with what it reaches — null when
+/// nothing does. Embed is admitted only to calls whose result
+/// crosses back into compiler-owned data. The one scan `world_reached`
+/// renders as prose and `world_witness` reads the chain off of.
+type WorldHit = { said: string, body: Body }
+
+fn world_hit(l: Lowered, permits_embed: bool) -> WorldHit? {
     let rows = rt_index()
     for b in l.fns.concat([l.entry]) {
-        let hit: string? = world_in(rows, b, permits_embed)
-        // The refusal names each CALL LINK, not only the body the
-        // world row stands in: `f` called from `g` called from the
-        // const's entry reads as the chain the reader wrote.
-        if hit != null {
-            let said = hit!
-            return "${said}${callers_from(l, b.name)}"
-        }
+        let said: string? = world_in(rows, b, permits_embed)
+        if said != null { return WorldHit { said: said!, body: b } }
     }
     null
+}
+
+fn world_reached(l: Lowered, permits_embed: bool) -> string? {
+    let hit? = world_hit(l, permits_embed) else { return null }
+    // The refusal names each CALL LINK, not only the body the
+    // world row stands in: `f` called from `g` called from the
+    // const's entry reads as the chain the reader wrote.
+    "${hit.said}${callers_from(l, hit.body.name)}"
+}
+
+/// THE WITNESS: the bodies a Reach refusal's own proof passes
+/// through, entry first, the hitting body last — null when nothing
+/// reaches the world. A structural refusal depends on these bodies
+/// alone; anything else `l.fns` lowered is off the path and can move
+/// without moving the verdict.
+export fn world_witness(l: Lowered, permits_embed: bool) -> List<Body>? {
+    let hit? = world_hit(l, permits_embed) else { return null }
+    let p? = call_path(l, hit.body.name) else { return [hit.body] }
+    let by = body_index(l)
+    [by.get(name)! for name in p if by.get(name) != null]
 }
 
 /// The callers between the entry and `offender`, nearest first, as
