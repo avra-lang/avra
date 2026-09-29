@@ -342,7 +342,7 @@ impl LowerCx {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
         let own: DeclId? = self.view.decls.decl_of(self.view.file, s)
-        if own != null && self.view.decls.is_instance(own!) { return self.instance_value_reg(e, own!) }
+        if own != null && self.view.decls.is_instance(own!) && !self.settles(ty) { return self.instance_value_reg(e, own!) }
         let init = value!
         if self.sub == null && self.reads_settled_seat(init) {
             // a TEMPLATE body, not a unit: its `const` seats have no
@@ -360,17 +360,26 @@ impl LowerCx {
     /// A DECLARED const read: settled in the declaration's OWN file, on
     /// no seats — a declaration has none.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
-        if self.view.decls.is_instance(d) { return self.instance_value_reg(e, d) }
+        if self.view.decls.is_instance(d) && !self.settles(ty) { return self.instance_value_reg(e, d) }
         let x = self.view.decls.decl(d)
         let held = self.view.decls.held_value(d)
         if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
         self.const_reg(e, x.file, x.stmt, ty, [])
     }
 
-    /// A DECLARED VALUE — an exported top-level instance — is built once
-    /// per run: its read calls the unit that builds it (`lower_root`'s
-    /// `once` body), never a settled constant, so it may hold what no
-    /// static can: behaviour. The unit is its FILE's, like a fn's body.
+    /// Whether a value of type `ty` is DATA the compiler can lay out
+    /// once, as any const's aggregate is: no fn, `dyn`, `Cell`, task or
+    /// pointer anywhere inside it. An instance answering true here
+    /// settles exactly like a plain const — the call path is owed only
+    /// to one that holds behaviour a static layout cannot represent.
+    fn settles(ty: TypeId) -> bool {
+        self.view.decls.identity_in(ty, []) == null
+    }
+
+    /// A DECLARED VALUE — an exported top-level instance whose type
+    /// holds behaviour (`settles` above said no) — is built once per
+    /// run: its read calls the unit that builds it (`lower_root`'s
+    /// `once` body). The unit is its FILE's, like a fn's body.
     fn instance_value_reg(e: ExprId, d: DeclId) -> Reg {
         let unit = self.view.decls.instance_unit(d)
         if self.unseen(unit.name) { self.jobs.pending.push(unit) }
