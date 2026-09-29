@@ -307,27 +307,39 @@ impl Walk {
 /// carries a `NodeStore` arena and a `program: fn() -> Program`
 /// closure, neither of which a durable row can hold (M5b's own future
 /// slice, COMPILER DB townhall §6.11).
-export type WitnessedCheck = { clean: bool, diagnostics: List<DiagFacts> }
+/// `diagnostics` and `rules` stay TWO lists, never one merged run:
+/// `says` (derive.av) renders each into its own store key
+/// (`said_key`/`rules_key`) so the OLDER hold mechanism's `unruled`
+/// check — "does this file's rules_key exist" — sees the same fact
+/// whichever path produced the answer. A merged single list answers
+/// `says`'s `rules` field with nothing to write, so `rules_key` is
+/// never kept and no hold candidate is ever ruled.
+export type WitnessedCheck = { clean: bool, diagnostics: List<DiagFacts>, rules: List<DiagFacts> }
 
 impl WitnessedCheck {
     /// Hand-written, not `@derive(Exemplar)`: a `DiagFacts` nests
     /// `@std/errors`' `Frame`/`Suggestion`, foreign shapes no derive
     /// reaches (core/exemplar_derive.av's own doc — a named field
     /// "must derive `Exemplar` too, or hand-write both").
-    static fn codec_zero() -> WitnessedCheck { WitnessedCheck { clean: false, diagnostics: [] } }
+    static fn codec_zero() -> WitnessedCheck { WitnessedCheck { clean: false, diagnostics: [], rules: [] } }
 
     static fn exemplars() -> List<WitnessedCheck> {
         [
             WitnessedCheck.codec_zero(),
             WitnessedCheck.codec_zero() with { clean: true },
             WitnessedCheck.codec_zero() with { diagnostics: [sample_diag_facts()] },
+            WitnessedCheck.codec_zero() with { rules: [sample_diag_facts()] },
         ]
     }
 
-    static fn exemplar_labels() -> List<string> { ["baseline", "field clean", "field diagnostics"] }
+    static fn exemplar_labels() -> List<string> {
+        ["baseline", "field clean", "field diagnostics", "field rules"]
+    }
 
     fn codec_same(other: WitnessedCheck) -> bool {
-        self.clean == other.clean && list_eq(self.diagnostics, other.diagnostics, diag_facts_same)
+        self.clean == other.clean &&
+            list_eq(self.diagnostics, other.diagnostics, diag_facts_same) &&
+            list_eq(self.rules, other.rules, diag_facts_same)
     }
 }
 
@@ -370,14 +382,16 @@ fn loc_same(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi =
 /// The record-shape stamp a stored check carries (§6.6's record header
 /// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an
 /// entry written in another shape is refused rather than decoded.
-/// 2: `report: string` became `diagnostics: List<DiagFacts>`
-/// (avra-8sb5.57.55).
-fn witnessed_check_shape() -> int { 2 }
+/// 2: `report: string` became `diagnostics: List<DiagFacts>`. 3: a
+/// merged `diagnostics` split into `diagnostics`/`rules` — `says`
+/// needs them apart to write `rules_key` (avra-8sb5.57.55).
+fn witnessed_check_shape() -> int { 3 }
 
 fn encoded_witnessed_check(c: WitnessedCheck) -> Bytes {
     let w = stable_writer()
     w.bool(c.clean)
     written_list(w, c.diagnostics, written_diag_facts)
+    written_list(w, c.rules, written_diag_facts)
     w.bytes()
 }
 
@@ -394,7 +408,8 @@ fn decoded_witnessed_check(b: Bytes) -> WitnessedCheck? {
     let r = stable_reader(b)
     let clean? = codec_ok(r.bool()) else { return null }
     let diagnostics? = codec_ok(read_diag_facts_list(r)) else { return null }
-    WitnessedCheck { clean: clean, diagnostics: diagnostics }
+    let rules? = codec_ok(read_diag_facts_list(r)) else { return null }
+    WitnessedCheck { clean: clean, diagnostics: diagnostics, rules: rules }
 }
 
 /// Whether this call reused a durable answer or paid for a fresh one
@@ -933,14 +948,18 @@ impl Workspace {
         }
     }
 
-    /// The file's whole checked answer: its own diagnostics plus its
-    /// rule findings (`says`'s own `ds`, derive.av) — `rule_findings`
-    /// reads only the file's own `Analysed` facts, so nothing here
-    /// widens the edges `record_witness` already expands.
+    /// The file's whole checked answer: its own diagnostics AND its
+    /// rule findings (`says`'s own read, derive.av), kept APART —
+    /// `rule_findings` reads only the file's own `Analysed` facts, so
+    /// nothing here widens the edges `record_witness` already expands.
     fn settled_check(f: FileId, name: string) -> WitnessedCheck {
         let a = self.analysis(f)
-        let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
-        let out = WitnessedCheck { clean: a.clean(), diagnostics: [diag_facts_of(d) for d in ds] }
+        let rules = rule_findings(analysed(a), a.view.stmts)
+        let out = WitnessedCheck {
+            clean: a.clean(),
+            diagnostics: [diag_facts_of(d) for d in a.diagnostics],
+            rules: [diag_facts_of(d) for d in rules],
+        }
         self.record_witness(f, name, out)
         out
     }
@@ -967,8 +986,8 @@ impl Workspace {
                     name: name,
                     hash: fp_str(
                         joined(
-                            [d.kind for d in out.diagnostics]
-                                .concat([d.message for d in out.diagnostics]),
+                            [d.kind for d in out.diagnostics.concat(out.rules)]
+                                .concat([d.message for d in out.diagnostics.concat(out.rules)]),
                             "\n",
                         ),
                     ),

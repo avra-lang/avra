@@ -27,8 +27,12 @@ fn fresh_check(files: Map<string, string>, names: List<string>, path: string) ->
     let ws = new_workspace(memory_host(files, names), "/w", avra())
     for p in names { let _ = ws.items(ws.file_id(p)) }
     let a = ws.analysis(ws.file_id(path))
-    let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
-    WitnessedCheck { clean: a.clean(), diagnostics: [diag_facts_of(d) for d in ds] }
+    let rules = rule_findings(analysed(a), a.view.stmts)
+    WitnessedCheck {
+        clean: a.clean(),
+        diagnostics: [diag_facts_of(d) for d in a.diagnostics],
+        rules: [diag_facts_of(d) for d in rules],
+    }
 }
 
 /// A process over the given files and a real `avra.toml`, opened onto the shared pack.
@@ -101,5 +105,6 @@ fn same_facts(a: List<DiagFacts>, b: List<DiagFacts>) -> bool {
 
 fn same_verdict_as_fresh(v: Verdict, fresh: WitnessedCheck) -> bool {
     v.outcome.value().clean == fresh.clean &&
-        same_facts(v.outcome.value().diagnostics, fresh.diagnostics)
+        same_facts(v.outcome.value().diagnostics, fresh.diagnostics) &&
+        same_facts(v.outcome.value().rules, fresh.rules)
 }
