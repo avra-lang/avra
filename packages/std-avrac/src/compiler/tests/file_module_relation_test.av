@@ -4,7 +4,7 @@
 // revision still reads back correctly through the relation.
 use core.{FileId, ModuleId, same_file}
 use compiler.{Workspace}
-use features.{File, Module, FileInfo}
+use features.{File, Module, FileInfo, Decls, new_decls}
 
 fn file_parity_line(ws: Workspace, fi: FileInfo) -> string {
     let row? = File.get(ws.decls.decl_rows.get(), fi.id) else { return "no-row" }
@@ -52,5 +52,24 @@ spec "compiler/file_rows — a module's file bucket read then written in one rev
         let b_id = ws.file_id("/w/src/b.av")
         let after = ws.decls.files_of_module(m)
         before.length == 1 && after.length == 2 && after.any((f: FileId) -> same_file(f, b_id))
+    }
+}
+
+// THE PINNED HANDLE'S IDENTITY: `Decls.file_rows`/`module_rows` are read once
+// at construction (`Cell.new(File.rows_in(db))`) and never re-pinned — so a row
+// a later `file_id`/`module_id` call inserts must still be visible through that
+// SAME pin, or `file(f)`/`module_name(m)` would answer for a row that was never
+// there when they were taken. Both read through the pin (`file`, `module_name`),
+// proving it directly rather than through the index doors (`by_path`/`by_name`).
+spec "compiler/file_rows — the pinned Rows<File>/Rows<Module> handle sees a row inserted after Decls was built" {
+    then "a file minted after Decls was constructed reads back through the pin" {
+        let d: Decls = new_decls()
+        let f = d.file_id("/w/src/pinned.av", "pinned", false)
+        d.file(f).path == "/w/src/pinned.av"
+    }
+    then "a module minted after Decls was constructed reads back through the pin" {
+        let d: Decls = new_decls()
+        let f = d.file_id("/w/src/pinned.av", "pinned", false)
+        d.module_name(d.file(f).module_id) == "pinned"
     }
 }

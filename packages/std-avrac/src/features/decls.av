@@ -49,6 +49,7 @@ use core.{
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use @std.relation.db.{Db, new_db}
+use @std.relation.rows.{Rows}
 use core.{
     Fingerprint,
     Exemplar,
@@ -398,6 +399,18 @@ export type Decls = {
     /// bounds (length 0)" in the whole-package suite. `record_kernel` above already
     /// pays this; `decl_rows` pays it the same way.
     decl_rows: Cell<Db>,
+    /// `File`/`Module`'s own rows, pinned once at construction — a
+    /// `Cell`, `decl_rows`'s own reason: `Rows<T>` is not itself
+    /// `@identity`, and an `@identity` type's field must be a `Cell` or
+    /// another `@identity` (`type.identity_field`;
+    /// compiler/tests/file_module_relation_test.av's pinned-handle spec
+    /// is the witness that the pin still sees a row inserted after it
+    /// was taken). `file(f)`/`module_name(m)` read through these
+    /// directly, unrecorded: the kernel records a query's dependency on
+    /// `File`/`Module`, never a by-id fetch, so the hand-table read
+    /// this replaces recorded nothing either.
+    file_rows: Cell<Rows<File>>,
+    module_rows: Cell<Rows<Module>>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
     rows_state: Cell<List<int>>,
@@ -584,6 +597,7 @@ export fn new_decls() -> Decls {
     let no_written_seats: List<Cell<List<bool>>> = []
     let empty_consumed: List<List<bool>?> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
+    let db = new_db()
     let d = Decls {
         types: new_type_registry(),
         files: Cell.new(no_files),
@@ -597,7 +611,9 @@ export fn new_decls() -> Decls {
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
         record_kernel: Cell.new(new_kernel()),
-        decl_rows: Cell.new(new_db()),
+        decl_rows: Cell.new(db),
+        file_rows: Cell.new(File.rows_in(db)),
+        module_rows: Cell.new(Module.rows_in(db)),
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         rows_state: list_cell(),
