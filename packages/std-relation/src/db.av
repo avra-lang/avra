@@ -374,6 +374,68 @@ impl Memo<V> {
     }
 }
 
+/// A DRIVER-SET value: `@input`'s own store. `read` computes it once, on
+/// the first ask, and holds what it found after — an input is the
+/// driver's to refresh, never a reader's to recompute. `write` is that
+/// refresh: a value the driver already holds, hashed and compared to
+/// what was staged before, so bytes that come back unchanged cost no
+/// invalidation and a `@query` reading this input keeps its kept
+/// answer (`Memo.kept`, above, reading the same `db.writes` this
+/// settles through).
+export type Input<V> = { values: Cell<Map<string, V>>, hashes: Cell<Map<string, int>>, families: Cell<Map<string, int>> }
+
+export fn input_slot<V>() -> Input<V> {
+    let values: Cell<Map<string, V>> = Cell.new({})
+    let hashes: Cell<Map<string, int>> = Cell.new({})
+    let families: Cell<Map<string, int>> = Cell.new({})
+    Input { values: values, hashes: hashes, families: families }
+}
+
+impl Input<V> {
+    /// This input's family under `db`, registered on first ask — the
+    /// same door `Memo.family` uses.
+    fn family(db: Db) -> int {
+        let known? = self.families.get().get("${db.id}") else {
+            let register = db.hooks.family
+            let made = register((_cell: int) -> 0)
+            self.families.put("${db.id}", made)
+            return made
+        }
+        known
+    }
+
+    /// A call's cell under `db`, by its arguments' hash.
+    fn cell(db: Db, args: int) -> int { db.cell(self.family(db), args) }
+
+    /// The value staged for `cell`: `load` runs once, on the first ask;
+    /// every later ask answers what is already there.
+    fn read(db: Db, cell: int, load: fn() -> V, hash: fn(V) -> int) -> V {
+        let key = "${db.id}:${cell}"
+        let held? = self.values.get().get(key) else { return self.staged(db, key, load(), hash) }
+        held
+    }
+
+    /// The driver's own push, over an already-computed value.
+    fn write(db: Db, cell: int, value: V, hash: fn(V) -> int) -> V {
+        self.staged(db, "${db.id}:${cell}", value, hash)
+    }
+
+    fn staged(db: Db, key: string, value: V, hash: fn(V) -> int) -> V {
+        let h = hash(value)
+        self.values.put(key, value)
+        let prior? = self.hashes.get().get(key) else {
+            self.hashes.put(key, h)
+            db.wrote(self.family(db))
+            return value
+        }
+        if prior != h {
+            self.hashes.put(key, h)
+            db.wrote(self.family(db))
+        }
+        value
+    }
+}
+
 // ── voices ──
 
 fn self_read() -> string {
