@@ -180,6 +180,7 @@ export enum DbKind {
     Scan
     Canon
     Licenses
+    Findings
 }
 
 impl DbKind {
@@ -207,6 +208,7 @@ impl DbKind {
             .Scan -> "Scan",
             .Canon -> "Canon",
             .Licenses -> "Licenses",
+            .Findings -> "Findings",
         }
     }
 }
@@ -306,6 +308,13 @@ export enum DbRow {
     /// SAME key as its `Warn` row, so a repeat `avra check` reads both
     /// without building a second Program to re-scan for them.
     Licenses(name: string, text: string)
+    /// `findings_of`'s own rows (`compiler/findings.av`), one
+    /// `rule\tfile\ttext` per line, under the SAME key as `Warn` — a
+    /// rule finding is a fact about the program `Warn`'s own hit
+    /// already proved unchanged, so a cache hit answers a baseline
+    /// ratchet's question without rebuilding the Program `findings_of`
+    /// would otherwise need.
+    Findings(name: string, text: string)
 }
 
 impl DbRow {
@@ -333,15 +342,16 @@ impl DbRow {
             .Scan(_, _) -> DbKind.Scan,
             .Canon(_, _) -> DbKind.Canon,
             .Licenses(_, _) -> DbKind.Licenses,
+            .Findings(_, _) -> DbKind.Findings,
         }
     }
 
-    /// Only the three durable variants carry a name; a dense variant
+    /// Only the durable variants carry a name; a dense variant
     /// reaching here is a defect (a dense `Relation<DbRow>` never calls
     /// this — it addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) or .Licenses(name, _) -> name,
+            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) or .Licenses(name, _) or .Findings(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -630,14 +640,14 @@ fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [ki
 /// Whether a recalled row's witnesses still hold. `Sig`/`Warn` carry
 /// their own validity in the caller's key (a module/program identity
 /// that changes when its inputs do) and hold unconditionally here;
-/// `Decl` alone has a witness pair to re-check. Only the three durable
+/// `Decl` alone has a witness pair to re-check. Only the durable
 /// kinds ever reach this door — a dense variant is never written
 /// through `insert`'s durable half in the first place.
 fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) &&
             facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
-        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) or .Licenses(_, _) -> true,
+        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) or .Licenses(_, _) or .Findings(_, _) -> true,
         rest -> {
             avra_trap("defect: still_valid asked of a non-durable DbRow")
             false
@@ -674,12 +684,12 @@ export fn current_file_digest(path: string) -> string {
 /// `Decl` folds through `encoded_docfacts` (core/wire.av's escaping
 /// primitives); `Sig`/`Warn` are already text, so encoding them is
 /// identity — the wire format IS the value, not a second copy of it.
-/// Only the three durable kinds are ever encoded — `insert`'s durable
+/// Only the durable kinds are ever encoded — `insert`'s durable
 /// half is never reached for a dense variant.
 fn encoded(row: DbRow) -> string {
     match row {
         .Decl(_, facts) -> encoded_docfacts(facts),
-        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) or .Licenses(_, text) -> text,
+        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) or .Licenses(_, text) or .Findings(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -698,6 +708,7 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         .Scan -> DbRow.Scan(name, text),
         .Canon -> DbRow.Canon(name, text),
         .Licenses -> DbRow.Licenses(name, text),
+        .Findings -> DbRow.Findings(name, text),
         rest -> {
             avra_trap("defect: decoded asked of a non-durable DbKind")
             null

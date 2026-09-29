@@ -59,6 +59,11 @@ export fn ratio() -> Ratio { Ratio { r: 0.5 } }
 export fn word(w: Word) -> string { w.text }
 export fn tick() -> Tick { Tick { n: 8 } }
 AV
+# a SIBLING FILE'S signature names Word by TYPE, never edited itself — the
+# wire it was recorded with must still name Word after words.av reorders.
+cat > $R/lib/src/wordcall.av <<'AV'
+export fn word_upper(w: Word) -> string { w.text }
+AV
 # a QUOTED fn wears a real fn's name and another signature: it is no symbol
 cat > $R/lib/src/made.av <<'AV'
 use @std.meta.{Decls}
@@ -78,7 +83,7 @@ cat > $R/lib/src/lib.av <<'AV'
 export fn mid() -> int { one() + pick(10, 20, true) }
 AV
 cat > $R/a/src/main.av <<'AV'
-use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown, beyond}
+use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown, beyond, word_upper}
 // a held impl must still say what it implements, and a settled const runs a held body
 const TWICE: int = two() + two()
 const FAR: int = beyond()
@@ -87,7 +92,7 @@ let f = foo()
 let held = [f, f]
 let sh: dyn Shape = Sq { s: 3 }
 let big = if ratio().r > 0.4 { "big" } else { "small" }
-println("a ${FAR} ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
+println("a ${FAR} ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${word_upper(Word { text: "u" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
 AV
 cat > $R/b/src/main.av <<'AV'
 use @rt.lib.{two, pick}
@@ -176,6 +181,37 @@ S "a type inserted above Word/Ratio/Tick/Line: a's held wire must not read the n
 ed $R/lib/src/words.av 'export enum Sizing { Fixed, Auto }
 export type Word = { text: string }' 'export type Word = { text: string }'
 S "and back" a
+# A FREE FN BECOMES A METHOD: the impl block it joins is a NEW declaration of
+# its own, so every later ordinal in the file moves again, differently than a
+# plain insertion does. wordcall.av (a SIBLING FILE, never edited) keeps
+# reading Word by the wire words.av wrote it under; the wire must still
+# name Word, never whatever now sits at Word's old ordinal.
+ed $R/lib/src/words.av 'export type Word = { text: string }' 'fn decoy_one() -> int { 1 }
+fn decoy_two() -> int { 2 }
+fn decoy_three() -> int { 3 }
+fn decoy_four() -> int { 4 }
+export type Word = { text: string }'
+S "four free fns inserted above Word" a
+ed $R/lib/src/words.av 'fn decoy_one() -> int { 1 }
+fn decoy_two() -> int { 2 }
+fn decoy_three() -> int { 3 }
+fn decoy_four() -> int { 4 }
+export type Word = { text: string }' 'export type Word = { text: string }
+impl Word {
+    static fn decoy_one() -> int { 1 }
+    static fn decoy_two() -> int { 2 }
+    static fn decoy_three() -> int { 3 }
+    static fn decoy_four() -> int { 4 }
+}'
+S "the same four fns moved into impl Word: wordcall.av's held wire to Word must not read a decoy method" a
+ed $R/lib/src/words.av 'export type Word = { text: string }
+impl Word {
+    static fn decoy_one() -> int { 1 }
+    static fn decoy_two() -> int { 2 }
+    static fn decoy_three() -> int { 3 }
+    static fn decoy_four() -> int { 4 }
+}' 'export type Word = { text: string }'
+S "and back, again" a
 # A GENERIC REACHED WITH NO SUBSTITUTION IS STILL AN INSTANTIATION, and the caller's.
 # `st` holds @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
 # `stores<R>` with R pinned by nothing but the answer, from a home `st` never lowered.

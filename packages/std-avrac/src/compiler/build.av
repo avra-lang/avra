@@ -122,6 +122,18 @@ impl Workspace {
         if self.keys.compiler_id.get() == "" { self.keys.compiler_id.set(compiler_print(self)) }
         self.keys.compiler_id.get()
     }
+
+    /// LENDS an ALREADY-KNOWN print to a workspace that has not asked
+    /// for its own yet — for a caller about to mint MANY workspaces in
+    /// one run over a binary it already knows cannot move under it
+    /// (fmt.av's tree walk, one Workspace per package): each still
+    /// pays its own hash without this, the exact cost a PROCESS-WIDE
+    /// cache here once tried to avoid and was refused for (a path is
+    /// the same kind of claim a stamp is — compiler_print's own doc).
+    /// A no-op once this workspace has already settled its own.
+    fn seed_compiler_id(id: string) {
+        if self.keys.compiler_id.get() == "" { self.keys.compiler_id.set(id) }
+    }
 }
 
 /// WHERE A TREE'S ARTIFACTS LIVE — one place for the whole checkout, so a
@@ -199,7 +211,15 @@ fn unnamed_print() -> string {
 /// two-generation rebuild produces when this exact door lies). A stamp match
 /// is a claim about the bytes, never the bytes; only the digest is. The roll
 /// still lists the stores kept, newest last, so `rolled`'s sweep still knows
-/// what to keep.
+/// what to keep. A PATH IS THE SAME KIND OF CLAIM AS A STAMP: a process-wide
+/// cache keyed on `at` was tried and refused here — the compiler_print_
+/// adversarial_test's own "two DIFFERENT binary contents at the SAME path
+/// still disagree" attacks exactly that shortcut, inside one process, and a
+/// path cache fails it the same way a stamp cache would. A caller that KNOWS
+/// its own binary cannot move across many workspaces in one run (the fmt
+/// command's tree walk) shares one hash by seeding each Workspace's own
+/// `keys.compiler_id` instead — see `seed_compiler_id`, below, and
+/// fmt.av's `fold_groups`, its one caller.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its compiler's print out.
 fn compiler_print(ws: Workspace) -> string {
     let at? = ws.host.compiler else { return unnamed_print() }

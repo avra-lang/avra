@@ -8,7 +8,7 @@
 //! narrowed walk keeps the scan's meaning; the index is a declaration,
 //! never a guess.
 use core.{ExprId, DeclId, DeclKind, BinOp, CompClause, Binding, Type, same_expr}
-use features.{FileView, NameFacts, Dispatch, bound_decl_of, post_order}
+use features.{FileView, NameFacts, Dispatch, bound_decl_of, post_order, AnnotationFact}
 
 /// A relation's whole set scanned by a comprehension's head: the
 /// relation, its `@plans_all` accessor, the Db it was asked of, the
@@ -38,7 +38,13 @@ fn scan_at(view: FileView, names: NameFacts, clauses: List<CompClause>, h: int) 
         .MethodCall(subject, name, args) -> {
             let relation? = bound_decl_of(names, subject) else { return [] }
             let all? = view.decls.method(relation, name.of) else { return [] }
-            if !view.decls.annotations_of(all).any(it.name == plans_all_word) { return [] }
+            let file = view.decls.annotation_home(all)
+            if !view
+                .decls
+                .annotations_of(all)
+                .any((a: AnnotationFact) -> view.decls.is_meta_annotation(a, file, plans_all_word)) {
+                return []
+            }
             let db? = args.first() else { return [] }
             let bound = binders_before(clauses, h)
             [
@@ -207,12 +213,18 @@ fn planned(view: FileView, scan: Scan, a: Ask) -> List<Plan> {
     [Plan { lookup: m, db: scan.db, value: a.value, field: a.field, head: scan.head, cond: a.cond } for m in view.decls.methods_of(scan.relation) if plans_field(view, m, a.field)]
 }
 
-/// Whether a declaration wears `@plans(field)`.
+/// Whether a declaration wears `@std/meta`'s `@plans(field)` — by
+/// declaration, never a bare compare of the word.
 fn plans_field(view: FileView, m: DeclId, field: string) -> bool {
+    let file = view.decls.annotation_home(m)
     view
         .decls
         .annotations_of(m)
-        .any(it.name == plans_word && it.args.length == 1 && it.args[0] == field)
+        .any(
+            (a: AnnotationFact) -> a.args.length == 1 &&
+                a.args[0] == field &&
+                view.decls.is_meta_annotation(a, file, plans_word),
+        )
 }
 
 /// Whether a value of this shape could be null — no bucket holds it.

@@ -190,15 +190,12 @@ fn heap_from_wire(mut r: WireReader) -> MetaHeap? {
 
 impl Workspace {
 
+    /// `decl_ref`'s inverse — the whole field is a wire, since a ref is
+    /// never nested inside a wider tilde stream the way a type's own is.
     fn decl_from_ref(raw: string) -> DeclId? {
         if raw == "" { return null }
-        let parts = raw.split("~")
-        if parts.length != 2 { return null }
-        let f? = self.decls.paths.get().get(parts[0]) else { return null }
-        let at? = wire_number(parts[1]) else { return null }
-        let ids = self.decls.decls_of_file(f)
-        if at < 0 || at >= ids.length { return null }
-        ids[at]
+        let wd? = self.decls.wire_decl(raw.split("~"), 0) else { return null }
+        wd.id
     }
 
     fn decl_ref(d: DeclId?) -> string {

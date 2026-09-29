@@ -6,6 +6,10 @@
 //! entries. A commit marker closes a batch; a reader trusts nothing
 //! past the last one it can verify, so a crash mid-write leaves the
 //! prior committed state exactly as it was — never a partial entry.
+//! ATOMICITY, not per-commit DURABILITY: `commit` appends with no
+//! `fsync` (this is a cache — a lost commit is only recomputed, never
+//! a wrong answer), and `flushed` pays that cost once, for a whole
+//! pass's worth of commits.
 //!
 //! THE FILE, in order:
 //!   header: magic, format version, the producing compiler's id
@@ -14,13 +18,15 @@
 //!
 //! A pack from another compiler, or another format version, is never
 //! read — it answers as empty, and the next write starts a fresh log
-//! over it. `avra_mmap_slice` cannot cross to Avra as `Bytes` (its row
-//! carries no evaluator arm to build the box), so the whole file is
-//! read through `avra_mmap_word_at`'s eight-byte stride instead, with
-//! `@std/io`'s `read_bytes` for the tail under eight bytes it cannot
-//! reach.
-use @std.io.{read_bytes, write_bytes}
-use @std.relation.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
+//! over it. The whole file is read through `@std/io`'s `read_bytes`
+//! (chunked straight into `Bytes` — `drained`'s own doc), never
+//! word-at-a-time into a `List<int>`: that shape spends one 8-byte
+//! `int` PER BYTE, an 8x-16x blowup measured turning a leaf-edit
+//! recheck's pack read into 2.3 GB of the run's 2.9 GB peak
+//! (avra-8sb5.57.55's OOM).
+use core.{list_cell}
+use @std.io.{read_bytes, write_bytes, truncate_to, AppendFile, opened_for_append}
+use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
 // ── The header ──
 
@@ -55,6 +61,14 @@ fn write_frame(w: Writer, tag: int, body: Bytes) {
     w.byte(tag)
     w.octets(body)
     w.int(frame_checksum(tag, body))
+}
+
+/// The exact on-disk size of a frame carrying `body` — tag, length
+/// prefix and checksum included, the same bytes `write_frame` emits.
+fn framed_len(tag: int, body: Bytes) -> int {
+    let w = writer()
+    write_frame(w, tag, body)
+    w.bytes().length
 }
 
 enum RawFrame { NameDef(string), Entry(Bytes), Commit }
@@ -160,11 +174,23 @@ type StagedEntry = { name: string, body: Bytes }
 /// The scan's running answer, folded one frame at a time. Frames since
 /// the last `Commit` are staged, separately from what a reader may
 /// already trust, so a transaction that never closes leaves no trace.
+///
+/// `stage_by_id`/`stage_entries` are CELLS, not plain lists: `applied`
+/// runs once per NAME and per ROW frame — a pack can carry thousands
+/// — and the caller's own `s` (`walked`'s loop) still stands for the
+/// argument across the call (CLAUDE.md's borrowing law), so a plain
+/// field read into a `mut` local and pushed is never uniquely held —
+/// `push` clones the whole list first, same O(n²) a `concat([x])` fold
+/// has, just under `avra_cell_unique` instead of `avra_array_concat`.
+/// A Cell's identity survives being read: pushing through it mutates
+/// the one shared buffer regardless of how many bindings hold `s`.
+/// Measured: the dominant cost of a leaf-edit recheck (41% of wall
+/// time, all retains under the clone) collapses to noise.
 type ScanState = {
     by_id: List<string>,
     slots: Map<string, Slot>,
-    stage_by_id: List<string>,
-    stage_entries: List<StagedEntry>,
+    stage_by_id: Cell<List<string>>,
+    stage_entries: Cell<List<StagedEntry>>,
     committed_len: int,
     broken: bool,
 }
@@ -172,12 +198,11 @@ type ScanState = {
 fn empty_scan(committed_len: int) -> ScanState {
     let no_by_id: List<string> = []
     let no_slots: Map<string, Slot> = {}
-    let no_stage: List<StagedEntry> = []
     ScanState {
         by_id: no_by_id,
         slots: no_slots,
-        stage_by_id: no_by_id,
-        stage_entries: no_stage,
+        stage_by_id: list_cell(),
+        stage_entries: list_cell(),
         committed_len: committed_len,
         broken: false,
     }
@@ -188,13 +213,17 @@ fn empty_scan(committed_len: int) -> ScanState {
 fn name_for(s: ScanState, id: int) -> string? {
     if id < s.by_id.length { return s.by_id[id] }
     let j = id - s.by_id.length
-    if j >= 0 && j < s.stage_by_id.length { return s.stage_by_id[j] }
+    let staged = s.stage_by_id.get()
+    if j >= 0 && j < staged.length { return staged[j] }
     null
 }
 
 fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
     match frame {
-        .NameDef(name) -> s with { stage_by_id: s.stage_by_id.concat([name]) },
+        .NameDef(name) -> {
+            s.stage_by_id.push(name)
+            s
+        },
         .Entry(body) -> staged_entry(s, body),
         .Commit -> committed(s, pos_after),
     }
@@ -203,30 +232,40 @@ fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
 fn staged_entry(s: ScanState, body: Bytes) -> ScanState {
     let id? = decoded_name_id(body) else { return s with { broken: true } }
     let name? = name_for(s, id) else { return s with { broken: true } }
-    s with { stage_entries: s.stage_entries.concat([StagedEntry { name: name, body: body }]) }
+    s.stage_entries.push(StagedEntry { name: name, body: body })
+    s
 }
 
+/// Once per COMMIT frame, far rarer than a name or a row: batching two
+/// already-built lists with `concat` here is the right shape, and
+/// fresh cells for the next transaction cost nothing a commit does
+/// not already pay.
 fn committed(s: ScanState, pos_after: int) -> ScanState {
     mut slots = s.slots
-    for se in s.stage_entries { slots.set(se.name, Slot.OnDisk(se.body)) }
-    let no_stage: List<StagedEntry> = []
+    for se in s.stage_entries.get() { slots.set(se.name, Slot.OnDisk(se.body)) }
     ScanState {
-        by_id: s.by_id.concat(s.stage_by_id),
+        by_id: s.by_id.concat(s.stage_by_id.get()),
         slots: slots,
-        stage_by_id: [],
-        stage_entries: no_stage,
+        stage_by_id: list_cell(),
+        stage_entries: list_cell(),
         committed_len: pos_after,
         broken: false,
     }
 }
 
-type Loaded = { raw: Bytes, by_id: List<string>, slots: Map<string, Slot> }
+/// `raw` is the bytes THROUGH the last verified commit — what a
+/// reader trusts and what this pack's frame count starts from.
+/// `disk_len` is what the FILE actually measured on disk, which may
+/// run past `raw` when an earlier writer crashed mid-append: that
+/// gap is a torn tail, trimmed away (`readied`) before this process
+/// appends past it.
+type Loaded = { raw: Bytes, by_id: List<string>, slots: Map<string, Slot>, disk_len: int }
 
 fn empty_loaded() -> Loaded {
     let no_bytes = "".bytes()
     let no_by_id: List<string> = []
     let no_slots: Map<string, Slot> = {}
-    Loaded { raw: no_bytes, by_id: no_by_id, slots: no_slots }
+    Loaded { raw: no_bytes, by_id: no_by_id, slots: no_slots, disk_len: 0 }
 }
 
 /// Every frame from `r`'s current position, folded into the state the
@@ -244,7 +283,12 @@ fn walked(r: Reader, raw: Bytes) -> Loaded {
             null -> { going = false }
         }
     }
-    Loaded { raw: raw.slice(0, s.committed_len), by_id: s.by_id, slots: s.slots }
+    Loaded {
+        raw: raw.slice(0, s.committed_len),
+        by_id: s.by_id,
+        slots: s.slots,
+        disk_len: raw.length,
+    }
 }
 
 fn scanned(compiler_id: string, raw: Bytes) -> Loaded {
@@ -258,46 +302,15 @@ fn scanned(compiler_id: string, raw: Bytes) -> Loaded {
     walked(r, raw)
 }
 
-extern fn avra_mmap_open(path: string) -> ptr?
-extern fn avra_mmap_len(h: ptr) -> int
-extern fn avra_mmap_word_at(h: ptr, i: int) -> int
-extern fn avra_mmap_close(h: ptr)
-
-fn byte_of(w: int, j: int) -> int {
-    (w >> 8 * (7 - j)) & 255
-}
-
-/// The mapped file's whole content. `avra_mmap_word_at` has no
-/// single-byte form and traps under eight bytes from its end, so a
-/// file that short reads through `@std/io` instead — mmap's stride
-/// buys nothing there, and a pack's header alone is longer.
-fn slurped(path: string, h: ptr, len: int) -> Bytes {
-    if len < 8 {
-        return match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    }
-    mut out: List<int> = []
-    // LICENSED loops.index_walk: a stride of eight, `StableHasher.octets`'s own —
-    // no element walk answers "the next aligned word".
-    mut at = 0
-    while at + 8 <= len {
-        let w = avra_mmap_word_at(h, at)
-        for j in 0..8 { out.push(byte_of(w, j)) }
-        at = at + 8
-    }
-    if at < len {
-        let w = avra_mmap_word_at(h, len - 8)
-        let short = len - at
-        for j in 0..short { out.push(byte_of(w, 8 - short + j)) }
-    }
-    out.bytes()!
+/// The file's whole content, or empty for one that cannot be read —
+/// `scanned` reads an empty `Bytes` the same way it reads a missing
+/// pack, at the magic-header check.
+fn slurped(path: string) -> Bytes {
+    match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
 }
 
 fn loaded(path: string, compiler_id: string) -> Loaded {
-    let h? = avra_mmap_open(path) else { return empty_loaded() }
-    let len = avra_mmap_len(h)
-    let raw = slurped(path, h, len)
-    avra_mmap_close(h)
-    scanned(compiler_id, raw)
+    scanned(compiler_id, slurped(path))
 }
 
 fn reverse_index(names_by_id: List<string>) -> Map<string, int> {
@@ -311,7 +324,28 @@ fn reverse_index(names_by_id: List<string>) -> Map<string, int> {
 export type Pack = {
     path: string,
     compiler_id: string,
-    raw: Cell<Bytes>,
+    disk_len: Cell<int>,
+    observed_len: Cell<int>,
+    ready: Cell<bool>,
+    // `dead_bytes` starts at 0 for a pack loaded from a PRIOR process —
+    // this session only counts weight ITS OWN overwrites age, so a pack
+    // already half garbage from an earlier session waits for this one to
+    // age its own share before compacting. A heuristic delay, not a
+    // correctness gap: compaction is housekeeping, never owed to a reader.
+    dead_bytes: Cell<int>,
+    // Whether a commit marker already stands on disk — from a prior
+    // process, or from an earlier `commit` this session. A commit
+    // marker is superseded by the next one after it (only the LAST
+    // matters once a newer exists), so `commit` ages the standing
+    // marker into `dead_bytes` before adding its own.
+    has_marker: Cell<bool>,
+    // The open append descriptor, held across every `commit` this
+    // session makes — opened once, lazily, by the first one; a
+    // fresh open()/close() pair per commit was a real per-file
+    // syscall cost the census cannot see (it counts refcounts and
+    // allocations, not kernel calls), invisible in the operation
+    // counts but not in the wall clock. `flushed` closes it.
+    fd: Cell<AppendFile?>,
     names: Cell<Map<string, int>>,
     by_id: Cell<List<string>>,
     slots: Cell<Map<string, Slot>>,
@@ -319,13 +353,22 @@ export type Pack = {
 }
 
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — the path and this
-// compiler's id in, the pack out, exactly `store_at`'s shape.
+// compiler's id in, the pack out, exactly `store_at`'s shape. LOADS
+// ONLY — a caller that never commits (`avra explain`'s read-only
+// inspection, P7) leaves no mark on disk; `ensure_ready` does the
+// one-time prep for APPENDING, lazily, at the first real commit.
 export fn pack_at(path: string, compiler_id: string) -> Pack {
     let l = loaded(path, compiler_id)
+    let no_fd: AppendFile? = null
     Pack {
         path: path,
         compiler_id: compiler_id,
-        raw: Cell.new(l.raw),
+        disk_len: Cell.new(l.raw.length),
+        dead_bytes: Cell.new(0),
+        has_marker: Cell.new(l.raw.length > header_bytes(compiler_id).length),
+        observed_len: Cell.new(l.disk_len),
+        ready: Cell.new(false),
+        fd: Cell.new(no_fd),
         names: Cell.new(reverse_index(l.by_id)),
         by_id: Cell.new(l.by_id),
         slots: Cell.new(l.slots),
@@ -334,11 +377,25 @@ export fn pack_at(path: string, compiler_id: string) -> Pack {
 }
 
 impl Pack {
+    /// `name`'s dense id, if already assigned — its WHOLE body, so the
+    /// map `self.names.get()` answers is never still held by the time
+    /// `interned` may go on to write it: a read held across a write
+    /// finds the Cell's box shared, and `avra_cell_unique` clones the
+    /// whole map — with no index, so the next lookup rebuilds it —
+    /// once per new name, which is quadratic in the pack's own names
+    /// (measured: 724 files' worth of edges turned a ~46s check into
+    /// minutes before this fn existed).
+    fn name_id(name: string) -> int? { self.names.get().get(name) }
+
+    /// The next id `by_id` would mint — its own read, ended before
+    /// `interned`'s write, the same reason `name_id` is its own fn.
+    fn next_id() -> int { self.by_id.get().length }
+
     /// `name`'s dense id — already assigned, or minted here and staged
     /// as a `NameDef` frame this pack has not yet committed.
     fn interned(name: string) -> int {
-        let known? = self.names.get().get(name) else {
-            let id = self.by_id.get().length
+        let known? = self.name_id(name) else {
+            let id = self.next_id()
             self.by_id.push(name)
             self.names.put(name, id)
             write_frame(self.pending, name_tag(), name.bytes())
@@ -350,17 +407,34 @@ impl Pack {
     /// Stage an entry: visible to `get` at once, durable once `commit`
     /// answers `true`.
     fn put(entry: Entry) {
+        let old = self.slot_at(entry.name)
         let name_id = self.interned(entry.name)
         let edges = [EdgeId { name_id: self.interned(e.name), hash: e.hash } for e in entry.edges]
         let body = encoded_entry(name_id, entry.fingerprint, entry.hash, edges, entry.payload)
         write_frame(self.pending, entry_tag(), body)
         self.slots.put(entry.name, Slot.Loaded(entry))
+        // An OVERWRITE ages the OLD frame into dead weight — its own
+        // ON-DISK size (tag, checksum and all, matching what `disk_len`
+        // counts), never the new one's, so a shrinking entry (a long
+        // payload replaced by a short one) is not read as light. One
+        // entry's worth of work, so `garbage_heavy` still answers in
+        // O(1) without re-walking the whole pack.
+        if old != null {
+            let dead = framed_len(entry_tag(), self.entry_body(entry.name, old!))
+            self.dead_bytes.set(self.dead_bytes.get() + dead)
+        }
     }
+
+    /// `name`'s slot, if any — its own fn for the same reason
+    /// `name_id` is: `.OnDisk`'s branch below may go on to WRITE
+    /// `self.slots` (`materialized`), and a read held across that
+    /// write clones the whole map the same way `interned`'s did.
+    fn slot_at(name: string) -> Slot? { self.slots.get().get(name) }
 
     /// The newest entry for `name` — this session's own `put`, or the
     /// pack's own committed state, decoded once and kept.
     fn get(name: string) -> Entry? {
-        let slot? = self.slots.get().get(name) else { return null }
+        let slot? = self.slot_at(name) else { return null }
         match slot { .Loaded(e) -> e, .OnDisk(body) -> self.materialized(name, body) }
     }
 
@@ -381,51 +455,151 @@ impl Pack {
     fn names() -> List<string> { self.by_id.get() }
 
     /// The bytes this pack occupies on disk right now.
-    fn disk_bytes() -> int { self.raw.get().length }
+    fn disk_bytes() -> int { self.disk_len.get() }
 
     /// What this pack would occupy freshly compacted — every live
     /// name's newest entry, nothing else. The gap to `disk_bytes` is
     /// garbage a compaction would reclaim.
     fn live_bytes() -> int { self.fresh_bytes().length }
 
-    /// Everything staged since the last commit, durable in one write —
-    /// a rewrite-and-rename, never a partial file. Compacts past it
-    /// when about half the pack is dead weight.
+    /// Everything staged since the last commit, APPENDED after the
+    /// file's current end — never a read of what is already there,
+    /// so this is O(the batch), not O(the whole pack). `ensure_ready`
+    /// pays the one-time prep this needs first. Compacts past it — a
+    /// real rewrite-and-rename — only when about half the pack is
+    /// dead weight; that check is cheap (two lengths), so it runs
+    /// every commit even though compaction itself does not.
     fn commit() -> bool {
         let batch = self.pending.bytes()
         if batch.length == 0 { return true }
-        let base = self.based()
-        let whole = base.concat(batch).concat(commit_frame())
-        if !self.written(whole) { return false }
+        if !self.ensure_ready() { return false }
+        // The marker already on disk (a prior process's, or an earlier
+        // commit this session's) is superseded the moment this one
+        // lands — only the newest matters once it exists, so it ages
+        // into dead weight here, before this commit's own marker joins it.
+        if self.has_marker.get() { self.dead_bytes.set(self.dead_bytes.get() + commit_frame().length) }
+        self.has_marker.set(true)
+        let framed = batch.concat(commit_frame())
+        if !self.appended(framed) { return false }
         self.pending.out.set([])
         if self.garbage_heavy() { return self.compact() }
         true
     }
 
-    /// What to build this write on: the trusted bytes already on disk,
-    /// or a fresh header when there are none — no prior file, or one
-    /// this compiler could not read at all.
-    fn based() -> Bytes {
-        if self.raw.get().length > 0 { return self.raw.get() }
-        header_bytes(self.compiler_id)
+    /// Every commit so far made DURABLE — one `fsync`, paid once for
+    /// however many `commit` calls came before it. THE PACK IS A
+    /// CACHE: what correctness needs is that a reader never sees a
+    /// half-written entry as valid, which the commit marker and the
+    /// torn-tail trim already guarantee with no `fsync` at all — losing
+    /// the last few commits to a crash before this runs just means
+    /// recomputing them next time, not a wrong answer. Call once at
+    /// the end of a pass, or whenever this `Pack` is done being
+    /// written to.
+    fn flushed() -> bool {
+        let f? = self.fd.get() else { return true }
+        let ok = match f.synced() { .Ok(_) -> true, .Err(_) -> false }
+        let _ = f.closed()
+        self.fd.set(null)
+        ok
     }
 
-    fn written(bytes: Bytes) -> bool {
-        match write_bytes(self.path, bytes) {
+    /// The file left ready to APPEND to, paid once per `Pack` (never
+    /// at `pack_at` — a caller that only ever reads leaves no mark on
+    /// disk): a fresh header when nothing usable was on disk (absent,
+    /// another compiler's, or a format this one does not read —
+    /// `disk_len` is 0 in every such case, per `scanned`), or the
+    /// existing file trimmed back to its last verified commit when a
+    /// crash left a torn tail past it (`observed_len` — the length
+    /// actually seen at load — running ahead of `disk_len`, the
+    /// trusted committed length). Otherwise the file already ends
+    /// exactly where this pack believes, and nothing more is owed.
+    fn ensure_ready() -> bool {
+        if self.ready.get() { return true }
+        self.ready.set(true)
+        if self.disk_len.get() == 0 {
+            let header = header_bytes(self.compiler_id)
+            return match write_bytes(self.path, header) {
+                .Ok(_) -> {
+                    self.disk_len.set(header.length)
+                    true
+                },
+                .Err(_) -> false,
+            }
+        }
+        if self.observed_len.get() > self.disk_len.get() {
+            return match truncate_to(self.path, self.disk_len.get()) {
+                .Ok(_) -> true,
+                .Err(_) -> false,
+            }
+        }
+        true
+    }
+
+    fn appended(bytes: Bytes) -> bool {
+        let f? = self.opened_append() else { return false }
+        match f.write(bytes) {
             .Ok(_) -> {
-                self.raw.set(bytes)
+                self.disk_len.set(self.disk_len.get() + bytes.length)
                 true
             },
             .Err(_) -> false,
         }
     }
 
-    fn garbage_heavy() -> bool {
-        self.raw.get().length > self.fresh_bytes().length * 2
+    /// The open append descriptor, opened once and held for every
+    /// later `appended` call this session — a fresh open()/close()
+    /// pair per commit was a real per-file syscall cost.
+    fn opened_append() -> AppendFile? {
+        let cached? = self.fd.get() else { return self.reopened() }
+        cached
     }
 
+    fn reopened() -> AppendFile? {
+        match opened_for_append(self.path) {
+            .Ok(f) -> {
+                self.fd.set(f)
+                f
+            },
+            .Err(_) -> null,
+        }
+    }
+
+    fn written(bytes: Bytes) -> bool {
+        // A held append FD (`self.fd`) now points at the OLD inode —
+        // `write_bytes`'s temp+rename replaces the DIRECTORY ENTRY at
+        // `self.path`, not the file a held descriptor still has open,
+        // so a write through it after this would land in an orphaned
+        // inode nothing reads. Close it; the next `appended` reopens
+        // against the file this call just put there.
+        self.closed_fd()
+        match write_bytes(self.path, bytes) {
+            .Ok(_) -> {
+                self.disk_len.set(bytes.length)
+                self.dead_bytes.set(0)
+                true
+            },
+            .Err(_) -> false,
+        }
+    }
+
+    fn closed_fd() {
+        let f? = self.fd.get() else { return }
+        let _ = f.closed()
+        self.fd.set(null)
+    }
+
+    /// O(1) — `dead_bytes` is aged incrementally by `put`, never
+    /// answered by rebuilding `fresh_bytes` to compare two lengths:
+    /// that rebuild is exactly what made a per-file `commit` quadratic
+    /// before `commit` itself appended instead of rewriting, and a
+    /// cheap `append` gains nothing if the heaviness CHECK still walks
+    /// the whole pack on every call.
+    fn garbage_heavy() -> bool { self.dead_bytes.get() * 2 > self.disk_len.get() }
+
     /// Rewritten as just the live names and their newest entries, then
-    /// renamed over the old file — the same atomic write `commit` uses.
+    /// renamed over the old file — a whole-file replace, unlike
+    /// `commit`'s append; this is what makes it worth gating on
+    /// `garbage_heavy` rather than running it every time.
     fn compact() -> bool { self.written(self.fresh_bytes()) }
 
     fn fresh_bytes() -> Bytes {

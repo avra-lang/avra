@@ -28,6 +28,9 @@ extern fn avra_io_temp_fd(h: int) -> int
 extern fn avra_io_commit(h: int) -> int
 extern fn avra_io_drop(h: int) -> int
 extern fn avra_io_env_set(name: string) -> int
+extern fn avra_io_open_append(path: string) -> int
+extern fn avra_fd_sync(fd: int) -> int
+extern fn avra_io_truncate(path: string, len: int) -> int
 
 // THE RUNTIME'S OWN, which mint or answer immortal text — the only
 // doors through which bytes become a value. `avra_io_list` is the one
@@ -255,6 +258,62 @@ fn poured(path: string, fd: int, bytes: Bytes) -> Result<int, IoError> {
         at = at + done(path, avra_fd_write(fd, bytes, at))?
     }
     at
+}
+
+/// OCTETS appended after the file's current end, created if absent —
+/// never a rewrite of what was already there, so a caller's own
+/// growing content is never copied to append a small addition. NOT
+/// durable on its own: the write reaches the OS's page cache, not
+/// necessarily the device, until a caller asks `synced` for it —
+/// call that once for a whole batch of appends, never once per
+/// append. Answers the path, the same convention as `write_bytes`.
+export fn append_bytes(path: string, bytes: Bytes) -> Result<string, IoError> {
+    let fd = done(path, avra_io_open_append(one_path(path)?))?
+    defer avra_io_close(fd)
+    poured(path, fd, bytes)?
+    path
+}
+
+/// Every byte appended to `path` since the last `synced` (or ever)
+/// made durable on the device — a crash after this returns cannot
+/// lose them. The cost of durability paid ONCE for however many
+/// `append_bytes` calls came before it, not once per call.
+export fn synced(path: string) -> Result<string, IoError> {
+    let fd = done(path, avra_io_open_append(one_path(path)?))?
+    defer avra_io_close(fd)
+    done(path, avra_fd_sync(fd))?
+    path
+}
+
+/// An append-mode descriptor held OPEN across many writes — the cost
+/// of `open`/`close` paid once for a whole session of `append_bytes`
+/// calls, not once per call, the same shape `append_bytes` itself
+/// gives durability.
+export type AppendFile = { path: string, fd: int }
+
+export fn opened_for_append(path: string) -> Result<AppendFile, IoError> {
+    let clean = one_path(path)?
+    let fd = done(clean, avra_io_open_append(clean))?
+    AppendFile { path: clean, fd: fd }
+}
+
+impl AppendFile {
+    /// OCTETS appended after the file's current end. NOT durable on
+    /// its own — the same convention `append_bytes` keeps.
+    fn write(bytes: Bytes) -> Result<int, IoError> { poured(self.path, self.fd, bytes) }
+
+    fn synced() -> Result<int, IoError> { done(self.path, avra_fd_sync(self.fd)) }
+
+    fn closed() -> Result<int, IoError> { done(self.path, avra_io_close(self.fd)) }
+}
+
+/// The file cut back to exactly `len` bytes — what a caller trims a
+/// TORN TAIL to (bytes an earlier crash left past the last frame it
+/// could verify) before appending past it, so a half-written frame
+/// never ends up between two valid ones. Answers the path.
+export fn truncate_to(path: string, len: int) -> Result<string, IoError> {
+    done(path, avra_io_truncate(one_path(path)?, len))?
+    path
 }
 
 /// The directory's entries in byte order, `.` and `..` left out.

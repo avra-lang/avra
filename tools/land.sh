@@ -42,13 +42,27 @@
 # seed-check outright — a seed whose compiler-relevant files never
 # moved compiles HEAD exactly as it did on the landing before this one.
 #
+# fmt-lossless RUNS BEFORE THE BUILD, WITH THE STANDING COMPILER: the
+# formatter's own cache means a warm tree-wide `avra fmt --check
+# packages` answers in well under a second (compiler/build.av's
+# `compiler_print` used to re-hash this binary once per PACKAGE in
+# that walk — 23 hashes of an 8 MB file for one check — memoized once
+# a process now), so there is no longer a reason to pay for a build
+# before learning the tree is unformatted. The standing compiler's
+# formatter output equals a freshly-built one's UNLESS this landing
+# moves the formatter itself, which `compiler_reached` already answers
+# as "the compiler changed" — so this fail-fast run stands alone for
+# an ordinary landing, and a compiler-changing one also gets the
+# ordinary post-build run (in the pool below), since only the NEW
+# compiler can answer whether ITS OWN rules are met tree-wide.
+#
 # ONCE THE BUILD IS DONE, every affected package's tests, idioms
-# (scoped the same way — see run_checks), fmt-lossless and (when the
-# compiler changed) seed-check run TOGETHER, bounded by AVRA_LAND_JOBS
-# (default 4, env-overridable). cache-attacks stands apart, sequential:
-# it clears the shared .avra-cache as its own first act, which a
-# concurrently-reading check would read as a vanished store, not a
-# real failure.
+# (scoped the same way — see run_checks), a compiler-changing
+# landing's own fmt-lossless re-check, and (when the compiler changed)
+# seed-check run TOGETHER, bounded by AVRA_LAND_JOBS (default 4,
+# env-overridable). cache-attacks stands apart, sequential: it clears
+# the shared .avra-cache as its own first act, which a concurrently-
+# reading check would read as a vanished store, not a real failure.
 #
 # `sh tools/land.sh --call <function> [args...]` calls one function
 # below directly, standing where the real script stands (so `$0`-based
@@ -732,10 +746,17 @@ linux_gate_step() {
     # does; the warm gate and --verify-held guard warm answers. Each
     # remote phase prints its seconds.
     body="export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
+    # The suites run in parallel on the Sprite, the longest first, at
+    # most AVRA_LAND_SPRITE_JOBS at once; each keeps its own log and
+    # status, and every failure is printed after all have finished.
+    first=""
+    rest=""
     for p in $pkgs; do
-        body="$body; t=\$(date +%s); build/avra test 'packages/$p'; s=\$?; echo \"land-linux: test $p \$((\$(date +%s) - t))s\"; [ \$s -eq 0 ] || exit \$s"
+        case "$p" in std-avrac|cli) first="$first $p" ;; *) rest="$rest $p" ;; esac
     done
-    body="$body; exit 0"
+    body="$body; pkgs='$first $rest'; cap=${AVRA_LAND_SPRITE_JOBS:-4}"
+    body="$body"'; d=$(mktemp -d); for p in $pkgs; do while [ "$(jobs -r | wc -l)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & done; wait; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
+
     out="$scratch/linux-sprite.out"
     st=0
     sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
@@ -1232,7 +1253,11 @@ run_checks() {
         [ "$pkg" = "cli" ] && continue
         job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
     done
-    if [ "$has_av" -eq 1 ]; then
+    if [ "$has_av" -eq 1 ] && [ "$compiler_changed" -eq 1 ]; then
+        # The fail-fast pre-build run (check_phase, standing compiler)
+        # already answered for a compiler-unchanged landing; this one
+        # re-asks with the compiler THIS landing built, the only copy
+        # that can speak for a formatter this landing itself moved.
         job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
     fi
     if [ "${AVRA_LAND_WARM_GATE:-1}" = "1" ]; then
@@ -1353,6 +1378,19 @@ check_phase() {
     has_av=0
     if diff_touches "$diff" '\.av$'; then has_av=1; fi
 
+    # FAIL FAST: a whole-tree fmt-lossless check, BEFORE any build, with
+    # whatever compiler already stands here — the formatter's own cache
+    # makes this cheap now (see the file header), so there is nothing
+    # to gain by waiting for a build first. Skipped exactly like idioms
+    # when the diff touches no `.av` file at all.
+    if [ "$has_av" -eq 1 ]; then
+        if ! heavy "fmt-lossless-fast$suffix" sh -c "cd '$wt' && make fmt-lossless"; then
+            return 1
+        fi
+    else
+        skipped "fmt-lossless (fast)$suffix" ".av file"
+    fi
+
     linux_launch "$wt" "$base_sha" "$head_sha" "$suffix"
     st=0
     local_checks "$wt" "$base_sha" "$head_sha" "$suffix" || st=$?
@@ -1380,6 +1418,7 @@ linux_launch() {
         skipped "the Linux gate$4" "affected package"
         return 0
     fi
+    linux_suffix="$4"
     ( heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
     linux_pid=$!
 }
@@ -1395,6 +1434,7 @@ linux_collect() {
     fi
     lst=0
     wait "$linux_pid" || lst=$?
+    grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     return "$lst"
 }
 
@@ -1486,9 +1526,16 @@ ff_refused() {
 # `land.sh a b c` merges main and every named branch into ONE scratch
 # integration branch, builds and checks that ONCE, then fast-forwards
 # main to it — never the per-branch dance a single landing runs three
-# times over. A batch failure BISECTS: the whole set failed, so it is
-# split in half and each half tried FRESH from main; a half that still
-# fails splits again, down to a single branch, which is named a
+# times over. A batch failure first tries DROP BY FILE (bisect_land's
+# own `batch_failed_files`/`sole_owner`): when the failing step's log
+# names source files (fmt-lossless's differing paths, idioms' violation
+# lines) and every one of them traces to ONE branch's own diff, that
+# branch is the culprit with no further building needed — dropped, and
+# the rest retried as one attempt. Only when the named files do not
+# settle on one branch (or nothing failed in a file-naming way) does it
+# fall back to BISECTING: the whole set splits in half and each half is
+# tried FRESH from main; a half that still fails splits again (drop by
+# file tried again at each node), down to a single branch, named a
 # CULPRIT rather than retried further. The surviving halves are
 # recombined into one final integration and built/checked once more
 # (two branches that are each fine alone can still disagree combined,
@@ -1566,6 +1613,71 @@ try_integration() {
     return 0
 }
 
+# DROP BY FILE, NOT BISECT: a failing step whose LOG NAMES SOURCE
+# FILES (fmt-lossless prints each differing path bare; idioms prints
+# "  <file>\t[<kind>]\t<text>" per new violation) often already says
+# who broke it, with no rebuild needed to find out. Two shapes read:
+# an ABSOLUTE `.av` path alone on its line, under the batch tree's own
+# root (fmt-lossless's `t.diffs`, `rooted()`-absolute); and idioms'
+# own two-space-indented, tab-separated violation line. Both are
+# stripped to a repo-relative path.
+batch_failed_files() {
+    label="$1"
+    for name in "fmt-lossless-fast-batch-$label" "fmt-lossless-batch-$label" "idioms-batch-$label"; do
+        log="$(log_of "$name")"
+        [ -f "$log" ] || continue
+        # `|| true` on each: a pattern that matches NOTHING in this log
+        # exits 1 under `set -e`, which would otherwise abort this whole
+        # function on the first empty pattern and never reach the ones
+        # after it — a grep finding nothing is not a script failure.
+        sed -n "s#^${batch_wt}/##p" "$log" 2>/dev/null | grep -E '\.av$' || true
+        grep -E '^packages/.*\.av$' "$log" 2>/dev/null || true
+        sed -n 's/^  \([^\t]*\)\t\[.*/\1/p' "$log" 2>/dev/null || true
+    done | sort -u
+}
+
+# The one branch (of `$2..`) whose diff against `batch_base` touches
+# `$1` — "" when no branch does, or more than one does, either of
+# which is a file drop_by_file must not guess past.
+file_owner() {
+    f="$1"
+    shift
+    owner=""
+    for b in "$@"; do
+        if git -C "$main_wt" diff --name-only "$batch_base...refs/heads/$b" 2>/dev/null | grep -qxF "$f"; then
+            if [ -n "$owner" ] && [ "$owner" != "$b" ]; then
+                echo ""
+                return 0
+            fi
+            owner="$b"
+        fi
+    done
+    echo "$owner"
+}
+
+# The one branch (of `$2..`) that owns EVERY file `$1` names (space or
+# newline separated) — "" the moment any file's owner is unclear,
+# which is exactly when a plain drop is not honest and bisection is
+# owed instead.
+sole_owner() {
+    files="$1"
+    shift
+    owner=""
+    for f in $files; do
+        b="$(file_owner "$f" "$@")"
+        if [ -z "$b" ]; then
+            echo ""
+            return 0
+        fi
+        if [ -n "$owner" ] && [ "$owner" != "$b" ]; then
+            echo ""
+            return 0
+        fi
+        owner="$b"
+    done
+    echo "$owner"
+}
+
 # THE BISECTION: prints the surviving GREEN branch names (space
 # separated) on stdout; prints each isolated CULPRIT, one per line,
 # to stderr as "CULPRIT: <branch>". Recurses on halves, then on a
@@ -1583,6 +1695,33 @@ bisect_land() {
     fi
     # The machinery failed, so no branch is judged.
     [ -f "$scratch/tool-failure" ] && return 1
+    if [ "$n" -gt 1 ]; then
+        files="$(batch_failed_files "$label")"
+        if [ -n "$(printf '%s' "$files" | tr -d '[:space:]')" ]; then
+            culprit="$(sole_owner "$files" "$@")"
+            if [ -n "$culprit" ]; then
+                echo "land: [$label] every named file traces to one branch — dropping it, no bisection" >&2
+                echo "CULPRIT: $culprit" >&2
+                rest=""
+                for b in "$@"; do
+                    [ "$b" = "$culprit" ] && continue
+                    rest="$rest $b"
+                done
+                rest="${rest# }"
+                if [ -z "$rest" ]; then return 1; fi
+                drop_label="drop-$(echo "$rest" | tr ' /' '__' | cut -c1-40)"
+                if try_integration "$drop_label" $rest; then
+                    echo "$rest"
+                    return 0
+                fi
+                [ -f "$scratch/tool-failure" ] && return 1
+                # Red for a different reason now — the ordinary
+                # bisection below takes it from here, over what remains.
+                set -- $rest
+                n=$#
+            fi
+        fi
+    fi
     if [ "$n" -eq 1 ]; then
         echo "CULPRIT: $1" >&2
         return 1

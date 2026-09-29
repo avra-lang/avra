@@ -9,10 +9,34 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
-use diagnostics.{Diag, render_among}
+use diagnostics.{Diag, render_among, render_facts_among, SourceFile}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
+use compiler.findings.{findings_text}
+
+/// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
+/// not yet clear the bar (at or under main's own ~5-6s keep phase).
+/// Two causes found and fixed so far, both by `sample`, neither by
+/// guessing: the OOM (store/pack.av's `slurped` read a pack
+/// word-at-a-time into a `List<int>`, one `int` per BYTE — 2.3 GB of
+/// a 2.9 GB peak on one leaf-edit recheck of std-avrac; `read_bytes`
+/// now reads it straight into `Bytes`, RSS 2586 -> 758 MB, measured),
+/// and the dominant CPU cost (store/pack.av's `applied`, the
+/// pack-load frame-fold, rebuilding a list on every NAME/ROW frame —
+/// ~50% of all sampled time, all under `avra_rc_retain`/`array_clone`;
+/// `ScanState`'s staged lists are `Cell`s now, so a push mutates the
+/// one shared buffer instead of cloning it — `store.applied` is 0
+/// samples of the same scenario resampled). Still open: `reused_check`
+/// -> `decl_at_stable`'s validation cost, and `Pack.name_id` (the
+/// next-largest sampled site, ~8%, not yet chased). `holding` reads
+/// this alone — with it false, `self.pack` never attaches, so
+/// `reused_check` and `record_witness` (both `let pack? =
+/// self.pack.get() else { … }`) answer at once and every
+/// witness-specific cost never runs: a normal compiler pays nothing
+/// for machinery it never reaches. Flip this once the follow-up
+/// ticket closes the speed gap.
+const witness_enabled: bool = false
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -70,11 +94,12 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
 
 /// One file's hold: held, or read with why (null for a file no record
-/// knows), and the stored rows a read-for-want-of-rows file lacks.
-export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string> }
+/// knows), the stored rows a read-for-want-of-rows file lacks, and what
+/// moved in its key since it was last kept.
+export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string>, moved: List<PartMoved> }
 
 /// A stored row by what it keeps, and whether the store has it.
 type StoreRow = { says: string, kept: bool }
@@ -98,7 +123,11 @@ impl Derived {
     /// WHAT `--time` SAYS: the phases and what followed them on one line, then
     /// the files a record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
-        let counted = ["held ${self.held}/${self.files}", "attempt ${self.turns}"]
+        let counted = [
+            "held ${self.held}/${self.files}",
+            "witnessed ${self.witnessed}/${self.files}",
+            "attempt ${self.turns}",
+        ]
         let spent = joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
                 .concat(counted)
@@ -183,15 +212,17 @@ fn remember(store: Store, key: string, paths: List<string>) {
 }
 
 /// What `check` says of a clean program: its warnings, its stale
-/// `// LICENSED` citations (compiler/licenses.av — a cache hit reads
-/// these back too, never rescanning), and whether they were kept from
-/// a check of these exact inputs — plus the PROGRAM this answer was
-/// derived from, when one was: a cache hit costs a hash and builds
-/// none, so a caller wanting more than the rendered answer (the
-/// baseline ratchet's own rule listing) falls back to building its
-/// own rather than forcing every `check` to pay for a Program it does
-/// not otherwise need.
-export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "" }
+/// `// LICENSED` citations (compiler/licenses.av) and its rule
+/// findings (compiler/findings.av, TSV-encoded — a cache hit reads
+/// all three back, never rescanning or rebuilding), and whether they
+/// were kept from a check of these exact inputs — plus the PROGRAM
+/// this answer was derived from, when one was: a cache hit costs a
+/// hash and builds none, so a caller wanting the Program itself (a
+/// baseline ratchet's own `--baseline_accept` prune, which needs the
+/// files a check REACHED and not merely what it found) falls back to
+/// building its own rather than forcing every `check` to pay for a
+/// Program it does not otherwise need.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: string? = null }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -209,19 +240,26 @@ impl Workspace {
                 reused: true,
                 timed: "",
                 licenses: self.db.licenses(store, key0) ?? "",
+                // A missing row reads as UNKNOWN, never as EMPTY — the
+                // empty-value law applied to a cache row. A caller reads
+                // null as "derive it yourself", "" as "no findings".
+                findings: self.db.findings(store, key0),
             }
         }
         let d = self.derived(entry, Want.Diagnostics)?
         let key = d.program.ws.kept_key(under)
         let licenses = stale_license_lines(d.program)
+        let findings = findings_text(d.program)
         self.db.insert_warn(store, key, d.warnings)
         self.db.insert_licenses(store, key, licenses)
+        self.db.insert_findings(store, key, findings)
         Checked {
             warnings: d.warnings,
             reused: false,
             timed: d.timed([]),
             program: d.program,
             licenses: licenses,
+            findings: findings,
         }
     }
 
@@ -298,11 +336,25 @@ impl Workspace {
     }
 
     fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
-        if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [] } }
+        if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [], moved: [] } }
         let why: Reads? = d.read.find(it.path == path)?.why
         let unkept = why != null && why! is .Unkept
         let missing = if unkept { self.missing_rows(d.store, self.held_okey(d.store, path), d.want) } else { [] }
-        FileHold { path: path, held: false, why: why, missing: missing }
+        FileHold {
+            path: path,
+            held: false,
+            why: why,
+            missing: missing,
+            moved: self.parts_moved_at(path),
+        }
+    }
+
+    /// What this build found moved in a file's key: its own parts, then the
+    /// modules its module sees.
+    fn parts_moved_at(path: string) -> List<PartMoved> {
+        let moved = self.hold.moved.get()
+        (moved.get(parts_key(path)) ?? [])
+            .concat(moved.get(seen_key(self.module_path_of(path).text())) ?? [])
     }
 
     /// The rows standing in for a file under `want` that the store lacks, by
@@ -377,6 +429,11 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = store_at(build_cache_root(self))
         self.attach_store(store)
+        // guarded, unlike `attach_store`: `holding` can run more than
+        // once per `derived` (a retried attempt), and re-opening would
+        // both re-scan the pack file and discard an earlier attempt's
+        // still-uncommitted writes on the Pack value it replaces
+        if witness_enabled && self.pack.get() == null { let _ = self.open_pack(self.pack_path()) }
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -430,6 +487,16 @@ impl Workspace {
         if !adrift.is_empty() { fail at.adrift(adrift) }
         for a in p.files { self.keep_asks(store, lo, a) }
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
+        // A FINAL commit for whatever the last file staged: `says`
+        // (below) commits after EVERY file now that `Pack.commit`
+        // appends (O(the batch), store/pack.av) rather than rewriting
+        // the whole file, so this call is a no-op on the ordinary
+        // path — it exists for the one file that stages nothing after
+        // the last one that does. THEN ONE `fsync` for the whole pass:
+        // `commit` itself never syncs (the pack is a cache — atomicity
+        // matters, not per-commit durability, `Pack.flushed`'s own doc).
+        let _ = self.pack.get()?.commit()
+        let _ = self.pack.get()?.flushed()
         said
     }
 
@@ -470,6 +537,7 @@ impl Workspace {
             unlowered: unlowered,
             asked: asked,
             held: held_paths(self).length,
+            witnessed: self.witness_hits.get(),
             files: self.decls.files.get().length,
             turns: at.moved,
             spans: spans,
@@ -514,7 +582,7 @@ impl Workspace {
     /// are declared now — by name, since an edit moves ordinals.
     fn kept_boxed(store: Store, f: FileId) -> List<DeclId> {
         let path = self.decls.file(f).path
-        let found = [boxed_name(parts, path) for parts in record_fields(self, store, module_path(self.module_of(path).split(".")))]
+        let found = [boxed_name(parts, path) for parts in record_fields(self, store, self.module_path_of(path))]
         let names = [n! for n in found if n != null]
         [d for d in self.decls.decls_of_file(f) if self.names_record(d, names)]
     }
@@ -544,7 +612,7 @@ impl Workspace {
     fn home_moved(store: Store, path: string) -> bool {
         if path.is_empty() || !self.host.exists(path) { return false }
         !written_from(
-            record_places(self, store, module_path(self.module_of(path).split("."))).get(path),
+            record_places(self, store, self.module_path_of(path)).get(path),
             self.text_digest(path),
         )
     }
@@ -567,8 +635,7 @@ impl Workspace {
         mut at = 0
         while at < reads.length {
             for path in kept_runs(
-                record_places(self, store, module_path(self.module_of(reads[at]).split(".")))
-                    .get(reads[at]),
+                record_places(self, store, self.module_path_of(reads[at])).get(reads[at]),
             ) {
                 if !reads.contains(path) {
                     reads.push(path)
@@ -608,26 +675,102 @@ impl Workspace {
     /// as the store kept it — null when a held row cannot be read. A file the
     /// table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
+        // EVERY LOADED SOURCE, ONCE FOR THE WHOLE PASS, AND ONLY WHEN A
+        // WITNESSED ANSWER MIGHT NEED IT: `says` renders a reused row's
+        // `DiagFacts` through it per file, and gathering it per file (734
+        // files' worth of SourceFile, 734 times) is exactly the O(n²)
+        // that turned std-avrac's "keep" phase from ~10s into 700+s
+        // (measured; the hot path was @std.text.codepoints under
+        // avra_release_dead — line-start construction, paid again for
+        // every file on every file). `witness_enabled` is a compile-time
+        // constant, so a build with it false pays nothing here.
+        let sources: List<SourceFile> = if witness_enabled { p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()]) } else { [] }
         mut fresh: Map<string, Spoken> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want)) }
+        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want, sources)) }
         let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
 
-    /// What a parsed file says now: its own diagnostics, and — only when
-    /// the want is diagnostics — its rule findings (`rule_findings`), kept
-    /// beside them so a HELD file answers them alike.
-    fn says(p: Program, a: Analysis, want: Want) -> Spoken {
-        let said = Said {
-            path: a.view.source.file,
-            warnings: p.warned(a.diagnostics),
-            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
+    /// What a parsed file says now. Under `.Binary` no rule ever runs
+    /// (a build reads no lint) — `p.warned(a.diagnostics)` alone, exactly
+    /// as before witnessing existed. Under `.Diagnostics`, `witness_enabled`
+    /// picks the answer: OFF, the plain answer plus `rule_findings`,
+    /// kept apart under its own key (`file_said`) so a HELD file answers
+    /// them alike; ON, the WITNESSED answer (compiler/witness.av), reused
+    /// when a still-current one exists — `Family.Analysis` already covers
+    /// exactly this file's own diagnostics AND its rule findings
+    /// (`settled_check`'s `ds`, witness.av) MERGED, so a witnessed `Said`
+    /// carries both at once and `rules` stays null (nothing left to keep
+    /// apart). A reused row is rendered here, fresh, the same way a
+    /// freshly computed one is — `render_facts_among` picks each frame's
+    /// window from `sources`, `all_said`'s own, gathered once for the
+    /// whole pass — never from whichever process happened to settle the
+    /// witness.
+    fn says(p: Program, a: Analysis, want: Want, sources: List<SourceFile>) -> Spoken {
+        let cases = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)]
+        if want is .Binary || !witness_enabled {
+            let said = Said {
+                path: a.view.source.file,
+                warnings: p.warned(a.diagnostics),
+                cases: cases,
+            }
+            let rules: string? = if want is .Diagnostics { p.warned(rule_findings(analysed(a), a.view.stmts)) } else { null }
+            return Spoken { said: said, rules: rules }
         }
-        match want {
-            .Diagnostics -> Spoken { said: said, rules: p.warned(rule_findings(analysed(a), a.view.stmts)) },
-            .Binary -> Spoken { said: said, rules: null },
+        let outcome = self.witnessed_check(a.view.file)
+        if outcome.reused() {
+            self.witness_hits.set(self.witness_hits.get() + 1)
+        } else {
+            // A fresh check STAGED an entry (witness.av's `record_witness`)
+            // — commit it now: `Pack.commit` appends just this batch
+            // (store/pack.av), so a per-file commit costs O(the batch),
+            // not O(the whole pack).
+            let _ = self.pack.get()?.commit()
         }
+        let facts = outcome.value().diagnostics
+        let warned = [f for f in facts if f.severity is .Warning]
+        Spoken {
+            said: Said {
+                path: a.view.source.file,
+                warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
+                cases: cases,
+            },
+            rules: null,
+        }
+    }
+
+    /// A read file's key parts: its own under its path, the modules it sees
+    /// under its module — each rewritten only when it moved, and what moved
+    /// noted in the hold under the row's key.
+    fn keep_parts(store: Store, path: string) {
+        let now = self.key_parts_cached(store, self.module_path_of(path), path)
+        let own = now with { seen: [] }
+        let kept = store.get(Stored.Unit, parts_key(path))
+        let was = parts_of(kept ?? "")
+        self
+            .keep_moved(
+                store,
+                parts_key(path),
+                parts_wire(own),
+                if was == null { [] } else { parts_moved(store, was!, own) },
+            )
+        let seen = store.get(Stored.Unit, seen_key(now.module))
+        let seen_was = seen_of(seen ?? "")
+        self
+            .keep_moved(
+                store,
+                seen_key(now.module),
+                seen_wire(now.seen),
+                if seen == null || seen_was == null { [] } else { seen_list_moved(store, seen_was!, now.seen) },
+            )
+    }
+
+    /// A parts row kept when it moved, what moved noted under its key.
+    fn keep_moved(store: Store, key: string, wire: string, moved: List<PartMoved>) {
+        if store.get(Stored.Unit, key) == wire { return }
+        if !moved.is_empty() { self.hold.moved.put(key, moved) }
+        let _ = store.keep(Stored.Unit, key, wire, [])
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there
@@ -640,6 +783,7 @@ impl Workspace {
             return held_said(store, okey, said, want)
         }
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
+        self.keep_parts(store, path)
         let rules? = told.rules else { return told.said }
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules)
         told.said with { warnings: spoken([told.said.warnings, rules]) }
