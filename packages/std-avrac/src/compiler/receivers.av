@@ -113,6 +113,11 @@ impl Workspace {
         if x.root == null { return Summary { own: filled(n, false), edges: [] } }
         let receiver: TypeId? = self.receiver_type(x)
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
+        // `Receivers` is never `d`'s own owner — it is the whole-program
+        // pass reading every fn's body — so this read of `d`'s nodes is
+        // FOREIGN and depends on `d`'s own syntax (COMPILER DB townhall
+        // §6.11 rule 2), never on the whole file's `Parsed`.
+        touch(self.syntax(d))
         mut cx = Survey {
             ws: self,
             decls: self.decls,
