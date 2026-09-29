@@ -1142,6 +1142,24 @@ test_failed_run_restores_the_seed() {
     if grep -q "restored the seed" "$scratch/seed-restore.out"; then ok "restore: says what it restored"; else bad "restore: restored silently"; fi
 }
 
+test_landing_keeps_the_warm_cache() {
+    d="$(batch_repo warm-keep)"
+    wt="$scratch/warm-keep-wt"
+    git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
+    mkdir -p "$wt/build" "$wt/.avra-cache/objects"
+    cp "$d/build/avra" "$wt/build/avra"
+    echo warm > "$wt/.avra-cache/objects/kept"
+    ( cd "$wt" && AVRA_LAND_LOCK="$scratch/warm-keep-lock" AVRA_LAND_BATCH_WT="$scratch/warm-keep-batchwt" \
+        AVRA_SLOTS_DIR="$scratch/warm-keep-slots" exec sh "$land" a ) > "$scratch/warm-keep.out" 2>&1 || bad "warm-keep: the landing failed"
+    if [ -f "$wt/.avra-cache/objects/kept" ]; then
+        ok "warm-keep: a landing keeps its tree's warm cache"
+    else
+        bad "warm-keep: a landing moved its tree's cache aside"
+        cat "$scratch/warm-keep.out"
+    fi
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+}
+
 test_scratch_lifecycle() {
     d="$(batch_repo lifecycle)"
     git -C "$d" checkout -q -b dc main
@@ -1553,7 +1571,7 @@ STUB
     chmod +x "$path"
 }
 
-test_linux_gate_runs_cold() {
+test_linux_gate_runs_warm() {
     d="$(git_repo linux-cold)"
     mkdir -p "$d/packages/pa/src"
     commit_all "$d" "base"
@@ -1563,12 +1581,15 @@ test_linux_gate_runs_cold() {
     chmod +x "$stub"
     AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
     body="$(cat "$body_file" 2>/dev/null)"
-    clear_at="$(printf '%s' "$body" | awk '{print index($0, "-name .avra-cache")}')"
-    test_at="$(printf '%s' "$body" | awk '{print index($0, "build/avra test")}')"
-    if [ "${clear_at:-0}" -gt 0 ] && [ "${test_at:-0}" -gt "$clear_at" ]; then
-        ok "linux-gate: the Sprite tree's .avra-cache is cleared before any suite runs"
+    if printf '%s' "$body" | grep -q -- '-name .avra-cache'; then
+        bad "linux-gate: the Sprite command clears the tree's warm cache — body: $body"
     else
-        bad "linux-gate: the Sprite command runs a suite over a warm cache — body: $body"
+        ok "linux-gate: the Sprite tree keeps its warm cache"
+    fi
+    if printf '%s' "$body" | grep -q 'land-linux: test pa'; then
+        ok "linux-gate: each Sprite suite prints its own seconds"
+    else
+        bad "linux-gate: the Sprite command times no suite — body: $body"
     fi
 }
 
@@ -1963,6 +1984,7 @@ run_test test_run_checks_slash_label
 run_test test_job_wait_fails_closed_on_killed_job
 run_test test_compiler_untouched_skips_second_build_and_seedcheck
 run_test test_failed_run_restores_the_seed
+run_test test_landing_keeps_the_warm_cache
 run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
 run_test test_timeline_lines_present
@@ -1988,7 +2010,7 @@ run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
-run_test test_linux_gate_runs_cold
+run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
 run_test test_linux_gate_pass

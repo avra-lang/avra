@@ -456,13 +456,10 @@ merge_ref_in() {
 merge_main_in() { merge_ref_in "$1" "refs/heads/main"; }
 
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
-# avra-8sb5.57.25 (compiler print folded into every durable key) and
-# avra-8sb5.57.24 (a held module's record decoder now enforces its own
-# fingerprint, so a test-then-check sequence in one tree no longer
-# indexes a stale shape) are BOTH closed, on main — nothing in the
-# pipeline forces a cache sweep any more. Kept as a callable utility
-# (land_test.sh's own fixture still exercises it, and it is a
-# reasonable manual escape hatch), just not wired into a landing.
+# A landing tree keeps its warm cache: every durable key carries the
+# compiler's print and each held record its own fingerprint. A gate
+# whose question is COLD (the speed gate) moves its own side tree's
+# cache aside with this.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
@@ -731,12 +728,12 @@ linux_gate_step() {
     # not bootstrap just ran, is what keeps a warm persistent tree
     # (compiler cached, build/ synced) from failing `libs`'s link the
     # same way speed_base_tree once did for real.
-    # COLD: the gate asks whether the suites pass on Linux, so the
-    # Sprite tree's persistent .avra-cache goes first; warm behaviour
-    # is the warm gate's question.
-    body="export LLVM_PREFIX=/usr/lib/llvm-22; find . -maxdepth 4 -name .avra-cache -type d -prune -exec rm -rf {} +; test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }"
+    # WARM: the Sprite tree keeps its .avra-cache, as a landing tree
+    # does; the warm gate and --verify-held guard warm answers. Each
+    # remote phase prints its seconds.
+    body="export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
     for p in $pkgs; do
-        body="$body; build/avra test 'packages/$p'; s=\$?; [ \$s -eq 0 ] || exit \$s"
+        body="$body; t=\$(date +%s); build/avra test 'packages/$p'; s=\$?; echo \"land-linux: test $p \$((\$(date +%s) - t))s\"; [ \$s -eq 0 ] || exit \$s"
     done
     body="$body; exit 0"
     out="$scratch/linux-sprite.out"
@@ -1258,9 +1255,6 @@ run_pipeline() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
 
     light "merge$suffix" merge_main_in "$branch_wt"
-    # A warm cache does not yet follow every edit a merge makes, so the
-    # merged tree starts cacheless; drop this once it does.
-    move_caches_aside "$branch_wt"
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
@@ -1529,9 +1523,6 @@ reset_batch_wt() {
         { tool_failed "could not check out the batch branch in $batch_wt"; return 1; }
     git -C "$batch_wt" reset -q --hard main && git -C "$batch_wt" clean -q -fd ||
         { tool_failed "could not reset the batch tree at $batch_wt"; return 1; }
-    # Each attempt merges different content: a cache kept from the last
-    # one describes files that are no longer there.
-    move_caches_aside "$batch_wt"
     seed_compiler "$batch_wt"
 }
 

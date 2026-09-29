@@ -25,6 +25,8 @@ use core.{
     dst_of,
     lent_args,
     reads_of,
+    reads_reg,
+    reads_some,
     same_reg,
     rt_owns,
     rt_lends,
@@ -217,17 +219,19 @@ fn memory_ins(
     mut open_scopes: Stack<Scope> = new_stack()
     let last = last_reads(reg_types.length, ins)
     let defs = def_sites(reg_types.length, ins)
+    let next_barrier = barrier_positions(ins)
     let life = Lives {
         types: types,
         reg_types: reg_types,
         ins: ins,
         last: last,
         defs: defs,
+        next_barrier: next_barrier,
         viewed: viewed_regs(types, reg_types, ins),
-        death: death_points(defs, types, reg_types, ins, last),
+        death: death_points(defs, next_barrier, types, reg_types, ins, last),
     }
     for at, raw in ins {
-        let i = owned_form(defs, types, reg_types, ins, at, raw)
+        let i = owned_form(defs, next_barrier, types, reg_types, ins, at, raw)
         match i {
             .ScopeEnter(tier) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
@@ -360,7 +364,7 @@ fn memory_ins(
             .Load(dst, slot) -> {
                 out.push(i)
                 if is_managed(types, reg_types[dst.index]) &&
-                    borrow_outlives(defs, types, reg_types, ins, at, dst, slot) {
+                    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, slot) {
                     out.push(Ins.Retain(dst))
                     manages(types, reg_types, open_scopes, i)
                 }
@@ -457,6 +461,7 @@ fn memory_ins(
 /// retaining is a dangling store whether the read owns or not.
 fn borrow_outlives(
     defs: List<int>,
+    next_barrier: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -469,20 +474,20 @@ fn borrow_outlives(
     mut j = at + 1
     while j < ins.length {
         let i = ins[j]
-        if reads_of(i).any(held_by(views, it)) {
+        if views.any(reads_reg(i, it)) {
             if gives_upward(i) { return true }
             last = j
             let d: Reg? = view_of(i)
             // a child that takes its OWN reference rides nobody's
             if d != null &&
                 is_managed(types, reg_types[d!.index]) &&
-                !takes_twin(defs, types, reg_types, ins, j, i) {
+                !takes_twin(defs, next_barrier, types, reg_types, ins, j, i) {
                 views.push(d!)
             }
         }
         j = j + 1
     }
-    leaves_or_changes(defs, ins, at, last, slot)
+    leaves_or_changes(defs, next_barrier, ins, at, last, slot)
 }
 
 /// WHETHER THE CELL'S REFERENCE MAY NOT STAND for the whole stretch a borrow is
@@ -494,10 +499,22 @@ fn borrow_outlives(
 /// A REGION ARM THAT LEAVES THE FUNCTION CANNOT REACH `last`: nothing in it
 /// stands on any path to a use past its own close, so the scan skips straight
 /// there instead of reading what the arm did on its way out.
-fn leaves_or_changes(defs: List<int>, ins: List<Ins>, at: int, last: int, slot: Reg) -> bool {
+/// `next_barrier` SKIPS what the scan below can prove boring first: with
+/// none between `at + 1` and `last`, the loop below would run to `last`
+/// touching neither a bracket nor `slot` and answer false — so that is
+/// the answer, with no instruction visited at all.
+fn leaves_or_changes(
+    defs: List<int>,
+    next_barrier: List<int>,
+    ins: List<Ins>,
+    at: int,
+    last: int,
+    slot: Reg,
+) -> bool {
+    if next_barrier[at + 1] > last { return false }
     mut depth = 0
     mut loops = 0
-    mut k = at + 1
+    mut k = next_barrier[at + 1]
     while k < ins.length && (k <= last || loops > 0) {
         let i = ins[k]
         if changes_cell(defs, ins, i, slot) { return true }
@@ -511,7 +528,7 @@ fn leaves_or_changes(defs: List<int>, ins: List<Ins>, at: int, last: int, slot: 
         } else if depth == 0 && turns(i) {
             return true
         }
-        k = skip_diverging_arm(ins, k, last) ?? k + 1
+        k = skip_diverging_arm(ins, k, last) ?? next_barrier[k + 1]
     }
     false
 }
@@ -553,11 +570,6 @@ fn skip_diverging_arm(ins: List<Ins>, k: int, last: int) -> int? {
     if exit.diverges && (last <= k || last >= exit.boundary) { exit.boundary } else { null }
 }
 
-/// One of the borrows taken from the load.
-fn held_by(views: List<Reg>, r: Reg) -> bool {
-    views.any(same_reg(it, r))
-}
-
 /// A step that could CHANGE what the cell holds: a store to it, or
 /// any step handed the cell itself — a writing callee opens it
 /// there. A second load only reads it.
@@ -581,7 +593,7 @@ fn held_by(views: List<Reg>, r: Reg) -> bool {
 /// traces back to.
 fn changes_cell(defs: List<int>, ins: List<Ins>, i: Ins, slot: Reg) -> bool {
     if i is .Load { return false }
-    if reads_of(i).any(same_reg(it, slot)) { return true }
+    if reads_reg(i, slot) { return true }
     if !rederivable(defs, ins, slot) { return false }
     match i {
         .CallRtVoid(_, args) -> {
@@ -628,6 +640,33 @@ fn closes(i: Ins) -> bool { i is .ScopeExit || i is .RegionEnd || i is .LoopEnd 
 
 fn turns(i: Ins) -> bool { i is .ArmEnd || i is .LoopCond }
 
+/// A SUPERSET of every position `leaves_or_changes`'s per-step test can
+/// ever answer true for, over ANY slot: a bracket (opens/closes/turns
+/// already say so on their own), or a read `changes_cell` could match —
+/// which needs a register read at all, and never a `Load`'s (excluded by
+/// that law itself, whatever it reads). Over-inclusive is fine, since the
+/// exact test still runs at every position this reaches; under-inclusive
+/// would skip a real barrier, which `barrier_positions` must never do.
+fn barrier_kind(i: Ins) -> bool {
+    opens(i) || closes(i) || turns(i) || !(i is .Load) && reads_some(i)
+}
+
+/// THE NEXT BARRIER AT OR AFTER EACH POSITION, once per function body —
+/// `ins.length` past the last one. A scan for one fixed `slot` jumps
+/// straight to `next_barrier[p]` instead of visiting `p, p+1, p+2, …`:
+/// every position skipped is provably neither a bracket nor a possible
+/// `changes_cell` match, for ANY slot, so nothing the scan would have
+/// found is lost.
+fn barrier_positions(ins: List<Ins>) -> List<int> {
+    mut out = [ins.length for j in 0..ins.length + 1]
+    mut k = ins.length - 1
+    while k >= 0 {
+        out.set(k, if barrier_kind(ins[k]) { k } else { out[k + 1] })
+        k = k - 1
+    }
+    out
+}
+
 /// WHETHER THE STRETCH AFTER `from` AND BEFORE `to` RETURNS TO `from`'s
 /// OWN NESTING: every bracket opened in it closes in it, and none open at
 /// `from` closes or turns — so `to` runs once for each run of `from`.
@@ -650,7 +689,7 @@ fn level_span(ins: List<Ins>, from: int, to: int) -> bool {
 
 /// Whether `i` reads `r`.
 fn touches(i: Ins, r: Reg) -> bool {
-    reads_of(i).any(same_reg(it, r))
+    reads_reg(i, r)
 }
 
 /// WHETHER A LAST READ AT `i` MAY BE FOLLOWED BY THE RELEASE: not a
@@ -855,6 +894,7 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
 /// pass's one concern, and no runtime name is spelled here.
 fn owned_form(
     defs: List<int>,
+    next_barrier: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -868,7 +908,7 @@ fn owned_form(
             let twin: string? = rt_owned_twin(callee)
             if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
         },
-        .CallRt(dst, callee, args) if takes_twin(defs, types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
+        .CallRt(dst, callee, args) if takes_twin(defs, next_barrier, types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
         rest -> i,
     }
 }
@@ -878,6 +918,7 @@ fn owned_form(
 /// declines only while the child stays a borrow.
 fn takes_twin(
     defs: List<int>,
+    next_barrier: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -887,7 +928,8 @@ fn takes_twin(
     match i {
         .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
             is_managed(types, reg_types[dst.index]) &&
-            (!rt_lends(callee) || read_outlives(defs, types, reg_types, ins, at, dst, args)),
+            (!rt_lends(callee) ||
+                read_outlives(defs, next_barrier, types, reg_types, ins, at, dst, args)),
         rest -> false,
     }
 }
@@ -899,6 +941,7 @@ fn takes_twin(
 /// so the write that follows lands IN PLACE instead of cloning.
 fn read_outlives(
     defs: List<int>,
+    next_barrier: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -907,7 +950,7 @@ fn read_outlives(
     args: List<Reg>,
 ) -> bool {
     if args.is_empty() { return true }
-    borrow_outlives(defs, types, reg_types, ins, at, dst, args[0])
+    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, args[0])
 }
 
 /// A push's VALUE seat (arg 1) holds a managed type.
@@ -972,6 +1015,7 @@ type Lives = {
     ins: List<Ins>,
     last: List<int>,
     defs: List<int>,
+    next_barrier: List<int>,
     viewed: List<bool>,
     death: List<int>,
 }
@@ -1036,9 +1080,17 @@ impl Lives {
             let i = self.ins[j]
             let d: Reg? = view_of(i)
             if d != null &&
-                reads_of(i).any(held_by(family, it)) &&
+                family.any(reads_reg(i, it)) &&
                 is_managed(self.types, self.reg_types[d!.index]) &&
-                !takes_twin(self.defs, self.types, self.reg_types, self.ins, j, i) {
+                !takes_twin(
+                    self.defs,
+                    self.next_barrier,
+                    self.types,
+                    self.reg_types,
+                    self.ins,
+                    j,
+                    i,
+                ) {
                 family.push(d!)
             }
             j = j + 1
@@ -1072,7 +1124,18 @@ impl Lives {
         let d = self.defs[r.index]
         if d < 0 { return null }
         let slot? = loaded_slot(self.ins[d]) else { return null }
-        if borrow_outlives(self.defs, self.types, self.reg_types, self.ins, d, r, slot) { return null }
+        if borrow_outlives(
+            self.defs,
+            self.next_barrier,
+            self.types,
+            self.reg_types,
+            self.ins,
+            d,
+            r,
+            slot,
+        ) {
+            return null
+        }
         if !self.level_with(slot, d, at) ||
             !self.refilled(slot, at) ||
             self.borrowed_past(slot, r, at) {
@@ -1098,7 +1161,7 @@ impl Lives {
         while k < self.ins.length {
             let i = self.ins[k]
             if opens(i) || closes(i) || turns(i) || i is .FnExit { return false }
-            if reads_of(i).any(same_reg(it, slot)) { return stores_into(i, slot) }
+            if reads_reg(i, slot) { return stores_into(i, slot) }
             k = k + 1
         }
         false
@@ -1208,6 +1271,7 @@ fn last_reads(count: int, ins: List<Ins>) -> List<int> {
 /// may still point into the box.
 fn death_points(
     defs: List<int>,
+    next_barrier: List<int>,
     types: TypeRegistry,
     reg_types: List<TypeId>,
     ins: List<Ins>,
@@ -1219,7 +1283,7 @@ fn death_points(
     while j >= 0 {
         let i = ins[j]
         let d: Reg? = view_of(i)
-        if d != null && !takes_twin(defs, types, reg_types, ins, j, i) {
+        if d != null && !takes_twin(defs, next_barrier, types, reg_types, ins, j, i) {
             let dies = out[d!.index]
             for r in reads_of(i) {
                 if dies > out[r.index] { out.set(r.index, dies) }

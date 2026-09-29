@@ -476,6 +476,50 @@ case "$vh_vh2" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over vh2: $(printf '%s' "$vh_vh2" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# A HELD `_`-DECLARED CALLEE MUST NOT LOSE ITS ERROR UNION: `helper/mod.av`
+# declares `raise_thing`, whose `Result<int, _>` infers `SomeErr` from its
+# own `fail`; `leaf/mod.av` declares `wrapper`, whose OWN `Result<int, _>`
+# infers ONLY through a `?` into `raise_thing` — nothing else in
+# `wrapper`'s body can fail. A body-only edit to `leaf/mod.av` leaves
+# `helper/mod.av` held; if the held callee's inferred set is read from the
+# fixpoint's own (unfilled) table instead of its already-settled
+# signature, `wrapper`'s answer collapses to "nothing here can fail" and
+# the hold is refused whole — `S` itself catches that refusal as a FAIL.
+mkdir -p $R/vh3/src/helper $R/vh3/src/leaf
+cat > $R/vh3/avra.toml <<TOML
+[package]
+name = "rt-vh3"
+version = "0.1.0"
+TOML
+cat > $R/vh3/src/helper/mod.av <<'AV'
+export type SomeErr = { msg: string }
+export fn raise_thing(n: int) -> Result<int, _> {
+    if n < 0 { fail SomeErr { msg: "neg" } }
+    n
+}
+AV
+cat > $R/vh3/src/leaf/mod.av <<'AV'
+use helper.{raise_thing}
+export fn wrapper(n: int) -> Result<int, _> {
+    raise_thing(n)?
+}
+AV
+cat > $R/vh3/src/main.av <<'AV'
+use leaf.{wrapper}
+match wrapper(3) {
+    .Ok(v) -> println("ok ${v}"),
+    .Err(e) -> println("err ${e.msg}"),
+}
+match wrapper(-1) {
+    .Ok(v) -> println("ok ${v}"),
+    .Err(e) -> println("err ${e.msg}"),
+}
+AV
+S "cold vh3: a fn's inferred error union flows through a call" vh3
+ed $R/vh3/src/leaf/mod.av 'raise_thing(n)?' 'let m = n + 0
+    raise_thing(m)?'
+S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
+
 # RULE FINDINGS ARE A CHECK'S WANT: a build keeps none and prints none; a check
 # after that build reads no rule row, so it runs the rules over the file (a miss,
 # never a wrong answer) and speaks what a cold check speaks; a check held on a
