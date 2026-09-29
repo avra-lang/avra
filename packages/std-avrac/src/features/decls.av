@@ -80,7 +80,7 @@ use features.{
     Origins,
     no_origins,
 }
-use @std.meta.{Diagnostic, derive}
+use @std.meta.{Diagnostic, derive, identity}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb, new_db}
 
@@ -314,6 +314,10 @@ export enum UseKind { Call, MethodCall, Read, Write, Import, TypeUse }
 @relation
 export type Ref = { @local @index decl: DeclId, @local @index file: FileId, @local at: At, kind: UseKind }
 
+/// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
+/// type, so a copy of `Decls` still reads and writes the tables the
+/// workspace built.
+@identity
 export type Decls = {
     types: TypeRegistry,
     /// OUTER-TABLE GROWTH, SHARED: `mint`/`file_id`/`module_id` run
@@ -421,6 +425,8 @@ export type Decls = {
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: Cell<List<DeclId>>,
+    // LICENSED identity.plain: the language's own builtin rows, built
+    // once at workspace construction and never written after
     rows: List<TypeRow>,
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
