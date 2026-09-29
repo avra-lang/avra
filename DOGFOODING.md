@@ -691,7 +691,7 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       both processes, and no root-module file could ever reuse an
       answer. A refusal case cannot see this — it passes when
       everything is refused — and only a positive control (an unchanged
-      source is reused) failed. `stable_fields` restores the field.
+      source is reused) failed. core's `wire_fields` restores the field.
       THE SMELL: a decoder that splits on the separator its encoder
       joined with and takes the field count from the result. THE IDIOM:
       write the empty case first — an empty last field, an empty first
