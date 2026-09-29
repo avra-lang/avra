@@ -456,6 +456,37 @@ EOF
 # checks, sequential inside ONE job — 2s) and fmt-lossless (1s):
 # serial sum ~5s; run_checks_parallel already pins the cap=4 (~max)
 # side of this contrast.
+test_run_checks_slash_label() {
+    d="$(git_repo checks-slash)"
+    for p in pa pb; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build"
+    printf '#!/bin/sh\necho "$1-ok"\n' > "$d/build/avra"
+    chmod +x "$d/build/avra"
+    printf 'fmt-lossless:\n\t@echo fmt-ok\n' > "$d/Makefile"
+    commit_all "$d" "base"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    for p in pa pb; do printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"; done
+    commit_all "$d" "touch"
+    scr="$scratch/checks-slash-scratch"
+    rm -rf "$scr" "$scratch/checks-slash-slots"
+    ( AVRA_LAND_JOBS=1 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$scratch/checks-slash-slots" branch=x \
+        exec sh "$land" --call run_checks "$d" "$base_sha" HEAD "-batch-fix/slashed" 0 ) > "$scratch/checks-slash.out" 2>&1 &
+    pid=$!
+    n=0
+    while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 40 ]; do sleep 0.5; n=$((n + 1)); done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        bad "run_checks: a job label holding '/' never freed its slot — the pool deadlocked"
+        cat "$scratch/checks-slash.out"
+    else
+        ok "run_checks: a job label holding '/' frees its slot"
+    fi
+}
+
 test_run_checks_jobs_cap() {
     d="$(git_repo checks-jobs-cap)"
     for p in pa pb; do
@@ -1142,6 +1173,7 @@ test_run_checks_parallel
 test_run_checks_one_fails
 test_run_checks_two_fail
 test_run_checks_jobs_cap
+test_run_checks_slash_label
 test_job_wait_fails_closed_on_killed_job
 test_compiler_untouched_skips_second_build_and_seedcheck
 test_diff_scope_skips
