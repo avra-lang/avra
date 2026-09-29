@@ -43,6 +43,8 @@ use features.{
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
+use @std.relation.{relation}
+use @std.relation.db.{Db as RelDb, new_db}
 
 /// What every bound hole shares: the file a rule reads, and the two
 /// pass tables a fact comes from — one per analysis, never copied or
@@ -520,20 +522,10 @@ impl Code {
     /// receiver (`x.push(v)` writes `x` exactly as `x = …` does) —
     /// the write side of `local_uses`' split.
     fn write_roots(range: List<ExprId>) -> List<ExprId> {
-        // THE WHOLE ARENA, never `self.of.view.stmts` (the file's TOP
-        // LEVEL alone): an assignment almost always nests inside a
-        // fn's body, which the top-level list does not reach.
-        let assigns = flatten(
-            [some_list(self.write_root_of(s)) for s in self.of.view.store.stmt_ids()],
-        )
+        let assigns = assign_roots_at(self.of.view, self.at)
         let calls = flatten([some_list(self.method_write_root(e)) for e in range])
         let seated = flatten([self.seat_write_roots(e) for e in range])
         assigns.concat(calls).concat(seated)
-    }
-
-    fn write_root_of(s: StmtId) -> ExprId? {
-        let t? = self.of.view.store.assign_target(s) else { return null }
-        self.of.view.store.place_root(t)
     }
 
     /// A method call's own subject, when the method it names WRITES
@@ -912,6 +904,41 @@ fn seat_declared(of: Analysed, at: At, i: int) -> Ty? {
 export fn enclosing_decl(view: FileView, at: At) -> DeclId? {
     let sp? = view.store.span_at(at) else { return null }
     view.decls.innermost(view.decls.owner_spans(view.file), sp) ?? view.decls.main_of(view.file)
+}
+
+// ── the assign-roots index: `write_roots`' per-file cache ──
+
+/// One statement's own assignment root, filed once per file: the
+/// declaration whose body holds the write, and the root its place
+/// (or its writing method's receiver) targets — `@index owner` answers
+/// `write_roots`' whole-file walk with one lookup.
+@relation
+type AssignRoot = { @local @index owner: DeclId, @local root: ExprId }
+
+/// Every assign root filed under `at`'s own enclosing declaration —
+/// `write_roots`' bound, read from the file's index instead of a
+/// fresh arena walk.
+fn assign_roots_at(view: FileView, at: At) -> List<ExprId> {
+    let d? = enclosing_decl(view, at) else { return [] }
+    [r.root for r in AssignRoot.by_owner(view.assign_roots(), d)]
+}
+
+/// This file's assignment roots, one row per statement whose target
+/// has a place root: built once, from the WHOLE ARENA — never
+/// `view.stmts` (the file's TOP LEVEL alone), since an assignment
+/// almost always nests inside a fn's body — and cached on `view`
+/// (`FileView.assign_roots`), never rewalked per local or param.
+fn filed_assign_roots(view: FileView) -> RelDb {
+    let db = new_db()
+    for s in view.store.stmt_ids() { file_assign_root(db, view, s) }
+    db
+}
+
+fn file_assign_root(db: RelDb, view: FileView, s: StmtId) {
+    let t? = view.store.assign_target(s) else { return }
+    let root? = view.store.place_root(t) else { return }
+    let d? = enclosing_decl(view, At.Stmt(s)) else { return }
+    let _ = AssignRoot.insert(db, owner: d, root: root)
 }
 
 // ── pure(): a registry over Expr, folded through kids_at ──
