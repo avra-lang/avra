@@ -456,13 +456,10 @@ merge_ref_in() {
 merge_main_in() { merge_ref_in "$1" "refs/heads/main"; }
 
 # ── EVERY .avra-cache MOVED ASIDE (mv, never rm) ──────────────────────
-# avra-8sb5.57.25 (compiler print folded into every durable key) and
-# avra-8sb5.57.24 (a held module's record decoder now enforces its own
-# fingerprint, so a test-then-check sequence in one tree no longer
-# indexes a stale shape) are BOTH closed, on main — nothing in the
-# pipeline forces a cache sweep any more. Kept as a callable utility
-# (land_test.sh's own fixture still exercises it, and it is a
-# reasonable manual escape hatch), just not wired into a landing.
+# A landing tree keeps its warm cache: every durable key carries the
+# compiler's print and each held record its own fingerprint. A gate
+# whose question is COLD (the speed gate) moves its own side tree's
+# cache aside with this.
 move_caches_aside() {
     wt="$1"
     found="$(find "$wt" -maxdepth 4 -name .avra-cache -type d 2>/dev/null)"
@@ -1258,9 +1255,6 @@ run_pipeline() {
     old_main_sha="$(git -C "$main_wt" rev-parse HEAD)"
 
     light "merge$suffix" merge_main_in "$branch_wt"
-    # A warm cache does not yet follow every edit a merge makes, so the
-    # merged tree starts cacheless; drop this once it does.
-    move_caches_aside "$branch_wt"
 
     new_branch_sha="$(git -C "$branch_wt" rev-parse HEAD)"
     diff_files="$(git -C "$branch_wt" diff --name-only "$old_main_sha...$new_branch_sha")"
@@ -1529,9 +1523,6 @@ reset_batch_wt() {
         { tool_failed "could not check out the batch branch in $batch_wt"; return 1; }
     git -C "$batch_wt" reset -q --hard main && git -C "$batch_wt" clean -q -fd ||
         { tool_failed "could not reset the batch tree at $batch_wt"; return 1; }
-    # Each attempt merges different content: a cache kept from the last
-    # one describes files that are no longer there.
-    move_caches_aside "$batch_wt"
     seed_compiler "$batch_wt"
 }
 

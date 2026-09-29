@@ -1141,6 +1141,24 @@ test_failed_run_restores_the_seed() {
     if grep -q "restored the seed" "$scratch/seed-restore.out"; then ok "restore: says what it restored"; else bad "restore: restored silently"; fi
 }
 
+test_landing_keeps_the_warm_cache() {
+    d="$(batch_repo warm-keep)"
+    wt="$scratch/warm-keep-wt"
+    git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
+    mkdir -p "$wt/build" "$wt/.avra-cache/objects"
+    cp "$d/build/avra" "$wt/build/avra"
+    echo warm > "$wt/.avra-cache/objects/kept"
+    ( cd "$wt" && AVRA_LAND_LOCK="$scratch/warm-keep-lock" AVRA_LAND_BATCH_WT="$scratch/warm-keep-batchwt" \
+        AVRA_SLOTS_DIR="$scratch/warm-keep-slots" exec sh "$land" a ) > "$scratch/warm-keep.out" 2>&1 || bad "warm-keep: the landing failed"
+    if [ -f "$wt/.avra-cache/objects/kept" ]; then
+        ok "warm-keep: a landing keeps its tree's warm cache"
+    else
+        bad "warm-keep: a landing moved its tree's cache aside"
+        cat "$scratch/warm-keep.out"
+    fi
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+}
+
 test_scratch_lifecycle() {
     d="$(batch_repo lifecycle)"
     git -C "$d" checkout -q -b dc main
@@ -1962,6 +1980,7 @@ run_test test_run_checks_slash_label
 run_test test_job_wait_fails_closed_on_killed_job
 run_test test_compiler_untouched_skips_second_build_and_seedcheck
 run_test test_failed_run_restores_the_seed
+run_test test_landing_keeps_the_warm_cache
 run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
 run_test test_timeline_lines_present
