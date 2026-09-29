@@ -23,7 +23,22 @@ impl Workspace {
         // nothing: the references relation settles after typing, and
         // an unrecorded row leaves the program's own ask to decide.
         if self.comptime_active() { return filled(n, false) }
-        if x.root == null || self.is_held(x.file) || self.taken_as_value(d) {
+        // A HELD DECLARATION'S BODY IS READ, NEVER RE-GUESSED: the bit this
+        // scan would infer from a body this attempt does not have is
+        // already sitting in the declaration's own kept record line —
+        // computed the last time the file was fresh, decoded by `fill_fn`'s
+        // `row.marks()` straight into `declared_mark` (record.av's
+        // `mark_of_word`). The scan below is a pure function of the body's
+        // OWN text (no callee's or caller's mark enters it, per this file's
+        // header), so the record already carries the one true answer — a
+        // held declaration's `consumed_seat` is the same value whether this
+        // attempt holds it or a different attempt does.
+        if self.is_held(x.file) {
+            let kept = [self.decls.declared_mark(d, j).consumed for j in 0..n]
+            self.decls.record_consumed(d, kept)
+            return kept
+        }
+        if x.root == null || self.taken_as_value(d) {
             let none = filled(n, false)
             self.decls.record_consumed(d, none)
             return none

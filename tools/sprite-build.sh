@@ -251,6 +251,13 @@ advance_and_cache() {
         a1=$?
         make -s avra >> "/tmp/.avra-adv-$$" 2>&1
         a2=$?
+        # A standing compiler that cannot build this source may be a
+        # broken generation; the seed climbs from nothing.
+        if [ "$a1" != 0 ] || [ "$a2" != 0 ]; then
+            make bootstrap >> "/tmp/.avra-adv-$$" 2>&1
+            a1=$?
+            a2=$a1
+        fi
     else
         make bootstrap > "/tmp/.avra-adv-$$" 2>&1
         a1=$?

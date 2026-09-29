@@ -424,22 +424,10 @@ if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
     echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
 fi
 
-# A BODY EDIT MUST NOT COST A DEPENDENT ITS HOLD (avra-8sb5.57.??): `leaf/mod.av`
-# declares `helper`; `wrap/mod.av` — a NON-entry module — is the ONLY place
-# `helper` is taken as a VALUE (returned bare, never called by name), and
-# `shape/mod.av` is a third module neither one touches. `taken_as_value`'s
-# whole-program `refs_of` query used to answer FALSE for `helper` whenever
-# `wrap/mod.av` itself was held (a held file's body is not scanned, so its
-# own outgoing references were invisible to the fold) — silently letting the
-# per-seat scan run and mark a seat "consumed" that a caller elsewhere still
-# needs, and every dependent module's iface digest moved with it, costing
-# the WHOLE package its hold over ONE unrelated body edit. Each in its OWN
-# module (a subdirectory, never three files sharing the package's root
-# module): the bug is about a reference CROSSING a module boundary a hold
-# can stand on either side of, which three flat files in one root module
-# cannot pose in the first place — a mistake this fixture already made once
-# and caught only by hand-tracing "held 1/5" back to `seen_modules` folding
-# `self` into `self`.
+# A BODY EDIT MUST NOT COST A DEPENDENT ITS HOLD: `wrap` alone takes `leaf`'s
+# `helper` as a value, and a whole-program reference read answers the same
+# whether `wrap` is held or read. Each part is its own module, so the
+# reference crosses a module boundary a hold can stand on either side of.
 mkdir -p $R/vh2/src/shape $R/vh2/src/leaf $R/vh2/src/wrap
 cat > $R/vh2/avra.toml <<TOML
 [package]
@@ -487,6 +475,29 @@ case "$vh_vh2" in
     *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vh2 -> clean" ;;
     *) fails=$((fails+1)); echo "FAIL  verify-held over vh2: $(printf '%s' "$vh_vh2" | tail -5 | tr '\n' ' ')" ;;
 esac
+
+# RULE FINDINGS ARE A CHECK'S WANT: a build keeps none and prints none; a check
+# after that build reads no rule row, so it runs the rules over the file (a miss,
+# never a wrong answer) and speaks what a cold check speaks; a check held on a
+# check's rows speaks the same again.
+mkdir -p $R/rw/src
+printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
+printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
+rm -rf .avra-cache; rw_cold=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); case "$rw_cold" in *unmutated_mut*) ;; *) fails=$((fails+1)); echo "FAIL  the rule fixture draws no finding cold, so it attacks nothing" ;; esac
+rm -rf .avra-cache; rw_build=$(./avra build $R/rw 2>&1)
+steps=$((steps+1)); case "$rw_build" in *unmutated_mut*) fails=$((fails+1)); echo "FAIL  a build printed a rule finding" ;; esac
+rw_after=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check after a build speaks otherwise than a cold check"; }
+rw_held=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check held on a check's rows speaks otherwise than a cold check"; }
+
+# A CHECK THAT HOLDS SOME FILES AND READS OTHERS AFTER A BUILD: the held ones
+# with no rule row are read again (a miss), and the check stands.
+rm -rf .avra-cache; lib_cold=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
+rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/null 2>&1
+lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.

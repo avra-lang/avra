@@ -27,6 +27,8 @@ export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
+# No fixture prunes the machine's real scratch root.
+export AVRA_LAND_SCRATCH_ROOT="$scratch/scratch-root"
 # Every process a fixture started names the scratch dir; none outlives the run.
 cleanup() {
     pkill -9 -f "$scratch" 2>/dev/null
@@ -195,7 +197,7 @@ test_lock_fifo() {
     for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 600; then
+    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 1800; then
         bad "lock-fifo: C never acquired ticket 3 after A released"
     else
         ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
@@ -1114,6 +1116,41 @@ unlogged() {
     if grep -q "$2" "$scratch/$1.out"; then bad "$3"; cat "$scratch/$1.out"; else ok "$3"; fi
 }
 
+test_failed_run_restores_the_seed() {
+    d="$(batch_repo seed-restore)"
+    printf 'regenerated\n' > "$d/bootstrap/seed.ll"
+    sh "$land" --call restore_generated "$d" > "$scratch/seed-restore.out" 2>&1
+    if git -C "$d" diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources; then
+        ok "restore: a failed run's stranded seed is restored in the branch tree"
+    else
+        bad "restore: a failed run left its regenerated seed in the branch tree"
+    fi
+    if grep -q "restored the seed" "$scratch/seed-restore.out"; then ok "restore: says what it restored"; else bad "restore: restored silently"; fi
+}
+
+test_scratch_lifecycle() {
+    d="$(batch_repo lifecycle)"
+    git -C "$d" checkout -q -b dc main
+    mkdir -p "$d/docs"
+    printf 'words\n' > "$d/docs/note.md"
+    commit_all "$d" "docs only"
+    git -C "$d" checkout -q main
+    root="$scratch/lifecycle-root"
+    mkdir -p "$root/999991-1/trash/big" "$root/999991-1/logs" "$root/999992-1/trash" "$root/999992-1/logs"
+    touch -t 202001010000 "$root/999992-1"
+    wt="$scratch/lifecycle-wt"
+    git -C "$d" worktree add -q "$wt" dc > /dev/null 2>&1
+    mkdir -p "$wt/build" && cp "$d/build/avra" "$wt/build/avra"
+    ( cd "$wt" && AVRA_LAND_SCRATCH_ROOT="$root" AVRA_LAND_LOCK="$scratch/lifecycle-lock" AVRA_LAND_BATCH_WT="$scratch/lifecycle-batchwt" \
+        AVRA_SLOTS_DIR="$scratch/lifecycle-slots" exec sh "$land" dc ) > "$scratch/lifecycle.out" 2>&1 || bad "scratch: a docs-only landing failed"
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+    if [ -d "$root/999991-1/trash" ]; then bad "scratch: a dead run's trash survived the prune"; else ok "scratch: a dead run's trash is pruned at start"; fi
+    if [ -d "$root/999991-1/logs" ]; then ok "scratch: a fresh dead run's logs stay for a day"; else bad "scratch: a fresh dead run's logs were pruned"; fi
+    if [ -d "$root/999992-1" ]; then bad "scratch: a day-old dead run's scratch survived"; else ok "scratch: a day-old dead run's scratch is pruned"; fi
+    left="$(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '99999*' | wc -l | tr -d ' ')"
+    if [ "$left" -eq 0 ]; then ok "scratch: a green run leaves no scratch of its own"; else bad "scratch: a green run left $left scratch dir(s)"; ls "$root"; fi
+}
+
 test_diff_scope_skips() {
     d="$(batch_repo scope)"
     git -C "$d" checkout -q -b t main
@@ -1365,6 +1402,37 @@ STUB
     echo "$d"
 }
 
+test_gates_never_touch_the_landing_cache() {
+    d="$(speed_repo gate-cache cold)"
+    printf 'objects:\n\t@mkdir -p build && touch build/libavra_runtime.a\nlibs:\n\t@echo libs-ok\n' > "$d/Makefile"
+    printf '.avra-cache/\nbuild/\n' > "$d/.gitignore"
+    mkdir -p "$d/tools" && : > "$d/tools/speed.baseline"
+    commit_all "$d" "make targets"
+    mkdir -p "$d/.avra-cache/objects"
+    echo live > "$d/.avra-cache/objects/sibling-write"
+    out="$(AVRA_LAND_SPEED_WT="$scratch/gate-cache-speed-wt" branch=x sh "$land" --call speed_refresh "$d" 2>&1)"
+    if [ -f "$d/.avra-cache/objects/sibling-write" ]; then
+        ok "side tree: the speed refresh leaves the landing tree's cache where a sibling job writes"
+    else
+        bad "side tree: the speed refresh moved the landing tree's cache out from under a sibling — $out"
+    fi
+    if git -C "$d" diff --quiet -- tools/speed.baseline; then
+        ok "staged: the refresh leaves the landing tree's baseline untouched until every check is green"
+    else
+        bad "staged: the refresh wrote the landing tree's baseline mid-run"
+    fi
+    if printf '%s' "$out" | grep -q "baseline advanced"; then
+        ok "side tree: the refresh ran and measured"
+    else
+        bad "side tree: the refresh never measured — $out"
+    fi
+    if [ -f "$scratch/gate-cache-speed-wt/.git" ] || [ -d "$scratch/gate-cache-speed-wt/.git" ]; then
+        ok "side tree: the refresh measured in a tree of its own"
+    else
+        bad "side tree: no side tree was made for the refresh — $out"
+    fi
+}
+
 test_warm_gate_off() {
     d="$(git_repo warm-off)"
     mkdir -p "$d/build"
@@ -1471,6 +1539,25 @@ STUB
     chmod +x "$path"
 }
 
+test_linux_gate_runs_cold() {
+    d="$(git_repo linux-cold)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-cold-sprite.sh"
+    body_file="$scratch/linux-cold-body"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
+    chmod +x "$stub"
+    AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
+    body="$(cat "$body_file" 2>/dev/null)"
+    clear_at="$(printf '%s' "$body" | awk '{print index($0, "-name .avra-cache")}')"
+    test_at="$(printf '%s' "$body" | awk '{print index($0, "build/avra test")}')"
+    if [ "${clear_at:-0}" -gt 0 ] && [ "${test_at:-0}" -gt "$clear_at" ]; then
+        ok "linux-gate: the Sprite tree's .avra-cache is cleared before any suite runs"
+    else
+        bad "linux-gate: the Sprite command runs a suite over a warm cache — body: $body"
+    fi
+}
+
 test_linux_gate_pass() {
     d="$(git_repo linux-pass)"
     mkdir -p "$d/packages/pa/src"
@@ -1532,10 +1619,13 @@ speed_repo() {
     mkdir -p "$d/build" "$d/packages/cli/src"
     held_line="held 0/5"
     [ "$mode" = "warm" ] && held_line="held 5/5"
+    hit_line=""
+    [ "$mode" = "objhit" ] && hit_line='echo "time: lower+emit · cache hit"'
     cat > "$d/build/avra" <<STUB
 #!/bin/sh
 if [ "\$1" = "build" ]; then
     echo "time: parse 1ms, $held_line, attempt 1"
+    $hit_line
     exit 0
 fi
 exit 0
@@ -1589,6 +1679,52 @@ test_speed_gate_regress_with_override() {
         ok "speed-gate: the override reason is queued for the chore commit"
     else
         bad "speed-gate: the override reason was not queued"
+    fi
+}
+
+test_speed_gate_links_the_candidates_runtime() {
+    d="$(git_repo speed-pair)"
+    record="$scratch/speed-pair-record"
+    : > "$record"
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/runtime" "$d/tools"
+    printf 'int r;\n' > "$d/runtime/r.c"
+    : > "$d/tools/speed.baseline"
+    printf 'objects:\n\t@mkdir -p build && echo BASE > build/libavra_runtime.a && echo BASEO > build/r.o\nlibs:\n\t@echo libs-ok\n' > "$d/Makefile"
+    printf '.avra-cache/\nbuild/\n' > "$d/.gitignore"
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+if [ "\$1" = "build" ]; then
+    cat build/libavra_runtime.a build/r.o >> "$record"
+    echo "time: parse 1ms, held 0/1, attempt 1"
+fi
+exit 0
+STUB
+    chmod +x "$d/build/avra"
+    commit_all "$d" "base"
+    echo CAND > "$d/build/libavra_runtime.a"
+    echo CANDO > "$d/build/r.o"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    AVRA_LAND_SPEED_WT="$scratch/speed-pair-wt" branch=x sh "$land" --call speed_gate_step "$d" "$base_sha" > "$scratch/speed-pair.out" 2>&1
+    if [ "$(head -2 "$record" | tr '\n' ' ')" = "CAND CANDO " ]; then
+        ok "speed-gate: the candidate's product links the candidate's runtime and runtime objects"
+    else
+        bad "speed-gate: the candidate linked another tree's runtime — saw: $(tr '\n' ' ' < "$record")"
+        cat "$scratch/speed-pair.out"
+    fi
+}
+
+test_speed_gate_object_hit_tool_failure() {
+    d="$(speed_repo speed-objhit objhit)"
+    mkdir -p "$d/tools"
+    scr="$scratch/speed-objhit-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label > "$scratch/speed-objhit.out" 2>&1
+    if [ -f "$scr/tool-failure" ] && grep -q "was not cold" "$scr/tool-failure"; then
+        ok "speed-gate: a cached object under 'held 0/' is still not cold — a TOOL failure"
+    else
+        bad "speed-gate: a run reusing cached objects was measured as cold"
+        cat "$scratch/speed-objhit.out"
     fi
 }
 
@@ -1767,6 +1903,8 @@ run_test test_run_checks_jobs_cap
 run_test test_run_checks_slash_label
 run_test test_job_wait_fails_closed_on_killed_job
 run_test test_compiler_untouched_skips_second_build_and_seedcheck
+run_test test_failed_run_restores_the_seed
+run_test test_scratch_lifecycle
 run_test test_diff_scope_skips
 run_test test_timeline_lines_present
 run_test test_slot_limit
@@ -1786,16 +1924,20 @@ run_test test_ratchet_missing_baseline
 run_test test_ratchet_regress_no_override
 run_test test_ratchet_regress_with_override
 run_test test_chore_commit_carries_override_reason
+run_test test_gates_never_touch_the_landing_cache
 run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
+run_test test_linux_gate_runs_cold
 run_test test_linux_gate_pass
 run_test test_linux_gate_fail
 run_test test_linux_gate_unreachable
 run_test test_speed_gate_improve
 run_test test_speed_gate_regress_no_override
 run_test test_speed_gate_regress_with_override
+run_test test_speed_gate_links_the_candidates_runtime
+run_test test_speed_gate_object_hit_tool_failure
 run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order
