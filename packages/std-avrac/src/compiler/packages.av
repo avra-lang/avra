@@ -205,8 +205,22 @@ impl Workspace {
 
     /// The package a module path names: the root package for a local
     /// path, a dependency by key, absence when no package has the key.
+    /// A KEY NOT YET ADMITTED IS ADMITTED HERE, through the one door
+    /// (`reaches`) every `use` already takes — a package joins lazily,
+    /// on the first ask, so asking twice must not answer twice: once
+    /// found, once absent. Admitting through the root is the same
+    /// reach a root's own `use` line gets, and every other package's
+    /// dependencies are already admitted transitively at ITS OWN entry
+    /// (`admit_dependencies`), so nothing reachable is missed by asking
+    /// from there. A key `reaches` genuinely refuses (no manifest row,
+    /// no toolchain directory) is absence, still — the door speaks for
+    /// itself on the one path that can misfire silently, a dependency
+    /// cycle (`speak_package`, `admitted`).
     fn holder(m: ModulePath) -> Package? {
         let k? = m.package() else { return self.packages()[0] }
+        let found: Package? = self.packages().find(it.key == k)
+        if found != null { return found }
+        if !self.reaches(self.packages()[0], k) { return null }
         self.packages().find(it.key == k)
     }
 
