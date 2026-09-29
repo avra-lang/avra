@@ -653,7 +653,12 @@ linux_gate_step() {
     pkgs="$*"
     sprite="${AVRA_LAND_SPRITE:-avra-idioms-pay}"
     sprite_build="${AVRA_LAND_SPRITE_BUILD:-$tools_dir/sprite-build.sh}"
-    body="export LLVM_PREFIX=/usr/lib/llvm-22; test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }"
+    # `-o avra` skips avra's OWN prerequisites too (libavra_runtime.a
+    # among them, COMPILER_OBJS) — `make objects` first, whether or
+    # not bootstrap just ran, is what keeps a warm persistent tree
+    # (compiler cached, build/ synced) from failing `libs`'s link the
+    # same way speed_base_tree once did for real.
+    body="export LLVM_PREFIX=/usr/lib/llvm-22; test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }"
     for p in $pkgs; do
         body="$body; build/avra test 'packages/$p'; s=\$?; [ \$s -eq 0 ] || exit \$s"
     done
