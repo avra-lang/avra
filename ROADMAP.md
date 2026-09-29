@@ -3187,10 +3187,10 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         about it; the trap firing inside a guarded package is a bug in
         the guards.
   - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
-        is F2003 "`Idea` is a record, not an enum": the type-name
-        admission rule fires for a CALL, never for a bare `Name.parse`
-        passed as a fn value, so every route wraps it — `(t: string)
-        -> Idea.parse(t)`, one honest line. WANTING SITE: the router's
+        is F2003 "`Idea.parse` is a static fn, and a static fn is not a
+        value yet", whose help writes the wrapper: a static fn is
+        callable (`Idea.parse(t)`) but not yet a value, so every route
+        wraps it — `(t: string) -> Idea.parse(t)`, one honest line. WANTING SITE: the router's
         table (`packages/std-http/src/route.av`), the first consumer
         where a door wants to be a value; the same door-as-value
         question the subset's "a generic fn as a value" entry records
@@ -3604,10 +3604,10 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         about it; the trap firing inside a guarded package is a bug in
         the guards.
   - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
-        is F2003 "`Idea` is a record, not an enum": the type-name
-        admission rule fires for a CALL, never for a bare `Name.parse`
-        passed as a fn value, so every route wraps it — `(t: string)
-        -> Idea.parse(t)`, one honest line. WANTING SITE: the router's
+        is F2003 "`Idea.parse` is a static fn, and a static fn is not a
+        value yet", whose help writes the wrapper: a static fn is
+        callable (`Idea.parse(t)`) but not yet a value, so every route
+        wraps it — `(t: string) -> Idea.parse(t)`, one honest line. WANTING SITE: the router's
         table (`packages/std-http/src/route.av`), the first consumer
         where a door wants to be a value; the same door-as-value
         question the subset's "a generic fn as a value" entry records

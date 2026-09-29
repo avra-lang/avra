@@ -120,5 +120,38 @@ spec "features/impls/statics" {
                 a.report().contains("`P` has no static fn `nope`") &&
                 a.report().contains("build a record with `P { ... }`")
         }
+        then "a static fn read as a value names the law and writes the lambda" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply(P.of)",
+            )
+            a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains(
+                        "error[type.unknown_prop]: `P.of` is a static fn, and a static fn is not a value yet",
+                    ) &&
+                a.report().contains("help: wrap it in a lambda — `(n: int) -> P.of(n)`")
+        }
+        then "a static fn read as a value, rendered whole" {
+            analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply(P.of)",
+            )
+                .report()
+                .starts_with(
+                    "error[type.unknown_prop]: `P.of` is a static fn, and a static fn is not a value yet\n  ╭─[<source>:6:7]\n6 │ apply(P.of)\n  ·       ┬\n  ·       ╰── read here\n──╯\nhelp: wrap it in a lambda — `(n: int) -> P.of(n)`",
+                )
+        }
+        then "the lambda spells every seat of a static fn" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn sum(a: int, b: int) -> P { P { x: a + b } }\n}\nfn apply(f: fn(int, int) -> P) -> int { f(1, 2).x }\napply(P.sum)",
+            )
+            a.diagnostics.length == 1 && a.report().contains("`(a: int, b: int) -> P.sum(a, b)`")
+        }
+        then "the lambda it writes is the fix" {
+            let a = analyze_source(
+                "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply((n: int) -> P.of(n))",
+            )
+            a.diagnostics.is_empty()
+        }
     }
 }
