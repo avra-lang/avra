@@ -1,13 +1,18 @@
-//! Stale `// LICENSED <id>` citations (CLAUDE.md's exemption law) —
-//! the dotted id right after that word must still name a rule `avra
-//! rules` lists. `Workspace.checked()` finds them once, from the
-//! Program it already built, and caches the answer (compiler/db.av's
-//! `Licenses` row) under the same key as its warnings — never
-//! `here()`-relative: a cached line is read back by a check that may
-//! run from a different directory than the one that minted it, so
-//! the CLI layer (`avra check`) renders the final message, this file
-//! only finds and encodes the citation.
-use core.{Remark, flatten, joined}
+//! `// LICENSED <id>` citations (CLAUDE.md's exemption law), a colon
+//! and a reason after the id — the dotted id right after that word
+//! must still name a rule `avra rules` lists. `Workspace.checked()`
+//! finds stale ones
+//! once, from the Program it already built, and caches the answer
+//! (compiler/db.av's `Licenses` row) under the same key as its
+//! warnings — never `here()`-relative: a cached line is read back by
+//! a check that may run from a different directory than the one
+//! that minted it, so the CLI layer (`avra check`) renders the final
+//! message, this file only finds and encodes the citation.
+//! `site_licensed` is the SAME exemption read the other way: not
+//! "is this citation stale" but "does a finding's own site carry
+//! one" — `rule_pass.av`'s door, before a finding is even reported.
+use core.{NodeStore, Remark, flatten, joined}
+use diagnostics.{SourceFile}
 
 /// Every stale citation across `p`'s files, one `file\tline\tid` per
 /// line, joined — "" for a clean program.
@@ -21,20 +26,25 @@ fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
 }
 
 fn remark_line(a: Analysis, r: Remark, known: List<string>) -> List<string> {
-    let id? = claimed(r) else { return [] }
-    if known.contains(id) { return [] }
+    let c? = claimed(r) else { return [] }
+    if known.contains(c.id) { return [] }
     let line = a.view.source.linecol(r.at).line
-    ["${a.view.source.file}\t${line}\t${id}"]
+    ["${a.view.source.file}\t${line}\t${c.id}"]
 }
 
-/// The id a remark's own text claims, or absence — a bare `// LICENSED
-/// — reason` (no id: a doctrine exemption, never a rule's) claims
-/// nothing, and neither does a comment that merely mentions the word.
-fn claimed(r: Remark) -> string? {
+/// One `// LICENSED <id>: <reason>` comment, parsed — the id and
+/// what follows its colon, trimmed (empty when the author wrote
+/// none).
+type Cited = { id: string, reason: string }
+
+/// A remark's own claim, or absence — a bare `// LICENSED — reason`
+/// (no id: a doctrine exemption, never a rule's) claims nothing, and
+/// neither does a comment that merely mentions the word.
+fn claimed(r: Remark) -> Cited? {
     match r.trivia { .Comment(text) -> claimed_in(text), .Blank -> null }
 }
 
-fn claimed_in(text: string) -> string? {
+fn claimed_in(text: string) -> Cited? {
     if !text.contains("LICENSED") { return null }
     let rest = text.substring(text.index_of("LICENSED") + "LICENSED".length, text.length).trim()
     if rest == "" || rest.starts_with("—") || rest.starts_with("-") { return null }
@@ -42,5 +52,24 @@ fn claimed_in(text: string) -> string? {
     if colon < 0 { return null }
     let id = rest.substring(0, colon).trim()
     if id == "" { return null }
-    id
+    Cited { id: id, reason: rest.substring(colon + 1, rest.length).trim() }
+}
+
+/// A rule's own SITE LICENSE (CLAUDE.md's exemption law): the line
+/// directly above `line` is its OWN `// LICENSED <id>: <reason>` —
+/// naming `id` exactly, a non-empty reason — read by `rule_pass.av`
+/// before a finding is even reported. Never a loose proximity guess
+/// (`licensed_just_above`'s 200-byte window, `avra fix`'s own door)
+/// and never a different rule's citation, or one whose colon closes
+/// on nothing.
+export fn site_licensed(store: NodeStore, source: SourceFile, line: int, id: string) -> bool {
+    line > 1 && store.remarks.get().any(licenses(it, source, line - 1, id))
+}
+
+fn licenses(r: Remark, source: SourceFile, line: int, id: string) -> bool {
+    !r.same_line && source.linecol(r.at).line == line && cites(claimed(r), id)
+}
+
+fn cites(c: Cited?, id: string) -> bool {
+    c != null && c!.id == id && c!.reason != ""
 }

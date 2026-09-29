@@ -55,7 +55,18 @@ fn node_candidates(a: Analysed, index: RuleIndex, at: At) -> List<Candidate> {
 
 fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {
     let f? = r.run(code_at(a, at)) else { return [] }
+    if site_licenses(a, at, r) { return [] }
     [Candidate { at: at, owner: r, fix: f }]
+}
+
+/// Whether the firing rule's own site carries `// LICENSED <id>:
+/// <reason>` on the line directly above (`compiler.licenses`'
+/// `site_licensed`, CLAUDE.md's exemption law) — a finding never
+/// built for a site whose author already decided this IS the law,
+/// not a defect.
+fn site_licenses(a: Analysed, at: At, r: RuleEntry) -> bool {
+    let loc? = code_at(a, at).loc() else { return false }
+    site_licensed(a.view.store, a.view.source, a.view.source.linecol(loc.lo).line, rule_id(r))
 }
 
 /// The one construction seam: a rule's own subject, one node in one
