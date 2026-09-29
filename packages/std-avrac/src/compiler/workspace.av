@@ -44,7 +44,7 @@ use core.{
     DeclKind,
 }
 use @std.path.{dir_of, joined_path}
-use @std.relation.db.{Db as RelDb, new_db as new_error_sites_db}
+use @std.relation.db.{Db as RelDb, Hooks as RelHooks, hooked_db}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     Unsettled,
@@ -87,7 +87,7 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
+use query.{new_kernel, Kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -685,6 +685,39 @@ fn family_gap_voice(fam: Family, i: int) -> string {
 /// real ordinal is 22.
 export fn family_gap_probe() -> string { family_gap_voice(Family.Raised, 99) }
 
+/// A `@std/relation` `Db`'s owner, worn over this workspace's OWN
+/// kernel — never a fixed `Family` variant, since a relation mints its
+/// family dynamically, on first reach, through the same door
+/// `kernel.family` already answers any caller. A read or write outside
+/// a `@query` lands in the frame of whichever kernel query is open —
+/// `kernel.reader()`, stable for that query's own run and distinct from
+/// every other's — so a query reading a relation it just wrote is
+/// refused, and its own words say to read `prior(db)` instead. A
+/// refusal here TRAPS: nothing outside the compiler's own process
+/// could be listening for it, so a hit is the compiler's own defect,
+/// not a program's.
+fn relation_hooks(kernel: Kernel) -> RelHooks {
+    RelHooks {
+        family: (verify: fn(int) -> int) -> kernel.family(verify),
+        record: (fam: int, cell: int) -> {
+            kernel.record_dep(Key { family: fam, arg: cell })
+            kernel.reader()
+        },
+        revision: () -> kernel.revision(),
+        reader: (token: int) -> "a compiler query (reader ${token})",
+        refused: (words: string) -> avra_trap(words),
+        opened: (_fam: int, _cell: int) -> 0 - 1,
+        settled: (_fam: int, _cell: int) -> no_relation_settle_word(),
+        running: () -> kernel.reader(),
+    }
+}
+
+/// `Hooks.settled` answers `void`: this Db leans on `@std/relation`'s
+/// OWN write-count reuse check (`opened`'s `-1`, "no opinion") rather
+/// than the kernel's early-cutoff fingerprint, so nothing needs telling
+/// when a cell settles.
+fn no_relation_settle_word() {}
+
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
     timed_workspace(host, root, lang, () -> 0)
 }
@@ -810,7 +843,7 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
-        error_sites_db: Cell.new(new_error_sites_db()),
+        error_sites_db: Cell.new(hooked_db(relation_hooks(kernel))),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
