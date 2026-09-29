@@ -919,7 +919,30 @@ export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
 /// declaration TEXT is no interface — it carries the receivers pass's written bits,
 /// which move without a contract moving.
 export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
-    iface_of(record_cached(ws, store, m)) ?? module_bytes(ws, m)
+    iface_of(record_cached(ws, store, m)) ?? sub_module_bytes_key(ws, store, m) ?? module_bytes(
+        ws,
+        m,
+    )
+}
+
+/// A file-level module within a package (a bare intra-package `use`'s
+/// target) has no record of its own — only the PACKAGE ROOT's record
+/// does, one `file` line per file, each carrying that file's own
+/// interface digest (`FileLines.iface`, `interface.av`'s `record_of`).
+/// That digest already covers every declaration the file names,
+/// exported or not — a same-package `use` reaches both — so reading
+/// it here is the same digest a cross-package `use` of the whole
+/// package already keys on, narrowed to the files this path names.
+/// Null when the root itself has no record yet, or names a file the
+/// root's record has not placed — module_bytes is the honest answer
+/// for either, never a guess.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
+fn sub_module_bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string? {
+    if m.local().is_empty() || m.package() == null { return null }
+    let places = record_places(ws, store, module_path(m.segments.slice(0, 2)))
+    let ats = [places.get(f) for f in ws.module_files(m)]
+    if ats.is_empty() || ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
+    digest_of(joined(sorted_texts([at!.file[4] for at in ats]), "\n"))
 }
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its

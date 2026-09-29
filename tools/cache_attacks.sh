@@ -403,6 +403,47 @@ case "$vh_hc" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# A BARE INTRA-PACKAGE MODULE KEYS ON ITS OWN INTERFACE, NEVER THE PACKAGE'S
+# RAW TEXT: `lib.av` reaches `pad.av`'s exported `pad` through a `use` and its
+# non-exported `priv` through no `use` at all — a sibling file's bare name
+# reaches a declaration a cross-package `use` never could. A body-only edit
+# must hold; a signature edit — exported or not — never may, or a sibling
+# keeps compiling against a signature that moved (avra-8sb5.57's
+# perf/module-hold).
+MH() { # MH <label> <path-substr> <want: held|read>
+    steps=$((steps+1))
+    out=$(./avra build --time $R/mh 2>&1)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+}
+mkdir -p $R/mhl/src $R/mh/src
+printf '[package]\nname = "@rt/mhl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mhl"\npath = "src/lib.av"\n' > $R/mhl/avra.toml
+cat > $R/mhl/src/pad.av <<'AV'
+export fn pad() -> int { 3 }
+fn priv() -> int { 5 }
+AV
+cat > $R/mhl/src/lib.av <<'AV'
+use pad.{pad}
+export fn host() -> int { pad() + priv() }
+AV
+printf '[package]\nname = "rt-mh"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n' > $R/mh/avra.toml
+printf 'use @rt.mhl.{host}\nprintln("mh ${host()}")\n' > $R/mh/src/main.av
+S "cold mh: a sibling reaches one file by use, another by no use at all" mh
+S "mh: warm no-op" mh
+ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
+MH "mh: pad's body only moves — lib.av stays held" lib.av held
+ed $R/mhl/src/pad.av "{ 30 }" "{ 3 }"
+MH "mh: and back" lib.av held
+ed $R/mhl/src/pad.av "export fn pad() -> int { 3 }" "export fn pad(n: int = 0) -> int { 3 }"
+MH "mh: pad's EXPORTED signature moves (reached through a use) — lib.av re-reads" lib.av read
+ed $R/mhl/src/pad.av "export fn pad(n: int = 0) -> int { 3 }" "export fn pad() -> int { 3 }"
+MH "mh: and back" lib.av held
+ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
+MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read
+ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
+MH "mh: and back, cold no more" lib.av held
+
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
 # shape alone and the held declaration is a plain enum, so the decl wire naming
