@@ -13,6 +13,7 @@ use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
+use compiler.findings.{findings_text}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -176,15 +177,17 @@ fn remember(store: Store, key: string, paths: List<string>) {
 }
 
 /// What `check` says of a clean program: its warnings, its stale
-/// `// LICENSED` citations (compiler/licenses.av — a cache hit reads
-/// these back too, never rescanning), and whether they were kept from
-/// a check of these exact inputs — plus the PROGRAM this answer was
-/// derived from, when one was: a cache hit costs a hash and builds
-/// none, so a caller wanting more than the rendered answer (the
-/// baseline ratchet's own rule listing) falls back to building its
-/// own rather than forcing every `check` to pay for a Program it does
-/// not otherwise need.
-export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "" }
+/// `// LICENSED` citations (compiler/licenses.av) and its rule
+/// findings (compiler/findings.av, TSV-encoded — a cache hit reads
+/// all three back, never rescanning or rebuilding), and whether they
+/// were kept from a check of these exact inputs — plus the PROGRAM
+/// this answer was derived from, when one was: a cache hit costs a
+/// hash and builds none, so a caller wanting the Program itself (a
+/// baseline ratchet's own `--baseline_accept` prune, which needs the
+/// files a check REACHED and not merely what it found) falls back to
+/// building its own rather than forcing every `check` to pay for a
+/// Program it does not otherwise need.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: string? = null }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -202,19 +205,26 @@ impl Workspace {
                 reused: true,
                 timed: "",
                 licenses: self.db.licenses(store, key0) ?? "",
+                // A missing row reads as UNKNOWN, never as EMPTY — the
+                // empty-value law applied to a cache row. A caller reads
+                // null as "derive it yourself", "" as "no findings".
+                findings: self.db.findings(store, key0),
             }
         }
         let d = self.derived(entry, Want.Diagnostics)?
         let key = d.program.ws.kept_key(under)
         let licenses = stale_license_lines(d.program)
+        let findings = findings_text(d.program)
         self.db.insert_warn(store, key, d.warnings)
         self.db.insert_licenses(store, key, licenses)
+        self.db.insert_findings(store, key, findings)
         Checked {
             warnings: d.warnings,
             reused: false,
             timed: d.timed([]),
             program: d.program,
             licenses: licenses,
+            findings: findings,
         }
     }
 
