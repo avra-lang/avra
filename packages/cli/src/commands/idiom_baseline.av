@@ -46,6 +46,29 @@ export fn new_sites(findings: List<Finding>, keys: List<string>) -> List<Site> {
     [s for s in sites_of(findings) if !keys.contains(site_key(s))]
 }
 
+/// `new_sites`, fed from `Checked.findings` — the durable TSV a cache
+/// hit already carries (compiler/db.av's `Findings` row), so the
+/// common gate (`avra check <pkg> --baseline <file>`, no
+/// `--baseline_accept`) never rebuilds the Program `findings_of`
+/// would need just to answer this.
+export fn new_sites_from_text(text: string, keys: List<string>) -> List<Site> {
+    [s for s in sites_from_text(text) if !keys.contains(site_key(s))]
+}
+
+/// `Db`'s `Findings` row, read back: one `rule\tfile\ttext` per line,
+/// the file still the writer's own — `sites_of`'s same `relative_path`
+/// door, applied at READ time so it answers under THIS caller's
+/// directory rather than whichever one wrote the row.
+fn sites_from_text(text: string) -> List<Site> {
+    if text == "" { return [] }
+    [site_of_line(line) for line in text.split("\n")]
+}
+
+fn site_of_line(line: string) -> Site {
+    let parts = line.split("\t")
+    Site { kind: parts[0], file: relative_path(here(), parts[1]), text: parts[2] }
+}
+
 /// The keys `findings` currently reports — a fresh check's OWN answer
 /// to "does this site still fire", in the one currency a baseline key
 /// is kept or dropped by.
