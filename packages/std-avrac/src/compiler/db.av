@@ -72,6 +72,7 @@ use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest}
 use diagnostics.{SourceFile}
 use compiler.lower.{Unit}
+use compiler.kinds.{DbKind}
 use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
 use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
@@ -152,37 +153,12 @@ export fn decoded_docfacts(text: string) -> DocFacts? {
     }
 }
 
-/// `DbRow`'s own tags — hand-written, not derived: an enum's variant
-/// list refuses a spliced `List<Code>` the same way a struct literal's
-/// field list does (confirmed against the real compiler while
-/// attempting it, twice) — neither has the "Many"-joining a Statement
-/// or Arms hole gets. Grows exactly when `DbRow` does.
-export enum DbKind {
-    Source
-    Parsed
-    Lowered
-    Manifest
-    Plain
-    Items
-    Namespace
-    Visible
-    Resolved
-    Typed
-    ConstTyped
-    Folded
-    Analysis
-    Lifted
-    Expanded
-    Settled
-    Decl
-    Sig
-    Warn
-    Scan
-    Canon
-    Licenses
-    Findings
-}
-
+/// `DbRow`'s own tags — SYNTHESIZED (compiler/kinds/kinds.av, N3):
+/// each variant is a marker declaration there, wearing `@db_kind`,
+/// gathered by `collect enum`. Grows exactly when `DbRow` does — a
+/// new `DbRow` payload variant with no matching marker leaves `kind()`
+/// below refusing to compile (`.Enum`'s ordinary exhaustiveness), the
+/// same way a forgotten `tag()` arm would.
 impl DbKind {
     fn tag() -> string {
         match self {

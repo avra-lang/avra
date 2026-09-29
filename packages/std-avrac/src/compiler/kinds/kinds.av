@@ -1,0 +1,196 @@
+//! `Family` (`Db.families`'s dense per-compile slots, workspace.av)
+//! and `DbKind` (`DbRow`'s own tag, db.av) — SYNTHESIZED, never
+//! hand-typed: each variant is a marker declaration here, gathered by
+//! `collect enum` (N3, COMPILER DB townhall §7). A marker's own name
+//! IS the variant's name, so a family or kind whose true name a real
+//! declaration already holds elsewhere in the package (`Analysis`,
+//! `Settled`, …) lives here alone, never in `compiler`'s root module,
+//! or the two would collide. Every marker and its `collect enum` share
+//! this ONE file, so `self` scope gathers them with no reachability
+//! question to ask; `Family`/`DbKind` themselves are exported so the
+//! root module's `use compiler.kinds.{Family, DbKind}` is the only
+//! new seam a consumer pays.
+//!
+//! A gathered member needs no behavior — `family`/`db_kind` are no-ops,
+//! existing only to be worn. Sixteen concepts wear both: a dense
+//! family IS the kind of the `DbRow` it caches (`Source` the file's
+//! text, `Typed` a declaration's type facts, …). The rest wear one:
+//! `Family` alone for a pass with no cached `DbRow` shape (`Methods`,
+//! `Receivers`, the whole-program relations), `DbKind` alone for a
+//! durable, string-keyed row with no dense family (`Decl`, `Warn`,
+//! `Scan`, `Canon`, `Licenses`).
+use @std.meta.{Named}
+
+fn family(_what: Named) {}
+
+fn db_kind(_what: Named) {}
+
+// ── both: a dense, per-compile family whose value is also a DbRow kind ──
+
+/// an input: a file's own text, read once
+@family
+@db_kind
+fn Source() {}
+
+@family
+@db_kind
+fn Parsed() {}
+
+@family
+@db_kind
+fn Items() {}
+
+@family
+@db_kind
+fn Namespace() {}
+
+@family
+@db_kind
+fn Visible() {}
+
+@family
+@db_kind
+fn Resolved() {}
+
+/// `Family.Sig`'s in-memory answer lives in `Decls.sigs`, a different
+/// mechanism from `DbKind.Sig`'s durable row: a module's interface
+/// record (record.av), already flat, structurally-encoded text.
+@family
+@db_kind
+fn Sig() {}
+
+@family
+@db_kind
+fn Typed() {}
+
+@family
+@db_kind
+fn ConstTyped() {}
+
+@family
+@db_kind
+fn Folded() {}
+
+@family
+@db_kind
+fn Analysis() {}
+
+@family
+@db_kind
+fn Settled() {}
+
+@family
+@db_kind
+fn Lowered() {}
+
+@family
+@db_kind
+fn Lifted() {}
+
+@family
+@db_kind
+fn Manifest() {}
+
+@family
+@db_kind
+fn Expanded() {}
+
+/// a file parsed under NO sublanguage words — what the block pre-scan
+/// reads of a provider, depending on its source alone
+@family
+@db_kind
+fn Plain() {}
+
+// ── Family alone: a pass with no cached DbRow shape ──
+
+@family
+fn Methods() {}
+
+@family
+fn Receivers() {}
+
+/// A compile-time run's own units — a lift, an argument crossing, a
+/// const's settlement — keyed the same way as `Lowered` but in a
+/// SEPARATE space: the two never share a cache row, so a symbol
+/// reached by both a comptime run and the real program never has one
+/// context's answer stand in for the other's.
+@family
+fn LiftLowered() {}
+
+/// THE REFERENCES RELATION — one key, the whole program: every named
+/// use of a declaration, folded from every file's own rows
+/// (compiler/references.av).
+@family
+fn References() {}
+
+/// a `Result<T, _>`'s inferred error set — the whole-program fixpoint,
+/// one key for the entire program
+@family
+fn Failures() {}
+
+/// a held declaration's sig — its module's stored record, one key per
+/// module, asked fresh every time `sig()` reads a held decl
+@family
+fn HeldSig() {}
+
+/// M6 PREP: `Fixpoint<List<TypeId>>`'s own dense per-member space for
+/// the whole-program raised-error fixpoint — one key per `_`-declared
+/// fn, touched only from inside its own `solve`.
+@family
+fn Raised() {}
+
+/// one file's method-table clashes — the whole type table's methods
+/// asked in ITS bracket, so every file's `Analysis` depends on them
+/// whichever file ran the scan first
+@family
+fn MethodDiags() {}
+
+/// a declaration's own syntax (COMPILER DB townhall §6.11): the fold
+/// of its expr/stmt range's fingerprints, keyed by DeclId so an edit
+/// to one declaration in a file cuts off before a neighbour's reader
+/// — a query reading another declaration's nodes depends on this,
+/// never on the file's whole `Parsed`
+@family
+fn Syntax() {}
+
+// ── DbKind alone: a durable, string-keyed row with no dense family ──
+
+/// `avra docs <name>` — witness-validated, see `DocFacts`.
+@db_kind
+fn Decl() {}
+
+/// A program's rendered warnings (`derive.av`'s `checked()`) —
+/// already-rendered text, kept under the program's own key.
+@db_kind
+fn Warn() {}
+
+/// Whether a file's text can open a block word (voices.av's lex-level
+/// pre-filter), under that text's own digest — so no process lexes
+/// the same bytes twice.
+@db_kind
+fn Scan() {}
+
+/// A file's bytes known to be canonical `avra fmt` output, under
+/// their own digest — present or absent, the text is unused.
+@db_kind
+fn Canon() {}
+
+/// A program's stale `// LICENSED <id>` citations (compiler/
+/// licenses.av), one `file\tline\tid` per line — kept under the SAME
+/// key as its `Warn` row, so a repeat `avra check` reads both without
+/// building a second Program to re-scan for them.
+@db_kind
+fn Licenses() {}
+
+/// `findings_of`'s own rows (compiler/findings.av), one
+/// `rule\tfile\ttext` per line, under the SAME key as `Warn` — a rule
+/// finding is a fact about the program `Warn`'s own hit already
+/// proved unchanged, so a cache hit answers a baseline ratchet's
+/// question without rebuilding the Program `findings_of` would
+/// otherwise need.
+@db_kind
+fn Findings() {}
+
+export collect enum Family = @family in self by it.name
+
+export collect enum DbKind = @db_kind in self by it.name
