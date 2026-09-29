@@ -1852,13 +1852,42 @@ impl Decls {
         (self.namespace_of.get())(file).fn_decl(a.name)
     }
 
-    /// Whether an annotation resolves, in the file that wrote it, to
+    /// Whether an annotation resolves, in `file`'s own namespace, to
     /// `@std/meta`'s declaration of `word` — by DECLARATION, never
     /// by the bare word it happens to spell: a caller's own fn of
-    /// the same name answers false.
+    /// the same name answers false. Call with `annotation_home(d)`,
+    /// never `decl(d).file`: a generated declaration's annotation is
+    /// the TEMPLATE's word, not the landing file's.
     fn is_meta_annotation(a: AnnotationFact, file: FileId, word: string) -> bool {
         let callee? = self.annotation_callee(a, file) else { return false }
         self.is_meta_fn(callee, word)
+    }
+
+    /// The file an annotation on `d` resolves in. A COPIED TEMPLATE'S
+    /// SPANS ARE ITS ORIGIN FILE'S OFFSETS, and its WORDS are that
+    /// file's too: `@plans_all` written inside `@std/relation`'s own
+    /// `quote { … }` means what `@std/relation` imports, whichever
+    /// user's file the generated accessor lands in — that file may
+    /// never import `plans_all` at all. `d`'s own file is right only
+    /// for a WRITTEN declaration, where there is no template to ask.
+    fn annotation_home(d: DeclId) -> FileId {
+        let prov? = self.template_provenance(d) else { return self.decl(d).file }
+        let loc? = prov.template else { return self.decl(d).file }
+        let path? = loc.file else { return self.decl(d).file }
+        self.paths.get().get(path) ?? self.decl(d).file
+    }
+
+    /// `d`'s own provenance, or its nearest ancestor's. `note_provenance`
+    /// runs once per generation, at the declaration a generation
+    /// MINTS AT — an impl block, a struct — never at each method or
+    /// default it also mints; those carry no provenance of their own
+    /// and answer their owner's (`Decl.parent`).
+    fn template_provenance(d: DeclId) -> Provenance? {
+        let own? = self.provenance_of(d) else {
+            let parent? = self.decl(d).parent else { return null }
+            return self.template_provenance(parent)
+        }
+        own
     }
 
     /// A type's name, read as a value — a receiver for `Type.name(…)`,

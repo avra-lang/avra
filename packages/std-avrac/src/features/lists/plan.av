@@ -38,11 +38,13 @@ fn scan_at(view: FileView, names: NameFacts, clauses: List<CompClause>, h: int) 
         .MethodCall(subject, name, args) -> {
             let relation? = bound_decl_of(names, subject) else { return [] }
             let all? = view.decls.method(relation, name.of) else { return [] }
-            let file = view.decls.decl(all).file
+            let file = view.decls.annotation_home(all)
             if !view
                 .decls
                 .annotations_of(all)
-                .any((a: AnnotationFact) -> view.decls.is_meta_annotation(a, file, plans_all_word)) { return [] }
+                .any((a: AnnotationFact) -> view.decls.is_meta_annotation(a, file, plans_all_word)) {
+                return []
+            }
             let db? = args.first() else { return [] }
             let bound = binders_before(clauses, h)
             [
@@ -214,7 +216,7 @@ fn planned(view: FileView, scan: Scan, a: Ask) -> List<Plan> {
 /// Whether a declaration wears `@std/meta`'s `@plans(field)` — by
 /// declaration, never a bare compare of the word.
 fn plans_field(view: FileView, m: DeclId, field: string) -> bool {
-    let file = view.decls.decl(m).file
+    let file = view.decls.annotation_home(m)
     view
         .decls
         .annotations_of(m)
