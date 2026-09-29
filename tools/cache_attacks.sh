@@ -403,6 +403,36 @@ case "$vh_hc" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
+# shape is `enum`, and its KIND column is what says a collect made it — read the
+# shape alone and the held declaration is a plain enum, so the decl wire naming
+# it (`…~collect_enum~~Command`) resolves to nothing: its references vanish and
+# `describe`'s seat reads as an error type.
+mkdir -p $R/ce/src/lib
+printf '[package]\nname = "rt-ce"\nversion = "0.1.0"\n' > $R/ce/avra.toml
+printf 'use lib.{describe, Command}\nprintln(describe(Command.init))\n' > $R/ce/src/main.av
+cat > $R/ce/src/lib/a.av <<'AV'
+use @std.meta.{Named}
+fn command(_what: Named) {}
+@command
+fn build() {}
+@command
+fn init() {}
+export collect enum Command = @command in self by it.name
+export fn describe(c: Command) -> string {
+    match c { .build -> "build", .init -> "init" }
+}
+AV
+S "cold ce: a collect enum in a library module" ce
+S "warm ce: the collect enum's file is held" ce
+vh_ce=$(./avra check $R/ce --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_ce" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over ce compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over ce -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over ce: $(printf '%s' "$vh_ce" | tail -5 | tr '\n' ' ')" ;;
+esac
+
 # `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
 # Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
 # — a held file with no OTHER declaration worth diffing would pass this suite
@@ -647,6 +677,58 @@ if [ "${AVRA_WITNESS_PIN:-}" = "1" ]; then
     want=$((total - 2))
     [ "$got" -ge "$want" ] || { fails=$((fails+1)); echo "FAIL  a leaf edit did not reuse every unrelated file's witness: $wn (wanted >= $want)"; }
 fi
+# A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
+# NEVER AS A GAP (avra-8sb5.57.100): `members.av` declares two exported named
+# instances of `widget` (a component whose one field is `run: fn(int) ->
+# int`, the same shape `rule`'s `run: fn(Code) -> Fix?` is) — each an
+# `is_instance` const. `table.av`'s `collect` reads `it.run` for each,
+# calling it by its `instance_unit` symbol. Editing `table.av` ALONE forces
+# the collect fresh while `widget.av`/`members.av` stay held; without a
+# declaration for a held member's symbol the link traps "nothing declares
+# ... — the program is not closed" (witnessed: packages/std-avrac/src/
+# compiler/interface.av's `Workspace.stub_of`/`instance_stub`, reused by
+# `held_stubs`, is what a held FN's own symbol already goes through — the
+# fix is keeping a gathered member's structural refusal the same way).
+mkdir -p $R/cl/src
+printf '[package]\nname = "rt-cl"\nversion = "0.1.0"\n' > $R/cl/avra.toml
+cat > $R/cl/src/widget.av <<'AV'
+export component widget {
+    run: fn(int) -> int
+}
+AV
+cat > $R/cl/src/members.av <<'AV'
+use widget.{widget}
+
+export widget one { n -> n + 1 }
+export widget two { n -> n + 2 }
+AV
+cat > $R/cl/src/table.av <<'AV'
+use widget.{widget}
+type Entry = { name: string, ran: fn(int) -> int }
+export collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name
+AV
+cat > $R/cl/src/main.av <<'AV'
+use table.{entries}
+println("cl ${entries.length} ${entries[0].name}=${entries[0].ran(10)} ${entries[1].name}=${entries[1].ran(10)}")
+AV
+S "cold cl: a fresh collect reads two members' closures" cl
+S "no-op cl" cl
+ed $R/cl/src/table.av 'type Entry = { name: string, ran: fn(int) -> int }' 'type Entry = { name: string, ran: fn(int) -> int }
+// moved'
+S "cl: table.av alone moves — widget.av/members.av stay held, the fresh collect body must reference their closures as externs" cl
+got_cl1=$($R/cl/src/main 2>&1)
+[ "$got_cl1" = "cl 2 one=11 two=12" ] || { fails=$((fails+1)); echo "FAIL  cl (collect fresh, members held) printed '$got_cl1', wanted 'cl 2 one=11 two=12'"; }
+# A MEMBER'S OWN BODY EDIT, while the collect's own file stays held, is NOT
+# pinned here: on a brand-new tiny package it trips a pre-existing, GENERAL
+# held-collect/held-instance gap (a stale interface read that the "hold was
+# refused, rebuilt from sources" safety net catches and self-heals — right
+# answer, wasted work — reproduced with a plain DATA-only component too, no
+# `run: fn`/structural-refusal involved, so it is not this ticket's exclusion
+# and not touched here). The REAL requirement this scenario stands for —
+# editing a rule's actual match logic and rebuilding the compiler warm
+# re-derives that rule's finding, cleanly, no refusal — was witnessed
+# directly against compiler/features/enums/idioms.av's `bool_variant_match`
+# (avra-8sb5.57.100's own receipt), not against a synthetic fixture here.
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.

@@ -48,6 +48,22 @@ impl Workspace {
     fn record_key(m: ModulePath) -> string {
         node_key(Stored.Sig, [self.compiler_id(), self.root, m.text()])
     }
+
+    /// Where this compiler keeps record bodies, by module and interface.
+    fn record_bodies() -> RecordBodies { RecordBodies { compiler: self.compiler_id(), root: self.root, db: self.db } }
+}
+
+/// A MODULE'S RECORD IS KEPT BY ITS INTERFACE: the row under `record_key` holds
+/// the interface digest, and the body stands under (module, digest). A body
+/// edit rewrites the body its interface already names; an interface that moves
+/// leaves the old body standing, so what it declared can still be read.
+export type RecordBodies = { compiler: string, root: string, db: Db }
+
+impl RecordBodies {
+    fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.compiler, self.root, module, iface]) }
+
+    /// The body kept for a module under one interface, when one was.
+    fn body(store: Store, module: string, iface: string) -> string? { self.db.sig(store, self.key(module, iface)) }
 }
 
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
@@ -58,7 +74,8 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     let key = ws.record_key(m)
     let known = ws.records.record_texts.get().get(key)
     if known != null { return known! }
-    let text = ws.db.sig(store, key) ?? ""
+    let iface = ws.db.sig(store, key) ?? ""
+    let text = if iface == "" { "" } else { ws.record_bodies().body(store, m.text(), iface) ?? "" }
     ws.records.record_texts.put(key, text)
     if text != "" { ws.records.record_lines.put(key, text.split("\n")) }
     text
@@ -514,12 +531,11 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let made = ws.record_of(store, m)
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
-            ws.db.insert_sig(store, ws.record_key(m), made)
+            let iface = iface_of(made) ?? ""
+            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
+            ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
-            if seen_part(made) != seen_part(prior) {
-                seen_moved = true
-                keep_forms(store, made)
-            }
+            if seen_part(made) != seen_part(prior) { seen_moved = true }
         }
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
@@ -841,16 +857,27 @@ fn payload_of(ws: Workspace, arm: string) -> List<TypeId> {
 /// THE DECLARATION KIND a record's shape and kind column name. `Struct`/`Boxed`
 /// are always a `Record` and `Named` always `Named` — their kind column reads
 /// "type" either way, so the SHAPE alone tells them apart; every other shape
-/// reads its kind from the kind column, which is theirs to spell.
+/// reads its kind from the kind column, which is theirs to spell — an `Enum`'s
+/// says whether a `collect enum` made it.
 fn declared_kind(shape: Shape, word: string) -> DeclKind? {
     match shape {
         .Struct or .Boxed -> .Record,
-        .Enum -> .Enum,
+        .Enum -> enum_kind(word),
         .Named -> .Named,
         .Alias -> .Alias,
         .Const -> .Const,
         .Aims -> .Impl,
         .Fn or .Extern or .Opaque -> kind_of_word(word),
+    }
+}
+
+/// The kind an `Enum` shape's kind column names — an enum or a `collect enum`,
+/// and nothing else.
+fn enum_kind(word: string) -> DeclKind? {
+    let k? = kind_of_word(word) else { return null }
+    match k {
+        .Enum or .CollectEnum -> k,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> null,
     }
 }
 
@@ -893,12 +920,6 @@ export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
 /// which move without a contract moving.
 export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
     iface_of(record_cached(ws, store, m)) ?? module_bytes(ws, m)
-}
-
-/// A record's contract lines, kept once under its interface digest.
-fn keep_forms(store: Store, record: string) {
-    let iface? = iface_of(record) else { return }
-    let _ = store.keep_once(Stored.Unit, forms_key(iface), joined(record_forms(record), "\n"))
 }
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
@@ -1036,7 +1057,9 @@ export type PartMoved = { part: string, was: string, now: string, lines: List<st
 
 /// What moved between a key's parts then and now — its text, what its runs read,
 /// and each module it sees whose interface moved, came or went.
-export fn parts_moved(store: Store, was: KeyParts, now: KeyParts) -> List<PartMoved> {
+export fn parts_moved(store: Store, bodies: RecordBodies, was: KeyParts, now: KeyParts) -> List<
+    PartMoved,
+> {
     let text = if was.text == now.text { [] } else { [PartMoved { part: "its text", was: was.text, now: now.text, lines: [] }] }
     let runs = if joined(was.runs, ",") == joined(now.runs, ",") {
         []
@@ -1050,13 +1073,18 @@ export fn parts_moved(store: Store, was: KeyParts, now: KeyParts) -> List<PartMo
             },
         ]
     }
-    text.concat(runs).concat(seen_list_moved(store, was.seen, now.seen))
+    text.concat(runs).concat(seen_list_moved(store, bodies, was.seen, now.seen))
 }
 
 /// What moved between the modules seen then and now: each whose interface
 /// moved, came or went.
-export fn seen_list_moved(store: Store, was: List<SeenPart>, now: List<SeenPart>) -> List<PartMoved> {
-    let seen = [m for s in now for m in seen_moved(store, was.find(it.module == s.module), s)]
+export fn seen_list_moved(
+    store: Store,
+    bodies: RecordBodies,
+    was: List<SeenPart>,
+    now: List<SeenPart>,
+) -> List<PartMoved> {
+    let seen = [m for s in now for m in seen_moved(store, bodies, was.find(it.module == s.module), s)]
     seen
         .concat(
             [PartMoved {
@@ -1068,7 +1096,7 @@ export fn seen_list_moved(store: Store, was: List<SeenPart>, now: List<SeenPart>
         )
 }
 
-fn seen_moved(store: Store, was: SeenPart?, now: SeenPart) -> List<PartMoved> {
+fn seen_moved(store: Store, bodies: RecordBodies, was: SeenPart?, now: SeenPart) -> List<PartMoved> {
     let prior? = was else {
         return [
             PartMoved {
@@ -1085,14 +1113,10 @@ fn seen_moved(store: Store, was: SeenPart?, now: SeenPart) -> List<PartMoved> {
             part: "module ${now.module}'s interface",
             was: seen_words(prior),
             now: seen_words(now),
-            lines: forms_moved(forms_at(store, prior.bytes_key), forms_at(store, now.bytes_key)),
+            lines: forms_moved(forms_at(store, bodies, prior), forms_at(store, bodies, now)),
         },
     ]
 }
-
-/// Where a module's contract lines are kept: under the interface digest they
-/// make, once, so every interface a module has had can still be read.
-export fn forms_key(iface: string) -> string { node_key(Stored.Unit, ["forms", iface]) }
 
 /// A record's contract lines — each declaration's `interface_form`, in name order.
 fn record_forms(record: string) -> List<string> {
@@ -1101,10 +1125,11 @@ fn record_forms(record: string) -> List<string> {
     )
 }
 
-/// The contract lines kept under an interface digest — null when none were.
-fn forms_at(store: Store, iface: string) -> List<string>? {
-    let kept? = store.get(Stored.Unit, forms_key(iface)) else { return null }
-    if kept.is_empty() { [] } else { kept.split("\n") }
+/// The contract lines of the record a module had under one interface — null
+/// when no body was kept for it.
+fn forms_at(store: Store, bodies: RecordBodies, s: SeenPart) -> List<string>? {
+    let body? = bodies.body(store, s.module, s.bytes_key) else { return null }
+    record_forms(body)
 }
 
 /// The lines one interface lost and the other gained — nothing when either

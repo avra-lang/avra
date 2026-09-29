@@ -29,6 +29,7 @@ use core.{
     same_expr,
     flatten,
     some_list,
+    hole_name,
 }
 use features.{
     FileView,
@@ -702,15 +703,29 @@ impl Code {
 
     /// Whether this node is a `mut` LOCAL its own enclosing
     /// declaration never writes — `unmutated_mut`'s own predicate; a
-    /// bare read-only `mut` says `let`.
+    /// bare read-only `mut` says `let`. A local a HOLE reaches is
+    /// never provably unwritten: `write_roots` walks the PARSED tree
+    /// alone, and a template hole splices in code this pass cannot
+    /// see the inside of — so its mere presence in the declaration's
+    /// own range reads as a possible write, conservatively, rather
+    /// than a false "always unwritten" over a `quote`'s own body.
     fn is_unwritten_mut() -> bool {
         match self.at {
             .Stmt(id) -> match self.of.view.store.stmt(id) {
-                .MutLet(_, _, _) -> self.writes().is_empty(),
+                .MutLet(_, _, _) -> self.writes().is_empty() && !self.reachable_by_hole(),
                 rest -> false,
             },
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
+    }
+
+    /// Whether this local's own enclosing declaration holds a hole —
+    /// a template placeholder standing for code spliced in only at
+    /// expansion, never parsed here.
+    fn reachable_by_hole() -> bool {
+        self
+            .local_range()
+            .any((e: ExprId) -> hole_name(self.of.view.store.ident_name(e) ?? "") != null)
     }
 }
 
