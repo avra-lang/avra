@@ -749,15 +749,19 @@ linux_gate_step() {
     # is the Sprite's (unreachable, reset, a sync that died); after it,
     # the branch's own.
     body="echo 'land-linux: body started'; export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
-    # The suites run in parallel on the Sprite, the longest first, at
-    # most AVRA_LAND_SPRITE_JOBS at once; each keeps its own log and
-    # status, and every failure is printed after all have finished.
+    # The suites run in parallel on the Sprite, the longest first; each
+    # keeps its own log and status, and every failure is printed after
+    # all have finished. The cap is AVRA_LAND_SPRITE_JOBS when set, else
+    # what the Sprite's MemAvailable holds at AVRA_LAND_SPRITE_SUITE_MB
+    # per suite, between 1 and 4 — a Sprite's memory is read, never assumed;
+    # an unreadable one runs one suite at a time.
     first=""
     rest=""
     for p in $pkgs; do
         case "$p" in std-avrac|cli) first="$first $p" ;; *) rest="$rest $p" ;; esac
     done
-    body="$body; pkgs='$first $rest'; cap=${AVRA_LAND_SPRITE_JOBS:-4}"
+    body="$body; pkgs='$first $rest'; cap='${AVRA_LAND_SPRITE_JOBS:-}'; per=${AVRA_LAND_SPRITE_SUITE_MB:-1800}; meminfo='${AVRA_LAND_SPRITE_MEMINFO:-/proc/meminfo}'"
+    body="$body"'; if [ -z "$cap" ]; then avail=$(awk '"'"'/^MemAvailable:/ { print int($2 / 1024) }'"'"' "$meminfo" 2>/dev/null); cap=$(( ${avail:-0} / per )); [ "$cap" -ge 1 ] || cap=1; [ "$cap" -le 4 ] || cap=4; fi; echo "land-linux: $cap suites at once"'
     body="$body"'; d=$(mktemp -d); for p in $pkgs; do while [ "$(jobs -r | wc -l)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & done; wait; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
 
     # A Sprite that fails before the body starts is a TOOL failure that

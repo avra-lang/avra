@@ -33,7 +33,7 @@ printf 'export fn f() -> int {\n    41\n}\n' > "$pkg/src/util/b.av"
 printf 'use util.{f}\n\nconst x: int = f()\n\nprintln("x=${x}")\n' > "$pkg/src/main.av"
 
 build() { # build <label>
-    (cd "$pkg" && sh "$memcap" 4000 "$avra" build . > "$logs/$1.log" 2>&1)
+    (cd "$tree" && sh "$memcap" 4000 "$avra" build "$pkg" > "$logs/$1.log" 2>&1)
     echo $? > "$logs/$1.exit"
 }
 
