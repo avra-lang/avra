@@ -631,12 +631,14 @@ impl Workspace {
     /// witness.
     fn says(p: Program, a: Analysis, want: Want, sources: List<SourceFile>) -> Spoken {
         let cases = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)]
-        if want is .Binary {
-            return Spoken { said: Said { path: a.view.source.file, warnings: p.warned(a.diagnostics), cases: cases }, rules: null }
-        }
-        if !witness_enabled {
-            let said = Said { path: a.view.source.file, warnings: p.warned(a.diagnostics), cases: cases }
-            return Spoken { said: said, rules: p.warned(rule_findings(analysed(a), a.view.stmts)) }
+        if want is .Binary || !witness_enabled {
+            let said = Said {
+                path: a.view.source.file,
+                warnings: p.warned(a.diagnostics),
+                cases: cases,
+            }
+            let rules: string? = if want is .Diagnostics { p.warned(rule_findings(analysed(a), a.view.stmts)) } else { null }
+            return Spoken { said: said, rules: rules }
         }
         let outcome = self.witnessed_check(a.view.file)
         if outcome.reused() {
