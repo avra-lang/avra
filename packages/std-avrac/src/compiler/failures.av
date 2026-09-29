@@ -34,9 +34,8 @@ use core.{
     flatten,
     fp,
     fp_list,
-    some_list,
-    same_decl,
     same_expr,
+    some_list,
     same_type as same_type_id,
     touch,
 }
@@ -94,10 +93,9 @@ fn is_unresolved(c: Contribution) -> bool { c is .Unresolved }
 /// key) waits on M5's `DeclKey` — a typed id can key a relation only
 /// through its target's own stable key, and `Decl` has none yet.
 /// `owner`, not `fn`: `fn` is a keyword, refused as a field name.
-/// `callee`/`within` stay unindexed — a nullable field cannot file
-/// (`@std/relation`'s `files` refuses `.Opt(_)` outright, key or
-/// index alike) — so their readers scan `ErrorSite.all(db)`, exactly
-/// as they scanned the old `Cell<List<ErrorSite>>` before.
+/// `callee` is nullable: a site files under it only when it has one,
+/// so the reverse edge `chain` walks up is a lookup. `within` is an
+/// `ExprId`, which no index files, so its reader scans.
 export enum SiteHow { Fail, Propagate, Catch }
 
 @relation
@@ -105,7 +103,7 @@ export type ErrorSite = {
     @local at: ExprId,
     @local @index owner: DeclId,
     how: SiteHow,
-    @local callee: DeclId?,
+    @local @index callee: DeclId?,
     @local within: ExprId?,
     @local errors: List<TypeId>,
 }
@@ -423,6 +421,11 @@ fn catch_error_site(
     }
 }
 
+fn within_is(within: ExprId?, c: ExprId) -> bool {
+    let w? = within else { return false }
+    same_expr(w, c)
+}
+
 /// M6 PREP: the growing-set fixpoint's lattice over `raised_by`'s
 /// answer — sets of `TypeId`, join = union, deduped by index.
 fn raised_join(a: List<TypeId>, b: List<TypeId>) -> List<TypeId> {
@@ -430,16 +433,6 @@ fn raised_join(a: List<TypeId>, b: List<TypeId>) -> List<TypeId> {
 }
 
 fn raised_fp(v: List<TypeId>) -> int { fp_list([t.index for t in v]) }
-
-fn callee_is(callee: DeclId?, f: DeclId) -> bool {
-    let c? = callee else { return false }
-    same_decl(c, f)
-}
-
-fn within_is(within: ExprId?, c: ExprId) -> bool {
-    let w? = within else { return false }
-    same_expr(w, c)
-}
 
 fn refusal_of(r: Result<int, FixpointRefusal>) -> FixpointRefusal? {
     match r { .Ok(_) -> null, .Err(e) -> e }
@@ -624,20 +617,19 @@ impl Workspace {
     }
 
     /// Every site whose `callee` is `f` — the reverse edge `chain`
-    /// walks up through. `callee` is nullable, so it cannot file —
-    /// a relation index answers only a fileable value (`@std/relation`'s
-    /// `files` refuses `.Opt(_)`) — this scans `all` exactly as the
-    /// old `Cell<List<ErrorSite>>` version did.
-    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> {
-        let all: List<ErrorSite> = ErrorSite.all(self.error_sites_db.get())
-        [s for s in all if callee_is(s.callee, f)]
-    }
+    /// walks up through.
+    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.error_sites_db.get(), f) }
 
     /// Every site lexically within catch `c`'s own arm — `chain`'s
-    /// downward step when it reaches a `Catch`.
-    fn error_sites_within(c: ExprId) -> List<ErrorSite> {
-        let all: List<ErrorSite> = ErrorSite.all(self.error_sites_db.get())
-        [s for s in all if within_is(s.within, c)]
+    /// downward step when it reaches a `Catch`. Scoped by `owner`
+    /// first: `ExprId` is a PER-FILE arena index, so two different
+    /// files' catches can share one raw `at` — `owner` (workspace-
+    /// global) is what tells them apart, and it is already an index
+    /// (IDIOMS, avra-8sb5.57 — `@dense` on `ExprId` was the wrong
+    /// fix, since it would index across files by a number that means
+    /// nothing outside one).
+    fn error_sites_within(owner: DeclId, c: ExprId) -> List<ErrorSite> {
+        [x for x in ErrorSite.by_owner(self.error_sites_db.get(), owner) if within_is(x.within, c)]
     }
 
     /// The error topology's own worked example (design doc §6.7,
@@ -646,7 +638,10 @@ impl Workspace {
     /// or `Propagate` does, since a call edge can.
     fn chain(s: ErrorSite, seen: List<int>) -> Chain {
         match s.how {
-            .Catch -> Chain { site: s, next: [self.chain(n, seen) for n in self.error_sites_within(s.at)] },
+            .Catch -> Chain {
+                site: s,
+                next: [self.chain(n, seen) for n in self.error_sites_within(s.owner, s.at)],
+            },
             .Fail or .Propagate -> {
                 if seen.contains(s.owner.index) { return Chain { site: s, next: [] } }
                 let deeper = seen.concat([s.owner.index])

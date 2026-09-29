@@ -15,10 +15,19 @@ use @std.meta.{name}
 /// own NAME field is a lone hole — the raw fold keys on that literal
 /// spelling, which no real declaration shares (core/quote_pat.av).
 /// `is_unwritten_mut` reads the shape structurally off `self` instead.
+///
+/// A HOLE IN THE BODY IS NOT A HOLE IN THE PROOF: `write_roots` walks
+/// the tree a `quote` PARSED, and a hole stands for code that arrives
+/// only at expansion — `@std/db`'s own `insert`/`update` templates
+/// declare `mut args = []` and push onto it from a spliced
+/// `${[push_bound(f) for f in non_id_fields(t)]}`, invisible to this
+/// walk. A `mut` a hole can reach reads as possibly written, never
+/// provably not (`Code.reachable_by_hole`).
 @fixes("fn f() {\n    mut n = 0\n}", "let n = 0")
 @keeps("fn f() {\n    mut n = 0\n    n = n + 1\n}")
 @keeps("type B = { x: int }\ntype Row = { build: fn(mut B) -> int }\nfn via(r: Row) -> int {\n    mut world = B { x: 1 }\n    r.build(world)\n}")
 @keeps("trait Grow {\n    mut fn grow()\n}\ntype R = { n: int }\nimpl Grow for R {\n    mut fn grow() { self.n = self.n + 1 }\n}\nfn f(d: dyn Grow) {\n    mut q = d\n    q.grow()\n}")
+@keeps("fn f() {\n    quote {\n        mut args: List<int> = []\n        \${quote { args.push(1) }}\n    }\n}")
 @law("dropping `mut` from a binding nothing ever writes changes no later read — the memory pass opens a cell unique only for a write it will never make, exactly as `type.mut_fn_unused` already reads for a `mut fn`; a write reached through a `dyn` receiver is the same write, so `mut q = d` keeps its `mut` when `q`'s own trait method is declared `mut fn` — never `let`, which would ALIAS `d` instead of the copy spec 11.5 promises (features/tests/borrow_dyn)")
 export rule unmutated_mut { quote { ${m} } if m.is_unwritten_mut() -> unmutated_mut_fix(m) }
 

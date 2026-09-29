@@ -403,6 +403,77 @@ case "$vh_hc" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# A BARE INTRA-PACKAGE MODULE KEYS ON ITS OWN INTERFACE, NEVER THE PACKAGE'S
+# RAW TEXT: `lib.av` reaches `pad.av`'s exported `pad` through a `use` and its
+# non-exported `priv` through no `use` at all — a sibling file's bare name
+# reaches a declaration a cross-package `use` never could. A body-only edit
+# must hold; a signature edit — exported or not — never may, or a sibling
+# keeps compiling against a signature that moved (avra-8sb5.57's
+# perf/module-hold).
+MH() { # MH <label> <path-substr> <want: held|read>
+    steps=$((steps+1))
+    out=$(./avra build --time $R/mh 2>&1)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+}
+mkdir -p $R/mhl/src $R/mh/src
+printf '[package]\nname = "@rt/mhl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mhl"\npath = "src/lib.av"\n' > $R/mhl/avra.toml
+cat > $R/mhl/src/pad.av <<'AV'
+export fn pad() -> int { 3 }
+fn priv() -> int { 5 }
+AV
+cat > $R/mhl/src/lib.av <<'AV'
+use pad.{pad}
+export fn host() -> int { pad() + priv() }
+AV
+printf '[package]\nname = "rt-mh"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n' > $R/mh/avra.toml
+printf 'use @rt.mhl.{host}\nprintln("mh ${host()}")\n' > $R/mh/src/main.av
+S "cold mh: a sibling reaches one file by use, another by no use at all" mh
+S "mh: warm no-op" mh
+ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
+MH "mh: pad's body only moves — lib.av stays held" lib.av held
+ed $R/mhl/src/pad.av "{ 30 }" "{ 3 }"
+MH "mh: and back" lib.av held
+ed $R/mhl/src/pad.av "export fn pad() -> int { 3 }" "export fn pad(n: int = 0) -> int { 3 }"
+MH "mh: pad's EXPORTED signature moves (reached through a use) — lib.av re-reads" lib.av read
+ed $R/mhl/src/pad.av "export fn pad(n: int = 0) -> int { 3 }" "export fn pad() -> int { 3 }"
+MH "mh: and back" lib.av held
+ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
+MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read
+ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
+MH "mh: and back, cold no more" lib.av held
+
+# `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
+# shape is `enum`, and its KIND column is what says a collect made it — read the
+# shape alone and the held declaration is a plain enum, so the decl wire naming
+# it (`…~collect_enum~~Command`) resolves to nothing: its references vanish and
+# `describe`'s seat reads as an error type.
+mkdir -p $R/ce/src/lib
+printf '[package]\nname = "rt-ce"\nversion = "0.1.0"\n' > $R/ce/avra.toml
+printf 'use lib.{describe, Command}\nprintln(describe(Command.init))\n' > $R/ce/src/main.av
+cat > $R/ce/src/lib/a.av <<'AV'
+use @std.meta.{Named}
+fn command(_what: Named) {}
+@command
+fn build() {}
+@command
+fn init() {}
+export collect enum Command = @command in self by it.name
+export fn describe(c: Command) -> string {
+    match c { .build -> "build", .init -> "init" }
+}
+AV
+S "cold ce: a collect enum in a library module" ce
+S "warm ce: the collect enum's file is held" ce
+vh_ce=$(./avra check $R/ce --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_ce" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over ce compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over ce -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over ce: $(printf '%s' "$vh_ce" | tail -5 | tr '\n' ' ')" ;;
+esac
+
 # `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
 # Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
 # — a held file with no OTHER declaration worth diffing would pass this suite
@@ -579,6 +650,50 @@ rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/n
 lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
+# `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/`Lowered`
+# settle on a CONTENT fingerprint now, never `db.revision()` — a build-wide
+# counter that read every edit anywhere as "changed" through them. These pin
+# two of the fields the fold covers: a lambda's CAPTURE (NameFacts/TypeFacts)
+# and a WARNING'S OWN PRESENCE (voices) — an edit to either must still reach
+# a caller held across the edit, whether that caller is the program's own
+# printed answer or the check output the file itself earns.
+mkdir -p $R/cutfp/src
+printf '[package]\nname = "rt-cutfp"\nversion = "0.1.0"\n' > $R/cutfp/avra.toml
+cat > $R/cutfp/src/main.av <<'AV'
+fn make_adder(n: int) -> fn(int) -> int {
+    (x: int) -> x + n
+}
+mut unused = 1
+let add = make_adder(5)
+println("cutfp ${add(10)}")
+AV
+S "cold cutfp: a closure capture and an unmutated mut sit in one file" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 15" ] || { fails=$((fails+1)); echo "FAIL  cold cutfp printed '$got', wanted 'cutfp 15'"; }
+cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+[ "$cutfp_warn0" = "1" ] || { fails=$((fails+1)); echo "FAIL  cutfp's cold check did not find the unmutated_mut warning it was written to earn"; }
+
+# THE CAPTURE MOVES: the closure now closes over a DIFFERENT computation —
+# its TypeFacts/NameFacts captures column changes though the file's declared
+# NAMES do not, so a Namespace-level cache alone would miss it.
+ed $R/cutfp/src/main.av 'x + n' 'x + n + 1'
+S "cutfp: the closure's capture computation moves" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 16" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16' — a captured value's edit did not propagate"; }
+
+# THE WARNING MOVES, THE PROGRAM'S OWN VALUE ALSO MOVES: `mut unused`
+# becomes read, so the unmutated_mut voice must vanish from a held file's
+# own check — voices ride no program output, so only the diagnostic text
+# can catch a dropped fold.
+ed $R/cutfp/src/main.av 'mut unused = 1' 'mut unused = 1
+unused = unused + 1'
+ed $R/cutfp/src/main.av 'println("cutfp ${add(10)}")' 'println("cutfp ${add(10)} ${unused}")'
+S "cutfp: a voice-only edit — the warning is earned no longer, the closure is untouched" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 16 2" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16 2'"; }
+cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+[ "$cutfp_warn1" = "0" ] || { fails=$((fails+1)); echo "FAIL  cutfp's warm check still finds unmutated_mut after the local was written — a stale voices fold"; }
+
 # A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
 # STRUCTURAL one (Reach) is persisted as ready; a const that traps while
 # settling never is, so its file never holds and the trap never goes quiet.
@@ -594,6 +709,111 @@ steps=$((steps+1)); case "$rs_cold" in *const.trap*) ;; *) fails=$((fails+1)); e
 printf '// moved\n' >> $R/rs/src/main.av
 rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
+
+# A DURABLE WITNESS, PINNED — under AVRA_WITNESS_PIN=1 only: the
+# `--time` field reads `witnessed 0/N` BOTH when the compile-time
+# switch is off (nothing ever attempted) and when it is on and the
+# Sig-hash bug makes every attempt fail, so the text alone cannot
+# tell vacuous apart from broken. AVRA_WITNESS_PIN names which this
+# binary is — set it only when `build/avra` was built with
+# `witness_enabled: bool = true` — and unset (the gate's own runs)
+# it skips the step outright rather than guess from the count.
+# A LEAF edit — one file nothing else imports — must not cost every
+# OTHER file its witness: `witnessed` must cover every file but the
+# one edited. A `Sig`/`Methods` edge hashed from a `TypeId`/`DeclId`'s
+# raw registry index (core/types.av's and core/nodes.av's own "means
+# nothing outside this process") drifts between processes though the
+# declaration's own text never changed, refusing every unrelated
+# file's witness; a `rules_key` no witnessed path ever writes
+# collapses `held` the same way.
+mkdir -p $R/wr/src
+printf '[package]\nname = "rt-wr"\nversion = "0.1.0"\n' > $R/wr/avra.toml
+cat > $R/wr/src/leaf.av <<'AV'
+export fn leaf_only() -> int { 1 }
+AV
+for n in 1 2 3 4 5 6; do
+cat > $R/wr/src/other$n.av <<AV
+export fn other_fn_$n() -> int { $n }
+AV
+done
+cat > $R/wr/src/main.av <<'AV'
+use other1.{other_fn_1}
+use other2.{other_fn_2}
+use other3.{other_fn_3}
+use other4.{other_fn_4}
+use other5.{other_fn_5}
+use other6.{other_fn_6}
+export fn two(a: int) -> int { a + other_fn_1() + other_fn_2() + other_fn_3() + other_fn_4() + other_fn_5() + other_fn_6() }
+println("${two(1)}")
+AV
+if [ "${AVRA_WITNESS_PIN:-}" = "1" ]; then
+    rm -rf .avra-cache
+    ./avra check $R/wr >$R/wr.first.log 2>&1
+    printf '\nexport fn leaf_only_added() -> int { 2 }\n' >> $R/wr/src/leaf.av
+    wr_line=$(./avra check --time $R/wr 2>&1 | grep '^time:')
+    steps=$((steps+1))
+    wn=$(printf '%s\n' "$wr_line" | grep -oE 'witnessed [0-9]+/[0-9]+' | head -1)
+    got=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\1#')
+    total=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\2#')
+    # N-2: the edited leaf (its own Parsed edge legitimately moved) and
+    # `main.av` (the entry) are the only files this fixture's shape
+    # ever costs a witness — six unrelated files and the prelude must
+    # all still answer `Reused`.
+    want=$((total - 2))
+    [ "$got" -ge "$want" ] || { fails=$((fails+1)); echo "FAIL  a leaf edit did not reuse every unrelated file's witness: $wn (wanted >= $want)"; }
+fi
+# A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
+# NEVER AS A GAP: `members.av` declares two exported named
+# instances of `widget` (a component whose one field is `run: fn(int) ->
+# int`, the same shape `rule`'s `run: fn(Code) -> Fix?` is) — each an
+# `is_instance` const. `table.av`'s `collect` reads `it.run` for each,
+# calling it by its `instance_unit` symbol. Editing `table.av` ALONE forces
+# the collect fresh while `widget.av`/`members.av` stay held; without a
+# declaration for a held member's symbol the link traps "nothing declares
+# ... — the program is not closed" (witnessed: packages/std-avrac/src/
+# compiler/interface.av's `Workspace.stub_of`/`instance_stub`, reused by
+# `held_stubs`, is what a held FN's own symbol already goes through — the
+# fix is keeping a gathered member's structural refusal the same way).
+mkdir -p $R/cl/src
+printf '[package]\nname = "rt-cl"\nversion = "0.1.0"\n' > $R/cl/avra.toml
+cat > $R/cl/src/widget.av <<'AV'
+export component widget {
+    run: fn(int) -> int
+}
+AV
+cat > $R/cl/src/members.av <<'AV'
+use widget.{widget}
+
+export widget one { n -> n + 1 }
+export widget two { n -> n + 2 }
+AV
+cat > $R/cl/src/table.av <<'AV'
+use widget.{widget}
+type Entry = { name: string, ran: fn(int) -> int }
+export collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name
+AV
+cat > $R/cl/src/main.av <<'AV'
+use table.{entries}
+println("cl ${entries.length} ${entries[0].name}=${entries[0].ran(10)} ${entries[1].name}=${entries[1].ran(10)}")
+AV
+S "cold cl: a fresh collect reads two members' closures" cl
+S "no-op cl" cl
+ed $R/cl/src/table.av 'type Entry = { name: string, ran: fn(int) -> int }' 'type Entry = { name: string, ran: fn(int) -> int }
+// moved'
+S "cl: table.av alone moves — widget.av/members.av stay held, the fresh collect body must reference their closures as externs" cl
+got_cl1=$($R/cl/src/main 2>&1)
+[ "$got_cl1" = "cl 2 one=11 two=12" ] || { fails=$((fails+1)); echo "FAIL  cl (collect fresh, members held) printed '$got_cl1', wanted 'cl 2 one=11 two=12'"; }
+# A MEMBER'S OWN BODY EDIT, while the collect's own file stays held, is NOT
+# pinned here: on a brand-new tiny package it trips a pre-existing, GENERAL
+# held-collect/held-instance gap (a stale interface read that the "hold was
+# refused, rebuilt from sources" safety net catches and self-heals — right
+# answer, wasted work — reproduced with a plain DATA-only component too, no
+# `run: fn`/structural-refusal involved, so it is not this ticket's exclusion
+# and not touched here). The REAL requirement this scenario stands for —
+# editing a rule's actual match logic and rebuilding the compiler warm
+# re-derives that rule's finding, cleanly, no refusal — was witnessed
+# directly against compiler/features/enums/idioms.av's `bool_variant_match`
+# itself, not against a synthetic fixture here.
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.

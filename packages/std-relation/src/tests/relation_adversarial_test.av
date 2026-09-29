@@ -221,4 +221,33 @@ spec "std/relation — the stable name" {
             a_hash() != b_hash()
         }
     }
+    given "a nullable field under a lookup" {
+        then "a nullable @key is refused: a null names no row" {
+            refusals(one_row([kinded("k", "string?", Kind.Opt(Kind.Str), ["key"])])) == "null_bucket"
+        }
+        then "a nullable grain is refused: get reads a row through one bucket" {
+            refusals(
+                one_row(
+                    [
+                        kinded("g", "int?", Kind.Opt(Kind.Int), []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
+                    ],
+                ),
+            ) == "null_bucket"
+        }
+        then "a nullable @index and @unique are filed" {
+            refusals(
+                one_row(
+                    [
+                        kinded("a", "int?", Kind.Opt(Kind.Int), ["index"]),
+                        kinded("b", "string?", Kind.Opt(Kind.Str), ["unique"]),
+                    ],
+                ),
+            ) == ""
+        }
+        then "a nullable list under @index files under nothing" {
+            refusals(
+                one_row([kinded("xs", "List<int>?", Kind.Opt(Kind.List(Kind.Int)), ["index"])]),
+            ) == "lookup_kind"
+        }
+    }
 }

@@ -42,8 +42,8 @@ one spelling for the compiler's relations and a plugin's:
 |---|---|---|
 | a field named `id` | the Db mints it on insert; it is an `int`, or a `@dense` type (`use @std.meta.{dense}`, a record of one int) | `Decl.get(db, id) -> Decl?` |
 | `@key f` (one or more fields) | together, the row's stable name; a known key REPLACES its row, keeping the id | `Decl.by_key(db, DeclKey { f: v }) -> Decl?` |
-| `@unique f` | a lookup that answers one row; an insert of a value another row holds is refused | `Decl.by_f(db, v) -> Decl?` |
-| `@index f` | a lookup that answers a list, in id order; a list field files its row under every element | `Decl.by_f(db, v) -> List<Decl>` |
+| `@unique f` | a lookup that answers one row; an insert of a value another row holds is refused (a nullable field: among present values — any number of rows may be null) | `Decl.by_f(db, v) -> Decl?` |
+| `@index f` | a lookup that answers a list, in id order; a list field files its row under every element, a nullable field only when present (`by_f(db, v)` takes the value itself; a null is in no bucket) | `Decl.by_f(db, v) -> List<Decl>` |
 | `@local f` | a column this process alone reads: out of the stable hash and the codec | `DeclStored`, the row without its `@local` columns, which `Decl.decoded(bytes)` answers |
 | (always) | the rows | `Decl.insert(db, f: v, …) -> Decl`, its fields as named seats with no `id` (the row as stored; `Result<Decl, InsertRefused>` when a field is `@unique`), `Decl.all(db) -> List<Decl>` |
 
@@ -191,7 +191,8 @@ All were compiled to check:
 | a `@dense` id held anywhere but the row's `id` or a `@local` column | `dense_unmarked` — a dense id means nothing in another process |
 | `@key` and `@local` on one field | `key_local` — a key is the row's stable name |
 | a list field under `@key` or `@unique` | `many_valued` — a list files its row under every element, so mark it `@index` |
-| a lookup mark on `string?`, or any kind but int, bool, string | `lookup_kind` |
+| a lookup mark on any kind but int, bool, string (an enum or `@dense` id included), or a list or nullable of one | `lookup_kind` |
+| a nullable field under `@key` or `@index(grain)` | `null_bucket` — a null is in no bucket, and a key or a grain names one |
 | `@unique @index` on one field | `answer_clash` |
 | a mark twice, or a mark outside the four (`@key`, `@unique`, `@index`, `@local`) | `duplicate_mark`, `unknown_mark` |
 | an argument on a mark, other than `@index(ordered)` or `@index(grain)` | `mark_args` |

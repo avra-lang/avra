@@ -699,18 +699,18 @@ impl Workspace {
     /// What a parsed file says now. Under `.Binary` no rule ever runs
     /// (a build reads no lint) — `p.warned(a.diagnostics)` alone, exactly
     /// as before witnessing existed. Under `.Diagnostics`, `witness_enabled`
-    /// picks the answer: OFF, the plain answer plus `rule_findings`,
-    /// kept apart under its own key (`file_said`) so a HELD file answers
-    /// them alike; ON, the WITNESSED answer (compiler/witness.av), reused
-    /// when a still-current one exists — `Family.Analysis` already covers
-    /// exactly this file's own diagnostics AND its rule findings
-    /// (`settled_check`'s `ds`, witness.av) MERGED, so a witnessed `Said`
-    /// carries both at once and `rules` stays null (nothing left to keep
-    /// apart). A reused row is rendered here, fresh, the same way a
-    /// freshly computed one is — `render_facts_among` picks each frame's
-    /// window from `sources`, `all_said`'s own, gathered once for the
-    /// whole pass — never from whichever process happened to settle the
-    /// witness.
+    /// picks the answer: OFF, the plain answer plus `rule_findings`; ON,
+    /// the WITNESSED answer (compiler/witness.av), reused when a still-
+    /// current one exists. EITHER WAY diagnostics and rules stay TWO
+    /// renders, `said.warnings` and `rules`, so `file_said` writes
+    /// `rules_key` the same fact whichever path produced it — the older
+    /// hold mechanism's `unruled` check (derive.av) reads `rules_key`'s
+    /// presence, so a witness answer that merges the two leaves no file
+    /// ever held. A reused row is rendered here, fresh, the same way a
+    /// freshly computed one is —
+    /// `render_facts_among` picks each frame's window from `sources`,
+    /// `all_said`'s own, gathered once for the whole pass — never from
+    /// whichever process happened to settle the witness.
     fn says(p: Program, a: Analysis, want: Want, sources: List<SourceFile>) -> Spoken {
         let cases = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)]
         if want is .Binary || !witness_enabled {
@@ -732,15 +732,16 @@ impl Workspace {
             // not O(the whole pack).
             let _ = self.pack.get()?.commit()
         }
-        let facts = outcome.value().diagnostics
-        let warned = [f for f in facts if f.severity is .Warning]
+        let out = outcome.value()
+        let warned = [f for f in out.diagnostics if f.severity is .Warning]
+        let warned_rules = [f for f in out.rules if f.severity is .Warning]
         Spoken {
             said: Said {
                 path: a.view.source.file,
                 warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
                 cases: cases,
             },
-            rules: null,
+            rules: joined([render_facts_among(f, sources) for f in warned_rules], "\n\n"),
         }
     }
 
@@ -757,7 +758,7 @@ impl Workspace {
                 store,
                 parts_key(path),
                 parts_wire(own),
-                if was == null { [] } else { parts_moved(store, was!, own) },
+                if was == null { [] } else { parts_moved(store, self.record_bodies(), was!, own) },
             )
         let seen = store.get(Stored.Unit, seen_key(now.module))
         let seen_was = seen_of(seen ?? "")
@@ -766,7 +767,7 @@ impl Workspace {
                 store,
                 seen_key(now.module),
                 seen_wire(now.seen),
-                if seen == null || seen_was == null { [] } else { seen_list_moved(store, seen_was!, now.seen) },
+                if seen == null || seen_was == null { [] } else { seen_list_moved(store, self.record_bodies(), seen_was!, now.seen) },
             )
     }
 

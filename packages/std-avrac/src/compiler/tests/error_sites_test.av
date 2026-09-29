@@ -57,7 +57,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         catches
             .all(
                 (c: ErrorSite) -> ws
-                    .error_sites_within(c.at)
+                    .error_sites_within(c.owner, c.at)
                     .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
             )
     }
@@ -140,7 +140,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let f = decl_named(ws, "via_if")
         let _ = ws.raised_by(f)
         let c = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(c.at)
+        let inside = ws.error_sites_within(c.owner, c.at)
         inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
     }
     then "a re-raise inside a `match` inside the arm is found, `within` the catch" {
@@ -149,7 +149,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let f = decl_named(ws, "via_match")
         let _ = ws.raised_by(f)
         let c = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(c.at)
+        let inside = ws.error_sites_within(c.owner, c.at)
         inside.length == 1 && inside[0].how is .Propagate && same_decl(inside[0].owner, f)
     }
     then "a catch nested in a catch's arm is `within` the outer catch, and chain descends into it" {
@@ -158,7 +158,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let f = decl_named(ws, "via_nested_catch")
         let _ = ws.raised_by(f)
         let outer = outer_catch_of(ws, f)
-        let inside = ws.error_sites_within(outer.at)
+        let inside = ws.error_sites_within(outer.owner, outer.at)
         let tree = ws.chain(outer, [])
         inside.length == 1 &&
             inside[0].how is .Catch &&
@@ -180,7 +180,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         catches
             .all(
                 (c: ErrorSite) -> ws
-                    .error_sites_within(c.at)
+                    .error_sites_within(c.owner, c.at)
                     .all((s: ErrorSite) -> same_decl(s.owner, c.owner)),
             )
     }
@@ -195,5 +195,65 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vn)
         let sites = ErrorSite.all(ws.error_sites_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
+    }
+}
+
+// `ExprId` is a PER-FILE arena index — two files parsed from the SAME
+// shape mint the SAME raw indexes, so a catch's `at` in one file can
+// equal another file's `at` by number alone. `error_sites_within`
+// must not be fooled by that: it scopes by `owner` (workspace-global)
+// before ever comparing `at` (IDIOMS, avra-8sb5.57 — this is the
+// adversarial case a naive `@dense` index on `ExprId` would have
+// answered wrong, filing a cross-file collision as one site).
+fn two_file_workspace(a: string, b: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/one.av": a,
+                "/w/src/two.av": b,
+            },
+            ["/w/avra.toml", "/w/src/one.av", "/w/src/two.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+// Identical shape in both files, so each catch's `at` mints the SAME
+// arena index — the collision `error_sites_within` must see through.
+fn twin_source(fail_name: string, catcher_name: string) -> string {
+    "fn ${fail_name}() -> Result<int, string> {\n" +
+        "    fail \"boom\"\n" +
+        "}\n" +
+        "export fn ${catcher_name}() -> Result<int, _> {\n" +
+        "    let v = ${fail_name}() catch e -> {\n" +
+        "        ${fail_name}()?\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n"
+}
+
+spec "compiler/failures — two files whose catch sites share one raw ExprId index" {
+    then "each file's chain lists only its own nested site, never the other file's" {
+        let ws = two_file_workspace(twin_source("a", "one"), twin_source("a", "two"))
+        let _ = ws.analyze_file("/w/src/one.av")
+        let _ = ws.analyze_file("/w/src/two.av")
+        let one = decl_named(ws, "one")
+        let two = decl_named(ws, "two")
+        let _ = ws.raised_by(one)
+        let _ = ws.raised_by(two)
+        let sites = ErrorSite.all(ws.error_sites_db.get())
+        let catch_one = [s for s in sites if s.how is .Catch && same_decl(s.owner, one)][0]
+        let catch_two = [s for s in sites if s.how is .Catch && same_decl(s.owner, two)][0]
+        // the collision this test exists to force: same raw index, different files
+        let collides = same_expr(catch_one.at, catch_two.at)
+        let tree_one = ws.chain(catch_one, [])
+        let tree_two = ws.chain(catch_two, [])
+        collides &&
+            tree_one.next.length == 1 &&
+            same_decl(tree_one.next[0].site.owner, one) &&
+            tree_two.next.length == 1 &&
+            same_decl(tree_two.next[0].site.owner, two)
     }
 }

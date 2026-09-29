@@ -1,0 +1,118 @@
+// avra-8sb5.57.106: `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/
+// `Lowered` settle on a CONTENT fingerprint now (voices.av's
+// `namespace_fp`/`name_facts_fp`/`type_facts_fp`/`voices_fp`), never
+// `self.db.revision()` — a build-wide counter that read every edit
+// anywhere as "changed" through them. These pin each fold directly,
+// at the VALUE level: a fold covers a field when two values
+// differing ONLY in that field fingerprint differently, and it wins
+// (never churns) when two values built the same way fingerprint
+// alike. The kernel's own cutoff (`prior.value_hash == value_hash` in
+// query/kernel.av's `settle`) is exactly this equality, so a field
+// left out of a fold is exactly a field whose edit would be missed.
+use compiler.{namespace_fp, name_facts_fp, type_facts_fp, voices_fp}
+use core.{TypeId, ExprId, StmtId, DeclId}
+use features.{Namespace, no_names, new_name_facts, new_type_facts}
+use diagnostics.{Diag, Voices, refusal}
+
+fn tid(n: int) -> TypeId { TypeId { index: n } }
+fn eid(n: int) -> ExprId { ExprId { index: n } }
+fn sid(n: int) -> StmtId { StmtId { index: n } }
+fn did(n: int) -> DeclId { DeclId { index: n } }
+
+fn named(n: string, d: DeclId) -> Namespace {
+    mut fns: Map<string, DeclId> = {}
+    fns.set(n, d)
+    no_names() with { fns: fns, fn_names: [n] }
+}
+
+fn one_diag(kind: string, msg: string) -> Diag {
+    refusal(kind, null, msg, "here", null)
+}
+
+fn voices_of(ds: List<Diag>) -> Voices {
+    Voices { list: ds }
+}
+
+spec "compiler/voices — the six families' content fingerprints" {
+    given "namespace_fp, over a namespace's bound names" {
+        then "two namespaces built the same way fingerprint alike" {
+            namespace_fp(named("foo", did(1))) == namespace_fp(named("foo", did(1)))
+        }
+        then "a different bound name's identity moves the fingerprint" {
+            namespace_fp(named("foo", did(1))) != namespace_fp(named("foo", did(2)))
+        }
+        then "a different bound name's spelling moves the fingerprint" {
+            namespace_fp(named("foo", did(1))) != namespace_fp(named("bar", did(1)))
+        }
+        then "a namespace's own voices move the fingerprint" {
+            let plain = no_names()
+            let voiced = no_names() with { voices: voices_of([one_diag("x.y", "boom")]) }
+            namespace_fp(plain) != namespace_fp(voiced)
+        }
+    }
+
+    given "voices_fp, over a diagnostic list" {
+        then "the same diagnostics fingerprint alike" {
+            voices_fp(voices_of([one_diag("x.y", "boom")])) == voices_fp(voices_of([one_diag("x.y", "boom")]))
+        }
+        then "a different message moves the fingerprint" {
+            voices_fp(voices_of([one_diag("x.y", "boom")])) != voices_fp(voices_of([one_diag("x.y", "bang")]))
+        }
+        then "a different kind moves the fingerprint" {
+            voices_fp(voices_of([one_diag("x.y", "boom")])) != voices_fp(voices_of([one_diag("x.z", "boom")]))
+        }
+        then "an empty list is its own value" {
+            voices_fp(voices_of([])) != voices_fp(voices_of([one_diag("x.y", "boom")]))
+        }
+    }
+
+    given "name_facts_fp, over a file's resolved names" {
+        then "the SAME binding at the SAME expression fingerprints alike" {
+            let a = new_name_facts(2, no_names())
+            let b = new_name_facts(2, no_names())
+            name_facts_fp(a) == name_facts_fp(b)
+        }
+        then "a mut-seat read mark moves the fingerprint" {
+            let a = new_name_facts(2, no_names())
+            let b = new_name_facts(2, no_names())
+            b.mark_mut_read(eid(0))
+            name_facts_fp(a) != name_facts_fp(b)
+        }
+        then "the namespace it resolved against moves the fingerprint" {
+            let a = new_name_facts(1, no_names())
+            let b = new_name_facts(1, named("foo", did(1)))
+            name_facts_fp(a) != name_facts_fp(b)
+        }
+    }
+
+    given "type_facts_fp, over one declaration's typing facts" {
+        then "the SAME table fingerprints alike" {
+            let a = new_type_facts(0, 2, 1, tid(0))
+            let b = new_type_facts(0, 2, 1, tid(0))
+            type_facts_fp(a) == type_facts_fp(b)
+        }
+        then "an expression's settled type moves the fingerprint" {
+            let a = new_type_facts(0, 2, 1, tid(0))
+            let b = new_type_facts(0, 2, 1, tid(0))
+            b.set_type(eid(0), tid(9))
+            type_facts_fp(a) != type_facts_fp(b)
+        }
+        then "a widened expression moves the fingerprint though its own type does not" {
+            let a = new_type_facts(0, 2, 1, tid(0))
+            let b = new_type_facts(0, 2, 1, tid(0))
+            b.widen(eid(0), tid(9))
+            type_facts_fp(a) != type_facts_fp(b)
+        }
+        then "the boxed_locals column (a WHOLE-FILE window, stmt-indexed) moves the fingerprint" {
+            let a = new_type_facts(0, 2, 3, tid(0))
+            let b = new_type_facts(0, 2, 3, tid(0))
+            b.mark_boxed_local(sid(0))
+            type_facts_fp(a) != type_facts_fp(b)
+        }
+        then "the table's own voices move the fingerprint though every column is untouched" {
+            let a = new_type_facts(0, 1, 1, tid(0))
+            let b = a with { voices: voices_of([one_diag("x.y", "boom")]) }
+            type_facts_fp(a) != type_facts_fp(b)
+        }
+    }
+}

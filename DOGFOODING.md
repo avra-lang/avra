@@ -77,6 +77,27 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
+A LICENSE SILENCES THE FINDING, NOT ONLY THE BASELINE. `// LICENSED
+<rule>: <reason>` on the line directly above a site used to answer
+only the ratchet — `avra check`'s own rule pass fired there anyway,
+and the baseline was the only thing standing between the finding and
+the reader. `compiler/licenses.av`'s `site_licensed` reads the same
+citation before a finding is even built (`rule_pass.av`'s door), so a
+licensed site never fires at all — never a loose "mentions LICENSED
+nearby" guess: the id must be the EXACT firing rule's own, the reason
+non-empty, the comment the line right above, never two lines up, and
+licensing one rule at a site never silences a different rule's
+finding on that same line.
+
+A MULTI-ARM RULE SITS IN EVERY ARM'S OWN BUCKET, NEVER "ANY NODE" FOR
+THAT ALONE. Two arms narrowing to different kinds — structs.index_compared's
+`==` and `!=`, compiler.repeated_projection's `&&` and `||` — once
+forced the WHOLE rule to any-node the moment they disagreed, since
+the index kept one kind per rule. `core.root_kind_of` answers a LIST
+now, one kind per pattern that narrows; a rule sits in every one of
+those buckets, and only a SINGLE pattern that cannot narrow AT ALL
+still falls back to any node.
+
 A CITATION IS RATCHETED TOO, by a different keeper: `make cited`
 refuses a name or a path this file or CLAUDE.md cites that the
 tree cannot answer, and a bare `file.av:NNN`, which the next edit
@@ -134,7 +155,7 @@ a bullet here.
 - modules.unused_import A name imported and never used ANYWHERE in its MODULE — never per FILE, since bs2 merges a module's own files into one bundle, so an import in one file may serve another (`program.av`'s import can be `mod.av`'s to use); a per-file scan deletes an import a sibling still depends on. The compiler refuses a MISSING import (F3000) and one a module does not export (F3012); an unused one is silent, so this rule keeps that direction. `unused_imports()`/`unused_import_decls()` (features/code.av, THE REFERENCES RELATION) already exempt a component instance (`DeclFacts.instance`): its use is being REACHABLE for a `collect`, not being read.
 - nullable.if_null_ternary A null test that picks the value or a default is `??`.
 - nullable.let_else_guard `let x = E` guarded by an immediate absence-exit — `let x? = E else { … }` — with every later `x!` in the block reading `x` bare. A `mut` never matches: the pattern's own `let` name-seat sees only a `let`'s binder, a different node kind entirely.
-- nullable.nullable_flag_local A `mut` local seeded `null` with an explicit nullable type — is this scan a `find`/`index_of`? No hole binds the TYPE (a quote pattern has none in type position yet, avra-8sb5.25.10): a bare-hole root guarded `lit.is_nullable_flag_mut()` reads it off the declaration structurally instead.
+- nullable.nullable_flag_local A `mut` local seeded `null` with an explicit nullable type — is this scan a `find`/`index_of`? A BARE-HOLE ROOT: a `mut`'s own binder NAME would need to open to match any local, and `root_kind_of` refuses to index a root whose own NAME or TYPE field is a lone hole — the raw fold keys on that literal spelling, which no real declaration shares (core/quote_pat.av). `is_nullable_flag_mut` reads both fields structurally off `self` instead.
 - nullable.repeated_unwrap A `let` LOCAL forced open (`!`) three or more times within its own declaration — a value the code already knows it has, insisted on again and again instead of guarded once. A `mut` never matches (`forces()`'s own law): it changes every turn, so there is no one value to bind.
 - specs.refusal_uncounted_contains A `then` case asserting only `.report().contains(...)` — the shape that lets a cascade of refusals hide behind a message that happens to appear. Pin the count too (`diagnostics.length`, `refusals(...) == n`, `refused_with`/`refused_n`/`refused_in`).
 - structs.index_compared A hand-rolled identity comparison — every typed id (`TypeId`, `ExprId`, a struct wrapping one field) is compared by `.index` pervasively in this compiler's own source, but the SHAPE that makes the comparison honest — one word, nothing more — is a property of the type, not of the site that wrote it. `avra fix` names no mechanical rewrite here: a `.index` comparison names no verb the type doesn't already carry, so this rule only SAYS, never rewrites.

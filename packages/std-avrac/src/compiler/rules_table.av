@@ -4,14 +4,15 @@
 //! body is SYNTHESISED at lowering from every one the workspace
 //! admits (compiler/lower/lower.av's `lower_collect`) — `run` the
 //! instance's own `fn(Code) -> Fix?` field, `fixes`/`keeps` its
-//! `@fixes`/`@keeps`-filled `List` fields, `root` the ROOT-KIND INDEX
-//! `it.root_kind` folds from its arms (compiler/lower/lower.av's
+//! `@fixes`/`@keeps`-filled `List` fields, `root` the ROOT-KIND
+//! INDICES `it.root_kind` folds from its arms (compiler/lower/lower.av's
 //! `component_root_kind` — a general `.Component`-kind field, read
 //! off the WRITTEN body rather than the built value, same as
 //! `doc`/`name`/`module`/`file`). A rule is an ORDINARY declaration,
 //! reached the way any other is: a feature's `mod.av` imports its own
 //! `idioms.av`'s rules, and the COMPILER's own (compiler/idioms.av,
 //! shapes no single feature owns) are imported here.
+use core.{flatten}
 use features.{Code, Fix, Fixes, rule}
 use compiler.{
     refusal_assembled,
@@ -65,20 +66,23 @@ use compiler.{
 }
 
 /// A root-kind index with no root at all: "any node", tried
-/// everywhere — a struct field cannot hold `int?` (the subset
-/// today), so this is the seed `root_kind_of` never answers.
+/// everywhere — spelled as the SOLE member of a rule's own root
+/// list, never an empty one: an empty list would spend that absence
+/// on "no kinds narrow it", a state no rule with arms is ever in.
+/// This is the seed `root_kind_of` never answers a kind for.
 export const any_root: int = -1
 
 /// One rule: its identity (`<module>.<name>`, split), the fn the
-/// pass calls, the ROOT-KIND INDEX (`core.root_kind_of`) its first
-/// arm's pattern folds to — `any_root` for a rule the index cannot
-/// narrow — its own `///` SENTENCE, the examples that prove it
+/// pass calls, the ROOT-KIND INDICES (`core.root_kind_of`) every
+/// pattern narrows to — one member per kind its arms disagree over,
+/// `[any_root]` for a rule a single pattern cannot narrow at all —
+/// its own `///` SENTENCE, the examples that prove it
 /// (`avra test`'s own suite reads these, never `check` —
 /// compiler/rule_examples.av), and its `@law` — `component rule`'s
 /// own raw `List<string>` (`check` refuses more than one), zero or
 /// one long; `declared_law` is the read that turns it into the
 /// `string?` a rule either carries or does not.
-export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: int, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string> }
+export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string> }
 
 /// `<module>.<name>` — the identity a finding's kind and `--only`
 /// both read.
@@ -96,24 +100,29 @@ export fn declared_law(r: RuleEntry) -> string? { r.law.first() }
 /// here.
 export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law } by it.module, it.name
 
-/// THE RULES BY ROOT KIND: each kind a rule is rooted at, the rules a
-/// node of that kind is tried against — its own and every `any_root`
-/// rule, in table order — and the `any_root` rules alone for every
-/// other kind. Design §5: nodes touched, never nodes × rules.
+/// THE RULES BY ROOT KIND: each kind SOME rule is rooted at, the
+/// rules a node of that kind is tried against — its own (a rule
+/// sits under every kind its arms disagree over) and every
+/// `any_root` rule, in table order — and the `any_root` rules alone
+/// for every other kind. Design §5: nodes touched, never nodes ×
+/// rules.
 export type RuleIndex = { roots: List<int>, at_root: List<List<RuleEntry>>, anywhere: List<RuleEntry> }
 
 /// The rule table's index, built once.
 export once fn rule_index() -> RuleIndex { indexed(rules) }
 
 export fn indexed(entries: List<RuleEntry>) -> RuleIndex {
-    let rooted = [r.root for r in entries if r.root != any_root]
+    let rooted = flatten([r.root for r in entries if !is_any_root(r)])
     let roots = [k for i, k in rooted if rooted.index_of(k) == i]
     RuleIndex {
         roots: roots,
-        at_root: [[r for r in entries if r.root == any_root || r.root == k] for k in roots],
-        anywhere: [r for r in entries if r.root == any_root],
+        at_root: [[r for r in entries if is_any_root(r) || r.root.contains(k)] for k in roots],
+        anywhere: [r for r in entries if is_any_root(r)],
     }
 }
+
+/// A rule with no narrow root at all — tried at every node.
+fn is_any_root(r: RuleEntry) -> bool { r.root.contains(any_root) }
 
 impl RuleIndex {
     /// The rules a node of `kind` is tried against.

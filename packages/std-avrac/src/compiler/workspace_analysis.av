@@ -14,6 +14,8 @@ use core.{
     spelled,
     module_path,
     fp_str,
+    fp,
+    fp_list,
     joined,
 }
 use @std.path.{dir_of}
@@ -39,9 +41,9 @@ use features.{
 }
 use core.{StmtId}
 use diagnostics.{Diag, no_voices, has_errors}
-use compiler.backend.{run_crossed, run_lifted, run_settle}
+use compiler.backend.{run_crossed, run_lifted, run_settle, world_witness}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, Unit, lower_unit}
+use compiler.lower.{Lowered, Body, Unit, lower_unit}
 use compiler.memory.{memory}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -148,8 +150,37 @@ impl Workspace {
             .Compute -> nothing(),
         }
         let out = self.analyzed(f)
+        // DERIVED, LAZY, never re-walked: `analyzed` just asked
+        // `resolved` and `folded` above (their own fingerprints
+        // fresh once asked), so this adds only what an `Analysis`
+        // carries beyond them — every diagnostic in pipeline order,
+        // `sig_diagnostics` and `method_diagnostics` included. `view`
+        // and `program` are left out: `view` is shared/derived state
+        // (the workspace's own Decls/TypeRegistry, `p.store` already
+        // covered by `Parsed`/`Resolved`/`Folded`), and `program` is
+        // a CLOSURE — structurally unfoldable — whose behavior is a
+        // pure fn of `f`'s own stable path, never independent
+        // content. LAZY because reading Resolved's/Folded's hash
+        // back would otherwise force THEIR folds (and, through
+        // Folded's own derivation, every body's Typed) on every cold
+        // compile; this closure runs only when Analysis itself has a
+        // prior settle to compare against.
+        let ws = self
         analysis_of(
-            self.relation(Family.Analysis).finish(f.index, DbRow.Analysis(out), self.db.revision()),
+            self
+                .relation(Family.Analysis)
+                .finish_lazy(
+                    f.index,
+                    DbRow.Analysis(out),
+                    (r: DbRow) -> fp(
+                        1,
+                        [
+                            dep_hash_fp(ws.db.value_hash_of(key(Family.Resolved, f.index))),
+                            dep_hash_fp(ws.db.value_hash_of(key(Family.Folded, f.index))),
+                            fp_list([diag_fp(d) for d in analysis_of(r).diagnostics]),
+                        ],
+                    ),
+                ),
         )
     }
 
@@ -227,10 +258,11 @@ impl Workspace {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
+        let out = self.lower_requested(self.asks.get()[id])
         lowered_of(
             self
                 .relation(fam)
-                .finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()),
+                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
     }
 
@@ -327,9 +359,23 @@ impl Workspace {
         self.hold.runs.put(reader, distinct((self.hold.runs.get().get(reader) ?? []).concat(paths)))
     }
 
-    /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a shared
-    /// `Lowered` query, the consts it reads are noted as `f`'s, and so is the file
-    /// of every body it will run.
+    /// What `f`'s own run reads, recorded once its OUTCOME is known: `chain`
+    /// when one is given (a structural refusal's own witness — the proof
+    /// depends on these bodies alone, so a body `l.fns` lowered off that path
+    /// can move without moving the verdict), every body `l` lowered otherwise
+    /// (a value or a speaking refusal really did execute or need it).
+    fn recorded_reads(f: FileId, l: Lowered, chain: List<Body>?) {
+        let bodies = chain ?? l.fns
+        self
+            .read_by(
+                self.decls.file(f).path,
+                [self.decls.file(b.file!).path for b in bodies if b.file != null],
+            )
+    }
+
+    /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a
+    /// shared `Lowered` query. What it reads is the caller's to record, once
+    /// the run's own outcome answers whether the whole of it was needed.
     fn run_lowered_for(f: FileId, root: Wanted) -> Lowered {
         let ws = self
         let reader = self.decls.file(f).path
@@ -339,7 +385,6 @@ impl Workspace {
         )
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
-        self.read_by(reader, [self.decls.file(bd.file!).path for bd in l.fns if bd.file != null])
         l
     }
 
@@ -467,14 +512,20 @@ impl Workspace {
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
         let l = self.standalone(f, root, "settling\$${name}", seats)
-        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        if has_errors(l.diagnostics) {
+            self.recorded_reads(f, l, null)
+            return .Err(Unsettled.Trap(l.diagnostics.first()!.message))
+        }
         let ws = self
-        run_settle(
+        let r = run_settle(
             l,
             self.budgets(),
             dir_of(self.decls.file(f).path),
             (nm: string) -> ws.type_named_lifted(f, nm),
         )
+        let chain = match r { .Err(.Reach(_)) -> world_witness(l, true), _ -> null }
+        self.recorded_reads(f, l, chain)
+        r
     }
 
     /// One expression lowered as a program of its own, while every
@@ -488,6 +539,7 @@ impl Workspace {
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.standalone(f, e, expr_symbol(f, e), [])
+        self.recorded_reads(f, l, null)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let ws = self
         match run_crossed(
@@ -558,6 +610,7 @@ impl Workspace {
             )
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])
+        self.recorded_reads(f, l, null)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let sig = self.decls.sig(d)?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
