@@ -24,6 +24,7 @@
 use core.{
     DeclId,
     ExprId,
+    ExprKind,
     StmtId,
     TypeId,
     TypeRef,
@@ -37,6 +38,7 @@ use core.{
     same_decl,
     same_expr,
     same_type as same_type_id,
+    touch,
 }
 use features.{Decls, Decl, TypeCx, bound_decl_of, written_seats}
 use query.{FixpointRefusal, spoken as fixpoint_spoken}
@@ -257,8 +259,11 @@ fn fail_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
     [v for v in fail_values(store) if v.index >= lo && v.index < hi]
 }
 
+/// M5b PREP (COMPILER DB townhall §6.11): a bucket lookup over the
+/// `Expr` arena relation's `@index kind`, scoped to the decl's own
+/// `@index decl` range — never a hand-matched sweep of every node.
 fn propagate_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
-    flatten([propagate_value(store, ExprId { index: i }) for i in lo..hi])
+    flatten([propagate_value(store, e) for e in store.exprs_by_kind(lo, hi, ExprKind.Propagate)])
 }
 
 fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
@@ -525,6 +530,12 @@ impl Workspace {
         // too). Seats never depend on inference, so `seats(d)` carries none
         // of that risk: whichever caller asks first types them, once.
         let seats: List<TypeId> = self.decls.seats(d)
+        // `Failures` is never `d`'s own owner — it is the whole-program
+        // fixpoint reading every `_`-declared fn's body — so this read of
+        // `d`'s nodes is FOREIGN and depends on `d`'s own syntax
+        // (COMPILER DB townhall §6.11 rule 2), never on the whole file's
+        // `Parsed`.
+        touch(self.syntax(d))
         let store = self.decls.store(d)
         let fs = FailSurvey {
             dt: DeclaredTypes {

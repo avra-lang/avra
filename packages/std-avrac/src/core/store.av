@@ -970,6 +970,21 @@ impl NodeStore {
     fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints.get()[id.index] }
     fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints.get()[id.index] }
 
+    /// Every expression in `[lo, hi)` whose own variant is `k` — the
+    /// `Expr` ARENA RELATION's `@index decl`/`@index kind`
+    /// (COMPILER DB townhall §6.11): a declaration's range IS the
+    /// decl index, and `Expr.kind()` the variant index, so a caller
+    /// asks syntax by comprehension instead of matching every node
+    /// in range by hand.
+    fn exprs_by_kind(lo: int, hi: int, k: ExprKind) -> List<ExprId> {
+        [ExprId { index: i } for i in lo..hi if self.expr(ExprId { index: i }).kind() == k]
+    }
+
+    /// `exprs_by_kind`'s `Stmt` twin.
+    fn stmts_by_kind(lo: int, hi: int, k: StmtKind) -> List<StmtId> {
+        [StmtId { index: i } for i in lo..hi if self.stmt(StmtId { index: i }).kind() == k]
+    }
+
     /// The span containing both expressions, when both are known.
     fn cover(a: ExprId, b: ExprId) -> Span? {
         let sa = self.expr_span(a)

@@ -447,6 +447,100 @@ export enum Expr {
     /// discard, in the order they ran; `body` is a block with no tail.
     Collect(body: ExprId)
 }
+
+/// EVERY `Expr` VARIANT'S NAME, no payload — COMPILER DB townhall
+/// §6.11's `@index kind`: a pass asks which variant a node is
+/// without matching its payload. `Expr.kind()` mirrors `Expr` one arm
+/// at a time; a variant `Expr` gains and this match does not refuses
+/// to compile, so the mirror cannot go silently stale.
+export enum ExprKind {
+    IntLit
+    FloatLit
+    StrLit
+    BoolLit
+    Ident
+    Receiver
+    Binary
+    Not
+    ListLit
+    Comp
+    MapLit
+    Index
+    Prop
+    Body
+    Component
+    If
+    When
+    Block
+    Call
+    Named
+    StructLit
+    With
+    Match
+    NullLit
+    Coalesce
+    MatchOpt
+    Lambda
+    Spawn
+    CallValue
+    Chain
+    Force
+    Is
+    VariantLit
+    Propagate
+    Catch
+    MethodCall
+    Error
+    Collect
+}
+
+impl Expr {
+    /// The node's own variant, no payload — the `@index kind`
+    /// projection `NodeStore.exprs_by_kind` filters by.
+    fn kind() -> ExprKind {
+        match self {
+            .IntLit(_) -> ExprKind.IntLit,
+            .FloatLit(_) -> ExprKind.FloatLit,
+            .StrLit(_) -> ExprKind.StrLit,
+            .BoolLit(_) -> ExprKind.BoolLit,
+            .Ident(_) -> ExprKind.Ident,
+            .Receiver -> ExprKind.Receiver,
+            .Binary(_, _, _) -> ExprKind.Binary,
+            .Not(_) -> ExprKind.Not,
+            .ListLit(_) -> ExprKind.ListLit,
+            .Comp(_, _) -> ExprKind.Comp,
+            .MapLit(_, _) -> ExprKind.MapLit,
+            .Index(_, _) -> ExprKind.Index,
+            .Prop(_, _) -> ExprKind.Prop,
+            .Body(_, _, _, _) -> ExprKind.Body,
+            .Component(_, _, _, _, _) -> ExprKind.Component,
+            .If(_, _, _) -> ExprKind.If,
+            .When(_, _, _) -> ExprKind.When,
+            .Block(_, _) -> ExprKind.Block,
+            .Call(_, _, _) -> ExprKind.Call,
+            .Named(_, _) -> ExprKind.Named,
+            .StructLit(_, _, _) -> ExprKind.StructLit,
+            .With(_, _, _) -> ExprKind.With,
+            .Match(_, _) -> ExprKind.Match,
+            .NullLit -> ExprKind.NullLit,
+            .Coalesce(_, _) -> ExprKind.Coalesce,
+            .MatchOpt(_, _, _, _) -> ExprKind.MatchOpt,
+            .Lambda(_, _) -> ExprKind.Lambda,
+            .Spawn(_) -> ExprKind.Spawn,
+            .CallValue(_, _) -> ExprKind.CallValue,
+            .Chain(_, _) -> ExprKind.Chain,
+            .Force(_) -> ExprKind.Force,
+            .Is(_, _) -> ExprKind.Is,
+            .VariantLit(_, _) -> ExprKind.VariantLit,
+            .Propagate(_) -> ExprKind.Propagate,
+            .Catch(_, _, _, _) -> ExprKind.Catch,
+            .MethodCall(_, _, _) -> ExprKind.MethodCall,
+            .Error -> ExprKind.Error,
+            .Collect(_) -> ExprKind.Collect,
+        }
+    }
+}
+
 /// Whether the parse tree already HOLDS this value — an int, float,
 /// bool or string literal. A computed expression is not a literal:
 /// reading it needs typed answers that do not exist before analysis.
@@ -958,6 +1052,78 @@ export enum Stmt {
     /// own declaration name. `order` is the `by` list's `it.field`
     /// paths, the same currency `Collect` orders by.
     CollectEnum(name: Scoped, kind: CollectKind, scope: CollectScope, order: List<Plain>)
+}
+
+/// EVERY `Stmt` VARIANT'S NAME, no payload — `ExprKind`'s twin.
+export enum StmtKind {
+    Let
+    MutLet
+    ConstDecl
+    Assign
+    ExprStmt
+    Discard
+    FnDecl
+    ExternFn
+    While
+    IfStmt
+    Return
+    Fail
+    ImplDecl
+    TraitDecl
+    LetElse
+    For
+    Use
+    ForEach
+    StructDecl
+    NamedType
+    EnumDecl
+    Spec
+    ComponentDecl
+    SyntaxDecl
+    Defer
+    Collect
+    Error
+    Setting
+    Alias
+    CollectEnum
+}
+
+impl Stmt {
+    /// The node's own variant, no payload — `Expr.kind()`'s twin.
+    fn kind() -> StmtKind {
+        match self {
+            .Let(_, _, _) -> StmtKind.Let,
+            .MutLet(_, _, _) -> StmtKind.MutLet,
+            .ConstDecl(_, _, _) -> StmtKind.ConstDecl,
+            .Assign(_, _) -> StmtKind.Assign,
+            .ExprStmt(_) -> StmtKind.ExprStmt,
+            .Discard(_) -> StmtKind.Discard,
+            .FnDecl(_, _, _, _, _) -> StmtKind.FnDecl,
+            .ExternFn(_, _, _) -> StmtKind.ExternFn,
+            .While(_, _) -> StmtKind.While,
+            .IfStmt(_, _, _) -> StmtKind.IfStmt,
+            .Return(_) -> StmtKind.Return,
+            .Fail(_) -> StmtKind.Fail,
+            .ImplDecl(_, _, _) -> StmtKind.ImplDecl,
+            .TraitDecl(_, _) -> StmtKind.TraitDecl,
+            .LetElse(_, _, _) -> StmtKind.LetElse,
+            .For(_, _, _, _, _, _) -> StmtKind.For,
+            .Use(_, _, _) -> StmtKind.Use,
+            .ForEach(_, _, _, _) -> StmtKind.ForEach,
+            .StructDecl(_, _, _) -> StmtKind.StructDecl,
+            .NamedType(_, _, _) -> StmtKind.NamedType,
+            .EnumDecl(_, _, _) -> StmtKind.EnumDecl,
+            .Spec(_, _) -> StmtKind.Spec,
+            .ComponentDecl(_, _, _, _) -> StmtKind.ComponentDecl,
+            .SyntaxDecl(_, _) -> StmtKind.SyntaxDecl,
+            .Defer(_, _) -> StmtKind.Defer,
+            .Collect(_, _, _, _, _, _) -> StmtKind.Collect,
+            .Error -> StmtKind.Error,
+            .Setting(_, _) -> StmtKind.Setting,
+            .Alias(_, _, _) -> StmtKind.Alias,
+            .CollectEnum(_, _, _, _) -> StmtKind.CollectEnum,
+        }
+    }
 }
 
 /// The language AST's arenas plus their fingerprint side tables. A
