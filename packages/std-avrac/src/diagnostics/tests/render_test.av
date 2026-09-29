@@ -1,7 +1,16 @@
 // Golden renderings: the human text is a contract. Every code's
 // shape is asserted EXACTLY — a drifted gutter or caret fails here.
 use @std.errors.{Loc, Frame, Error, ErrorInfo, info, Suggestion, Edit, Confidence}
-use @std.avrac.diagnostics.{Diag, error_at, render, SourceFile, new_source_file}
+use @std.avrac.diagnostics.{
+    Diag,
+    error_at,
+    render,
+    render_among,
+    render_facts_among,
+    diag_facts_of,
+    SourceFile,
+    new_source_file,
+}
 
 enum Underlying { Bad }
 
@@ -246,6 +255,40 @@ fix (low): second fix
         then "no suggestions is no fix line at all" {
             let d = error_at("language.defect", null, "m")
             render(d, two_lines()) == "error[language.defect]: m"
+        }
+    }
+    given "a Diag's wire-safe DiagFacts twin" {
+        then "a located diagnostic with suggestions renders identically through facts" {
+            let at = Loc { file: "app.av", lo: 14, hi: 15 }
+            let m = Frame { label: "expected NAME", loc: at }
+            let edit = Edit { loc: at, replacement: "x" }
+            let sg = Suggestion {
+                confidence: Confidence.High,
+                description: "name it",
+                edits: [edit],
+            }
+            let d = error_at("parse.expected", at, "expected NAME while parsing `stmt`") with { primary: m, help: "a `let` names its value", suggestions: [sg] }
+            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+        }
+        then "a multi-hop cause chain flattens to the same lines through facts" {
+            let d = error_at("language.defect", null, "the build failed") with { cause: Wrapping { inner: Underlying.Bad } }
+            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+        }
+        then "a chain past the cap renders the same stop line through facts" {
+            let d = error_at("language.defect", null, "the build failed") with { cause: deep_chain(16) }
+            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+        }
+        then "an unlocated label survives the round trip" {
+            let d = error_at("language.defect", null, "the package moved") with { primary: Frame { label: "declares nothing", loc: null }, help: "build against the one this compiler ships" }
+            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+        }
+        then "a secondary frame in ANOTHER file picks that file's own source, same as render_among" {
+            let other = new_source_file("other.av", "fn f() {}\n")
+            let primary_at = Loc { file: "app.av", lo: 14, hi: 15 }
+            let secondary_at = Loc { file: "other.av", lo: 0, hi: 2 }
+            let d = error_at("type.extern_value", primary_at, "an extern fn is not a value") with { primary: Frame { label: "read as a value here", loc: primary_at }, secondary: [Frame { label: "declared here", loc: secondary_at }] }
+            let sources = [two_lines(), other]
+            render_facts_among(diag_facts_of(d), sources) == render_among(d, sources)
         }
     }
 }

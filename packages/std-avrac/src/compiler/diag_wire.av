@@ -1,0 +1,129 @@
+//! `DiagFacts` (diagnostics/mod.av), on the wire — a durable witness
+//! row (avra-8sb5.57.55) carries a file's diagnostics and rule
+//! findings as DATA, never a rendered string, so it prints correctly
+//! wherever it is later read (diagnostics/render.av's
+//! `render_facts_among`). Every field of `DiagFacts`/`Frame`/`Loc`/
+//! `Suggestion`/`Edit`/`Confidence` is already plain data; this is
+//! the one place that spells their bytes, composed the way pack.av
+//! composes `EdgeId` into an `Entry` — one `written_`/`read_` pair per
+//! shape, folded by `written_list`/a counted comprehension, never by
+//! hand at the call site.
+use @std.relation.stable.{Writer, Reader, written_list, CodecFault}
+use @std.avrac.diagnostics.{DiagFacts, Severity}
+use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
+
+fn severity_flag(s: Severity) -> bool { s is .Error }
+
+fn severity_of(flag: bool) -> Severity { if flag { Severity.Error } else { Severity.Warning } }
+
+fn confidence_tag(c: Confidence) -> int {
+    match c { .High -> 0, .Medium -> 1, .Low -> 2 }
+}
+
+fn confidence_of(tag: int) -> Result<Confidence, CodecFault> {
+    match tag {
+        0 -> Confidence.High,
+        1 -> Confidence.Medium,
+        2 -> Confidence.Low,
+        rest -> { fail CodecFault.NotFlag },
+    }
+}
+
+fn written_loc(w: Writer, l: Loc) {
+    let has_file = l.file != null
+    w.present(has_file)
+    if has_file { w.text(l.file!) }
+    w.int(l.lo)
+    w.int(l.hi)
+}
+
+fn read_loc(r: Reader) -> Result<Loc, CodecFault> {
+    let has_file = r.present()?
+    let file = if has_file { r.text()? } else { null }
+    let lo = r.int()?
+    let hi = r.int()?
+    Loc { file: file, lo: lo, hi: hi }
+}
+
+fn written_frame(w: Writer, f: Frame) {
+    let has_label = f.label != null
+    w.present(has_label)
+    if has_label { w.text(f.label!) }
+    let has_loc = f.loc != null
+    w.present(has_loc)
+    if has_loc { written_loc(w, f.loc!) }
+}
+
+fn read_frame(r: Reader) -> Result<Frame, CodecFault> {
+    let has_label = r.present()?
+    let label = if has_label { r.text()? } else { null }
+    let has_loc = r.present()?
+    let loc = if has_loc { read_loc(r)? } else { null }
+    Frame { label: label, loc: loc }
+}
+
+fn written_edit(w: Writer, e: Edit) {
+    written_loc(w, e.loc)
+    w.text(e.replacement)
+}
+
+fn read_edit(r: Reader) -> Result<Edit, CodecFault> {
+    let loc = read_loc(r)?
+    let replacement = r.text()?
+    Edit { loc: loc, replacement: replacement }
+}
+
+fn written_suggestion(w: Writer, s: Suggestion) {
+    w.int(confidence_tag(s.confidence))
+    w.text(s.description)
+    written_list(w, s.edits, written_edit)
+}
+
+fn read_suggestion(r: Reader) -> Result<Suggestion, CodecFault> {
+    let confidence = confidence_of(r.int()?)?
+    let description = r.text()?
+    let n = r.count()?
+    let edits = [read_edit(r)? for _k in 0..n]
+    Suggestion { confidence: confidence, description: description, edits: edits }
+}
+
+/// One `DiagFacts` written — the unit `written_list` folds for a
+/// file's whole diagnostics/rule-findings row.
+fn written_diag_facts(w: Writer, d: DiagFacts) {
+    w.text(d.kind)
+    w.bool(severity_flag(d.severity))
+    written_frame(w, d.primary)
+    written_list(w, d.secondary, written_frame)
+    written_list(w, d.cause_lines, (w: Writer, l: string) -> w.text(l))
+    w.text(d.message)
+    let has_help = d.help != null
+    w.present(has_help)
+    if has_help { w.text(d.help!) }
+    written_list(w, d.suggestions, written_suggestion)
+}
+
+/// `written_diag_facts`'s inverse.
+fn read_diag_facts(r: Reader) -> Result<DiagFacts, CodecFault> {
+    let kind = r.text()?
+    let severity = severity_of(r.bool()?)
+    let primary = read_frame(r)?
+    let secn = r.count()?
+    let secondary = [read_frame(r)? for _k in 0..secn]
+    let causen = r.count()?
+    let cause_lines = [r.text()? for _k in 0..causen]
+    let message = r.text()?
+    let has_help = r.present()?
+    let help = if has_help { r.text()? } else { null }
+    let sn = r.count()?
+    let suggestions = [read_suggestion(r)? for _k in 0..sn]
+    DiagFacts {
+        kind: kind,
+        severity: severity,
+        primary: primary,
+        secondary: secondary,
+        cause_lines: cause_lines,
+        message: message,
+        help: help,
+        suggestions: suggestions,
+    }
+}
