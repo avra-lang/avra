@@ -79,6 +79,8 @@ use features.{
     Origin,
     Origins,
     no_origins,
+    Namespace,
+    no_names,
 }
 use @std.meta.{Diagnostic, derive, identity}
 use @std.relation.{relation}
@@ -422,6 +424,9 @@ export type Decls = {
     // declaration at compile time, what it said back
     lifter: Cell<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
     ensure_methods: Cell<fn(DeclId) -> void>,
+    // the workspace's namespace hook: a file's names resolved, what
+    // `annotation_callee` reads a captured fact's callee through
+    namespace_of: Cell<fn(FileId) -> Namespace>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: Cell<List<DeclId>>,
@@ -478,6 +483,9 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
 > {
     .Err(Unsettled.Trap("nothing here lifts an annotation"))
 }
+
+/// Where no workspace stands behind the table, nothing resolves.
+fn no_namespace(_f: FileId) -> Namespace { no_names() }
 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_marks(d: DeclId) {}
@@ -599,6 +607,7 @@ export fn new_decls() -> Decls {
         consumed: Cell.new(empty_consumed),
         ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
+        namespace_of: Cell.new(no_namespace),
         refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
@@ -1054,15 +1063,23 @@ impl Decls {
         )
     }
 
-    /// Whether a type is one declaration exported by `@std/meta`.
-    /// The DeclId is the identity; the package and export name locate
-    /// that identity without accepting an equal-shaped user record.
+    /// Whether a declaration IS `@std/meta`'s export of `name` — by
+    /// DECLARATION, never the word it happens to answer to: the
+    /// package and the export name locate the identity without
+    /// accepting an equal-shaped user declaration.
+    fn is_meta_fn(d: DeclId, name: string) -> bool {
+        self.decl(d).name == name && self.package_of(d) == "@std.meta"
+    }
+
+    /// Whether a type is one declaration exported by `@std/meta` —
+    /// `is_meta_fn`'s door, opened over a TYPE's shape rather than a
+    /// resolved declaration directly.
     fn meta_type(ty: TypeId, name: string) -> bool {
         match self.types.shape_of(ty) {
             // THE DECLARATION'S name, never the WRITTEN spelling: a
             // `use @std.meta.{Fn as F}` gives the type the alias in its
             // written name, and the boundary must still read `Fn`.
-            .Struct(d, _) -> self.decl(d).name == name && self.package_of(d) == "@std.meta",
+            .Struct(d, _) -> self.is_meta_fn(d, name),
             rest -> false,
         }
     }
@@ -1213,6 +1230,11 @@ impl Decls {
         lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>,
     ) {
         self.lifter.set(lift)
+    }
+
+    /// The workspace arms the namespace hook once.
+    fn arm_namespace(ns: fn(FileId) -> Namespace) {
+        self.namespace_of.set(ns)
     }
 
     /// The workspace arms the marks hook once — a declaration's
@@ -1820,6 +1842,23 @@ impl Decls {
     /// written order — the fact `avra docs`, the formatter's `Code` and
     /// `@std/meta`'s crossing all read, so no reader parses a store of its own.
     fn annotations_of(d: DeclId) -> List<AnnotationFact> { self.facts_of(d)?.annotations ?? [] }
+
+    /// An annotation's callee, resolved as `file`'s own namespace
+    /// would read it — the door `compiler/expand.av`'s
+    /// `declared_work` opens for a live node, asked here of a fact
+    /// captured at admission, before any file's names were resolved.
+    fn annotation_callee(a: AnnotationFact, file: FileId) -> DeclId? {
+        (self.namespace_of.get())(file).fn_decl(a.name)
+    }
+
+    /// Whether an annotation resolves, in the file that wrote it, to
+    /// `@std/meta`'s declaration of `word` — by DECLARATION, never
+    /// by the bare word it happens to spell: a caller's own fn of
+    /// the same name answers false.
+    fn is_meta_annotation(a: AnnotationFact, file: FileId, word: string) -> bool {
+        let callee? = self.annotation_callee(a, file) else { return false }
+        self.is_meta_fn(callee, word)
+    }
 
     /// A type's name, read as a value — a receiver for `Type.name(…)`,
     /// never a constructible shape of its own. A trait's Self is not

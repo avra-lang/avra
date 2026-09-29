@@ -214,9 +214,15 @@ impl TypeCx {
         }
     }
 
-    /// Whether a declaration carries `@identity`.
+    /// Whether a declaration carries `@std/meta`'s `@identity` — by
+    /// declaration, never a bare compare of the word: a package's
+    /// own fn named `identity` answers false.
     fn marks_identity(d: DeclId) -> bool {
-        self.view.decls.annotations_of(d).any((a: AnnotationFact) -> a.name == "identity")
+        let decls = self.view.decls
+        let file = decls.decl(d).file
+        decls
+            .annotations_of(d)
+            .any((a: AnnotationFact) -> decls.is_meta_annotation(a, file, "identity"))
     }
 
     fn non_identity_field(s: StmtId, field: string, found: TypeId) {
@@ -1013,24 +1019,76 @@ const identity_field_law: string = "an identity's tables are shared by every cop
 /// A field an `@identity` type carries plain, reviewed here rather
 /// than wrapped: a scalar or a fn value set once at construction and
 /// never reassigned, so no writing path ever reaches it to fork it.
-/// Each is also noted at its field (`// plain for its identity: …`);
-/// this table is what the law reads.
-type PlainField = { of: string, field: string }
+/// THE ONE SPELLING: no field carries its own license comment — this
+/// table is the license, and its `reason` is the review. A `@plain`
+/// FIELD MARK would say the same thing at the site, but "EVERY MARK
+/// OWES A READER" (compiler/expand.av's `hold_marks_to_a_reader`)
+/// claims a mark only through a `@derive` trait's `marks()`, run over
+/// a declaration that ANSWERS `@std/meta`'s `Derived`/`Declared`
+/// shape — `@identity` generates nothing and derives nothing, so no
+/// trait stands behind it to claim one. Inventing a trait solely to
+/// open that door would be machinery built to argue a decision
+/// already made, not a real derive; the table stays the one license.
+type PlainField = { of: string, field: string, reason: string }
 
 const identity_plain: List<PlainField> = [
-    PlainField { of: "NodeStore", field: "file" },
-    PlainField { of: "Decls", field: "rows" },
-    PlainField { of: "Workspace", field: "host" },
-    PlainField { of: "Workspace", field: "root" },
-    PlainField { of: "Workspace", field: "lang" },
-    PlainField { of: "Workspace", field: "lone" },
-    PlainField { of: "Workspace", field: "per_file" },
-    PlainField { of: "Workspace", field: "clock" },
-    PlainField { of: "Fixpoint", field: "family" },
-    PlainField { of: "Fixpoint", field: "bottom" },
-    PlainField { of: "Fixpoint", field: "join" },
-    PlainField { of: "Fixpoint", field: "fp" },
-    PlainField { of: "Fixpoint", field: "turn_cap" },
+    PlainField {
+        of: "NodeStore",
+        field: "file",
+        reason: "the path this store parsed, set once at construction",
+    },
+    PlainField {
+        of: "Decls",
+        field: "rows",
+        reason: "the language's own builtin rows, built once at workspace construction and never written after",
+    },
+    PlainField {
+        of: "Workspace",
+        field: "host",
+        reason: "the host capability table, set once at construction and never reassigned",
+    },
+    PlainField {
+        of: "Workspace",
+        field: "root",
+        reason: "the tree's root path, set once at construction",
+    },
+    PlainField {
+        of: "Workspace",
+        field: "lang",
+        reason: "the assembled grammar and features, set once at construction and never reassigned",
+    },
+    PlainField {
+        of: "Workspace",
+        field: "lone",
+        reason: "a build-wide config flag, set once at construction",
+    },
+    PlainField {
+        of: "Workspace",
+        field: "per_file",
+        reason: "a directory of programs, every file its own module — set once at construction",
+    },
+    PlainField {
+        of: "Workspace",
+        field: "clock",
+        reason: "the injected clock fn, set once at construction",
+    },
+    PlainField {
+        of: "Fixpoint",
+        field: "family",
+        reason: "registered once at the family's construction, then read only",
+    },
+    PlainField { of: "Fixpoint", field: "bottom", reason: "the lattice's floor, registered once" },
+    PlainField { of: "Fixpoint", field: "join", reason: "the lattice's join fn, registered once" },
+    PlainField {
+        of: "Fixpoint",
+        field: "fp",
+        reason: "the lattice's fingerprint fn, registered once",
+    },
+    PlainField {
+        of: "Fixpoint",
+        field: "turn_cap",
+        reason: "set at registration, `with` swaps in a fresh value rather than writing through a path",
+    },
 ]
 
 fn identity_licensed(owner: string, field: string) -> bool {
