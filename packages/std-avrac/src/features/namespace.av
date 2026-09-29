@@ -103,11 +103,21 @@ impl Namespace {
         answer
     }
 
+    /// Whether `key` was already asked — its own fn, ended before
+    /// `noted` may go on to WRITE `reads.asked`: a read held across
+    /// that write finds the Cell's box shared, and `avra_cell_unique`
+    /// clones the whole map (with no index, so the next lookup
+    /// rebuilds it) — once per DISTINCT name this namespace resolves,
+    /// which is every name resolution in the file while a pack is
+    /// attached (CLAUDE.md: "A READ-MODIFY-WRITE THROUGH get IS A
+    /// COPY").
+    fn already_asked(key: string) -> bool { self.reads.asked.get().get(key) != null }
+
     /// Keeps one ask for a durable witness, a name once.
     fn noted(kind: NameKind, name: string, answer: DeclId?) {
         if !self.reads.on { return }
         let key = "${name_kind_word(kind)}\n${name}"
-        if self.reads.asked.get().get(key) != null { return }
+        if self.already_asked(key) { return }
         self.reads.asked.put(key, true)
         self.reads.found.push(NameRead { kind: kind, name: name, answer: answer })
     }

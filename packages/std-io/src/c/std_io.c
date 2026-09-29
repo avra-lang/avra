@@ -68,6 +68,32 @@ int64_t avra_io_close(int64_t fd) {
     return close((int)fd) == 0 || errno == EINTR ? 0 : -errno;
 }
 
+/* A write descriptor positioned at the file's current end, created if
+   absent — every write through it lands AFTER whatever is already
+   there, never over it. The append-only pack format's own primitive:
+   a caller that wants a whole-file replace still goes through
+   avra_io_temp's publish-or-remove door. */
+int64_t avra_io_open_append(const char* path) {
+    int fd;
+    while ((fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644)) < 0 && errno == EINTR) {}
+    return fd < 0 ? -errno : fd;
+}
+
+/* The descriptor's writes durable on the device — a crash after this
+   returns cannot lose bytes already written through it. */
+int64_t avra_fd_sync(int64_t fd) {
+    while (fsync((int)fd) != 0) { if (errno != EINTR) return -errno; }
+    return 0;
+}
+
+/* The file cut back to exactly `len` bytes. A caller trims a TORN
+   TAIL — bytes past the last frame it could verify, left by a writer
+   that crashed mid-append — to this before appending past it, so a
+   half-written frame never ends up sitting between two valid ones. */
+int64_t avra_io_truncate(const char* path, int64_t len) {
+    return truncate(path, (off_t)len) == 0 ? 0 : -errno;
+}
+
 /* Every directory along the path made; one already standing is fine,
    a FILE standing where a directory must is -ENOTDIR. */
 int64_t avra_io_mkdir(const char* path) {

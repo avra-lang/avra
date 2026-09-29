@@ -9,10 +9,23 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
-use diagnostics.{Diag, render_among}
+use diagnostics.{Diag, render_among, render_facts_among, SourceFile}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
+
+/// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
+/// not yet clear the bar (at or under main's own ~5-6s keep phase;
+/// measured 95-150s, dominated by `reused_check`'s validation —
+/// `decl_at_stable`'s cost is down but not enough, and the OOM
+/// on some edits is unexplained). `holding` reads this alone — with
+/// it false, `self.pack` never attaches, so `reused_check` and
+/// `record_witness` (both `let pack? = self.pack.get() else { … }`)
+/// answer at once and every witness-specific cost (`expanded_edges`,
+/// `decl_at_stable`, `Pack.put`/`commit`) never runs: a normal
+/// compiler pays nothing for machinery it never reaches. Flip this
+/// once the follow-up ticket closes the gap.
+const witness_enabled: bool = false
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -70,7 +83,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -99,7 +112,11 @@ impl Derived {
     /// WHAT `--time` SAYS: the phases and what followed them on one line, then
     /// the files a record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
-        let counted = ["held ${self.held}/${self.files}", "attempt ${self.turns}"]
+        let counted = [
+            "held ${self.held}/${self.files}",
+            "witnessed ${self.witnessed}/${self.files}",
+            "attempt ${self.turns}",
+        ]
         let spent = joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
                 .concat(counted)
@@ -392,6 +409,11 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = store_at(build_cache_root(self))
         self.attach_store(store)
+        // guarded, unlike `attach_store`: `holding` can run more than
+        // once per `derived` (a retried attempt), and re-opening would
+        // both re-scan the pack file and discard an earlier attempt's
+        // still-uncommitted writes on the Pack value it replaces
+        if witness_enabled && self.pack.get() == null { let _ = self.open_pack(self.pack_path()) }
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -445,6 +467,16 @@ impl Workspace {
         if !adrift.is_empty() { fail at.adrift(adrift) }
         for a in p.files { self.keep_asks(store, lo, a) }
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
+        // A FINAL commit for whatever the last file staged: `says`
+        // (below) commits after EVERY file now that `Pack.commit`
+        // appends (O(the batch), store/pack.av) rather than rewriting
+        // the whole file, so this call is a no-op on the ordinary
+        // path — it exists for the one file that stages nothing after
+        // the last one that does. THEN ONE `fsync` for the whole pass:
+        // `commit` itself never syncs (the pack is a cache — atomicity
+        // matters, not per-commit durability, `Pack.flushed`'s own doc).
+        let _ = self.pack.get()?.commit()
+        let _ = self.pack.get()?.flushed()
         said
     }
 
@@ -485,6 +517,7 @@ impl Workspace {
             unlowered: unlowered,
             asked: asked,
             held: held_paths(self).length,
+            witnessed: self.witness_hits.get(),
             files: self.decls.files.get().length,
             turns: at.moved,
             spans: spans,
@@ -622,25 +655,68 @@ impl Workspace {
     /// as the store kept it — null when a held row cannot be read. A file the
     /// table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
+        // EVERY LOADED SOURCE, ONCE FOR THE WHOLE PASS, AND ONLY WHEN A
+        // WITNESSED ANSWER MIGHT NEED IT: `says` renders a reused row's
+        // `DiagFacts` through it per file, and gathering it per file (734
+        // files' worth of SourceFile, 734 times) is exactly the O(n²)
+        // that turned std-avrac's "keep" phase from ~10s into 700+s
+        // (measured; the hot path was @std.text.codepoints under
+        // avra_release_dead — line-start construction, paid again for
+        // every file on every file). `witness_enabled` is a compile-time
+        // constant, so a build with it false pays nothing here.
+        let sources: List<SourceFile> = if witness_enabled { p.manifests.concat([self.source(fi.id) for fi in self.decls.files.get()]) } else { [] }
         mut fresh: Map<string, Spoken> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want)) }
+        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want, sources)) }
         let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
 
-    /// What a parsed file says now: its own diagnostics, and — only when
-    /// the want is diagnostics — its rule findings (`rule_findings`), kept
-    /// beside them so a HELD file answers them alike.
-    fn says(p: Program, a: Analysis, want: Want) -> Spoken {
-        let said = Said {
-            path: a.view.source.file,
-            warnings: p.warned(a.diagnostics),
-            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
+    /// What a parsed file says now. Under `.Binary` no rule ever runs
+    /// (a build reads no lint) — `p.warned(a.diagnostics)` alone, exactly
+    /// as before witnessing existed. Under `.Diagnostics`, `witness_enabled`
+    /// picks the answer: OFF, the plain answer plus `rule_findings`,
+    /// kept apart under its own key (`file_said`) so a HELD file answers
+    /// them alike; ON, the WITNESSED answer (compiler/witness.av), reused
+    /// when a still-current one exists — `Family.Analysis` already covers
+    /// exactly this file's own diagnostics AND its rule findings
+    /// (`settled_check`'s `ds`, witness.av) MERGED, so a witnessed `Said`
+    /// carries both at once and `rules` stays null (nothing left to keep
+    /// apart). A reused row is rendered here, fresh, the same way a
+    /// freshly computed one is — `render_facts_among` picks each frame's
+    /// window from `sources`, `all_said`'s own, gathered once for the
+    /// whole pass — never from whichever process happened to settle the
+    /// witness.
+    fn says(p: Program, a: Analysis, want: Want, sources: List<SourceFile>) -> Spoken {
+        let cases = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)]
+        if want is .Binary || !witness_enabled {
+            let said = Said {
+                path: a.view.source.file,
+                warnings: p.warned(a.diagnostics),
+                cases: cases,
+            }
+            let rules: string? = if want is .Diagnostics { p.warned(rule_findings(analysed(a), a.view.stmts)) } else { null }
+            return Spoken { said: said, rules: rules }
         }
-        match want {
-            .Diagnostics -> Spoken { said: said, rules: p.warned(rule_findings(analysed(a), a.view.stmts)) },
-            .Binary -> Spoken { said: said, rules: null },
+        let outcome = self.witnessed_check(a.view.file)
+        if outcome.reused() {
+            self.witness_hits.set(self.witness_hits.get() + 1)
+        } else {
+            // A fresh check STAGED an entry (witness.av's `record_witness`)
+            // — commit it now: `Pack.commit` appends just this batch
+            // (store/pack.av), so a per-file commit costs O(the batch),
+            // not O(the whole pack).
+            let _ = self.pack.get()?.commit()
+        }
+        let facts = outcome.value().diagnostics
+        let warned = [f for f in facts if f.severity is .Warning]
+        Spoken {
+            said: Said {
+                path: a.view.source.file,
+                warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
+                cases: cases,
+            },
+            rules: null,
         }
     }
 

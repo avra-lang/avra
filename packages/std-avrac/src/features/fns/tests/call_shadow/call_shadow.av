@@ -1,0 +1,68 @@
+// proves: a call's callee is a READ — it resolves innermost scope
+// outward, the same lookup a plain name uses, and a declaration
+// answers only where no binding does. A param, a `let`, a `for`
+// binder, a lambda param, a match binder and a closure capture each
+// shadow a same-named fn for a CALL exactly as they do for a read;
+// the shadowed fn answers `1`, the shadowing one `2`.
+fn picked(_x: int) -> int { 1 }
+fn two(_x: int) -> int { 2 }
+enum Box { Held(fn(int) -> int) }
+
+fn shout(line: string) { println("SHOUT:${line}") }
+
+fn param_call(picked: fn(int) -> int) -> int { picked(5) }
+
+fn param_read(picked: fn(int) -> int) -> int {
+    let g = picked
+    g(5)
+}
+
+fn let_call() -> int {
+    let picked = two
+    picked(5)
+}
+
+fn let_read() -> int {
+    let picked = two
+    let g = picked
+    g(5)
+}
+
+// the FOR BINDER is the shape under test, not incidental iteration
+fn for_call() -> int {
+    mut total = 0
+    for picked in [two] { total = total + picked(5) }
+    total
+}
+
+fn apply(f: fn(fn(int) -> int) -> int, arg: fn(int) -> int) -> int { f(arg) }
+
+fn lambda_param_call() -> int {
+    apply((picked: fn(int) -> int) -> picked(5), two)
+}
+
+fn match_binder_call() -> int {
+    match Box.Held(two) { .Held(picked) -> picked(5) }
+}
+
+fn make(picked: fn(int) -> int) -> fn() -> int {
+    () -> picked(5)
+}
+
+fn closure_capture_call() -> int {
+    let g = make(two)
+    g()
+}
+
+fn prelude_param_call(println: fn(string) -> void) -> int {
+    println("i")
+    1
+}
+
+fn prelude_let_call() -> int {
+    let println = shout
+    println("j")
+    1
+}
+
+"${param_call(two)} ${param_read(two)} ${let_call()} ${let_read()} ${for_call()} ${lambda_param_call()} ${match_binder_call()} ${closure_capture_call()} ${prelude_param_call(shout)} ${prelude_let_call()}"

@@ -180,6 +180,41 @@ impl TypeCx {
             )
     }
 
+    /// The static fn a type declares under `name`, if it declares one.
+    fn static_named(decl: DeclId, name: string) -> DeclId? {
+        self
+            .view
+            .decls
+            .declared_methods(decl)
+            .find(
+                (m: DeclId) -> self.view.decls.decl(m).name == name &&
+                    self.view.decls.is_static_of(m),
+            )
+    }
+
+    /// A static fn read without a call: a static fn is not a value yet,
+    /// and the help writes the lambda that is one.
+    mut fn static_not_value(e: ExprId, tname: string, name: string, m: DeclId) -> TypeId {
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "`${tname}.${name}` is a static fn, and a static fn is not a value yet",
+                    "read here",
+                    "wrap it in a lambda — `${self.static_wrapper(tname, name, m)}`",
+                ),
+            )
+    }
+
+    /// The lambda that calls a static fn, spelled from its own seats.
+    fn static_wrapper(tname: string, name: string, m: DeclId) -> string {
+        let seats = self.view.decls.facts_of(m)?.seats ?? []
+        let types = self.view.decls.sig(m)?.fn_sig()?.params ?? []
+        let typed = ["${s}: ${self.view.types.name_of(types[j])}" for j, s in seats if j < types.length]
+        "(${typed.join(", ")}) -> ${tname}.${name}(${seats.join(", ")})"
+    }
+
     /// The static fns a type declares, by name.
     fn static_names(decl: DeclId) -> List<string> {
         [self.view.decls.decl(m).name for m in self.view.decls.declared_methods(decl) if self.view.decls.is_static_of(m)]
