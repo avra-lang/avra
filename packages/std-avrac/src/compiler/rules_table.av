@@ -95,9 +95,29 @@ export fn declared_law(r: RuleEntry) -> string? { r.law.first() }
 /// here.
 export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law } by it.module, it.name
 
-/// The rules whose root-kind index admits `kind` — the ones indexed
-/// at it, plus every `any_root` rule, tried everywhere. Design §5:
-/// nodes touched, never nodes × rules.
-export fn rules_at(entries: List<RuleEntry>, kind: int) -> List<RuleEntry> {
-    [r for r in entries if r.root == any_root || r.root == kind]
+/// THE RULES BY ROOT KIND: each kind a rule is rooted at, the rules a
+/// node of that kind is tried against — its own and every `any_root`
+/// rule, in table order — and the `any_root` rules alone for every
+/// other kind. Design §5: nodes touched, never nodes × rules.
+export type RuleIndex = { roots: List<int>, at_root: List<List<RuleEntry>>, anywhere: List<RuleEntry> }
+
+/// The rule table's index, built once.
+export once fn rule_index() -> RuleIndex { indexed(rules) }
+
+export fn indexed(entries: List<RuleEntry>) -> RuleIndex {
+    let rooted = [r.root for r in entries if r.root != any_root]
+    let roots = [k for i, k in rooted if rooted.index_of(k) == i]
+    RuleIndex {
+        roots: roots,
+        at_root: [[r for r in entries if r.root == any_root || r.root == k] for k in roots],
+        anywhere: [r for r in entries if r.root == any_root],
+    }
+}
+
+impl RuleIndex {
+    /// The rules a node of `kind` is tried against.
+    fn at(kind: int) -> List<RuleEntry> {
+        let i = self.roots.index_of(kind)
+        if i < 0 { self.anywhere } else { self.at_root[i] }
+    }
 }
