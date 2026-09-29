@@ -38,7 +38,7 @@ use core.{
     same_expr,
     same_type as same_type_id,
 }
-use features.{Decls, Decl, bound_decl_of}
+use features.{Decls, Decl, TypeCx, bound_decl_of, written_seats}
 use query.{FixpointRefusal, spoken as fixpoint_spoken}
 
 /// `Result<_, _>`'s error side — a bare `_`, checked by SHAPE: `_?`,
@@ -209,9 +209,18 @@ impl FailSurvey {
     }
 
     /// THE GUARD: a callee's own written shape decides before its
-    /// `sig()` is ever asked.
+    /// `sig()` is ever asked — UNLESS the callee is HELD, where `sig()`
+    /// is already the fixpoint's own past answer, replayed from its
+    /// interface at mint, never touched by this attempt: a held `_`-
+    /// declared callee's union rode its interface, so its resolved
+    /// `Result<_, E>` is read directly, the same as any settled type.
+    /// Without this, `inferred_errors_so_far(d)` for a held `d` answers
+    /// the empty table this attempt never filled, and a caller's own
+    /// inferred set silently loses every error that flowed through it.
     fn via_callee(d: DeclId) -> SiteType {
-        if self.dt.decls.declared_result_hole(d) { return SiteType.Edge(d) }
+        if self.dt.decls.declared_result_hole(d) && !self.dt.ws.is_held(self.dt.decls.decl(d).file) {
+            return SiteType.Edge(d)
+        }
         self.wrap(self.dt.decls.sig(d)?.fn_sig()?.ret)
     }
 }
@@ -452,6 +461,65 @@ impl Workspace {
         fns.length
     }
 
+    /// `Decls.seats`' hook: types one fn's own parameters, standalone, through
+    /// a signing context built for it alone — never the answer, so a caller
+    /// mid this same fixpoint (fail_summary asking for ITS OWN seats) never
+    /// recurses into the answer it is busy computing. A held fn's parameters
+    /// come from its record, never a parse it does not have.
+    fn seats_ensured(d: DeclId) {
+        let x = self.decls.decl(d)
+        if self.is_held(x.file) { return }
+        let store = self.parsed(x.file).store
+        let fp? = store.fn_parts(x.stmt) else { return }
+        mut t = self.sign_cx_for(x)
+        // A free fn's OWN type params must be in scope for its seats to
+        // resolve, and a `mut` seat's record type seals boxed here exactly
+        // as `declare_sig` does around this same fold (typing/declare.av).
+        if x.parent == null {
+            t.enter_tscope(x.stmt)
+            let ptypes = t.typed_seats(x.stmt, fp.params, null)
+            t.keep_boxed(written_seats(t.keywords, fp.params), ptypes)
+            t.leave_tscope()
+            self.decls.record_seat_types(d, ptypes)
+            return
+        }
+        // A STATIC SPENDS NO SEAT ON A RECEIVER and reads no target scope —
+        // `Self` is not in scope for it (declare_trait_sig's own law).
+        if store.is_static(x.stmt) {
+            self.decls.record_seat_types(d, t.typed_seats(x.stmt, fp.params, null))
+            return
+        }
+        // A non-static member's target's OWN type params (a trait's `Self`,
+        // a generic impl's or record's own Vars) must be in scope here too —
+        // `t` is its own fresh context, so `declare_under`'s/`declare_trait_sig`'s
+        // enter_target_scope on THEIR TypeCx does not reach it.
+        let target? = self.seated_target(x.parent!, store, t) else { return }
+        t.enter_target_scope(target)
+        let ptypes = t.typed_seats(x.stmt, fp.params, self.decls.self_type_of(target))
+        t.leave_tscope()
+        self.decls.record_seat_types(d, ptypes)
+    }
+
+    /// A non-static member's target — the trait itself, a record naming its
+    /// own method, or an impl's target resolved FRESH from the parse
+    /// (`impl_target`), never read through `target_of`/`receiver_type`: those
+    /// answer from what the impl block's OWN signing already recorded, which
+    /// may not have run yet — the same hazard `seats_ensured` exists to route
+    /// around, one level up. A method-shaped fn's parent is always one of
+    /// these three (`declare_member`'s own exhaustive dispatch refuses every
+    /// other kind before a DeclSig is ever asked for it).
+    fn seated_target(parent_id: DeclId, store: NodeStore, t: TypeCx) -> DeclId? {
+        let parent = self.decls.decl(parent_id)
+        match parent.kind {
+            .Trait or .Record -> parent_id,
+            .Impl -> {
+                let parts? = store.impl_parts(parent.stmt) else { return null }
+                t.impl_target(parent.stmt, parts, false)
+            },
+            rest -> null,
+        }
+    }
+
     /// One fn's own evidence, read from its resolved body and the
     /// declarations its expressions name — never from another
     /// `_`-declared fn's `sig()` (FailSurvey.via_callee's guard).
@@ -459,12 +527,13 @@ impl Workspace {
         let x = self.decls.decl(d)
         if x.root == null { return FailSummary { direct: [], calls: [] } }
         let receiver: TypeId? = self.receiver_type(x)
-        // `sig_so_far`, never `sig`: `d` is one of THIS fixpoint's own
-        // decls, and `d` has not necessarily started signing yet —
-        // `sig(d)` would start it, running straight into `d`'s own
-        // `inferred_answer`, which asks this same fixpoint for an
-        // answer it has not settled yet (empty table, spurious refusal).
-        let seats: List<TypeId> = self.decls.sig_so_far(d)?.fn_sig()?.params ?? []
+        // `decls.seats`, never `sig`/`sig_so_far`: `d`'s own ANSWER is what
+        // this fixpoint is computing, so asking `sig(d)` here would recurse
+        // into it mid-flight (the exact hazard `FailSurvey.via_callee` avoids
+        // for a callee, one level up — it applies to `d` asking about itself
+        // too). Seats never depend on inference, so `seats(d)` carries none
+        // of that risk: whichever caller asks first types them, once.
+        let seats: List<TypeId> = self.decls.seats(d)
         let store = self.decls.store(d)
         let fs = FailSurvey {
             dt: DeclaredTypes {

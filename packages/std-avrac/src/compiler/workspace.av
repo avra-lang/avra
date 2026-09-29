@@ -72,7 +72,7 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use @std.meta.{Diagnostic}
+use @std.meta.{Diagnostic, identity}
 use core.{StmtId}
 use diagnostics.{
     SourceFile,
@@ -116,6 +116,7 @@ type ExternNames = { decls: int, names: List<string> }
 /// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys`
 /// every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
+@identity
 type Keys = { bytes_keys: Cell<Map<string, string>>, view_keys: Cell<Map<string, string>>, object_keys: Cell<Map<string, string>>, text_digests: Cell<Map<string, string>>, store_root: Cell<string>, compiler_id: Cell<string> }
 
 fn new_keys() -> Keys {
@@ -156,6 +157,7 @@ fn new_keys() -> Keys {
 /// DeclId — a module mints every identity at once, but fills each
 /// row on the ask that names it, so a row that names another still
 /// unfilled in the same module can fill it first (`row_filled`).
+@identity
 type Hold = {
     homes: Cell<Map<string, bool>>,
     held_wants: Cell<List<Wanted>>,
@@ -208,6 +210,7 @@ fn new_hold() -> Hold {
 /// load, the mint, the fill, the object key): whether it has been loaded
 /// into declarations yet, its raw text, split into lines, tab-split into
 /// fields, and each file's place within it (record.av's `Placed`).
+@identity
 type Records = {
     loaded_records: Cell<Map<string, bool>>,
     record_texts: Cell<Map<string, string>>,
@@ -241,9 +244,19 @@ fn new_records() -> Records {
 /// Every dense family's value table now lives on `Db.families`, one
 /// slot per family ordinal (`Workspace.relation`, below); `sigs` and
 /// `methods` live in the declaration table itself.
+///
+/// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
+/// type, so a copy of the workspace still reads and writes the same
+/// build.
+@identity
 export type Workspace = {
+    // plain for its identity: the host capability table, set once at
+    // construction and never reassigned
     host: Host,
+    // plain for its identity: the tree's root path, set once at construction
     root: string,
+    // plain for its identity: the assembled grammar and features,
+    // set once at construction and never reassigned
     lang: Language,
     db: Db,
     decls: Decls,
@@ -294,11 +307,14 @@ export type Workspace = {
     defects: Cell<List<Diag>>,
     package_rows: Cell<List<Package>>,
     package_voices: Cell<List<Diag>>,
+    // plain for its identity: a build-wide config flag, set once at construction
     lone: bool,
-    // a directory of programs: every file its own module
+    // plain for its identity: a directory of programs, every file
+    // its own module — set once at construction
     per_file: bool,
     // one-shot, its captures ended: nothing it hands out is kept
     closed: Cell<bool>,
+    // plain for its identity: the injected clock fn, set once at construction
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
     /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
@@ -746,6 +762,7 @@ fn built(
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))

@@ -424,6 +424,102 @@ if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
     echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
 fi
 
+# A BODY EDIT MUST NOT COST A DEPENDENT ITS HOLD: `wrap` alone takes `leaf`'s
+# `helper` as a value, and a whole-program reference read answers the same
+# whether `wrap` is held or read. Each part is its own module, so the
+# reference crosses a module boundary a hold can stand on either side of.
+mkdir -p $R/vh2/src/shape $R/vh2/src/leaf $R/vh2/src/wrap
+cat > $R/vh2/avra.toml <<TOML
+[package]
+name = "rt-vh2"
+version = "0.1.0"
+TOML
+cat > $R/vh2/src/shape/mod.av <<'AV'
+export type Sq = { s: int }
+impl Sq { fn area() -> int { self.s * self.s } }
+AV
+cat > $R/vh2/src/leaf/mod.av <<'AV'
+use shape.{Sq}
+export fn helper(cx: Sq) -> int { cx.area() }
+AV
+cat > $R/vh2/src/wrap/mod.av <<'AV'
+use shape.{Sq}
+use leaf.{helper}
+export fn get_helper() -> fn(Sq) -> int { helper }
+AV
+cat > $R/vh2/src/main.av <<'AV'
+use wrap.{get_helper}
+use shape.{Sq}
+let f = get_helper()
+println("vh2 ${f(Sq { s: 3 })}")
+AV
+S "cold vh2: helper taken as a value from a non-entry module" vh2
+ed $R/vh2/src/leaf/mod.av 'cx.area() }' 'cx.area() + 0 }'
+S "vh2: a body-only edit in leaf/mod.av — no signature, no new declaration" vh2
+held_vh2=$(grep -oE "held [0-9]+/[0-9]+" $R/vh2.err | tail -1 | sed 's/^held //')
+h2=${held_vh2%/*}; m2=${held_vh2#*/}
+steps=$((steps+1))
+if [ -z "$h2" ] || [ -z "$m2" ] || [ "$h2" -lt "$((m2 - 2))" ]; then
+    fails=$((fails+1))
+    echo "FAIL  a body edit in leaf/mod.av cost the package its holds: held $held_vh2, wanted >= $((m2 - 2))/$m2 (only leaf/mod.av's own file need move)"
+fi
+# leaf/mod.av settles as a hold candidate now that nothing further edits it —
+# `--verify-held` then compares `helper`'s OWN kept marks (written the run
+# above, while `wrap/mod.av` was held) against a fresh reading: a wrongly-set
+# `consumed` bit from that run is a MISMATCH here, never a clean pass.
+S "vh2: no-op rebuild — leaf/mod.av is now itself a hold candidate" vh2
+vh_vh2=$(./avra check $R/vh2 --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_vh2" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vh2 compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vh2 -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over vh2: $(printf '%s' "$vh_vh2" | tail -5 | tr '\n' ' ')" ;;
+esac
+
+# A HELD `_`-DECLARED CALLEE MUST NOT LOSE ITS ERROR UNION: `helper/mod.av`
+# declares `raise_thing`, whose `Result<int, _>` infers `SomeErr` from its
+# own `fail`; `leaf/mod.av` declares `wrapper`, whose OWN `Result<int, _>`
+# infers ONLY through a `?` into `raise_thing` — nothing else in
+# `wrapper`'s body can fail. A body-only edit to `leaf/mod.av` leaves
+# `helper/mod.av` held; if the held callee's inferred set is read from the
+# fixpoint's own (unfilled) table instead of its already-settled
+# signature, `wrapper`'s answer collapses to "nothing here can fail" and
+# the hold is refused whole — `S` itself catches that refusal as a FAIL.
+mkdir -p $R/vh3/src/helper $R/vh3/src/leaf
+cat > $R/vh3/avra.toml <<TOML
+[package]
+name = "rt-vh3"
+version = "0.1.0"
+TOML
+cat > $R/vh3/src/helper/mod.av <<'AV'
+export type SomeErr = { msg: string }
+export fn raise_thing(n: int) -> Result<int, _> {
+    if n < 0 { fail SomeErr { msg: "neg" } }
+    n
+}
+AV
+cat > $R/vh3/src/leaf/mod.av <<'AV'
+use helper.{raise_thing}
+export fn wrapper(n: int) -> Result<int, _> {
+    raise_thing(n)?
+}
+AV
+cat > $R/vh3/src/main.av <<'AV'
+use leaf.{wrapper}
+match wrapper(3) {
+    .Ok(v) -> println("ok ${v}"),
+    .Err(e) -> println("err ${e.msg}"),
+}
+match wrapper(-1) {
+    .Ok(v) -> println("ok ${v}"),
+    .Err(e) -> println("err ${e.msg}"),
+}
+AV
+S "cold vh3: a fn's inferred error union flows through a call" vh3
+ed $R/vh3/src/leaf/mod.av 'raise_thing(n)?' 'let m = n + 0
+    raise_thing(m)?'
+S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
+
 # RULE FINDINGS ARE A CHECK'S WANT: a build keeps none and prints none; a check
 # after that build reads no rule row, so it runs the rules over the file (a miss,
 # never a wrong answer) and speaks what a cold check speaks; a check held on a
