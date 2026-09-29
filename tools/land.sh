@@ -59,7 +59,7 @@
 # THREE MORE GATES SHARE THE SAME POOL, each ratcheted in
 # tools/land.baseline (key=value) or tools/speed.baseline (PERF's own
 # line format — see speed_gate below): the warm-reuse gate
-# (AVRA_LAND_WARM_GATE=1, off by default), the Linux gate
+# (AVRA_LAND_WARM_GATE, default 1), the Linux gate
 # (AVRA_LAND_LINUX, default 1, runs affected packages' suites on a
 # Sprite), and the speed gate (AVRA_LAND_SPEED_GATE=1, off by default,
 # instructions retired and peak memory footprint over a fixed input).
@@ -1235,7 +1235,7 @@ run_checks() {
     if [ "$has_av" -eq 1 ]; then
         job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
     fi
-    if [ "${AVRA_LAND_WARM_GATE:-0}" = "1" ]; then
+    if [ "${AVRA_LAND_WARM_GATE:-1}" = "1" ]; then
         job_launch "warm-reuse$suffix" heavy "warm-reuse$suffix" sh "$self" --call warm_gate_step "$wt"
     else
         echo "land: skipped warm-reuse gate$suffix: AVRA_LAND_WARM_GATE is off" >&2
