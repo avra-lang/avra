@@ -1525,6 +1525,28 @@ seed_policy() {
 
 try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
 
+# MAIN'S CHECKOUT RUNS WHAT MAIN SAYS: after a landing that reached the
+# compiler, the landing tree's fixed-point compiler and runtime library
+# replace main's own, so a probe run from main answers for main. Each is
+# staged beside its target and renamed into place, so a process already
+# running the old binary keeps its file.
+refresh_main_compiler() {
+    src="$1"
+    dst="$2"
+    [ "${compiler_changed:-0}" -eq 1 ] || return 0
+    if [ ! -x "$src/build/avra" ]; then
+        echo "land: no compiler in $src to refresh main's with" >&2
+        return 0
+    fi
+    mkdir -p "$dst/build"
+    for f in build/avra build/libavra_runtime.a; do
+        [ -f "$src/$f" ] || continue
+        cp -p "$src/$f" "$dst/$f.land-$$" && mv -f "$dst/$f.land-$$" "$dst/$f" ||
+            { echo "land: could not refresh $dst/$f" >&2; return 0; }
+    done
+    echo "land: refreshed main's compiler from $src"
+}
+
 # Whether main's ref moved off `base`. A fast-forward that fails while
 # the ref stands still failed for its own reason, and git's words say it.
 main_moved_since() { [ "$(git -C "$main_wt" rev-parse refs/heads/main)" != "$1" ]; }
@@ -1820,6 +1842,7 @@ batch_core() {
     ff_log="$(log_of batch-ff)"
     if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
         landed="$(git -C "$main_wt" rev-parse HEAD)"
+        refresh_main_compiler "$batch_wt" "$main_wt"
         return 0
     fi
     if main_moved_since "$batch_base"; then
@@ -1943,6 +1966,7 @@ main() {
 
     ff_log="$(log_of ff)"
     if try_ff > "$ff_log" 2>&1; then
+        refresh_main_compiler "$branch_wt" "$main_wt"
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
@@ -1955,6 +1979,7 @@ main() {
 
     ff_retry_log="$(log_of ff-retry)"
     if try_ff > "$ff_retry_log" 2>&1; then
+        refresh_main_compiler "$branch_wt" "$main_wt"
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
