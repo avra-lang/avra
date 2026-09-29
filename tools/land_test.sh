@@ -1648,6 +1648,8 @@ esac
 STUB
     chmod +x "$d/build/avra"
     cat > "$d/Makefile" <<'MK'
+objects:
+	@mkdir -p build && touch build/libavra_runtime.a
 libs:
 	@echo libs-ok
 seed-check:

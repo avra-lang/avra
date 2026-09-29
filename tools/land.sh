@@ -709,8 +709,19 @@ speed_base_tree() {
     fi
     move_caches_aside "$speed_base_wt"
     if [ ! -f "$speed_base_wt/build/libavra_runtime.a" ]; then
-        ( cd "$speed_base_wt" && make -o avra libs ) > "$(log_of "speed-base-libs")" 2>&1 ||
-            { tool_failed "could not build libs in the speed base tree"; return 1; }
+        # `-o avra` skips avra's OWN prerequisites too (COMPILER_OBJS,
+        # libavra_runtime.a among them) — `make objects` first is what
+        # build_generation's own two-step sequence already does, and
+        # `libs` alone silently produced a build/avra.land that could
+        # never link (clang: no such file: build/libavra_runtime.a).
+        if ! heavy "speed-base-objects" sh -c "cd '$speed_base_wt' && make objects"; then
+            tool_failed "could not build objects in the speed base tree"
+            return 1
+        fi
+        if ! heavy "speed-base-libs" sh -c "cd '$speed_base_wt' && make -o avra libs"; then
+            tool_failed "could not build libs in the speed base tree"
+            return 1
+        fi
     fi
 }
 
