@@ -190,28 +190,41 @@ fn unnamed_print() -> string {
 }
 
 /// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, hashed FRESH
-/// every ask. A STAMP-KEYED SHORTCUT STOOD HERE ONCE, trusting a size/time/inode
-/// match to skip the hash — the `compiler_id()` memoization already pays that
-/// hash at most once a workspace, and the shortcut bought a few milliseconds
-/// against a law it could not keep: a rebuilt binary at the SAME path can land
-/// on a stamp the roll already holds (an adversarial host proves it outright,
-/// and the field's own "index N is out of bounds" traps are what a live
-/// two-generation rebuild produces when this exact door lies). A stamp match
-/// is a claim about the bytes, never the bytes; only the digest is. The roll
-/// still lists the stores kept, newest last, so `rolled`'s sweep still knows
-/// what to keep.
+/// the first ask of a PROCESS, never trusted from an earlier one. A
+/// STAMP-KEYED SHORTCUT STOOD HERE ONCE, trusting a size/time/inode
+/// match to skip the hash — refused, because a rebuilt binary at the
+/// SAME path can land on a stamp the roll already holds (an
+/// adversarial host proves it outright, and the field's own "index N
+/// is out of bounds" traps are what a live two-generation rebuild
+/// produces when this exact door lies). A stamp match is a claim
+/// about the bytes, never the bytes; only the digest is — this cache
+/// never substitutes for one, it only stops asking twice inside ONE
+/// process for bytes that cannot move under it: `compiler_id()`
+/// memoizes per WORKSPACE, and a tree-wide walk (`avra fmt --check
+/// packages`) mints one workspace per PACKAGE, so without this a
+/// 23-package tree read and hashed its own 8 MB binary 23 times
+/// (673ms of a 720ms warm run, measured at fmt.av's own `--time`).
+/// The roll still lists the stores kept, newest last, so `rolled`'s
+/// sweep still knows what to keep.
+once fn compiler_prints() -> Cell<Map<string, string>> { Cell.new({}) }
+
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its compiler's print out.
 fn compiler_print(ws: Workspace) -> string {
     let at? = ws.host.compiler else { return unnamed_print() }
-    let roll = joined_path(stores_dir(ws), "compilers")
-    let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
-    let print? = digest_of_binary(at) else { return unnamed_print() }
-    rolled(
-        ws,
-        roll,
-        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}"]),
-    )
-    print
+    let cache = compiler_prints()
+    let cached? = cache.get().get(at) else {
+        let roll = joined_path(stores_dir(ws), "compilers")
+        let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
+        let print? = digest_of_binary(at) else { return unnamed_print() }
+        rolled(
+            ws,
+            roll,
+            [line for line in lines if print_of(line) != print].concat(["${print}\t${at}"]),
+        )
+        cache.put(at, print)
+        return print
+    }
+    cached
 }
 
 /// A roll line's print: its first field. A roll holds no empty line.
