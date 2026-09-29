@@ -5,7 +5,7 @@
 //! (`rule_findings`) and `avra fix`'s proof both read it, so a
 //! rewrite `check` shows is the exact one `fix` proves or refuses,
 //! never a second derivation that could disagree.
-use core.{At, StmtId, DeclId, NodeStore, flatten}
+use core.{At, StmtId, DeclId, SyntaxArena, flatten}
 use features.{Code, Fix, Analysed}
 use diagnostics.{Diag, warning}
 use @std.errors.{Suggestion, Edit, Confidence, Loc}
@@ -37,7 +37,7 @@ fn stmt_candidates(a: Analysed, index: RuleIndex, s: StmtId) -> List<Candidate> 
 /// `Ins.IfStart(${c})`, and that reads as a real `Ins.IfStart` call
 /// to every rule walking compiler/idioms.av (or any feature's own
 /// idioms.av) — a PRECISION bug, not debt to license away.
-fn every_at(store: NodeStore, root: At) -> List<At> {
+fn every_at(store: SyntaxArena, root: At) -> List<At> {
     if quote_pattern(store, root) { return [root] }
     flatten([every_at(store, k) for k in store.kids_at(root)]).concat([root])
 }
@@ -45,7 +45,7 @@ fn every_at(store: NodeStore, root: At) -> List<At> {
 /// Whether `at` is a `Pat.Quote` — the PATTERN position. A rewrite's
 /// own `-> quote { ... }` is an ordinary `Expr`, ANSWER position,
 /// real code the walk still reaches and rules may still fire on.
-fn quote_pattern(store: NodeStore, at: At) -> bool {
+fn quote_pattern(store: SyntaxArena, at: At) -> bool {
     match at { .Pat(id) -> store.pat(id) is .Quote, _ -> false }
 }
 

@@ -65,7 +65,7 @@ export enum Shape {
     TypedNode(shallow: int, kids: List<Shape>, opens: List<Open>)
 }
 
-impl NodeStore {
+impl SyntaxArena {
     /// The arity fold for any node, dispatched by kind — what a
     /// non-hole `Shape.TypedNode` with no open field compares a
     /// subject's root against.
@@ -136,12 +136,12 @@ impl NodeStore {
 /// A struct literal's `index`-th field NAME — the invariant
 /// `At.Field` is minted under: `owner` is always a `StructLit`,
 /// exactly as `kids_at` builds it.
-fn field_name_of(store: NodeStore, owner: ExprId, index: int) -> string {
+fn field_name_of(store: SyntaxArena, owner: ExprId, index: int) -> string {
     match store.expr(owner) { .StructLit(_, fields, _) -> fields[index].of, rest -> "" }
 }
 
 /// A struct literal's `index`-th field VALUE — `field_name_of`'s twin.
-fn field_value_of(store: NodeStore, owner: ExprId, index: int) -> ExprId {
+fn field_value_of(store: SyntaxArena, owner: ExprId, index: int) -> ExprId {
     match store.expr(owner) {
         .StructLit(_, _, values) -> values[index],
         rest -> ExprId { index: 0 },
@@ -155,7 +155,7 @@ fn shallow_field(name: string) -> int { fp(304, [fp_str(name)]) }
 /// A fn declaration's `index`-th PARAM — the invariant `At.Param` is
 /// minted under: `owner` is always a `FnDecl` or an `ExternFn`,
 /// exactly as `Code.fn_params` (features/code.av) builds it.
-fn param_of(store: NodeStore, owner: StmtId, index: int) -> Param {
+fn param_of(store: SyntaxArena, owner: StmtId, index: int) -> Param {
     match store.stmt(owner) {
         .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> params[index],
         rest -> Param {
@@ -174,7 +174,7 @@ fn param_of(store: NodeStore, owner: StmtId, index: int) -> Param {
 /// seat's whole content (name, type and contract alike) is what "the
 /// same param" means, so no field of it is folded twice under two
 /// different doors.
-fn shallow_param(store: NodeStore, owner: StmtId, index: int) -> int {
+fn shallow_param(store: SyntaxArena, owner: StmtId, index: int) -> int {
     store.param_fps([param_of(store, owner, index)]).first()!
 }
 
@@ -184,7 +184,7 @@ fn shallow_param(store: NodeStore, owner: StmtId, index: int) -> int {
 /// open. Absent for every other kind: nothing to hold, so
 /// `name_hole_at` never reaches it and its name stays folded into
 /// `shallow_at` as before.
-export fn own_name_at(store: NodeStore, at: At) -> string? {
+export fn own_name_at(store: SyntaxArena, at: At) -> string? {
     match at {
         .Stmt(id) -> match store.stmt(id) {
             .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .For(name, _, _, _, _, _) or .ForEach(_, name, _, _) -> name.of,
@@ -222,7 +222,7 @@ export fn own_name_at(store: NodeStore, at: At) -> string? {
 /// (the field itself is `TypeRef?` and reads null): nothing to hold,
 /// so `type_hole_at` never reaches it and it stays folded into
 /// `shallow_at` as before.
-export fn own_type_at(store: NodeStore, at: At) -> TypeRef? {
+export fn own_type_at(store: SyntaxArena, at: At) -> TypeRef? {
     match at {
         .Stmt(id) -> match store.stmt(id) {
             .Let(_, ty, _) or .MutLet(_, ty, _) or .ConstDecl(_, ty, _) -> ty,
@@ -277,7 +277,7 @@ fn comp_blanked(clauses: List<CompClause>) -> List<CompClause> {
 /// makes the owning node's arity fold BLIND to that one field's
 /// count — which is exactly what a run needs, and everything else
 /// about the node still folds as it always did.
-export fn typed_node_shallow_at(store: NodeStore, at: At, kids: List<Shape>, opens: List<Open>) -> int {
+export fn typed_node_shallow_at(store: SyntaxArena, at: At, kids: List<Shape>, opens: List<Open>) -> int {
     let blank_name = opens.any(is_name_open)
     let blank_type = opens.any(is_type_open)
     let blank_run = kids.any(is_run_shape)
@@ -454,7 +454,7 @@ fn same_at(a: At, b: At) -> bool {
 /// (core/exact_derive.av) walks every field of the dereferenced node,
 /// never a fold, so two subtrees agree here only when they ARE the
 /// same code.
-fn same_subtree(store: NodeStore, a: At, b: At) -> bool {
+fn same_subtree(store: SyntaxArena, a: At, b: At) -> bool {
     match a {
         .Expr(x) -> match b { .Expr(y) -> store.exact_expr(store.expr(x), store.expr(y)), rest -> false },
         .Stmt(x) -> match b { .Stmt(y) -> store.exact_stmt(store.stmt(x), store.stmt(y)), rest -> false },
@@ -499,7 +499,7 @@ fn hole_index(holes: List<At>, at: At) -> int? {
 /// read (CLAUDE.md): a placeholder listed twice must share ONE
 /// index, or the index after it sits at a position `matched` can
 /// never fill, and its answer would carry a gap disguised as a bind.
-export fn shape_at(store: NodeStore, at: At, holes: List<At>) -> Shape? {
+export fn shape_at(store: SyntaxArena, at: At, holes: List<At>) -> Shape? {
     let deduped = deduped_ats(holes)
     let built = built_shape(store, at, deduped)
     if reaches_every_hole(built, deduped) { built } else { null }
@@ -510,7 +510,7 @@ fn deduped_ats(holes: List<At>) -> List<At> {
     [h for i, h in holes if hole_index(holes, h) == i]
 }
 
-fn built_shape(store: NodeStore, at: At, holes: List<At>) -> Shape {
+fn built_shape(store: SyntaxArena, at: At, holes: List<At>) -> Shape {
     let h? = hole_index(holes, at) else {
         return Shape
             .TypedNode(store.shallow_at(at), [built_shape(store, k, holes) for k in store.kids_at(at)], [])
@@ -575,7 +575,7 @@ fn max_of_opens(opens: List<Open>) -> int {
 /// share this same accumulator, at more than one element — one shape,
 /// so `matched_runs` needs no second table). A REPEAT occurrence must
 /// name the SAME subtree, span-blind — same binder, same code.
-fn bound_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
+fn bound_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
     let seen: List<At>? = acc[hole]
     if seen == null {
         mut next = acc
@@ -594,7 +594,7 @@ fn bound_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) ->
 /// REPEAT occurrence must carry the SAME NAME TEXT — `bound_hole`'s
 /// twin, comparing what `own_name_at` reads rather than the whole
 /// subtree.
-fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<
+fn bound_name_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At>?>) -> List<
     List<At>?,
 >? {
     let seen: List<At>? = acc[hole]
@@ -611,7 +611,7 @@ fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?
 /// twin, comparing what `own_type_at` reads (`spelled`, core/nodes.av)
 /// rather than the whole subtree — a written type's own spelling, not
 /// the typer's answer, exactly as a NAME binder compares written text.
-fn bound_type_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?>) -> List<
+fn bound_type_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At>?>) -> List<
     List<At>?,
 >? {
     let seen: List<At>? = acc[hole]
@@ -628,7 +628,7 @@ fn bound_type_hole(store: NodeStore, subject: At, hole: int, acc: List<List<At>?
 /// one node. A REPEAT occurrence (`${..xs}` written twice) must name
 /// the same span, element by element, span-blind — same binder, same
 /// list of code.
-fn bound_run(store: NodeStore, ats: List<At>, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
+fn bound_run(store: SyntaxArena, ats: List<At>, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
     let seen: List<At>? = acc[hole]
     if seen == null {
         mut next = acc
@@ -638,7 +638,7 @@ fn bound_run(store: NodeStore, ats: List<At>, hole: int, acc: List<List<At>?>) -
     if same_run(store, seen!, ats) { acc } else { null }
 }
 
-fn same_run(store: NodeStore, a: List<At>, b: List<At>) -> bool {
+fn same_run(store: SyntaxArena, a: List<At>, b: List<At>) -> bool {
     a.length == b.length &&
         [j for j in 0..a.length]
             .all(
@@ -654,7 +654,9 @@ fn same_run(store: NodeStore, a: List<At>, b: List<At>) -> bool {
 /// here cannot arise. `.Run` never reaches here: it binds a SPAN, not
 /// one subject, so `match_kids` peels it off before any single shape
 /// is matched this way — reached, it is a defect and refuses.
-fn match_shape(store: NodeStore, subject: At, shape: Shape, acc: List<List<At>?>) -> List<List<At>?>? {
+fn match_shape(store: SyntaxArena, subject: At, shape: Shape, acc: List<List<At>?>) -> List<
+    List<At>?,
+>? {
     match shape {
         .Hole(h) -> bound_hole(store, subject, h, acc),
         .Run(_) -> null,
@@ -668,7 +670,7 @@ fn match_shape(store: NodeStore, subject: At, shape: Shape, acc: List<List<At>?>
 /// empty is an ordinary structural node, no binding to do), then its
 /// ordinary children match.
 fn match_typed_node(
-    store: NodeStore,
+    store: SyntaxArena,
     subject: At,
     shallow: int,
     kids: List<Shape>,
@@ -686,7 +688,7 @@ fn match_typed_node(
 /// `own_type_at`, and either refuses when the subject's kind answers
 /// none (a defensive refusal, never reached once the pattern's own
 /// build agrees with what it is matched against).
-fn bind_opens(store: NodeStore, subject: At, opens: List<Open>, acc: List<List<At>?>) -> List<
+fn bind_opens(store: SyntaxArena, subject: At, opens: List<Open>, acc: List<List<At>?>) -> List<
     List<At>?,
 >? {
     mut cur = acc
@@ -714,7 +716,7 @@ fn bind_opens(store: NodeStore, subject: At, opens: List<Open>, acc: List<List<A
 /// boundary and nothing here backtracks past it. With no `Run` among
 /// `shapes` this is the exact zip it always was, `si` and `j` in
 /// lockstep.
-fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: List<List<At>?>) -> List<
+fn match_kids(store: SyntaxArena, subjects: List<At>, shapes: List<Shape>, acc: List<List<At>?>) -> List<
     List<At>?,
 >? {
     mut cur = acc
@@ -756,7 +758,7 @@ fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: Li
 /// subject when there is none — an EMPTY run when `n` is 0 straight
 /// away. One anchored scan, no backtracking: a later shape failing
 /// never widens the run to try again.
-fn run_span(store: NodeStore, subjects: List<At>, from: int, after: Shape?, acc: List<List<At>?>) -> int? {
+fn run_span(store: SyntaxArena, subjects: List<At>, from: int, after: Shape?, acc: List<List<At>?>) -> int? {
     let want? = after else { return subjects.length - from }
     mut n = 0
     while from + n < subjects.length {
@@ -777,7 +779,7 @@ fn run_span(store: NodeStore, subjects: List<At>, from: int, after: Shape?, acc:
 /// miss like any other — the type's NAME rides the shallow fold's
 /// first part, so the two spaces never collide. Parentheses mint no
 /// node and spans are never folded, so neither ever matters.
-export fn matched_runs(store: NodeStore, subject: At, shape: Shape) -> List<List<At>>? {
+export fn matched_runs(store: SyntaxArena, subject: At, shape: Shape) -> List<List<At>>? {
     let seed: List<List<At>?> = [null for i in 0..max_hole(shape) + 1]
     let acc? = match_shape(store, subject, shape, seed) else { return null }
     [b! for b in acc]
@@ -786,7 +788,7 @@ export fn matched_runs(store: NodeStore, subject: At, shape: Shape) -> List<List
 /// `matched_runs`, projected to ONE `At` per binder — every existing
 /// caller's currency, unchanged: a shape with no `Run` binds exactly
 /// one element per binder, so the projection never drops anything.
-export fn matched(store: NodeStore, subject: At, shape: Shape) -> List<At>? {
+export fn matched(store: SyntaxArena, subject: At, shape: Shape) -> List<At>? {
     let acc? = matched_runs(store, subject, shape) else { return null }
     [a.first()! for a in acc]
 }
