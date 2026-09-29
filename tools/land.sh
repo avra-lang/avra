@@ -735,7 +735,7 @@ linux_gate_step() {
     wt="$1"
     shift
     pkgs="$*"
-    sprite="${AVRA_LAND_SPRITE:-avra-idioms-pay}"
+    sprites="${AVRA_LAND_SPRITE:-avra-idioms-pay avra-comptime}"
     sprite_build="${AVRA_LAND_SPRITE_BUILD:-$tools_dir/sprite-build.sh}"
     # `-o avra` skips avra's OWN prerequisites too (libavra_runtime.a
     # among them, COMPILER_OBJS) — `make objects` first, whether or
@@ -745,7 +745,10 @@ linux_gate_step() {
     # WARM: the Sprite tree keeps its .avra-cache, as a landing tree
     # does; the warm gate and --verify-held guard warm answers. Each
     # remote phase prints its seconds.
-    body="export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
+    # The first word the body says is the boundary: before it, a failure
+    # is the Sprite's (unreachable, reset, a sync that died); after it,
+    # the branch's own.
+    body="echo 'land-linux: body started'; export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
     # The suites run in parallel on the Sprite, the longest first, at
     # most AVRA_LAND_SPRITE_JOBS at once; each keeps its own log and
     # status, and every failure is printed after all have finished.
@@ -757,15 +760,22 @@ linux_gate_step() {
     body="$body; pkgs='$first $rest'; cap=${AVRA_LAND_SPRITE_JOBS:-4}"
     body="$body"'; d=$(mktemp -d); for p in $pkgs; do while [ "$(jobs -r | wc -l)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & done; wait; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
 
-    out="$scratch/linux-sprite.out"
-    st=0
-    sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
-    cat "$out"
-    if [ "$st" -ne 0 ] && ! grep -qE '^sprite-build: .* -> exit ' "$out"; then
-        tool_failed "the Linux Sprite ($sprite) could not be reached"
-        return 1
-    fi
-    return "$st"
+    # A Sprite that fails before the body starts is a TOOL failure that
+    # names it; the next Sprite in the list is tried.
+    tried=""
+    for sprite in $sprites; do
+        out="$scratch/linux-sprite-$sprite.out"
+        st=0
+        sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
+        cat "$out"
+        if grep -q '^land-linux: body started' "$out"; then
+            return "$st"
+        fi
+        echo "land: linux: the Sprite $sprite failed before the command ran (exit $st)" >&2
+        tried="$tried $sprite"
+    done
+    tool_failed "no Linux Sprite could run the suites (tried:$tried)"
+    return 1
 }
 
 # ── THE SPEED GATE (PERF's method): instructions retired and peak memory footprint

@@ -1735,6 +1735,7 @@ STUB
         fail)
             cat > "$path" <<'STUB'
 #!/bin/sh
+echo "land-linux: body started"
 echo "sprite-build: pa-slug@stub-hash on stub -> exit 1" >&2
 exit 1
 STUB
@@ -1742,6 +1743,7 @@ STUB
         *)
             cat > "$path" <<'STUB'
 #!/bin/sh
+echo "land-linux: body started"
 echo "sprite-build: pa-slug@stub-hash on stub -> exit 0" >&2
 exit 0
 STUB
@@ -1756,7 +1758,7 @@ test_linux_gate_runs_warm() {
     commit_all "$d" "base"
     stub="$scratch/linux-cold-sprite.sh"
     body_file="$scratch/linux-cold-body"
-    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "land-linux: body started"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
     chmod +x "$stub"
     AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa > /dev/null 2>&1
     body="$(cat "$body_file" 2>/dev/null)"
@@ -1780,7 +1782,7 @@ test_linux_gate_suites_run_in_parallel() {
     commit_all "$d" "base"
     stub="$scratch/linux-par-sprite.sh"
     body_file="$scratch/linux-par-body"
-    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
+    printf '#!/bin/sh\nfor a in "$@"; do last="$a"; done\nprintf "%%s" "$last" > "%s"\necho "land-linux: body started"\necho "sprite-build: stub -> exit 0" >&2\n' "$body_file" > "$stub"
     chmod +x "$stub"
     AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa pb pc > /dev/null 2>&1
     tree="$scratch/linux-par-tree"
@@ -1807,7 +1809,7 @@ test_linux_gate_starts_before_the_builds() {
     d="$(batch_repo linux-early)"
     stub="$scratch/linux-early-sprite.sh"
     mark="$scratch/linux-early-mark"
-    printf '#!/bin/sh\ndate +%%s%%N > "%s"\necho "land-linux: test pa 3s"\necho "sprite-build: stub -> exit 0" >&2\n' "$mark" > "$stub"
+    printf '#!/bin/sh\ndate +%%s%%N > "%s"\necho "land-linux: body started"\necho "land-linux: test pa 3s"\necho "sprite-build: stub -> exit 0" >&2\n' "$mark" > "$stub"
     chmod +x "$stub"
     wt="$scratch/linux-early-wt"
     git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
@@ -1834,7 +1836,7 @@ test_linux_gate_starts_before_the_builds() {
 test_linux_gate_failure_refuses_the_landing() {
     d="$(batch_repo linux-red)"
     stub="$scratch/linux-red-sprite.sh"
-    printf '#!/bin/sh\necho "sprite-build: stub -> exit 1" >&2\nexit 1\n' > "$stub"
+    printf '#!/bin/sh\necho "land-linux: body started"\necho "sprite-build: stub -> exit 1" >&2\nexit 1\n' > "$stub"
     chmod +x "$stub"
     wt="$scratch/linux-red-wt"
     git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
@@ -1882,6 +1884,43 @@ test_linux_gate_fail() {
         ok "linux-gate: a real suite failure refuses the landing, and is never blamed as a tool failure"
     else
         bad "linux-gate: expected a non-tool failure — got ($st): $out"
+    fi
+}
+
+# A Sprite reset under the tree: sprite-build still reports an exit, but
+# the command never started — a tool failure naming the Sprite.
+test_linux_gate_reset_sprite_is_a_tool_failure() {
+    d="$(git_repo linux-reset)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-reset-sprite.sh"
+    printf '#!/bin/sh\necho "Error: directory /home/sprite does not exist" >&2\necho "sprite-build: pa@h tree=synced compiler=cached cmd=0s -> exit 1" >&2\nexit 1\n' > "$stub"
+    chmod +x "$stub"
+    scr="$scratch/linux-reset-scratch"
+    rm -rf "$scr"; mkdir -p "$scr"
+    st=0
+    out="$(AVRA_LAND_SCRATCH="$scr" AVRA_LAND_SPRITE="s-one s-two" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1)" || st=$?
+    if [ "$st" -ne 0 ] && [ -f "$scr/tool-failure" ] && grep -q "s-one s-two" "$scr/tool-failure"; then
+        ok "linux-gate: a reset Sprite is a TOOL failure naming every Sprite tried, never the branch"
+    else
+        bad "linux-gate: a reset Sprite was blamed on the branch ($st): $out"
+    fi
+}
+
+# The first Sprite reset, the second healthy: the gate falls back and passes.
+test_linux_gate_falls_back_to_the_next_sprite() {
+    d="$(git_repo linux-fallback)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    stub="$scratch/linux-fallback-sprite.sh"
+    printf '#!/bin/sh\nif [ "$1" = s-bad ]; then echo "Error: directory /home/sprite does not exist" >&2; echo "sprite-build: x -> exit 1" >&2; exit 1; fi\necho "land-linux: body started"\necho "sprite-build: x -> exit 0" >&2\n' > "$stub"
+    chmod +x "$stub"
+    st=0
+    out="$(AVRA_LAND_SPRITE="s-bad s-good" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1)" || st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q "the Sprite s-bad failed before the command ran"; then
+        ok "linux-gate: a reset Sprite falls back to the next, and says so"
+    else
+        bad "linux-gate: no fallback past a reset Sprite ($st): $out"
     fi
 }
 
@@ -2234,6 +2273,8 @@ run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
 run_test test_linux_gate_pass
 run_test test_linux_gate_fail
+run_test test_linux_gate_reset_sprite_is_a_tool_failure
+run_test test_linux_gate_falls_back_to_the_next_sprite
 run_test test_linux_gate_unreachable
 run_test test_speed_gate_improve
 run_test test_speed_gate_regress_no_override
