@@ -8,6 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
+use @std.io.{env}
 use core.{
     Fingerprint,
     StmtId,
@@ -439,14 +440,29 @@ impl Decls {
 
     /// A DECLARATION NOBODY LOWERED A BODY FOR, HERE: an instantiation the
     /// program owes but a held home never ran, or a HELD CALLEE a fresh
-    /// caller reaches — its signature under its type arguments (what
-    /// `lower_fn` would give it), and its OWN seat marks, so a caller's
-    /// memory pass (`marks_by_name`, compiler/memory/memory.av) can read a
-    /// held callee's `consumed` seats exactly as it reads a fresh one's,
-    /// instead of defaulting every seat plain because the callee's real
-    /// body never entered `l.fns`.
+    /// caller reaches. A REGISTRY over the declaration's kind: every kind
+    /// that owns a symbol a caller can reach (`Fn`/`Method`/`Default`, a
+    /// `Collect`) builds its own stub; the rest answer null by name, so
+    /// the next kind that starts owning a symbol cannot vanish silently
+    /// the way `Collect` did (a held collect's caller referenced a symbol
+    /// no stub answered for, and `program_closed` found it undeclared).
     fn unlowered_stub(w: Wanted) -> Body? {
         let d? = w.decl else { return null }
+        if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("unlowered_stub: name=${w.name} is_collect=${self.decl(d).kind is .Collect}") }
+        match self.decl(d).kind {
+            .Fn or .Method or .Default -> self.fn_stub(w, d),
+            .Collect -> self.collect_stub(w, d),
+            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Const or .CollectEnum -> null,
+        }
+    }
+
+    /// A held fn-shaped callee's stub: its signature under its type
+    /// arguments (what `lower_fn` would give it), and its OWN seat marks,
+    /// so a caller's memory pass (`marks_by_name`, compiler/memory/
+    /// memory.av) can read a held callee's `consumed` seats exactly as it
+    /// reads a fresh one's, instead of defaulting every seat plain
+    /// because the callee's real body never entered `l.fns`.
+    fn fn_stub(w: Wanted, d: DeclId) -> Body? {
         let sig? = self.sig(d)?.fn_sig() else { return null }
         Body {
             name: w.name,
@@ -457,6 +473,22 @@ impl Decls {
             reg_types: [],
             weak: true,
             marks: self.marks_of(d, sig.params.length),
+        }
+    }
+
+    /// A held collect's stub: no parameters (a collect's read takes
+    /// none), its answer type the same `collect_answer_type` gives
+    /// `lower_collect`'s own body, so a held read and a fresh one agree.
+    fn collect_stub(w: Wanted, d: DeclId) -> Body {
+        let x = self.decl(d)
+        Body {
+            name: w.name,
+            params: [],
+            ret: collect_answer_type(self, x.file, x.stmt),
+            gives: null,
+            ins: [],
+            reg_types: [],
+            weak: true,
         }
     }
 
@@ -538,6 +570,7 @@ fn drained(
             // (held, unseen) release still performs, and the caller reads
             // freed memory (.66 hole 3).
             let stub: Body? = held_stub(w)
+            if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
             if stub != null { fns.push(stub!) }
         }
         if fresh && !is_held(w.file) {
@@ -902,6 +935,16 @@ fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
     a.view.decls.store_of(x.file).collect_parts(x.stmt) != null
 }
 
+/// A COLLECT'S ANSWER TYPE — the record's own, or `Type.Error` when
+/// nothing recorded one: a held collect's interface carries no value
+/// to project a type from (`fill_opaque` mints its declaration alone),
+/// so a stub built for a held collect answers the same absorbing type
+/// a fresh one falls back to. `lower_collect` and `unlowered_stub`'s
+/// `collect_stub` share this one derivation.
+export fn collect_answer_type(decls: Decls, f: FileId, s: StmtId) -> TypeId {
+    decls.type_of_const(f, s) ?? decls.types.intern(Type.Error)
+}
+
 /// A collect's body: every declaration of `p.kind`, in `p.scope`,
 /// projected by `p.proj` and ordered by `p.order` — SYNTHESISED, no
 /// AST, `wrapped_body`'s shape, keyed on the one declaration
@@ -916,11 +959,7 @@ fn lower_collect(
     cross: fn(DeclId, TypeId) -> Lifted,
 ) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
-    let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a
-        .view
-        .decls
-        .types
-        .intern(Type.Error)
+    let rt: TypeId = collect_answer_type(a.view.decls, x.file, x.stmt)
     mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross))
     lo.out.seeded()
     lo.seats_enter()

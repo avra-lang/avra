@@ -160,6 +160,20 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// A file's names: what each expression's name resolves to, each
 /// lambda's captures, the namespace they were resolved in, and the
 /// voices resolving earned.
+///
+/// A COLUMN RELATION OVER THE FILE (COMPILER DB townhall §6.11): the
+/// `SideTable`s stay dense, born total over the file's own expression
+/// range — no `@relation` storage, since a column here holds a
+/// `Binding?`/`Cap?` the derive cannot carry. The ONE door in is
+/// `Workspace.resolved(f)` (compiler/workspace.av): every reader,
+/// this file's own resolve pass and every foreign one alike, gets a
+/// `NameFacts` value only by asking THAT, a `Relation<T>` family
+/// accessor whose `ask` records one Kernel edge on `(Resolved, f)` —
+/// file grain, the finest a whole-file name resolution can answer at.
+/// A `NameFacts` VALUE's own field reads (`.binding(e)`, `.capture(e)`)
+/// are plain local methods once the caller holds it, never a second
+/// Kernel ask, so nothing here risks the per-node recording cost
+/// §6.11 warns against.
 export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, settled_reads: SideTable<bool>, names: Namespace, voices: Voices }
 
 /// Born total over the file's expressions: nothing bound, nothing
@@ -208,6 +222,23 @@ export type Asked = { subject: ExprId, on_present: bool }
 /// expressions a boundary LIFTED into a nullable; `narrows` the
 /// reads a presence test proved; `substs` the instantiations mono
 /// specializes; the want columns are the expected-type channel.
+///
+/// A COLUMN RELATION OVER THE DECLARATION (COMPILER DB townhall
+/// §6.11): dense `SideTable`s, born total over one declaration's own
+/// [lo, hi) — no `@relation` storage, since a column here holds a
+/// `TypeId?`/`Sub?`/`List<TypeId>?` the derive cannot carry yet. The
+/// ONE door in is `Workspace.typed(d)` (compiler/workspace.av): a
+/// `Relation<T>` family accessor keyed by the DECLARATION, so a
+/// FOREIGN reader of another declaration's facts (`Workspace.
+/// const_type_at`'s `touch(self.typed(dv))` reads one this way)
+/// records exactly one Kernel edge on `(Typed, d)`, never a whole
+/// file and never per node. `folded(f)` absorbs every `typed(d)` in a
+/// file into one FILE-grain table (`Family.Folded`) for a reader that
+/// genuinely needs the whole file at once (`references()`, `Analysis`)
+/// — the coarsest grain such a reader could use regardless, not an
+/// escape from the per-declaration door. A `TypeFacts` VALUE's own
+/// field reads (`.type_at(e)`, `.widened_at(e)`) are plain local
+/// methods once a caller holds it, never a second Kernel ask.
 /// The enclosing fn's parameter types — a hungry node's typing scope.
 @derive(Fingerprint)
 export type ParamScope = { params: List<TypeId> }

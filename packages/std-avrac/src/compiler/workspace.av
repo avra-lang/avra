@@ -44,6 +44,7 @@ use core.{
     DeclKind,
 }
 use @std.path.{dir_of, joined_path}
+use @std.relation.db.{Db as RelDb, new_db as new_error_sites_db}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     Unsettled,
@@ -358,14 +359,11 @@ export type Workspace = {
     // plain for its identity: the injected clock fn, set once at construction
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
-    /// M6 PREP: one `ErrorSite` row per fail/propagate/catch site,
-    /// appended by `fail_summary` (failures.av) — the plain table
-    /// `@relation` will replace once M5 lands; the accessors built on
-    /// it (`raised_by`, `error_sites_by_callee`, `error_sites_within`)
-    /// keep their names across that swap.
-    error_sites: Cell<List<ErrorSite>>,
-    /// M6 PREP: the whole-program raised-error fixpoint, over
-    /// `error_sites` — `raised_by`'s own table.
+    /// One `ErrorSite` row per fail/propagate/catch site, filed by
+    /// `fail_summary` (failures.av). `avra-8sb5.57.9.1`.
+    error_sites_db: Cell<RelDb>,
+    /// The whole-program raised-error fixpoint, over `error_sites_db`
+    /// — `raised_by`'s own table.
     raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
@@ -800,7 +798,7 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
-        error_sites: list_cell(),
+        error_sites_db: Cell.new(new_error_sites_db()),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     // This is also `family_at`'s and `ordinal`'s cross-check: `f` at

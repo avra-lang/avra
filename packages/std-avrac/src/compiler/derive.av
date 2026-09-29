@@ -16,16 +16,30 @@ use compiler.host.{no_source}
 use compiler.findings.{findings_text}
 
 /// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
-/// not yet clear the bar (at or under main's own ~5-6s keep phase;
-/// measured 95-150s, dominated by `reused_check`'s validation —
-/// `decl_at_stable`'s cost is down but not enough, and the OOM
-/// on some edits is unexplained). `holding` reads this alone — with
-/// it false, `self.pack` never attaches, so `reused_check` and
-/// `record_witness` (both `let pack? = self.pack.get() else { … }`)
-/// answer at once and every witness-specific cost (`expanded_edges`,
-/// `decl_at_stable`, `Pack.put`/`commit`) never runs: a normal
-/// compiler pays nothing for machinery it never reaches. Flip this
-/// once the follow-up ticket closes the gap.
+/// not yet clear the bar (at or under main's own ~5-6s keep phase).
+/// Three causes found and fixed so far, every one by measurement —
+/// `sample` or `/usr/bin/time -l`'s instructions retired, never by
+/// guessing. The OOM: store/pack.av's `slurped` read a pack
+/// word-at-a-time into a `List<int>`, one `int` per BYTE — 2.3 GB of
+/// a 2.9 GB peak on one leaf-edit recheck of std-avrac; `read_bytes`
+/// now reads it straight into `Bytes`, RSS 2586 -> 758 MB. The
+/// dominant CPU cost: `applied`, the pack-load frame-fold, rebuilt a
+/// list on every NAME/ROW frame — `ScanState`'s staged lists are
+/// `Cell`s now, so a push mutates the one shared buffer instead of
+/// cloning it. Instructions retired on the same edited recheck fell
+/// avg 1,343,930,562,787 -> 829,506,187,128 from those two (-38.3%).
+/// A third: `put`'s dead-byte accounting re-encoded an already-`get`
+/// materialized entry — every name resolved back through `map_find`
+/// — just to measure a length it already knew when it was decoded;
+/// `Slot.Loaded` now carries that length. Instructions retired fell
+/// again to avg 763,492,161,550 (-43.2% from the original baseline).
+/// Still open: `reused_check` -> `decl_at_stable`'s validation cost.
+/// `holding` reads this alone — with it false, `self.pack` never
+/// attaches, so `reused_check` and `record_witness` (both `let pack?
+/// = self.pack.get() else { … }`) answer at once and every
+/// witness-specific cost never runs: a normal compiler pays nothing
+/// for machinery it never reaches. Flip this once the follow-up
+/// ticket closes the speed gap.
 const witness_enabled: bool = false
 
 /// What a command wants of a program. A file's warnings stand in for it
@@ -743,7 +757,7 @@ impl Workspace {
                 store,
                 parts_key(path),
                 parts_wire(own),
-                if was == null { [] } else { parts_moved(was!, own) },
+                if was == null { [] } else { parts_moved(store, was!, own) },
             )
         let seen = store.get(Stored.Unit, seen_key(now.module))
         let seen_was = seen_of(seen ?? "")
@@ -752,7 +766,7 @@ impl Workspace {
                 store,
                 seen_key(now.module),
                 seen_wire(now.seen),
-                if seen == null || seen_was == null { [] } else { seen_list_moved(seen_was!, now.seen) },
+                if seen == null || seen_was == null { [] } else { seen_list_moved(store, seen_was!, now.seen) },
             )
     }
 

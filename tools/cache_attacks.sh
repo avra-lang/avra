@@ -59,6 +59,11 @@ export fn ratio() -> Ratio { Ratio { r: 0.5 } }
 export fn word(w: Word) -> string { w.text }
 export fn tick() -> Tick { Tick { n: 8 } }
 AV
+# a SIBLING FILE'S signature names Word by TYPE, never edited itself — the
+# wire it was recorded with must still name Word after words.av reorders.
+cat > $R/lib/src/wordcall.av <<'AV'
+export fn word_upper(w: Word) -> string { w.text }
+AV
 # a QUOTED fn wears a real fn's name and another signature: it is no symbol
 cat > $R/lib/src/made.av <<'AV'
 use @std.meta.{Decls}
@@ -78,7 +83,7 @@ cat > $R/lib/src/lib.av <<'AV'
 export fn mid() -> int { one() + pick(10, 20, true) }
 AV
 cat > $R/a/src/main.av <<'AV'
-use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown, beyond}
+use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown, beyond, word_upper}
 // a held impl must still say what it implements, and a settled const runs a held body
 const TWICE: int = two() + two()
 const FAR: int = beyond()
@@ -87,7 +92,7 @@ let f = foo()
 let held = [f, f]
 let sh: dyn Shape = Sq { s: 3 }
 let big = if ratio().r > 0.4 { "big" } else { "small" }
-println("a ${FAR} ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
+println("a ${FAR} ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${word_upper(Word { text: "u" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
 AV
 cat > $R/b/src/main.av <<'AV'
 use @rt.lib.{two, pick}
@@ -176,6 +181,37 @@ S "a type inserted above Word/Ratio/Tick/Line: a's held wire must not read the n
 ed $R/lib/src/words.av 'export enum Sizing { Fixed, Auto }
 export type Word = { text: string }' 'export type Word = { text: string }'
 S "and back" a
+# A FREE FN BECOMES A METHOD: the impl block it joins is a NEW declaration of
+# its own, so every later ordinal in the file moves again, differently than a
+# plain insertion does. wordcall.av (a SIBLING FILE, never edited) keeps
+# reading Word by the wire words.av wrote it under; the wire must still
+# name Word, never whatever now sits at Word's old ordinal.
+ed $R/lib/src/words.av 'export type Word = { text: string }' 'fn decoy_one() -> int { 1 }
+fn decoy_two() -> int { 2 }
+fn decoy_three() -> int { 3 }
+fn decoy_four() -> int { 4 }
+export type Word = { text: string }'
+S "four free fns inserted above Word" a
+ed $R/lib/src/words.av 'fn decoy_one() -> int { 1 }
+fn decoy_two() -> int { 2 }
+fn decoy_three() -> int { 3 }
+fn decoy_four() -> int { 4 }
+export type Word = { text: string }' 'export type Word = { text: string }
+impl Word {
+    static fn decoy_one() -> int { 1 }
+    static fn decoy_two() -> int { 2 }
+    static fn decoy_three() -> int { 3 }
+    static fn decoy_four() -> int { 4 }
+}'
+S "the same four fns moved into impl Word: wordcall.av's held wire to Word must not read a decoy method" a
+ed $R/lib/src/words.av 'export type Word = { text: string }
+impl Word {
+    static fn decoy_one() -> int { 1 }
+    static fn decoy_two() -> int { 2 }
+    static fn decoy_three() -> int { 3 }
+    static fn decoy_four() -> int { 4 }
+}' 'export type Word = { text: string }'
+S "and back, again" a
 # A GENERIC REACHED WITH NO SUBSTITUTION IS STILL AN INSTANTIATION, and the caller's.
 # `st` holds @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
 # `stores<R>` with R pinned by nothing but the answer, from a home `st` never lowered.
@@ -543,7 +579,7 @@ rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/n
 lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
-# avra-8sb5.57.106: `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/`Lowered`
+# `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/`Lowered`
 # settle on a CONTENT fingerprint now, never `db.revision()` — a build-wide
 # counter that read every edit anywhere as "changed" through them. These pin
 # two of the fields the fold covers: a lambda's CAPTURE (NameFacts/TypeFacts)
@@ -586,6 +622,75 @@ got=$($R/cutfp/src/main 2>&1)
 [ "$got" = "cutfp 16 2" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16 2'"; }
 cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
 [ "$cutfp_warn1" = "0" ] || { fails=$((fails+1)); echo "FAIL  cutfp's warm check still finds unmutated_mut after the local was written — a stale voices fold"; }
+
+# A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
+# STRUCTURAL one (Reach) is persisted as ready; a const that traps while
+# settling never is, so its file never holds and the trap never goes quiet.
+mkdir -p $R/rs/src
+printf '[package]\nname = "rt-rs"\nversion = "0.1.0"\n' > $R/rs/avra.toml
+printf 'export const x: int = x + 1\n' > $R/rs/src/bad.av
+cat > $R/rs/src/main.av <<'AV'
+use bad.{x}
+println("${x}")
+AV
+rm -rf .avra-cache; rs_cold=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); case "$rs_cold" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  the trap fixture draws no diagnostic cold, so it attacks nothing" ;; esac
+printf '// moved\n' >> $R/rs/src/main.av
+rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
+steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
+
+# A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
+# NEVER AS A GAP: `members.av` declares two exported named
+# instances of `widget` (a component whose one field is `run: fn(int) ->
+# int`, the same shape `rule`'s `run: fn(Code) -> Fix?` is) — each an
+# `is_instance` const. `table.av`'s `collect` reads `it.run` for each,
+# calling it by its `instance_unit` symbol. Editing `table.av` ALONE forces
+# the collect fresh while `widget.av`/`members.av` stay held; without a
+# declaration for a held member's symbol the link traps "nothing declares
+# ... — the program is not closed" (witnessed: packages/std-avrac/src/
+# compiler/interface.av's `Workspace.stub_of`/`instance_stub`, reused by
+# `held_stubs`, is what a held FN's own symbol already goes through — the
+# fix is keeping a gathered member's structural refusal the same way).
+mkdir -p $R/cl/src
+printf '[package]\nname = "rt-cl"\nversion = "0.1.0"\n' > $R/cl/avra.toml
+cat > $R/cl/src/widget.av <<'AV'
+export component widget {
+    run: fn(int) -> int
+}
+AV
+cat > $R/cl/src/members.av <<'AV'
+use widget.{widget}
+
+export widget one { n -> n + 1 }
+export widget two { n -> n + 2 }
+AV
+cat > $R/cl/src/table.av <<'AV'
+use widget.{widget}
+type Entry = { name: string, ran: fn(int) -> int }
+export collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name
+AV
+cat > $R/cl/src/main.av <<'AV'
+use table.{entries}
+println("cl ${entries.length} ${entries[0].name}=${entries[0].ran(10)} ${entries[1].name}=${entries[1].ran(10)}")
+AV
+S "cold cl: a fresh collect reads two members' closures" cl
+S "no-op cl" cl
+ed $R/cl/src/table.av 'type Entry = { name: string, ran: fn(int) -> int }' 'type Entry = { name: string, ran: fn(int) -> int }
+// moved'
+S "cl: table.av alone moves — widget.av/members.av stay held, the fresh collect body must reference their closures as externs" cl
+got_cl1=$($R/cl/src/main 2>&1)
+[ "$got_cl1" = "cl 2 one=11 two=12" ] || { fails=$((fails+1)); echo "FAIL  cl (collect fresh, members held) printed '$got_cl1', wanted 'cl 2 one=11 two=12'"; }
+# A MEMBER'S OWN BODY EDIT, while the collect's own file stays held, is NOT
+# pinned here: on a brand-new tiny package it trips a pre-existing, GENERAL
+# held-collect/held-instance gap (a stale interface read that the "hold was
+# refused, rebuilt from sources" safety net catches and self-heals — right
+# answer, wasted work — reproduced with a plain DATA-only component too, no
+# `run: fn`/structural-refusal involved, so it is not this ticket's exclusion
+# and not touched here). The REAL requirement this scenario stands for —
+# editing a rule's actual match logic and rebuilding the compiler warm
+# re-derives that rule's finding, cleanly, no refusal — was witnessed
+# directly against compiler/features/enums/idioms.av's `bool_variant_match`
+# itself, not against a synthetic fixture here.
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.

@@ -47,7 +47,7 @@ use core.{
     flatten,
     some_list,
     Span,
-    module_path,
+    wire_fields,
 }
 use features.{
     NameFacts,
@@ -120,15 +120,16 @@ impl Workspace {
     /// moved name is caught.
     fn restored_refs(store: Store, f: FileId) -> List<Ref> {
         let path = self.decls.file(f).path
-        let m = module_path(self.module_of(path).split("."))
-        let rows = [p for p in record_fields(self, store, m) if p.length >= 5 && p[0] == "ref" && p[1] == path]
+        let rows = [p for p in record_fields(self, store, self.module_path_of(path)) if p.length >= 4 && p[0] == "ref" && p[1] == path]
         flatten([some_list(self.resolved_ref(f, p)) for p in rows])
     }
 
     fn resolved_ref(f: FileId, p: List<string>) -> Ref? {
-        let kind? = use_kind_of_word(p[4]) else { return null }
-        let target_m = module_path(p[2].split("."))
-        let target? = self.interface_decls(target_m).find((d: Decl) -> d.name == p[3]) else { return null }
+        let kind? = use_kind_of_word(p[3]) else { return null }
+        let wire = wire_fields(p[2], "~")
+        // a wire names its file, which answers only once its module's declarations stand
+        let _ = self.interface_decls(self.module_path_of(wire[0]))
+        let target? = self.decls.wire_decl(wire, 0) else { return null }
         Ref { decl: target.id, file: f, at: At.Stmt(StmtId { index: 0 }), kind: kind }
     }
 
@@ -338,16 +339,13 @@ impl Workspace {
     /// A FRESH FILE'S OWN OUTGOING REFERENCES, as its record's own
     /// lines — kept beside its declarations so a LATER attempt, holding
     /// this file, answers `references()`'s whole-program fold the same
-    /// way this one did. Named by the REFERENCED declaration's own
-    /// (module, name) pair, never its `DeclId`: a `Ref`'s `decl`/`file`
-    /// are `@local` (features/decls.av) — this process's own integers —
-    /// so the only cross-attempt-stable spelling of "which declaration"
-    /// is the one every other kept line already uses for the same
-    /// reason (`record_of`'s "import" lines). Read back by
-    /// `restored_refs`, exactly the shape `declares` (record.av)
-    /// excludes from a file's own declaration count.
+    /// way this one did. The referenced declaration is named by its
+    /// `decl_wire`, the one durable spelling of "which declaration": a
+    /// `Ref`'s `decl`/`file` are `@local` (features/decls.av), this
+    /// process's own integers. Read back by `restored_refs`, exactly the
+    /// shape `declares` (record.av) excludes from a file's own count.
     fn ref_lines(path: string, refs: List<Ref>) -> List<string> {
-        ["ref\t${path}\t${self.module_of(self.decls.file(self.decls.decl(r.decl).file).path)}\t${self.decls.decl(r.decl).name}\t${use_kind_word(r.kind)}" for r in refs]
+        ["ref\t${path}\t${self.decls.decl_wire(r.decl)}\t${use_kind_word(r.kind)}" for r in refs]
     }
 }
 

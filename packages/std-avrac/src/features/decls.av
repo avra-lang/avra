@@ -363,6 +363,10 @@ export type Decls = {
     faces: Cell<List<DeclFacts?>>,
     /// Settlements restored for declarations whose files were never parsed.
     held_values: Cell<Map<string, Settled>>,
+    /// A held declaration's own const, restored as UNFOLDABLE rather than as
+    /// a value: the words its settlement reached the world with, so a later
+    /// ask answers the same `Unsettled.Reach` a fresh compile would.
+    held_reaches: Cell<Map<string, string>>,
     keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
     /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
@@ -586,6 +590,7 @@ export fn new_decls() -> Decls {
         held_items: map_cell(),
         faces: Cell.new(no_faces),
         held_values: map_cell(),
+        held_reaches: map_cell(),
         keys: Cell.new(no_keys),
         sigs: Cell.new(no_sigs),
         seat_types: Cell.new(no_seat_types),
@@ -1262,6 +1267,10 @@ impl Decls {
     fn held_value(d: DeclId) -> Settled? { self.held_values.get().get("${d.index}") }
 
     fn remember_held_value(d: DeclId, value: Settled) { self.held_values.put("${d.index}", value) }
+
+    fn held_reach(d: DeclId) -> string? { self.held_reaches.get().get("${d.index}") }
+
+    fn remember_held_reach(d: DeclId, words: string) { self.held_reaches.put("${d.index}", words) }
 
     fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
         self.const_types.put(const_type_key(f, s), ty)

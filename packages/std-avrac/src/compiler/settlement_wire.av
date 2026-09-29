@@ -116,6 +116,22 @@ fn settled_from_wire(raw: string) -> Settled? {
     Settled { answer: answer, heap: heap, embeds: embeds, fingerprint: fp }
 }
 
+/// A CONST THAT STRUCTURALLY REACHES THE WORLD, kept under the same key a
+/// settled value would use: the verdict is the fact worth caching, since no
+/// amount of re-settling turns a value that reaches the world into one that
+/// does not. A stale row is safe — a callee that later stops reaching the
+/// world just keeps the const on its runtime `once` path, same answer, one
+/// skipped optimization.
+fn reach_wire(words: string) -> string { "R1" + wire_field(words) }
+
+fn reach_from_wire(raw: string) -> string? {
+    if !raw.starts_with("R1") { return null }
+    mut r = wire_reader(raw)
+    let words? = r.field() else { return null }
+    if r.pos != raw.length { return null }
+    words
+}
+
 // ── What a file's bodies ASK ──────────────────────────────────────
 //
 // A held file contributes no body — its machine code is the stored object — but
@@ -174,15 +190,12 @@ fn heap_from_wire(mut r: WireReader) -> MetaHeap? {
 
 impl Workspace {
 
+    /// `decl_ref`'s inverse — the whole field is a wire, since a ref is
+    /// never nested inside a wider tilde stream the way a type's own is.
     fn decl_from_ref(raw: string) -> DeclId? {
         if raw == "" { return null }
-        let parts = raw.split("~")
-        if parts.length != 2 { return null }
-        let f? = self.decls.paths.get().get(parts[0]) else { return null }
-        let at? = wire_number(parts[1]) else { return null }
-        let ids = self.decls.decls_of_file(f)
-        if at < 0 || at >= ids.length { return null }
-        ids[at]
+        let wd? = self.decls.wire_decl(raw.split("~"), 0) else { return null }
+        wd.id
     }
 
     fn decl_ref(d: DeclId?) -> string {
