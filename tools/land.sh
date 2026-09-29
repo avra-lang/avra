@@ -776,6 +776,22 @@ side_tree() {
     move_caches_aside "$side"
 }
 
+# A COMPILER AND ITS RUNTIME ARE ONE PAIR: the candidate's product
+# links the candidate's runtime and backend objects, never the base
+# tree's — the input stays the base's source, only the toolchain moves.
+# Package C is the input's own and stays.
+pair_toolchain() {
+    for f in libavra_runtime.a llvm_wrapper.o ffi.o avra_hot.bc avra_hot.inc; do
+        [ -f "$1/build/$f" ] && cp "$1/build/$f" "$2/build/$f"
+    done
+    for c in "$1"/runtime/*.c; do
+        [ -f "$c" ] || continue
+        o="$(basename "$c" .c).o"
+        [ -f "$1/build/$o" ] && cp "$1/build/$o" "$2/build/$o"
+    done
+    return 0
+}
+
 # The speed gate's side tree, beside the landing tree `$1`.
 speed_side_path() { echo "${AVRA_LAND_SPEED_WT:-$(cd "$1/.." && pwd -P)/avra-land-speed-wt}"; }
 
@@ -987,6 +1003,7 @@ speed_gate_step() {
         return 1
     fi
     st=0
+    pair_toolchain "$land_wt" "$speed_base_wt"
     speed_gate "$speed_base_wt" "$land_wt/build/avra" "$speed_base_wt" "$label" || st=$?
     if [ "$st" -eq 0 ]; then
         speed_refresh "$land_wt"

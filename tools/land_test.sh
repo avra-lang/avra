@@ -1651,6 +1651,37 @@ test_speed_gate_regress_with_override() {
     fi
 }
 
+test_speed_gate_links_the_candidates_runtime() {
+    d="$(git_repo speed-pair)"
+    record="$scratch/speed-pair-record"
+    : > "$record"
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/runtime" "$d/tools"
+    printf 'int r;\n' > "$d/runtime/r.c"
+    : > "$d/tools/speed.baseline"
+    printf 'objects:\n\t@mkdir -p build && echo BASE > build/libavra_runtime.a && echo BASEO > build/r.o\nlibs:\n\t@echo libs-ok\n' > "$d/Makefile"
+    printf '.avra-cache/\nbuild/\n' > "$d/.gitignore"
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+if [ "\$1" = "build" ]; then
+    cat build/libavra_runtime.a build/r.o >> "$record"
+    echo "time: parse 1ms, held 0/1, attempt 1"
+fi
+exit 0
+STUB
+    chmod +x "$d/build/avra"
+    commit_all "$d" "base"
+    echo CAND > "$d/build/libavra_runtime.a"
+    echo CANDO > "$d/build/r.o"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    AVRA_LAND_SPEED_WT="$scratch/speed-pair-wt" branch=x sh "$land" --call speed_gate_step "$d" "$base_sha" > "$scratch/speed-pair.out" 2>&1
+    if [ "$(head -2 "$record" | tr '\n' ' ')" = "CAND CANDO " ]; then
+        ok "speed-gate: the candidate's product links the candidate's runtime and runtime objects"
+    else
+        bad "speed-gate: the candidate linked another tree's runtime — saw: $(tr '\n' ' ' < "$record")"
+        cat "$scratch/speed-pair.out"
+    fi
+}
+
 test_speed_gate_object_hit_tool_failure() {
     d="$(speed_repo speed-objhit objhit)"
     mkdir -p "$d/tools"
@@ -1872,6 +1903,7 @@ run_test test_linux_gate_unreachable
 run_test test_speed_gate_improve
 run_test test_speed_gate_regress_no_override
 run_test test_speed_gate_regress_with_override
+run_test test_speed_gate_links_the_candidates_runtime
 run_test test_speed_gate_object_hit_tool_failure
 run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
