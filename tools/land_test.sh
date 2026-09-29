@@ -16,8 +16,8 @@ land="$here/land.sh"
 slot="$here/slot.sh"
 affected="$here/affected_packages.sh"
 
-# The Linux and speed gates default ON for a real landing (land.sh's
-# own header) — a bare run_checks call in a fixture below must never
+# The Linux gate defaults ON for a real landing, and the speed gate
+# may (land.sh's own header) — a bare run_checks call in a fixture below must never
 # reach a live Sprite or run a real cold build. OFF here, by default;
 # the fixtures that exercise these two gates re-arm them locally
 # (env-var prefix on that one command), each with its own stub.
@@ -1127,7 +1127,15 @@ test_diff_scope_skips() {
     git -C "$d" checkout -q -b cc main
     printf 'int x;\n' > "$d/packages/a/src/x.c"
     commit_all "$d" "c only"
+    git -C "$d" checkout -q -b bk main
+    mkdir -p "$d/backend"
+    printf 'int y;\n' > "$d/backend/wrap.c"
+    commit_all "$d" "backend only"
     git -C "$d" checkout -q main
+
+    land_scoped "$d" bk scope-bk || bad "scope: a backend-only landing failed"
+    logged scope-bk "compiler changed in this landing: 1" "scope: backend C reaches the compiler"
+    unlogged scope-bk "skipped cache-attacks" "scope: a backend-only diff runs cache-attacks"
 
     land_scoped "$d" t scope-t || bad "scope: a tools-only landing failed"
     logged scope-t "skipped builds and package checks: diff touches no code outside tools/ or docs/" "scope: a tools-only diff skips builds and checks"

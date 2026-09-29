@@ -62,7 +62,7 @@
 # (AVRA_LAND_WARM_GATE=1, off by default), the Linux gate
 # (AVRA_LAND_LINUX, default 1, runs affected packages' suites on a
 # Sprite), and the speed gate (AVRA_LAND_SPEED_GATE=1, off by default,
-# instructions retired and max RSS over a fixed input).
+# instructions retired and peak memory footprint over a fixed input).
 # Each prints its own NUMBER and VERDICT; a regression past a gate's
 # own threshold needs that gate's own override env var
 # (AVRA_LAND_WARM_OK, AVRA_LAND_SPEED_OK) with a reason, signed into
@@ -673,7 +673,7 @@ linux_gate_step() {
     return "$st"
 }
 
-# ── THE SPEED GATE (PERF's method): instructions retired and max RSS
+# ── THE SPEED GATE (PERF's method): instructions retired and peak memory footprint
 # from `/usr/bin/time -l`, over a FIXED input — main's own
 # packages/cli at the landing's BASE sha, never the branch's own —
 # compiled by THIS landing's product. One scratch worktree at the
@@ -685,7 +685,7 @@ linux_gate_step() {
 # fixed input.
 #
 # tools/speed.baseline is PERF's own format: one line per landing,
-# `<main-sha> <instructions> <maxrss-bytes> <reason-or-dash>`, the
+# `<main-sha> <instructions> <footprint-bytes> <reason-or-dash>`, the
 # newest line the comparison. tools/land.baseline (key=value) stays
 # the warm-reuse floor's alone.
 speed_base_wt=""
@@ -733,7 +733,7 @@ speed_base_tree() {
 # packages/cli`, tagged `$2` for its own log. Asserts a cold `held
 # 0/` — a warm hit would have examined nothing, which is a TOOL
 # failure, never a measurement. Answers through globals
-# (`speed_run_instr`, `speed_run_rss`, `speed_run_wall_ms`,
+# (`speed_run_instr`, `speed_run_footprint`, `speed_run_wall_ms`,
 # `speed_run_phases`), the shape a POSIX fn returns a small record in.
 speed_one_run() {
     tree="$1"
@@ -752,11 +752,11 @@ speed_one_run() {
         return 1
     fi
     speed_run_instr="$(grep -oE '[0-9]+ +instructions retired' "$log" | awk '{print $1}' | head -1)"
-    speed_run_rss="$(grep -oE '[0-9]+ +maximum resident set size' "$log" | awk '{print $1}' | head -1)"
+    speed_run_footprint="$(grep -oE '[0-9]+ +peak memory footprint' "$log" | awk '{print $1}' | head -1)"
     speed_run_wall_ms="$(awk '{for(i=1;i<=NF;i++) if($i=="real"){printf "%.0f", $(i-1)*1000; exit}}' "$log")"
     speed_run_phases="$(grep -oE '^time: .*' "$log" | tail -1)"
-    if [ -z "$speed_run_instr" ] || [ -z "$speed_run_rss" ]; then
-        tool_failed "the speed gate's $tag run has no instructions/RSS in $log (\`/usr/bin/time -l\` is macOS-only)"
+    if [ -z "$speed_run_instr" ] || [ -z "$speed_run_footprint" ]; then
+        tool_failed "the speed gate's $tag run has no instructions/footprint in $log (\`/usr/bin/time -l\` is macOS-only)"
         return 1
     fi
     return 0
@@ -775,7 +775,7 @@ speed_baseline_last() {
 }
 
 # 1 when `instr`/`rss` cross either threshold against the baseline's
-# last line (+1.0% instructions, +10% max RSS) — the trigger for a
+# last line (+1.0% instructions, +10% peak footprint) — the trigger for a
 # median-of-3 remeasurement, never itself a verdict.
 speed_over_threshold() {
     file="$1"
@@ -784,13 +784,13 @@ speed_over_threshold() {
     line="$(speed_baseline_last "$file")"
     [ -z "$line" ] && { echo 0; return; }
     old_instr="$(printf '%s' "$line" | awk '{print $2}')"
-    old_rss="$(printf '%s' "$line" | awk '{print $3}')"
+    old_footprint="$(printf '%s' "$line" | awk '{print $3}')"
     over=0
     if [ -n "$old_instr" ] && [ "$old_instr" -gt 0 ] 2>/dev/null; then
         awk -v n="$instr" -v o="$old_instr" 'BEGIN{exit !(((n-o)*100.0/o)>1.0)}' && over=1
     fi
-    if [ -n "$old_rss" ] && [ "$old_rss" -gt 0 ] 2>/dev/null; then
-        awk -v n="$rss" -v o="$old_rss" 'BEGIN{exit !(((n-o)*100.0/o)>10.0)}' && over=1
+    if [ -n "$old_footprint" ] && [ "$old_footprint" -gt 0 ] 2>/dev/null; then
+        awk -v n="$rss" -v o="$old_footprint" 'BEGIN{exit !(((n-o)*100.0/o)>10.0)}' && over=1
     fi
     echo "$over"
 }
@@ -814,16 +814,16 @@ speed_gate() {
 
     speed_one_run "$tree" run1 || return 1
     instr="$speed_run_instr"
-    rss="$speed_run_rss"
+    rss="$speed_run_footprint"
     wall_ms="$speed_run_wall_ms"
     phases="$speed_run_phases"
     note="one run"
     if [ "$(speed_over_threshold "$baseline_file" "$instr" "$rss")" -eq 1 ]; then
         echo "land: speed: run1 crossed a threshold — remeasuring twice more for a median of 3" >&2
         speed_one_run "$tree" run2 || return 1
-        i2="$speed_run_instr"; r2="$speed_run_rss"
+        i2="$speed_run_instr"; r2="$speed_run_footprint"
         speed_one_run "$tree" run3 || return 1
-        i3="$speed_run_instr"; r3="$speed_run_rss"
+        i3="$speed_run_instr"; r3="$speed_run_footprint"
         instr="$(median3 "$instr" "$i2" "$i3")"
         rss="$(median3 "$rss" "$r2" "$r3")"
         note="median of 3 runs"
@@ -832,11 +832,11 @@ speed_gate() {
     line="$(speed_baseline_last "$baseline_file")"
     old_sha=""
     old_instr=""
-    old_rss=""
+    old_footprint=""
     if [ -n "$line" ]; then
         old_sha="$(printf '%s' "$line" | awk '{print $1}')"
         old_instr="$(printf '%s' "$line" | awk '{print $2}')"
-        old_rss="$(printf '%s' "$line" | awk '{print $3}')"
+        old_footprint="$(printf '%s' "$line" | awk '{print $3}')"
     fi
     reason="${AVRA_LAND_SPEED_OK:-}"
     ipct="n/a"
@@ -856,8 +856,8 @@ speed_gate() {
             [ -z "$reason" ] && fail=1
         fi
     fi
-    if [ -n "$old_rss" ] && [ "$old_rss" -gt 0 ] 2>/dev/null; then
-        rpct="$(awk -v n="$rss" -v o="$old_rss" 'BEGIN{printf "%+.2f", (n-o)*100.0/o}')"
+    if [ -n "$old_footprint" ] && [ "$old_footprint" -gt 0 ] 2>/dev/null; then
+        rpct="$(awk -v n="$rss" -v o="$old_footprint" 'BEGIN{printf "%+.2f", (n-o)*100.0/o}')"
         if awk -v p="$rpct" 'BEGIN{exit !(p>10.0)}'; then
             regressed=1
             [ -z "$reason" ] && fail=1
@@ -868,10 +868,10 @@ speed_gate() {
     fi
     word="PASS"
     [ "$fail" -eq 1 ] && word="FAIL"
-    echo "land: speed: $instr instr (${ipct}% vs ${old_sha:-none}), rss $rss (${rpct}%) — $word ($note, wall ${wall_ms}ms)" >&2
+    echo "land: speed: $instr instr (${ipct}% vs ${old_sha:-none}), footprint $rss (${rpct}%) — $word ($note, wall ${wall_ms}ms)" >&2
     [ -n "$phases" ] && echo "land: speed: $phases" >&2
     speed_gate_instr="$instr"
-    speed_gate_rss="$rss"
+    speed_gate_footprint="$rss"
     [ "$fail" -eq 0 ]
 }
 
@@ -893,8 +893,8 @@ speed_refresh() {
     fi
     sha="$(git -C "$land_wt" rev-parse HEAD)"
     reason="${AVRA_LAND_SPEED_OK:--}"
-    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_rss" "$reason" >> "$land_wt/tools/speed.baseline"
-    echo "land: speed: baseline advanced — $sha $speed_run_instr $speed_run_rss $reason" >&2
+    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_footprint" "$reason" >> "$land_wt/tools/speed.baseline"
+    echo "land: speed: baseline advanced — $sha $speed_run_instr $speed_run_footprint $reason" >&2
 }
 
 # The job-pool wrapper: the base tree (once), the copy in, the gate,
@@ -964,12 +964,15 @@ build_generation() {
 # rename); a job's own slot is freed by a STATUS FILE, never `kill -0`
 # on its pid — a finished-but-unwaited child is still a live pid to
 # `kill -0` (a zombie), so polling pids would never see a slot free.
-# Whether a landing reaches the compiler: its C, its seed, or any
-# package the cli (the compiler's root) imports, however deep — the
-# closure affected_packages.sh already computes names packages/cli
-# exactly then.
+# Whether a landing reaches the compiler: its build (the Makefile),
+# its seed, any C outside packages/ (package C is its package's own,
+# reached through the import closure; every other C file links into
+# the compiler or its runtime), or any package the cli (the
+# compiler's root) imports, however deep — the closure
+# affected_packages.sh already computes names packages/cli exactly then.
 compiler_reached() {
-    case "$4" in *"runtime/"*|*"bootstrap/"*) return 0 ;; esac
+    if printf '%s\n' "$4" | grep -qE '^Makefile$|^bootstrap/|^(runtime|backend)/'; then return 0; fi
+    if [ -n "$(printf '%s\n' "$4" | grep -E '\.[ch]$' | grep -v '^packages/')" ]; then return 0; fi
     reached="$(sh "$tools_dir/affected_packages.sh" "$2" "$3" "$1" 2>/dev/null)" || return 0
     printf '%s\n' "$reached" | grep -qxE '(packages/)?cli'
 }
