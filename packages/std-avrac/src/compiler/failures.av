@@ -209,9 +209,18 @@ impl FailSurvey {
     }
 
     /// THE GUARD: a callee's own written shape decides before its
-    /// `sig()` is ever asked.
+    /// `sig()` is ever asked — UNLESS the callee is HELD, where `sig()`
+    /// is already the fixpoint's own past answer, replayed from its
+    /// interface at mint, never touched by this attempt: a held `_`-
+    /// declared callee's union rode its interface, so its resolved
+    /// `Result<_, E>` is read directly, the same as any settled type.
+    /// Without this, `inferred_errors_so_far(d)` for a held `d` answers
+    /// the empty table this attempt never filled, and a caller's own
+    /// inferred set silently loses every error that flowed through it.
     fn via_callee(d: DeclId) -> SiteType {
-        if self.dt.decls.declared_result_hole(d) { return SiteType.Edge(d) }
+        if self.dt.decls.declared_result_hole(d) && !self.dt.ws.is_held(self.dt.decls.decl(d).file) {
+            return SiteType.Edge(d)
+        }
         self.wrap(self.dt.decls.sig(d)?.fn_sig()?.ret)
     }
 }
