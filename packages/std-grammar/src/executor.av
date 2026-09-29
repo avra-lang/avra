@@ -27,8 +27,19 @@
 //! whoever tokenizes, `N` to whoever supplies the builders. A `T`'s
 //! whole contract is its `Lexeme<T>` value, carried on the context
 //! (`cx.lex`) rather than a trait bound (lexeme.av says why).
-use util.{flatten, filled}
-use ast.{Grammar, Alt, Seq, Item, Prim, BranchStart, Slot, listed_grammar, node_builder_name}
+use util.{flatten, filled, distinct}
+use ast.{
+    Grammar,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    BranchStart,
+    StartTerm,
+    Slot,
+    listed_grammar,
+    node_builder_name,
+}
 use first.{with_branch_starts}
 use diagnostics.{
     Cause,
@@ -103,6 +114,9 @@ type MatchContext<T, N> = {
     // atoms and a `sync_to` name may denote, disambiguating a
     // named class from a literal spelling at `sync_past`
     known_terminals: List<string>,
+    // each of the grammar's terminal classes as this parse's lexer
+    // numbers it, by the class's slot — resolved once per run
+    kinds: List<int>,
     // one absence and one silence per run: a miss is the engine's
     // commonest outcome, and a value it shares costs nothing to hand
     // out (a consumer that changed one would copy it)
@@ -319,10 +333,11 @@ fn binding_for<T, N>(bindings: List<Binding<T, N>>, label: string) -> Captured<T
 fn sync_past<T, N>(cx: MatchContext<T, N>, target: string, entry: int, from: int) -> int {
     if is_end(target) { return sync_to_end<T, N>(cx, entry, from) }
     let known = cx.known_terminals.contains(target)
+    let kind = cx.lex.kind_of(target)
     mut i = from
     while !cx.lex.is_eof(cx.tokens[i]) {
         let t = cx.tokens[i]
-        let hit: bool = if known { cx.lex.wears(t, target) } else { cx.lex.lit_matches(t, target) }
+        let hit: bool = if known { cx.lex.wears_kind(t, kind) } else { cx.lex.lit_matches(t, target) }
         if hit { return i + 1 }
         i = i + 1
     }
@@ -396,16 +411,16 @@ fn undefined_rule<T, N>(cx: MatchContext<T, N>, name: string, cursor: int) -> Ma
 
 /// Whether a branch's first terminals can take `t` — the one question
 /// that lets the engine skip a branch whole.
-fn starts_at<T>(lex: Lexeme<T>, terms: List<Prim>, t: T) -> bool {
-    terms.any(takes_term(lex, it, t))
+fn starts_at<T>(lex: Lexeme<T>, kinds: List<int>, terms: List<StartTerm>, t: T) -> bool {
+    terms.any(takes_term(lex, kinds, it, t))
 }
 
 /// Whether one closed terminal accepts `t`, exactly as `match_prim`
 /// judges it.
-fn takes_term<T>(lex: Lexeme<T>, p: Prim, t: T) -> bool {
-    match p {
+fn takes_term<T>(lex: Lexeme<T>, kinds: List<int>, st: StartTerm, t: T) -> bool {
+    match st.prim {
         .Lit(text) -> lex.lit_matches(t, text),
-        .Named(term) -> lex.wears(t, term) || is_end(term) && closes_body(lex, t),
+        .Named(term) -> lex.wears_kind(t, kind_in(lex, kinds, term, st.slot)) || is_end(term) && closes_body(lex, t),
         .Ref(_) or .Group(_) or .NotChar(_) -> false,
     }
 }
@@ -419,9 +434,15 @@ fn skip_point(st: BranchStart, cursor: int) -> FarthestFailure {
 
 /// Whether a branch cannot consume `tok`: it is not nullable and none of
 /// its first terminals accepts.
-fn cannot_take<T>(lex: Lexeme<T>, st: BranchStart?, tok: T) -> bool {
+fn cannot_take<T>(lex: Lexeme<T>, kinds: List<int>, st: BranchStart?, tok: T) -> bool {
     let s? = st else { return false }
-    !s.nullable && !starts_at(lex, s.terminals, tok)
+    !s.nullable && !starts_at(lex, kinds, s.terminals, tok)
+}
+
+/// The kind id a terminal wears in this parse: its slot's, resolved
+/// once per run — or asked by name for a grammar `ready` never numbered.
+fn kind_in<T>(lex: Lexeme<T>, kinds: List<int>, term: string, slot: int) -> int {
+    if slot >= 0 && slot < kinds.length { kinds[slot] } else { lex.kind_of(term) }
 }
 
 /// Branches tried top to bottom; the first success wins. A committed
@@ -445,7 +466,7 @@ fn match_alt<T, N>(
     mut fb_diags: List<Diagnostic>? = null
     let tok = cx.tokens[cursor]
     for br in a.branches {
-        if cannot_take(cx.lex, br.start, tok) {
+        if cannot_take(cx.lex, cx.kinds, br.start, tok) {
             if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
         } else {
             let r = match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped)
@@ -791,7 +812,7 @@ fn match_prim<T, N>(
         },
         .Named(term) -> {
             let t = cx.tokens[cursor]
-            if cx.lex.wears(t, term) {
+            if cx.lex.wears_kind(t, kind_in(cx.lex, cx.kinds, term, member.slot)) {
                 // Eof is a position, not a token: match without consuming.
                 let step = if cx.lex.is_eof(t) { 0 } else { 1 }
                 matched<T, N>(cursor + step, bindings, captured_terminal<T, N>(t), cx.silence, null)
@@ -869,6 +890,9 @@ export type Ready = {
     lit_expects: Map<string, List<string>>,
     kind_expects: Map<string, List<string>>,
     known_terminals: List<string>,
+    // every terminal class the grammar names, a `.Named` atom's slot
+    // its place here
+    terms: List<string>,
     defects: List<Diagnostic>,
 }
 
@@ -887,13 +911,40 @@ export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
             .Ref(_) or .Group(_) or .NotChar(_) -> nothing_noted(),
         }
     }
+    let terms = distinct(
+        [term for p in flatten([terminals_of(r.body) for r in g.rules]) for term in named_term(p)],
+    )
     Ready {
-        g: listed_grammar(with_branch_starts(g)),
+        g: listed_grammar(with_branch_starts(slotted(g, terms))),
         ordinals: ordinals,
         lit_expects: lits,
         kind_expects: kinds,
         known_terminals: known_terminals,
+        terms: terms,
         defects: g.defects(known_terminals),
+    }
+}
+
+/// A terminal's class name, when it is a class.
+fn named_term(p: Prim) -> List<string> {
+    match p { .Named(term) -> [term], .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [] }
+}
+
+/// Every item naming a terminal class slotted by the class's place in
+/// `terms`, groups opened.
+fn slotted(g: Grammar, terms: List<string>) -> Grammar {
+    g with { rules: [r with { body: slotted_alt(r.body, terms) } for r in g.rules] }
+}
+
+fn slotted_alt(a: Alt, terms: List<string>) -> Alt {
+    a with { branches: [s with { items: [slotted_item(m, terms) for m in s.items] } for s in a.branches] }
+}
+
+fn slotted_item(m: Item, terms: List<string>) -> Item {
+    match m.prim {
+        .Named(term) -> m with { slot: terms.index_of(term) },
+        .Group(inner) -> m with { prim: Prim.Group(slotted_alt(inner, terms)) },
+        .Ref(_) or .Lit(_) or .NotChar(_) -> m,
     }
 }
 
@@ -985,6 +1036,7 @@ fn run_as<T, N>(
         lit_expects: rd.lit_expects,
         kind_expects: rd.kind_expects,
         known_terminals: rd.known_terminals,
+        kinds: [lex.kind_of(term) for term in rd.terms],
         absent: captured_absent<T, N>(),
         silence: silence,
         build: build,

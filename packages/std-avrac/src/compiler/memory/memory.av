@@ -138,7 +138,7 @@ fn body_ins(
         standing_regs(immortal, ins, seats, marks),
         consuming_seats(seats, marks),
         by_name,
-    ) if !retains_immortal(i, immortal)]
+    ) if !immortal_rc_op(i, immortal)]
 }
 
 /// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
@@ -178,8 +178,8 @@ fn loaded_dst(i: Ins) -> Reg? {
 }
 
 /// THE REGISTERS THAT HOLD THE BINARY'S OWN DATA — a string constant, a settled
-/// aggregate's address. The runtime never counts an immortal box, so a retain of
-/// one is a call that does nothing, and none is placed.
+/// aggregate's address. The runtime never counts an immortal box, so a retain
+/// or a release of one is a call that does nothing, and neither is placed.
 fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
     mut out = [false for j in 0..count]
     for i in ins {
@@ -197,8 +197,13 @@ fn immortal_dst(i: Ins) -> Reg? {
     match i { .ConstStr(d, _) or .StaticAddr(d, _) or .OnceRead(d, _) -> d, rest -> null }
 }
 
-fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
-    match i { .Retain(r) -> immortal[r.index], _ -> false }
+/// A retain or a release naming an immortal register — both no-ops the
+/// runtime never counts, dropped as a PAIR: `moved_out`'s borrowed-yield
+/// retain and the scope-exit release it balances both name an immortal
+/// register the same way, so stripping only the retain leaves the release
+/// unmatched — a debt this body never took.
+fn immortal_rc_op(i: Ins, immortal: List<bool>) -> bool {
+    match i { .Retain(r) or .Release(r) -> immortal[r.index], rest -> false }
 }
 
 /// The memory instructions as every scope's strategy places them — the pass's
