@@ -543,6 +543,50 @@ rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/n
 lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
 steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
+# avra-8sb5.57.106: `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/`Lowered`
+# settle on a CONTENT fingerprint now, never `db.revision()` — a build-wide
+# counter that read every edit anywhere as "changed" through them. These pin
+# two of the fields the fold covers: a lambda's CAPTURE (NameFacts/TypeFacts)
+# and a WARNING'S OWN PRESENCE (voices) — an edit to either must still reach
+# a caller held across the edit, whether that caller is the program's own
+# printed answer or the check output the file itself earns.
+mkdir -p $R/cutfp/src
+printf '[package]\nname = "rt-cutfp"\nversion = "0.1.0"\n' > $R/cutfp/avra.toml
+cat > $R/cutfp/src/main.av <<'AV'
+fn make_adder(n: int) -> fn(int) -> int {
+    (x: int) -> x + n
+}
+mut unused = 1
+let add = make_adder(5)
+println("cutfp ${add(10)}")
+AV
+S "cold cutfp: a closure capture and an unmutated mut sit in one file" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 15" ] || { fails=$((fails+1)); echo "FAIL  cold cutfp printed '$got', wanted 'cutfp 15'"; }
+cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+[ "$cutfp_warn0" = "1" ] || { fails=$((fails+1)); echo "FAIL  cutfp's cold check did not find the unmutated_mut warning it was written to earn"; }
+
+# THE CAPTURE MOVES: the closure now closes over a DIFFERENT computation —
+# its TypeFacts/NameFacts captures column changes though the file's declared
+# NAMES do not, so a Namespace-level cache alone would miss it.
+ed $R/cutfp/src/main.av 'x + n' 'x + n + 1'
+S "cutfp: the closure's capture computation moves" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 16" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16' — a captured value's edit did not propagate"; }
+
+# THE WARNING MOVES, THE PROGRAM'S OWN VALUE ALSO MOVES: `mut unused`
+# becomes read, so the unmutated_mut voice must vanish from a held file's
+# own check — voices ride no program output, so only the diagnostic text
+# can catch a dropped fold.
+ed $R/cutfp/src/main.av 'mut unused = 1' 'mut unused = 1
+unused = unused + 1'
+ed $R/cutfp/src/main.av 'println("cutfp ${add(10)}")' 'println("cutfp ${add(10)} ${unused}")'
+S "cutfp: a voice-only edit — the warning is earned no longer, the closure is untouched" cutfp
+got=$($R/cutfp/src/main 2>&1)
+[ "$got" = "cutfp 16 2" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16 2'"; }
+cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+[ "$cutfp_warn1" = "0" ] || { fails=$((fails+1)); echo "FAIL  cutfp's warm check still finds unmutated_mut after the local was written — a stale voices fold"; }
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

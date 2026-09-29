@@ -14,6 +14,8 @@ use core.{
     spelled,
     module_path,
     fp_str,
+    fp,
+    fp_list,
     joined,
 }
 use @std.path.{dir_of}
@@ -148,9 +150,25 @@ impl Workspace {
             .Compute -> nothing(),
         }
         let out = self.analyzed(f)
-        analysis_of(
-            self.relation(Family.Analysis).finish(f.index, DbRow.Analysis(out), self.db.revision()),
+        // DERIVED, never re-walked: `analyzed` just asked `resolved`
+        // and `folded` above (their own fingerprints fresh), so this
+        // adds only what an `Analysis` carries beyond them — every
+        // diagnostic in pipeline order, `sig_diagnostics` and
+        // `method_diagnostics` included. `view` and `program` are
+        // left out: `view` is shared/derived state (the workspace's
+        // own Decls/TypeRegistry, `p.store` already covered by
+        // `Parsed`/`Resolved`/`Folded`), and `program` is a CLOSURE —
+        // structurally unfoldable — whose behavior is a pure fn of
+        // `f`'s own stable path, never independent content.
+        let hash = fp(
+            1,
+            [
+                self.db.value_hash_of(key(Family.Resolved, f.index)) ?? 0,
+                self.db.value_hash_of(key(Family.Folded, f.index)) ?? 0,
+                fp_list([diag_fp(d) for d in out.diagnostics]),
+            ],
         )
+        analysis_of(self.relation(Family.Analysis).finish(f.index, DbRow.Analysis(out), hash))
     }
 
     /// The record itself: every pass's facts for the file, and the way
@@ -227,11 +245,8 @@ impl Workspace {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
-        lowered_of(
-            self
-                .relation(fam)
-                .finish(id, DbRow.Lowered(self.lower_requested(self.asks.get()[id])), self.db.revision()),
-        )
+        let out = self.lower_requested(self.asks.get()[id])
+        lowered_of(self.relation(fam).finish(id, DbRow.Lowered(out), unit_fp(out)))
     }
 
     /// Whether a compile-time run — a lift, an argument crossing, a

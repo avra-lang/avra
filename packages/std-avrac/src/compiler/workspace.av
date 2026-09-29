@@ -1420,7 +1420,7 @@ impl Workspace {
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
         visible_of(
-            self.relation(Family.Visible).finish(f.index, DbRow.Visible(out), self.db.revision()),
+            self.relation(Family.Visible).finish(f.index, DbRow.Visible(out), namespace_fp(out)),
         )
     }
 
@@ -1475,7 +1475,7 @@ impl Workspace {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
         resolved_of(
-            self.relation(Family.Resolved).finish(f.index, DbRow.Resolved(out), self.db.revision()),
+            self.relation(Family.Resolved).finish(f.index, DbRow.Resolved(out), name_facts_fp(out)),
         )
     }
 
@@ -1729,7 +1729,7 @@ impl Workspace {
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
-        typed_of(self.relation(Family.Typed).finish(d.index, DbRow.Typed(out), self.db.revision()))
+        typed_of(self.relation(Family.Typed).finish(d.index, DbRow.Typed(out), type_facts_fp(out)))
     }
 
     /// A file's bodies as one table: Main's facts first (its range
@@ -1747,16 +1747,35 @@ impl Workspace {
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
         mut spoken: List<Diag> = []
-        for d in self.bodies_of(f) {
+        let bodies = self.bodies_of(f)
+        for d in bodies {
             let facts = self.typed(d)
             out.absorb(facts)
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
+        // DERIVED: `folded_facts` is entirely `absorb`ed from each
+        // body's own `typed(d)`, already asked above — so its own
+        // fingerprints, in the same order, are folded content, never
+        // re-walked. An unchanged fold cuts the wave off here exactly
+        // when every one of them did (CLAUDE.md, "the key a
+        // remembered value settles on and the name its result is
+        // stored under are one derivation").
         folded_of(
             self
                 .relation(Family.Folded)
-                .finish(f.index, DbRow.Folded(folded_facts), self.db.revision()),
+                .finish(
+                    f.index,
+                    DbRow.Folded(folded_facts),
+                    fp(
+                        122,
+                        [
+                            fp_list(
+                                [self.db.value_hash_of(key(Family.Typed, d.index)) ?? 0 for d in bodies],
+                            ),
+                        ],
+                    ),
+                ),
         )
     }
 
