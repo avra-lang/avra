@@ -508,7 +508,9 @@ fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag {
 /// spell the word cannot cost a parse it has no chance of needing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn module_names_block_word(ws: Workspace, m: ModulePath, files: List<string>, items: List<string>) -> bool {
-    let rec? = store_at(build_cache_root(ws)).get(Stored.Sig, ws.record_key(m)) else { return maybe_declares_block(ws, files) }
+    let store = store_at(build_cache_root(ws))
+    let iface? = ws.db.sig(store, ws.record_key(m)) else { return maybe_declares_block(ws, files) }
+    let rec? = ws.record_bodies().body(store, m.text(), iface) else { return maybe_declares_block(ws, files) }
     for line in rec.split("\n") {
         let row = read_row(read_fields(line))
         if row != null && names_block_word(row!) && items.any(it == row!.name) { return true }
