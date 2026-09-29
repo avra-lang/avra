@@ -288,3 +288,18 @@ spec "compiler/witness — the package's own avra.toml" {
         }
     }
 }
+
+spec "compiler/witness — a root-sibling callee's signature edit, through the real path" {
+    given "a.av's return type changes, root siblings, checked through checked()/verdict() (not the explain-tooling helper)" {
+        then "b.av is refused, not reused stale" {
+            let path = fresh_pack_path("probe_root_sibling_sig")
+            let first = a_process_over(package_files(), package_names(), path)
+            let _ = checked(first, "/w/src/a.av")
+            let _ = checked(first, "/w/src/b.av")
+            mut edited = package_files()
+            edited.set("/w/src/a.av", "export fn f() -> string {\n    \"one\"\n}\n")
+            let v = verdict(a_process_over(edited, package_names(), path), path, "/w/src/b.av")
+            !v.refused_by.is_empty() && !v.outcome.reused()
+        }
+    }
+}

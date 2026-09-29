@@ -9,10 +9,10 @@ use compiler.{Workspace, key_family, shown_name, matching_names}
 use compiler.store.{
     Pack,
     Entry,
+    Edge,
     pack_at,
     real_entries,
     summarized,
-    witnessed,
     dependents,
     family_groups,
     Held,
@@ -49,19 +49,32 @@ fn edge_named_for(entry: Entry, family: string, path: string) -> string? {
 }
 
 /// Every edge of the pack's one entry, re-asked against what `ws`
-/// derives right now.
+/// derives right now — `ws.edge_current_hash` directly, never
+/// `witnessed()`'s recursive display fallback: `witnessed` answers
+/// "no validator is wired for this name" by walking the STORED copy
+/// (right for `avra cache`/`avra explain`, where an unwired family
+/// has nothing else to show), but a `Recorded` edge's `null` is a
+/// DIFFERENT thing — its row's own validator ran the whole nested
+/// check already and the null IS the conclusive stale verdict, not
+/// an invitation to go re-derive it from the pack's stale copy. A
+/// Recorded edge's staleness is its row's verdict.
 fn edge_verdicts(pack: Pack, ws: Workspace) -> List<Held> {
     let entry? = the_entry(pack) else { return [] }
-    [witnessed(pack, e.name, e.hash, [entry.name], (n: string) -> ws.edge_current_hash(n)).held for e in entry.edges]
+    [edge_verdict(ws, e) for e in entry.edges]
+}
+
+fn edge_verdict(ws: Workspace, e: Edge) -> Held {
+    let live? = ws.edge_current_hash(e.name) else { return Held.Stale }
+    if live == e.hash { Held.Matches } else { Held.Stale }
 }
 
 spec "compiler/store/explain — over a real Analysis entry" {
     given "one file checked by a first process" {
-        then "the pack holds that entry plus a Folded row for it AND for the callee it resolves, and its edges name it" {
+        then "the pack holds that entry plus its own Folded row — a materialized family, so it is never in referenced" {
             let s = summarized(left_behind(fresh_pack_path("explain_shape")), key_family)
             [f.family for f in s.families].contains("Analysis") &&
                 [f.family for f in s.families].contains("Folded") &&
-                [r.family for r in s.referenced].contains("Folded")
+                ![r.family for r in s.referenced].contains("Folded")
         }
     }
     given "the same source, asked again by a second process" {
@@ -114,17 +127,17 @@ spec "compiler/explain_names — real names read and typed back" {
 
 spec "compiler/store/explain — dependents of a real name" {
     given "the pack a first process leaves after checking b.av" {
-        then "the callee's Folded row that entry leans on has that one Analysis entry as its dependent" {
+        then "the entry's own Folded row (the callee is reached transitively, through it) has that one Analysis entry as its dependent" {
             let pack = left_behind(fresh_pack_path("dependents_sig"))
             let entry? = the_entry(pack) else { return false }
-            let folded? = edge_named_for(entry, "Folded", "/w/src/a.av") else { return false }
+            let folded? = edge_named_for(entry, "Folded", "/w/src/b.av") else { return false }
             let found = dependents(pack, folded)
             found.length == 1 && found[0].name == entry.name
         }
-        then "the dependents of the callee's Folded name group under Analysis" {
+        then "the dependents of the entry's own Folded name group under Analysis" {
             let pack = left_behind(fresh_pack_path("dependents_family"))
             let entry? = the_entry(pack) else { return false }
-            let folded? = edge_named_for(entry, "Folded", "/w/src/a.av") else { return false }
+            let folded? = edge_named_for(entry, "Folded", "/w/src/b.av") else { return false }
             let groups = family_groups([e.name for e in dependents(pack, folded)], key_family)
             let families = [g.family for g in groups]
             groups.length == 1 && families.contains("Analysis")
