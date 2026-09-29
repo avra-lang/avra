@@ -13,14 +13,12 @@ use core.{
     Type,
     TypeId,
     DeclId,
-    DeclKind,
     FileId,
     StmtId,
     ExprId,
     SeatMark,
 }
 use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word}
-use features.collects.{gathered_members}
 use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
@@ -34,6 +32,14 @@ impl Workspace {
     /// `Reach`) — the refusal itself, since that verdict is as stable as a
     /// value and is what lets the file hold. A non-structural refusal SPEAKS a
     /// diagnostic elsewhere and stays unkept, so the next build asks again.
+    /// A gathered member — a `rule`'s `run: fn(Code) -> Fix?`, any declared
+    /// instance holding behavior — refuses structurally too and is kept the
+    /// same way: `lower_collect` and a direct read (`instance_value_reg`)
+    /// both call such a member by its `instance_unit` symbol, and
+    /// `held_stubs`/`Workspace.stub_of` already declare that symbol for a
+    /// held file exactly as a held fn's own symbol is declared — the same
+    /// door an ordinary call into a held function goes through, never a
+    /// second one for collects.
     fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
         mut count = 0
         for m in modules {
@@ -62,10 +68,7 @@ impl Workspace {
                                 if verdict != null {
                                     match verdict! {
                                         .Refused(why) -> {
-                                            // a gathered member stays unkept: `lower_collect`
-                                            // calls each member's closures by symbol, which
-                                            // a held member's object cannot answer.
-                                            if why.structural() && !self.collected(d) {
+                                            if why.structural() {
                                                 let _ = store
                                                     .keep(
                                                         Stored.Unit,
@@ -86,36 +89,6 @@ impl Workspace {
             }
         }
         count
-    }
-
-    /// WHETHER SOME `collect` IN THE WORKSPACE GATHERS `d` — asked the SAME
-    /// WAY `lower_collect` enumerates a collect's members (`gathered_members`),
-    /// never by `d`'s own name or component word: a structural question about
-    /// what `lower_collect` will need to reference by symbol, not a spelling.
-    fn collected(d: Decl) -> bool {
-        let collects = self
-            .decls
-            .decls_of_kind(DeclKind.Collect)
-            .concat(self.decls.decls_of_kind(DeclKind.CollectEnum))
-        collects.any((c) -> self.collect_members_of(c).any(same_decl(it.id, d.id)))
-    }
-
-    /// One `collect`'s (or `collect enum`'s) own members — `[]` for a
-    /// declaration this door was never meant to see, which stays honest
-    /// since `decls_of_kind` already filtered to the two kinds that hold parts.
-    fn collect_members_of(c: Decl) -> List<Decl> {
-        match c.kind {
-            .Collect -> {
-                let p? = self.decls.store_of(c.file).collect_parts(c.stmt) else { return [] }
-                gathered_members(self.decls, p.kind, p.scope, c.file)
-            },
-            .CollectEnum -> {
-                let p? = self.decls.store_of(c.file).collect_enum_parts(c.stmt) else { return [] }
-                gathered_members(self.decls, p.kind, p.scope, c.file)
-            },
-            // `decls_of_kind` already narrowed `c` to these two kinds.
-            rest -> [],
-        }
     }
 
     fn const_rows_ready(store: Store, m: ModulePath, path: string, rows: List<List<string>>) -> bool {
