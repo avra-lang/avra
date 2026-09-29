@@ -18,11 +18,13 @@
 //!
 //! A pack from another compiler, or another format version, is never
 //! read — it answers as empty, and the next write starts a fresh log
-//! over it. `avra_mmap_slice` cannot cross to Avra as `Bytes` (its row
-//! carries no evaluator arm to build the box), so the whole file is
-//! read through `avra_mmap_word_at`'s eight-byte stride instead, with
-//! `@std/io`'s `read_bytes` for the tail under eight bytes it cannot
-//! reach.
+//! over it. The whole file is read through `@std/io`'s `read_bytes`
+//! (chunked straight into `Bytes` — `drained`'s own doc), never
+//! word-at-a-time into a `List<int>`: that shape spends one 8-byte
+//! `int` PER BYTE, an 8x-16x blowup measured turning a leaf-edit
+//! recheck's pack read into 2.3 GB of the run's 2.9 GB peak
+//! (avra-8sb5.57.55's OOM).
+use core.{list_cell}
 use @std.io.{read_bytes, write_bytes, truncate_to, AppendFile, opened_for_append}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
 
@@ -172,11 +174,23 @@ type StagedEntry = { name: string, body: Bytes }
 /// The scan's running answer, folded one frame at a time. Frames since
 /// the last `Commit` are staged, separately from what a reader may
 /// already trust, so a transaction that never closes leaves no trace.
+///
+/// `stage_by_id`/`stage_entries` are CELLS, not plain lists: `applied`
+/// runs once per NAME and per ROW frame — a pack can carry thousands
+/// — and the caller's own `s` (`walked`'s loop) still stands for the
+/// argument across the call (CLAUDE.md's borrowing law), so a plain
+/// field read into a `mut` local and pushed is never uniquely held —
+/// `push` clones the whole list first, same O(n²) a `concat([x])` fold
+/// has, just under `avra_cell_unique` instead of `avra_array_concat`.
+/// A Cell's identity survives being read: pushing through it mutates
+/// the one shared buffer regardless of how many bindings hold `s`.
+/// Measured: the dominant cost of a leaf-edit recheck (41% of wall
+/// time, all retains under the clone) collapses to noise.
 type ScanState = {
     by_id: List<string>,
     slots: Map<string, Slot>,
-    stage_by_id: List<string>,
-    stage_entries: List<StagedEntry>,
+    stage_by_id: Cell<List<string>>,
+    stage_entries: Cell<List<StagedEntry>>,
     committed_len: int,
     broken: bool,
 }
@@ -184,12 +198,11 @@ type ScanState = {
 fn empty_scan(committed_len: int) -> ScanState {
     let no_by_id: List<string> = []
     let no_slots: Map<string, Slot> = {}
-    let no_stage: List<StagedEntry> = []
     ScanState {
         by_id: no_by_id,
         slots: no_slots,
-        stage_by_id: no_by_id,
-        stage_entries: no_stage,
+        stage_by_id: list_cell(),
+        stage_entries: list_cell(),
         committed_len: committed_len,
         broken: false,
     }
@@ -200,13 +213,17 @@ fn empty_scan(committed_len: int) -> ScanState {
 fn name_for(s: ScanState, id: int) -> string? {
     if id < s.by_id.length { return s.by_id[id] }
     let j = id - s.by_id.length
-    if j >= 0 && j < s.stage_by_id.length { return s.stage_by_id[j] }
+    let staged = s.stage_by_id.get()
+    if j >= 0 && j < staged.length { return staged[j] }
     null
 }
 
 fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
     match frame {
-        .NameDef(name) -> s with { stage_by_id: s.stage_by_id.concat([name]) },
+        .NameDef(name) -> {
+            s.stage_by_id.push(name)
+            s
+        },
         .Entry(body) -> staged_entry(s, body),
         .Commit -> committed(s, pos_after),
     }
@@ -215,18 +232,22 @@ fn applied(s: ScanState, frame: RawFrame, pos_after: int) -> ScanState {
 fn staged_entry(s: ScanState, body: Bytes) -> ScanState {
     let id? = decoded_name_id(body) else { return s with { broken: true } }
     let name? = name_for(s, id) else { return s with { broken: true } }
-    s with { stage_entries: s.stage_entries.concat([StagedEntry { name: name, body: body }]) }
+    s.stage_entries.push(StagedEntry { name: name, body: body })
+    s
 }
 
+/// Once per COMMIT frame, far rarer than a name or a row: batching two
+/// already-built lists with `concat` here is the right shape, and
+/// fresh cells for the next transaction cost nothing a commit does
+/// not already pay.
 fn committed(s: ScanState, pos_after: int) -> ScanState {
     mut slots = s.slots
-    for se in s.stage_entries { slots.set(se.name, Slot.OnDisk(se.body)) }
-    let no_stage: List<StagedEntry> = []
+    for se in s.stage_entries.get() { slots.set(se.name, Slot.OnDisk(se.body)) }
     ScanState {
-        by_id: s.by_id.concat(s.stage_by_id),
+        by_id: s.by_id.concat(s.stage_by_id.get()),
         slots: slots,
-        stage_by_id: [],
-        stage_entries: no_stage,
+        stage_by_id: list_cell(),
+        stage_entries: list_cell(),
         committed_len: pos_after,
         broken: false,
     }
@@ -281,46 +302,15 @@ fn scanned(compiler_id: string, raw: Bytes) -> Loaded {
     walked(r, raw)
 }
 
-extern fn avra_mmap_open(path: string) -> ptr?
-extern fn avra_mmap_len(h: ptr) -> int
-extern fn avra_mmap_word_at(h: ptr, i: int) -> int
-extern fn avra_mmap_close(h: ptr)
-
-fn byte_of(w: int, j: int) -> int {
-    (w >> 8 * (7 - j)) & 255
-}
-
-/// The mapped file's whole content. `avra_mmap_word_at` has no
-/// single-byte form and traps under eight bytes from its end, so a
-/// file that short reads through `@std/io` instead — mmap's stride
-/// buys nothing there, and a pack's header alone is longer.
-fn slurped(path: string, h: ptr, len: int) -> Bytes {
-    if len < 8 {
-        return match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    }
-    mut out: List<int> = []
-    // LICENSED loops.index_walk: a stride of eight, `StableHasher.octets`'s own —
-    // no element walk answers "the next aligned word".
-    mut at = 0
-    while at + 8 <= len {
-        let w = avra_mmap_word_at(h, at)
-        for j in 0..8 { out.push(byte_of(w, j)) }
-        at = at + 8
-    }
-    if at < len {
-        let w = avra_mmap_word_at(h, len - 8)
-        let short = len - at
-        for j in 0..short { out.push(byte_of(w, 8 - short + j)) }
-    }
-    out.bytes()!
+/// The file's whole content, or empty for one that cannot be read —
+/// `scanned` reads an empty `Bytes` the same way it reads a missing
+/// pack, at the magic-header check.
+fn slurped(path: string) -> Bytes {
+    match read_bytes(path) { .Ok(b) -> b, .Err(_) -> "".bytes() }
 }
 
 fn loaded(path: string, compiler_id: string) -> Loaded {
-    let h? = avra_mmap_open(path) else { return empty_loaded() }
-    let len = avra_mmap_len(h)
-    let raw = slurped(path, h, len)
-    avra_mmap_close(h)
-    scanned(compiler_id, raw)
+    scanned(compiler_id, slurped(path))
 }
 
 fn reverse_index(names_by_id: List<string>) -> Map<string, int> {
