@@ -183,6 +183,22 @@ fn merged_remarks(a: List<Remark>, b: List<Remark>) -> List<Remark> {
     out.concat(a.slice(i, a.length)).concat(b.slice(j, b.length))
 }
 
+/// A statement and where its span begins.
+export type StmtStart = { lo: int, stmt: StmtId }
+
+/// The earliest statement in `starts` (as `stmt_starts` orders them) that
+/// begins at or after `at` — where a doc group's anchor lands — found by
+/// halving.
+export fn statement_after(starts: List<StmtStart>, at: int) -> StmtId? {
+    mut lo = 0
+    mut hi = starts.length
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if starts[mid].lo < at { lo = mid + 1 } else { hi = mid }
+    }
+    if lo < starts.length { starts[lo].stmt } else { null }
+}
+
 impl NodeStore {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
@@ -724,22 +740,13 @@ impl NodeStore {
         self.remarks.set(merged_remarks(self.remarks.get(), added))
     }
 
-    /// The statement whose span begins at or after `at`, earliest
-    /// first — where a doc group's anchor lands.
-    fn statement_after(at: int) -> StmtId? {
-        mut best: StmtId? = null
-        mut best_lo = 0
-        for s in self.stmt_ids() {
-            let span = self.stmt_span(s)
-            if span != null {
-                let lo = span!.lo
-                if lo >= at && (best == null || lo < best_lo) {
-                    best = s
-                    best_lo = lo
-                }
-            }
-        }
-        best
+    /// Every spanned statement by where it begins, earliest first — equal
+    /// starts in statement order.
+    fn stmt_starts() -> List<StmtStart> {
+        sorted_by(
+            [StmtStart { lo: self.stmt_span(s)!.lo, stmt: s } for s in self.stmt_ids() if self.stmt_span(s) != null],
+            (a: StmtStart, b: StmtStart) -> a.lo < b.lo,
+        )
     }
 
     /// `@name(args)` crossed this declaration: the call the compiler
