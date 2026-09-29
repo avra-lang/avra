@@ -56,12 +56,8 @@ impl Decls {
     }
 
     /// The FileId a path already names, or null before anything mints
-    /// it — `file_id`'s own miss check, on every path any pass
-    /// resolves, so it pays `file(f)`'s door: the pinned `Rows<File>`'s
-    /// own unrecorded bucket read (`bucket_of_text`/`first_id`/`row`),
-    /// never `File.by_path`'s recorded one — measured (M5's speed
-    /// gate): the recorded door's per-call list allocation is this
-    /// site's whole remaining cost over the pinned-`row` fix alone.
+    /// it — read unrecorded through the pinned `Rows<File>`'s path
+    /// bucket, as `file(f)` is.
     fn known_file_id(path: string) -> FileId? {
         let rs = self.file_rows.get()
         let id? = rs.first_id(rs.bucket_of_text(0, path)) else { return null }
@@ -82,19 +78,16 @@ impl Decls {
     }
 
     /// The ModuleId a dotted name already names, or null before
-    /// anything mints it — `module_id`'s own miss check, `known_file_id`'s
-    /// reasoning and its same unrecorded door.
+    /// anything mints it — read unrecorded, as `known_file_id` is.
     fn known_module_id(module: string) -> ModuleId? {
         let rs = self.module_rows.get()
         let id? = rs.first_id(rs.bucket_of_text(0, module)) else { return null }
         rs.row(id)?.id
     }
 
-    /// A module's own name — fetched unrecorded, through the pinned
-    /// `Rows<Module>`: dependency recording is the query kernel's, over
-    /// a query's whole `Module`/`File` read, never a by-id fetch — the
-    /// hand-table read this replaces recorded nothing either. Absence
-    /// is a defect: every minted `ModuleId` names a row.
+    /// A module's own name, fetched unrecorded through the pinned
+    /// `Rows<Module>`: the query kernel records dependencies, never a
+    /// by-id fetch. Every minted `ModuleId` names a row.
     fn module_name(m: ModuleId) -> string { self.module_rows.get().row(m.index)!.name }
 
     /// A file's Main: its run-time statements as one declaration.
@@ -103,9 +96,7 @@ impl Decls {
         held
     }
 
-    /// A file's own row — fetched unrecorded, through the pinned
-    /// `Rows<File>` (`module_name`'s reasoning). Hot: every declaration
-    /// read asks its file.
+    /// A file's own row, fetched unrecorded as `module_name`'s is.
     fn file(f: FileId) -> FileInfo { file_info(self.file_rows.get().row(f.index)!) }
 
     /// Every minted file — the relation's whole set, recorded as read.
@@ -113,10 +104,7 @@ impl Decls {
         [file_info(r) for r in File.all(self.decl_rows.get())]
     }
 
-    /// How many files are minted — the pinned `Rows<File>`'s own count,
-    /// unrecorded the same way `file(f)` is: `file_count` bounds the
-    /// whole-program walks that call `file` in a loop, so it pays the
-    /// same door.
+    /// How many files are minted, read unrecorded as `file(f)` is.
     fn file_count() -> int { self.file_rows.get().count() }
 
     /// Every file of a module, in mint order — the relation's own
