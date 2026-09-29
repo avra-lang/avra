@@ -164,10 +164,19 @@ fn loose_groups(files: List<string>) -> List<Group> {
     [Group { root: r, explicit: by_root.get(r) } for r in roots]
 }
 
-fn fold_groups(groups: List<Group>, write: bool) -> Tally {
+/// `shared_id` is null on the top-level call (`walked`'s own): the
+/// FIRST group's workspace hashes the running binary for real, and
+/// every LATER group is seeded with that same answer instead of
+/// hashing its own copy — one process, one binary, one hash, never
+/// the process-wide cache `compiler_print` itself refuses (a rebuilt
+/// binary at the SAME path inside one process must still disagree;
+/// see compiler/build.av). `shared_id` is a caller's OWN knowledge
+/// that ITS workspaces share one binary, never a general assumption.
+fn fold_groups(groups: List<Group>, write: bool, shared_id: string? = null) -> Tally {
     if groups.is_empty() { return empty_tally() }
     let g = groups[0]
     let ws = workspace_for(g.root)
+    if shared_id != null { ws.seed_compiler_id(shared_id!) }
     let t0 = now_ns()
     let store = store_at(build_cache_root(ws))
     let store_ns = now_ns() - t0
@@ -178,7 +187,7 @@ fn fold_groups(groups: List<Group>, write: bool) -> Tally {
     // so reading it per file would fold the same early spans in again
     // with every later one.
     let all = group with { phases: group.phases.concat([Phase { name: "store", ns: store_ns }]).concat(ws.phases.get()) }
-    combined(all, fold_groups(groups.slice(1, groups.length), write))
+    combined(all, fold_groups(groups.slice(1, groups.length), write, shared_id ?? ws.compiler_id()))
 }
 
 fn workspace_for(root: string) -> Workspace {
