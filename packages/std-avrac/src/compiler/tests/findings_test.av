@@ -1,0 +1,23 @@
+//! `compiler/findings.av`'s own contract: a rule's own hit becomes a
+//! `Finding` row carrying its rule, its file, and its own source
+//! line — and code the rule does not fire on rows nothing for it.
+use compiler.{avra, new_workspace, findings_of, Finding}
+use compiler.host.{memory_host}
+
+fn findings_of_source(main: string) -> List<Finding> {
+    let ws = new_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w", avra())
+    findings_of(ws.program("/w/src/main.av"))
+}
+
+spec "compiler/findings — a rule hit becomes a row" {
+    given "a `mut` local an ordinary assignment never writes again" {
+        then "the rule that fires names its own source line" {
+            findings_of_source("mut a = 0\na\n").find(it.rule == "let_stmt.unmutated_mut")!.text == "mut a = 0"
+        }
+    }
+    given "the same statement, `let`-bound instead of `mut`" {
+        then "the rule does not fire — no row names it" {
+            !findings_of_source("let a = 0\na\n").any(it.rule == "let_stmt.unmutated_mut")
+        }
+    }
+}

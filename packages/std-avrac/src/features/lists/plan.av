@@ -1,19 +1,24 @@
 //! THE PLANNER: a comprehension over a relation's rows is a query. When
-//! its first head scans a `@plans_all` accessor and a filter conjunct
-//! compares a row field to an invariant value — `r.f == v`, or
-//! `r.f.contains(v)` over a list field — and a sibling `@plans(f)`
-//! lookup exists, the head reads that lookup's rows instead. Every
-//! filter still runs, so the narrowed walk keeps the scan's meaning; the
-//! index is a declaration, never a guess.
+//! a head scans a `@plans_all` accessor and a filter conjunct in its
+//! region compares its row's field to an invariant value — `r.f == v`,
+//! or `r.f.contains(v)` over a list field — and a sibling `@plans(f)`
+//! lookup exists, the head reads that lookup's rows instead. A later
+//! head's value may read an earlier head's binders, so a join narrows
+//! its inner scan per outer row. Every filter still runs, so the
+//! narrowed walk keeps the scan's meaning; the index is a declaration,
+//! never a guess.
 use core.{ExprId, DeclId, DeclKind, BinOp, CompClause, Binding, Type, same_expr}
-use features.{FileView, NameFacts, bound_decl_of}
+use features.{FileView, NameFacts, Dispatch, bound_decl_of, post_order}
 
-/// A relation's whole set scanned by a comprehension's first head: the
-/// relation, its `@plans_all` accessor, and the Db it was asked of.
-export type Scan = { relation: DeclId, all: DeclId, db: ExprId }
+/// A relation's whole set scanned by a comprehension's head: the
+/// relation, its `@plans_all` accessor, the Db it was asked of, the
+/// head's clause, its row's place among the binders, and the place of
+/// its first binder — every binder before it is an earlier head's.
+export type Scan = { relation: DeclId, all: DeclId, db: ExprId, head: int, place: int, bound: int }
 
-/// A narrowed scan: the head reads `lookup(db, value)`, `field` its key.
-export type Plan = { lookup: DeclId, db: ExprId, value: ExprId, field: string }
+/// A narrowed scan: the head reads `lookup(db, value)`, `field` its key,
+/// the value written in the filter `cond`.
+export type Plan = { lookup: DeclId, db: ExprId, value: ExprId, field: string, head: int, cond: ExprId }
 
 /// The marker a relation's whole-set accessor wears.
 const plans_all_word: string = "plans_all"
@@ -21,19 +26,33 @@ const plans_all_word: string = "plans_all"
 /// The marker a relation's lookup wears, its field the argument.
 const plans_word: string = "plans"
 
-/// The relation a comprehension's first head scans whole, when it does.
-export fn relation_scan(view: FileView, names: NameFacts, clauses: List<CompClause>) -> Scan? {
-    let head? = clauses.first() else { return null }
-    let source? = head_source(head) else { return null }
+/// Every head that scans a relation whole, in written order.
+export fn relation_scans(view: FileView, names: NameFacts, clauses: List<CompClause>) -> List<Scan> {
+    [s for h in 0..clauses.length for s in scan_at(view, names, clauses, h)]
+}
+
+/// The relation the head at `h` scans whole, when it does.
+fn scan_at(view: FileView, names: NameFacts, clauses: List<CompClause>, h: int) -> List<Scan> {
+    let source? = head_source(clauses[h]) else { return [] }
     match view.store.expr(source) {
         .MethodCall(subject, name, args) -> {
-            let relation? = bound_decl_of(names, subject) else { return null }
-            let all? = view.decls.method(relation, name.of) else { return null }
-            if !view.decls.annotations_of(all).any(it.name == plans_all_word) { return null }
-            let db? = args.first() else { return null }
-            Scan { relation: relation, all: all, db: db }
+            let relation? = bound_decl_of(names, subject) else { return [] }
+            let all? = view.decls.method(relation, name.of) else { return [] }
+            if !view.decls.annotations_of(all).any(it.name == plans_all_word) { return [] }
+            let db? = args.first() else { return [] }
+            let bound = binders_before(clauses, h)
+            [
+                Scan {
+                    relation: relation,
+                    all: all,
+                    db: db,
+                    head: h,
+                    place: bound + elem_place(clauses[h]),
+                    bound: bound,
+                },
+            ]
         },
-        rest -> null,
+        rest -> [],
     }
 }
 
@@ -45,28 +64,40 @@ fn head_source(c: CompClause) -> ExprId? {
     }
 }
 
-/// The first head's element binder's place among the binders.
+/// A head's element binder's place among its own binders.
 fn elem_place(c: CompClause) -> int {
     match c { .Head(index, _, _, _) -> if index == null { 0 } else { 1 }, .Filter(_) -> 0 }
 }
 
+/// How many binders the clauses before `h` bind.
+fn binders_before(clauses: List<CompClause>, h: int) -> int {
+    [b for c in clauses.slice(0, h) for b in binders_of(c)].length
+}
+
+/// A clause's binders, one mark each: a head's name, and its index.
+fn binders_of(c: CompClause) -> List<bool> {
+    match c {
+        .Head(index, _, _, _) -> if index == null { [true] } else { [true, true] },
+        .Filter(_) -> [],
+    }
+}
+
 /// The lookups a scan may narrow to, in written order: each conjunct, in
-/// a filter before any second head, comparing a row field to an
+/// a filter of its head's region, comparing its row's field to an
 /// invariant value a `@plans` lookup answers. The caller takes the first
 /// whose value cannot be null — null is in no bucket.
 export fn comp_plans(view: FileView, names: NameFacts, clauses: List<CompClause>, scan: Scan) -> List<
     Plan,
 > {
-    let j = elem_place(clauses[0])
-    let asks = [a for c in leading_filters(clauses) for a in lookup_asks(view, names, c, j)]
+    let asks = [a for c in region_filters(clauses, scan.head) for a in lookup_asks(view, names, c, scan)]
     [p for a in asks for p in planned(view, scan, a)]
 }
 
-/// The filters between the first head and the next: every one reads the
-/// first head's row, and none can depend on a later binder.
-fn leading_filters(clauses: List<CompClause>) -> List<ExprId> {
-    let at = [i for i, c in clauses if i > 0 && is_head(c)].first() ?? clauses.length
-    [cond for c in clauses.slice(1, at) for cond in filter_cond(c)]
+/// The filters between the head at `h` and the next: every one reads
+/// that head's row, and none can depend on a later binder.
+fn region_filters(clauses: List<CompClause>, h: int) -> List<ExprId> {
+    let at = [i for i, c in clauses if i > h && is_head(c)].first() ?? clauses.length
+    [cond for c in clauses.slice(h + 1, at) for cond in filter_cond(c)]
 }
 
 fn is_head(c: CompClause) -> bool {
@@ -86,32 +117,32 @@ fn conjuncts(view: FileView, e: ExprId) -> List<ExprId> {
 }
 
 /// A row field compared to an invariant value, as the filter wrote it.
-type Ask = { field: string, value: ExprId }
+type Ask = { field: string, value: ExprId, cond: ExprId }
 
 /// Each conjunct of `cond` that asks for the rows whose field holds a
 /// value: `r.f == v`, `v == r.f`, or `r.f.contains(v)`.
-fn lookup_asks(view: FileView, names: NameFacts, cond: ExprId, j: int) -> List<Ask> {
-    [a for c in conjuncts(view, cond) for a in ask_of(view, names, cond, c, j)]
+fn lookup_asks(view: FileView, names: NameFacts, cond: ExprId, scan: Scan) -> List<Ask> {
+    [a for c in conjuncts(view, cond) for a in ask_of(view, names, cond, c, scan)]
 }
 
-fn ask_of(view: FileView, names: NameFacts, cond: ExprId, c: ExprId, j: int) -> List<Ask> {
+fn ask_of(view: FileView, names: NameFacts, cond: ExprId, c: ExprId, scan: Scan) -> List<Ask> {
     match view.store.expr(c) {
-        .Binary(op, l, r) -> if op == BinOp.Eq { compared(view, names, cond, l, r, j).concat(compared(view, names, cond, r, l, j)) } else { [] },
-        .MethodCall(subject, name, args) -> if name.of == "contains" && args.length == 1 { compared(view, names, cond, subject, args[0], j) } else { [] },
+        .Binary(op, l, r) -> if op == BinOp.Eq { compared(view, names, cond, l, r, scan).concat(compared(view, names, cond, r, l, scan)) } else { [] },
+        .MethodCall(subject, name, args) -> if name.of == "contains" && args.length == 1 { compared(view, names, cond, subject, args[0], scan) } else { [] },
         rest -> [],
     }
 }
 
-/// `row` as the first head's row field and `value` as an invariant.
-fn compared(view: FileView, names: NameFacts, cond: ExprId, row: ExprId, value: ExprId, j: int) -> List<
+/// `row` as the scanned head's row field and `value` as an invariant.
+fn compared(view: FileView, names: NameFacts, cond: ExprId, row: ExprId, value: ExprId, scan: Scan) -> List<
     Ask,
 > {
-    let field? = row_field(view, names, cond, row, j) else { return [] }
-    if !invariant(view, names, cond, value) { return [] }
-    [Ask { field: field, value: value }]
+    let field? = row_field(view, names, cond, row, scan.place) else { return [] }
+    if !invariant(view, names, cond, value, scan.bound) { return [] }
+    [Ask { field: field, value: value, cond: cond }]
 }
 
-/// `r.f` over the first head's element binder, its field's name.
+/// `r.f` over the element binder at place `j`, its field's name.
 fn row_field(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) -> string? {
     match view.store.expr(e) {
         .Prop(subject, name) -> if is_row(names, cond, subject, j) { name.of } else { null },
@@ -121,26 +152,42 @@ fn row_field(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) 
 
 fn is_row(names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
     let b? = names.binding(e) else { return false }
-    match b { .Pattern(arm, at) -> same_expr(arm, cond) && at == j, rest -> false }
+    binds_row(names, cond, b, j)
 }
 
-/// A value the lookup may compute ONCE: a literal, a local, a const, or
-/// a field path of those — never a call, whose effects the scan runs per
-/// row, and never anything of the comprehension's own rows.
-fn invariant(view: FileView, names: NameFacts, cond: ExprId, e: ExprId) -> bool {
+/// Whether a binding is the row at place `j`, through every lambda that
+/// captured it.
+fn binds_row(names: NameFacts, cond: ExprId, b: Binding, j: int) -> bool {
+    match b {
+        .Pattern(arm, at) -> same_expr(arm, cond) && at == j,
+        .Capture(lam, index) -> {
+            let cap? = names.capture(lam) else { return false }
+            binds_row(names, cond, cap.sources[index], j)
+        },
+        .Param(_) or .Receiver or .Def(_) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> false,
+    }
+}
+
+/// A value the lookup may compute ONCE per scan: a literal, a local, a
+/// const, an earlier head's binder, or a field path of those — never a
+/// call, whose effects the scan runs per row, and never the scanned
+/// head's own binders or a later one's (those before place `bound` are
+/// earlier heads').
+fn invariant(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, bound: int) -> bool {
     match view.store.expr(e) {
         .IntLit(_) or .StrLit(_) or .BoolLit(_) -> true,
-        .Ident(_) -> steady(view, names, cond, e),
-        .Prop(subject, _) -> invariant(view, names, cond, subject),
+        .Ident(_) -> steady(view, names, cond, e, bound),
+        .Prop(subject, _) -> invariant(view, names, cond, subject, bound),
         rest -> false,
     }
 }
 
-/// A name bound outside the comprehension, to a local or a const.
-fn steady(view: FileView, names: NameFacts, cond: ExprId, e: ExprId) -> bool {
+/// A name bound outside the scan: a local, a const, or an earlier head's
+/// binder.
+fn steady(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, bound: int) -> bool {
     let b? = names.binding(e) else { return false }
     match b {
-        .Pattern(arm, _) -> !same_expr(arm, cond),
+        .Pattern(arm, at) -> !same_expr(arm, cond) || at < bound,
         .Decl(d) -> constant_kind(view.decls.decl(d).kind),
         .Param(_) or .Receiver or .Def(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> true,
     }
@@ -157,7 +204,7 @@ fn constant_kind(k: DeclKind) -> bool {
 
 /// The ask answered by a `@plans` lookup on the relation, when one is.
 fn planned(view: FileView, scan: Scan, a: Ask) -> List<Plan> {
-    [Plan { lookup: m, db: scan.db, value: a.value, field: a.field } for m in view.decls.methods_of(scan.relation) if plans_field(view, m, a.field)]
+    [Plan { lookup: m, db: scan.db, value: a.value, field: a.field, head: scan.head, cond: a.cond } for m in view.decls.methods_of(scan.relation) if plans_field(view, m, a.field)]
 }
 
 /// Whether a declaration wears `@plans(field)`.
@@ -165,7 +212,7 @@ fn plans_field(view: FileView, m: DeclId, field: string) -> bool {
     view
         .decls
         .annotations_of(m)
-        .any((n) -> n.name == plans_word && n.args.length == 1 && n.args[0] == field)
+        .any(it.name == plans_word && it.args.length == 1 && it.args[0] == field)
 }
 
 /// Whether a value of this shape could be null — no bucket holds it.
@@ -173,34 +220,42 @@ export fn could_be_null(shape: Type) -> bool {
     match shape { .Opt(_) or .Null -> true, rest -> false }
 }
 
-/// The first conjunct, in a filter before any second head, that hands a
-/// row to a call — what no index can answer, so a scan of the whole set
-/// would run it per row with nothing narrowing it first.
-export fn residual(view: FileView, names: NameFacts, clauses: List<CompClause>) -> ExprId? {
-    let j = elem_place(clauses[0])
-    [c for cond in leading_filters(clauses) for c in conjuncts(view, cond) if hands_row(view, names, cond, c, j)]
+/// The first call, in any filter after the scanned head, handed its row —
+/// what no index can answer, so a scan of the whole set would run it per
+/// row with nothing narrowing it first. Children come first, so the call
+/// named is the innermost.
+export fn residual(
+    d: Dispatch,
+    view: FileView,
+    names: NameFacts,
+    clauses: List<CompClause>,
+    scan: Scan,
+) -> ExprId? {
+    [k for c in clauses.slice(scan.head + 1, clauses.length) for cond in filter_cond(c) for k in post_order(d, view.store, cond) if hands_row(d, view, names, cond, k, scan.place)]
         .first()
 }
 
-/// Whether a conjunct calls something with the row — `r.f.contains(v)`
-/// excepted, the list lookup's own form.
-fn hands_row(view: FileView, names: NameFacts, cond: ExprId, c: ExprId, j: int) -> bool {
-    match view.store.expr(c) {
-        .Call(_, _, args) -> args.any((a: ExprId) -> reads_row(view, names, cond, a, j)),
+/// Whether a node is a call whose subject or arguments mention the row —
+/// `r.f.contains(v)` excepted, the list lookup's own form.
+fn hands_row(d: Dispatch, view: FileView, names: NameFacts, cond: ExprId, k: ExprId, j: int) -> bool {
+    match view.store.expr(k) {
+        .Call(_, _, args) -> args.any((a: ExprId) -> mentions_row(d, view, names, cond, a, j)),
         .MethodCall(subject, name, args) -> !(name.of == "contains" && row_field(view, names, cond, subject, j) != null) &&
-            (reads_row(view, names, cond, subject, j) ||
-                args.any((a: ExprId) -> reads_row(view, names, cond, a, j))),
-        .Not(inner) -> hands_row(view, names, cond, inner, j),
-        .Binary(_, l, r) -> hands_row(view, names, cond, l, j) || hands_row(view, names, cond, r, j),
+            [subject].concat(args).any((a: ExprId) -> mentions_row(d, view, names, cond, a, j)),
         rest -> false,
     }
 }
 
-/// Whether an expression is the row, or a field path of it.
-fn reads_row(view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
-    match view.store.expr(e) {
-        .Ident(_) -> is_row(names, cond, e, j),
-        .Prop(subject, _) -> reads_row(view, names, cond, subject, j),
-        rest -> false,
-    }
+/// Whether the row at place `j` appears anywhere in an expression — a
+/// lambda's body is not walked, so a lambda mentions the row when it
+/// captures it.
+fn mentions_row(d: Dispatch, view: FileView, names: NameFacts, cond: ExprId, e: ExprId, j: int) -> bool {
+    post_order(d, view.store, e)
+        .any((k: ExprId) -> is_row(names, cond, k, j) || captures_row(names, cond, k, j))
+}
+
+/// Whether a lambda captures the row at place `j`.
+fn captures_row(names: NameFacts, cond: ExprId, lam: ExprId, j: int) -> bool {
+    let cap? = names.capture(lam) else { return false }
+    cap.sources.any((b: Binding) -> binds_row(names, cond, b, j))
 }

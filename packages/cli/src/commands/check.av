@@ -7,7 +7,7 @@
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.path.{relative_path, under_dir}
-use @std.avrac.compiler.{Checked, Program, rule_id}
+use @std.avrac.compiler.{Checked, findings_of}
 
 type CheckCmd = {}
 
@@ -33,11 +33,7 @@ fn said(args: CliResult, path: string, c: Checked) -> int {
     if args.has_flag("baseline_accept") { return accepted(path, baseline, c) }
     if !c.licenses.is_empty() { return refused_licenses(rendered_licenses(c.licenses)) }
     if baseline != "" {
-        let bad = new_sites(
-            c.warnings,
-            rule_kinds(c.program ?? root_program(path)),
-            baseline_keys(baseline),
-        )
+        let bad = new_sites(findings_of(c.program ?? root_program(path)), baseline_keys(baseline))
         if !bad.is_empty() { return refused_sites(bad) }
     }
     if !c.warnings.is_empty() { println(c.warnings) }
@@ -58,18 +54,6 @@ fn rendered_license(line: string) -> string {
     "${relative_path(here(), parts[0])}:${parts[1]}: `// LICENSED ${parts[2]}` names no rule `avra rules` lists"
 }
 
-/// Every rule the compiler carries, by its `<module>.<rule>` id — the
-/// ONLY kinds the ratchet counts (idiom_baseline.av's `sites_in`).
-/// Read from the SAME rule table `avra rules` answers
-/// (compiler/rules_table.av's `rules` collect), never a shape guessed
-/// from the kind string itself. Takes the Program a caller already
-/// holds — never builds its own (`said`/`accepted` hold `c.program`
-/// when `check` derived one fresh; a second `root_program` here would
-/// be the same whole-program build the caller just paid for).
-fn rule_kinds(p: Program) -> List<string> {
-    [rule_id(r) for r in p.rule_listing()]
-}
-
 /// A stale `// LICENSED` id refuses unconditionally, baseline or not
 /// — it is never idiom debt to ratchet, it is a claim nothing backs
 /// (compiler/licenses.av finds them; `Checked.licenses` carries them).
@@ -82,30 +66,30 @@ fn refused_licenses(stale: List<string>) -> int {
 /// `--baseline_accept`'s whole verb: prune, write, report — exit 0
 /// whatever it kept, since pruning never fails the gate on its own.
 /// `c` is the SAME checked answer `said` already holds for `path` —
-/// the ratchet's "does it still fire" reads the one rendering
-/// `avra check` itself trusts, never a second derivation that could
-/// disagree (a bare `root_program` here once answered `unused_import`
-/// wrong: its own analysis skips the cross-file References a full
-/// check populates).
+/// the ratchet's "does it still fire" reads the SAME Program's own
+/// `Finding` relation, never a second derivation that could disagree
+/// (a bare `root_program` here once answered `unused_import` wrong:
+/// its own analysis skips the cross-file References a full check
+/// populates).
 ///
 /// REACHED IS `path`'S OWN FILES, NEVER EVERY FILE ITS PROGRAM
 /// ANALYZED: `root_program(path).files` also holds every dependency
 /// `path` reaches — `packages/cli` alone pulls in `@std/grammar` — and
-/// `c.warnings` never reports on a dependency's own diagnostics, only
-/// `path`'s. Counting a dependency file as REACHED then reads its
-/// silence as "stopped firing" and drops another package's own
-/// accepted row out from under it; narrowed to files under `path`
+/// a fix to one of THIS package's files can never make a dependency's
+/// own finding disappear. Counting a dependency file as REACHED would
+/// read its silence as "stopped firing" and drop another package's
+/// own accepted row out from under it; narrowed to files under `path`
 /// itself, a dependency is simply never asked.
 export fn accepted(path: string, baseline: string, c: Checked) -> int {
     // `path` ARRIVES ABSOLUTE (`argued_path` roots every path argument
     // there); a reached file's own key is `here()`-relative
-    // (`site_at`'s convention, idiom_baseline.av) — the same currency
+    // (`sites_of`'s convention, idiom_baseline.av) — the same currency
     // on both sides, or an absolute `path` never matches a relative
     // `f` and every file reads as outside the package.
     let own = relative_path(here(), path)
     let prog = c.program ?? root_program(path)
     let reached = [f for f in [relative_path(here(), a.view.source.file) for a in prog.files] if f == own || under_dir(f, own)]
-    let fresh = fresh_keys(c.warnings, rule_kinds(prog))
+    let fresh = fresh_keys(findings_of(prog))
     let kept = pruned_baseline(baseline_keys(baseline), reached, fresh)
     let _ = write_text(baseline, baseline_header + joined_lines(kept))
     println("baseline: ${kept.length} site(s) kept")

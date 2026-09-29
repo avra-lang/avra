@@ -1,7 +1,8 @@
 // proves: a comprehension over a relation's rows narrows to a declared
 // `@plans` lookup when a filter compares a row field to an invariant
 // value — and scans otherwise — each answer equal to a plain scan over
-// the same rows, the recorded reads showing which it did, in both engines
+// the same rows, the recorded reads showing which it did, in both
+// engines; a join's inner head narrows per outer row
 use @std.relation.{relation}
 use @std.relation.db.{Db, hooked_db, Hooks}
 use @std.meta.{dense}
@@ -153,4 +154,20 @@ fn empty_calls() -> string {
     "${none.length} ${picks().get() - before}"
 }
 
-"${cases()} | ${empty_calls()} | ${coded()} | ${edges()}"
+/// How many reads since `from` took the whole relation.
+fn whole_reads(from: int) -> int {
+    [c for c in reads().get().slice(from, reads().get().length) if c == 0].length
+}
+
+fn pairs(xs: List<int>) -> string { ["${x}" for x in xs].join(",") }
+
+fn joins() -> string {
+    let db = filled()
+    let rows = Item.all(db)
+    let m = reads().get().length
+    let hits = [i.n * 10 + j.n for i in Item.all(db) for j in Item.all(db) if j.tag == i.tag]
+    let scan = [i.n * 10 + j.n for i in rows for j in rows if j.tag == i.tag]
+    "${whole_reads(m)} ${hits.length} ${pairs(hits) == pairs(scan)}"
+}
+
+"${cases()} | ${empty_calls()} | ${coded()} | ${edges()} | ${joins()}"

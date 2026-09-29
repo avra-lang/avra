@@ -1,0 +1,35 @@
+//! THE SAME FLOOR BUG, SEEN NATIVE ONLY: a generic fn value crossing a
+//! generic seat reads its own answer type off the SAME corrupted
+//! facts `derive_sibling_floor` proves — eval tolerates the stale
+//! read, the LLVM backend does not, and the mismatch surfaces as a
+//! verifier refusal in the lambda's own body, never a compiler
+//! diagnostic.
+use @std.meta.{Type, Directive}
+
+export type Rows<T> = { items: List<T> }
+
+export fn rows<T>(seed: List<T>) -> Rows<T> { Rows { items: seed } }
+
+export type Stores<R> = { fresh: fn() -> Rows<R> }
+
+export fn stores<R>(fresh: fn() -> Rows<R>) -> Stores<R> { Stores { fresh: fresh } }
+
+impl Stores<R> {
+    fn get_fresh() -> Rows<R> { self.fresh() }
+}
+
+export trait MakesRows {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            once fn made_stores() -> Stores<${t}> { stores(() -> rows<${t}>([])) }
+            impl ${t} { static fn read_count() -> int { made_stores().get_fresh().items.length } }
+        },
+            },
+        ]
+    }
+}

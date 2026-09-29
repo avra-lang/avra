@@ -24,6 +24,7 @@ use core.{
 use core.{SeatMark, SideTable, side_table, side_table_of, ParamId}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
+use @std.relation.db.{Db as RelDb}
 
 /// The language's registries, once — never copied into a program.
 export type LanguageRows = { methods: List<MethodRow>, types: List<TypeRow>, properties: List<PropertyRow>, codes: List<DiagCode>, remedies: List<KeywordRemedy> }
@@ -34,10 +35,31 @@ export fn remedy_for(rows: LanguageRows, word: string) -> string? {
     row.help
 }
 
+/// An empty `owner_spans` Cell — `file_view`'s own mint, kept here
+/// since `OwnerSpan` is this module's own name, unreachable through
+/// `features.{…}` from outside it.
+export fn no_owner_spans() -> Cell<List<OwnerSpan>?> { Cell.new(null) }
+
+/// An empty `assign_roots` Cell — `file_view`'s own mint.
+export fn no_assign_roots() -> Cell<RelDb?> { Cell.new(null) }
+
 /// What every context and facade reads of a file: its identity, its
 /// nodes, its text, the declaration table, the type registry, and
-/// the language's rows.
-export type FileView = { file: FileId, store: NodeStore, stmts: List<StmtId>, source: SourceFile, decls: Decls, types: TypeRegistry, lang: LanguageRows }
+/// the language's rows. `owner_spans`/`assign_roots` are this file's
+/// own indexes, filed lazily and held for this ANALYSIS alone — a
+/// fresh `FileView` carries a fresh, empty Cell, so nothing survives
+/// into a later one.
+export type FileView = {
+    file: FileId,
+    store: NodeStore,
+    stmts: List<StmtId>,
+    source: SourceFile,
+    decls: Decls,
+    types: TypeRegistry,
+    lang: LanguageRows,
+    owner_spans: Cell<List<OwnerSpan>?>,
+    assign_roots: Cell<RelDb?>,
+}
 
 impl FileView {
     /// Where an expression is — THE source position, every context
@@ -104,6 +126,28 @@ impl FileView {
     /// The module this file belongs to.
     fn module() -> string { self.decls.module_name(self.decls.file(self.file).module_id) }
     fn package() -> string { self.decls.package_named(self.module()) }
+
+    /// This file's owner spans, filed once — `enclosing_decl`'s every
+    /// ask past the first reads the same list, never `Decls.owner_spans`
+    /// fresh.
+    fn owner_spans() -> List<OwnerSpan> {
+        let held = self.owner_spans.get()
+        if held != null { return held! }
+        let spans = self.decls.owner_spans(self.file)
+        self.owner_spans.set(spans)
+        spans
+    }
+
+    /// This file's assignment-root index, filed once — `write_roots`'
+    /// every ask past the first reads the same `Db`, never rewalks the
+    /// arena (`filed_assign_roots`, features/code.av).
+    fn assign_roots() -> RelDb {
+        let held = self.assign_roots.get()
+        if held != null { return held! }
+        let db = filed_assign_roots(self)
+        self.assign_roots.set(db)
+        db
+    }
 }
 
 /// A lambda's captures: the names it reached outside itself and the
