@@ -403,6 +403,36 @@ case "$vh_hc" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
+# shape is `enum`, and its KIND column is what says a collect made it — read the
+# shape alone and the held declaration is a plain enum, so the decl wire naming
+# it (`…~collect_enum~~Command`) resolves to nothing: its references vanish and
+# `describe`'s seat reads as an error type.
+mkdir -p $R/ce/src/lib
+printf '[package]\nname = "rt-ce"\nversion = "0.1.0"\n' > $R/ce/avra.toml
+printf 'use lib.{describe, Command}\nprintln(describe(Command.init))\n' > $R/ce/src/main.av
+cat > $R/ce/src/lib/a.av <<'AV'
+use @std.meta.{Named}
+fn command(_what: Named) {}
+@command
+fn build() {}
+@command
+fn init() {}
+export collect enum Command = @command in self by it.name
+export fn describe(c: Command) -> string {
+    match c { .build -> "build", .init -> "init" }
+}
+AV
+S "cold ce: a collect enum in a library module" ce
+S "warm ce: the collect enum's file is held" ce
+vh_ce=$(./avra check $R/ce --verify-held 2>&1 | grep -v '^watch:')
+steps=$((steps+1))
+case "$vh_ce" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over ce compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over ce -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over ce: $(printf '%s' "$vh_ce" | tail -5 | tr '\n' ' ')" ;;
+esac
+
 # `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
 # Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
 # — a held file with no OTHER declaration worth diffing would pass this suite
