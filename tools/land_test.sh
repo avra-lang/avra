@@ -1390,6 +1390,32 @@ STUB
     echo "$d"
 }
 
+test_gates_never_touch_the_landing_cache() {
+    d="$(speed_repo gate-cache cold)"
+    printf 'objects:\n\t@mkdir -p build && touch build/libavra_runtime.a\nlibs:\n\t@echo libs-ok\n' > "$d/Makefile"
+    printf '.avra-cache/\nbuild/\n' > "$d/.gitignore"
+    mkdir -p "$d/tools" && : > "$d/tools/speed.baseline"
+    commit_all "$d" "make targets"
+    mkdir -p "$d/.avra-cache/objects"
+    echo live > "$d/.avra-cache/objects/sibling-write"
+    out="$(AVRA_LAND_SPEED_WT="$scratch/gate-cache-speed-wt" branch=x sh "$land" --call speed_refresh "$d" 2>&1)"
+    if [ -f "$d/.avra-cache/objects/sibling-write" ]; then
+        ok "side tree: the speed refresh leaves the landing tree's cache where a sibling job writes"
+    else
+        bad "side tree: the speed refresh moved the landing tree's cache out from under a sibling — $out"
+    fi
+    if printf '%s' "$out" | grep -q "baseline advanced"; then
+        ok "side tree: the refresh ran and measured"
+    else
+        bad "side tree: the refresh never measured — $out"
+    fi
+    if [ -f "$scratch/gate-cache-speed-wt/.git" ] || [ -d "$scratch/gate-cache-speed-wt/.git" ]; then
+        ok "side tree: the refresh measured in a tree of its own"
+    else
+        bad "side tree: no side tree was made for the refresh — $out"
+    fi
+}
+
 test_warm_gate_off() {
     d="$(git_repo warm-off)"
     mkdir -p "$d/build"
@@ -1812,6 +1838,7 @@ run_test test_ratchet_missing_baseline
 run_test test_ratchet_regress_no_override
 run_test test_ratchet_regress_with_override
 run_test test_chore_commit_carries_override_reason
+run_test test_gates_never_touch_the_landing_cache
 run_test test_warm_gate_off
 run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
