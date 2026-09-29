@@ -1,0 +1,26 @@
+// A git WORKTREE's `.git` is a FILE, not a directory. `tree_root`'s walk
+// must still name that directory the tree's root, or it climbs past it
+// looking for a directory `.git` and lands on whatever ancestor has one —
+// a nested worktree then shares its store with the tree it is nested in.
+use @std.avrac.compiler.{avra, new_workspace, build_cache_root}
+use compiler.host.{memory_host}
+
+spec "compiler/build — tree_root over a worktree's `.git` FILE" {
+    given "a package under a directory whose `.git` is a FILE (a worktree), with no `avra.toml` at that directory" {
+        then "the store stands at the `.git`-holding directory, not the package below it" {
+            let ws = new_workspace(
+                memory_host(
+                    {
+                        "/root/.git": "gitdir: /main/.git/worktrees/wt\n",
+                        "/root/pkg/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                        "/root/pkg/src/main.av": "fn a() { 1 }\n",
+                    },
+                    ["/root/pkg/avra.toml", "/root/pkg/src/main.av"],
+                ),
+                "/root/pkg",
+                avra(),
+            )
+            build_cache_root(ws).starts_with("/root/.avra-cache/")
+        }
+    }
+}
