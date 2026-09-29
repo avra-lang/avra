@@ -1404,6 +1404,11 @@ test_gates_never_touch_the_landing_cache() {
     else
         bad "side tree: the speed refresh moved the landing tree's cache out from under a sibling — $out"
     fi
+    if git -C "$d" diff --quiet -- tools/speed.baseline; then
+        ok "staged: the refresh leaves the landing tree's baseline untouched until every check is green"
+    else
+        bad "staged: the refresh wrote the landing tree's baseline mid-run"
+    fi
     if printf '%s' "$out" | grep -q "baseline advanced"; then
         ok "side tree: the refresh ran and measured"
     else
@@ -1583,10 +1588,13 @@ speed_repo() {
     mkdir -p "$d/build" "$d/packages/cli/src"
     held_line="held 0/5"
     [ "$mode" = "warm" ] && held_line="held 5/5"
+    hit_line=""
+    [ "$mode" = "objhit" ] && hit_line='echo "time: lower+emit · cache hit"'
     cat > "$d/build/avra" <<STUB
 #!/bin/sh
 if [ "\$1" = "build" ]; then
     echo "time: parse 1ms, $held_line, attempt 1"
+    $hit_line
     exit 0
 fi
 exit 0
@@ -1640,6 +1648,52 @@ test_speed_gate_regress_with_override() {
         ok "speed-gate: the override reason is queued for the chore commit"
     else
         bad "speed-gate: the override reason was not queued"
+    fi
+}
+
+test_speed_gate_links_the_candidates_runtime() {
+    d="$(git_repo speed-pair)"
+    record="$scratch/speed-pair-record"
+    : > "$record"
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/runtime" "$d/tools"
+    printf 'int r;\n' > "$d/runtime/r.c"
+    : > "$d/tools/speed.baseline"
+    printf 'objects:\n\t@mkdir -p build && echo BASE > build/libavra_runtime.a && echo BASEO > build/r.o\nlibs:\n\t@echo libs-ok\n' > "$d/Makefile"
+    printf '.avra-cache/\nbuild/\n' > "$d/.gitignore"
+    cat > "$d/build/avra" <<STUB
+#!/bin/sh
+if [ "\$1" = "build" ]; then
+    cat build/libavra_runtime.a build/r.o >> "$record"
+    echo "time: parse 1ms, held 0/1, attempt 1"
+fi
+exit 0
+STUB
+    chmod +x "$d/build/avra"
+    commit_all "$d" "base"
+    echo CAND > "$d/build/libavra_runtime.a"
+    echo CANDO > "$d/build/r.o"
+    base_sha="$(git -C "$d" rev-parse HEAD)"
+    AVRA_LAND_SPEED_WT="$scratch/speed-pair-wt" branch=x sh "$land" --call speed_gate_step "$d" "$base_sha" > "$scratch/speed-pair.out" 2>&1
+    if [ "$(head -2 "$record" | tr '\n' ' ')" = "CAND CANDO " ]; then
+        ok "speed-gate: the candidate's product links the candidate's runtime and runtime objects"
+    else
+        bad "speed-gate: the candidate linked another tree's runtime — saw: $(tr '\n' ' ' < "$record")"
+        cat "$scratch/speed-pair.out"
+    fi
+}
+
+test_speed_gate_object_hit_tool_failure() {
+    d="$(speed_repo speed-objhit objhit)"
+    mkdir -p "$d/tools"
+    scr="$scratch/speed-objhit-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call speed_gate "$d" "$d/build/avra" "$d" test-label > "$scratch/speed-objhit.out" 2>&1
+    if [ -f "$scr/tool-failure" ] && grep -q "was not cold" "$scr/tool-failure"; then
+        ok "speed-gate: a cached object under 'held 0/' is still not cold — a TOOL failure"
+    else
+        bad "speed-gate: a run reusing cached objects was measured as cold"
+        cat "$scratch/speed-objhit.out"
     fi
 }
 
@@ -1849,6 +1903,8 @@ run_test test_linux_gate_unreachable
 run_test test_speed_gate_improve
 run_test test_speed_gate_regress_no_override
 run_test test_speed_gate_regress_with_override
+run_test test_speed_gate_links_the_candidates_runtime
+run_test test_speed_gate_object_hit_tool_failure
 run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order
