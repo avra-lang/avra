@@ -16,14 +16,15 @@ land="$here/land.sh"
 slot="$here/slot.sh"
 affected="$here/affected_packages.sh"
 
-# The Linux gate defaults ON for a real landing, and the speed gate
-# may (land.sh's own header) — a bare run_checks call in a fixture below must never
-# reach a live Sprite or run a real cold build. OFF here, by default;
+# The Linux, speed and warm gates default ON for a real landing
+# (land.sh's own header) — a bare run_checks call in a fixture below must never
+# reach a live Sprite or run a real compiler. OFF here, by default;
 # the fixtures that exercise these two gates re-arm them locally
 # (env-var prefix on that one command), each with its own stub.
 AVRA_LAND_LINUX=0
 AVRA_LAND_SPEED_GATE=0
-export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE
+AVRA_LAND_WARM_GATE=0
+export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
@@ -137,6 +138,19 @@ wait_for_line() {
         i=$((i + 1))
     done
     return 1
+}
+
+test_ticket_scan_survives_an_arriving_waiter() {
+    lockdir="$scratch/ticket-arrival"
+    rm -rf "$lockdir"
+    mkdir -p "$lockdir/tickets/1"
+    st=0
+    out="$(AVRA_LAND_LOCK="$lockdir" branch=x sh "$land" --call lowest_live_ticket 2>&1)" || st=$?
+    if [ "$st" -eq 0 ]; then
+        ok "lock: a ticket whose pid is not written yet does not end the scan"
+    else
+        bad "lock: the scan died silently ($st) on a ticket mid-arrival — $out"
+    fi
 }
 
 test_lock_fifo() {
@@ -1446,7 +1460,7 @@ test_warm_gate_off() {
     AVRA_LAND_JOBS=2 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$slots" branch=x \
         sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 0 0 \
         > "$scratch/warm-off.out" 2>&1
-    logged warm-off "skipped warm-reuse gate: AVRA_LAND_WARM_GATE is off" "warm-gate: off by default — skipped, and says so"
+    logged warm-off "skipped warm-reuse gate: AVRA_LAND_WARM_GATE is off" "warm-gate: AVRA_LAND_WARM_GATE=0 skips it, and says so"
 }
 
 test_warm_gate_prints_held_pass() {
@@ -1555,6 +1569,50 @@ test_linux_gate_runs_cold() {
         ok "linux-gate: the Sprite tree's .avra-cache is cleared before any suite runs"
     else
         bad "linux-gate: the Sprite command runs a suite over a warm cache — body: $body"
+    fi
+}
+
+test_linux_gate_starts_before_the_builds() {
+    d="$(batch_repo linux-early)"
+    stub="$scratch/linux-early-sprite.sh"
+    mark="$scratch/linux-early-mark"
+    printf '#!/bin/sh\ndate +%%s%%N > "%s"\necho "sprite-build: stub -> exit 0" >&2\n' "$mark" > "$stub"
+    chmod +x "$stub"
+    wt="$scratch/linux-early-wt"
+    git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
+    mkdir -p "$wt/build" && cp "$d/build/avra" "$wt/build/avra"
+    ( cd "$wt" && AVRA_LAND_LINUX=1 AVRA_LAND_SPRITE_BUILD="$stub" AVRA_LAND_JOBS=1 SLOW_BUILD=2 \
+        AVRA_LAND_LOCK="$scratch/linux-early-lock" AVRA_LAND_BATCH_WT="$scratch/linux-early-batchwt" \
+        AVRA_SLOTS_DIR="$scratch/linux-early-slots" exec sh "$land" a ) > "$scratch/linux-early.out" 2>&1 || bad "linux-early: the landing failed"
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+    linux_ok="$(grep -n 'linux OK' "$scratch/linux-early.out" | head -1 | cut -d: -f1)"
+    b1_done="$(grep -n 'build-1-compile OK' "$scratch/linux-early.out" | head -1 | cut -d: -f1)"
+    if [ -n "$linux_ok" ] && [ -n "$b1_done" ] && [ "$linux_ok" -lt "$b1_done" ]; then
+        ok "linux-early: the Sprite run finishes while the first local build is still going"
+    else
+        bad "linux-early: the Linux gate waited for the local builds (linux OK at line ${linux_ok:-none}, build-1 done at ${b1_done:-none})"
+        cat "$scratch/linux-early.out"
+    fi
+}
+
+test_linux_gate_failure_refuses_the_landing() {
+    d="$(batch_repo linux-red)"
+    stub="$scratch/linux-red-sprite.sh"
+    printf '#!/bin/sh\necho "sprite-build: stub -> exit 1" >&2\nexit 1\n' > "$stub"
+    chmod +x "$stub"
+    wt="$scratch/linux-red-wt"
+    git -C "$d" worktree add -q "$wt" a > /dev/null 2>&1
+    mkdir -p "$wt/build" && cp "$d/build/avra" "$wt/build/avra"
+    st=0
+    ( cd "$wt" && AVRA_LAND_LINUX=1 AVRA_LAND_SPRITE_BUILD="$stub" \
+        AVRA_LAND_LOCK="$scratch/linux-red-lock" AVRA_LAND_BATCH_WT="$scratch/linux-red-batchwt" \
+        AVRA_SLOTS_DIR="$scratch/linux-red-slots" exec sh "$land" a ) > "$scratch/linux-red.out" 2>&1 || st=$?
+    git -C "$d" worktree remove -f "$wt" > /dev/null 2>&1
+    if [ "$st" -ne 0 ] && grep -q "FAILED at 'linux" "$scratch/linux-red.out" && ! grep -q "^LANDED" "$scratch/linux-red.out"; then
+        ok "linux-early: a red Sprite run refuses the landing, named"
+    else
+        bad "linux-early: a red Sprite run did not refuse the landing ($st)"
+        cat "$scratch/linux-red.out"
     fi
 }
 
@@ -1826,10 +1884,10 @@ EOF
         > "$scratch/checks-order.out" 2>&1
 
     got="$(awk '{print $2}' "$scr/jobs.list" 2>/dev/null | tr '\n' ' ')"
-    want_prefix="test-std-avrac idioms seed-check speed linux test-cli"
+    want_prefix="test-std-avrac idioms seed-check speed test-cli"
     case "$got" in
         "$want_prefix"*)
-            ok "launch-order: std-avrac, idioms, seed-check, speed, linux, cli launch first, in that order"
+            ok "launch-order: std-avrac, idioms, seed-check, speed, cli launch first, in that order"
             ;;
         *)
             bad "launch-order: wanted prefix [$want_prefix], got [$got]"
@@ -1892,6 +1950,7 @@ test_tools_only_several_gate_scripts_run_all_steps() {
 }
 
 echo "=== land tooling fixtures (parallel, ${AVRA_LAND_TEST_JOBS:-8} at a time) ==="
+run_test test_ticket_scan_survives_an_arriving_waiter
 run_test test_lock_fifo
 run_test test_merge_seed_conflict
 run_test test_merge_real_conflict
@@ -1930,6 +1989,8 @@ run_test test_warm_gate_prints_held_pass
 run_test test_warm_gate_fails_below_floor
 run_test test_warm_gate_override_passes
 run_test test_linux_gate_runs_cold
+run_test test_linux_gate_starts_before_the_builds
+run_test test_linux_gate_failure_refuses_the_landing
 run_test test_linux_gate_pass
 run_test test_linux_gate_fail
 run_test test_linux_gate_unreachable
