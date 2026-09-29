@@ -55,6 +55,19 @@
 # paths still resolve) — the seam tools/land_test.sh's fixtures use to
 # exercise the merge, the cache sweep and the lock in a throwaway
 # repo, never the real one.
+#
+# THREE MORE GATES SHARE THE SAME POOL, each ratcheted in
+# tools/land.baseline (key=value) or tools/speed.baseline (PERF's own
+# line format — see speed_gate below): the warm-reuse gate
+# (AVRA_LAND_WARM_GATE=1, OFF by default — avra-8sb5.57.91), the
+# Linux gate (AVRA_LAND_LINUX, default 1, runs affected packages'
+# suites on a Sprite), and the speed gate (AVRA_LAND_SPEED_GATE,
+# default 1, instructions retired and max RSS over a fixed input).
+# Each prints its own NUMBER and VERDICT; a regression past a gate's
+# own threshold needs that gate's own override env var
+# (AVRA_LAND_WARM_OK, AVRA_LAND_SPEED_OK) with a reason, signed into
+# the chore commit (commit_chore_if_moved) that carries the seed and
+# every moved baseline together — at most one per landing.
 set -eu
 
 LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
@@ -437,6 +450,460 @@ commit_seed_if_moved() {
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 }
 
+# ── THE RATCHET BASELINE — tools/land.baseline, key=value lines ──────
+# A gate's number that IMPROVES is recorded automatically; one that
+# REGRESSES is recorded only when the landing sets its own override
+# env var with a reason, and without one the gate FAILS. A missing
+# file or key records the first number and passes — there is nothing
+# yet to ratchet against.
+baseline_get() {
+    file="$1"
+    key="$2"
+    [ -f "$file" ] || return 0
+    sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+# Portable in-place update (no `sed -i`, whose flag differs BSD/GNU):
+# rewrite through a temp file, replacing the key's line or appending it.
+baseline_set() {
+    file="$1"
+    key="$2"
+    value="$3"
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        awk -v k="$key" -v v="$value" -F= 'BEGIN{OFS="="} $1==k{print k,v; next} {print}' "$file" > "$file.tmp"
+    else
+        cp "$file" "$file.tmp"
+        echo "${key}=${value}" >> "$file.tmp"
+    fi
+    mv "$file.tmp" "$file"
+}
+
+# ratchet_check <file> <key> <value> <up|down> [<override-reason>] —
+# `up` means higher is better (a held-file count); `down` means lower
+# is better (instructions, bytes). Prints one PASS/FAIL line on
+# stdout, updates the baseline on an improvement OR a signed
+# regression, and appends `<key>: <reason>` to
+# `$scratch/ratchet-overrides` so the chore commit can sign it.
+ratchet_check() {
+    file="$1"
+    key="$2"
+    value="$3"
+    direction="$4"
+    reason="${5:-}"
+    old="$(baseline_get "$file" "$key")"
+    if [ -z "$old" ]; then
+        baseline_set "$file" "$key" "$value"
+        echo "PASS $value (no prior baseline for $key — recorded)"
+        return 0
+    fi
+    improved=0
+    case "$direction" in
+        up) [ "$value" -ge "$old" ] 2>/dev/null && improved=1 ;;
+        down) [ "$value" -le "$old" ] 2>/dev/null && improved=1 ;;
+    esac
+    if [ "$improved" -eq 1 ]; then
+        baseline_set "$file" "$key" "$value"
+        echo "PASS $value (was $old)"
+        return 0
+    fi
+    if [ -n "$reason" ]; then
+        baseline_set "$file" "$key" "$value"
+        echo "$key: $reason" >> "$scratch/ratchet-overrides"
+        echo "PASS $value (was $old, regressed WITH override: $reason)"
+        return 0
+    fi
+    echo "FAIL $value (was $old, regressed with no override)"
+    return 1
+}
+
+# ── THE CHORE COMMIT — the seed and every moved ratchet baseline,
+# together, so one landing makes AT MOST ONE chore commit. Run once,
+# after every gate in the parallel pool has finished (never from
+# inside a gate's own job — two gates finishing at different times
+# would otherwise race the same commit).
+chore_commit_message() {
+    label="$1"
+    seed_moved="$2"
+    subject="chore(seed): the compiler re-emitted for ${label}'s landing"
+    [ "$seed_moved" -eq 1 ] || subject="chore(land): the ratchet baseline moved for ${label}'s landing"
+    if [ -s "$scratch/ratchet-overrides" ]; then
+        overrides="$(printf 'Override reason(s), signed on this landing:\n'; sed 's/^/- /' "$scratch/ratchet-overrides")"
+        printf '%s\n\n%s\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>' "$subject" "$overrides"
+    else
+        printf '%s\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>' "$subject"
+    fi
+}
+
+commit_chore_if_moved() {
+    wt="$1"
+    label="${2:-$branch}"
+    cd "$wt"
+    seed_moved=0
+    git diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources || seed_moved=1
+    baseline_paths=""
+    for f in tools/land.baseline tools/speed.baseline; do
+        [ -f "$f" ] || continue
+        git diff --quiet -- "$f" || baseline_paths="$baseline_paths $f"
+    done
+    if [ "$seed_moved" -eq 0 ] && [ -z "$baseline_paths" ]; then
+        echo "land: seed and ratchet baseline(s) unchanged" >&2
+        return 0
+    fi
+    [ "$seed_moved" -eq 1 ] && git add bootstrap/seed.ll bootstrap/seed.sources
+    # A short, known-safe word list — every element is a path this
+    # same function just found changed under `tools/`.
+    [ -n "$baseline_paths" ] && git add $baseline_paths
+    msg="$(chore_commit_message "$label" "$seed_moved")"
+    git commit -m "$msg"
+}
+
+# ── THE WARM-REUSE GATE (behind AVRA_LAND_WARM_GATE=1; OFF by default
+# — avra-8sb5.57.91 is a known bug that currently fails it) ──────────
+# Held-file reuse is a correctness property of the compiler's own
+# cache, not of any one landing's diff: `build/avra check
+# packages/std-avrac --time` prints a `held N/M` count (compiler/
+# derive.av's `Derived.timed`) — N of M files answered from the
+# store rather than re-derived. A body-only edit to ONE leaf file
+# (its text digest moves, its interface does not) should still leave
+# every OTHER file held, so a second check's `held` count is the
+# signal: a floor it must clear, ratcheted in tools/land.baseline
+# under `warm_held_floor`.
+#
+# compiler/format/receipt.av backs `avra fmt --write`'s own lossless
+# gate — nothing in analysis, typing or lowering reads it — so
+# editing one of its message strings cannot itself change what any
+# OTHER file's record depends on; a leaf by construction, not by luck.
+warm_gate_edit_path="packages/std-avrac/src/compiler/format/receipt.av"
+
+warm_gate_step() {
+    wt="$1"
+    cd "$wt"
+    edit="$warm_gate_edit_path"
+    backup="$scratch/warm-gate-orig"
+    cp "$edit" "$backup"
+    restore_warm_edit() { [ -f "$backup" ] && cp "$backup" "$edit"; }
+    trap restore_warm_edit EXIT INT TERM
+
+    echo "land: warm-reuse: first check (warms the cache) …"
+    if ! build/avra check packages/std-avrac --time > "$scratch/warm-1.out" 2>&1; then
+        cat "$scratch/warm-1.out"
+        echo "land: warm-reuse: the first check failed" >&2
+        return 1
+    fi
+
+    sed 's/a token moved at position/a token moved, position/' "$edit" > "$edit.tmp" && mv "$edit.tmp" "$edit"
+    if cmp -s "$backup" "$edit"; then
+        echo "land: warm-reuse: the scripted edit did not change $edit — pick another literal" >&2
+        return 1
+    fi
+
+    echo "land: warm-reuse: second check (one file's body edited) …"
+    if ! build/avra check packages/std-avrac --time > "$scratch/warm-2.out" 2>&1; then
+        cat "$scratch/warm-2.out"
+        echo "land: warm-reuse: the second check failed" >&2
+        return 1
+    fi
+    cat "$scratch/warm-2.out"
+    restore_warm_edit
+
+    pair="$(grep -oE 'held [0-9]+/[0-9]+' "$scratch/warm-2.out" | head -1)"
+    if [ -z "$pair" ]; then
+        echo "land: warm-reuse: no 'held N/M' line in the second check's own --time output" >&2
+        return 1
+    fi
+    nm="${pair#held }"
+    n="${nm%/*}"
+    m="${nm#*/}"
+
+    old_floor="$(baseline_get "tools/land.baseline" warm_held_floor)"
+    # `st=$?` AFTER the assignment reads 0 unconditionally (the
+    # assignment itself, once its substitution has run, always
+    # "succeeds" as a shell command) — worse under `set -eu`, a
+    # substitution answering non-zero aborts the whole script right
+    # here, before `st=$?` is ever reached. `|| st=$?` on the
+    # assignment itself is the only safe capture (heavy()'s own note).
+    st=0
+    out="$(ratchet_check "tools/land.baseline" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
+    word="PASS"
+    [ "$st" -ne 0 ] && word="FAIL"
+    echo "land: warm-reuse: held $n/$m (floor ${old_floor:-none}) — $word ($out)"
+    return "$st"
+}
+
+# ── THE LINUX GATE (behind AVRA_LAND_LINUX, default 1) ────────────────
+# Every package the landing's diff affects, run on a Sprite — ONE
+# sprite-build call for the whole set, since a Sprite bootstraps a
+# changed source tree once (~4-5 min) and a second call would pay
+# that again for nothing. `AVRA_LAND_SPRITE_BUILD` stands in for
+# tools/sprite-build.sh's own path so a fixture can stub it; a Sprite
+# name comes from AVRA_LAND_SPRITE (default avra-idioms-pay — this
+# gate's own Sprite, SPRITES.md).
+#
+# UNREACHABLE IS A TOOL FAILURE, NEVER A BRANCH'S: sprite-build.sh
+# runs under `set -eu`, so a connectivity failure (the file push, or
+# the exec that tests for a synced tree) stops it before its own
+# trailing "sprite-build: … -> exit N" line — which a REAL remote
+# command failure, guarded by `|| status=$?`, always reaches. Absence
+# of that line is the tell.
+linux_gate_step() {
+    wt="$1"
+    shift
+    pkgs="$*"
+    sprite="${AVRA_LAND_SPRITE:-avra-idioms-pay}"
+    sprite_build="${AVRA_LAND_SPRITE_BUILD:-$tools_dir/sprite-build.sh}"
+    body="export LLVM_PREFIX=/usr/lib/llvm-22; test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }"
+    for p in $pkgs; do
+        body="$body; build/avra test 'packages/$p'; s=\$?; [ \$s -eq 0 ] || exit \$s"
+    done
+    body="$body; exit 0"
+    out="$scratch/linux-sprite.out"
+    st=0
+    sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
+    cat "$out"
+    if [ "$st" -ne 0 ] && ! grep -qE '^sprite-build: .* -> exit ' "$out"; then
+        tool_failed "the Linux Sprite ($sprite) could not be reached"
+        return 1
+    fi
+    return "$st"
+}
+
+# ── THE SPEED GATE (PERF's method): instructions retired and max RSS
+# from `/usr/bin/time -l`, over a FIXED input — main's own
+# packages/cli at the landing's BASE sha, never the branch's own —
+# compiled by THIS landing's product. One scratch worktree at the
+# base sha, its runtime and package C built once (`make -o avra
+# libs`); the product is copied in as build/avra.land and run FROM
+# THERE, since a compiler resolves @std/* from its own binary's
+# directory — run it from the branch's tree instead and it would
+# compile the branch's OWN (possibly changed) std-avrac, not the
+# fixed input.
+#
+# tools/speed.baseline is PERF's own format: one line per landing,
+# `<main-sha> <instructions> <maxrss-bytes> <reason-or-dash>`, the
+# newest line the comparison. tools/land.baseline (key=value) stays
+# the warm-reuse floor's alone.
+speed_base_wt=""
+
+# The base-sha tree, C-built once: `$1` is any worktree of the same
+# repo (a worktree can `git worktree add` a sibling of its own repo),
+# `$2` the base sha to fix the input at.
+speed_base_tree() {
+    src_wt="$1"
+    base_sha="$2"
+    if [ -e "$speed_base_wt" ] && [ ! -d "$speed_base_wt/.git" ] && [ ! -f "$speed_base_wt/.git" ]; then
+        mkdir -p "$trash"
+        mv "$speed_base_wt" "$trash/speed-tree-$$-$(date +%s)"
+    fi
+    if [ ! -d "$speed_base_wt/.git" ] && [ ! -f "$speed_base_wt/.git" ]; then
+        mkdir -p "$(dirname "$speed_base_wt")"
+        git -C "$src_wt" worktree add -q --detach "$speed_base_wt" "$base_sha" ||
+            { tool_failed "could not make the speed base tree at $speed_base_wt"; return 1; }
+    fi
+    if [ "$(git -C "$speed_base_wt" rev-parse HEAD)" != "$(git -C "$src_wt" rev-parse "$base_sha")" ]; then
+        git -C "$speed_base_wt" checkout -q -f --detach "$base_sha" ||
+            { tool_failed "could not check out $base_sha in the speed base tree"; return 1; }
+        git -C "$speed_base_wt" clean -q -fd
+        rm -f "$speed_base_wt/build/libavra_runtime.a"
+    fi
+    move_caches_aside "$speed_base_wt"
+    if [ ! -f "$speed_base_wt/build/libavra_runtime.a" ]; then
+        ( cd "$speed_base_wt" && make -o avra libs ) > "$(log_of "speed-base-libs")" 2>&1 ||
+            { tool_failed "could not build libs in the speed base tree"; return 1; }
+    fi
+}
+
+# ONE COLD `/usr/bin/time -l` run of `$1/build/avra.land build --time
+# packages/cli`, tagged `$2` for its own log. Asserts a cold `held
+# 0/` — a warm hit would have examined nothing, which is a TOOL
+# failure, never a measurement. Answers through globals
+# (`speed_run_instr`, `speed_run_rss`, `speed_run_wall_ms`,
+# `speed_run_phases`), the shape a POSIX fn returns a small record in.
+speed_one_run() {
+    tree="$1"
+    tag="$2"
+    cd "$tree"
+    move_caches_aside "$tree" > /dev/null 2>&1
+    log="$(log_of "speed-$tag")"
+    /usr/bin/time -l build/avra.land build --time packages/cli > "$log" 2>&1
+    st=$?
+    if [ "$st" -ne 0 ]; then
+        echo "land: speed: the $tag build failed (exit $st) — $log" >&2
+        return 1
+    fi
+    if ! grep -q 'held 0/' "$log"; then
+        tool_failed "the speed gate's $tag run was not cold — no 'held 0/' in $log"
+        return 1
+    fi
+    speed_run_instr="$(grep -oE '[0-9]+ +instructions retired' "$log" | awk '{print $1}' | head -1)"
+    speed_run_rss="$(grep -oE '[0-9]+ +maximum resident set size' "$log" | awk '{print $1}' | head -1)"
+    speed_run_wall_ms="$(awk '{for(i=1;i<=NF;i++) if($i=="real"){printf "%.0f", $(i-1)*1000; exit}}' "$log")"
+    speed_run_phases="$(grep -oE '^time: .*' "$log" | tail -1)"
+    if [ -z "$speed_run_instr" ] || [ -z "$speed_run_rss" ]; then
+        tool_failed "the speed gate's $tag run has no instructions/RSS in $log (\`/usr/bin/time -l\` is macOS-only)"
+        return 1
+    fi
+    return 0
+}
+
+median3() { printf '%s\n%s\n%s\n' "$1" "$2" "$3" | sort -n | sed -n '2p'; }
+
+# The baseline's newest (last) data line, comments dropped, or empty
+# when there is none yet. `||`, never `&&`: a missing file must answer
+# empty at exit 0, not fail the assignment that reads it under `set -e`
+# (the same trap `out="$(ratchet_check …)"` fell into above).
+speed_baseline_last() {
+    [ -f "$1" ] || return 0
+    grep -v '^#' "$1" 2>/dev/null | tail -n 1
+    return 0
+}
+
+# 1 when `instr`/`rss` cross either threshold against the baseline's
+# last line (+1.0% instructions, +10% max RSS) — the trigger for a
+# median-of-3 remeasurement, never itself a verdict.
+speed_over_threshold() {
+    file="$1"
+    instr="$2"
+    rss="$3"
+    line="$(speed_baseline_last "$file")"
+    [ -z "$line" ] && { echo 0; return; }
+    old_instr="$(printf '%s' "$line" | awk '{print $2}')"
+    old_rss="$(printf '%s' "$line" | awk '{print $3}')"
+    over=0
+    if [ -n "$old_instr" ] && [ "$old_instr" -gt 0 ] 2>/dev/null; then
+        awk -v n="$instr" -v o="$old_instr" 'BEGIN{exit !(((n-o)*100.0/o)>1.0)}' && over=1
+    fi
+    if [ -n "$old_rss" ] && [ "$old_rss" -gt 0 ] 2>/dev/null; then
+        awk -v n="$rss" -v o="$old_rss" 'BEGIN{exit !(((n-o)*100.0/o)>10.0)}' && over=1
+    fi
+    echo "$over"
+}
+
+# THE GATE ITSELF — standalone-callable: `sh tools/land.sh --call
+# speed_gate <base-sha-tree> <product> [<baseline-wt>] [<label>]`.
+# `<base-sha-tree>` is already `make -o avra libs`-built (speed_base_tree,
+# or PERF's own); `<baseline-wt>`, default `<base-sha-tree>` itself,
+# is where tools/speed.baseline is read (never written here — see
+# speed_refresh, the only writer, run only after a green landing).
+speed_gate() {
+    tree="$1"
+    product="$2"
+    baseline_wt="${3:-$tree}"
+    label="${4:-standalone}"
+    baseline_file="$baseline_wt/tools/speed.baseline"
+
+    mkdir -p "$tree/build"
+    cp "$product" "$tree/build/avra.land"
+    chmod +x "$tree/build/avra.land"
+
+    speed_one_run "$tree" run1 || return 1
+    instr="$speed_run_instr"
+    rss="$speed_run_rss"
+    wall_ms="$speed_run_wall_ms"
+    phases="$speed_run_phases"
+    note="one run"
+    if [ "$(speed_over_threshold "$baseline_file" "$instr" "$rss")" -eq 1 ]; then
+        echo "land: speed: run1 crossed a threshold — remeasuring twice more for a median of 3" >&2
+        speed_one_run "$tree" run2 || return 1
+        i2="$speed_run_instr"; r2="$speed_run_rss"
+        speed_one_run "$tree" run3 || return 1
+        i3="$speed_run_instr"; r3="$speed_run_rss"
+        instr="$(median3 "$instr" "$i2" "$i3")"
+        rss="$(median3 "$rss" "$r2" "$r3")"
+        note="median of 3 runs"
+    fi
+
+    line="$(speed_baseline_last "$baseline_file")"
+    old_sha=""
+    old_instr=""
+    old_rss=""
+    if [ -n "$line" ]; then
+        old_sha="$(printf '%s' "$line" | awk '{print $1}')"
+        old_instr="$(printf '%s' "$line" | awk '{print $2}')"
+        old_rss="$(printf '%s' "$line" | awk '{print $3}')"
+    fi
+    reason="${AVRA_LAND_SPEED_OK:-}"
+    ipct="n/a"
+    rpct="n/a"
+    # `regressed` and `fail` are DIFFERENT questions: a run past
+    # threshold is a regression whether or not a reason excuses it,
+    # and only a regression with NO reason is a FAIL — collapsing them
+    # into one flag (an earlier draft's `&& [ -z "$reason" ] &&
+    # fail=1`) meant a signed run never set anything, so its own
+    # reason was never queued for the chore commit to sign.
+    regressed=0
+    fail=0
+    if [ -n "$old_instr" ] && [ "$old_instr" -gt 0 ] 2>/dev/null; then
+        ipct="$(awk -v n="$instr" -v o="$old_instr" 'BEGIN{printf "%+.2f", (n-o)*100.0/o}')"
+        if awk -v p="$ipct" 'BEGIN{exit !(p>1.0)}'; then
+            regressed=1
+            [ -z "$reason" ] && fail=1
+        fi
+    fi
+    if [ -n "$old_rss" ] && [ "$old_rss" -gt 0 ] 2>/dev/null; then
+        rpct="$(awk -v n="$rss" -v o="$old_rss" 'BEGIN{printf "%+.2f", (n-o)*100.0/o}')"
+        if awk -v p="$rpct" 'BEGIN{exit !(p>10.0)}'; then
+            regressed=1
+            [ -z "$reason" ] && fail=1
+        fi
+    fi
+    if [ "$regressed" -eq 1 ] && [ -n "$reason" ]; then
+        echo "speed: ${reason}" >> "$scratch/ratchet-overrides"
+    fi
+    word="PASS"
+    [ "$fail" -eq 1 ] && word="FAIL"
+    echo "land: speed: $instr instr (${ipct}% vs ${old_sha:-none}), rss $rss (${rpct}%) — $word ($note, wall ${wall_ms}ms)" >&2
+    [ -n "$phases" ] && echo "land: speed: $phases" >&2
+    speed_gate_instr="$instr"
+    speed_gate_rss="$rss"
+    [ "$fail" -eq 0 ]
+}
+
+# Runs ONLY after a green speed_gate: the product this landing built,
+# over ITS OWN packages/cli (main's own input the moment this landing
+# lands) — the row the NEXT landing's fixed input will compare
+# against. `$1` is the landing's own worktree (already built).
+speed_refresh() {
+    # NEVER named `wt`: move_caches_aside (called inside speed_one_run,
+    # below) sets a GLOBAL of that exact name — POSIX sh has no
+    # function-local scope — which clobbered this fn's own caller's
+    # `wt` the first time this was written, before the rename.
+    land_wt="$1"
+    cd "$land_wt"
+    cp build/avra build/avra.land
+    if ! speed_one_run "$land_wt" refresh; then
+        echo "land: speed: the refresh run failed — the baseline was not advanced" >&2
+        return 0
+    fi
+    sha="$(git -C "$land_wt" rev-parse HEAD)"
+    reason="${AVRA_LAND_SPEED_OK:--}"
+    printf '%s %s %s %s\n' "$sha" "$speed_run_instr" "$speed_run_rss" "$reason" >> "$land_wt/tools/speed.baseline"
+    echo "land: speed: baseline advanced — $sha $speed_run_instr $speed_run_rss $reason" >&2
+}
+
+# The job-pool wrapper: the base tree (once), the copy in, the gate,
+# then — only on a pass — the refresh. `land_wt`, not `wt` — see
+# speed_refresh's own note.
+speed_gate_step() {
+    land_wt="$1"
+    base_sha="$2"
+    label="${3:-$branch}"
+    speed_base_wt="${AVRA_LAND_SPEED_WT:-$(cd "$land_wt/.." && pwd -P)/avra-land-speed-wt}"
+    speed_base_tree "$land_wt" "$base_sha" || return 1
+    cd "$land_wt"
+    if [ ! -x build/avra ]; then
+        tool_failed "no product at $land_wt/build/avra for the speed gate"
+        return 1
+    fi
+    st=0
+    speed_gate "$speed_base_wt" "$land_wt/build/avra" "$land_wt" "$label" || st=$?
+    if [ "$st" -eq 0 ]; then
+        speed_refresh "$land_wt"
+    fi
+    return "$st"
+}
+
 # ── ONE BUILD GENERATION ──────────────────────────────────────────────
 # A failure of the landing machinery itself, never a branch's verdict:
 # recorded so a batch reports it instead of bisecting it into culprits.
@@ -592,20 +1059,63 @@ run_checks() {
     suffix="$4"
     compiler_changed="$5"
     has_av="${6:-1}"
-    affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt")"
+    # Space-joined, not newline-separated: `listed` (a plain " $x "
+    # substring test) needs a space on both sides of every name, which
+    # a bare newline-separated capture does not give it — `for pkg in
+    # $affected` word-splits on either, so this changes nothing there.
+    affected="$(sh "$tools_dir/affected_packages.sh" "$base_sha" "$head_sha" "$wt" | tr '\n' ' ')"
 
     job_pool_reset
-    for pkg in $affected; do
-        job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
-    done
+    # LONGEST JOBS LAUNCH FIRST — under a job cap, a job LAUNCHED late
+    # STARTS late: a timed landing showed idioms starting at +51s and
+    # seed-check at +98s, purely because shorter jobs were called
+    # ahead of them in this loop. Measured on the same tree: std-avrac
+    # 165s, idioms 148s, seed-check 114s, cli 105s, std-relation 48s,
+    # fmt-lossless 29s, everything else <=12s — the speed and Linux
+    # gates run a full second build (or a whole Sprite) each, so they
+    # slot in right after seed-check, ahead of cli.
+    if listed std-avrac "$affected"; then
+        job_launch "test-std-avrac$suffix" heavy "test-std-avrac$suffix" sh -c "cd '$wt' && build/avra test packages/std-avrac"
+    fi
     if [ "$has_av" -eq 1 ]; then
         job_launch "idioms$suffix" heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $affected
-        job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
     else
         skipped "idioms and fmt-lossless$suffix" ".av file"
     fi
     if [ "$compiler_changed" -eq 1 ]; then
         job_launch "seed-check$suffix" seed_policy "$wt" "$suffix" "$branch"
+    fi
+    if [ "${AVRA_LAND_SPEED_GATE:-1}" = "1" ]; then
+        job_launch "speed$suffix" heavy "speed$suffix" sh "$self" --call speed_gate_step "$wt" "$base_sha" "$branch"
+    else
+        echo "land: skipped the speed gate$suffix: AVRA_LAND_SPEED_GATE is off" >&2
+    fi
+    if [ "${AVRA_LAND_LINUX:-1}" = "1" ]; then
+        if [ -n "$(printf '%s' "$affected" | tr -d '[:space:]')" ]; then
+            job_launch "linux$suffix" heavy "linux$suffix" sh "$self" --call linux_gate_step "$wt" $affected
+        else
+            skipped "the Linux gate$suffix" "affected package"
+        fi
+    else
+        echo "land: skipped the Linux gate$suffix: AVRA_LAND_LINUX is off" >&2
+    fi
+    if listed cli "$affected"; then
+        job_launch "test-cli$suffix" heavy "test-cli$suffix" sh -c "cd '$wt' && build/avra test packages/cli"
+    fi
+
+    # Everything else, in any order.
+    for pkg in $affected; do
+        [ "$pkg" = "std-avrac" ] && continue
+        [ "$pkg" = "cli" ] && continue
+        job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
+    done
+    if [ "$has_av" -eq 1 ]; then
+        job_launch "fmt-lossless$suffix" heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless"
+    fi
+    if [ "${AVRA_LAND_WARM_GATE:-0}" = "1" ]; then
+        job_launch "warm-reuse$suffix" heavy "warm-reuse$suffix" sh "$self" --call warm_gate_step "$wt"
+    else
+        echo "land: skipped warm-reuse gate$suffix: AVRA_LAND_WARM_GATE is off" >&2
     fi
 
     if ! job_wait_all; then
@@ -641,6 +1151,64 @@ diff_touches() { printf '%s\n' "$1" | grep -qE "$2"; }
 diff_beyond() { printf '%s\n' "$1" | grep -vE "$2" | grep -q .; }
 skipped() { echo "land: skipped $1: diff touches no $2" >&2; }
 
+# ── A GATE SCRIPT'S OWN CHANGE RUNS ITS OWN GATE ─────────────────────
+# The tools-only rule above runs land_test.sh (land.sh's own fixtures)
+# for ANY tools/ touch, which proves land.sh's OWN mechanics — never
+# that a changed GATE SCRIPT still behaves against the real tree. A
+# tools-only landing that edited tools/cache_attacks.sh once reached
+# main having run only land_test.sh, the script itself untested.
+gate_script_step() {
+    case "$1" in
+        tools/cache_attacks.sh) echo cache-attacks ;;
+        tools/idioms*) echo idioms ;;
+        tools/fmt_lossless.sh) echo fmt-lossless ;;
+        tools/seed_guard.sh) echo seed-check ;;
+        *) echo "" ;;
+    esac
+}
+
+# Every DISTINCT step the diff's changed files map to, in one FIXED
+# order — never the diff's own file order, which a log or a test
+# reading it must not have to depend on.
+gate_steps_touched() {
+    diff="$1"
+    steps=""
+    for want in cache-attacks idioms fmt-lossless seed-check; do
+        for f in $(printf '%s\n' "$diff"); do
+            [ "$(gate_script_step "$f")" = "$want" ] || continue
+            steps="$steps $want"
+            break
+        done
+    done
+    printf '%s' "$steps"
+}
+
+# A mapped step needs a real compiler, which a tools-only diff never
+# built — gen 1 only (the compiler source did not change, so a second
+# build would compile nothing new).
+gate_scripts_step() {
+    wt="$1"
+    suffix="$2"
+    diff="$3"
+    steps="$(gate_steps_touched "$diff")"
+    [ -n "$(printf '%s' "$steps" | tr -d '[:space:]')" ] || return 0
+    echo "land: a changed tools/ script is itself a gate ($(printf '%s' "$steps" | sed 's/^ //')) — building gen 1 to run it for real" >&2
+    if ! ( build_generation "$wt" "1$suffix" ); then
+        echo "land: build generation 1$suffix failed (needed for:$steps)" >&2
+        return 1
+    fi
+    st=0
+    for step in $steps; do
+        case "$step" in
+            cache-attacks) heavy "cache-attacks$suffix" sh -c "cd '$wt' && make cache-attacks" || st=1 ;;
+            idioms) heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $(cd "$wt" && for p in packages/*/; do basename "$p"; done) || st=1 ;;
+            fmt-lossless) heavy "fmt-lossless$suffix" sh -c "cd '$wt' && make fmt-lossless" || st=1 ;;
+            seed-check) heavy "seed-check$suffix" sh -c "cd '$wt' && make seed-check" || st=1 ;;
+        esac
+    done
+    return "$st"
+}
+
 check_phase() {
     wt="$1"
     base_sha="$2"
@@ -651,7 +1219,10 @@ check_phase() {
         skipped "builds and package checks$suffix" "code outside tools/ or docs/"
         if diff_touches "$diff" '^tools/'; then
             heavy "land-test$suffix" sh -c "cd '$wt' && sh tools/land_test.sh"
-            return
+            if ! gate_scripts_step "$wt" "$suffix" "$diff"; then
+                return 1
+            fi
+            return 0
         fi
         skipped "land-test$suffix" "tools/"
         return 0
@@ -681,6 +1252,11 @@ check_phase() {
         echo "land: a check failed (an affected package's tests, idioms, fmt-lossless, or seed-check)" >&2
         return 1
     fi
+
+    # Every job in the pool above (seed-check, the warm-reuse gate,
+    # the speed gate) has now finished — a single commit, never one
+    # per gate, and never while a slower gate might still be writing.
+    light "chore-commit$suffix" commit_chore_if_moved "$wt" "$branch"
 
     if [ "$compiler_changed" -eq 0 ]; then
         skipped "cache-attacks$suffix" "compiler source"
@@ -720,7 +1296,9 @@ seed_policy() {
     fi
     echo "land: seed-check failed on the first try — the seed lags HEAD; re-emitting" >&2
     heavy "seed-emit$suffix" sh -c "cd '$wt' && make seed"
-    light "seed-commit$suffix" commit_seed_if_moved "$wt" "$label"
+    # Committed once, later, alongside any moved ratchet baseline —
+    # see commit_chore_if_moved, run by check_phase after every job in
+    # the pool (this one included) has finished.
     heavy "seed-check-2$suffix" sh -c "cd '$wt' && make seed-check"
     echo "land: seed-check passed after a fresh emit" >&2
 }
