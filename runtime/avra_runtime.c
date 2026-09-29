@@ -565,7 +565,10 @@ void avra_rc_dead_check(void* p, const char* what) {
 }
 
 __attribute__((noinline, cold))
-void avra_retain_noted(void* p, int32_t rc, void* ra) { rc_note(p, 1, ra, rc); }
+void avra_retain_noted(void* p, Header* h) {
+    h->rc++;
+    rc_note(p, 1, __builtin_return_address(0), h->rc);
+}
 
 
 // The guard's release: the box is kept and marked dead, its cells
@@ -1394,6 +1397,17 @@ int64_t avra_get_guarded(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     if (i < 0 || i >= a->len) avra_trap_bounds(i, a->len);
     return a->data[i];
+}
+
+// The guarded read plus its retain, whole: the composition an
+// inlined avra_array_get_owned would otherwise pay for is here
+// instead, once, out of line.
+__attribute__((noinline, cold))
+void* avra_get_owned_guarded(void* arr, int64_t i) {
+    void* v = (void*)(uintptr_t)avra_get_guarded(arr, i);
+    Header* h = hdr(v);
+    if (h != 0 && h->kind >= 0) avra_retain_noted(v, h);
+    return v;
 }
 
 
