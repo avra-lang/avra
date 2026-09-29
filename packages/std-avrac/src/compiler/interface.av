@@ -495,17 +495,39 @@ impl Workspace {
     }
 }
 
-/// The ordinal of a declaration its file does not list.
+/// The sentinel wire for a declaration that cannot be named — a tilde in
+/// its own text; `wire_decl` reads too few words from it to decode.
 const NO_ORDINAL: int = 0 - 1
 
 impl Decls {
 
-    /// A declaration as a wire: its file and its ordinal there. One its file does
-    /// not list wears NO ordinal, which no reader decodes — never another's.
+    /// A declaration as a wire: its file, kind, owner and name — never a
+    /// position. A moved declaration keeps this wire; a declaration reordered
+    /// around it never steals it. `owner` is a method's impl target ("" for
+    /// anything not one), which is what tells `impl Word { fn one() }`'s `one`
+    /// apart from a free `fn one()` sharing its name. Two declarations sharing
+    /// kind+owner+name in one file is the namespace law's to refuse (F3003) for
+    /// every kind decl_wire actually names; the trailing index is a belt for a
+    /// kind the law does not police (defaults, generated members) — a tilde in
+    /// owner or name (case labels are sentences) has none of decl_wire's
+    /// callers, and wears NO_ORDINAL rather than corrupt the tilde stream.
     fn decl_wire(d: DeclId) -> string {
         let x = self.decl(d)
-        let at = [j for j, id in self.decls_of_file(x.file) if same_decl(id, d)].first() ?? NO_ORDINAL
-        "${self.file(x.file).path}~${at}"
+        if x.owner.contains("~") || x.name.contains("~") { return "${self.file(x.file).path}~${NO_ORDINAL}" }
+        let kind = kind_word(x.kind)
+        let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
+        let base = "${self.file(x.file).path}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
+        if siblings.length <= 1 { return base }
+        let at = [j for j, id in siblings if same_decl(id, d)].first() ?? 0
+        "${base}~${at}"
+    }
+
+    /// Every declaration of one file sharing a wire's identity — one, almost
+    /// always; more only for a kind the namespace law leaves unpoliced.
+    fn wire_siblings(f: FileId, kind: string, owner: string, name: string) -> List<DeclId> {
+        [id for id in self.decls_of_file(f) if kind_word(self.decl(id).kind) == kind &&
+            self.decl(id).owner == owner &&
+            self.decl(id).name == name]
     }
 
     fn read_type_wire(words: List<string>, at: int) -> WireType? {
@@ -528,22 +550,26 @@ impl Decls {
         }
         if scalar != null { return WireType { id: self.types.intern(scalar!), next: at + 1 } }
         if tag == "S" || tag == "E" || tag == "D" || tag == "N" || tag == "R" || tag == "A" {
-            let d? = self.wire_decl(words, at + 1) else { return null }
+            let wd? = self.wire_decl(words, at + 1) else { return null }
+            let d = wd.id
             let x = self.decl(d)
-            if tag == "S" { return WireType { id: self.types.intern(Type.Struct(d, x.name)), next: at + 3 } }
-            if tag == "E" { return WireType { id: self.types.intern(Type.Enum(d, x.name)), next: at + 3 } }
-            if tag == "D" { return WireType { id: self.types.intern(Type.Dyn(d, x.name)), next: at + 3 } }
-            if tag == "N" { return WireType { id: self.types.intern(Type.TypeName(d, x.name)), next: at + 3 } }
-            if at + 3 >= words.length { return null }
-            let n? = wire_number(words[at + 3]) else { return null }
+            if tag == "S" { return WireType { id: self.types.intern(Type.Struct(d, x.name)), next: wd.next } }
+            if tag == "E" { return WireType { id: self.types.intern(Type.Enum(d, x.name)), next: wd.next } }
+            if tag == "D" { return WireType { id: self.types.intern(Type.Dyn(d, x.name)), next: wd.next } }
+            if tag == "N" { return WireType { id: self.types.intern(Type.TypeName(d, x.name)), next: wd.next } }
+            if wd.next >= words.length { return null }
+            let n? = wire_number(words[wd.next]) else { return null }
             if tag == "R" {
                 let names = self.tparams(d)
                 if n < 0 || n >= names.length { return null }
-                return WireType { id: self.types.intern(Type.Var(d, n, names[n])), next: at + 4 }
+                return WireType {
+                    id: self.types.intern(Type.Var(d, n, names[n])),
+                    next: wd.next + 1,
+                }
             }
             if n < 0 { return null }
             mut args: List<TypeId> = []
-            mut cursor = at + 4
+            mut cursor = wd.next + 1
             for j in 0..n {
                 let child? = self.read_type_wire(words, cursor) else { return null }
                 args.push(child.id)
@@ -663,14 +689,25 @@ impl Decls {
         }
     }
 
-    fn wire_decl(words: List<string>, at: int) -> DeclId? {
-        if at + 1 >= words.length { return null }
-        let ordinal? = wire_number(words[at + 1]) else { return null }
+    /// `decl_wire`'s inverse — the declaration a wire names, and how many
+    /// words it read (4, or 5 across a name it shared with a sibling).
+    fn wire_decl(words: List<string>, at: int) -> WireDeclRef? {
+        if at + 3 >= words.length { return null }
         let f: FileId? = self.paths.get().get(words[at])
-        if f == null || ordinal < 0 { return null }
-        let ids = self.decls_of_file(f!)
-        if ordinal >= ids.length { return null }
-        ids[ordinal]
+        if f == null { return null }
+        let kind = words[at + 1]
+        let owner = text_of_field(words[at + 2])
+        let name = text_of_field(words[at + 3])
+        let siblings = self.wire_siblings(f!, kind, owner, name)
+        if siblings.length == 1 { return WireDeclRef { id: siblings[0], next: at + 4 } }
+        if siblings.is_empty() { return null }
+        if at + 4 >= words.length { return null }
+        let idx? = wire_number(words[at + 4]) else { return null }
+        if idx < 0 || idx >= siblings.length { return null }
+        WireDeclRef { id: siblings[idx], next: at + 5 }
     }
 }
+
+/// `wire_decl`'s answer: the declaration, and where the next field starts.
+type WireDeclRef = { id: DeclId, next: int }
 
