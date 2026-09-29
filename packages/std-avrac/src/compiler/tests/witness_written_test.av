@@ -23,19 +23,22 @@ fn written_files(callee: string) -> Map<string, string> {
 
 fn written_names() -> List<string> { ["/w/src/a.av", "/w/src/other/b.av"] }
 
-/// `a`'s verdict text over `callee`, in a pack of its own.
-fn report_over(callee: string, tag: string) -> string {
+/// `a`'s own diagnostic count over `callee`, in a pack of its own — the
+/// warning a writing `bump` earns, that a reading one does not, shows up
+/// in `diagnostics`, not `clean` (which answers a narrower question:
+/// whether the file carries an ERROR, not a warning).
+fn diag_count_over(callee: string, tag: string) -> int {
     let ws = a_process_over(
         written_files(callee),
         written_names(),
         fresh_pack_path("written_${tag}"),
     )
-    checked(ws, "/w/src/a.av").value().report
+    checked(ws, "/w/src/a.av").value().diagnostics.length
 }
 
 spec "compiler/witness — a callee body that changes only whether it writes" {
     then "fixture: the two callee bodies give the caller different verdicts" {
-        report_over(writer_body(), "fixture_writer") != report_over(reader_body(), "fixture_reader")
+        diag_count_over(writer_body(), "fixture_writer") != diag_count_over(reader_body(), "fixture_reader")
     }
     then "the caller's witness is refused as stale in a second process" {
         let path = fresh_pack_path("written_edit")
