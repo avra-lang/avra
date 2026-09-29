@@ -516,7 +516,10 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         if made != prior {
             ws.db.insert_sig(store, ws.record_key(m), made)
             record_known(ws, m, made)
-            if seen_part(made) != seen_part(prior) { seen_moved = true }
+            if seen_part(made) != seen_part(prior) {
+                seen_moved = true
+                keep_forms(store, made)
+            }
         }
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
@@ -889,11 +892,13 @@ export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
 /// declaration TEXT is no interface — it carries the receivers pass's written bits,
 /// which move without a contract moving.
 export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
-    let rec = record_cached(ws, store, m)
-    for line in rec.split("\n") {
-        if line.starts_with("iface\t") { return line.substring(6, line.length) }
-    }
-    module_bytes(ws, m)
+    iface_of(record_cached(ws, store, m)) ?? module_bytes(ws, m)
+}
+
+/// A record's contract lines, kept once under its interface digest.
+fn keep_forms(store: Store, record: string) {
+    let iface? = iface_of(record) else { return }
+    let _ = store.keep_once(Stored.Unit, forms_key(iface), joined(record_forms(record), "\n"))
 }
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
@@ -1025,13 +1030,14 @@ fn seen_row(r: List<string>) -> SeenPart? {
     SeenPart { module: r[1], bytes_key: r[2], files: files }
 }
 
-/// ONE PART OF A KEY THAT MOVED: what it is, and how it read then and reads now.
-export type PartMoved = { part: string, was: string, now: string }
+/// ONE PART OF A KEY THAT MOVED: what it is, how it read then and reads now, and
+/// for a module's interface the contract lines it lost (`- `) and gained (`+ `).
+export type PartMoved = { part: string, was: string, now: string, lines: List<string> }
 
 /// What moved between a key's parts then and now — its text, what its runs read,
 /// and each module it sees whose interface moved, came or went.
-export fn parts_moved(was: KeyParts, now: KeyParts) -> List<PartMoved> {
-    let text = if was.text == now.text { [] } else { [PartMoved { part: "its text", was: was.text, now: now.text }] }
+export fn parts_moved(store: Store, was: KeyParts, now: KeyParts) -> List<PartMoved> {
+    let text = if was.text == now.text { [] } else { [PartMoved { part: "its text", was: was.text, now: now.text, lines: [] }] }
     let runs = if joined(was.runs, ",") == joined(now.runs, ",") {
         []
     } else {
@@ -1040,32 +1046,77 @@ export fn parts_moved(was: KeyParts, now: KeyParts) -> List<PartMoved> {
                 part: "what its compile-time runs read",
                 was: joined(was.runs, ","),
                 now: joined(now.runs, ","),
+                lines: [],
             },
         ]
     }
-    text.concat(runs).concat(seen_list_moved(was.seen, now.seen))
+    text.concat(runs).concat(seen_list_moved(store, was.seen, now.seen))
 }
 
 /// What moved between the modules seen then and now: each whose interface
 /// moved, came or went.
-export fn seen_list_moved(was: List<SeenPart>, now: List<SeenPart>) -> List<PartMoved> {
-    let seen = [m for s in now for m in seen_moved(was.find(it.module == s.module), s)]
+export fn seen_list_moved(store: Store, was: List<SeenPart>, now: List<SeenPart>) -> List<PartMoved> {
+    let seen = [m for s in now for m in seen_moved(store, was.find(it.module == s.module), s)]
     seen
         .concat(
-            [PartMoved { part: "module ${s.module}", was: seen_words(s), now: "no longer seen" } for s in was if !now.any(it.module == s.module)],
+            [PartMoved {
+                part: "module ${s.module}",
+                was: seen_words(s),
+                now: "no longer seen",
+                lines: [],
+            } for s in was if !now.any(it.module == s.module)],
         )
 }
 
-fn seen_moved(was: SeenPart?, now: SeenPart) -> List<PartMoved> {
-    let prior? = was else { return [PartMoved { part: "module ${now.module}", was: "not seen", now: seen_words(now) }] }
+fn seen_moved(store: Store, was: SeenPart?, now: SeenPart) -> List<PartMoved> {
+    let prior? = was else { return [
+            PartMoved {
+                part: "module ${now.module}",
+                was: "not seen",
+                now: seen_words(now),
+                lines: [],
+            },
+        ] }
     if prior.bytes_key == now.bytes_key && prior.files == now.files { return [] }
     [
         PartMoved {
             part: "module ${now.module}'s interface",
             was: seen_words(prior),
             now: seen_words(now),
+            lines: forms_moved(forms_at(store, prior.bytes_key), forms_at(store, now.bytes_key)),
         },
     ]
+}
+
+/// Where a module's contract lines are kept: under the interface digest they
+/// make, once, so every interface a module has had can still be read.
+export fn forms_key(iface: string) -> string { node_key(Stored.Unit, ["forms", iface]) }
+
+/// A record's contract lines — each declaration's `interface_form`, in name order.
+fn record_forms(record: string) -> List<string> {
+    sorted_texts(
+        [f for line in record.split("\n") if named_file(line) != "" for f in [interface_form(line)] if f != ""],
+    )
+}
+
+/// The contract lines kept under an interface digest — null when none were.
+fn forms_at(store: Store, iface: string) -> List<string>? {
+    let kept? = store.get(Stored.Unit, forms_key(iface)) else { return null }
+    if kept.is_empty() { [] } else { kept.split("\n") }
+}
+
+/// The lines one interface lost and the other gained — nothing when either
+/// side was never kept.
+fn forms_moved(was: List<string>?, now: List<string>?) -> List<string> {
+    if was == null || now == null { return [] }
+    ["- ${f}" for f in was! if !now!.contains(f)]
+        .concat(["+ ${f}" for f in now! if !was!.contains(f)])
+}
+
+/// The interface digest a record names on its `iface` line.
+fn iface_of(record: string) -> string? {
+    let line? = record.split("\n").find(it.starts_with("iface\t")) else { return null }
+    line.substring(6, line.length)
 }
 
 fn seen_words(s: SeenPart) -> string { "bytes ${s.bytes_key}, ${s.files} file${if s.files == 1 { "" } else { "s" }}" }

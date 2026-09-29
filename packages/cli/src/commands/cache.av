@@ -10,6 +10,8 @@ use @std.avrac.compiler.{
     shown_name,
     matching_names,
     FileHold,
+    PartMoved,
+    HeldMismatch,
     Want,
 }
 use @std.avrac.compiler.store.{
@@ -259,8 +261,20 @@ fn explained_held(query: string) -> int {
         return 1
     }
     for line in hold_lines(root, named[0]) { println(line) }
+    if named[0].held { for line in disagreements(root, named[0].path) { println(line) } }
     0
 }
+
+/// Where a held file's declarations read differently from a fresh reading —
+/// `check --verify-held`'s comparison, for this one file.
+fn disagreements(root: string, path: string) -> List<string> {
+    match root_workspace(root).verify_held(null) {
+        .Ok(v) -> [disagreement_line(m) for m in v.mismatches if m.file == path],
+        .Err(why) -> ["held:   no fresh reading to compare: ${why}"],
+    }
+}
+
+export fn disagreement_line(m: HeldMismatch) -> string { "held:   ${m.decl}'s ${m.field}: ${m.held} held, ${m.fresh} fresh" }
 
 /// Every file's hold, counted, and each read one with why.
 fn held_summary(root: string, rows: List<FileHold>) -> int {
@@ -276,7 +290,13 @@ fn hold_lines(root: string, h: FileHold) -> List<string> {
     let head = "held: ${relative_path(root, h.path)} — ${hold_word(h)}"
     [head]
         .concat(["held:   missing ${m}" for m in h.missing])
-        .concat(["held:   moved ${m.part}: ${m.was} -> ${m.now}" for m in h.moved])
+        .concat([line for m in h.moved for line in moved_lines(m)])
+}
+
+/// One moved part, then the contract lines it lost and gained, a field apart by two spaces.
+fn moved_lines(m: PartMoved) -> List<string> {
+    ["held:   moved ${m.part}: ${m.was} -> ${m.now}"]
+        .concat(["held:     ${l.replace("\t", "  ")}" for l in m.lines])
 }
 
 fn hold_word(h: FileHold) -> string {

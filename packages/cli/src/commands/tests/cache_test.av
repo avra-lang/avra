@@ -2,8 +2,8 @@
 //! `held` answering a check's hold file by file.
 use @std.io.{make_dirs, write_text}
 use @std.time.{now_ns}
-use @std.avrac.compiler.{Want, FileHold}
-use commands.{cache_mode, CacheMode, checked_at, root_workspace}
+use @std.avrac.compiler.{Want, FileHold, HeldMismatch}
+use commands.{cache_mode, CacheMode, checked_at, root_workspace, disagreement_line}
 
 /// A package root of one file under `src/`, holding `text` — its own path
 /// each run, so nothing an earlier run kept answers for it.
@@ -77,11 +77,51 @@ spec "commands/cache" {
             let readers = rows.filter(!it.path.contains("/src/lib/"))
             readers.length == 2 && readers.all(it.moved.any(it.part.ends_with("lib's interface")))
         }
+        then "a seat's consumed mark moving names the one contract line it changed, then and now" {
+            let root = cache_probe("consumed", "use lib.{kept}\nkept([1]).length\n")
+            let _ = make_dirs("${root}/src/lib")
+            let _ = write_text(
+                "${root}/src/lib/a.av",
+                "export fn kept(xs: List<int>) -> List<List<int>> { [xs] }\n",
+            )
+            let _ = holds_after_check(root)
+            let _ = write_text(
+                "${root}/src/lib/a.av",
+                "export fn kept(xs: List<int>) -> List<List<int>> { [[xs.length]] }\n",
+            )
+            let moved = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])?.moved ?? []
+            let lines = moved.find(it.part.ends_with("lib's interface"))?.lines ?? []
+            lines.length == 2 &&
+                lines[0].starts_with("- ") &&
+                lines[1].starts_with("+ ") &&
+                lines.all(it.contains("kept"))
+        }
         then "an untouched module names nothing moved" {
             let root = lib_probe("still_lib")
             let _ = holds_after_check(root)
             let h = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])
             h != null && h!.held && h!.moved.is_empty()
+        }
+    }
+    given "a held file a fresh reading disagrees with" {
+        then "a Reference-row count reads as the rows naming the declaration, held then fresh" {
+            disagreement_line(
+                HeldMismatch {
+                    file: "a.av",
+                    decl: "check_length",
+                    field: "Reference rows",
+                    held: "0",
+                    fresh: "1",
+                },
+            ) == "held:   check_length's Reference rows: 0 held, 1 fresh"
+        }
+        then "a module read by a held file agrees with a fresh reading, Reference rows included" {
+            let root = lib_probe("agrees")
+            let _ = holds_after_check(root)
+            match root_workspace(root).verify_held(null) {
+                .Ok(v) -> v.declarations > 0 && v.mismatches.is_empty(),
+                .Err(_) -> false,
+            }
         }
     }
 }
