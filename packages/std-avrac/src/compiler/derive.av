@@ -16,16 +16,26 @@ use compiler.host.{no_source}
 use compiler.findings.{findings_text}
 
 /// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
-/// not yet clear the bar (at or under main's own ~5-6s keep phase;
-/// measured 95-150s, dominated by `reused_check`'s validation —
-/// `decl_at_stable`'s cost is down but not enough, and the OOM
-/// on some edits is unexplained). `holding` reads this alone — with
-/// it false, `self.pack` never attaches, so `reused_check` and
-/// `record_witness` (both `let pack? = self.pack.get() else { … }`)
-/// answer at once and every witness-specific cost (`expanded_edges`,
-/// `decl_at_stable`, `Pack.put`/`commit`) never runs: a normal
-/// compiler pays nothing for machinery it never reaches. Flip this
-/// once the follow-up ticket closes the gap.
+/// not yet clear the bar (at or under main's own ~5-6s keep phase).
+/// Two causes found and fixed so far, both by `sample`, neither by
+/// guessing: the OOM (store/pack.av's `slurped` read a pack
+/// word-at-a-time into a `List<int>`, one `int` per BYTE — 2.3 GB of
+/// a 2.9 GB peak on one leaf-edit recheck of std-avrac; `read_bytes`
+/// now reads it straight into `Bytes`, RSS 2586 -> 758 MB, measured),
+/// and the dominant CPU cost (store/pack.av's `applied`, the
+/// pack-load frame-fold, rebuilding a list on every NAME/ROW frame —
+/// ~50% of all sampled time, all under `avra_rc_retain`/`array_clone`;
+/// `ScanState`'s staged lists are `Cell`s now, so a push mutates the
+/// one shared buffer instead of cloning it — `store.applied` is 0
+/// samples of the same scenario resampled). Still open: `reused_check`
+/// -> `decl_at_stable`'s validation cost, and `Pack.name_id` (the
+/// next-largest sampled site, ~8%, not yet chased). `holding` reads
+/// this alone — with it false, `self.pack` never attaches, so
+/// `reused_check` and `record_witness` (both `let pack? =
+/// self.pack.get() else { … }`) answer at once and every
+/// witness-specific cost never runs: a normal compiler pays nothing
+/// for machinery it never reaches. Flip this once the follow-up
+/// ticket closes the speed gap.
 const witness_enabled: bool = false
 
 /// What a command wants of a program. A file's warnings stand in for it

@@ -1,6 +1,6 @@
-// M6 PREP (avra-8sb5.57.9): `error_sites`, `raised_by` and `chain` over
-// a small real program — a concrete-typed fn that fails, and a
-// `_`-declared fn that catches it and re-raises.
+// avra-8sb5.57.9.1: `ErrorSite`, `raised_by` and `chain` over a small
+// real program — a concrete-typed fn that fails, and a `_`-declared
+// fn that catches it and re-raises.
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite}
 use compiler.host.{memory_host}
@@ -45,14 +45,14 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let a = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        a.clean() && !ws.error_sites.get().is_empty()
+        a.clean() && !ErrorSite.all(ws.error_sites_db.get()).is_empty()
     }
     then "invariant: a site `within` a catch shares that catch's own owner" {
         let ws = sites_workspace(source())
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let sites = ws.error_sites.get()
+        let sites = ErrorSite.all(ws.error_sites_db.get())
         let catches = [s for s in sites if s.how is .Catch]
         catches
             .all(
@@ -66,7 +66,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let sites = ws.error_sites.get()
+        let sites = ErrorSite.all(ws.error_sites_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
     then "raised_by(b) includes the re-raised string error" {
@@ -80,7 +80,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let catches = [s for s in ws.error_sites.get() if s.how is .Catch]
+        let catches = [s for s in ErrorSite.all(ws.error_sites_db.get()) if s.how is .Catch]
         let c = catches[0]
         let tree = ws.chain(c, [])
         tree.next.length == 1 && tree.next[0].next.length == 0
@@ -129,7 +129,8 @@ fn nested_source() -> string {
 }
 
 fn outer_catch_of(ws: Workspace, owner: DeclId) -> ErrorSite {
-    [s for s in ws.error_sites.get() if s.how is .Catch && same_decl(s.owner, owner) && s.within == null][0]
+    let all: List<ErrorSite> = ErrorSite.all(ws.error_sites_db.get())
+    [s for s in all if s.how is .Catch && same_decl(s.owner, owner) && s.within == null][0]
 }
 
 spec "compiler/failures — a re-raise nested inside further control flow within the arm" {
@@ -174,7 +175,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vf)
         let _ = ws.raised_by(vm)
         let _ = ws.raised_by(vn)
-        let sites = ws.error_sites.get()
+        let sites = ErrorSite.all(ws.error_sites_db.get())
         let catches = [s for s in sites if s.how is .Catch]
         catches
             .all(
@@ -192,7 +193,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vf)
         let _ = ws.raised_by(vm)
         let _ = ws.raised_by(vn)
-        let sites = ws.error_sites.get()
+        let sites = ErrorSite.all(ws.error_sites_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
 }
