@@ -18,6 +18,7 @@ use core.{
     DeclId,
     FnParts,
     StructParts,
+    Spread,
     EnumParts,
     widthless,
     width_named,
@@ -59,7 +60,7 @@ impl TypeCx {
         self.refuse_taken_tparams(s, self.view.store.type_decl_name(s) ?? "this type")
         self.enter_tscope(s)
         let sp: StructParts? = self.view.store.struct_parts(s)
-        if sp != null { self.declare_struct_sig(s, sp!.fields) }
+        if sp != null { self.declare_struct_sig(s, sp!.fields, sp!.spreads) }
         self.leave_tscope()
     }
 
@@ -169,26 +170,68 @@ impl TypeCx {
         self.view.decls.declare(self.decl_of(s), d)
     }
 
-    fn declare_struct_sig(s: StmtId, fields: List<Param>) {
-        let names = [f.name for f in fields]
+    fn declare_struct_sig(s: StmtId, fields: List<Param>, spreads: List<Spread>) {
         let owner: string = self.view.store.type_decl_name(s) ?? "this type"
-        for d in duplicate_names(
-            "type.duplicate_field",
-            owner,
-            [t.of for t in names],
-            self.stmt_loc(s),
-        ) {
-            self.emit(d)
-        }
-        let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
-        if self.marks_identity(record) { self.identity_law(s, owner, record, names, types) }
-        let sig = StructSig {
-            names: [t.of for t in names],
-            types: types,
+        let own = StructSig {
+            names: [f.name.of for f in fields],
+            types: [self.field_type(s, f) for f in fields],
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
         }
+        let sig = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
+        for d in duplicate_names("type.duplicate_field", owner, sig.names, self.stmt_loc(s)) {
+            self.emit(d)
+        }
+        if self.marks_identity(record) {
+            self.identity_law(s, owner, record, [Scoped(n) for n in sig.names], sig.types)
+        }
         self.declare(s, DeclSig.Record(sig))
+    }
+
+    /// A record's own fields with each `..R`'s placed where it was
+    /// written: R's names, its types under the written arguments, and
+    /// R's OWN defaults, typed in R's scope.
+    fn spread_into(s: StmtId, owner: string, own: StructSig, spreads: List<Spread>) -> StructSig {
+        let parts = [self.spread_fields(s, owner, x) for x in spreads]
+        let before = (k: int) -> [p for j, p in parts if spreads[j].at == k]
+        let rows = flatten(
+            [flatten(before(k)).concat([one_field(own, k)]) for k in 0..own.names.length],
+        )
+            .concat(flatten(before(own.names.length)))
+        StructSig {
+            names: [r.names[0] for r in rows],
+            types: [r.types[0] for r in rows],
+            defaults: [r.defaults[0] for r in rows],
+        }
+    }
+
+    /// One `..R`'s fields, each as a one-field table; a spread that
+    /// names no record, or reaches its own, is refused and adds none.
+    fn spread_fields(s: StmtId, owner: string, x: Spread) -> List<StructSig> {
+        let ty = self.full_type(self.stmt_loc(s), x.of)
+        if self.view.types.shape_of(ty) is .Error { return [] }
+        if self.names_record(ty, self.decl_of(s)) { return self.spread_own(s, owner) }
+        if self.record_unsigned(ty) { return self.spread_cycle(s, x.of) }
+        let fields? = self.view.decls.fields_of_type(ty) else { return self.spread_no_record(s, x.of) }
+        [one_field(fields, j) for j in 0..fields.names.length]
+    }
+
+    /// Whether `ty` names a declaration whose signature cannot be
+    /// asked from here — it is being signed, so the spread came back.
+    fn record_unsigned(ty: TypeId) -> bool {
+        match self.view.types.shape_of(ty) {
+            .Struct(decl, _) or .App(decl, _, _) -> self.view.decls.sig(decl) == null,
+            _ -> false,
+        }
+    }
+
+    /// Whether `ty` is the record `d` itself, applied or not.
+    fn names_record(ty: TypeId, d: DeclId) -> bool {
+        match self.view.types.shape_of(ty) {
+            // LICENSED structs.index_compared: DECLARATION identity — the spread names the record being declared
+            .Struct(decl, _) or .App(decl, _, _) -> decl.index == d.index,
+            _ -> false,
+        }
     }
 
     /// AN IDENTITY'S TABLES ARE SHARED BY EVERY COPY: a field a
@@ -549,6 +592,48 @@ impl TypeCx {
                     "move it to the top level, or drop `once`",
                 ),
             )
+    }
+
+    fn spread_own(s: StmtId, owner: string) -> List<StructSig> {
+        self
+            .emit(
+                refusal(
+                    "type.spread",
+                    self.stmt_loc(s),
+                    "`${owner}` spreads itself",
+                    "declared here",
+                    "a spread places ANOTHER record's fields — a record cannot hold its own",
+                ),
+            )
+        []
+    }
+
+    fn spread_cycle(s: StmtId, of: TypeRef) -> List<StructSig> {
+        self
+            .emit(
+                refusal(
+                    "type.spread",
+                    self.stmt_loc(s),
+                    "`..${spelled(of)}` spreads a record that spreads this one",
+                    "spread here",
+                    "spreads cannot form a cycle — the fields would have no first owner",
+                ),
+            )
+        []
+    }
+
+    fn spread_no_record(s: StmtId, of: TypeRef) -> List<StructSig> {
+        self
+            .emit(
+                refusal(
+                    "type.spread",
+                    self.stmt_loc(s),
+                    "`..${spelled(of)}` spreads no record",
+                    "spread here",
+                    "a spread places a record's fields — `${spelled(of)}` is not a record with fields",
+                ),
+            )
+        []
     }
 
     fn named_is_generic(s: StmtId, name: string) {
@@ -1152,4 +1237,9 @@ fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }
 /// An extern's seats, each width word read as the `int` it carries.
 fn widthless_seats(ps: List<Param>) -> List<Param> {
     [pp with { ty: widthless(pp.ty) } for pp in ps]
+}
+
+/// The `j`th field of a table, as a table of one.
+fn one_field(sig: StructSig, j: int) -> StructSig {
+    StructSig { names: [sig.names[j]], types: [sig.types[j]], defaults: [sig.defaults[j]] }
 }

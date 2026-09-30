@@ -78,6 +78,8 @@ export type SyntaxArena = {
     // one node; the mark rides the hole's own CONTENT expr, never the
     // quote body's placeholder
     run_holes: Cell<List<bool>>,
+    // a record's `..R` entries, by its statement
+    spreads: Cell<List<List<Spread>>>,
     // a string written `"""raw"""`, never `"escaped"` — the printer's
     // only way to tell them apart once both are one StrLit
     raw_strings: Cell<List<bool>>,
@@ -141,6 +143,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         type_lits: list_cell(),
         holes: list_cell(),
         run_holes: list_cell(),
+        spreads: list_cell(),
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
         instance_owners: list_cell(),
@@ -358,6 +361,25 @@ impl SyntaxArena {
         self.run_holes.set_at(e.index, true)
         self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
     }
+
+    /// A record's `..R` entries, part of the statement's identity.
+    fn spread_fields(s: StmtId, xs: List<Spread>) {
+        self.spreads.set_at(s.index, xs)
+        self
+            .stmt_fingerprints
+            .set_at(
+                s.index,
+                fp(
+                    153,
+                    [
+                        self.stmt_fingerprints.get()[s.index],
+                        fp_list([fp_list([x.at, type_fp(x.of)]) for x in xs]),
+                    ],
+                ),
+            )
+    }
+
+    fn spreads_of(s: StmtId) -> List<Spread> { self.spreads.get()[s.index] }
 
     fn is_run_hole(e: ExprId) -> bool {
         self.run_holes.get()[e.index]
@@ -701,6 +723,7 @@ impl SyntaxArena {
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
+        self.spreads.push([])
         StmtId { index: self.stmts.add(s, span) }
     }
 
