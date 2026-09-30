@@ -658,7 +658,12 @@ fn load_imports(
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
+            for owner in ws.record_modules(imp) {
+                load_named(ws, store, owner, ws.module_files(imp), entry, want)
+                // the record is kept under its whole module, and a check reaches every
+                // file of it: minted now, never first inside a query
+                for path in ws.module_files(owner) { let _ = ws.file_id(path) }
+            }
         }
     }
     // a method table wants EVERY impl of a name, and a held impl names its trait by
