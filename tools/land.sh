@@ -1739,7 +1739,7 @@ main_ff() {
     fi
     before="$(git -C "$mwt" rev-parse HEAD)"
     ffst=0
-    git -C "$mwt" merge --ff-only "$target" || ffst=$?
+    AVRA_LANDING=1 git -C "$mwt" merge --ff-only "$target" || ffst=$?
     [ "$ffst" -eq 0 ] && return 0
     if [ "$(git -C "$mwt" rev-parse HEAD)" = "$before" ]; then
         restored=""
