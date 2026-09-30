@@ -1,6 +1,7 @@
 # The merge queue's check: each train's combined commit, built once, then
 # every affected package's suite on its own runner at once. `test` is the
-# one required check.
+# one required check. The machine is .github/ci/Dockerfile's image; a train
+# is at most ten entries over its base, so twenty commits of history reach it.
 name: checks
 
 on:
@@ -11,34 +12,29 @@ concurrency:
   group: checks-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  LLVM_PREFIX: /usr/lib/llvm-22
-  CC: /usr/lib/llvm-22/bin/clang
+permissions:
+  contents: read
+  packages: read
 
 jobs:
   compiler:
     runs-on: ubuntu-latest
-    container: ubuntu:26.04
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 30
     outputs:
       key: ${{ steps.key.outputs.key }}
       packages: ${{ steps.plan.outputs.packages }}
     steps:
-      - name: git
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git >/dev/null
-          git config --system --add safe.directory '*'
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - run: sh tools/ci-toolchain.sh
+        with: { fetch-depth: 20 }
       - id: key
-        run: |
-          echo "key=avra-$(sh tools/sources_hash.sh)" >> "$GITHUB_OUTPUT"
+        run: echo "key=avra-${{ hashFiles('Makefile', 'backend/**', 'runtime/**', 'bootstrap/**', 'packages/**', '!packages/**/tests/**') }}" >> "$GITHUB_OUTPUT"
       - id: plan
         run: |
-          git fetch -q origin main
-          sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null \
+          base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
+          sh tools/affected_packages.sh "$base" HEAD "$PWD" 2>/dev/null \
             | python3 -c 'import json,sys; print("packages=" + json.dumps([l.strip() for l in sys.stdin if l.strip()]))' \
             >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v4
@@ -58,17 +54,13 @@ jobs:
   lint:
     needs: compiler
     runs-on: ubuntu-latest
-    container: ubuntu:26.04
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 20
     steps:
-      - name: git
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git >/dev/null
-          git config --system --add safe.directory '*'
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - run: sh tools/ci-toolchain.sh
+        with: { fetch-depth: 20 }
       - uses: actions/cache/restore@v4
         with:
           path: build/avra
@@ -76,8 +68,8 @@ jobs:
           fail-on-cache-miss: true
       - name: fmt
         run: |
-          git fetch -q origin main
-          changed=$(git diff --name-only --diff-filter=d origin/main...HEAD -- '*.av')
+          base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
+          changed=$(git diff --name-only --diff-filter=d "$base" HEAD -- '*.av')
           [ -z "$changed" ] || build/avra fmt --check $changed
       - name: idioms
         run: build/avra check packages/std-avrac --baseline tools/idioms.baseline
@@ -86,7 +78,9 @@ jobs:
     needs: compiler
     if: needs.compiler.outputs.packages != '[]'
     runs-on: ubuntu-latest
-    container: ubuntu:26.04
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -94,13 +88,7 @@ jobs:
         package: ${{ fromJSON(needs.compiler.outputs.packages) }}
     name: suite (${{ matrix.package }})
     steps:
-      - name: git
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git >/dev/null
-          git config --system --add safe.directory '*'
       - uses: actions/checkout@v4
-      - run: sh tools/ci-toolchain.sh
       - uses: actions/cache/restore@v4
         with:
           path: build/avra
