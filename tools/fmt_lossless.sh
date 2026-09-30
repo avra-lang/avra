@@ -19,7 +19,14 @@
 set -u
 avra=${AVRA:-build/avra}
 root=${1:-.}
-shift || true
+# `shift` with NOTHING left to shift is an ORDINARY failure under bash
+# (which `|| true` catches) and a FATAL one under dash — Ubuntu's
+# `/bin/sh`, and so every Sprite's — where a shift past `$#` aborts
+# the script before `|| true` is ever consulted. `make fmt-lossless`
+# calls this with zero arguments, so the bare form crashed on every
+# Linux run and never once on a Mac's bash-as-sh (found running the
+# land train's own Sprite proof, docs/2026_09_29_LAND_TRAIN.md).
+[ "$#" -gt 0 ] && shift
 if [ "$#" -gt 0 ]; then
     "$avra" fmt --check "$@"
 else

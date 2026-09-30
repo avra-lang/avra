@@ -1,0 +1,208 @@
+// Certificates as a server presents them and a client judges them:
+// the system's trust anchors, an identity per name chosen by SNI, a
+// wildcard served through an intermediate, an address checked as an
+// address, and the refusals verification owes — a chain missing its
+// intermediate, an expired leaf, a wildcard asked to cover two labels,
+// a client that names no host. The fixtures below are signed by the
+// test authority in @std.tls.testing and are good for nothing else.
+use @std.io.{read_bytes}
+use @std.tls.{Config, TlsError, client_config, server_config, anchored, roots_path}
+use @std.tls.testing.{localhost_ca, localhost_chain, localhost_key, trusting_localhost}
+
+/// `*.example.test`, leaf first, then the intermediate that signed it.
+fn wildcard_chain() -> Bytes {
+    pem_of(
+        [
+            "-----BEGIN CERTIFICATE-----",
+            "MIIB2DCCAX+gAwIBAgIBBDAKBggqhkjOPQQDAjA9MTswOQYDVQQDDDJBdnJhIHRl",
+            "c3QgaW50ZXJtZWRpYXRlIC0gbmV2ZXIgdHJ1c3Qgb3V0c2lkZSB0ZXN0czAgFw0y",
+            "NjA5MzAwMjU1MDlaGA8yMTI2MDkwNjAyNTUwOVowGTEXMBUGA1UEAwwOKi5leGFt",
+            "cGxlLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT2KSxi2y1DJXagq4+1",
+            "QJRuxpQZH/988WFKdn2b+51vBT6U/YXQAETY6unQTDY5lNeoGm8tkU1J/hzuWFJX",
+            "nEWjo4GRMIGOMBkGA1UdEQQSMBCCDiouZXhhbXBsZS50ZXN0MAwGA1UdEwEB/wQC",
+            "MAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMB0GA1UdDgQW",
+            "BBS8xTkQTKAadPJ7B5NA3xJabIwJgjAfBgNVHSMEGDAWgBQv3uUV5kJaITQ2B/0h",
+            "XA3NwRFnuDAKBggqhkjOPQQDAgNHADBEAiBkWqdQWM+hcZTAOOgYTmRNake3H3XL",
+            "HbGAmxEmGjPxGQIgZT2g4I9erpNa1FOxOqDHbKoY5GAT49z21y/V9QqsjDs=",
+            "-----END CERTIFICATE-----",
+            "-----BEGIN CERTIFICATE-----",
+            "MIIBxzCCAW2gAwIBAgIBAzAKBggqhkjOPQQDAjAzMTEwLwYDVQQDDChBdnJhIHRl",
+            "c3QgQ0EgLSBuZXZlciB0cnVzdCBvdXRzaWRlIHRlc3RzMCAXDTI2MDkzMDAyNTUw",
+            "OVoYDzIxMjYwOTA2MDI1NTA5WjA9MTswOQYDVQQDDDJBdnJhIHRlc3QgaW50ZXJt",
+            "ZWRpYXRlIC0gbmV2ZXIgdHJ1c3Qgb3V0c2lkZSB0ZXN0czBZMBMGByqGSM49AgEG",
+            "CCqGSM49AwEHA0IABEFxEltupzfkiOZr+G0kbHSPgr1adBZbywGNV2iMYxwZWsCu",
+            "vEnQSCRJguch+yx3LNbwGiQnFrNZvdI3DairFa+jZjBkMBIGA1UdEwEB/wQIMAYB",
+            "Af8CAQAwDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBQv3uUV5kJaITQ2B/0hXA3N",
+            "wRFnuDAfBgNVHSMEGDAWgBQUdW2ReoHBdij2z8KXn8BtguvvBzAKBggqhkjOPQQD",
+            "AgNIADBFAiBMsech1sY+yFcd8nFS5eDK6p4zn4KaSe7T4a9cBovspwIhANgDlZrc",
+            "bm3y2l2FsGBFjm3109t1pO2Q19wknwtGx+Gv",
+            "-----END CERTIFICATE-----",
+        ],
+    )
+}
+
+fn wildcard_key() -> Bytes {
+    pem_of(
+        [
+            "-----BEGIN PRIVATE KEY-----",
+            "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgHidQq3jnPo1KHyUB",
+            "rldqdonvuVGII9ATkO81z1bjMnKhRANCAAT2KSxi2y1DJXagq4+1QJRuxpQZH/98",
+            "8WFKdn2b+51vBT6U/YXQAETY6unQTDY5lNeoGm8tkU1J/hzuWFJXnEWj",
+            "-----END PRIVATE KEY-----",
+        ],
+    )
+}
+
+/// The wildcard leaf alone, without the intermediate that signed it.
+fn wildcard_leaf_alone() -> Bytes {
+    pem_of(
+        [
+            "-----BEGIN CERTIFICATE-----",
+            "MIIB2DCCAX+gAwIBAgIBBDAKBggqhkjOPQQDAjA9MTswOQYDVQQDDDJBdnJhIHRl",
+            "c3QgaW50ZXJtZWRpYXRlIC0gbmV2ZXIgdHJ1c3Qgb3V0c2lkZSB0ZXN0czAgFw0y",
+            "NjA5MzAwMjU1MDlaGA8yMTI2MDkwNjAyNTUwOVowGTEXMBUGA1UEAwwOKi5leGFt",
+            "cGxlLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT2KSxi2y1DJXagq4+1",
+            "QJRuxpQZH/988WFKdn2b+51vBT6U/YXQAETY6unQTDY5lNeoGm8tkU1J/hzuWFJX",
+            "nEWjo4GRMIGOMBkGA1UdEQQSMBCCDiouZXhhbXBsZS50ZXN0MAwGA1UdEwEB/wQC",
+            "MAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMB0GA1UdDgQW",
+            "BBS8xTkQTKAadPJ7B5NA3xJabIwJgjAfBgNVHSMEGDAWgBQv3uUV5kJaITQ2B/0h",
+            "XA3NwRFnuDAKBggqhkjOPQQDAgNHADBEAiBkWqdQWM+hcZTAOOgYTmRNake3H3XL",
+            "HbGAmxEmGjPxGQIgZT2g4I9erpNa1FOxOqDHbKoY5GAT49z21y/V9QqsjDs=",
+            "-----END CERTIFICATE-----",
+        ],
+    )
+}
+
+/// A localhost leaf that expired on 2021-01-01.
+fn expired_chain() -> Bytes {
+    pem_of(
+        [
+            "-----BEGIN CERTIFICATE-----",
+            "MIIB2zCCAYGgAwIBAgIBBTAKBggqhkjOPQQDAjAzMTEwLwYDVQQDDChBdnJhIHRl",
+            "c3QgQ0EgLSBuZXZlciB0cnVzdCBvdXRzaWRlIHRlc3RzMB4XDTIwMDEwMTAwMDAw",
+            "MFoXDTIxMDEwMTAwMDAwMFowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZI",
+            "zj0CAQYIKoZIzj0DAQcDQgAER1gRlxdcUEukqTlNOuycmrPgJMJJF1RL1M/Q4gO+",
+            "D5YNvb2+C5/NSeJl5CV/11E2xtSdFeXhPH+T31r88Ub2SaOBpDCBoTAsBgNVHREE",
+            "JTAjgglsb2NhbGhvc3SHBH8AAAGHEAAAAAAAAAAAAAAAAAAAAAEwDAYDVR0TAQH/",
+            "BAIwADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwHQYDVR0O",
+            "BBYEFJKZdtAuVzgrkCN46Xg3tVj09mv0MB8GA1UdIwQYMBaAFBR1bZF6gcF2KPbP",
+            "wpefwG2C6+8HMAoGCCqGSM49BAMCA0gAMEUCIQDginnpCupshZfUhPsPS2c6ndwz",
+            "wLgEnY2Dm5zpBgsh5AIgaL0Z56UAaGPZh0V+ydiuuiM/S1VtLSrP2Pw5FkMKEjM=",
+            "-----END CERTIFICATE-----",
+        ],
+    )
+}
+
+fn expired_key() -> Bytes {
+    pem_of(
+        [
+            "-----BEGIN PRIVATE KEY-----",
+            "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgaJXoTe1R+2/O6Bc1",
+            "QIg1jmct/gYwSQePlAPuaXt2fbuhRANCAARHWBGXF1xQS6SpOU067Jyas+AkwkkX",
+            "VEvUz9DiA74Plg29vb4Ln81J4mXkJX/XUTbG1J0V5eE8f5PfWvzxRvZJ",
+            "-----END PRIVATE KEY-----",
+        ],
+    )
+}
+
+/// A server presenting localhost first, then the wildcard.
+fn named_server() -> Result<Config, TlsError> {
+    let s = server_config()?
+    s.presenting(localhost_chain(), localhost_key())?
+    s.presenting(wildcard_chain(), wildcard_key())
+}
+
+fn served(chain: Bytes, key: Bytes) -> Result<Config, TlsError> {
+    (server_config()?).presenting(chain, key)
+}
+
+/// A client's handshake against `sc`, asking for `host`: "<ok>" or
+/// the refusal's words.
+fn verdict(cc: Result<Config, TlsError>, sc: Config, host: string) -> string {
+    match shaken_with(cc, sc, host) {
+        .Ok(done) -> if done { "<ok>" } else { "<stalled>" },
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn shaken_with(cc: Result<Config, TlsError>, sc: Config, host: string) -> Result<bool, TlsError> {
+    shaken(paired(cc?, sc, host)?)
+}
+
+fn asked(sc: Config, host: string) -> string { verdict(trusting_localhost(), sc, host) }
+
+fn asked_system(host: string) -> string {
+    match named_server() {
+        .Ok(sc) -> verdict(client_config(), sc, host),
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn asked_named(host: string) -> string {
+    match named_server() { .Ok(sc) -> asked(sc, host), .Err(e) -> e.describe().message }
+}
+
+fn asked_of(chain: Bytes, key: Bytes, host: string) -> string {
+    match served(chain, key) { .Ok(sc) -> asked(sc, host), .Err(e) -> e.describe().message }
+}
+
+fn system_roots_load() -> Result<bool, TlsError> {
+    let path? = roots_path() else { return false }
+    let c = client_config()?
+    let bundle = read_bytes(path) catch "".bytes()
+    let counted = (anchored(bundle)?).trusting(localhost_ca())?
+    c.free()?
+    !bundle.is_empty() && counted == 1
+}
+
+/// The refusal for a certificate no anchor signed.
+fn unsigned(host: string) -> string {
+    "${host}'s certificate is not trusted: The certificate is not correctly signed by the trusted CA"
+}
+
+/// The refusal for a certificate that does not name the host asked for.
+fn misnamed(host: string) -> string {
+    "${host}'s certificate is not trusted: The certificate Common Name (CN) does not match with the expected CN"
+}
+
+/// The refusal for a certificate past its validity.
+fn lapsed(host: string) -> string {
+    "${host}'s certificate is not trusted: The certificate validity has expired"
+}
+
+spec "std.tls certificates" {
+    given "a client's default trust" {
+        then "the system's bundle is found and loaded" { passes(system_roots_load()) }
+        then "the system's anchors do not include the test authority" {
+            asked_system("localhost") == unsigned("localhost")
+        }
+    }
+    given "a server holding an identity per name" {
+        then "SNI for localhost is answered by the localhost leaf" { asked_named("localhost") == "<ok>" }
+        then "SNI for a name under the wildcard is answered through its intermediate" {
+            asked_named("api.example.test") == "<ok>"
+        }
+        then "names are compared ignoring case" { asked_named("API.Example.TEST") == "<ok>" }
+        then "a wildcard covers one label, never two" {
+            asked_named("a.b.example.test") == misnamed("a.b.example.test")
+        }
+        then "a wildcard does not cover its own parent" {
+            asked_named("example.test") == misnamed("example.test")
+        }
+    }
+    given "what a client verifies" {
+        then "an address is checked against the certificate's addresses" { asked_named("127.0.0.1") == "<ok>" }
+        then "an address the certificate does not carry is refused" {
+            asked_named("127.0.0.2") == misnamed("127.0.0.2")
+        }
+        then "a chain missing its intermediate is refused" {
+            asked_of(wildcard_leaf_alone(), wildcard_key(), "api.example.test") == unsigned("api.example.test")
+        }
+        then "an expired leaf is refused" {
+            asked_of(expired_chain(), expired_key(), "localhost") == lapsed("localhost")
+        }
+        then "a verifying client that names no host is refused before it trusts anything" {
+            asked_named("") == "session naming no host: a verifying client names the host it expects"
+        }
+    }
+}
