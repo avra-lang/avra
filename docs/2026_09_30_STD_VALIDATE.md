@@ -502,3 +502,29 @@ Recorded as each decision landed on `lane/validate`.
   reader that took the other copy would see another value.
 - **A secret stays secret all the way down**: a secret list's
   elements and a secret object's fields never show what they received.
+- **An annotation's arguments are expressions, and a reader splices
+  the call.** `@range(13, 130)` on a field is recorded as the template
+  `range(${value}, 13, 130)`, marked where the `@` stands; `@std/meta`'s
+  `Annotation.call` carries it and `applied(a, value)` fills it. The
+  `Decode` derive splices it over the value it read, so the ordinary
+  typer checks it there and every refusal points at the annotation:
+  a rule on the wrong type, a misspelled rule, a sibling name that
+  does not exist. No second typing law exists for rules.
+- **A rule on a declaration is data, not a call.** An annotation whose
+  first parameter takes a VALUE rather than a declaration (`Fn`,
+  `Type`, `Named`) is not run at compile time; on a named type it
+  checks the value the type wraps, and on a record it is a
+  **cross-field rule** over the whole value, run once every field has
+  passed — the `check(t)` of §4, spelled as one more plain fn:
+
+  ```avra
+  fn adult_for_pro(s: Signup) -> Result<Signup, Issue> {
+      if s.plan == "pro" && s.age < 18 { fail issue("plan", "pro needs an adult") }
+      s
+  }
+
+  @derive(Decode) @adult_for_pro
+  type Signup = { … }
+  ```
+- **`@derive(Decode)` is written.** §1's type carries no derive; the
+  derive is the visible door (P7), one line.

@@ -94,7 +94,7 @@ impl Decoding {
     /// was received unless the slot is secret.
     mut fn refused(s: Slot, rule: string, i: Issue) {
         let named = if i.rule.is_empty() { rule } else { i.rule }
-        let got = if s.hidden { null } else { i.received ?? s.value }
+        let got = if s.hidden { null } else { i.received ?? s.value?.at(i.path) }
         self.say(i with { path: i.path.under(s.at), rule: named, received: got })
     }
 
@@ -106,7 +106,8 @@ impl Decoding {
             return null
         }
         if v is .Null {
-            if s.required { self
+            if s.required {
+                self
                     .say(
                         Issue {
                             path: s.at,
@@ -114,7 +115,8 @@ impl Decoding {
                             message: not_null(),
                             received: Value.Null,
                         },
-                    ) }
+                    )
+            }
             return null
         }
         v
@@ -194,6 +196,11 @@ impl Decoding {
     mut fn int(s: Slot) -> int? { scalar(self, s, "an integer", as_int) }
     mut fn float(s: Slot) -> float? { scalar(self, s, "a number", as_float) }
     mut fn bool(s: Slot) -> bool? { scalar(self, s, "true or false", as_bool) }
+
+    /// A shape no reader takes yet: one issue naming it.
+    mut fn unread(s: Slot, shape: string) {
+        self.say(Issue { path: s.at, rule: "type", message: unreadable(shape) })
+    }
 }
 
 /// The slot's value read as one kind, or the wrong kind named.
@@ -269,11 +276,17 @@ export fn ruled<T, E: Refusal>(mut d: Decoding, s: Slot, rule: string, verdict: 
     match verdict {
         .Ok(v) -> v,
         .Err(e) -> {
-            d.refused(s, rule, e.issue())
+            for i in e.issues() { d.refused(s, rule, i) }
             null
         },
     }
 }
+
+/// Each scalar reader as a decoder, for a list of them.
+export fn read_text(mut d: Decoding, s: Slot) -> string? { d.text(s) }
+export fn read_int(mut d: Decoding, s: Slot) -> int? { d.int(s) }
+export fn read_float(mut d: Decoding, s: Slot) -> float? { d.float(s) }
+export fn read_bool(mut d: Decoding, s: Slot) -> bool? { d.bool(s) }
 
 /// A field the decoder does not name, and the one it may have meant.
 fn stray(at: Path, key: string, names: List<string>) -> Issue {
@@ -302,6 +315,7 @@ fn required() -> string { "is required" }
 fn not_null() -> string { "is required, and null is not a value here" }
 fn must_be(want: string, got: Value) -> string { "must be ${want}, not ${got.kind()}" }
 fn not_here() -> string { "is not a field here" }
+fn unreadable(shape: string) -> string { "is a `${shape}`, which no decoder reads yet" }
 fn twice() -> string { "is written more than once" }
 fn too_deep(most: int) -> string { "nests deeper than ${most} levels" }
 fn too_many(most: int) -> string { "holds more than ${most} items" }

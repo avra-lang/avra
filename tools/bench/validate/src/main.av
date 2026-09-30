@@ -1,106 +1,24 @@
 //! WHAT VALIDATION COSTS BESIDE PARSING. One Signup payload, read a
 //! hundred thousand times four ways: `@std/json`'s parse alone, parse
-//! into a `Value`, parse and decode with every rule, and the same over
-//! a payload that breaks nine rules — the refusal path, which builds
-//! every issue. Each line is nanoseconds per payload.
+//! into a `Value`, parse and decode through `@derive(Decode)` with
+//! every rule, and the same over a payload that breaks six rules — the
+//! refusal path, which builds every issue. Each line is nanoseconds
+//! per payload.
+use @std.meta.{derive}
 use @std.time.{now_ns}
 use @std.json.{parse}
 use @std.validate.{
+    Decode,
+    Issue,
+    Value,
     email,
     range,
     length,
     matches,
     one_of,
     pattern,
-    Decoding,
-    Slot,
-    Coercion,
-    Issues,
-    decode,
-    ruled,
-    list,
     from_json,
-    Value,
-}
-
-type Signup = {
-    email: string,
-    age: int,
-    username: string,
-    password: string,
-    confirm: string,
-    plan: string,
-    interests: List<string>,
-}
-
-/// What `@derive` will write from the annotations: each field read at
-/// its slot, then its rules in order.
-fn signup(mut d: Decoding, s: Slot) -> Signup? {
-    let o? = d.object(s) else { return null }
-    let address = mailbox(d, o.field("email"))
-    let years = age(d, o.field("age"))
-    let handle = username(d, o.field("username"))
-    let secret = password(d, o.field("password").secret())
-    let again = confirm(d, o.field("confirm").secret(), secret)
-    let tier = plan(d, o.field("plan").optional())
-    let likes = interests(d, o.field("interests").optional())
-    if !d.closed(o, ["email", "age", "username", "password", "confirm", "plan", "interests"]) { return null }
-    Signup {
-        email: address!,
-        age: years!,
-        username: handle!,
-        password: secret!,
-        confirm: again!,
-        plan: tier ?? "free",
-        interests: likes ?? [],
-    }
-}
-
-fn mailbox(mut d: Decoding, s: Slot) -> string? {
-    let v? = d.text(s) else { return null }
-    ruled(d, s, "email", email(v))
-}
-
-fn age(mut d: Decoding, s: Slot) -> int? {
-    let v? = d.int(s) else { return null }
-    ruled(d, s, "range", range(v, 13, 130))
-}
-
-fn username(mut d: Decoding, s: Slot) -> string? {
-    let v? = d.text(s) else { return null }
-    let sized? = ruled(d, s, "length", length(v, min: 3, max: 32)) else { return null }
-    ruled(d, s, "pattern", pattern(sized, slug, "slug"))
-}
-
-fn password(mut d: Decoding, s: Slot) -> string? {
-    let v? = d.text(s) else { return null }
-    ruled(d, s, "length", length(v, min: 12))
-}
-
-fn confirm(mut d: Decoding, s: Slot, password: string?) -> string? {
-    let v? = d.text(s) else { return null }
-    ruled(d, s, "matches", matches(v, password, "password"))
-}
-
-fn plan(mut d: Decoding, s: Slot) -> string? {
-    let v? = d.text(s) else { return null }
-    ruled(d, s, "one_of", one_of(v, ["free", "pro"]))
-}
-
-fn interests(mut d: Decoding, s: Slot) -> List<string>? {
-    let v? = list(d, s, interest) else { return null }
-    ruled(d, s, "at_most", at_most(v, 3))
-}
-
-fn interest(mut d: Decoding, s: Slot) -> string? {
-    let v? = d.text(s) else { return null }
-    ruled(d, s, "one_of", one_of(v, ["music", "maths", "code"]))
-}
-
-/// A rule of our own: a plain fn over the value.
-fn at_most(v: List<string>, n: int) -> Result<List<string>, string> {
-    if v.length > n { fail "must hold at most ${n} items" }
-    v
+    issue,
 }
 
 /// Lowercase letters, digits and inner hyphens.
@@ -112,9 +30,28 @@ fn slug(s: string) -> bool {
 
 fn slug_char(c: int) -> bool { c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 45 }
 
-let good = "{\"email\": \"ada@lovelace.dev\", \"age\": 36, \"username\": \"ada-l\", \"password\": \"correct horse battery\", \"confirm\": \"correct horse battery\", \"plan\": \"pro\", \"interests\": [\"maths\", \"code\"]}"
-let bad = "{\"email\": \"ada@lovelace\", \"age\": 9, \"username\": \"Ada!\", \"password\": \"correct horse\", \"confirm\": \"correct house\", \"plan\": \"prp\", \"interests\": [\"music\", \"math\", \"art\", \"code\"], \"admin\": true, \"pln\": \"pro\"}"
-let n = 100000
+@derive(Decode)
+@length(min: 3, max: 32)
+@pattern(slug, "slug")
+type Username = string
+
+/// A cross-field rule: a plain fn over the whole record, run once
+/// every field has passed.
+fn adult_for_pro(s: Signup) -> Result<Signup, Issue> {
+    if s.plan == "pro" && s.age < 18 { fail issue("plan", "pro needs an adult") }
+    s
+}
+
+@derive(Decode)
+@adult_for_pro
+type Signup = {
+    @email email: string,
+    @range(13, 130) age: int,
+    username: Username,
+    @secret @length(min: 12) password: string,
+    @secret @matches(password, "password") confirm: string,
+    @one_of(["free", "pro"]) plan: string = "free",
+}
 
 fn parse_only(text: string, n: int) -> int {
     mut ok = 0
@@ -132,7 +69,7 @@ fn full(text: string, n: int) -> int {
     mut ok = 0
     for _i in 0..n {
         let v = from_json(text) catch Value.Null
-        if decode(v, signup) is .Ok { ok = ok + 1 }
+        if Signup.decode(v) is .Ok { ok = ok + 1 }
     }
     ok
 }
@@ -141,6 +78,9 @@ fn timed(label: string, t0: int, t1: int, n: int) {
     println("${label}: ${(t1 - t0) / n} ns/payload")
 }
 
+let good = "{\"email\": \"ada@lovelace.dev\", \"age\": 36, \"username\": \"ada-l\", \"password\": \"correct horse battery\", \"confirm\": \"correct horse battery\", \"plan\": \"pro\"}"
+let bad = "{\"email\": \"ada@lovelace\", \"age\": 9, \"username\": \"Ada!\", \"password\": \"correct horse\", \"confirm\": \"correct house\", \"plan\": \"prp\", \"admin\": true}"
+let n = 100000
 let a = now_ns()
 let r1 = parse_only(good, n)
 let b = now_ns()
@@ -150,8 +90,8 @@ let r3 = full(good, n)
 let e = now_ns()
 let r4 = full(bad, n)
 let f = now_ns()
-timed("std-json parse          (valid)  ", a, b, n)
-timed("from_json -> Value      (valid)  ", b, c, n)
-timed("from_json + decode      (valid)  ", c, e, n)
-timed("from_json + decode      (9 issues)", e, f, n)
+timed("std-json parse           (valid)   ", a, b, n)
+timed("from_json -> Value       (valid)   ", b, c, n)
+timed("from_json + decode       (valid)   ", c, e, n)
+timed("from_json + decode       (6 issues)", e, f, n)
 "${r1 + r2 + r3 + r4}"

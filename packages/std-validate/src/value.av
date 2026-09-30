@@ -3,6 +3,7 @@
 //! decoder written once reads them all. A map keeps its entries in
 //! written order — a list of `Entry`, never a `Map` — so an issue list
 //! reads in the order the input was written.
+use issue.{Path, Step}
 
 export type Entry = { key: string, value: Value }
 
@@ -29,6 +30,33 @@ impl Value {
             .List(items) -> "[${[i.shown() for i in items].join(", ")}]",
             .Map(entries) -> "{${[shown_entry(e) for e in entries].join(", ")}}",
         }
+    }
+
+    /// The value a path reaches from here, when it reaches one.
+    fn at(p: Path) -> Value? {
+        mut v = self
+        for s in p.steps {
+            let next? = v.step(s) else { return null }
+            v = next
+        }
+        v
+    }
+
+    /// One step down: a field or key of a map, an item of a list.
+    fn step(s: Step) -> Value? {
+        match s {
+            .Field(k) or .Key(k) -> self.entries().find(it.key == k)?.value,
+            .Index(i) -> if i >= 0 && i < self.items().length { self.items()[i] } else { null },
+            .Variant(_) -> null,
+        }
+    }
+
+    fn entries() -> List<Entry> {
+        match self { .Map(entries) -> entries, rest -> [] }
+    }
+
+    fn items() -> List<Value> {
+        match self { .List(items) -> items, rest -> [] }
     }
 
     /// What kind of value this is, as a report names it.
