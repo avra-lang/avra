@@ -1,0 +1,385 @@
+//! A request body READ as the handler asks for it: piece by piece or
+//! gathered under its bound, a `100 Continue` written only for the
+//! first read, what the handler left unread dropped or the connection
+//! closed, and a body that broke answered by its own law.
+use @std.net.{NetError, connect}
+use @std.time.{ms, secs, sleep}
+use @std.http.frame.{limits, Limits}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.body.{Body, BodyError, whole}
+use @std.http.server.{Timing, timing}
+
+/// What a handler saw of a body: its pieces, the largest, and how its
+/// reading ended.
+type Seen = { pieces: Cell<int>, largest: Cell<int>, total: Cell<int>, ending: Cell<string> }
+
+fn seen() -> Seen { Seen { pieces: Cell.new(0), largest: Cell.new(0), total: Cell.new(0), ending: Cell.new("") } }
+
+impl Seen {
+    /// The body read to its end, piece by piece, each noted here.
+    fn read_all(b: Body) -> string {
+        while true {
+            match b.read() {
+                .Ok(piece) -> {
+                    let got? = piece else { return self.ended("end") }
+                    self.noted(got)
+                },
+                .Err(e) -> { return self.ended(error_word(e)) },
+            }
+        }
+        "?"
+    }
+
+    fn noted(piece: Bytes) {
+        self.pieces.set(self.pieces.get() + 1)
+        self.total.set(self.total.get() + piece.length)
+        if piece.length > self.largest.get() { self.largest.set(piece.length) }
+    }
+
+    fn ended(word: string) -> string {
+        self.ending.set(word)
+        word
+    }
+}
+
+fn error_word(e: BodyError) -> string {
+    match e {
+        .TooLarge -> "too-large",
+        .Malformed(_) -> "malformed",
+        .Closed -> "closed",
+        .TimedOut -> "timed-out",
+        .Net(_) -> "net",
+    }
+}
+
+/// A server whose handler is `answer`, under `lim` and `t`.
+fn body_bed(answer: fn(Request<Unrouted>) -> Response, lim: Limits, t: Timing) -> Result<
+    Bed,
+    NetError,
+> {
+    bed_with((_app: App, q: Request<Unrouted>) -> answer(q), lim, t)
+}
+
+/// A handler that reads the whole body in pieces and answers what it saw.
+fn piecewise(s: Seen) -> fn(Request<Unrouted>) -> Response {
+    (q: Request<Unrouted>) -> text(200, "${s.read_all(q.body)} ${s.total.get()}")
+}
+
+fn post(n: int) -> string { "POST /u HTTP/1.1\r\nHost: a\r\nContent-Length: ${n}\r\n\r\n" }
+
+fn chunked_post() -> string { "POST /u HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n" }
+
+fn filler(n: int) -> string { ["x" for _i in 0..n].join("") }
+
+// ── Reading ─────────────────────────────────────────────────────
+
+fn pieces_across_reads() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    b.c.write(chunked_post().bytes())?
+    b.c.write("3\r\nhel\r\n".bytes())?
+    sleep(ms(30))
+    b.c.write("2\r\nlo\r\n0\r\n\r\n".bytes())?
+    let got = reply(b.c, "")?
+    .Ok(got.ends_with("end 5") && s.pieces.get() >= 2)
+}
+
+fn a_piece_is_one_read_at_most() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = reply(b.c, post(200000) + filler(200000))?
+    .Ok(got.ends_with("end 200000") && s.largest.get() <= 16384 && s.pieces.get() > 1)
+}
+
+fn a_giant_chunk_arrives_in_pieces() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = reply(b.c, chunked_post() + "30d40\r\n" + filler(200000) + "\r\n0\r\n\r\n")?
+    .Ok(got.ends_with("end 200000") && s.largest.get() <= 16384)
+}
+
+fn gathered_whole() -> Result<bool, NetError> {
+    let b = body_bed((q: Request<Unrouted>) -> text(200, q.body.text() ?? "?"), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = reply(b.c, chunked_post() + "3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n")?
+    .Ok(got.ends_with("\r\n\r\nhello"))
+}
+
+fn pipelined_after_a_read_body() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let sent = chunked_post() + "2\r\nhi\r\n0\r\n\r\n" + post(3) + "abc"
+    let got = (exchanged(b.c, sent, 1000)?).text() ?? ""
+    .Ok(got.contains("end 2") && got.ends_with("end 5") && b.s.connections() == 1)
+}
+
+fn pipelined_after_an_empty_length() -> Result<bool, NetError> {
+    let b = body_bed(
+        (q: Request<Unrouted>) -> text(200, "[${q.body.text() ?? "?"}]"),
+        limits(),
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, post(0) + post(2) + "hi", 1000)?).text() ?? ""
+    .Ok(got.contains("[]") && got.ends_with("[hi]") && b.s.connections() == 1)
+}
+
+fn pipelined_after_trailers() -> Result<bool, NetError> {
+    let b = body_bed(
+        (q: Request<Unrouted>) -> text(200, "[${q.body.text() ?? "?"}]"),
+        limits(),
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let sent = chunked_post() + "2\r\nab\r\n0\r\nX-T: 1\r\n\r\n" + post(2) + "cd"
+    let got = (exchanged(b.c, sent, 1000)?).text() ?? ""
+    .Ok(got.contains("[ab]") && got.ends_with("[cd]"))
+}
+
+/// A BODY OUTLIVES ITS HANDLER ONLY AS WHAT WAS ALREADY READ: kept
+/// past its request, left unfinished when its connection closed, and
+/// read from another connection's handler, it ends — never a read of a
+/// descriptor the kernel may have handed to that other connection.
+fn a_kept_body_reads_no_other_socket() -> Result<bool, NetError> {
+    let kept: Cell<List<Body>> = Cell.new([])
+    let answer = (q: Request<Unrouted>) -> kept_or_read(q, kept)
+    let b = body_bed(answer, Limits { body: 2 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = (exchanged(b.c, post(10) + "abc", 1000)?).text() ?? ""
+    let other = connect("127.0.0.1", b.s.listener.port, secs(2))?
+    defer { let _ = other.close() }
+    let second = reply(other, "GET /late HTTP/1.1\r\nHost: a\r\n\r\nsecret")?
+    .Ok(first.ends_with("kept") && second.ends_with("late: closed closed"))
+}
+
+/// The first request's body kept unread; a later request reads it.
+fn kept_or_read(q: Request<Unrouted>, kept: Cell<List<Body>>) -> Response {
+    let old? = kept.get().first() else {
+        kept.push(q.body)
+        return text(200, "kept")
+    }
+    let first = match old.read() { .Ok(p) -> p?.text() ?? "end", .Err(e) -> error_word(e) }
+    let second = match old.read() { .Ok(p) -> p?.text() ?? "end", .Err(e) -> error_word(e) }
+    text(200, "late: ${first} ${second}")
+}
+
+// ── What the handler left ───────────────────────────────────────
+
+/// A handler that answers without reading.
+fn unread(_q: Request<Unrouted>) -> Response { text(200, "unread") }
+
+fn unread_small_body_is_skipped() -> Result<bool, NetError> {
+    let b = body_bed(unread, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, post(5) + "hello")?
+    let second = reply(b.c, "GET /next HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(first.ends_with("unread") && second.ends_with("unread") && b.s.connections() == 1)
+}
+
+fn unread_large_body_closes() -> Result<bool, NetError> {
+    let b = body_bed(unread, Limits { body: 1000 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, post(5000) + filler(5000), 1000)?).text() ?? ""
+    .Ok(
+        got.starts_with("HTTP/1.1 200 ") &&
+            got.contains("connection: close\r\n") &&
+            settles_to(b.s, 0),
+    )
+}
+
+fn half_read_body_is_skipped() -> Result<bool, NetError> {
+    let answer = (q: Request<Unrouted>) -> text(200, "first ${first_length(q.body)}")
+    let b = body_bed(answer, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    b.c.write((post(10) + "abc").bytes())?
+    sleep(ms(30))
+    let first = reply(b.c, "defghij")?
+    let second = reply(b.c, "GET /n HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(first.ends_with("first 3") && second.contains("first 0") && b.s.connections() == 1)
+}
+
+/// How long the body's first piece is — 0 at its end or a failure.
+fn first_length(b: Body) -> int {
+    match b.read() { .Ok(p) -> p?.length ?? 0, .Err(_) -> 0 }
+}
+
+// ── 100 Continue ────────────────────────────────────────────────
+
+fn expecting(n: int) -> string { "POST /u HTTP/1.1\r\nHost: a\r\nContent-Length: ${n}\r\nExpect: 100-continue\r\n\r\n" }
+
+fn continue_only_for_a_read() -> Result<bool, NetError> {
+    let b = body_bed((_q: Request<Unrouted>) -> Response { status: 401 }, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, expecting(5), 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 401 ") && !got.contains("100 Continue") && settles_to(b.s, 0))
+}
+
+fn continue_before_the_first_read() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, expecting(2))?
+    let second = reply(b.c, "ok")?
+    .Ok(first == "HTTP/1.1 100 Continue\r\n\r\n" && second.ends_with("end 2"))
+}
+
+fn too_large_to_gather_is_never_invited() -> Result<bool, NetError> {
+    let b = body_bed(
+        (q: Request<Unrouted>) -> text(200, q.body.text() ?? "none"),
+        Limits { body: 4 },
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, expecting(5), 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 413 ") && !got.contains("100 Continue") && settles_to(b.s, 0))
+}
+
+// ── A body that broke ───────────────────────────────────────────
+
+fn chunks_past_the_gathered_bound_are_413() -> Result<bool, NetError> {
+    let b = body_bed(
+        (q: Request<Unrouted>) -> text(200, q.body.text() ?? "none"),
+        Limits { body: 4 },
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, chunked_post() + "3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n", 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 413 ") && !got.contains("none") && settles_to(b.s, 0))
+}
+
+fn chunks_past_the_stream_bound_are_413() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), Limits { stream: 4 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, chunked_post() + "3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n", 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 413 ") && s.ending.get() == "too-large" && s.total.get() == 3)
+}
+
+fn a_length_past_the_stream_bound_is_refused_at_its_head() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), Limits { stream: 4 }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, post(5) + "hello", 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 413 ") && s.ending.get() == "")
+}
+
+fn a_malformed_chunk_is_400() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, chunked_post() + "3\r\nhel\r\nZZ\r\n", 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 400 ") && s.ending.get() == "malformed" && s.total.get() == 3)
+}
+
+fn a_silent_body_is_408() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), Timing { body: ms(100) })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, post(10) + "abc", 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 408 ") && s.ending.get() == "timed-out" && settles_to(b.s, 0))
+}
+
+fn a_vanished_peer_is_answered_nothing() -> Result<bool, NetError> {
+    let s = seen()
+    let b = body_bed(piecewise(s), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    b.c.write((post(10) + "abc").bytes())?
+    let _ = b.c.shutdown_write()?
+    let got = exchanged(b.c, "", 1000)?
+    .Ok(got.is_empty() && s.ending.get() == "closed" && settles_to(b.s, 0))
+}
+
+fn a_failure_answers_every_later_read() -> Result<bool, NetError> {
+    let again = Cell.new("")
+    let answer = (q: Request<Unrouted>) -> twice_failed(q.body, again)
+    let b = body_bed(answer, limits(), Timing { body: ms(100) })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = exchanged(b.c, post(10) + "abc", 1000)?
+    .Ok(again.get() == "abc timed-out timed-out")
+}
+
+/// The body read three times past its silence, each answer noted.
+fn twice_failed(b: Body, noted: Cell<string>) -> Response {
+    let first = match b.read() { .Ok(p) -> p?.text() ?? "end", .Err(e) -> error_word(e) }
+    let second = match b.read() { .Ok(_) -> "read", .Err(e) -> error_word(e) }
+    let third = match b.read() { .Ok(_) -> "read", .Err(e) -> error_word(e) }
+    noted.set("${first} ${second} ${third}")
+    text(200, "x")
+}
+
+// ── The body as a value ─────────────────────────────────────────
+
+fn whole_body_reads() -> bool {
+    let b = whole("abc".bytes())
+    let first = match b.read() { .Ok(p) -> p?.text() ?? "end", .Err(_) -> "err" }
+    let after = match b.read() { .Ok(p) -> p?.text() ?? "end", .Err(_) -> "err" }
+    first == "abc" && after == "end" && b.finished()
+}
+
+fn empty_body_reads_nothing() -> bool {
+    let e = whole("".bytes())
+    let read = match e.read() { .Ok(p) -> p == null, .Err(_) -> false }
+    let gathered = match e.gathered() { .Ok(g) -> g.is_empty(), .Err(_) -> false }
+    read && gathered && e.finished() && e.text() == ""
+}
+
+spec "std.http request bodies" {
+    given "a body read in pieces" {
+        then "pieces arrive across reads, and the end reads as null" { passes(pieces_across_reads()) }
+        then "a piece is never more than one read of the socket" { passes(a_piece_is_one_read_at_most()) }
+        then "a chunk larger than a read arrives in pieces, never gathered" { passes(a_giant_chunk_arrives_in_pieces()) }
+        then "gathered, a chunked body reads whole" { passes(gathered_whole()) }
+        then "a pipelined request after a read body is framed next" { passes(pipelined_after_a_read_body()) }
+        then "a pipelined request after an empty length is framed next" { passes(pipelined_after_an_empty_length()) }
+        then "a pipelined request after a chunked body's trailers is framed next" { passes(pipelined_after_trailers()) }
+        then "a body kept past its handler reads what it had, then ends — no other socket" { passes(a_kept_body_reads_no_other_socket()) }
+    }
+    given "a body the handler did not read" {
+        then "a small one is dropped and the connection kept" { passes(unread_small_body_is_skipped()) }
+        then "one past the gathered bound closes the connection behind the answer" { passes(unread_large_body_closes()) }
+        then "the rest of a half-read one is dropped and the next request served" { passes(half_read_body_is_skipped()) }
+    }
+    given "a peer that expects 100-continue" {
+        then "a handler that answers unread invites nothing, and the connection closes" { passes(continue_only_for_a_read()) }
+        then "100 Continue is written before the first read" { passes(continue_before_the_first_read()) }
+        then "a declared length past the gathered bound is 413 and never invited" { passes(too_large_to_gather_is_never_invited()) }
+    }
+    given "a body that broke" {
+        then "chunks gathered past the gathered bound are 413, the handler's answer unsent" { passes(chunks_past_the_gathered_bound_are_413()) }
+        then "chunks read past the stream bound are 413" { passes(chunks_past_the_stream_bound_are_413()) }
+        then "a length past the stream bound is refused at its head, the handler never run" { passes(a_length_past_the_stream_bound_is_refused_at_its_head()) }
+        then "a malformed chunk mid-body is 400" { passes(a_malformed_chunk_is_400()) }
+        then "a body gone silent past its deadline is 408" { passes(a_silent_body_is_408()) }
+        then "a peer gone mid-body is answered nothing" { passes(a_vanished_peer_is_answered_nothing()) }
+        then "a failure answers every later read the same" { passes(a_failure_answers_every_later_read()) }
+    }
+    given "a body as a value" {
+        then "a whole body reads once, then ends" { whole_body_reads() }
+        then "an empty body reads nothing and gathers empty" { empty_body_reads_nothing() }
+    }
+}
