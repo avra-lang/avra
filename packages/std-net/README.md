@@ -79,7 +79,7 @@ Methods:
 ## Tests
 
 ```sh
-make objects                      # builds build/std_net.o
+make libs                         # each package's library; the evaluator binds C through it
 build/avra test packages/std-net  # every test, evaluator and native
 ```
 

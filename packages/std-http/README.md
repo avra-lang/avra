@@ -18,7 +18,7 @@ let _ = app.run()
 
 ## Modules
 
-There is no re-export, so each module is imported by its own path:
+Each module is imported by its own path:
 `use @std.http.frame.{…}`, `@std.http.http`, `@std.http.query`,
 `@std.http.route`, `@std.http.server`, `@std.http.client`.
 
@@ -37,7 +37,7 @@ There is no re-export, so each module is imported by its own path:
 |---|---|
 | `Span` | A byte range in the buffer a head was framed from. |
 | `Field` | One field line as two spans. |
-| `Fields` | A head's fields as four offsets each; `count`, `field(i)`, `named(buf, name)`. |
+| `Fields` | A head's fields as four offsets each; `count`, `field(i)`, `named(buf, wanted)`. |
 | `Method` | The nine registered methods, and `Other`. |
 | `TargetForm` | `Origin`, `Absolute`, `Asterisk`, `Authority`, `Other`. |
 | `Body` | How a request body is delimited: `None`, `Length(n)`, `Chunked`. |
@@ -180,7 +180,7 @@ There is no re-export, so each module is imported by its own path:
 ## Tests
 
 ```sh
-make objects                       # builds build/std_net.o
+make libs                          # each package's library; the evaluator binds C through it
 build/avra test packages/std-http  # every test, evaluator and native
 ```
 

@@ -131,5 +131,4 @@ HTTP/2 except HTTP/2's own client.
 - `docs/2026_09_22_FIBERS_DESIGN.md` §10–13, `docs/2026_09_23_REUSE_IN_PLACE.md`
   — the fibers and C-level campaigns as built; their leftovers are
   H7's tickets.
-- `ROADMAP.md` — holds the HTTP campaign section twice, byte-identical
-  (`avra-8sb5.1.31.1` deletes one).
+- `ROADMAP.md` — the HTTP campaign section, opened 2026-09-06; history.
