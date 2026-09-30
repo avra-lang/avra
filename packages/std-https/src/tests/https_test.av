@@ -1,0 +1,250 @@
+// The server secured with TLS, and the red team's survivors against
+// it: a client that never speaks meets the handshake deadline and the
+// server serves the next one, a client hanging up mid-handshake leaves
+// the server serving, bytes that are neither TLS nor HTTP are answered
+// in the clear and closed, an HTTPS client at a plain port fails
+// promptly, and a client that does not trust the server refuses it.
+// Closure alerts both ways (RFC 9112 §9.8), and a target's scheme
+// judged against the secured connection (RFC 9110 §7.4).
+use @std.net.{Conn, Listener, NetError, listen, connect}
+use @std.time.{Duration, ms, secs, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{Server, server, served, timing}
+use @std.http.client.{Client, ClientError, request, netted}
+use @std.https.{over_tls, secured, tls_carried}
+use @std.tls.{TlsConn, TlsError, client_config, dial, handshake, wired}
+use @std.http.wire.{Secure}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+/// What a secured test server keeps: nothing.
+type Quiet = {}
+
+/// A TLS server on the loopback answering every request with its
+/// target, one core, the handshake deadline `handshake`.
+fn secure_bed(handshake: Duration) -> Result<Server<Quiet>, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let sc = tls_carried(serving_localhost())?
+    let t = timing() with { handshake: handshake }
+    .Ok(
+        served(l, () -> Quiet {}, limits(), t) { _q, q -> text(200, q.target() ?? "?") }
+            .secured(over_tls(sc)),
+    )
+}
+
+/// One HTTPS fetch of `path` from the loopback server on `port`: the
+/// status and body, or the failure's words.
+fn fetched_secure(port: int, path: string) -> string {
+    match fetch_secure(port, path) { .Ok(s) -> s, .Err(e) -> e.describe().message }
+}
+
+fn fetch_secure(port: int, path: string) -> Result<string, ClientError> {
+    mut c = secured("localhost", port, secs(5), limits(), tls_carried(trusting_localhost())?)?
+    let a = c.fetched(.Get, request("GET", path, "localhost", [], "".bytes())!, secs(5))?
+    c.close()?
+    .Ok("${a.status} ${a.body.text() ?? "?"}")
+}
+
+/// Everything a raw connection hears after writing `sent`, until the
+/// server closes it or two seconds pass.
+fn heard_after(port: int, sent: Bytes) -> Result<Bytes, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c.write(sent)?
+    mut got = "".bytes()
+    mut open = true
+    while open {
+        match within secs(2) { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? "".bytes())
+            },
+            .Err(_) -> { open = false },
+        }
+    }
+    let _ = c.close()
+    .Ok(got)
+}
+
+fn silent_client_dropped() -> Result<bool, ClientError> {
+    let s = secure_bed(ms(200))?
+    spawn s.run(1)
+    defer s.stop()
+    let quiet = netted(connect("127.0.0.1", s.listener.port, secs(2)))?
+    let closed = within secs(2) { quiet.read(64) }
+    let _ = quiet.close()
+    let after = fetched_secure(s.listener.port, "/after")
+    .Ok(match closed { .Ok(b) -> b == null, .Err(_) -> false } && after == "200 /after")
+}
+
+fn hangup_mid_handshake_survived() -> Result<bool, ClientError> {
+    let s = secure_bed(secs(5))?
+    spawn s.run(1)
+    defer s.stop()
+    let c = netted(connect("127.0.0.1", s.listener.port, secs(2)))?
+    netted(c.write([22, 3, 1, 0, 200, 1].bytes()!))?
+    let _ = c.close()
+    .Ok(fetched_secure(s.listener.port, "/still") == "200 /still")
+}
+
+fn neither_tls_nor_http_answered() -> Result<bool, ClientError> {
+    let s = secure_bed(secs(5))?
+    spawn s.run(1)
+    defer s.stop()
+    let got = netted(heard_after(s.listener.port, [0, 1, 2, 3].bytes()!))?
+    .Ok(got.text()?.starts_with("HTTP/1.1 400 Bad Request\r\n") ?? false)
+}
+
+fn https_at_a_plain_port() -> Result<bool, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let s = served(l, () -> Quiet {}, limits(), timing()) { _q, q -> text(200, "plain") }
+    spawn s.run(1)
+    defer s.stop()
+    let words = within secs(3) { fetch_secure(l.port, "/") }
+    .Ok(
+        match words {
+            .Err(.Secure(_)) or .Err(.Net(_)) or .Err(.Closed) -> true,
+            .Err(_) or .Ok(_) -> false,
+        },
+    )
+}
+
+fn untrusted_server_refused() -> Result<bool, ClientError> {
+    let s = secure_bed(secs(5))?
+    spawn s.run(1)
+    defer s.stop()
+    let refused = secured(
+        "localhost",
+        s.listener.port,
+        secs(5),
+        limits(),
+        tls_carried(client_config())?,
+    )
+    .Ok(
+        match refused {
+            .Err(.Secure(e)) -> e.describe().kind == "tls.untrusted",
+            .Err(_) or .Ok(_) -> false,
+        },
+    )
+}
+
+/// TLS under the test identity, or null when it cannot be made.
+fn test_identity() -> Secure? {
+    match serving_localhost() { .Ok(c) -> over_tls(c), .Err(_) -> null }
+}
+
+export server secure_app {
+    port: 0
+    tls: test_identity()
+    get "/health" { _req -> "ok" }
+}
+
+fn declared_secure() -> Result<bool, ClientError> {
+    let s = netted(secure_app.listening())?
+    spawn s.run(1)
+    defer s.stop()
+    .Ok(fetched_secure(s.listener.port, "/health") == "200 ok")
+}
+
+/// A raw TLS client's request, then everything it reads to the end —
+/// "<close_notify>" when the server ended with its closure alert.
+fn read_to_the_end(port: int, sent: string) -> Result<string, TlsError> {
+    let c = dial("localhost", port, secs(5), trusting_localhost()?)?
+    c.write(sent.bytes())?
+    mut got = ""
+    mut open = true
+    while open {
+        match c.read(65536)? {
+            b? -> { got = got + (b.text() ?? "?") }
+            null -> { open = false }
+        }
+    }
+    c.close()?
+    .Ok("${got.split("\r\n").first() ?? ""} <close_notify>")
+}
+
+fn words_of(r: Result<string, TlsError>) -> string { r catch e -> e.describe().message }
+
+fn server_sends_close_notify() -> Result<bool, ClientError> {
+    let s = secure_bed(secs(5))?
+    spawn s.run(1)
+    defer s.stop()
+    let seen = words_of(
+        read_to_the_end(
+            s.listener.port,
+            "GET /bye HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        ),
+    )
+    .Ok(seen == "HTTP/1.1 200 OK <close_notify>")
+}
+
+/// A raw TLS server reading until its peer ends: "<close_notify>" when
+/// the peer ended with its closure alert, the error's words otherwise.
+fn ended_by(l: Listener) -> string {
+    match heard_to_the_end(l) { .Ok(_) -> "<close_notify>", .Err(e) -> e.describe().message }
+}
+
+fn heard_to_the_end(l: Listener) -> Result<int, TlsError> {
+    let c = handshake(wired(l.accept())?, serving_localhost()?, "")?
+    mut open = true
+    while open { open = c.read(65536)? != null }
+    c.close()
+}
+
+fn client_sends_close_notify() -> Result<bool, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let ending = spawn ended_by(l)
+    let c = secured("localhost", l.port, secs(5), limits(), tls_carried(trusting_localhost())?)?
+    c.close()?
+    .Ok(ending.await == "<close_notify>")
+}
+
+fn secure_line_for(target: string) -> Result<string, ClientError> {
+    let s = secure_bed(secs(5))?
+    spawn s.run(1)
+    defer s.stop()
+    let seen = words_of(
+        read_to_the_end(
+            s.listener.port,
+            "GET ${target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        ),
+    )
+    .Ok(seen)
+}
+
+fn held(r: Result<bool, ClientError>) -> bool {
+    match r { .Ok(b) -> b, .Err(_) -> false }
+}
+
+spec "std.http over TLS" {
+    given "a server secured with the test identity" {
+        then "a client that never speaks is dropped at the handshake deadline, and the next is served" {
+            held(silent_client_dropped())
+        }
+        then "a client hanging up mid-handshake leaves the server serving" { held(hangup_mid_handshake_survived()) }
+        then "bytes that are neither TLS nor HTTP are answered 400 in the clear" {
+            held(neither_tls_nor_http_answered())
+        }
+        then "a client trusting only the system's authorities refuses the test leaf" { held(untrusted_server_refused()) }
+    }
+    given "a server declaration with a tls setting" {
+        then "its routes are served over TLS" { held(declared_secure()) }
+    }
+    given "closure alerts (RFC 9112 §9.8)" {
+        then "a server closing sends close_notify, read as the end and never as a cut" {
+            held(server_sends_close_notify())
+        }
+        then "a client closing sends close_notify" { held(client_sends_close_notify()) }
+    }
+    given "a target's scheme over a secured connection (RFC 9110 §7.4)" {
+        then "an https target routes" {
+            (secure_line_for("https://localhost/x") catch _ -> "") == "HTTP/1.1 200 OK <close_notify>"
+        }
+        then "an http target is misdirected" {
+            (secure_line_for("http://localhost/x") catch _ -> "") == "HTTP/1.1 421 Misdirected Request <close_notify>"
+        }
+    }
+    given "an HTTPS client at a plain port" {
+        then "it fails promptly, never waits out a reply" { held(https_at_a_plain_port()) }
+    }
+}
