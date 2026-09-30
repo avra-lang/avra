@@ -55,6 +55,7 @@ use http.{
     Upgrade,
     upgrade_head,
     wire,
+    written,
     status,
     read_size,
     sendable,
@@ -613,7 +614,11 @@ fn judged(r: Response) -> Response {
 /// A whole response on the wire for a request: its head, then its body
 /// — none of it for a HEAD, whose head still carries the length.
 fn wired(sent: Response, delim: ReplyBody, keep: bool, head: Head) -> Bytes {
-    mut w = head_of(sent, delim, keep, head.minor)
-    if !(head.method is .Head) { w = w.concat(sent.body) }
-    w
+    written(
+        sent,
+        delim,
+        keep,
+        head.minor,
+        if head.method is .Head { "".bytes() } else { sent.body },
+    )
 }

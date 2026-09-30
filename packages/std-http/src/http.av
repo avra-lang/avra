@@ -359,7 +359,8 @@ impl Respond for int {
 /// that value; refusing at the crossing is what makes the
 /// reinterpretation impossible, where escaping would only move it.
 export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    written(as_sent(r), keep_alive, minor)
+    let sent = as_sent(r)
+    written(sent, .Length(sent.body.length), keep_alive, minor, sent.body)
 }
 
 /// THE RESPONSE AS IT WILL BE WRITTEN — `r` when a peer could read
@@ -368,37 +369,42 @@ export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// once by the same law, releasing a stream the 500 replaced.
 export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
-/// THE RESPONSE WRITTEN STRAIGHT INTO ONE BUFFER: the head, then the
-/// whole body appended in place — no list gathered and copied once,
-/// since a local `mut` accumulator grown by `concat` already lands in
-/// one box (reuse in place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
-fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    mut w = head_of(r, .Length(r.body.length), keep_alive, minor)
-    w = w.concat(r.body)
-    w
+/// A RESPONSE ON THE WIRE, WRITTEN STRAIGHT INTO ONE BUFFER: the
+/// status line, its fields, how its body is delimited, the connection's
+/// fate, the blank line, then `body` — a whole body, or nothing for a
+/// head a stream or a HEAD's answer follows. Every piece is appended in
+/// place to one accumulator, never a head box joined to a body (reuse
+/// in place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
+export fn written(r: Response, delim: ReplyBody, keep_alive: bool, minor: int, body: Bytes) -> Bytes {
+    laid_out(r, delim, fate(keep_alive, minor), body)
 }
 
-/// A response's HEAD on the wire: the status line, its fields, how its
-/// body is delimited, the connection's fate, the blank line. A streamed
-/// body follows it piece by piece; a whole one is appended to it.
+/// A response's HEAD on the wire, its body to follow piece by piece.
 export fn head_of(r: Response, delim: ReplyBody, keep_alive: bool, minor: int) -> Bytes {
-    mut w = reply_line(r.status)
-    w = w.concat(fields_of(r.headers))
-    w = w.concat(delimiting(delim))
-    w = w.concat(fate(keep_alive, minor).bytes())
-    w = w.concat(crlf)
-    w
+    written(r, delim, keep_alive, minor, nothing())
 }
 
-/// The field lines of `headers`, each `name: value` and a CRLF.
-fn fields_of(headers: List<Header>) -> Bytes {
-    mut w = nothing()
-    for h in headers {
+/// The response with `closing` as its last field line, then `body`.
+fn laid_out(r: Response, delim: ReplyBody, closing: string, body: Bytes) -> Bytes {
+    mut w = reply_line(r.status)
+    for h in r.headers {
         w = w.concat(h.name.bytes())
         w = w.concat(field_colon)
         w = w.concat(h.value.bytes())
         w = w.concat(crlf)
     }
+    match delim {
+        .Length(n) -> {
+            w = w.concat(length_field)
+            w = w.concat("${n}".bytes())
+            w = w.concat(crlf)
+        },
+        .Chunked -> { w = w.concat(chunked_line) },
+        .None or .UntilClose -> undelimited(),
+    }
+    w = w.concat(closing.bytes())
+    w = w.concat(crlf)
+    w = w.concat(body)
     w
 }
 
@@ -414,20 +420,10 @@ export fn delimited(r: Response, minor: int) -> ReplyBody {
     }
 }
 
-/// The framing field a delimiting is written as.
-fn delimiting(delim: ReplyBody) -> Bytes {
-    match delim {
-        .Length(n) -> length_line(n),
-        .Chunked -> chunked_line,
-        .None or .UntilClose -> nothing(),
-    }
-}
+/// A body delimited by nothing written: none at all, or the close.
+fn undelimited() {}
 
-fn length_line(n: int) -> Bytes {
-    mut w = length_field.concat("${n}".bytes())
-    w = w.concat(crlf)
-    w
-}
+const length_field: Bytes = "content-length: ".bytes()
 
 const chunked_line: Bytes = "transfer-encoding: chunked\r\n".bytes()
 
@@ -491,8 +487,6 @@ fn reply_text(status: int) -> string { "HTTP/1.1 ${status} ${reason(status)}\r\n
 
 const field_colon: Bytes = ": ".bytes()
 
-const length_field: Bytes = "content-length: ".bytes()
-
 /// The connection's fate, when the peer cannot assume it.
 fn fate(keep_alive: bool, minor: int) -> string {
     when {
@@ -510,8 +504,7 @@ export fn sendable(r: Response) -> bool {
     r.status >= 100 &&
         r.status <= 999 &&
         fields_writable(r.headers, reply_writes) &&
-        streamable(r) &&
-        handed_over(r)
+        (plain(r) || streamable(r) && handed_over(r))
 }
 
 /// AN UPGRADE AND A 101 COME TOGETHER: a 101 with nothing to hand the
@@ -525,15 +518,11 @@ fn handed_over(r: Response) -> bool {
 
 /// A 101's head on the wire: the status line, its fields, and the
 /// `connection: upgrade` its writer owns.
-export fn upgrade_head(r: Response) -> Bytes {
-    mut w = reply_line(r.status)
-    w = w.concat(fields_of(r.headers))
-    w = w.concat(upgrade_line)
-    w = w.concat(crlf)
-    w
-}
+export fn upgrade_head(r: Response) -> Bytes { laid_out(r, .None, "connection: upgrade\r\n", nothing()) }
 
-const upgrade_line: Bytes = "connection: upgrade\r\n".bytes()
+/// A response with a whole body and nothing to hand over: the common
+/// one, judged without asking the stream and upgrade laws.
+fn plain(r: Response) -> bool { r.stream == null && r.upgrade == null && r.status != 101 }
 
 /// A STREAM STANDS ALONE: a response carrying one carries no whole
 /// body beside it, declares no negative length, and has a status that
