@@ -1,6 +1,8 @@
-//! The byte rows, hosted: the evaluator's twin of the runtime's
-//! Bytes section over integer octets, refusal wording included.
-use core.{joined, flatten}
+//! The byte rows, hosted: the evaluator holds `Bytes` as the runtime's
+//! own box and answers each row through the runtime's own verb, so the
+//! two engines read octets through ONE implementation. What stays here
+//! is each row's bounds law, spoken as the evaluator's refusal before
+//! the native verb could trap the evaluator itself.
 
 impl Machine {
     /// OCTETS AT A ROW'S SEAT, FROM EITHER BOX — `text_val`'s mirror,
@@ -13,13 +15,13 @@ impl Machine {
     /// registry, and the catch-all that stood here is what forgot the
     /// string, so `avra_bytes_len("hi")` answered 2 compiled and a
     /// defect interpreted.
-    fn octets(v: Val) -> List<int> {
+    fn octets(v: Val) -> Bytes {
         match v {
             .Y(data) -> data,
-            .S(s) -> octets_of(s),
+            .S(s) -> s.bytes(),
             .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N or .Gone -> {
                 self.defect("a non-Bytes value reached a byte operation")
-                []
+                "".bytes()
             },
         }
     }
@@ -28,14 +30,14 @@ impl Machine {
         let data = self.octets(vals[0])
         let at = self.whole(vals[1])
         if at < 0 || at >= data.length { return self.out_of_bounds(at, data.length) }
-        Val.I(data[at])
+        Val.I(data.at(at))
     }
 
     fn bytes_slice_val(vals: List<Val>) -> Val {
         let data = self.octets(vals[0])
         let lo = self.whole(vals[1])
         let hi = self.whole(vals[2])
-        if lo < 0 || hi < lo || hi > data.length { return self.slice_out_of_bounds(lo, hi, data.length, Val.Y([])) }
+        if lo < 0 || hi < lo || hi > data.length { return self.slice_out_of_bounds(lo, hi, data.length, Val.Y("".bytes())) }
         Val.Y(data.slice(lo, hi))
     }
 
@@ -50,7 +52,7 @@ impl Machine {
         let data = self.octets(vals[0])
         let from = self.whole(vals[2])
         if from < 0 || from > data.length { return self.out_of_bounds(from, data.length) }
-        Val.I(index_of_octets(data, self.octets(vals[1]), from, data.length))
+        Val.I(data.index_of(self.octets(vals[1]), from))
     }
 
     fn bytes_index_in_val(vals: List<Val>) -> Val {
@@ -58,7 +60,7 @@ impl Machine {
         let lo = self.whole(vals[2])
         let hi = self.whole(vals[3])
         if lo < 0 || hi < lo || hi > data.length { return self.slice_out_of_bounds(lo, hi, data.length, Val.I(-1)) }
-        Val.I(index_of_octets(data, self.octets(vals[1]), lo, hi))
+        Val.I(data.index_in(self.octets(vals[1]), lo, hi))
     }
 
     fn bytes_run_val(vals: List<Val>) -> Val {
@@ -70,7 +72,7 @@ impl Machine {
             self.trapped("a class table holds 256 bytes (length ${admits.length})")
             return Val.I(0)
         }
-        Val.I(run_end(data, admits, from))
+        Val.I(data.run(from, admits))
     }
 
     fn bytes_eq_at_val(vals: List<Val>, folded: bool) -> Val {
@@ -79,150 +81,30 @@ impl Machine {
         let hi = self.whole(vals[2])
         if lo < 0 || hi < lo || hi > data.length { return self.slice_out_of_bounds(lo, hi, data.length, Val.I(0)) }
         let needle = self.octets(vals[3])
-        verdict(
-            hi - lo == needle.length &&
-                [same_byte(data[lo + k], needle[k], folded) for k in 0..needle.length].all(it),
-        )
+        verdict(if folded { data.ieq_at(lo, hi, needle) } else { data.eq_at(lo, hi, needle) })
     }
 
     fn bytes_gathered_val(v: Val) -> Val {
         let id? = array_id(v) else { return self.defect_val("a non-list reached a gather") }
-        Val.Y(flatten([self.octets(x) for x in self.arrays[id]]))
+        Val.Y([self.octets(x) for x in self.arrays[id]].bytes())
     }
 
     fn bytes_of_list_val(v: Val) -> Val {
         let id? = array_id(v) else { return self.defect_val("a non-list reached byte construction") }
-        let data = [self.whole(x) for x in self.arrays[id]]
-        if data.any(it < 0 || it > 255) { return Val.N }
-        Val.Y(data)
+        let b? = [self.whole(x) for x in self.arrays[id]].bytes() else { return Val.N }
+        Val.Y(b)
     }
 }
 
-fn same_byte(a: int, b: int, folded: bool) -> bool {
-    if folded { ascii_lower(a) == ascii_lower(b) } else { a == b }
-}
-
-fn ascii_lower(c: int) -> int {
-    if c >= 65 && c <= 90 { c + 32 } else { c }
-}
-
-fn same_octets(a: List<int>, b: List<int>) -> bool {
-    a.length == b.length && [a[i] == b[i] for i in 0..a.length].all(it)
-}
-
-/// A native box's octets — a row the host answers in kind.
-fn octets_of_box(b: Bytes) -> List<int> {
-    [b.at(i) for i in 0..b.length]
-}
-
-/// A text's bytes — `char_code` reads one byte.
-fn octets_of(text: string) -> List<int> {
-    [text.char_code(i) for i in 0..text.length]
-}
-
-/// Where `needle` first begins at or after `from`, or -1.
-/// Where the run of octets `admits` accepts, starting at `from`,
-/// ends — stopping at the first refusal, so a run costs its length.
-fn run_end(data: List<int>, admits: List<int>, from: int) -> int {
-    mut at = from
-    while at < data.length && admits[data[at]] != 0 { at = at + 1 }
-    at
-}
-
-/// Where `needle` first lies wholly inside lo..hi, or -1 — stopping
-/// at the first match, so a search costs the distance it walked.
-fn index_of_octets(data: List<int>, needle: List<int>, lo: int, hi: int) -> int {
-    mut at = lo
-    while at + needle.length <= hi {
-        if begins_at(data, needle, at) { return at }
-        at = at + 1
-    }
-    -1
-}
-
-fn begins_at(data: List<int>, needle: List<int>, at: int) -> bool {
-    [data[at + k] == needle[k] for k in 0..needle.length].all(it)
-}
-
-/// Text from octets, or null when they are not UTF-8.
-fn utf8_text(xs: List<int>) -> string? {
-    if utf8_bad_at(xs) >= 0 { return null }
-    joined([avra_str_from_codepoint(cp) for cp in codepoints(xs)], "")
-}
-
-/// The same as the `StrOfBytes` row answers it: absence is the null
-/// pointer.
-fn text_of_octets(xs: List<int>) -> Val {
-    let s? = utf8_text(xs) else { return Val.N }
+/// Text from a box, or absence when its octets are not UTF-8 — the
+/// `StrOfBytes` row's own answer, absence being the null pointer.
+fn text_of_octets(b: Bytes) -> Val {
+    let s? = b.text() else { return Val.N }
     Val.S(s)
 }
 
-/// The first offset that is not UTF-8, or -1: the runtime validator's
-/// twin, row for row. The lead byte's range decides how many
-/// continuations follow and the range the first must fall in.
-fn utf8_bad_at(xs: List<int>) -> int {
-    mut i = 0
-    while i < xs.length {
-        let need = lead_need(xs[i])
-        if need < 0 || i + need >= xs.length || !continues(xs, i, need) { return i }
-        i = i + need + 1
-    }
-    -1
-}
-
-/// How many continuation bytes follow a lead, or -1 for a byte that
-/// leads nothing.
-fn lead_need(c: int) -> int {
-    when {
-        c < 128 -> 0
-        c >= 194 && c <= 223 -> 1
-        c >= 224 && c <= 239 -> 2
-        c >= 240 && c <= 244 -> 3
-        _ -> -1
-    }
-}
-
-/// The first continuation's range refuses overlongs and surrogates;
-/// every later one is 128..191.
-fn continues(xs: List<int>, i: int, need: int) -> bool {
-    if need == 0 { return true }
-    let first = xs[i + 1]
-    first >= first_lo(xs[i]) &&
-        first <= first_hi(xs[i]) &&
-        [xs[i + k + 1] >= 128 && xs[i + k + 1] <= 191 for k in 1..need].all(it)
-}
-
-fn first_lo(lead: int) -> int {
-    when {
-        lead == 224 -> 160
-        lead == 240 -> 144
-        _ -> 128
-    }
-}
-
-fn first_hi(lead: int) -> int {
-    when {
-        lead == 237 -> 159
-        lead == 244 -> 143
-        _ -> 191
-    }
-}
-
-/// The code points of octets already known to be UTF-8.
-fn codepoints(xs: List<int>) -> List<int> {
-    mut out: List<int> = []
-    mut i = 0
-    while i < xs.length {
-        let need = lead_need(xs[i])
-        out.push(codepoint_at(xs, i, need))
-        i = i + need + 1
-    }
-    out
-}
-
-fn codepoint_at(xs: List<int>, i: int, need: int) -> int {
-    if need == 0 { return xs[i] }
-    mut cp = xs[i] & (255 >> need + 2)
-    for k in 0..need { cp = (cp << 6) | (xs[i + k + 1] & 63) }
-    cp
+/// A native box's octets as ints — what a crossing into the meta heap
+/// and a value's fingerprint read.
+fn octets_of_box(b: Bytes) -> List<int> {
+    [b.at(i) for i in 0..b.length]
 }
