@@ -398,12 +398,36 @@ run_wave() {
     printf '%s\n' "${good# }"
 }
 
+# Every candidate worktree this run minted, removed through git's own
+# door (never a bare `rm -rf` — that would leave `.git/worktrees/<x>`
+# administrative state behind, which the next `git worktree add`
+# reusing the same repo would then trip over). Logs and per-candidate
+# status files under `$scratch` are NOT removed — a caller reads
+# those after this returns (the winning head sha, every attempt's
+# log), the same "keep the logs, drop everything else" split
+# land.sh's own clean_own_scratch makes.
+train_cleanup_candidates() {
+    [ -d "$scratch/candidates" ] || return 0
+    for wt in "$scratch/candidates"/*; do
+        [ -e "$wt" ] || continue
+        git -C "$main_wt" worktree remove -f "$wt" 2>/dev/null || rm -rf "$wt"
+    done
+}
+
 # ── THE FULL LADDER — repeat waves until the tail is empty or wholly
 # green. Prints the final winning branch list (space-separated, FIFO
 # order preserved) on stdout; every dropped branch is named
 # "CULPRIT: <name>" on stderr, exactly as land.sh's own bisector names
-# one, so a caller's existing log-scraping needs no new pattern.
+# one, so a caller's existing log-scraping needs no new pattern. Every
+# candidate WORKTREE is cleaned up before this returns, whatever the
+# outcome — train_ladder_body never exits early without it.
 train_ladder() {
+    st=0
+    train_ladder_body "$@" || st=$?
+    train_cleanup_candidates
+    return "$st"
+}
+train_ladder_body() {
     resolve_main_wt
     good=""
     tail="$*"

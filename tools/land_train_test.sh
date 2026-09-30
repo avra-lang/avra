@@ -291,6 +291,125 @@ test_train_dry_run_prints_head() {
 # back afterward by SCANNING it (never by a shared counter a fixture's
 # own subshell would fork away from — the exact trap
 # `tools/land_test.sh`'s own header names).
+# ══ THE HAND-OFF INTO land.sh's OWN train_core ═══════════════════════
+# train_core (tools/land.sh) calls train_ladder for the Sprite half,
+# then land.sh's OWN try_integration/check_phase for the Mac-only
+# half. This reuses tools/land_test.sh's OWN `batch_repo` fixture
+# shape (a fake build/avra + Makefile, its CULPRIT_PKG convention) —
+# duplicated here rather than sourced, since land_test.sh runs its
+# whole suite as a side effect of being read — so this proves the
+# WIRING alone, never re-deriving what test_batch_mode already proves
+# about try_integration itself.
+train_batch_repo() {
+    d="$(git_repo "$1")"
+    for p in a b c; do
+        mkdir -p "$d/packages/$p/src"
+        printf '[package]\nname = "%s"\nversion = "0.1.0"\n' "$p" > "$d/packages/$p/avra.toml"
+        printf 'export fn seed_%s() -> int { 0 }\n' "$p" > "$d/packages/$p/src/lib.av"
+    done
+    mkdir -p "$d/build" "$d/packages/cli/src" "$d/bootstrap"
+    cat > "$d/build/avra" <<'STUB'
+#!/bin/sh
+case "$1" in
+    build)
+        mkdir -p packages/cli/src
+        cp "$0" packages/cli/src/main
+        chmod +x packages/cli/src/main
+        exit 0
+        ;;
+    test)
+        pkg="$(basename "$2")"
+        if [ "$pkg" = "${CULPRIT_PKG:-}" ]; then
+            echo "FAILED $pkg"
+            exit 1
+        fi
+        echo "tested $pkg"
+        exit 0
+        ;;
+    check|fmt) exit 0 ;;
+esac
+STUB
+    chmod +x "$d/build/avra"
+    cat > "$d/Makefile" <<'MK'
+build/libavra_runtime.a:
+	@touch build/libavra_runtime.a
+objects:
+	@touch build/libavra_runtime.a
+libs:
+	@echo libs-ok
+idioms:
+	@echo idioms-ok
+fmt-lossless:
+	@echo fmt-ok
+cache-attacks:
+	@echo cache-attacks-ok
+seed:
+	@echo seed-src > bootstrap/seed.ll
+	@echo seed-src > bootstrap/seed.sources
+seed-check:
+	@test -f bootstrap/seed.ll && echo seed-check-ok
+MK
+    printf 'seed-src\n' > "$d/bootstrap/seed.ll"
+    printf 'seed-src\n' > "$d/bootstrap/seed.sources"
+    printf 'build/\n' > "$d/.gitignore"
+    commit_all "$d" "base"
+    for p in a b c; do
+        git -C "$d" checkout -q -b "$p" main
+        printf 'export fn seed_%s() -> int { 1 }\n' "$p" > "$d/packages/$p/src/lib.av"
+        mkdir -p "$d/packages/$p"
+        printf '%s\n' "$p" > "$d/packages/$p/marker"
+        commit_all "$d" "$p's own change"
+    done
+    git -C "$d" checkout -q main
+    echo "$d"
+}
+
+test_train_core_lands_the_sprite_verified_prefix() {
+    d="$(train_batch_repo core-wire)"
+    stub="$scratch/core-wire-sprite.sh"
+    sprite_stub "$stub"
+    export AVRA_LAND_TRAIN_SPRITE_BUILD="$stub"
+    export AVRA_LAND_TRAIN_SPRITES="s1 s2"
+    export AVRA_LAND_TRAIN_MEM_CMD='echo 4096'
+    export CULPRIT_MARK=b
+    export AVRA_LAND_TRAIN=1 AVRA_LAND_SPEED_GATE=0 AVRA_LAND_WARM_GATE=0
+    lockdir="$scratch/core-wire-lock"
+    batchwt="$scratch/core-wire-batchwt"
+    slots="$scratch/core-wire-slots"
+    rm -rf "$lockdir" "$batchwt" "$slots"
+    out="$scratch/core-wire.out"
+    # The full CLI wrapper (`main_batch`), never `train_core` alone —
+    # main_batch is what prints "LANDED", exactly as a real multi-
+    # branch `land.sh a b c` run would, with AVRA_LAND_TRAIN=1 the
+    # only difference from test_batch_mode's own invocation of the
+    # non-train batch_core path.
+    ( cd "$d" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$slots" \
+        branch=x sh "$land" --call main_batch 0 a b c ) > "$out" 2>&1
+    if grep -q "^land: train green prefix: a c$" "$out"; then
+        ok "train_core: the Sprite-verified prefix (b dropped) is what reaches the final pass"
+    else
+        bad "train_core: expected the Sprite phase to drop b before the final pass" "$out"
+    fi
+    if grep -q "CULPRIT: b" "$out"; then
+        ok "train_core: names b as the culprit, from the Sprite phase"
+    else
+        bad "train_core: did not name b as the culprit" "$out"
+    fi
+    if grep -q "^LANDED" "$out"; then
+        ok "train_core: still lands a and c despite b's Sprite failure"
+    else
+        bad "train_core: did not land anything" "$out"
+    fi
+    main_a="$(git -C "$d" show main:packages/a/src/lib.av 2>/dev/null)"
+    main_b="$(git -C "$d" show main:packages/b/src/lib.av 2>/dev/null)"
+    if printf '%s' "$main_a" | grep -q "int { 1 }" && ! printf '%s' "$main_b" | grep -q "int { 1 }"; then
+        ok "train_core: main carries a's and c's change but not b's"
+    else
+        bad "train_core: main's content does not match a,c-in, b-out" "$out"
+    fi
+    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD CULPRIT_MARK
+    unset AVRA_LAND_TRAIN AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
+}
 run_test() {
     name="$1"
     log="$scratch/$name.run.log"
@@ -309,6 +428,7 @@ run_test test_train_first_fails
 run_test test_train_tool_failure_retries
 run_test test_train_all_sprites_bad_is_tool_failure
 run_test test_train_dry_run_prints_head
+run_test test_train_core_lands_the_sprite_verified_prefix
 
 total="$(cat "$scratch"/*.run.log 2>/dev/null | grep -cE '^(ok|FAIL)  ')"
 failed="$(cat "$scratch"/*.run.log 2>/dev/null | grep -cE '^FAIL  ')"
