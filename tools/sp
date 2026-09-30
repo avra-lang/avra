@@ -12,8 +12,7 @@
 # (tools/sprite-build.sh); LLVM_PREFIX is set. Pool: `sprite list` minus
 # web-terminal and avra-bench, or AVRA_SPRITES. AVRA_SP_TREE names another tree. Slots per Sprite:
 # AVRA_SP_JOBS_PER_SPRITE (default 3). A Sprite that misses its probe is skipped.
-# With no slot to be had, a command runs here (slot.sh 3, memcap.sh 6000)
-# while the 1-minute load is under 15, and otherwise waits.
+# With no slot to be had, a command waits its turn, saying where it stands.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -88,38 +87,53 @@ claim() {
 
 alive() { timeout -k 1 5 sprite -s "$1" exec --no-port-forward -- true >/dev/null 2>&1; }
 
-load1() { uptime | sed 's/.*load averages*: *//' | awk -F'[, ]+' '{ print int($1) }'; }
+# A waiter's place: a file named by when it began waiting; a dead
+# waiter's file does not count.
+queue=$slots/.queue
+position() {
+    n=0
+    for f in "$queue"/*; do
+        [ -f "$f" ] || continue
+        kill -0 "$(cat "$f")" 2>/dev/null || continue
+        n=$((n + 1))
+        [ "$f" = "$1" ] && break
+    done
+    echo "$n"
+}
 
 # A live claim: a Sprite that fails its liveness probe is released and
-# dropped for this run. With no slot anywhere, "local" when this machine's
-# load has room, else a wait that is said once.
+# dropped for this run. With no slot anywhere it waits, saying so once and
+# then once a minute with its place in the queue.
 claim_waiting() {
-    said=
+    mine=
+    said=0
     while :; do
         if claimed=$(claim "$1" "$2"); then
             s=${claimed%% *}
-            alive "$s" && { echo "$claimed"; return 0; }
+            alive "$s" && { [ -z "$mine" ] || rm -f "$mine"; echo "$claimed"; return 0; }
             r=${claimed#* }
             rm -rf "${r%% *}" "${r#* }"
             echo "sp: $s failed its 5s liveness probe — trying the next" >&2
             set -- "$(echo " $1 " | sed "s/ $s / /")" "$2"
             continue
         fi
-        if [ "$(load1)" -lt 15 ]; then echo "local - -"; return 0; fi
-        [ -n "$said" ] || echo "sp: no Sprite slot is free and the local load is 15 or more — waiting" >&2
-        said=1
+        if [ -z "$mine" ]; then
+            mkdir -p "$queue"
+            mine="$queue/$(date +%s)-$$-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
+            echo "$$" > "$mine"
+            trap 'rm -f "$mine"' EXIT
+        fi
+        now=$(date +%s)
+        if [ $((now - said)) -ge 60 ]; then
+            echo "sp: every Sprite slot is taken — waiting, number $(position "$mine") in the queue" >&2
+            said=$now
+        fi
         sleep 5
     done
 }
 
-# Runs one command string on a claimed Sprite, or here for "local"; its
-# status is the command's.
+# Runs one command string on a claimed Sprite; its status is the command's.
 run_on() {
-    if [ "$1" = local ]; then
-        echo "sp: no Sprite slot is free — running here" >&2
-        (cd "$worktree" && sh "$here/slot.sh" 3 sh "$here/memcap.sh" 6000 sh -c "$2")
-        return
-    fi
     sh "$here/sprite-build.sh" "$1" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $2"
 }
 
@@ -134,7 +148,7 @@ if [ "$1" != -p ]; then
     claimed=$(claim_waiting "$sprites" "")
     sprite=${claimed%% *}; rest=${claimed#* }
     slot=${rest%% *}; tree=${rest#* }
-    trap '[ "$sprite" = local ] || rm -rf "${slot:-}" "${tree:-}"' EXIT
+    trap 'rm -rf "${slot:-}" "${tree:-}"' EXIT
     echo "sp: $sprite" >&2
     st=0
     run_on "$sprite" "$cmd" || st=$?
@@ -155,7 +169,7 @@ for cmd in "$@"; do
     printf '%s\n' "$cmd" > "$out/$i.cmd"
     echo "$sprite" > "$out/$i.sprite"
     (
-        trap '[ "$sprite" = local ] || rm -rf "$slot" "$tree"' EXIT
+        trap 'rm -rf "$slot" "$tree"' EXIT
         t=$(date +%s)
         { st=0; run_on "$sprite" "$cmd" 2>&1 || st=$?; echo "$st" > "$out/$i.st"; } |
             awk -v p="[$i $sprite] " '{ print p $0; fflush() }'
