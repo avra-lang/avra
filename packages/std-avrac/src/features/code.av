@@ -30,6 +30,7 @@ use core.{
     flatten,
     some_list,
     hole_name,
+    CompClause,
 }
 use features.{
     FileView,
@@ -63,6 +64,13 @@ export type ForRange = { name: string, from: Code, to: Code, body: List<Code> }
 /// One `match` arm, `arms`'s answer: its patterns, its guard (absent
 /// for an unguarded arm) and its value, each still Code.
 export type ArmInfo = { pats: List<Code>, guard: Code?, value: Code }
+
+/// One name an arm binds, and the type typing gave it — absent when
+/// the arm went untyped.
+export type ArmBind = { name: string, ty: Ty? }
+
+/// A SCAN's two halves: the list it walks and the tests it applies.
+export type Scan = { source: Code, tests: List<Code> }
 
 /// A RUN binder's whole match, wrapped: every `At` it captured
 /// carries this Code's own facts — `quote_pat_binds`' (features/
@@ -229,6 +237,35 @@ impl Code {
                 } for a in arms],
                 _ -> null,
             },
+            _ -> null,
+        }
+    }
+
+    /// A comprehension as a scan: its first head's source, and every
+    /// filter — absent for every other shape.
+    fn comp_scan() -> Scan? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Comp(_, clauses) -> self.scan_of(clauses),
+                _ -> null,
+            },
+            _ -> null,
+        }
+    }
+
+    fn scan_of(clauses: List<CompClause>) -> Scan? {
+        let src? = flatten([some_list(head_source(c)) for c in clauses]).first() else { return null }
+        Scan {
+            source: self.coded(src),
+            tests: [self.coded(f) for c in clauses for f in some_list(filter_cond(c))],
+        }
+    }
+
+    /// A method call's own NAME — `xs.find(p)` answers `"find"` —
+    /// null for every other seat.
+    fn method_name() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .MethodCall(_, name, _) -> name.of, _ -> null },
             _ -> null,
         }
     }
@@ -731,6 +768,34 @@ impl Code {
 
 /// Whether two spans are the same range — never both absent counted
 /// equal to a present one.
+impl ArmInfo {
+    /// The names this arm binds, in its first pattern's pre-order —
+    /// the order typing keys each bind's type by.
+    fn binds() -> List<ArmBind> {
+        let p? = self.pats.first() else { return [] }
+        match p.at {
+            .Pat(id) -> [self.bound(j, b.name) for j, b in p.of.view.store.pattern_binds(id)],
+            _ -> [],
+        }
+    }
+
+    fn bound(j: int, name: string) -> ArmBind {
+        let of = self.value.of
+        ArmBind {
+            name: name,
+            ty: match self.value.at { .Expr(v) -> opt_ty(of, of.facts.pattern_type(v, j)), _ -> null },
+        }
+    }
+}
+
+fn head_source(c: CompClause) -> ExprId? {
+    match c { .Head(_, _, source, _) -> source, .Filter(_) -> null }
+}
+
+fn filter_cond(c: CompClause) -> ExprId? {
+    match c { .Head(_, _, _, _) -> null, .Filter(cond) -> cond }
+}
+
 fn same_span(a: Span?, b: Span?) -> bool {
     let av? = a else { return b == null }
     let bv? = b else { return false }
@@ -854,6 +919,14 @@ impl Ty {
     fn carried() -> Ty? {
         match self.types.shape_of(self.id) {
             .Opt(inner) -> Ty { types: self.types, id: inner },
+            _ -> null,
+        }
+    }
+
+    /// What a list holds — absence for every other shape.
+    fn element() -> Ty? {
+        match self.types.shape_of(self.id) {
+            .List(elem) -> Ty { types: self.types, id: elem },
             _ -> null,
         }
     }

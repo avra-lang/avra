@@ -62,3 +62,69 @@ spec "avra build — a durable-tier property survives an edit between two builds
         }
     }
 }
+
+/// A package whose `lib` — held on a second build — imports ONE FILE of a
+/// dependency's directory module, whose file in turn imports one file of a
+/// third package's: the shape a record keeps under the DIRECTORY's name
+/// while the `use` line names the file. Answers the entry and the sibling
+/// file beside the one `lib` names.
+type HeldChain = { entry: string, sibling: string }
+
+fn held_chain() -> HeldChain {
+    let root = "${scratch_dir()}/held_chain_${now_ns()}"
+    let dep = "${root}/vendor/dep"
+    let deeper = "${root}/vendor/deeper"
+    let _ = make_dirs("${root}/src")
+    let _ = make_dirs("${dep}/src")
+    let _ = make_dirs("${deeper}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+    )
+    let _ = write_text(
+        "${dep}/avra.toml",
+        "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/deeper\" = { path = \"../deeper\" }\n",
+    )
+    let _ = write_text(
+        "${deeper}/avra.toml",
+        "[package]\nname = \"@acme/deeper\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${deeper}/src/deeper.av", "export fn other() -> int { 1 }\n")
+    let _ = write_text("${deeper}/src/core.av", "export fn base() -> int { 39 }\n")
+    let _ = write_text("${dep}/src/dep.av", "export fn unused() -> int { 1 }\n")
+    let _ = write_text(
+        "${dep}/src/frame.av",
+        "use @acme.deeper.core.{base}\nexport fn framed() -> int { base() + 1 }\n",
+    )
+    let _ = write_text(
+        "${root}/src/lib.av",
+        "use @acme.dep.frame.{framed}\nexport fn go() -> int { framed() + 1 }\n",
+    )
+    let entry = "${root}/src/entry.av"
+    let _ = write_text(entry, entry_asking("go()"))
+    HeldChain { entry: entry, sibling: "${dep}/src/dep.av" }
+}
+
+fn entry_asking(value: string) -> string { "use lib.{go}\nprintln(\"\${${value}}\")\n" }
+
+spec "avra build — a warm store links every file a held file's `use` names" {
+    given "a held file naming one file of a dependency's directory module, which names one of a third package's" {
+        then "a second build after an entry edit links the named files of both packages" {
+            let c = held_chain()
+            second_build_value(c.entry, entry_asking("go()"), entry_asking("go() + 1"), c.entry) == "42\n"
+        }
+        then "a second build after an edit to the named file's sibling links them too" {
+            let c = held_chain()
+            second_build_value(
+                c.sibling,
+                "export fn unused() -> int { 1 }\n",
+                "export fn unused() -> int { 2 }\n",
+                c.entry,
+            ) == "41\n"
+        }
+        then "a second build with nothing edited answers as the first" {
+            let c = held_chain()
+            built_printed(c.entry) == "41\n" && built_printed(c.entry) == "41\n"
+        }
+    }
+}

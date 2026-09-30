@@ -25,6 +25,7 @@ use core.{
     DeclId,
     Expr,
     ExprId,
+    Stmt,
     StmtId,
     TypeId,
     TypeRef,
@@ -270,9 +271,15 @@ fn propagate_contribution(fs: FailSurvey, decls: Decls, v: ExprId) -> Contributi
     result_error_contribution(fs, decls, v)
 }
 
+/// Every `fail`'s value in the file: the `Stmt` relation's `Fail` bucket.
 fn fail_values(store: SyntaxArena) -> List<ExprId> {
-    flatten([fail_value(store, s) for s in store.stmt_ids()])
+    flatten(
+        [fail_value(store, s) for s in store.stmts_by_kind(0, store.stmts.count(), fail_tag(store))],
+    )
 }
+
+/// `Fail`'s own tag; the payload is a placeholder `tag_stmt` never reads.
+fn fail_tag(store: SyntaxArena) -> int { store.tag_stmt(Stmt.Fail(ExprId { index: 0 })) }
 
 fn fail_value(store: SyntaxArena, s: StmtId) -> List<ExprId> {
     match store.stmt(s) { .Fail(v) -> [v], rest -> [] }
@@ -282,15 +289,11 @@ fn fail_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
     [v for v in fail_values(store) if v.index >= lo && v.index < hi]
 }
 
-/// `Propagate`'s own tag — `tag_expr` reads only the variant, so the
-/// payload here is a placeholder never inspected.
-fn propagate_tag(store: SyntaxArena) -> int {
-    store.tag_expr(Expr.Propagate(ExprId { index: 0 }))
-}
+/// `Propagate`'s own tag; the payload is a placeholder `tag_expr` never reads.
+fn propagate_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Propagate(ExprId { index: 0 })) }
 
-/// M5b PREP (COMPILER DB townhall §6.11): a bucket lookup over the
-/// `Expr` arena relation's `@index kind`, scoped to the decl's own
-/// `@index decl` range — never a hand-matched sweep of every node.
+/// Every `?` value in `[lo, hi)`: the `Expr` relation's `Propagate`
+/// bucket, sliced to the declaration's range.
 fn propagate_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
     flatten([propagate_value(store, e) for e in store.exprs_by_kind(lo, hi, propagate_tag(store))])
 }
@@ -299,17 +302,12 @@ fn propagate_value(store: SyntaxArena, e: ExprId) -> List<ExprId> {
     match store.expr(e) { .Propagate(v) -> [v], rest -> [] }
 }
 
-/// M6 PREP: every `catch` expression in `[lo, hi)` — the same
-/// index-range sweep `propagate_sites` already uses, since a `catch`
-/// expression is addressed the same way (an `ExprId` in the decl's own
-/// range), no new arena assumption needed. Finds a catch AT ANY DEPTH,
-/// a nested catch included — this is a flat index-range scan, blind to
-/// AST shape, same as `fail_sites`/`propagate_sites`.
-fn catch_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
-    [ExprId { index: i } for i in lo..hi if is_catch(store, ExprId { index: i })]
-}
+/// Every `catch` in `[lo, hi)`, at any depth: the `Expr` relation's
+/// `Catch` bucket, sliced to the declaration's range.
+fn catch_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> { store.exprs_by_kind(lo, hi, catch_tag(store)) }
 
-fn is_catch(store: SyntaxArena, e: ExprId) -> bool { store.expr(e) is .Catch }
+/// `Catch`'s own tag; the payload is a placeholder `tag_expr` never reads.
+fn catch_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Catch(ExprId { index: 0 }, [], [], [])) }
 
 /// M6 PREP: one catch arm's OWN source span — the whole text a re-raise
 /// nested anywhere inside it (an `if`, a `match`, any depth) still falls
