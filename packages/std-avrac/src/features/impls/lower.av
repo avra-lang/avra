@@ -137,11 +137,28 @@ fn chosen_dispatch(
     args: List<ExprId>,
 ) -> Reg {
     let s = seated(cx, subject, args)
-    let m? = cx.facts.chosen_at(e) ?? cx.view.decls.method(decl, name) else {
+    let m? = cx.facts.chosen_at(e) ?? concrete_choice(cx, decl, name, args) ?? cx.view.decls.method(decl, name) else {
         return cx.lower_defect(e, "a method with no symbol survived typing")
     }
     let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
     cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(subject)), seats)
+}
+
+/// Inside a body typed over a type parameter, typing could not choose
+/// among a generic trait's members; under mono the arguments' types are
+/// concrete, and the ONE member whose seats they are is the callee.
+fn concrete_choice(cx: LowerCx, decl: DeclId, name: string, args: List<ExprId>) -> DeclId? {
+    let many = cx.view.decls.methods_named(decl, name)
+    if many.length < 2 { return null }
+    let fits = [m for m in many if seats_are(cx, m, args)]
+    if fits.length == 1 { fits[0] } else { null }
+}
+
+/// Whether the arguments' types are exactly the member's seats.
+fn seats_are(cx: LowerCx, m: DeclId, args: List<ExprId>) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
+    sig.params.length == args.length + 1 && [j for j, a in args if cx.type_at(a).index != sig.params[j + 1].index].is_empty()
 }
 
 /// A member chosen at RUN: the `dyn` argument's tag is tested against
