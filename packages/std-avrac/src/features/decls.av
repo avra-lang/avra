@@ -405,8 +405,6 @@ export type Decls = {
     held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
     move_stamps: Cell<Map<string, Cell<Map<string, int>>>>,
-    /// Cells a LATE write moved this pass, stamped at the pass's end.
-    late_moved: Cell<List<Key>>,
 
     // a GENERATED declaration's origin — null for every written one
     provenance: Cell<List<Provenance?>>,
@@ -567,15 +565,11 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 /// revision its cell last MOVED at — the kernel's contract — never the
 /// relation's own hash, which a revision cannot be compared with.
 ///
-/// A LATE WRITE IS AN INPUT ARRIVING: a file or module is minted when a
-/// `use` first reaches its package, possibly after a query enumerated the
-/// relation this revision. The write is kept until the pass ends
-/// (`Decls.settle_late`), which bumps the revision and stamps the cell,
-/// so that query re-verifies and recomputes on the next pass; nothing
-/// that read no moved cell does. It converges: recomputing can admit more
-/// packages, but admission only ever adds, and a workspace reaches
-/// finitely many packages.
-fn kernel_hooks(kernel: Kernel, stamps: Cell<Map<string, Cell<Map<string, int>>>>, late: Cell<List<Key>>) -> RelHooks {
+/// A LATE WRITE IS REFUSED: every module a `use` can reach is minted
+/// while files are admitted (`Workspace.admit_used`), before any query
+/// reads the relation, so a row filed after a query read its bucket is a
+/// defect the relation names — never an input the check absorbs.
+fn kernel_hooks(kernel: Kernel, stamps: Cell<Map<string, Cell<Map<string, int>>>>) -> RelHooks {
     RelHooks {
         family: (_verify: fn(int) -> int) -> kernel_family(kernel, stamps),
         record: (family: int, cell: int) -> recorded_in(kernel, family, cell),
@@ -585,7 +579,7 @@ fn kernel_hooks(kernel: Kernel, stamps: Cell<Map<string, Cell<Map<string, int>>>
         opened: (_family: int, _cell: int) -> 0 - 1,
         settled: (_family: int, _cell: int) -> nothing(),
         running: () -> kernel.reader(),
-        moved: (family: int, cell: int, is_late: bool) -> moved_in(kernel, stamps, late, family, cell, is_late),
+        moved: (family: int, cell: int, is_late: bool) -> moved_in(kernel, stamps, family, cell, is_late),
     }
 }
 
@@ -598,19 +592,15 @@ fn kernel_family(kernel: Kernel, stamps: Cell<Map<string, Cell<Map<string, int>>
     family
 }
 
-/// A cell a write moved: stamped now, or — a late one — at the pass's end.
+/// A cell a write moved, stamped with the revision — refused when late.
 fn moved_in(
     kernel: Kernel,
     stamps: Cell<Map<string, Cell<Map<string, int>>>>,
-    late: Cell<List<Key>>,
     family: int,
     cell: int,
     is_late: bool,
 ) -> bool {
-    if is_late {
-        late.push(Key { family: family, arg: cell })
-        return true
-    }
+    if is_late { return false }
     stamped(stamps, family, cell, kernel.revision())
     true
 }
@@ -668,7 +658,6 @@ export fn new_decls() -> Decls {
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
         move_stamps: map_cell(),
-        late_moved: list_cell(),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
         ensure_package: Cell.new(no_store),
@@ -815,21 +804,7 @@ impl Decls {
         self.record_items.set(items)
         self.record_methods.set(methods)
         self.held_rows.set(held)
-        self.decl_rows.get().armed(kernel_hooks(kernel, self.move_stamps, self.late_moved))
-    }
-
-    /// Late writes land BETWEEN passes: the revision moves once, every cell
-    /// a late write moved is stamped with it, and the answer says whether
-    /// any did. Nothing re-verifies mid-pass, so no query recomputes
-    /// inside another's run.
-    fn settle_late() -> bool {
-        let moved = self.late_moved.get()
-        if moved.is_empty() { return false }
-        let kernel = self.record_kernel.get()
-        kernel.bump()
-        for k in moved { stamped(self.move_stamps, k.family, k.arg, kernel.revision()) }
-        self.late_moved.set([])
-        true
+        self.decl_rows.get().armed(kernel_hooks(kernel, self.move_stamps))
     }
 
     /// Where a file's rows stand: minting (0), settled (1), held (2).
