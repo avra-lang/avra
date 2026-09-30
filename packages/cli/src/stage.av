@@ -3,7 +3,7 @@
 //! gone. Not a command — `test` re-executes this program with the hand-off's
 //! own first word, and the entry reads it before its commands do. The first
 //! red suite stops the run, so a failure names one thing.
-use @std.avrac.compiler.{verdict_of, staged_binaries, Want}
+use @std.avrac.compiler.{verdict_of, staged_binaries, Want, Verdict}
 use @std.avrac.compiler.backend.{run_program}
 use @std.avrac.compiler.lower.{program_symbol}
 use @std.process.{status_of, tool, cmd, Env, Outcome, ProcessError, minimal}
@@ -90,29 +90,32 @@ fn first_red(binaries: List<string>) -> int {
     0
 }
 
+/// The words a non-green verdict owes the reader — null for green,
+/// which speaks nothing. Pinned on its own so the wording is checked
+/// without calling the print `judged` wraps it in.
+export fn voice_of(binary: string, v: Verdict) -> string? {
+    match v {
+        .Green -> null,
+        .Red -> "STOPPED — ${binary} reported a failure above; the rest of the suite never ran",
+        .CouldNotStart -> "the binary could not start — the link answered a path that does not run",
+        .Died -> "STOPPED — the case or program named above trapped, and everything after it never ran",
+    }
+}
+
+/// The exit code a verdict leaves by — 0 for green, 1 for anything
+/// that stopped the suite.
+export fn exit_of(v: Verdict) -> int {
+    match v { .Green -> 0, .Red or .CouldNotStart or .Died -> 1 }
+}
+
 /// The verdict as an exit code, EVERY non-green one spoken — a status
 /// is a verdict, and a bare `1` told nobody which suite failed nor
 /// that the run stops here without running the rest.
 export fn judged(binary: string, status: int) -> int {
-    match verdict_of(status) {
-        .Green -> 0,
-        .Red -> {
-            println(
-                "STOPPED — ${binary} reported a failure above; the rest of the suite never ran",
-            )
-            1
-        },
-        .CouldNotStart -> {
-            println("the binary could not start — the link answered a path that does not run")
-            1
-        },
-        .Died -> {
-            println(
-                "STOPPED — the case or program named above trapped, and everything after it never ran",
-            )
-            1
-        },
-    }
+    let v = verdict_of(status)
+    let voice? = voice_of(binary, v) else { return exit_of(v) }
+    println(voice)
+    exit_of(v)
 }
 
 // ── SOUNDNESS: the same binary, twice more ────────────────────────

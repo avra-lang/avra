@@ -1,0 +1,337 @@
+// The no-script door: a form POST answers 303, 422, 409, 415 or 400,
+// and a repeated identity answers its first receipt again.
+use @std.action.derive.{action, impact}
+use @std.action.{routine, destructive, external, reversible, Impact}
+use @std.action.route.{action_route}
+use @std.action.wire.{ActionRefusal}
+use @std.http.frame.{Method}
+use @std.http.http.{Response, Header}
+use @std.http.route.{Route, compiled, dispatch}
+use @std.text.{from_codepoint}
+
+@action
+@impact(routine)
+fn rename(title: string, column: int) -> string { "${title}|${column}" }
+
+@action
+@impact(destructive)
+fn wipe(target: string) -> string { "wiped ${target}" }
+
+/// Seats named like the protocol's own fields without its prefix.
+@action
+@impact(routine)
+fn alike(confirm: string, next: string, idempotency: string) -> string { "${confirm}|${next}|${idempotency}" }
+
+@action
+@impact(external)
+fn dispatch_mail(to: string) -> string { to }
+
+@action
+@impact(reversible)
+fn archive(to: string) -> string { to }
+
+const typed_only: Impact = routine with { safeguard: .Typed }
+
+@action
+@impact(typed_only)
+fn retire(to: string) -> string { to }
+
+/// How often the action ran: a route over a counting call.
+fn counted_rename(runs: Cell<int>, fields: Map<string, string>) -> Result<
+    string,
+    List<ActionRefusal>,
+> {
+    runs.set(runs.get() + 1)
+    rename_from_text(fields)
+}
+
+fn counted_wipe(runs: Cell<int>, fields: Map<string, string>) -> Result<string, List<ActionRefusal>> {
+    runs.set(runs.get() + 1)
+    wipe_from_text(fields)
+}
+
+fn rename_route(runs: Cell<int>) -> Route {
+    action_route(rename_action(), (f: Map<string, string>) -> counted_rename(runs, f))
+}
+
+fn wipe_route(runs: Cell<int>) -> Route {
+    action_route(wipe_action(), (f: Map<string, string>) -> counted_wipe(runs, f))
+}
+
+fn alike_route() -> Route { action_route(alike_action(), alike_from_text) }
+
+/// What one route answers to a form POST of this body.
+fn answer(route: Route, name: string, body: string) -> Response {
+    let q? = form_post(name, body) else { return Response { status: 599 } }
+    dispatch(compiled([route]), q)
+}
+
+fn where_to(r: Response) -> string {
+    let h? = r.headers.find(it.name == "location") else { return "" }
+    h.value
+}
+
+fn words(r: Response) -> string { r.body.text() ?? "" }
+
+fn zero() -> Cell<int> { Cell.new(0) }
+
+spec "an action's form door" {
+    given "a submission that succeeds" {
+        then "answers 303 to the root when it asks nowhere" {
+            let r = answer(rename_route(zero()), "rename", "title=a&column=1")
+            r.status == 303 && where_to(r) == "/"
+        }
+        then "answers 303 to a local path it asks for" {
+            let r = answer(rename_route(zero()), "rename", "title=a&column=1&_next=/boards/7?tab=2")
+            r.status == 303 && where_to(r) == "/boards/7?tab=2"
+        }
+        then "the redirect carries no body" {
+            answer(rename_route(zero()), "rename", "title=a&column=1").body.length == 0
+        }
+        then "ran the action once" {
+            let runs = zero()
+            answer(rename_route(runs), "rename", "title=a&column=1")
+            runs.get() == 1
+        }
+    }
+    given "where a submission may send the browser" {
+        then "an absolute URL goes to the root" {
+            where_to(
+                answer(
+                    rename_route(zero()),
+                    "rename",
+                    "title=a&column=1&_next=http://evil.example/x",
+                ),
+            ) == "/"
+        }
+        then "a scheme-relative URL goes to the root" {
+            where_to(
+                answer(rename_route(zero()), "rename", "title=a&column=1&_next=//evil.example"),
+            ) == "/"
+        }
+        then "a backslash after the slash goes to the root" {
+            where_to(
+                answer(rename_route(zero()), "rename", "title=a&column=1&_next=/%5Cevil.example"),
+            ) == "/"
+        }
+        then "a tab, which a browser removes, goes to the root" {
+            where_to(
+                answer(rename_route(zero()), "rename", "title=a&column=1&_next=/%09/evil.example"),
+            ) == "/"
+        }
+        then "a line break goes to the root, never into a header" {
+            let r = answer(
+                rename_route(zero()),
+                "rename",
+                "title=a&column=1&_next=/a%0D%0Aset-cookie:x=1",
+            )
+            r.status == 303 && where_to(r) == "/"
+        }
+        then "a space goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a%20b")) == "/"
+        }
+        then "a NUL goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a%00b")) == "/"
+        }
+        then "a backslash past the first octet is only a path" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a%5Cb")) == "/a\\b"
+        }
+        then "a non-ASCII path goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/%C3%A9")) == "/"
+        }
+        then "a path with no leading slash goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=boards")) == "/"
+        }
+        then "an empty destination goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=")) == "/"
+        }
+        then "the first of a repeated destination decides" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a&_next=/b")) == "/a"
+        }
+    }
+    given "a submission the action refuses" {
+        then "answers 422 with a line per field" {
+            let r = answer(rename_route(zero()), "rename", "column=x")
+            r.status == 422 && words(r) == "title: a value is required\ncolumn: not a whole number"
+        }
+        then "answers as plain text" {
+            let r = answer(rename_route(zero()), "rename", "column=x")
+            r.headers.any(it.name == "content-type" && it.value.starts_with("text/plain"))
+        }
+        then "does not redirect" {
+            where_to(answer(rename_route(zero()), "rename", "column=x&_next=/a")) == ""
+        }
+    }
+    given "the form's own framing" {
+        then "answers 415 to a body that is not a form" {
+            let q? = posted("/actions/rename", "application/json", "{}".bytes()) else { return false }
+            dispatch(compiled([rename_route(zero())]), q).status == 415
+        }
+        then "answers 415 to a body with no type" {
+            let q? = posted("/actions/rename", null, "title=a&column=1".bytes()) else { return false }
+            dispatch(compiled([rename_route(zero())]), q).status == 415
+        }
+        then "reads the media type without case, past its parameters" {
+            let q? = posted(
+                "/actions/rename",
+                "Application/X-WWW-Form-Urlencoded; charset=UTF-8",
+                "title=a&column=1".bytes(),
+            ) else {
+                return false
+            }
+            dispatch(compiled([rename_route(zero())]), q).status == 303
+        }
+        then "answers 400 to a form it cannot read, without running the action" {
+            let runs = zero()
+            let r = answer(rename_route(runs), "rename", "title=a&column=%")
+            r.status == 400 && runs.get() == 0
+        }
+        then "answers 400 to an octet that is not UTF-8" {
+            answer(rename_route(zero()), "rename", "title=%FF&column=1").status == 400
+        }
+        then "answers 404 to another action's path" {
+            answer(rename_route(zero()), "wipe", "target=x").status == 404
+        }
+        then "answers 404 to a GET" {
+            let g? = asked_get("/actions/rename") else { return false }
+            dispatch(compiled([rename_route(zero())]), g).status == 404
+        }
+    }
+    given "a destructive action" {
+        then "awaits confirmation, and does not run" {
+            let runs = zero()
+            let r = answer(wipe_route(runs), "wipe", "target=x")
+            r.status == 409 && runs.get() == 0
+        }
+        then "says what confirms it" {
+            words(answer(wipe_route(zero()), "wipe", "target=x")).contains("_confirm=yes")
+        }
+        then "runs once confirmed" {
+            let runs = zero()
+            let r = answer(wipe_route(runs), "wipe", "target=x&_confirm=yes")
+            r.status == 303 && runs.get() == 1
+        }
+        then "is not confirmed by another answer" {
+            answer(wipe_route(zero()), "wipe", "target=x&_confirm=no").status == 409 &&
+                answer(wipe_route(zero()), "wipe", "target=x&_confirm=YES").status == 409 &&
+                answer(wipe_route(zero()), "wipe", "target=x&_confirm=").status == 409
+        }
+        then "is not confirmed by a seat of that name without the prefix" {
+            answer(wipe_route(zero()), "wipe", "target=x&confirm=yes").status == 409
+        }
+        then "asks before it validates" {
+            answer(wipe_route(zero()), "wipe", "").status == 409
+        }
+        then "refuses a confirmed submission that is invalid" {
+            answer(wipe_route(zero()), "wipe", "_confirm=yes").status == 422
+        }
+    }
+    given "an action whose safeguard is a confirmation though nothing is shown pending" {
+        then "awaits it" {
+            answer(
+                action_route(dispatch_mail_action(), dispatch_mail_from_text),
+                "dispatch_mail",
+                "to=a",
+            )
+                .status == 409
+        }
+        then "runs once confirmed" {
+            answer(
+                action_route(dispatch_mail_action(), dispatch_mail_from_text),
+                "dispatch_mail",
+                "to=a&_confirm=yes",
+            )
+                .status == 303
+        }
+    }
+    given "an action whose safeguard is an undo" {
+        then "needs no confirmation" {
+            answer(action_route(archive_action(), archive_from_text), "archive", "to=a").status == 303
+        }
+    }
+    given "an action whose safeguard a form cannot discharge" {
+        then "is held, and says what it asks for" {
+            let r = answer(action_route(retire_action(), retire_from_text), "retire", "to=a")
+            r.status == 409 && words(r).contains("re-authentication")
+        }
+        then "is not discharged by a confirmation" {
+            answer(action_route(retire_action(), retire_from_text), "retire", "to=a&_confirm=yes")
+                .status == 409
+        }
+    }
+    given "a routine action" {
+        then "needs no confirmation and ignores an offered one" {
+            answer(rename_route(zero()), "rename", "title=a&column=1&_confirm=no").status == 303
+        }
+    }
+    given "a repeated identity" {
+        then "answers the first receipt again and runs once" {
+            let runs = zero()
+            let route = rename_route(runs)
+            let first = answer(route, "rename", "title=a&column=1&_idempotency=k1&_next=/one")
+            let again = answer(route, "rename", "title=b&column=2&_idempotency=k1&_next=/two")
+            again.status == 303 &&
+                where_to(again) == "/one" &&
+                where_to(first) == "/one" &&
+                runs.get() == 1
+        }
+        then "runs again for another identity" {
+            let runs = zero()
+            let route = rename_route(runs)
+            answer(route, "rename", "title=a&column=1&_idempotency=k1")
+            answer(route, "rename", "title=a&column=1&_idempotency=k2")
+            runs.get() == 2
+        }
+        then "does not deduplicate submissions with no identity" {
+            let runs = zero()
+            let route = rename_route(runs)
+            answer(route, "rename", "title=a&column=1")
+            answer(route, "rename", "title=a&column=1")
+            answer(route, "rename", "title=a&column=1&_idempotency=")
+            answer(route, "rename", "title=a&column=1&_idempotency=")
+            runs.get() == 4
+        }
+        then "does not remember a refusal, so a corrected retry runs" {
+            let runs = zero()
+            let route = rename_route(runs)
+            let bad = answer(route, "rename", "column=1&_idempotency=k1")
+            let good = answer(route, "rename", "title=a&column=1&_idempotency=k1")
+            bad.status == 422 && good.status == 303 && runs.get() == 2
+        }
+        then "does not remember a confirmation that was awaited" {
+            let runs = zero()
+            let route = wipe_route(runs)
+            let asked = answer(route, "wipe", "target=x&_idempotency=k1")
+            let done = answer(route, "wipe", "target=x&_idempotency=k1&_confirm=yes")
+            asked.status == 409 && done.status == 303 && runs.get() == 1
+        }
+        then "keeps identities apart between routes" {
+            let runs = zero()
+            answer(rename_route(runs), "rename", "title=a&column=1&_idempotency=k1")
+            answer(rename_route(runs), "rename", "title=a&column=1&_idempotency=k1")
+            runs.get() == 2
+        }
+        then "keeps a hostile identity as an opaque key" {
+            let runs = zero()
+            let route = rename_route(runs)
+            answer(route, "rename", "title=a&column=1&_idempotency=%00")
+            answer(route, "rename", "title=a&column=1&_idempotency=" + "%00%00")
+            runs.get() == 2
+        }
+    }
+    given "seats named like the protocol's fields" {
+        then "read their own fields, and the protocol's are apart" {
+            let r = answer(alike_route(), "alike", "confirm=a&next=b&idempotency=c&_next=/ok")
+            r.status == 303 && where_to(r) == "/ok"
+        }
+        then "are refused when absent, by their own names" {
+            let r = answer(alike_route(), "alike", "_next=/ok&_idempotency=z")
+            r.status == 422 &&
+                words(r) == "confirm: a value is required\nnext: a value is required\nidempotency: a value is required"
+        }
+        then "are not read from the protocol's fields" {
+            let r = answer(alike_route(), "alike", "_confirm=a&_next=/b&_idempotency=c")
+            r.status == 422
+        }
+    }
+}

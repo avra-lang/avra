@@ -1,0 +1,25 @@
+//! MESSAGE AUTHENTICATION over the vendored engine, so the tree carries
+//! one SHA-256: a signed cookie, a webhook's signature, a token.
+//!
+//! `same_mac` is the only way to compare two: `==` stops at the first
+//! differing byte, and how long it took tells an attacker how many of
+//! a forged MAC's bytes were right.
+//!
+//! IT READS NOTHING OF tls.av, and its C is a unit of its own, so a
+//! program that only signs links no handshake.
+extern fn avra_tls_hmac_sha256(key: Bytes, key_n: int, msg: Bytes, msg_n: int) -> int
+extern fn avra_tls_mac_at() -> ptr?
+extern fn avra_tls_same(a: Bytes, a_n: int, b: Bytes, b_n: int) -> int
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+
+/// HMAC-SHA256 of `msg` under `key` (RFC 2104): 32 bytes.
+export fn hmac_sha256(key: Bytes, msg: Bytes) -> Bytes {
+    let n = avra_tls_hmac_sha256(key, key.length, msg, msg.length)
+    if n < 0 { return "".bytes() }
+    let at? = avra_tls_mac_at() else { return "".bytes() }
+    avra_bytes_adopted(at, n)
+}
+
+/// Whether two MACs are the same bytes, in a time that does not depend
+/// on where they first differ. Different lengths are never the same.
+export fn same_mac(a: Bytes, b: Bytes) -> bool { avra_tls_same(a, a.length, b, b.length) == 1 }

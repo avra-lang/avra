@@ -1,0 +1,161 @@
+// TlsConn over loopback, and the red team's survivors against it: a
+// peer that hangs up mid-handshake, plain HTTP at a TLS port, a peer
+// that never speaks, a stream cut without close_notify, a transfer
+// larger than the socket holds, and a close repeated. Each server
+// runs as its own task, so every verb parks as it would in service.
+use @std.net.{Listener, Conn, NetError, listen, connect}
+use @std.time.{Duration, secs, ms, within}
+use @std.tls.{TlsConn, TlsError, dial, handshake, wired}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+fn bound() -> Result<Listener, TlsError> { wired(listen("127.0.0.1", 0)) }
+
+/// The next connection's handshake as the server runs it: its words
+/// on failure, "<ok>" once secured.
+fn served_words(l: Listener) -> string {
+    match accepted_tls(l) {
+        .Ok(c) -> {
+            let _ = c.close()
+            "<ok>"
+        },
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn accepted_tls(l: Listener) -> Result<TlsConn, TlsError> {
+    handshake(wired(l.accept())?, serving_localhost()?, "")
+}
+
+fn accepted_tls_within(l: Listener, d: Duration) -> string {
+    match within d { accepted_tls(l) } {
+        .Ok(c) -> {
+            let _ = c.close()
+            "<ok>"
+        },
+        .Err(e) -> if e.timed_out() { "timed out" } else { e.describe().message },
+    }
+}
+
+fn hangup_mid_handshake() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn served_words(l)
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    wired(c.close())?
+    server.await.contains("the peer closed without close_notify")
+}
+
+fn plain_http_at_a_tls_port() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn served_words(l)
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    wired(c.write("GET / HTTP/1.1\r\nhost: localhost\r\n\r\n".bytes()))?
+    let refused = server.await
+    let answer = within secs(2) { c.read(4096) }
+    wired(c.close())?
+    refused.starts_with("handshake ") && !(answer is .Err)
+}
+
+fn silent_peer_times_out() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn accepted_tls_within(l, ms(200))
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    let words = server.await
+    wired(c.close())?
+    words == "timed out"
+}
+
+/// A server that shakes hands, writes a word, then drops the socket
+/// with no close_notify.
+fn cut_after_a_word(l: Listener) -> Result<int, TlsError> {
+    let c = accepted_tls(l)?
+    c.write("partial".bytes())?
+    wired(c.conn.close())
+}
+
+fn cut_stream_is_cut() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn cut_after_a_word(l)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let first = c.read(64)?
+    let after = c.read(64)
+    server.await?
+    let _ = c.close()
+    first?.text() == "partial" &&
+        match after { .Err(e) -> e.describe().kind == "tls.cut", .Ok(_) -> false }
+}
+
+/// A server that counts every byte until close_notify, then answers
+/// the count.
+fn counting(l: Listener) -> Result<int, TlsError> {
+    let c = accepted_tls(l)?
+    mut total = 0
+    mut open = true
+    while open {
+        match c.read(65536)? {
+            b? -> { total = total + b.length }
+            null -> { open = false }
+        }
+    }
+    c.write("${total}".bytes())?
+    c.shutdown_write()?
+    c.close()?
+    .Ok(total)
+}
+
+fn large_transfer() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn counting(l)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let big = [i % 256 for i in 0..1000000].bytes()!
+    let sent = c.write(big)?
+    c.shutdown_write()?
+    let answer = c.read(64)?
+    let counted = server.await?
+    c.close()?
+    sent == 1000000 && counted == 1000000 && answer?.text() == "1000000"
+}
+
+fn closed_twice() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn served_words(l)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let first = c.close()?
+    let second = words(c.close())
+    let _ = server.await
+    first == c.fd && second.ends_with("a TLS handle that names nothing live")
+}
+
+fn wrong_host_refused_by_the_client() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn served_words(l)
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    let refused = words(handshake(c, trusting_localhost()?, "example.com"))
+    let _ = server.await
+    refused == misnamed("example.com")
+}
+
+fn nobody_listening() -> Result<bool, TlsError> {
+    let l = bound()?
+    let port = l.port
+    wired(l.close())?
+    words(dial("localhost", port, secs(2), trusting_localhost()?)).starts_with("connect ")
+}
+
+spec "std.tls TlsConn" {
+    given "a loopback server and a verifying client" {
+        then "a megabyte crosses in records, every write parked until taken" { passes(large_transfer()) }
+        then "a close is answered once, and a second never reaches the socket" { passes(closed_twice()) }
+        then "a dial to a closed port fails in the net's words" { passes(nobody_listening()) }
+        then "a client naming a host the certificate does not carry refuses it" {
+            passes(wrong_host_refused_by_the_client())
+        }
+    }
+    given "a hostile or broken peer" {
+        then "a peer hanging up mid-handshake is Cut, never a wait" { passes(hangup_mid_handshake()) }
+        then "plain HTTP at a TLS port fails the handshake and the client is answered, not held" {
+            passes(plain_http_at_a_tls_port())
+        }
+        then "a peer that never speaks meets the handshake's deadline" { passes(silent_peer_times_out()) }
+        then "a stream ended without close_notify reads as Cut, never as the end" { passes(cut_stream_is_cut()) }
+    }
+}

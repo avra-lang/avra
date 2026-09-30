@@ -1,0 +1,193 @@
+// `@action` generates a description and a text reader beside the fn.
+use @std.action.derive.{action, impact}
+use @std.action.{routine, destructive, Impact}
+use @std.time.{Duration}
+use @std.action.wire.{ActionRefusal}
+
+@action
+@impact(routine)
+fn add_card(title: string, column: int, pinned: bool, note: string?) -> string {
+    "${title}|${column}|${pinned}|${note ?? "-"}"
+}
+
+@action
+@impact(destructive)
+fn purge(target: string) -> string { "purged ${target}" }
+
+/// Seats named like the protocol's own fields, without its prefix.
+@action
+@impact(routine)
+fn lookalike(confirm: string, next: string, idempotency: string) -> string {
+    "${confirm}|${next}|${idempotency}"
+}
+
+@action
+@impact(routine)
+fn scaled(scale: float) -> float { scale }
+
+@action
+@impact(routine)
+fn nothing_taken() -> int { 7 }
+
+/// Actions and impacts named like the names a generated body binds.
+@action
+@impact(routine)
+fn fields(x: int) -> int { x }
+
+@action
+@impact(routine)
+fn problems(x: int) -> int { x }
+
+@action
+@impact(routine)
+fn seats(x: int) -> int { x }
+
+@action
+@impact(routine)
+fn a0(x: int) -> int { x }
+
+const problems_impact: Impact = routine
+
+@action
+@impact(problems_impact)
+fn shadowed_impact(x: int) -> int { x }
+
+@action
+@impact(routine)
+fn decide(n: int) -> Result<int, string> {
+    if n < 0 { fail "negative" }
+    n
+}
+
+/// A profile overridden, named so the annotation can refer to it.
+const trashed: Impact = destructive with { recovery: .Trash(Duration { ms: 1000 }) }
+
+@action
+@impact(trashed)
+fn discard(card: string) -> string { card }
+
+fn said(r: Result<string, List<ActionRefusal>>) -> string {
+    match r { .Ok(v) -> v, .Err(rs) -> [x.message for x in rs].join(";") }
+}
+
+fn answered(r: Result<int, List<ActionRefusal>>) -> string {
+    match r { .Ok(n) -> "${n}", .Err(_) -> "refused" }
+}
+
+fn refusals_of<T>(r: Result<T, List<ActionRefusal>>) -> List<ActionRefusal> {
+    match r { .Ok(_) -> [], .Err(rs) -> rs }
+}
+
+spec "@action's description" {
+    given "an action with four seats" {
+        then "names itself and its answer" {
+            let i = add_card_action()
+            i.name == "add_card" && i.answer == "string"
+        }
+        then "lists the seats in order with their written types" {
+            [p.name + ":" + p.kind for p in add_card_action().params].join(",") == "title:string,column:int,pinned:bool,note:string?"
+        }
+        then "marks only the nullable seat as not required" {
+            ["${p.required}" for p in add_card_action().params].join(",") == "true,true,true,false"
+        }
+    }
+    given "the impact each action declared" {
+        then "a routine action is speculative" {
+            add_card_action().impact.presentation is .Speculative
+        }
+        then "a destructive action is pending" {
+            purge_action().impact.presentation is .Pending
+        }
+    }
+    given "an impact named by a const built with an override" {
+        then "carries the override, not the profile it started from" {
+            discard_action().impact.recovery is .Trash
+        }
+    }
+    given "an action named like a name a generated body binds" {
+        then "is still called by its own name" {
+            [
+                answered(fields_from_text(sent(["x", "1"]))),
+                answered(problems_from_text(sent(["x", "2"]))),
+                answered(seats_from_text(sent(["x", "3"]))),
+                answered(a0_from_text(sent(["x", "4"]))),
+                answered(shadowed_impact_from_text(sent(["x", "5"]))),
+            ]
+                .join(",") == "1,2,3,4,5"
+        }
+        then "describes itself under its own name" {
+            fields_action().name == "fields" &&
+                seats_action().name == "seats" &&
+                shadowed_impact_action().name == "shadowed_impact"
+        }
+    }
+    given "an action that answers a Result" {
+        then "answers its ok side when it succeeds" {
+            match decide_from_text(sent(["n", "4"])) { .Ok(n) -> n == 4, .Err(_) -> false }
+        }
+        then "carries its failure as a refusal with no field" {
+            let r = refusals_of(decide_from_text(sent(["n", "-1"])))
+            r.length == 1 && r[0].field == null && r[0].message == "negative"
+        }
+        then "still refuses a seat it cannot read, before calling" {
+            refusals_of(decide_from_text(sent(["n", "x"])))[0].field == "n"
+        }
+        then "describes the answer as written" { decide_action().answer == "Result<int, string>" }
+    }
+    given "an action with no seats" {
+        then "describes an empty list" { nothing_taken_action().params.length == 0 }
+    }
+}
+
+spec "@action's text reader" {
+    given "every seat supplied" {
+        then "calls the fn with each read value" {
+            said(
+                add_card_from_text(sent(["title", "a", "column", "3", "pinned", "on", "note", "n"])),
+            ) == "a|3|true|n"
+        }
+        then "leaves an absent nullable seat absent" {
+            said(add_card_from_text(sent(["title", "a", "column", "3", "pinned", "yes"]))) == "a|3|true|-"
+        }
+        then "reads an unchecked box as false" {
+            said(add_card_from_text(sent(["title", "a", "column", "3"]))) == "a|3|false|-"
+        }
+        then "calls a fn that takes nothing" {
+            match nothing_taken_from_text({}) { .Ok(n) -> n == 7, .Err(_) -> false }
+        }
+    }
+    given "seats the text cannot fill" {
+        then "refuses an absent required seat by name" {
+            let r = refusals_of(add_card_from_text(sent(["column", "3"])))
+            r.length == 1 && r[0].field == "title" && r[0].message == "a value is required"
+        }
+        then "refuses a number that is not whole" {
+            let r = refusals_of(add_card_from_text(sent(["title", "a", "column", "3.5"])))
+            r.length == 1 && r[0].field == "column" && r[0].message == "not a whole number"
+        }
+        then "refuses a checkbox word it does not know" {
+            let r = refusals_of(
+                add_card_from_text(sent(["title", "a", "column", "3", "pinned", "maybe"])),
+            )
+            r.length == 1 && r[0].field == "pinned" && r[0].message == "not a yes or a no"
+        }
+        then "refuses every seat that failed, in seat order" {
+            [x.field ?? "" for x in refusals_of(add_card_from_text(sent(["column", "x", "pinned", "?"])))]
+                .join(",") == "title,column,pinned"
+        }
+        then "refuses a float seat by name — text has no float reading" {
+            let r = refusals_of(scaled_from_text(sent(["scale", "1.5"])))
+            r.length == 1 &&
+                r[0].field == "scale" &&
+                r[0].message == "a `float` cannot be read from text"
+        }
+        then "never calls the fn over a refused seat" {
+            said(add_card_from_text(sent(["title", "a", "column", "nope"]))) == "not a whole number"
+        }
+    }
+    given "seats named like the protocol's fields without its prefix" {
+        then "read their own fields" {
+            said(lookalike_from_text(sent(["confirm", "a", "next", "b", "idempotency", "c"]))) == "a|b|c"
+        }
+    }
+}

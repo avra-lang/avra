@@ -1,0 +1,159 @@
+//! An action's HTTP door with no script: `POST /actions/<name>` takes a
+//! form body and answers with a status a browser follows.
+//!
+//!     303  done — to `_next` when it is a path on this origin, else `/`
+//!     409  the action's safeguard awaits `_confirm=yes`, or asks for more
+//!          than a form can give
+//!     415  the body is not a form
+//!     400  the form is unreadable
+//!     422  a refusal per field, one `field: message` line each
+//!
+//! The wire's own fields begin with `_` — `_next`, `_confirm`,
+//! `_idempotency` — and no action seat may (derive.av), so a seat's
+//! field and the protocol's never collide. A repeated `_idempotency`
+//! answers the first receipt again without calling the action. Receipts
+//! are kept in memory for the life of the route, one per identity.
+use @std.http.frame.{Method}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
+use @std.http.route.{Route, fixed}
+use @std.text.{codepoints, from_codepoints}
+use wire.{ActionInfo, ActionRefusal, line_of}
+use form.{form_fields}
+
+/// The protocol's own fields.
+const NEXT: string = "_next"
+const CONFIRM: string = "_confirm"
+const IDEMPOTENCY: string = "_idempotency"
+
+/// The action's route. `call` is the generated `<name>_from_text`.
+export fn action_route<R>(
+    info: ActionInfo,
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+) -> Route {
+    let receipts: Cell<Map<string, Response>> = Cell.new({})
+    fixed(
+        Method.Post,
+        "/actions/${info.name}",
+        (q: Request<Unrouted>) -> submitted(info, call, receipts, q),
+    )
+}
+
+/// The whole exchange for one request.
+fn submitted<R>(
+    info: ActionInfo,
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+    receipts: Cell<Map<string, Response>>,
+    q: Request<Unrouted>,
+) -> Response {
+    if !is_form(q) { return text(415, unsupported()) }
+    let fields? = form_fields(q.body) else { return text(400, unreadable_body()) }
+    let key = identity(fields)
+    remembered(receipts, key) ?? attempted(info, call, receipts, key, fields)
+}
+
+/// The submission's identity: its `_idempotency`, absent when it names none.
+fn identity(fields: Map<string, string>) -> string? {
+    let key? = fields.get(IDEMPOTENCY) else { return null }
+    if key == "" { null } else { key }
+}
+
+/// The receipt this identity was first given, absent for a new one.
+fn remembered(receipts: Cell<Map<string, Response>>, key: string?) -> Response? {
+    let seen? = key else { return null }
+    receipts.get().get(seen)
+}
+
+/// A submission not seen before: held for its safeguard, else called.
+fn attempted<R>(
+    info: ActionInfo,
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+    receipts: Cell<Map<string, Response>>,
+    key: string?,
+    fields: Map<string, string>,
+) -> Response {
+    withheld(info, fields) ?? performed(call, receipts, key, fields)
+}
+
+fn performed<R>(
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+    receipts: Cell<Map<string, Response>>,
+    key: string?,
+    fields: Map<string, string>,
+) -> Response {
+    match call(fields) {
+        .Ok(_) -> receipted(receipts, key, redirect(fields.get(NEXT))),
+        .Err(refusals) -> text(422, [line_of(r) for r in refusals].join("\n")),
+    }
+}
+
+/// The 409 an action's safeguard earns from a form, absent when the
+/// submission discharges it. A form discharges a confirmation only.
+fn withheld(info: ActionInfo, fields: Map<string, string>) -> Response? {
+    match info.impact.safeguard {
+        .Reauth or .Typed -> text(409, beyond_a_form(info)),
+        .Confirm -> if confirmed(fields) { null } else { text(409, confirmation(info)) },
+        .None or .Undo -> if info.impact.presentation is .Pending && !confirmed(fields) {
+            text(409, confirmation(info))
+        } else {
+            null
+        },
+    }
+}
+
+fn confirmed(fields: Map<string, string>) -> bool { fields.get(CONFIRM) == "yes" }
+
+/// The receipt, remembered under the submission's identity when it has one.
+fn receipted(receipts: Cell<Map<string, Response>>, key: string?, r: Response) -> Response {
+    let seen? = key else { return r }
+    receipts.put(seen, r)
+    r
+}
+
+fn redirect(next: string?) -> Response {
+    Response { status: 303, headers: [Header { name: "location", value: local_path(next) }] }
+}
+
+/// The destination when it is a path on this origin, else the root.
+/// `//host` and `/\host` are read by a browser as another origin, and
+/// a control character is removed by one before it reads either.
+fn local_path(next: string?) -> string {
+    let path? = next else { return "/" }
+    if local(path) { path } else { "/" }
+}
+
+fn local(path: string) -> bool {
+    path.starts_with("/") &&
+        !path.starts_with("//") &&
+        !path.starts_with("/\\") &&
+        plain(path.bytes())
+}
+
+/// Every octet is visible ASCII.
+fn plain(b: Bytes) -> bool { [i for i in 0..b.length if !printable(b.at(i))].is_empty() }
+
+fn printable(octet: int) -> bool { octet > 32 && octet < 127 }
+
+/// Whether the body is declared a form.
+fn is_form(q: Request<Unrouted>) -> bool {
+    let kind? = q.header("content-type") else { return false }
+    folded(kind).starts_with("application/x-www-form-urlencoded")
+}
+
+/// ASCII lowercase: a media type is compared without case.
+fn folded(s: string) -> string {
+    from_codepoints([if c >= 65 && c <= 90 { c + 32 } else { c } for c in codepoints(s)])
+}
+
+// ── The voices ──────────────────────────────────────────────────
+
+fn unsupported() -> string { "an action takes `application/x-www-form-urlencoded`" }
+
+fn unreadable_body() -> string { "the form body is not valid urlencoded UTF-8" }
+
+fn beyond_a_form(info: ActionInfo) -> string {
+    "${CONFIRM}: `${info.name}` asks for more than a form can give — re-authentication or a typed phrase"
+}
+
+fn confirmation(info: ActionInfo) -> string {
+    "${CONFIRM}: `${info.name}` cannot be taken back — send `${CONFIRM}=yes` to go ahead"
+}

@@ -1,0 +1,330 @@
+//! `@action` and `@impact` — an action is a fn, and its doors are
+//! derived from the fn.
+//!
+//!     use @std.action.derive.{action, impact}
+//!     use @std.action.{routine}
+//!
+//!     @action
+//!     @impact(routine)
+//!     fn add_card(title: string, column: int) -> Card { … }
+//!
+//! `@impact` takes a NAMED `Impact` value — a profile, or a const built
+//! `with { … }` — and refuses one whose `faults` are non-empty. `@action`
+//! requires it, and generates, beside the fn:
+//!
+//!     add_card_action() -> ActionInfo
+//!     add_card_from_text(fields: Map<string, string>) -> Result<Card, List<ActionRefusal>>
+//!
+//! `_from_text` reads each seat from its field by the seat's kind and
+//! calls the fn; every seat that cannot be read is refused by name. A
+//! fn answering `Result<T, string>` answers `T`, its failure a refusal
+//! with no field.
+//!
+//! Stands ALONE: only `@std/meta` and the wire's own names, nothing the
+//! annotated file could shadow.
+use @std.meta.{
+    Fn,
+    Param,
+    Kind,
+    Diagnostic,
+    Declared,
+    Directive,
+    Decls,
+    Code,
+    Stmts,
+    literal,
+    name,
+    refuse_as_at,
+}
+use action.{Impact, faults}
+use wire.{ActionInfo, ActionParam, ActionRefusal, text_field, int_field, bool_field, unread_field}
+
+/// The widest fn `_from_text` can call: a call's argument list is
+/// spelled per count, as a run has no expression position.
+const MAX_PARAMS: int = 8
+
+/// `@impact(profile)` — the impact record an action declares.
+export fn impact(f: Fn, i: Impact) -> List<Diagnostic> {
+    [impact_fault(f, why) for why in faults(i)]
+}
+
+/// `@action` — the derive. `made` is built only over a fn whose
+/// `problems` are empty, so a refused shape never types a second, silent
+/// pile of errors over the refusal.
+export fn action(f: Fn) -> Declared {
+    let problems = shape_problems(f)
+    Declared {
+        made: if problems.is_empty() && impact_word(f) != null { [directive(f)] } else { [] },
+        problems: problems,
+    }
+}
+
+/// Every way a fn breaks the action law.
+fn shape_problems(f: Fn) -> List<Diagnostic> {
+    let seats = [seat_problem(f, p) for p in f.params if reserved(p) || marked(p)]
+    seats
+        .concat(if f.answers is .Void { [no_answer(f)] } else { [] })
+        .concat(if f.params.length > MAX_PARAMS { [too_many_params(f)] } else { [] })
+        .concat(if unreadable_failure(f) { [failure_kind(f)] } else { [] })
+        .concat(if generic(f) { [generic_action(f)] } else { [] })
+        .concat(impact_problems(f))
+}
+
+/// The impact annotation's argument when it is a bare name — the one
+/// form the generated code can refer to.
+fn impact_word(f: Fn) -> string? {
+    let written? = f.annotations.find(it.name == "impact") else { return null }
+    let word? = written.args.first() else { return null }
+    if is_name(word) { word } else { null }
+}
+
+/// Whether the text is one identifier.
+fn is_name(text: string) -> bool {
+    let octets = text.bytes()
+    octets.length > 0 &&
+        !is_digit(octets.at(0)) &&
+        [i for i in 0..octets.length if !is_name_octet(octets.at(i))].is_empty()
+}
+
+fn is_digit(octet: int) -> bool { octet >= 48 && octet <= 57 }
+
+fn is_name_octet(octet: int) -> bool {
+    is_digit(octet) || octet >= 65 && octet <= 90 || octet >= 97 && octet <= 122 || octet == 95
+}
+
+/// A missing or repeated `@impact`, or one that is no bare name. A
+/// literal one is refused at its own seat too: the second word is the
+/// remedy, and no text tells a refused literal from a valid path.
+fn impact_problems(f: Fn) -> List<Diagnostic> {
+    let written = [a for a in f.annotations if a.name == "impact"]
+    if written.is_empty() { return [missing_impact(f)] }
+    if written.length > 1 { return [repeated_impact(f)] }
+    if impact_word(f) == null { return [unnamed_impact(f)] }
+    []
+}
+
+/// Whether the fn is over a type parameter, which a generated body
+/// cannot name.
+fn generic(f: Fn) -> bool { f.params.any(mentions_var(it.kind)) || mentions_var(f.answers) }
+
+fn mentions_var(k: Kind) -> bool {
+    match k {
+        .Var(_) -> true,
+        .List(inner) or .Cell(inner) or .Opt(inner) -> mentions_var(inner),
+        .Map(a, b) or .Result(a, b) -> mentions_var(a) || mentions_var(b),
+        .Named(_, args) -> args.any(mentions_var(it)),
+        .Fn(seats, answer) -> seats.any(mentions_var(it.kind)) || mentions_var(answer),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Dyn(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// A `Result` answer whose failure is not text a form can show.
+fn unreadable_failure(f: Fn) -> bool {
+    match f.answers { .Result(_, failure) -> !(failure is .Str), _ -> false }
+}
+
+/// A name the wire reserves for its own fields.
+fn reserved(p: Param) -> bool { p.name.starts_with("_") }
+
+/// A seat a text field cannot fill: written through, or settled early.
+fn marked(p: Param) -> bool { p.mutable || p.settled }
+
+fn seat_problem(f: Fn, p: Param) -> Diagnostic {
+    if reserved(p) { reserved_seat(p) } else { marked_seat(f, p) }
+}
+
+fn optional(k: Kind) -> bool { k is .Opt }
+
+/// The kind a seat reads as, past its optionality.
+fn unwrapped(k: Kind) -> Kind {
+    match k { .Opt(inner) -> inner, _ -> k }
+}
+
+// ── The generated declarations ──────────────────────────────────
+
+fn directive(f: Fn) -> Directive {
+    Directive { twin: "", name: f.name, at: f.at, source: generated(f) }
+}
+
+fn action_name(f: Fn) -> string { "${f.name}_action" }
+
+fn from_text_name(f: Fn) -> string { "${f.name}_from_text" }
+
+/// Names the generated bodies bind. A `$` is no character of a written
+/// name, so none of them can capture the annotated fn's own or an
+/// impact's.
+fn slot(i: int) -> string { "a\$${i}" }
+
+fn seats_local() -> string { "seats\$" }
+
+fn fields_local() -> string { "fields\$" }
+
+fn problems_local() -> string { "problems\$" }
+
+fn generated(f: Fn) -> Decls {
+    quote {
+        export fn ${action_name(f)}() -> ActionInfo {
+            mut ${seats_local()}: List<ActionParam> = []
+            ${[describe(p) for p in f.params]}
+            ActionInfo { name: ${literal(f.name)}, params: ${name(seats_local())}, impact: ${name(impact_word(f)!)}, answer: ${literal(f.answer)} }
+        }
+
+        export fn ${from_text_name(f)}(${fields_local()}: Map<string, string>) -> Result<${success(f)}, List<ActionRefusal>> {
+            mut ${problems_local()}: List<ActionRefusal> = []
+            ${[read(p, i) for i, p in f.params]}
+            if !${name(problems_local())}.is_empty() { fail ${name(problems_local())} }
+            ${finished(f)}
+        }
+    }
+}
+
+/// What `_from_text` answers on success: a fn answering a `Result` has
+/// its failure carried as a refusal, so only its ok side remains.
+fn success(f: Fn) -> string {
+    match f.answers { .Result(ok, _) -> ok.spelled(), _ -> f.answer }
+}
+
+/// The call, its failure turned into the refusal a form places.
+fn finished(f: Fn) -> Code {
+    match f.answers {
+        .Result(_, _) -> quote {
+            match ${called(f)} {
+                .Ok(done) -> done,
+                .Err(why) -> { fail [ActionRefusal { field: null, message: why }] },
+            }
+        },
+        _ -> called(f),
+    }
+}
+
+fn describe(p: Param) -> Code {
+    quote { ${name(seats_local())}.push(ActionParam { name: ${literal(p.name)}, kind: ${literal(p.ty)}, required: ${!optional(p.kind)} }) }
+}
+
+/// One seat's read from its field, bound to `a$<i>` as a nullable.
+fn read(p: Param, i: int) -> Stmts {
+    let required = !optional(p.kind)
+    match unwrapped(p.kind) {
+        .Int -> quote { let ${slot(i)} = int_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
+        .Bool -> quote { let ${slot(i)} = bool_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
+        .Str -> quote { let ${slot(i)} = text_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
+        .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unreadable(p, i),
+    }
+}
+
+/// A seat that no text can fill: refused by name, never read.
+fn unreadable(p: Param, i: int) -> Stmts {
+    let seat = unwrapped(p.kind).spelled()
+    quote { let ${slot(i)}: ${seat}? = unread_field(${literal(p.name)}, ${literal(seat)}, ${name(problems_local())}) }
+}
+
+/// One seat's argument: a required one is unwrapped, and the guard
+/// above has already refused every absence.
+fn argument(p: Param, i: int) -> Code {
+    if optional(p.kind) { name(slot(i)) } else { quote { ${name(slot(i))}! } }
+}
+
+/// The call, its argument list spelled for the fn's own count.
+fn called(f: Fn) -> Code {
+    let a = [argument(p, i) for i, p in f.params]
+    match f.params.length {
+        0 -> quote { ${f.name}() },
+        1 -> quote { ${f.name}(${a[0]}) },
+        2 -> quote { ${f.name}(${a[0]}, ${a[1]}) },
+        3 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}) },
+        4 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}) },
+        5 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}) },
+        6 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}, ${a[5]}) },
+        7 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}, ${a[5]}, ${a[6]}) },
+        8 -> quote { ${f.name}(${a[0]}, ${a[1]}, ${a[2]}, ${a[3]}, ${a[4]}, ${a[5]}, ${a[6]}, ${a[7]}) },
+        _ -> quote { an_action_with_more_than_eight_seats_needs_a_wider_call() },
+    }
+}
+
+// ── The refusals — each a `Diagnostic` at the declaration, stating
+// the law broken. The package prefixes the kind. ──
+
+fn missing_impact(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "missing_impact",
+        f.at,
+        "an action declares its impact, and `${f.name}` declares none",
+        "add `@impact(routine)`, or another profile, above `${f.name}`",
+    )
+}
+
+fn unnamed_impact(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "unnamed_impact",
+        f.at,
+        "`@impact` on `${f.name}` names no value — the impact is a profile or a const",
+        "bind it — `const mine: Impact = destructive with { … }` — and write `@impact(mine)`",
+    )
+}
+
+fn repeated_impact(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "repeated_impact",
+        f.at,
+        "`${f.name}` declares its impact more than once",
+        "keep one `@impact`",
+    )
+}
+
+fn generic_action(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "generic_action",
+        f.at,
+        "`${f.name}` is generic, and an action is called from text with concrete seats",
+        "write the seats' types out",
+    )
+}
+
+fn impact_fault(f: Fn, why: string) -> Diagnostic {
+    refuse_as_at("impact_fault", f.at, "the impact of `${f.name}` contradicts itself: ${why}", null)
+}
+
+fn no_answer(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "no_answer",
+        f.at,
+        "an action answers what it did, and `${f.name}` answers nothing",
+        "give `${f.name}` an answer type",
+    )
+}
+
+fn too_many_params(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "too_many_params",
+        f.at,
+        "`${f.name}` takes ${f.params.length} seats, and an action takes at most ${MAX_PARAMS}",
+        "group the seats into a record",
+    )
+}
+
+fn failure_kind(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "failure_kind",
+        f.at,
+        "`${f.name}` answers `${f.answer}`, and a door shows a failure as text",
+        "make the failure a `string`: `Result<T, string>`",
+    )
+}
+
+fn reserved_seat(p: Param) -> Diagnostic {
+    refuse_as_at(
+        "reserved_seat",
+        p.at,
+        "`${p.name}` begins with `_`, which the wire reserves for its own fields",
+        "rename the seat",
+    )
+}
+
+fn marked_seat(f: Fn, p: Param) -> Diagnostic {
+    refuse_as_at(
+        "marked_seat",
+        p.at,
+        "`${p.name}` of `${f.name}` is a `mut` or `const` seat, and a field cannot fill one",
+        "take the value plainly",
+    )
+}

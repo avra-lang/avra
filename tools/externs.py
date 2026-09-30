@@ -68,6 +68,27 @@ def rt_api():
     return open(os.path.join(ROOT, RT_API)).read()
 
 
+# EACH ROW AS ITS OWN TEXT, by name. A row's fields are read inside
+# its own braces and never across the next row's, and a row is found
+# however the formatter lays it out — one line or one field a line.
+# Every row reader here asks this; a regex spelling the layout once
+# read `RtSig { name:` and, when the rows were laid out a field per
+# line, found none of them and reported every check green.
+def row_texts():
+    text = rt_api()
+    starts = [m.start() for m in re.finditer(r"RtSig \{", text)]
+    out = {}
+    for a, b in zip(starts, starts[1:] + [len(text)]):
+        chunk = text[a:b]
+        named = re.search(r'name: "([a-z_0-9]+)"', chunk)
+        if named:
+            out[named.group(1)] = chunk
+    if not out:
+        print(f"externs: read no `RtSig` row in {RT_API} — every row check would examine nothing")
+        sys.exit(1)
+    return out
+
+
 # a C return whose value fills the whole 64-bit register
 WIDE = re.compile(r"(\*|\b(int64_t|uint64_t|long|size_t|ssize_t|ptrdiff_t|intptr_t|uintptr_t|"
                   r"__int64|LLVM[A-Za-z]*Ref)\b)")
@@ -502,8 +523,7 @@ def owned_mints(bodies):
 def rows():
     """The names `rt_sigs()` carries — the only place `owns_result` is
     written."""
-    text = rt_api()
-    return set(re.findall(r'RtSig \{ name: "([a-z_0-9]+)"', text))
+    return set(row_texts())
 
 
 def leaking_externs(wall, bodies, known):
@@ -1212,13 +1232,13 @@ def retaining_seats(bodies):
 def row_boxes():
     """Each row's declared boxes, by name: `Text`, `List`, `Map`, `Any`
     per parameter, `Any` where the row names none."""
-    text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
     out = {}
-    for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)".*?params: \[([^\]]*)\](.*?) \},', text, re.S):
-        n = len([p for p in m.group(2).split(",") if p.strip()])
-        named = re.search(r"boxes: \[([^\]]*)\]", m.group(3))
+    for name, row in row_texts().items():
+        params = re.search(r"params: \[([^\]]*)\]", row)
+        n = len([p for p in params.group(1).split(",") if p.strip()]) if params else 0
+        named = re.search(r"boxes: \[([^\]]*)\]", row)
         boxes = [b.strip().split(".")[-1] for b in named.group(1).split(",") if b.strip()] if named else []
-        out[m.group(1)] = boxes + ["Any"] * (n - len(boxes))
+        out[name] = boxes + ["Any"] * (n - len(boxes))
     return out
 
 
@@ -1307,8 +1327,8 @@ def row_answers():
     """Each row's declared ANSWER box, by name — the rows that name
     one. `Any` is the default and constrains nothing, so it is not
     here."""
-    return {m.group(1): m.group(2)
-            for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)".*?answer: Box\.(\w+)', rt_api())}
+    return {name: m.group(1) for name, row in row_texts().items()
+            for m in [re.search(r"answer: Box\.(\w+)", row)] if m}
 
 
 def wrong_answers(returns):

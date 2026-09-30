@@ -165,9 +165,9 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let at_ty = avrac_self(cx, "At")
     let shape_ty = avrac_self(cx, "Shape")
     let open_ty = avrac_self(cx, "Open")
-    let store_ty = avrac_self_any(cx, ["SyntaxArena", "NodeStore"])
     let of_ty = avrac_self(cx, "Analysed")
     let view_ty = avrac_self(cx, "FileView")
+    let store_ty = avrac_field_type(cx, view_ty, "store")
     let of = cx.field_named(v, vty, "of", of_ty)
     let view = cx.field_named(of, of_ty, "view", view_ty)
     let subj_store = cx.field_named(view, view_ty, "store", store_ty)
@@ -197,14 +197,11 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     let code_ty = avrac_self(cx, "Code")
     let type_ty = avrac_self(cx, "TypeRef")
     let of_ty = avrac_self(cx, "Analysed")
+    let view_ty = avrac_self(cx, "FileView")
+    let store_ty = avrac_field_type(cx, view_ty, "store")
     let of = cx.field_named(v, vty, "of", of_ty)
     let subj_store = cx
-        .field_named(
-            cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")),
-            avrac_self(cx, "FileView"),
-            "store",
-            avrac_self_any(cx, ["SyntaxArena", "NodeStore"]),
-        )
+        .field_named(cx.field_named(of, of_ty, "view", view_ty), view_ty, "store", store_ty)
     let carried = cx.carried_of(answer, cx.type(List<List<at_ty>>?))
     let list_at_ty = cx.type(List<at_ty>)
     mut out: List<Reg> = []
@@ -364,16 +361,23 @@ fn avrac_self(mut cx: LowerCx, name: string) -> TypeId {
     cx.view.decls.self_type_of(d)
 }
 
-/// A self-lookup across a rename: the speed gate runs a candidate
-/// compiler over the base tree's own source, which lags the
-/// candidate's own rename until a landing refreshes the baseline
-/// (avra-8sb5.57.18.4). Tries every name in order, oldest first --
-/// one lookup per name, never a second pass over a name already
-/// found.
-fn avrac_self_any(mut cx: LowerCx, names: List<string>) -> TypeId {
-    let found = [d! for n in names for d in [cx.view.decls.avrac_named(n)] if d != null].first()
-    let d? = found else { return avrac_type_missing(cx, names[0]) }
-    cx.view.decls.self_type_of(d)
+/// One field's declared type, read off `owner_ty`'s OWN struct sig
+/// rather than named directly — a field access through a NAME that
+/// never changes (`FileView.store`) instead of the field's own type's
+/// name, which a rename moves. No self-lookup by that name is needed
+/// at all: the field's type IS whatever the declaration says today.
+fn avrac_field_type(mut cx: LowerCx, owner_ty: TypeId, field: string) -> TypeId {
+    let sig? = cx.fields_of(owner_ty) else { return avrac_field_missing(cx, owner_ty, field) }
+    let slot? = sig.slot_of(field) else { return avrac_field_missing(cx, owner_ty, field) }
+    sig.types[slot]
+}
+
+fn avrac_field_missing(mut cx: LowerCx, owner_ty: TypeId, field: string) -> TypeId {
+    cx
+        .defect(
+            "`${cx.view.types.name_of(owner_ty)}` has no field `${field}` — the compiler's own struct moved under this lowering",
+        )
+    cx.type(string)
 }
 
 fn avrac_type_missing(mut cx: LowerCx, name: string) -> TypeId {

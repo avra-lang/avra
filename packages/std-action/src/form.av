@@ -1,0 +1,49 @@
+//! A form body — `application/x-www-form-urlencoded` — as keyed text.
+//! `+` is a space and `%XY` an octet, in names and values alike; the
+//! first of a repeated name wins; a key with no `=` holds the empty
+//! text. A body that cannot be read exactly — an escape left open, an
+//! octet that is not UTF-8 — is refused whole, never repaired.
+use @std.http.query.{Query, Pair, query_of, decoded}
+
+/// One decoded `name=value`.
+type Entry = { name: string, value: string }
+
+/// The fields of a form body, or absent when any of it is unreadable.
+export fn form_fields(body: Bytes) -> Map<string, string>? {
+    let q = query_of(body, 0, body.length)
+    let read = [entry_of(q, p) for p in q.pairs]
+    if read.any(it == null) { return null }
+    let entries = [e! for e in read]
+    mut fields: Map<string, string> = {}
+    for e in [e for j, e in entries if first_of(entries, e.name) == j] {
+        fields.set(e.name, e.value)
+    }
+    fields
+}
+
+/// The position of the first entry with this name.
+fn first_of(entries: List<Entry>, name: string) -> int {
+    [j for j in 0..entries.length].find(entries[it].name == name)!
+}
+
+fn entry_of(q: Query, p: Pair) -> Entry? {
+    let name? = spelled(q.raw.slice(p.name.lo, p.name.hi)) else { return null }
+    let value? = spelled(value_of(q, p)) else { return null }
+    Entry { name: name, value: value }
+}
+
+/// A pair's value octets; a key with no `=` holds none.
+fn value_of(q: Query, p: Pair) -> Bytes {
+    let v? = p.value else { return "".bytes() }
+    q.raw.slice(v.lo, v.hi)
+}
+
+/// Form-encoded octets as the text they spell.
+fn spelled(b: Bytes) -> string? {
+    let spaced? = [space_for_plus(b.at(i)) for i in 0..b.length].bytes() else { return null }
+    let octets? = decoded(spaced) else { return null }
+    octets.text()
+}
+
+/// `+` is the form encoding's space.
+fn space_for_plus(octet: int) -> int { if octet == 43 { 32 } else { octet } }

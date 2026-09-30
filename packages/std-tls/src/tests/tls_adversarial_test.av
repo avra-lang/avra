@@ -1,0 +1,157 @@
+// The red team's survivors against the engine's boundary, by class:
+// the empty case of every representation it consumes, handles used
+// after they end, ciphertext that is garbage or cut short, a peer
+// feeding past the session's cap, and an identity whose key is a
+// stranger's. Each refusal names its verb and subject.
+use @std.tls.{Session, TlsError, client_config, server_config, session}
+use @std.tls.testing.{localhost_ca, localhost_chain, trusting_localhost, serving_localhost}
+
+/// A P-256 key that belongs to no certificate here.
+fn stranger_key() -> Bytes {
+    pem_of(
+        [
+            "-----BEGIN PRIVATE KEY-----",
+            "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg3cTP+rJGQiALeVvP",
+            "mjVC7taa5qFPOw1wG0+kt0CrPMWhRANCAAQKpfOK3t9p5XjC4Md2/hMVBThaOeyZ",
+            "4mYK3fGO129cQa0n6MZM+oV9rytUu2M9+uS2YfdpERLpPLs0Mp8Ry8nM",
+            "-----END PRIVATE KEY-----",
+        ],
+    )
+}
+
+fn pem_of(lines: List<string>) -> Bytes { (lines.join("\n") + "\n").bytes() }
+
+fn empty_pem_refused() -> Result<bool, TlsError> {
+    let c = client_config()?
+    words(c.trusting("".bytes())).starts_with("trust 0 bytes of PEM: ")
+}
+
+fn a_bundle_counts_its_anchors() -> Result<bool, TlsError> {
+    let c = client_config()?
+    let twice = localhost_ca().concat(localhost_ca())
+    c.trusting(twice)? == 2
+}
+
+fn stranger_key_refused() -> Result<bool, TlsError> {
+    let s = server_config()?
+    words(s.presenting(localhost_chain(), stranger_key())) == "identity 709 bytes of PEM: a private key that is not its certificate's"
+}
+
+fn ended_twice() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    p.c.end()?
+    let again = words(p.c.end())
+    let stepped = words(p.c.step())
+    again.ends_with("a TLS handle that names nothing live") &&
+        stepped.ends_with("a TLS handle that names nothing live")
+}
+
+fn a_reused_slot_is_not_the_old_handle() -> Result<bool, TlsError> {
+    let cc = trusting_localhost()?
+    let first = session(cc, "localhost")?
+    first.end()?
+    let second = session(cc, "localhost")?
+    let stale = words(first.end())
+    let live = second.version() == 0 && second.end()? == second.handle
+    stale.ends_with("a TLS handle that names nothing live") && live && first.handle != second.handle
+}
+
+fn a_config_outlives_its_sessions() -> Result<bool, TlsError> {
+    let c = trusting_localhost()?
+    let live = session(c, "localhost")?
+    let busy = words(c.free())
+    live.end()?
+    let freed = c.free()? == c.handle
+    busy.ends_with("a config still serving sessions — end them first") && freed
+}
+
+fn freed_config_refuses_sessions() -> Result<bool, TlsError> {
+    let c = trusting_localhost()?
+    c.free()?
+    words(session(c, "localhost")).ends_with("a TLS handle that names nothing live") &&
+        words(c.free()).ends_with("a TLS handle that names nothing live")
+}
+
+fn garbage_fails_the_handshake() -> Result<bool, TlsError> {
+    let s = session(serving_localhost()?, "")?
+    s.fed("GET / HTTP/1.1\r\nHost: x\r\n\r\n".bytes())?
+    words(s.step()).starts_with("handshake ")
+}
+
+fn a_cut_record_reads_as_reading() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    p.c.sealed("hello".bytes(), 0)?
+    let wire = p.c.outgoing()?
+    p.s.fed(wire.slice(0, wire.length - 1))?
+    let early = p.s.opened(64)?
+    p.s.fed(wire.slice(wire.length - 1, wire.length))?
+    let late = p.s.opened(64)?
+    early is .Reading &&
+        match late { .Data(b) -> b.text() == "hello", .Reading or .Closed -> false }
+}
+
+fn an_empty_feed_is_nothing() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    p.s.fed("".bytes())?
+    p.s.opened(64)? is .Reading
+}
+
+fn past_the_cap() -> Result<bool, TlsError> {
+    let s = session(serving_localhost()?, "")?
+    let chunk = [0 for i in 0..65536].bytes()!
+    words(fed_until_refused(s, chunk, 0))
+        .ends_with("the peer sent more than a session holds unread")
+}
+
+/// `chunk` fed until the session refuses it, or 32 times over.
+fn fed_until_refused(s: Session, chunk: Bytes, n: int) -> Result<int, TlsError> {
+    if n == 32 { return n }
+    s.fed(chunk)?
+    fed_until_refused(s, chunk, n + 1)
+}
+
+fn overlong_host_refused() -> Result<bool, TlsError> {
+    let host = ["a" for i in 0..300].join("")
+    words(session(trusting_localhost()?, host)).starts_with("session ${host}: ")
+}
+
+fn zero_max_refused() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    words(p.s.opened(0)).ends_with("a range outside the value it names")
+}
+
+fn sealed_past_the_end() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    words(p.c.sealed("abc".bytes(), 4)).ends_with("a range outside the value it names")
+}
+
+spec "std.tls engine boundary" {
+    given "the empty case of every representation" {
+        then "empty PEM is refused as trust, naming its size" { passes(empty_pem_refused()) }
+        then "an empty feed changes nothing" { passes(an_empty_feed_is_nothing()) }
+        then "a receive of zero bytes is refused, never read as the end" { passes(zero_max_refused()) }
+        then "a host longer than a DNS name is refused at the session" { passes(overlong_host_refused()) }
+    }
+    given "PEM holding more or other than one certificate" {
+        then "a bundle counts every anchor it adds" { passes(a_bundle_counts_its_anchors()) }
+        then "a key that is not the certificate's is refused before any handshake" { passes(stranger_key_refused()) }
+    }
+    given "handles past their end" {
+        then "a session ended twice, or stepped after, is refused by name" { passes(ended_twice()) }
+        then "a freed config makes no session and frees once" { passes(freed_config_refuses_sessions()) }
+        then "a config is not freed under a live session" { passes(a_config_outlives_its_sessions()) }
+        then "a slot reused by a new session is not reachable through the old handle" {
+            passes(a_reused_slot_is_not_the_old_handle())
+        }
+    }
+    given "hostile ciphertext" {
+        then "plain HTTP fed to a server fails its handshake, never waits" { passes(garbage_fails_the_handshake()) }
+        then "a record cut short reads as Reading until its last byte" { passes(a_cut_record_reads_as_reading()) }
+        then "a peer feeding past the session's cap is refused" { passes(past_the_cap()) }
+        then "a send from past the end of its bytes is refused" { passes(sealed_past_the_end()) }
+    }
+}

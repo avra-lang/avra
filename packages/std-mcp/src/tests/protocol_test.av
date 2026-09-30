@@ -1,0 +1,244 @@
+use @std.json.{to_text}
+use @std.mcp.{schema, faults, handle_text}
+use @std.action.{routine, destructive}
+use @std.text.{repeat}
+
+spec "@std.mcp — the descriptor" {
+    given "a tool" {
+        then "its descriptor is name, description and a closed JSON Schema" {
+            to_text(schema(add_tool())) == "{\"name\":\"add\",\"description\":\"Add two integers\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\",\"description\":\"the first\"},\"b\":{\"type\":\"integer\"},\"note\":{\"type\":\"string\"}},\"required\":[\"a\",\"b\"],\"additionalProperties\":false}}"
+        }
+        then "each kind is its JSON Schema word" {
+            to_text(schema(echo_tool())) == "{\"name\":\"say hello\",\"description\":\"Echo the arguments\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"number\"},\"flag\":{\"type\":\"boolean\"},\"s\":{\"type\":\"string\"}},\"required\":[],\"additionalProperties\":false}}"
+        }
+        then "a tool with no params has empty properties and required" {
+            to_text(schema(boom_tool())) == "{\"name\":\"boom\",\"description\":\"Always fails\",\"inputSchema\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}"
+        }
+    }
+}
+
+spec "@std.mcp — the methods" {
+    given "initialize" {
+        then "it answers the protocol version, tools capability and server info" {
+            ask(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}",
+            ) == ok_result(
+                "1",
+                "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"avra\",\"version\":\"0.0.1\"}}",
+            )
+        }
+    }
+    given "notifications" {
+        then "initialized is not answered" {
+            ask("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}") == "(none)"
+        }
+        then "a notification carrying an id is a request and is answered" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"notifications/initialized\"}") == ok_result("7", "{}")
+        }
+        then "an unknown notification is not answered" {
+            ask("{\"jsonrpc\":\"2.0\",\"method\":\"nope\"}") == "(none)"
+        }
+        then "a tools/call without an id is not answered" {
+            ask(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"add\",\"arguments\":{\"a\":1,\"b\":2}}}",
+            ) == "(none)"
+        }
+    }
+    given "ping" {
+        then "it answers an empty result" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}") == ok_result("3", "{}")
+        }
+    }
+    given "tools/list" {
+        then "it lists every descriptor in order" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}") == ok_result("2", "{\"tools\":[${[to_text(schema(t)) for t in tools()].join(",")}]}")
+        }
+        then "no tools is an empty list" {
+            handle_text([], "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}") == ok_result("2", "{\"tools\":[]}")
+        }
+    }
+    given "an unknown method" {
+        then "it is -32601 naming the method" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"resources/list\"}") == error_of("9", "-32601", "no method `resources/list`")
+        }
+    }
+}
+
+spec "@std.mcp — tools/call" {
+    given "a sound call" {
+        then "the tool's answer is text content" {
+            ask(calling("1", "add", "{\"a\":2,\"b\":40}")) == ok_result("1", text_result("42", "false"))
+        }
+        then "an optional param may be given" {
+            ask(calling("1", "add", "{\"a\":2,\"b\":40,\"note\":\"x\"}")) == ok_result("1", text_result("42", "false"))
+        }
+        then "a negative and the largest int pass validation" {
+            ask(calling("1", "say hello", "{\"n\":-9223372036854775807}")) == ok_result("1", text_result("{\\\"n\\\":-9223372036854775807}", "false"))
+        }
+        then "a tool named with spaces is listed and callable" {
+            ask(calling("1", "say hello", "{\"flag\":true,\"s\":\"a\\\"b\"}")) == ok_result("1", text_result("{\\\"flag\\\":true,\\\"s\\\":\\\"a\\\\\\\"b\\\"}", "false"))
+        }
+        then "absent arguments are an empty object" {
+            ask(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"say hello\"}}",
+            ) == ok_result("1", text_result("{}", "false"))
+        }
+    }
+    given "a tool that fails" {
+        then "its Err is isError content" {
+            ask(calling("1", "boom", "{}")) == ok_result("1", text_result("the ledger is locked", "true"))
+        }
+    }
+    given "a tool whose impact needs a mandate" {
+        then "a pending presentation is refused uncalled" {
+            ask(calling("1", "wipe", "{}")) == ok_result(
+                "1",
+                text_result("`wipe` requires a mandate, and this door holds none", "true"),
+            )
+        }
+        then "a sending presentation is refused uncalled" {
+            ask(calling("1", "send", "{}")) == ok_result(
+                "1",
+                text_result("`send` requires a mandate, and this door holds none", "true"),
+            )
+        }
+        then "a routine impact that asks a safeguard is refused uncalled" {
+            ask(calling("1", "archive", "{}")) == ok_result(
+                "1",
+                text_result("`archive` requires a mandate, and this door holds none", "true"),
+            )
+        }
+        then "the refusal precedes validation of the arguments" {
+            ask(calling("1", "wipe", "{\"x\":1}")) == ok_result(
+                "1",
+                text_result("`wipe` requires a mandate, and this door holds none", "true"),
+            )
+        }
+    }
+    given "arguments that do not fit" {
+        then "a string for an integer is -32602 naming the param" {
+            ask(calling("1", "add", "{\"a\":\"2\",\"b\":1}")) == error_of("1", "-32602", "param `a` must be integer")
+        }
+        then "a null for an integer is the wrong kind" {
+            ask(calling("1", "add", "{\"a\":null,\"b\":1}")) == error_of("1", "-32602", "param `a` must be integer")
+        }
+        then "a missing required param is named" {
+            ask(calling("1", "add", "{\"a\":1}")) == error_of("1", "-32602", "param `b` is required")
+        }
+        then "an undeclared param is refused by name, `__proto__` included" {
+            ask(calling("1", "add", "{\"a\":1,\"b\":2,\"__proto__\":{}}")) == error_of("1", "-32602", "param `__proto__` is not declared")
+        }
+        then "a repeated param is refused by name" {
+            ask(calling("1", "add", "{\"a\":1,\"a\":5,\"b\":2}")) == error_of("1", "-32602", "param `a` is given more than once")
+        }
+        then "a boolean for a number is the wrong kind" {
+            ask(calling("1", "say hello", "{\"n\":true}")) == error_of("1", "-32602", "param `n` must be number")
+        }
+        then "arguments that are no object are refused" {
+            ask(calling("1", "add", "[1,2]")) == error_of("1", "-32602", "`arguments` is an object")
+        }
+        then "an unknown tool is -32602 naming it" {
+            ask(calling("1", "nope", "{}")) == error_of("1", "-32602", "no tool `nope`")
+        }
+        then "a name that is no string is refused" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":5}}") == error_of("1", "-32602", "`tools/call` names its tool in `name`")
+        }
+        then "no params at all is refused" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\"}") == error_of("1", "-32602", "`tools/call` names its tool in `name`")
+        }
+    }
+}
+
+spec "@std.mcp — ids and malformed requests" {
+    given "the id" {
+        then "a string id is echoed as a string" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"ping\"}") == ok_result("\"abc\"", "{}")
+        }
+        then "a string id that looks like a number stays a string" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"ping\"}") == ok_result("\"0\"", "{}")
+        }
+        then "a negative and a zero number id are echoed" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":-4,\"method\":\"ping\"}") == ok_result("-4", "{}") &&
+                ask("{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"ping\"}") == ok_result("0", "{}")
+        }
+        then "a null id is a request, answered with a null id" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}") == ok_result("null", "{}")
+        }
+        then "an id with escapes is echoed exactly" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":\"a\\\"\\n\",\"method\":\"ping\"}") == ok_result("\"a\\\"\\n\"", "{}")
+        }
+        then "the largest int id is echoed" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":9223372036854775807,\"method\":\"ping\"}") == ok_result("9223372036854775807", "{}")
+        }
+        then "a bool, array or object id is -32600 with a null id" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"ping\"}") == error_of("null", "-32600", "an id is a string, an integer or null") &&
+                ask("{\"jsonrpc\":\"2.0\",\"id\":[1],\"method\":\"ping\"}") == error_of("null", "-32600", "an id is a string, an integer or null") &&
+                ask("{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"ping\"}") == error_of("null", "-32600", "an id is a string, an integer or null")
+        }
+        then "an error answers the id of its request" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":\"q\",\"method\":\"nope\"}") == error_of("\"q\"", "-32601", "no method `nope`")
+        }
+    }
+    given "a request that is not one" {
+        then "a text that is no JSON is -32700 with a null id" {
+            ask("{").contains("\"id\":null,\"error\":{\"code\":-32700,") &&
+                ask("").contains("\"code\":-32700") &&
+                ask("nope").contains("\"code\":-32700")
+        }
+        then "an integer past the ceiling is -32700, in the id or an argument" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":99999999999999999999,\"method\":\"ping\"}")
+                    .contains("\"code\":-32700") &&
+                ask(calling("1", "add", "{\"a\":99999999999999999999,\"b\":1}"))
+                    .contains("\"code\":-32700")
+        }
+        then "a fraction is -32700" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"ping\"}").contains("\"code\":-32700")
+        }
+        then "a value that is no object is -32600" {
+            ask("[]") == error_of("null", "-32600", "a request is one JSON object") &&
+                ask("5") == error_of("null", "-32600", "a request is one JSON object") &&
+                ask("null") == error_of("null", "-32600", "a request is one JSON object")
+        }
+        then "a batch is refused as no object" {
+            ask("[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}]") == error_of("null", "-32600", "a request is one JSON object")
+        }
+        then "a wrong or missing version is -32600 echoing the id" {
+            ask("{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"ping\"}") == error_of("1", "-32600", "`jsonrpc` is \\\"2.0\\\"") &&
+                ask("{\"id\":1,\"method\":\"ping\"}") == error_of("1", "-32600", "`jsonrpc` is \\\"2.0\\\"")
+        }
+        then "a missing or non-string method is -32600" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1}") == error_of("1", "-32600", "a request names its `method` as a string") &&
+                ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":4}") == error_of("1", "-32600", "a request names its `method` as a string")
+        }
+        then "an invalid notification is still answered, being invalid" {
+            ask("{\"jsonrpc\":\"2.0\",\"method\":5}") == error_of("null", "-32600", "a request names its `method` as a string")
+        }
+    }
+}
+
+spec "@std.mcp — faults" {
+    given "a tool list" {
+        then "the fixtures with a spaced name are the only faults" {
+            faults(tools()).join("|") == "tool `say hello` is not [A-Za-z0-9_-]{1,64}"
+        }
+        then "a repeated name is named once per declaration" {
+            faults([boom_tool(), boom_tool()]).length == 2
+        }
+        then "a name of 65 characters is refused" {
+            faults([boom_tool() with { name: repeat("a", 65) }]).length == 1
+        }
+        then "an empty name is refused" {
+            faults([boom_tool() with { name: "" }]).length == 1
+        }
+        then "a repeated param is named" {
+            faults([add_tool() with { params: [param("a", .Text, true), param("a", .Text, true)] }])
+                .length == 2
+        }
+        then "an impact that contradicts itself is named with its tool" {
+            faults([boom_tool() with { impact: routine with { safeguard: .Undo } }]).join("|") == "tool `boom`: an undo safeguard needs a recovery"
+        }
+        then "a sound list has none" {
+            faults([add_tool(), boom_tool(), wipe_tool()]).is_empty()
+        }
+    }
+}

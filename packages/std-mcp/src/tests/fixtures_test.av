@@ -1,0 +1,95 @@
+// The tools every suite here speaks to.
+use @std.json.{Json, Field, field}
+use @std.action.{routine, destructive, external}
+use @std.mcp.{Tool, ToolParam, ParamKind, handle_text}
+
+fn add_call(args: Json) -> Result<Json, string> {
+    .Ok(Json.Int(args.member("a").int()! + args.member("b").int()!))
+}
+
+fn echo_call(args: Json) -> Result<Json, string> { .Ok(args) }
+
+fn boom_call(_args: Json) -> Result<Json, string> { .Err("the ledger is locked") }
+
+fn wipe_call(_args: Json) -> Result<Json, string> { .Ok(Json.Str("wiped")) }
+
+fn param(name: string, kind: ParamKind, required: bool) -> ToolParam {
+    ToolParam { name: name, kind: kind, required: required }
+}
+
+fn add_tool() -> Tool {
+    Tool {
+        name: "add",
+        description: "Add two integers",
+        params: [
+            ToolParam { name: "a", kind: .Integer, required: true, description: "the first" },
+            param("b", .Integer, true),
+            param("note", .Text, false),
+        ],
+        impact: routine,
+        call: add_call,
+    }
+}
+
+fn echo_tool() -> Tool {
+    Tool {
+        name: "say hello",
+        description: "Echo the arguments",
+        params: [param("n", .Number, false), param("flag", .Boolean, false), param("s", .Text, false)],
+        impact: routine,
+        call: echo_call,
+    }
+}
+
+fn boom_tool() -> Tool {
+    Tool { name: "boom", description: "Always fails", params: [], impact: routine, call: boom_call }
+}
+
+fn wipe_tool() -> Tool {
+    Tool {
+        name: "wipe",
+        description: "Deletes everything",
+        params: [],
+        impact: destructive,
+        call: wipe_call,
+    }
+}
+
+fn send_tool() -> Tool {
+    Tool { name: "send", description: "Sends mail", params: [], impact: external, call: wipe_call }
+}
+
+fn guarded_tool() -> Tool {
+    Tool {
+        name: "archive",
+        description: "Archives, with an undo the agent cannot offer",
+        params: [],
+        impact: routine with { safeguard: .Confirm },
+        call: wipe_call,
+    }
+}
+
+fn tools() -> List<Tool> { [add_tool(), echo_tool(), boom_tool(), wipe_tool(), send_tool(), guarded_tool()] }
+
+/// The answer text to a request text, or "(none)" for no answer.
+fn ask(request: string) -> string { handle_text(tools(), request) ?? "(none)" }
+
+/// A tools/call request with this id text and arguments text.
+fn calling(id: string, name: string, args: string) -> string {
+    "{\"jsonrpc\":\"2.0\",\"id\":${id},\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${args}}}"
+}
+
+fn ok_result(id: string, result: string) -> string { "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":${result}}" }
+
+fn error_of(id: string, code: string, message: string) -> string {
+    "{\"jsonrpc\":\"2.0\",\"id\":${id},\"error\":{\"code\":${code},\"message\":\"${message}\"}}"
+}
+
+fn text_result(text: string, is_error: string) -> string {
+    "{\"content\":[{\"type\":\"text\",\"text\":\"${text}\"}],\"isError\":${is_error}}"
+}
+
+fn quoting_call(_args: Json) -> Result<Json, string> { .Err("say \"no\"\n") }
+
+/// The answer text of these tools to a request text, or "(none)".
+fn ask_with(ts: List<Tool>, request: string) -> string { handle_text(ts, request) ?? "(none)" }

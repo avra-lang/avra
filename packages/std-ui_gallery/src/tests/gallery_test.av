@@ -1,0 +1,118 @@
+// Snapshots, digests, comparison, the terminal listing and the page.
+use @std.ui.{View, Node, Role, column, text, button, list, item}
+use @std.ui_html.{html}
+use @std.ui_gallery.{
+    Case,
+    Entry,
+    Snapshot,
+    Change,
+    ChangeKind,
+    gallery,
+    snapshots,
+    changed,
+    gallery_text,
+}
+
+fn says(t: string) -> dyn View { text t }
+
+fn greeting(cases: List<Case>) -> Entry { Entry { view: "greeting", cases: cases } }
+
+fn one(t: string) -> List<Snapshot> { snapshots([greeting([Case { name: "one", view: says(t) }])]) }
+
+fn shown(c: Change) -> string {
+    let k = match c.kind { .Added -> "+", .Removed -> "-", .Changed -> "~" }
+    "${k}${c.view}/${c.case}"
+}
+
+fn shown_all(cs: List<Change>) -> string { [shown(c) for c in cs].join(" ") }
+
+fn on_page(name: string) -> bool { doc().contains(name) }
+
+fn page_of(entries: List<Entry>) -> string { html(gallery(entries).node()) }
+
+fn hello() -> List<Snapshot> { one("Hello") }
+
+fn before() -> List<Snapshot> { snapshots(two()) }
+
+fn doc() -> string { page_of(two()) }
+
+fn two() -> List<Entry> {
+    [
+        greeting([Case { name: "empty", view: says("") }, Case { name: "many", view: says("hi") }]),
+        Entry { view: "actions", cases: [Case { name: "one", view: button "Go" }] },
+    ]
+}
+
+spec "std/ui-gallery" {
+    given "one entry with one case" {
+        then "the snapshot names its view and case" {
+            hello().length == 1 && hello()[0].view == "greeting" && hello()[0].case == "one"
+        }
+        then "the snapshot carries the html and the spoken text" {
+            hello()[0].html == "<p class=\"color-text face-body\">Hello</p>" &&
+                hello()[0].spoken == "Hello"
+        }
+        then "the digest is sixteen lowercase hex digits" {
+            hello()[0].digest.length == 16 && hello()[0].digest == one("Hello")[0].digest
+        }
+        then "a changed text changes the digest" {
+            hello()[0].digest != one("Hellp")[0].digest
+        }
+    }
+    given "snapshots of several entries" {
+        then "they come in entry then case order" {
+            [s.view + "/" + s.case for s in snapshots(two())].join(" ") == "greeting/empty greeting/many actions/one"
+        }
+        then "no entries have no snapshots" {
+            snapshots([]).length == 0
+        }
+    }
+    given "two snapshot lists" {
+        then "equal lists differ nowhere" {
+            changed(before(), snapshots(two())).length == 0
+        }
+        then "a new case is added" {
+            let more = two()
+                .concat([Entry { view: "extra", cases: [Case { name: "one", view: says("x") }] }])
+            shown_all(changed(before(), snapshots(more))) == "+extra/one"
+        }
+        then "a dropped case is removed" {
+            shown_all(changed(before(), snapshots([two()[0]]))) == "-actions/one"
+        }
+        then "an edited case is changed" {
+            let edited = [
+                greeting(
+                    [
+                        Case { name: "empty", view: says("") },
+                        Case { name: "many", view: says("ho") },
+                    ],
+                ),
+                two()[1],
+            ]
+            shown_all(changed(before(), snapshots(edited))) == "~greeting/many"
+        }
+        then "the same case name under another view is another case" {
+            let moved = [Entry { view: "other", cases: two()[0].cases }, two()[1]]
+            shown_all(changed(before(), snapshots(moved))) == "+other/empty +other/many -greeting/empty -greeting/many"
+        }
+    }
+    given "the terminal listing" {
+        then "each case sits under a rule naming it" {
+            gallery_text(two(), 20) == "── greeting / empty ──\n\n── greeting / many ──\nhi\n── actions / one ──\n[ Go ]"
+        }
+        then "no entries list nothing" {
+            gallery_text([], 20) == ""
+        }
+    }
+    given "the page" {
+        then "every view and case name is on it" {
+            ["greeting", "actions", "empty", "many", "one"].all(on_page(it))
+        }
+        then "a case's view sits under its heading" {
+            doc().index_of(">many</h3>") < doc().index_of(">hi</p>")
+        }
+        then "a hostile case name is escaped" {
+            page_of([greeting([Case { name: "<b>", view: says("x") }])]).contains("&lt;b&gt;")
+        }
+    }
+}

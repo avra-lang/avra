@@ -1,0 +1,68 @@
+//! proves: one server secured with TLS — an HTTPS client verifying the
+//! test authority's leaf fetches twice over one connection (the route
+//! answering exactly as it does in the clear, http/1.1 agreed by ALPN),
+//! a second connection resumes from the first's ticket (one core, so
+//! the count is this process's), and plain HTTP
+//! sent to the same port is answered 400 in the clear and closed,
+//! never held.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.http.client.{Client, ClientError, request, netted}
+use @std.https.{over_tls, secured, tls_carried}
+use @std.tls.{TlsError}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type App = { hits: Cell<int> }
+
+fn fetched(mut c: Client, path: string) -> Result<string, ClientError> {
+    let a = c.fetched(.Get, request("GET", path, "localhost", [], "".bytes())!, secs(5))?
+    .Ok("${a.status} ${a.body.text() ?? "?"}")
+}
+
+/// A plain request written to `port` and whatever comes back before
+/// the server closes, CRLFs shown as `/`.
+fn plain_at(port: int) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".bytes())?
+    mut got = "".bytes()
+    mut open = true
+    while open {
+        match within ms(2000) { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? "".bytes())
+            },
+            .Err(_) -> { open = false },
+        }
+    }
+    let _ = c.close()
+    .Ok((got.text() ?? "?").replace("\r\n", "/"))
+}
+
+fn shown() -> Result<string, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let sc = tls_carried((tls_carried(serving_localhost())?).offering(["http/1.1"]))?
+    let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+        app.hits.set(app.hits.get() + 1)
+        text(200, "${q.target() ?? "?"}|${app.hits.get()}")
+    }
+        .secured(over_tls(sc))
+    spawn s.run(1)
+    defer s.stop()
+    let cc = tls_carried((tls_carried(trusting_localhost())?).offering(["http/1.1"]))?
+    mut c = secured("localhost", l.port, secs(5), limits(), cc)?
+    let one = fetched(c, "/one")?
+    let two = fetched(c, "/two")?
+    let agreed = c.protocol() ?? "<none>"
+    c.close()?
+    mut again = secured("localhost", l.port, secs(5), limits(), cc)?
+    let three = fetched(again, "/three")?
+    again.close()?
+    let plain = plain_at(l.port) catch e -> "failed: ${e.describe().message}"
+    .Ok("${one}\n${two}\n${agreed}\n${three} resumed ${sc.resumed()}\n${plain}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
