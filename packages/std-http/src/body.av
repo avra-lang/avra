@@ -348,24 +348,24 @@ fn net_error(e: WireError) -> BodyError {
 
 // ── Gathering, skipping, the tail ───────────────────────────────
 
-/// Every piece still to come, in one buffer — bounded by `Limits.body`.
+/// Every piece still to come, in one buffer — bounded by `Limits.body`,
+/// the first piece judged as every later one is, from nothing gathered.
 fn all_of(flow: Cell<Inflow>) -> Result<Bytes, BodyError> {
     let f = flow.get()
-    if too_long(f) {
-        flow.set(f with { failure: BodyError.TooLarge })
-        return .Err(.TooLarge)
-    }
-    let first? = next_piece(flow)? else { return .Ok(nothing_owed()) }
-    mut all = first
+    if too_long(f) { return too_large(flow) }
+    mut all = nothing_owed()
     while true {
         let more? = next_piece(flow)? else { return .Ok(all) }
-        if all.length + more.length > f.limits.body {
-            flow.set(flow.get() with { failure: BodyError.TooLarge })
-            return .Err(.TooLarge)
-        }
+        if all.length + more.length > f.limits.body { return too_large(flow) }
         all = all.concat(more)
     }
     .Ok(all)
+}
+
+/// The body refused as too large to gather, and the failure kept.
+fn too_large(flow: Cell<Inflow>) -> Result<Bytes, BodyError> {
+    flow.set(flow.get() with { failure: BodyError.TooLarge })
+    .Err(.TooLarge)
 }
 
 /// Whether what is still owed already passes the gathered bound.
