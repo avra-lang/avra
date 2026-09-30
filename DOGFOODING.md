@@ -1630,3 +1630,18 @@ Anything that rebuilds a Request from another carries `set` along
 
 - THE ROOTS GREW 2026-09-05: the ratchet reads every std package (`packages/std-time`, `std-process`, `std-io`, `std-cli`), not the compiler and the cli alone — the first sweep found 13 sites in packages written under the bar but outside the tool's eye, all paid; a new `packages/std-<name>/src` joins SRC in tools/idioms.py with its first slice.
 - style.refusal_uncounted_contains/style.wrong_payload_count_pattern GREW 2026-09-03: a counted refusal also spells `voices.length == n` (a Program's package voices are diagnostics); the ratchet's roots now include packages/std-toml/src, so a standalone package is held to the same bar; style.wrong_payload_count_pattern reads one variant per line (CLAUDE.md records the one-line-enum blind spot).
+
+## A spliced call reads its value by a binder no program spells
+
+A derive that splices a caller's own expression over a value it read
+(`@range(13, 130)` → `range(v, 13, 130)`, `@std/validate`'s `Decode`)
+binds that value where the call lands, under a name with a `$` in it
+(`judged$`), and fills the call's hole with the NAME
+(`applied(a, name(judged))`). Two things follow: the call reads the
+value at the splice site, beside the siblings it may name, and a
+refusal about the value points at the annotation — a spanless fill
+stands where its hole does. The smell it replaces: filling the hole
+with a template (`quote { got! }`), whose refusals point into the
+library, and binding the value under the field's own name, which
+shadows a rule of the same name (`@email email`). Not ratcheted: the
+shape is one derive's until a second reader splices calls.

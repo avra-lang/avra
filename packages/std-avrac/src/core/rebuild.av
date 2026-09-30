@@ -195,7 +195,7 @@ impl Rebuilder {
         if k != null {
             self.classify(k!, HoleKind.Expression)
             if !self.copying { return e }
-            return self.fill_expr(k!)
+            return self.placed_fill(e, self.fill_expr(k!))
         }
         self.holed.push(false)
         let rebuilt = x.rebuilt(self)
@@ -400,7 +400,7 @@ impl Rebuilder {
     /// another store's table by a foreign index the day the two
     /// diverge in length.
     mut fn param(p: Param) -> Param {
-        let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
+        let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), marks: self.marks(p.marks) }
         if !self.copying { return rebuilt }
         let id = self.dst.alloc_param_id(self.src.param_id_span(p.id))
         if !self.verbatim && hole_name(p.name.of) != null { self.holed_params.push(id) }
@@ -454,7 +454,12 @@ impl Rebuilder {
     mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
 
     mut fn variant(v: Variant) -> Variant {
-        v with { name: self.plain_name(v.name), payloads: self.params(v.payloads) }
+        v with { name: self.plain_name(v.name), payloads: self.params(v.payloads), marks: self.marks(v.marks) }
+    }
+
+    /// A member's marks, each call copied as any expression is.
+    mut fn marks(ms: List<Mark>) -> List<Mark> {
+        [m with { call: self.expr_opt(m.call) } for m in ms]
     }
 
     mut fn case(c: Case) -> Case {
@@ -613,6 +618,16 @@ impl Rebuilder {
         if k >= self.fills.length { return Filled.Unplaceable(no_fill_for(k, self.fills.length)) }
         let fill = self.fills[k]
         fill(kind)
+    }
+
+    /// A fill with no place of its own — a name, a literal — stands
+    /// where its hole does, so an error about it points there.
+    mut fn placed_fill(hole: ExprId, fill: ExprId) -> ExprId {
+        let at: Span? = self.src.expr_span(hole)
+        if at == null || self.dst.expr_span(fill) != null { return fill }
+        self.dst.place_expr(fill, at!)
+        self.holed_exprs.push(fill)
+        fill
     }
 
     mut fn fill_expr(k: int) -> ExprId {
