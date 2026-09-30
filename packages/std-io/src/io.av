@@ -36,6 +36,7 @@ extern fn avra_io_fd_kind(fd: int) -> int
 extern fn avra_io_fd_size(fd: int) -> int
 extern fn avra_io_fd_mtime(fd: int) -> int
 extern fn avra_io_seek(fd: int, at: int) -> int
+extern fn avra_io_compile_slot() -> int
 
 // THE RUNTIME'S OWN, which mint or answer immortal text — the only
 // doors through which bytes become a value. `avra_io_list` is the one
@@ -405,14 +406,23 @@ export fn env(name: string) -> string? {
     // the empty string for a variable that is unset AND for one set
     // to nothing, so the value alone cannot tell them apart.
     //
-    // IT IS TWO READS OF THE ENVIRONMENT, atomic only while the
-    // environment is READ-ONLY to Avra — true today, since nothing in
-    // the runtime or any package sets, puts or unsets one. The day a
-    // `set_env` verb lands this becomes a check-then-use with a
-    // window between, and the answer is one C call returning both.
+    // IT IS TWO READS OF THE ENVIRONMENT, atomic only while nothing
+    // writes it concurrently with a read — true today: the one write,
+    // `compile_slot`'s `AVRA_COMPILE_SLOT`, happens once as a command
+    // starts, before it reads anything. The day a `set_env` verb lands
+    // this becomes a check-then-use with a window between, and the
+    // answer is one C call returning both.
     avra_host_env(name)
 }
 
 export fn env_or(name: string, default: string) -> string {
     env(name) ?? default
+}
+
+/// One of `AVRA_MAX_COMPILES` machine-wide compile slots (default 3;
+/// 0 = off), held until the process ends; waits, saying so once,
+/// while every slot is taken. A process whose parent holds one takes
+/// none. The slot taken, or -1 when none is.
+export fn compile_slot() -> int {
+    avra_io_compile_slot()
 }
