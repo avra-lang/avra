@@ -2,7 +2,7 @@
 //! torn across reads, one the framer refuses, one cut short, one
 //! read to the close, one chunked, one that never comes.
 use @std.net.{Listener, Conn, listen, poller}
-use @std.time.{ms, secs, within}
+use @std.time.{Duration, ms, secs, within}
 use @std.http.frame.{framed, limits, Limits}
 use @std.http.http.{Header}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
@@ -17,7 +17,7 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), lim)?
     c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
-    let peer = lifted(within ms(500) { l.accept() })?
+    let peer = lifted(within verdict_bound() { l.accept() })?
     if !arrived(peer)? { return .Err(.TimedOut) }
     .Ok(Wire { c: c, peer: peer, l: l })
 }
@@ -30,7 +30,7 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
 fn arrived(peer: Conn) -> Result<bool, ClientError> {
     let p = lifted(poller())?
     let _ = lifted(p.watch(peer.fd, .Read))?
-    let events = lifted(p.wait(secs(2)))?
+    let events = lifted(p.wait(verdict_bound()))?
     let _ = lifted(p.close())?
     .Ok(events.any(it.fd == peer.fd && it.readable))
 }
@@ -39,16 +39,28 @@ fn arrived(peer: Conn) -> Result<bool, ClientError> {
 /// never a reset.
 fn wired() -> Result<Wire, ClientError> {
     let w = wiring(limits())?
-    let _ = lifted(within ms(500) { w.peer.read(4096) })?
+    let _ = lifted(within verdict_bound() { w.peer.read(4096) })?
     .Ok(w)
 }
 
+/// The peer's bytes written, then the client read for a moment: null
+/// while it is still waiting — the one answer a short wait can prove,
+/// since a slow machine only makes it truer.
+fn pending(mut w: Wire, said: string) -> Result<Answer?, ClientError> { heard(w, said, ms(40)) }
+
 /// The peer's bytes written, then the client read until it answers or
-/// errs; null when it is still waiting after `turns` × 20 ms.
-fn spoken(mut w: Wire, said: string, turns: int) -> Result<Answer?, ClientError> {
+/// errs. A VERDICT IS WAITED FOR, NEVER RACED: under a short clock a
+/// descheduled test reads a reset as "waiting", so the bound only ends
+/// a hang.
+fn settled(mut w: Wire, said: string) -> Result<Answer?, ClientError> { heard(w, said, verdict_bound()) }
+
+fn heard(mut w: Wire, said: string, d: Duration) -> Result<Answer?, ClientError> {
     let _ = lifted(w.peer.write(said.bytes()))?
-    waiting_is_null(within ms(20 * turns) { awaited(w) })
+    waiting_is_null(within d { awaited(w) })
 }
+
+/// How long a wait whose answer is due may take before it is a hang.
+fn verdict_bound() -> Duration { secs(5) }
 
 fn awaited(mut w: Wire) -> Result<Answer?, ClientError> {
     mut a: Answer? = null
@@ -70,35 +82,35 @@ fn outcome(r: Result<Answer?, ClientError>) -> string {
 
 fn torn_reply() -> Result<bool, ClientError> {
     mut w = wired()?
-    let early = outcome(spoken(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r", 2))
-    let late = outcome(spoken(w, "\nhello", 5))
+    let early = outcome(pending(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r"))
+    let late = outcome(settled(w, "\nhello"))
     .Ok(early == "waiting" && late == "200 hello")
 }
 
 fn body_torn() -> Result<bool, ClientError> {
     mut w = wired()?
-    let early = outcome(spoken(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhel", 2))
-    let late = outcome(spoken(w, "lo", 5))
+    let early = outcome(pending(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhel"))
+    let late = outcome(settled(w, "lo"))
     .Ok(early == "waiting" && late == "200 hello")
 }
 
 fn refused_reply() -> Result<bool, ClientError> {
     mut w = wired()?
-    .Ok(outcome(spoken(w, "HTTP/1.1 200 OK\ncontent-length: 0\n\n", 5)) == "http.refused")
+    .Ok(outcome(settled(w, "HTTP/1.1 200 OK\ncontent-length: 0\n\n")) == "http.refused")
 }
 
 fn cut_short() -> Result<bool, ClientError> {
     mut w = wired()?
-    let early = outcome(spoken(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhel", 2))
+    let early = outcome(pending(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhel"))
     let _ = lifted(w.peer.close())?
-    let late = outcome(spoken(w, "", 5))
+    let late = outcome(settled(w, ""))
     .Ok(early == "waiting" && late == "http.closed")
 }
 
 fn closed_before_any_reply() -> Result<bool, ClientError> {
     mut w = wired()?
     let _ = lifted(w.peer.close())?
-    .Ok(outcome(spoken(w, "", 5)) == "http.closed")
+    .Ok(outcome(settled(w, "")) == "http.closed")
 }
 
 /// A peer that closes with the request unread resets the connection:
@@ -106,30 +118,30 @@ fn closed_before_any_reply() -> Result<bool, ClientError> {
 fn reset_by_peer() -> Result<bool, ClientError> {
     mut w = wiring(limits())?
     let _ = lifted(w.peer.close())?
-    .Ok(outcome(spoken(w, "", 5)) == "net.read")
+    .Ok(outcome(settled(w, "")) == "net.read")
 }
 
 fn read_to_close() -> Result<bool, ClientError> {
     mut w = wired()?
-    let early = outcome(spoken(w, "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\r\nhel", 2))
-    let mid = outcome(spoken(w, "lo", 2))
+    let early = outcome(pending(w, "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\r\nhel"))
+    let mid = outcome(pending(w, "lo"))
     let _ = lifted(w.peer.shutdown_write())?
-    let late = outcome(spoken(w, "", 5))
+    let late = outcome(settled(w, ""))
     .Ok(early == "waiting" && mid == "waiting" && late == "200 hello")
 }
 
 fn chunked_reply() -> Result<bool, ClientError> {
     mut w = wired()?
     let early = outcome(
-        spoken(w, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nhel\r\n", 2),
+        pending(w, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nhel\r\n"),
     )
-    let late = outcome(spoken(w, "2\r\nlo\r\n0\r\n\r\n", 5))
+    let late = outcome(settled(w, "2\r\nlo\r\n0\r\n\r\n"))
     .Ok(early == "waiting" && late == "200 hello")
 }
 
 fn no_content() -> Result<bool, ClientError> {
     mut w = wired()?
-    .Ok(outcome(spoken(w, "HTTP/1.1 204 No Content\r\n\r\n", 5)) == "204 ")
+    .Ok(outcome(settled(w, "HTTP/1.1 204 No Content\r\n\r\n")) == "204 ")
 }
 
 fn never_replies() -> Result<bool, ClientError> {
@@ -140,16 +152,16 @@ fn never_replies() -> Result<bool, ClientError> {
 
 fn two_replies_one_connection() -> Result<bool, ClientError> {
     mut w = wired()?
-    let one = outcome(spoken(w, "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na", 5))
+    let one = outcome(settled(w, "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na"))
     w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
-    let two = outcome(spoken(w, "HTTP/1.1 201 Created\r\ncontent-length: 1\r\n\r\nb", 5))
+    let two = outcome(settled(w, "HTTP/1.1 201 Created\r\ncontent-length: 1\r\n\r\nb"))
     .Ok(one == "200 a" && two == "201 b")
 }
 
 fn reply_too_large() -> Result<bool, ClientError> {
     mut w = wiring(Limits { head: 64 })?
     let filler = ["x" for i in 0..100].join("")
-    .Ok(outcome(spoken(w, "HTTP/1.1 200 OK\r\nx-pad: ${filler}\r\n\r\n", 5)) == "http.refused")
+    .Ok(outcome(settled(w, "HTTP/1.1 200 OK\r\nx-pad: ${filler}\r\n\r\n")) == "http.refused")
 }
 
 /// What a SERVER makes of the bytes the builder wrote — the oracle
