@@ -171,6 +171,7 @@ claim_sprite() {
     ordered=""
     ordered_at=0
     while :; do
+        kill -0 $$ 2>/dev/null || return 1
         now="$(date +%s)"
         if [ -z "$ordered" ] || [ $((now - ordered_at)) -ge "$probe_interval" ]; then
             ordered="$(sh "$land" --call sprites_by_load $(pool_list) 2>/dev/null)"
@@ -223,6 +224,9 @@ build_candidate_tree() {
 # longer than the quiet window, so bytes alone would call it wedged;
 # a wedged step spends no CPU, so the ticks still stop. Suites run
 # line-buffered, so their own lines reach the log as they are said.
+# The build lock is the candidate's own: the train's slots are the
+# Sprite's budget, and a step queued behind a neighbour's lock spends
+# no CPU and would read as wedged.
 candidate_body() {
     pkgs="$*"
     cat <<BODY
@@ -234,6 +238,7 @@ cpu() { for p in \$(tree \$\$); do sed 's/.*) //' "/proc/\$p/stat" 2>/dev/null; 
 hb=\$!
 trap 'pkill -P \$hb 2>/dev/null; kill \$hb 2>/dev/null' EXIT
 export LLVM_PREFIX=/usr/lib/llvm-22
+export AVRA_BUILD_LOCK="\$d/build.lock"
 lined=
 command -v stdbuf >/dev/null && lined="stdbuf -oL -eL"
 run_step() {
@@ -297,6 +302,7 @@ run_candidate() {
     cap_s="$AVRA_LAND_TRAIN_CAP_S"
     quiet_s="$AVRA_LAND_TRAIN_QUIET_S"
     while :; do
+        kill -0 $$ 2>/dev/null || return 1
         attempt=$((attempt + 1))
         deadline=$(( $(date +%s) + cap_s ))
         claimed="$(claim_sprite "$deadline" "$tried")" || {
@@ -441,25 +447,33 @@ train_cleanup_candidates() {
 # exit). A killed train: (1) kills its WHOLE local process tree — every
 # child of this process, through land.sh's own `kill_tree` — since the
 # wave and its candidates run in subshells whose pids this process
-# never holds; each sprite-build stops its own remote group as it goes; (2) tells every Sprite it currently has a lease on to
-# stop that candidate's remote run, through `stop_remote` — `run_candidate`
+# never holds; each sprite-build stops its own remote group as it goes;
+# (2) tells every Sprite it currently has a lease on to stop that
+# candidate's remote run, through `stop_remote` — `run_candidate`
 # records the (sprite, label) pair for exactly this window, in
 # `$scratch/inflight-<label>`, removed the instant that candidate's own
 # call returns; (3) removes every candidate worktree. Set once, for
 # the whole process, wherever that process might be a train's own top
 # level (`main`) or the ladder itself (`train_ladder`, called directly
-# via `--call` from land.sh's `train_core`).
+# via `--call` from land.sh's `train_core`). The ladder and each wave run
+# in the background behind a `wait`, which a signal interrupts — a
+# command substitution would hold the trap until the wave ended. And
+# every retry loop asks, each turn, whether the train still stands, so
+# a loop orphaned mid-kill ends on its own.
 train_interrupt() {
     sig="$1"
-    for p in $(pgrep -P $$); do
-        sh "$land" --call kill_tree "$p" 2>/dev/null
+    # In flight when the signal came: a candidate killed below clears
+    # its own record on the way out.
+    flying="$(for f in "$scratch"/inflight-*; do
+        [ -f "$f" ] && printf '%s %s\n' "$(cat "$f" 2>/dev/null)" "$(basename "$f" | sed 's/^inflight-//')"
+    done)"
+    me="$(exec sh -c 'echo $PPID')"
+    for p in $(pgrep -P "$me"); do
+        sh "$land" --call kill_tree "$p" 2>/dev/null &
     done
-    for f in "$scratch"/inflight-*; do
-        [ -f "$f" ] || continue
-        lbl="$(basename "$f")"
-        lbl="${lbl#inflight-}"
-        sp="$(cat "$f" 2>/dev/null)" || sp=""
-        [ -n "$sp" ] && sh "$land" --call stop_remote "$sp" "$lbl" 2>/dev/null
+    wait
+    printf '%s\n' "$flying" | while read -r sp lbl; do
+        [ -n "$lbl" ] && sh "$land" --call stop_remote "$sp" "$lbl" 2>/dev/null
     done
     [ -n "${main_wt:-}" ] && train_cleanup_candidates 2>/dev/null
     case "$sig" in
@@ -498,7 +512,9 @@ train_ladder_body() {
     while [ -n "$(printf '%s' "$tail" | tr -d '[:space:]')" ]; do
         wave=$((wave + 1))
         echo "land-train: wave $wave over:$tail (good so far:${good:- none})" >&2
-        wave_good="$(run_wave "$wave" "$good" $tail)"
+        run_wave "$wave" "$good" $tail > "$scratch/wave-$wave.good" &
+        wait $! || :
+        wave_good="$(cat "$scratch/wave-$wave.good")"
         if [ -f "$scratch/tool-failure" ]; then
             return 1
         fi
@@ -535,7 +551,9 @@ main() {
     dry_run=1
     if [ "${1:-}" = "--dry-run" ]; then shift; fi
     [ "$#" -ge 1 ] || { usage >&2; exit 2; }
-    good="$(train_ladder "$@")"
+    train_ladder "$@" > "$scratch/good" &
+    wait $! || :
+    good="$(cat "$scratch/good" 2>/dev/null)"
     if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
         echo "land-train: nothing survived — no branch lands" >&2
         exit 1

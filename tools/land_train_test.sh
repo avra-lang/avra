@@ -447,6 +447,46 @@ test_train_cpu_is_progress() {
     unset_train_env
 }
 
+# ══ A TERM MID-WAVE: nothing of the train outlives it, every candidate stopped
+test_train_term_leaves_nothing() {
+    d="$(ladder_repo term a)"
+    stub="$scratch/term-sprite.sh"
+    cat > "$stub" <<'STUB'
+#!/bin/sh
+echo "land-train: body started"
+touch "$TERM_MARKS/$$"
+sleep 300
+STUB
+    chmod +x "$stub"
+    train_env "$d" "$stub"
+    export TERM_MARKS="$scratch/term-marks"
+    mkdir -p "$TERM_MARKS"
+    ( cd "$d" && exec sh "$land_train" --call train_ladder a ) > "$scratch/term.out" 2>&1 &
+    train=$!
+    i=0
+    while [ "$(ls "$TERM_MARKS" | wc -l | tr -d ' ')" -lt 1 ] && [ "$i" -lt 300 ]; do sleep 1; i=$((i + 1)); done
+    kill -TERM "$train"
+    i=0
+    while pgrep -f "$AVRA_LAND_TRAIN_SCRATCH|train_ladder a\$" >/dev/null && [ "$i" -lt 90 ]; do sleep 1; i=$((i + 1)); done
+    left="$(pgrep -f "$AVRA_LAND_TRAIN_SCRATCH|train_ladder a\$" | wc -l | tr -d ' ')"
+    alive=0
+    for m in "$TERM_MARKS"/*; do kill -0 "$(basename "$m")" 2>/dev/null && alive=$((alive + 1)); done
+    if [ "$left" -eq 0 ] && [ "$alive" -eq 0 ]; then
+        ok "train: a TERM mid-wave leaves no train process and no candidate running (${i}s)"
+    else
+        bad "train: after a TERM, $left train process(es) and $alive candidate(s) still run" "$scratch/term.out"
+        pkill -f "$AVRA_LAND_TRAIN_SCRATCH" 2>/dev/null
+        for m in "$TERM_MARKS"/*; do kill "$(basename "$m")" 2>/dev/null; done
+    fi
+    if [ "$(grep -c '' "$STOP_LOG" 2>/dev/null || echo 0)" -ge 1 ]; then
+        ok "train: the in-flight candidate's remote run is told to stop"
+    else
+        bad "train: stops recorded: $(cat "$STOP_LOG" 2>/dev/null | tr '\n' ';')"
+    fi
+    unset TERM_MARKS
+    unset_train_env
+}
+
 # ══ SLOTS: one Sprite runs two candidates at once, each in its own tree ═
 test_train_two_slots_per_sprite() {
     d="$(ladder_repo slots a b c)"
@@ -690,6 +730,7 @@ run_test test_train_tool_failure_retries
 run_test test_train_all_sprites_bad_is_tool_failure
 run_test test_train_watchdog_moves_to_another_sprite
 run_test test_train_cpu_is_progress
+run_test test_train_term_leaves_nothing
 run_test test_train_two_slots_per_sprite
 run_test test_train_shared_pool
 run_test test_train_dry_run_prints_head
