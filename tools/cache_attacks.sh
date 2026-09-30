@@ -416,6 +416,8 @@ esac
 # perf/module-hold). AND AN IMPORTER IN ANOTHER PACKAGE KEYS ON THE FILES ITS
 # USES REACH, NEVER THE PACKAGE WHOLE: `show.av` names `host` alone, so a
 # signature edit to `pad` holds it and one to `host` never may.
+# AND AN IMPL IS REACHED THROUGH ITS TYPE: `dyn.av` names `Pt` and `Say`, never
+# `pt_say.av`, yet the `dyn Say` box it builds carries that file's impl.
 MH() { # MH <label> <path-substr> <want: held|read> [<path-substr> <want>]...
     steps=$((steps+1))
     label=$1; shift
@@ -439,7 +441,17 @@ export fn host() -> int { pad() + priv() }
 AV
 printf '[package]\nname = "rt-mh"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n' > $R/mh/avra.toml
 printf 'use @rt.mhl.{host}\nexport fn shown() -> int { host() }\n' > $R/mh/src/show.av
-printf 'println("mh ${shown()}")\n' > $R/mh/src/main.av
+cat > $R/mhl/src/pt.av <<'AV'
+export trait Say { fn say() -> int }
+export type Pt = { v: int }
+AV
+cat > $R/mhl/src/pt_say.av <<'AV'
+use pt.{Say, Pt}
+fn base() -> int { 1 }
+impl Say for Pt { fn say() -> int { self.v + base() } }
+AV
+printf 'use @rt.mhl.{Say, Pt}\nexport fn said() -> int {\n    let s: dyn Say = Pt { v: 4 }\n    s.say()\n}\n' > $R/mh/src/dyn.av
+printf 'println("mh ${shown()} ${said()}")\n' > $R/mh/src/main.av
 S "cold mh: a sibling reaches one file by use, another by no use at all" mh
 S "mh: warm no-op" mh
 ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
@@ -458,6 +470,14 @@ ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
 MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read show.av held
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
 MH "mh: and back, cold no more" lib.av held
+ed $R/mhl/src/pt_say.av "self.v + base() }" "self.v + base() + 1 }"
+MH "mh: the unnamed impl's body only moves — dyn.av stays held" dyn.av held
+ed $R/mhl/src/pt_say.av "self.v + base() + 1 }" "self.v + base() }"
+MH "mh: and back" dyn.av held
+ed $R/mhl/src/pt_say.av "fn base() -> int" "fn base(n: int = 0) -> int"
+MH "mh: the impl's file moves a signature — dyn.av boxes Pt as dyn Say, and re-reads" dyn.av read
+ed $R/mhl/src/pt_say.av "fn base(n: int = 0) -> int" "fn base() -> int"
+MH "mh: and back" dyn.av held
 
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
