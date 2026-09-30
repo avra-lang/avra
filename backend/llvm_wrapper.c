@@ -285,6 +285,25 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
+// Whether this build counts the boxes runtime rows mint, by type:
+// AVRA_CENSUS_TYPES set and not "0". The census's own build sets it.
+int64_t avra_llvm_census_types(void) {
+    const char* v = getenv("AVRA_CENSUS_TYPES");
+    return v && *v && strcmp(v, "0") != 0;
+}
+
+// A call to the census's box counter naming what was minted; `label`
+// becomes a private C string in `m`, read only by that counter.
+void avra_llvm_build_census_box(LLVMBuilderRef b, LLVMModuleRef m, const char* label) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), &ptr, 1, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(m, "avra_census_box");
+    if (!fn) fn = LLVMAddFunction(m, "avra_census_box", fty);
+    LLVMValueRef text = LLVMBuildGlobalStringPtr(b, label, "census.box");
+    LLVMBuildCall2(b, fty, fn, &text, 1, "");
+}
+
 LLVMValueRef avra_llvm_get_named_function(LLVMModuleRef m, const char* name) {
     char* sym = avra_mangle_symbol(name);
     LLVMValueRef fn = LLVMGetNamedFunction(m, sym ? sym : name);
