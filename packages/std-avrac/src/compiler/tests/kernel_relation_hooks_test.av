@@ -1,0 +1,71 @@
+// avra-8sb5.57.81: a real Kernel, worn as a `@std/relation` Db's
+// owner, through the same shape `Workspace.relation_hooks` builds —
+// proves the ownership law fires when a REAL kernel frame is open,
+// and stays quiet with none, independent of error_sites_db.
+use query.{Kernel, new_kernel, Key}
+use @std.relation.{relation}
+use @std.relation.db.{Db, hooked_db, Hooks}
+
+@relation
+type Fact = { @key name: string, n: int }
+
+once fn heard() -> Cell<List<string>> { Cell.new([]) }
+
+fn noted(w: string) {
+    let h = heard()
+    h.push(w)
+}
+
+fn none() {}
+
+/// The exact bridge `Workspace.relation_hooks` builds, over a REAL
+/// kernel — `refused` records instead of trapping, so the law's own
+/// words can be asserted rather than ending the process.
+fn kernel_hooks(kernel: Kernel) -> Hooks {
+    Hooks {
+        family: (verify: fn(int) -> int) -> kernel.family(verify),
+        record: (fam: int, cell: int) -> {
+            kernel.record_dep(Key { family: fam, arg: cell })
+            kernel.reader()
+        },
+        revision: () -> kernel.revision(),
+        reader: (token: int) -> "a query (reader ${token})",
+        refused: noted,
+        opened: (_fam: int, _cell: int) -> 0 - 1,
+        settled: (_fam: int, _cell: int) -> none(),
+        running: () -> kernel.reader(),
+    }
+}
+
+spec "compiler/workspace — a real kernel frame arms the ownership law" {
+    then "a query reading a relation it just wrote, inside the same frame, is refused" {
+        let kernel = new_kernel()
+        let db = hooked_db(kernel_hooks(kernel))
+        let key = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        kernel.begin(key)
+        let _ = Fact.insert(db, name: "a", n: 1)
+        let _ = Fact.all(db)
+        kernel.settle(key, 0)
+        heard().get().length == 1 && heard().get()[0].contains("prior(db)")
+    }
+    then "a read with no kernel frame open is free" {
+        let kernel = new_kernel()
+        let db = hooked_db(kernel_hooks(kernel))
+        let _ = Fact.insert(db, name: "b", n: 2)
+        let free = Fact.all(db).length
+        free == 1 && heard().get().is_empty()
+    }
+    then "a different frame reading a relation an earlier, closed frame wrote is free" {
+        let kernel = new_kernel()
+        let db = hooked_db(kernel_hooks(kernel))
+        let writer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        kernel.begin(writer)
+        let _ = Fact.insert(db, name: "c", n: 3)
+        kernel.settle(writer, 0)
+        let reader = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        kernel.begin(reader)
+        let seen = Fact.all(db).length
+        kernel.settle(reader, 0)
+        seen == 1 && heard().get().is_empty()
+    }
+}
