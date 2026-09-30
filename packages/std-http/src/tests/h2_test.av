@@ -508,6 +508,26 @@ spec "std.http h2" {
                 !request_head_kept(get_head("/").concat([field("connection", "close")])) &&
                 !request_head_kept(get_head("/").concat([field("te", "gzip")]))
         }
+        then "a host naming another target than :authority is malformed; one agreeing, case aside, is kept (§8.3.1)" {
+            !request_head_kept(get_head("/").concat([field("host", "b")])) &&
+                !request_head_kept(get_head("/").concat([field("host", "a:80")])) &&
+                !request_head_kept(get_head("/").concat([field("host", "a"), field("host", "b")])) &&
+                request_head_kept(get_head("/").concat([field("host", "A")])) &&
+                request_head_kept(
+                    [
+                        field(":method", "GET"),
+                        field(":scheme", "http"),
+                        field(":path", "/"),
+                        field("host", "b"),
+                    ],
+                )
+        }
+        then "a head whose host disagrees with :authority resets its stream PROTOCOL_ERROR and reaches no handler" {
+            let c = conn_after(
+                [heads(1, get_head("/").concat([field("host", "evil")]), end_stream), get_on(3)],
+            )
+            reset_of(c, 1) == code(.Protocol) && paths_ready(c) == "/s3" && alive(c)
+        }
         then "a missing, empty or doubled pseudo-field is malformed" {
             !request_head_kept([field(":method", "GET"), field(":scheme", "http")]) &&
                 !request_head_kept(

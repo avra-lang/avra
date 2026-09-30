@@ -18,16 +18,17 @@
 //! framer would have read off a wire.
 use frame.{Limits, Method, RequestBody, ReplyBody, framed, status_of, no_bytes, admits}
 use hpack.{HeaderField, field}
-use h2.{Exchange, H2Conn, pseudo_of, value_at, connect_word, connection_specific}
+use h2.{Exchange, H2Conn, pseudo_of, value_at, connect_word, connection_specific, host_name}
 use body.{Body, measured, until_close}
 use http.{Request, Unrouted, Response, Stream, sendable, released, delimited, status, read_size}
 use wire.{Transport, WireError}
 use @std.time.{Duration}
 
 /// The 1.1 head a request's fields mean: the method and target — the
-/// path, or CONNECT's authority — then `host` from `:authority` when no
-/// `host` field was sent, the regular fields in order, and the cookie
-/// crumbs joined into one field (RFC 9113 §8.2.3).
+/// path, or CONNECT's authority — then `host`: `:authority` when it is
+/// sent, which names the target whatever `host` says (RFC 9113 §8.3.1),
+/// else the `host` field; then the regular fields in order, and the
+/// cookie crumbs joined into one field (§8.2.3).
 export fn head_text(fs: List<HeaderField>) -> Bytes {
     let p = pseudo_of(fs)
     let method = value_at(fs, p.method)
@@ -35,9 +36,10 @@ export fn head_text(fs: List<HeaderField>) -> Bytes {
         .concat(space)
         .concat(value_at(fs, if method == connect_word { p.authority } else { p.path }))
         .concat(version_line)
-    if p.authority >= 0 && !fs.any(it.name == host_name) { w = field_onto(w, host_name, fs[p.authority].value) }
+    let spoken = p.authority >= 0
+    if spoken { w = field_onto(w, host_name, fs[p.authority].value) }
     let regular = fs.slice(p.heads, fs.length)
-    for f in regular { if f.name != cookie_name { w = field_onto(w, f.name, f.value) } }
+    for f in regular { if f.name != cookie_name && !(spoken && f.name == host_name) { w = field_onto(w, f.name, f.value) } }
     let crumbs = [f.value for f in regular if f.name == cookie_name]
     if crumbs.is_empty() { return w.concat(crlf) }
     field_onto(
@@ -230,7 +232,6 @@ fn lower_octet(c: int) -> int { if c >= 65 && c <= 90 { c + 32 } else { c } }
 
 /// The fields whose values are credentials.
 const secret_names: List<Bytes> = [w.bytes() for w in ["set-cookie", "cookie", "authorization", "proxy-authorization"]]
-const host_name: Bytes = "host".bytes()
 const cookie_name: Bytes = "cookie".bytes()
 const crumb_join: Bytes = "; ".bytes()
 const space: Bytes = " ".bytes()

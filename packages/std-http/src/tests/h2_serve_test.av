@@ -98,8 +98,18 @@ spec "std.http h2 serve" {
         then "a GET is its method, path and host, then its fields in order" {
             head_of_fields(fields_get("/a?b=1").concat([field("accept", "*/*"), field("x-y", "z")])) == "GET /a?b=1 HTTP/1.1\r\nhost: example.com\r\naccept: */*\r\nx-y: z\r\n\r\n"
         }
-        then "a host field the request sent wins over the authority" {
-            head_of_fields(fields_get("/").concat([field("host", "other")])) == "GET / HTTP/1.1\r\nhost: other\r\n\r\n"
+        then ":authority names the host, and a host field that agrees with it is not spoken again (§8.3.1)" {
+            head_of_fields(fields_get("/").concat([field("host", "EXAMPLE.com")])) == "GET / HTTP/1.1\r\nhost: example.com\r\n\r\n"
+        }
+        then "a host field names the host of a request with no :authority" {
+            head_of_fields(
+                [
+                    field(":method", "GET"),
+                    field(":scheme", "http"),
+                    field(":path", "/"),
+                    field("host", "other"),
+                ],
+            ) == "GET / HTTP/1.1\r\nhost: other\r\n\r\n"
         }
         then "cookie crumbs are joined into one field (§8.2.3)" {
             head_of_fields(

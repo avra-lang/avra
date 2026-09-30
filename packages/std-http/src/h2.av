@@ -1068,12 +1068,23 @@ fn unpadded(f: Frame) -> Bytes? {
 
 /// A request head this server takes: pseudo-fields first, each known
 /// and once; `:method`, `:scheme` and a non-empty `:path` — or, for
-/// CONNECT, an `:authority` and neither of the others; and every field
-/// a field the 1.1 framer would frame, lowercase, and none of the
-/// connection-specific ones (§8.2.2).
+/// CONNECT, an `:authority` and neither of the others; every field a
+/// field the 1.1 framer would frame, lowercase, and none of the
+/// connection-specific ones (§8.2.2); and no `host` naming another
+/// target than `:authority` does (§8.3.1).
 export fn request_head_kept(fs: List<HeaderField>) -> bool {
     let p = pseudo_of(fs)
-    fs.slice(p.heads, fs.length).all(!is_pseudo(it) && regular_kept(it)) && pseudo_shape_kept(fs, p)
+    let regular = fs.slice(p.heads, fs.length)
+    regular.all(!is_pseudo(it) && regular_kept(it) && host_agrees(it, fs, p)) &&
+        pseudo_shape_kept(fs, p)
+}
+
+/// A field is no `host`, or one naming what `:authority` names — ASCII
+/// case aside — or there is no `:authority` to disagree with.
+fn host_agrees(f: HeaderField, fs: List<HeaderField>, p: Pseudo) -> bool {
+    f.name != host_name ||
+        p.authority < 0 ||
+        f.value.ieq_at(0, f.value.length, fs[p.authority].value)
 }
 
 /// Where each request pseudo-field sits in its list, -1 when absent,
@@ -1193,6 +1204,7 @@ export const path_name: Bytes = ":path".bytes()
 export const authority_name: Bytes = ":authority".bytes()
 const pseudo_names: List<Bytes> = [method_name, scheme_name, path_name, authority_name]
 export const connect_word: Bytes = "CONNECT".bytes()
+export const host_name: Bytes = "host".bytes()
 const te_name: Bytes = "te".bytes()
 const trailers_word: Bytes = "trailers".bytes()
 const content_length_name: Bytes = "content-length".bytes()
