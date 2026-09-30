@@ -1,0 +1,138 @@
+// `@derive(Decode)` over every shape it reads: the empty record, a
+// named type, nesting, lists, nullable and defaulted fields, rules
+// chained over what the last one answered, and a secret all the way
+// down.
+use @std.meta.{derive}
+use @std.validate.{Decode, Value, Entry, Issues, range, length, one_of, from_json}
+
+@derive(Decode)
+type Nothing = {}
+
+@derive(Decode)
+@range(1, 5)
+type Small = int
+
+@derive(Decode)
+type Inner = {
+    @range(0, 9) x: int,
+}
+
+@derive(Decode)
+type Outer = {
+    inner: Inner,
+    items: List<Inner> = [],
+    @length(max: 3) nick: string? = null,
+    @one_of(["a", "b"]) mode: string = "a",
+}
+
+/// A rule that normalises: the field receives what it answered.
+fn tidied(v: string) -> Result<string, string> { v.trim() }
+
+@derive(Decode)
+type Named = {
+    @tidied @length(min: 1) name: string,
+}
+
+@derive(Decode)
+type Vault = {
+    @secret pins: List<Small>,
+    @secret inner: Inner,
+}
+
+@derive(Decode)
+type Loose = {
+    meta: Map<string, string>,
+}
+
+/// Every issue as `path rule`, or `ok`.
+fn paths(r: Result<Outer, Issues>) -> string {
+    match r { .Ok(_) -> "ok", .Err(e) -> [i.path.text() + " " + i.rule for i in e.all].join(", ") }
+}
+
+fn json(text: string) -> Value { from_json(text) catch Value.Null }
+
+spec "std/validate derive" {
+    given "degenerate shapes" {
+        then "the empty record reads the empty object" { Nothing.decode(json("{}")) is .Ok }
+        then "and refuses any field" {
+            match Nothing.decode(json("{\"x\": 1}")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].rule == "unknown",
+            }
+        }
+        then "a named type reads its shape and runs its own rules" {
+            Small.decode(Value.Int(3)) is .Ok &&
+                match Small.decode(Value.Int(9)) {
+                    .Ok(_) -> false,
+                    .Err(e) -> e.all[0].rule == "range" && e.all[0].path.text() == "",
+                }
+        }
+    }
+    given "nesting and lists" {
+        then "a nested record's issue wears the whole path" { paths(Outer.decode(json("{\"inner\": {\"x\": 10}}"))) == "inner.x range" }
+        then "a list of records, each at its index" {
+            paths(
+                Outer.decode(json("{\"inner\": {\"x\": 1}, \"items\": [{\"x\": 1}, {\"x\": -1}]}")),
+            ) == "items[1].x range"
+        }
+    }
+    given "nullable and defaulted fields" {
+        then "absent, both take their defaults and run no rule" {
+            match Outer.decode(json("{\"inner\": {\"x\": 1}}")) {
+                .Ok(o) -> o.nick == null && o.mode == "a" && o.items.is_empty(),
+                .Err(_) -> false,
+            }
+        }
+        then "present, both run their rules" {
+            paths(
+                Outer
+                    .decode(json("{\"inner\": {\"x\": 1}, \"nick\": \"long one\", \"mode\": \"c\"}")),
+            ) == "nick length, mode one_of"
+        }
+        then "a present default is replaced" {
+            match Outer.decode(json("{\"inner\": {\"x\": 1}, \"mode\": \"b\"}")) {
+                .Ok(o) -> o.mode == "b",
+                .Err(_) -> false,
+            }
+        }
+        then "an explicit null in a nullable field is no issue" {
+            paths(Outer.decode(json("{\"inner\": {\"x\": 1}, \"nick\": null}"))) == "ok"
+        }
+    }
+    given "rules chained" {
+        then "each reads what the last answered" {
+            match Named.decode(json("{\"name\": \"  ada  \"}")) {
+                .Ok(n) -> n.name == "ada",
+                .Err(_) -> false,
+            }
+        }
+        then "a normalised blank is refused by the next rule" {
+            match Named.decode(json("{\"name\": \"   \"}")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].rule == "length" && e.all[0].received?.shown() == "\"   \"",
+            }
+        }
+    }
+    given "a secret all the way down" {
+        then "a secret list's elements show nothing received" {
+            match Vault.decode(json("{\"pins\": [9], \"inner\": {\"x\": 1}}")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].path.text() == "pins[0]" && e.all[0].received == null,
+            }
+        }
+        then "a secret record's fields show nothing received" {
+            match Vault.decode(json("{\"pins\": [1], \"inner\": {\"x\": 99}}")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].path.text() == "inner.x" && e.all[0].received == null,
+            }
+        }
+    }
+    given "a shape no reader takes yet" {
+        then "is one issue naming it, never a crash" {
+            match Loose.decode(json("{\"meta\": {}}")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.count() == 1 && e.all[0].message.contains("Map<string, string>"),
+            }
+        }
+    }
+}

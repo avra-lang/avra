@@ -1,0 +1,258 @@
+//! `@derive(Decode)` — a type's annotations, read into its decoder.
+//!
+//!     @derive(Decode)
+//!     type Signup = {
+//!         @email email: string
+//!         @range(13, 130) age: int
+//!     }
+//!
+//!     let s = Signup.decode(value)?          // Result<Signup, Issues>
+//!
+//! Each field is read at its slot by its kind, then each annotation
+//! is CALLED over what was read — `@range(13, 130)` is
+//! `range(age, 13, 130)` — so a rule on the wrong type is refused
+//! where the annotation is written, and a rule naming a sibling field
+//! reads that field's value. A rule on the record itself reads the
+//! whole value once every field has passed — the cross-field rules.
+//! A `type Name = shape` carrying rules reads its shape, then wraps
+//! it: a `Username` is proof it passed. `@secret` on a field is no
+//! rule: no issue about it ever shows what it received.
+use @std.meta.{Type, Field, Kind, Annotation, Directive, Code, Decls, Stmts, name, literal, applied}
+use decode.{
+    Decoding,
+    Slot,
+    Coercion,
+    decode,
+    ruled,
+    list,
+    read_text,
+    read_int,
+    read_float,
+    read_bool,
+}
+use value.{Value}
+use issue.{Issues}
+
+export trait Decode {
+    static fn derive(t: Type) -> List<Directive> {
+        if generic(t) { return [] }
+        [Directive { twin: "", name: t.name, at: t.at, source: decoder(t) }]
+    }
+
+    /// Every annotation on a field is a rule this derive calls.
+    static fn marks(t: Type) -> List<string> {
+        flatten([[a.name for a in f.annotations] for f in t.fields])
+    }
+}
+
+/// The type's `decode` and `decoded`, the one shape every kind of
+/// type answers with its own body.
+fn decoder(t: Type) -> Decls {
+    let b = body(t)
+    quote {
+        impl ${t} {
+            /// The value read as this type: it, or every issue.
+            static fn decode(v: Value, coercion: Coercion = Coercion.Strict) -> Result<${t}, Issues> {
+                decode(v, (mut d: Decoding, s: Slot) -> ${name(t.name)}.decoded(d, s), coercion)
+            }
+
+            static fn decoded(mut d: Decoding, s: Slot) -> ${t}? {
+                ${b.lines}
+                ${b.answer}
+            }
+        }
+    }
+}
+
+/// A decoder's body: what it runs, then what it answers.
+type Body = { lines: Stmts, answer: Code }
+
+fn body(t: Type) -> Body {
+    if names_a_shape(t) { return named_body(t) }
+    if !t.variants.is_empty() { return union_body(t) }
+    record_body(t)
+}
+
+/// Each field read in its own block, the record built from the ones
+/// that must be written, each default a present field replaces, then
+/// the record's own rules over the whole value.
+fn record_body(t: Type) -> Body {
+    let fields = literal_list([literal(f.name) for f in t.fields])
+    let written = [init(f) for f in t.fields if !f.defaulted]
+    let lines = quote {
+        let o? = d.object(s) else { return null }
+        ${[field_read(f) for f in t.fields]}
+        if !d.closed(o, ${fields}) { return null }
+        let made = ${t} { ..${written} }
+        ${[replaced(f) for f in t.fields if f.defaulted]}
+        let at = s
+        let got: ${t}? = made
+        ${[checked(a) for a in rules(t)]}
+    }
+    Body { lines: lines, answer: quote { got } }
+}
+
+/// An enum: a union no reader takes yet, one issue naming it.
+fn union_body(t: Type) -> Body {
+    let answer = quote {
+        {
+            d.unread(s, ${literal("enum ${t.name}")})
+            null
+        }
+    }
+    Body { lines: quote { }, answer: answer }
+}
+
+/// A named type: its shape read at the slot, its own rules run, the
+/// value wrapped in its name.
+fn named_body(t: Type) -> Body {
+    let lines = quote {
+        let at = s
+        let got: ${t.over.spelled()}? = ${reader(t.over)}
+        ${[checked(a) for a in rules(t)]}
+    }
+    Body { lines: lines, answer: quote { if got == null { null } else { ${t.name}(got!) } } }
+}
+
+/// A generic type reads no value until its parameters are known — a
+/// decoder over one waits for generic impls to carry it.
+fn generic(t: Type) -> bool {
+    t.fields.any(mentions_a_parameter(it.kind))
+}
+
+fn mentions_a_parameter(k: Kind) -> bool {
+    match k {
+        .Var(_) -> true,
+        .List(inner) or .Opt(inner) or .Cell(inner) -> mentions_a_parameter(inner),
+        .Map(key, value) or .Result(key, value) -> mentions_a_parameter(key) || mentions_a_parameter(value),
+        .Named(_, args) -> args.any(mentions_a_parameter(it)),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Fn(_, _) or .Dyn(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// A `type Name = shape` — a record or an enum stands over nothing.
+fn names_a_shape(t: Type) -> bool {
+    match t.over { .Unspelled(_) -> false, rest -> true }
+}
+
+/// The type's own rules: every annotation it wears but the derive.
+/// An annotation is known here by its word, the one currency that
+/// crosses a package boundary.
+fn rules(t: Type) -> List<Annotation> {
+    [a for a in t.annotations if a.name != "derive"]
+}
+
+/// `let email = { … }` — the field read at its slot and each of its
+/// rules run over what the last one answered.
+fn field_read(f: Field) -> Stmts {
+    quote {
+        let ${f.name} = {
+            let at = ${slot(f)}
+            let got: ${inner(f.kind).spelled()}? = ${reader(inner(f.kind))}
+            ${[checked(a) for a in f.annotations if !is_secret(a)]}
+            got
+        }
+    }
+}
+
+/// Where a field is read: optional when absent is no issue, secret
+/// when an issue must never show what it received.
+fn slot(f: Field) -> Code {
+    let at = quote { o.field(${literal(f.name)}) }
+    let loose = if optional(f) { quote { ${at}.optional() } } else { at }
+    if f.annotations.any(is_secret(it)) { quote { ${loose}.secret() } } else { loose }
+}
+
+/// `@secret` is no rule: it hides what the field received.
+fn is_secret(a: Annotation) -> bool { a.name == "secret" }
+
+/// One rule over the value read so far, recorded where it refuses.
+/// The value is bound where the rule's call lands, under a name no
+/// program can spell, so the call reads it and every refusal about it
+/// points at the annotation.
+fn checked(a: Annotation) -> Stmts {
+    let call? = applied(a, name(judged)) else { return quote { let got = got } }
+    quote {
+        let got = if got == null {
+            null
+        } else {
+            let ${judged} = got!
+            ruled(d, at, ${literal(a.name)}, ${call})
+        }
+    }
+}
+
+/// The value a rule judges, as its call reads it.
+const judged: string = "judged\$"
+
+/// The reader for a shape at `at`.
+fn reader(k: Kind) -> Code {
+    match k {
+        .Str -> quote { d.text(at) },
+        .Int -> quote { d.int(at) },
+        .Float -> quote { d.float(at) },
+        .Bool -> quote { d.bool(at) },
+        .List(elem) -> {
+            let each? = element(elem) else { return unread(k) }
+            quote { list(d, at, ${each}) }
+        },
+        .Named(n, _) -> quote { ${name(n)}.decoded(d, at) },
+        .Opt(k2) -> reader(k2),
+        .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unread(k),
+    }
+}
+
+/// A shape no reader takes yet: one issue, and no value.
+fn unread(k: Kind) -> Code {
+    quote {
+        {
+            d.unread(at, ${literal(k.spelled())})
+            null
+        }
+    }
+}
+
+/// A list element's decoder, as a fn value — absent for an element
+/// no reader takes yet.
+fn element(k: Kind) -> Code? {
+    match k {
+        .Str -> quote { read_text },
+        .Int -> quote { read_int },
+        .Float -> quote { read_float },
+        .Bool -> quote { read_bool },
+        .Named(n, _) -> quote { (mut d: Decoding, s: Slot) -> ${name(n)}.decoded(d, s) },
+        .List(elem) -> {
+            let each? = element(elem) else { return null }
+            quote { (mut d: Decoding, s: Slot) -> list(d, s, ${each}) }
+        },
+        .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+/// A field a literal must write: its value, present or unwrapped.
+fn init(f: Field) -> Code {
+    if f.kind is .Opt { return quote { Init { ${f.name}: ${name(f.name)} } } }
+    quote { Init { ${f.name}: ${name(f.name)}! } }
+}
+
+/// A defaulted field replaced when the input held it.
+fn replaced(f: Field) -> Stmts {
+    quote { let made = if ${name(f.name)} == null { made } else { made with { ${f.name}: ${name(f.name)}! } } }
+}
+
+/// Absent is no issue: the field is nullable or declares a default.
+fn optional(f: Field) -> bool { f.defaulted || f.kind is .Opt }
+
+fn inner(k: Kind) -> Kind {
+    match k { .Opt(k2) -> k2, rest -> k }
+}
+
+fn literal_list(items: List<Code>) -> Code {
+    quote { [${..items}] }
+}
+
+fn flatten<T>(xss: List<List<T>>) -> List<T> {
+    mut out: List<T> = []
+    for xs in xss { out = out.concat(xs) }
+    out
+}
