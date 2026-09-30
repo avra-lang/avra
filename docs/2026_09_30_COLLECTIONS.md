@@ -635,3 +635,43 @@ then deleted (both copies where there are two).
 | Q9 | `string` not walkable; name the view (`bytes()`, `codes()`)? | **Yes** (Rust's choice); the lexer's `.10.27` ask is `s.codes()` |
 | Q10 | Rename `Cell.set_at`/`put` to match `List.set`/`Map.set`? | **No.** `Cell.set` already means "replace whole"; a cell is a slot, not a collection |
 | Q11 | `filter`/`map` or new words (`keep`, `where`)? | **Keep them.** Every language an LLM has read uses them (P1) |
+
+## Owner decisions (2026-09-30)
+
+All eleven recommendations accepted: Q1–Q9 and Q11 **yes**, Q10 **no**
+(Cell keeps `set_at`/`put`). S0, the map hash fix, starts immediately
+(`avra-8sb5.34.49`).
+
+## Strings: one protocol with `docs/2026_06_30_STRINGS_FROM_THE_FUTURE.md`
+
+That doc (old tree, `../forge-crafting-intepreters/docs/`) designed strings
+from first principles; this vocabulary adopts it rather than inventing a
+parallel one.
+
+| strings doc | here | decision |
+|---|---|---|
+| `Seq<T>` protocol, "strings aren't special" | `Walk<T>` + `Indexed<T>` | ONE protocol. `Walk<T>` is the source half of `Seq`; `Indexed<T>` is its int-position half; a string's positions are `Cursor`s, not ints, so a string is `Walk` but never `Indexed` |
+| `s.chars`, `s.bytes`, `s.graphemes()` lenses | Q9: `string` not walkable, name the view | the lens NAMES come from the strings doc: `s.chars` (Unicode scalars), `s.bytes`, `s.graphemes()`; `codes()` is dropped |
+| `Cursor` (opaque byte offset, O(1)) | — | adopted for strings: `find` on a `chars` lens answers `Cursor?`, `s[c..]` is an O(1) slice |
+| no bare `s[i]`, no bare `.length` on a string | — | adopted, with the doc's F-code voice naming the three intents |
+| typed string patterns (`"{head}{tail}"`) | — | already built (lane strings, `features/dispatch.av`); unchanged |
+| `+=` in a loop is amortised append | reuse-in-place | already true for a unique buffer; stated as a guarantee |
+
+Built today: typed string patterns, `Bytes`, `.text()`. Not built: `Cursor`,
+the lenses, `graphemes`, small-string inline storage. Those land with S1
+(lenses as `Walk` sources) and S2 (`Cursor`, slices as views).
+
+## How it is implemented: traits for the surface, the lowering for speed
+
+- **The surface is two small traits with default methods**, Ruby's
+  Enumerable shape: a type implements ONE method (`walk`, or `length` +
+  `at`) and inherits every verb as a trait default. User types get the
+  whole vocabulary by writing one fn.
+- **The speed is not the trait.** The compiler recognises a verb chain on
+  any `Walk` source and lowers it to ONE loop: monomorphised, lambdas
+  inlined, no intermediate list, reuse-in-place on a dying buffer. The
+  trait default is the semantics; the lowering is the fast path, and a
+  law (`eval == native`, chain == comprehension) holds them equal.
+- Built-ins (`List`, `Bytes`, ranges, map entries, string lenses) get the
+  vocabulary from the compiler in S1, and move onto the traits in S3 when
+  trait impls over generic types (F2031) land. No user-visible change.
