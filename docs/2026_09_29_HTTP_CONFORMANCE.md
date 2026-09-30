@@ -4,6 +4,8 @@ Every MUST / MUST NOT of [RFC 9112](https://www.rfc-editor.org/rfc/rfc9112.html)
 and the server-relevant ones of [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html),
 each with the fixture that pins it or the ticket that owns the gap. Sentences
 were extracted mechanically from the RFC text (87 MUSTs in 9112, all here).
+The framers are also fuzzed (`make fuzz-http`, corpus and every kept
+finding in `packages/std-http/fuzz`) and soaked (`make soak-http`).
 A fixture is named `suite › "then"`; every suite lives in
 `packages/std-http/src/tests/`.
 
@@ -53,7 +55,7 @@ writes nor forbids it. A gap is a ticket under `avra-8sb5.1.30`.
 | 18 | 3.2.2 | client sends Host beside absolute-form | CA › "a plain request frames with its host alone" (Host is always written) |
 | 19–20 | 3.2.2 | proxy replaces Host from absolute-form | N/A |
 | 21 | 3.2.2 | origin ignores Host for absolute-form, uses the target's host | T › "absolute-form hands it over"; T › "origin-form and absolute-form reach the SAME route" |
-| 22 | 3.2.2 | server accepts absolute-form | F › "absolute-form is accepted" |
+| 22 | 3.2.2 | server accepts absolute-form | F › "absolute-form is accepted"; C › "a scheme opens with a letter and holds letters, digits, `+`, `-` and `.`"; C › "a scheme holding a `?` is no scheme, so the target is refused (fuzz: trap-272-75247)" |
 | 23 | 3.2.3 | client CONNECT sends host:port only | N/A (the client sends no CONNECT) |
 | 24 | 3.2.4 | client server-wide OPTIONS sends `*` | N/A (the caller's target is written as given) |
 | 25 | 3.2.4 | last proxy rewrites to `*` | N/A |
