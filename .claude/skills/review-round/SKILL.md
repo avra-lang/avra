@@ -107,7 +107,8 @@ Hunting NEW idiom species is a method, not a mood:
    program), fix, and TIGHTEN the test that let it hide
    (contains() without a diagnostics COUNT hides cascades).
 5. SWEEP EVERY PACKAGE, cli and tools included, and smoke-test any
-   CLI path touched (`./avra explain F3005` both hit and miss).
+   CLI path touched, both hit and miss (`./avra cache why <entry>`
+   with a name that exists and one that does not).
 6. Choose the RIGHT form, not the fanciest: match (returned
    directly) before table; table only when consumed as data; when
    only for condition arms. Over-abstraction is a smell too.

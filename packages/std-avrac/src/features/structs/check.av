@@ -9,6 +9,7 @@ use features.{
     StructSig,
     this_is,
     fields_are,
+    lacks_voice,
     slot_worthy,
     tparams_refused,
     unpinned_of,
@@ -120,7 +121,11 @@ fn written_at(fields: List<string>, j: int) -> Written {
 fn field_slot(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, w: Written) -> int? {
     let slot? = sig.slot_of(f) else {
         cx.settled_value(v)
-        unknown_field(cx, v, name, f, sig)
+        let why? = sig.lacked(f) else {
+            unknown_field(cx, v, name, f, sig)
+            return null
+        }
+        lacked_field(cx, v, name, f, sig, why)
         return null
     }
     match w {
@@ -209,6 +214,19 @@ fn unknown_field(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: Struct
                 "type.struct_fields",
                 cx.loc_of(v),
                 "`${name}` has no field `${f}`",
+                "written here",
+                fields_are(sig),
+            ),
+        )
+}
+
+fn lacked_field(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: StructSig, why: string) {
+    cx
+        .emit(
+            refusal(
+                "type.struct_fields",
+                cx.loc_of(v),
+                lacks_voice(name, f, why),
                 "written here",
                 fields_are(sig),
             ),
