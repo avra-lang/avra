@@ -115,7 +115,7 @@ one scratch integration branch, builds and checks that ONCE, then
 fast-forwards main to it. A batch that fails BISECTS — it lands the
 largest subset that passes together and names the branch(es) that
 broke it, exiting non-zero when anything was excluded. Each branch
-lands alone, so a red blocks only itself; AVRA_LAND_ABSORB=1 batches
+lands in one batch with the queue behind it (AVRA_LAND_ABSORB=0 lands alone), verified in parallel on Sprites (AVRA_LAND_TRAIN=0 checks locally); the batch
 the queue — whoever takes the lock lands every branch still queued
 behind it in the same run, and each waiter exits with its own verdict. Never pushes
 anywhere, never rewrites a branch's own history.
@@ -2193,7 +2193,7 @@ train_core() {
 # decides which, so a queue is served identically either way from both
 # of this file's own call sites.
 dispatch_batch() {
-    if [ "${AVRA_LAND_TRAIN:-0}" = "1" ]; then
+    if [ "${AVRA_LAND_TRAIN:-1}" = "1" ]; then
         train_core "$@"
     else
         batch_core "$@"
@@ -2298,7 +2298,7 @@ main() {
     echo "land: branch worktree $branch_wt ($branch)"
 
     # AVRA_LAND_ABSORB=1 batches the queue behind this branch.
-    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-0}" = "1" ]; then
+    if [ "$dry_run" -eq 0 ] && [ "${AVRA_LAND_ABSORB:-1}" = "1" ]; then
         absorbed="$(absorb_waiters | tr '\n' ' ')"
         [ -n "$(printf '%s' "$absorbed" | tr -d '[:space:]')" ] && land_absorbed
     fi

@@ -118,9 +118,13 @@ export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [
 
 /// A struct's typed field table, in declaration order — the index
 /// IS the runtime slot; a default is the declaration whose body
-/// fills it.
+/// fills it. `lacking` names what it leaves out ON PURPOSE (`@lacks`).
 @derive(Fingerprint)
-export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?> }
+export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [] }
+
+/// A field a record leaves out on purpose, and the reason a read hears.
+@derive(Fingerprint)
+export type Lacked = { field: string, why: string }
 
 /// A NAMED TYPE's table: the ONE shape it stands over. The name is
 /// its own type at every seat; this says what it travels as.
@@ -148,6 +152,12 @@ impl StructSig {
     /// The fields, listed for help text.
     fn listed() -> string {
         named_list(self.names)
+    }
+
+    /// Why the record leaves `name` out, when it does so on purpose.
+    fn lacked(name: string) -> string? {
+        let l? = self.lacking.find(it.field == name) else { return null }
+        l.why
     }
 }
 
@@ -506,6 +516,11 @@ export fn variants_are(sig: EnumSig) -> string {
 /// a field, so both offer the same list.
 export fn fields_are(sig: StructSig) -> string {
     "the fields are ${sig.listed()}"
+}
+
+/// A lacked field's refusal, read or written: the record's own reason.
+export fn lacks_voice(record: string, field: string, why: string) -> string {
+    "`${record}` lacks `${field}` on purpose — ${why}"
 }
 
 /// What to write when a RECORD name was used where an enum was

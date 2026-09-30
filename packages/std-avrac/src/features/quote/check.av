@@ -244,14 +244,26 @@ fn subject_types(
     holes: List<QuoteHole>,
     names: List<string>,
 ) -> List<TypeId> {
-    let d? = cx.view.decls.avrac_named("Code") else { return no_avrac(cx, p) }
-    let code_ty = cx.view.decls.self_type_of(d)
+    let run_ty? = avrac_answer(cx, "run_coded") else { return no_avrac(cx, p) }
+    let code_ty? = cx.view.decls.elem_of(run_ty) else { return no_avrac(cx, p) }
     if cx.types_disagree(expected, code_ty) { return wrong_subject(cx, p, cx.view.types.name_of(expected)) }
-    let td? = cx.view.decls.avrac_named("TypeRef") else { return no_avrac(cx, p) }
+    let own_ty? = avrac_answer(cx, "own_type_at") else { return no_avrac(cx, p) }
+    let type_ty? = present_of(cx, own_ty) else { return no_avrac(cx, p) }
     let string_ty = cx.type(string)
-    let run_ty = cx.type(List<code_ty>)
-    let type_ty = cx.view.decls.self_type_of(td)
     [binder_type(holes, n, string_ty, run_ty, type_ty, code_ty) for n in names]
+}
+
+/// A `@std/avrac` verb's declared answer — how a quote pattern
+/// reaches `Code` (`run_coded`'s `List<Code>`) and `TypeRef`
+/// (`own_type_at`'s `TypeRef?`) by declaration, never by name.
+fn avrac_answer(cx: TypeCx, verb: string) -> TypeId? {
+    let d? = cx.view.decls.avrac_named(verb) else { return null }
+    cx.view.decls.sig(d)?.fn_sig()?.ret
+}
+
+/// A nullable's present type, or null for any other shape.
+fn present_of(cx: TypeCx, ty: TypeId) -> TypeId? {
+    match cx.view.types.shape_of(ty) { .Opt(t) -> t, _ -> null }
 }
 
 /// One binder's answer: its own written text, a `List<Code>` for a
