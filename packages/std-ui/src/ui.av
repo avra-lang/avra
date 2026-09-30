@@ -145,11 +145,7 @@ export component column {
 
 impl View for column {
     fn node() -> Node {
-        Node {
-            role: .Column,
-            look: frame(self.gap, self.pad, self.fill, self.radius),
-            children: nodes(self.items),
-        }
+        framed(.Column, self.gap, self.pad, self.fill, self.radius, self.items)
     }
 }
 
@@ -163,11 +159,7 @@ export component row {
 
 impl View for row {
     fn node() -> Node {
-        Node {
-            role: .Row,
-            look: frame(self.gap, self.pad, self.fill, self.radius),
-            children: nodes(self.items),
-        }
+        framed(.Row, self.gap, self.pad, self.fill, self.radius, self.items)
     }
 }
 
@@ -181,11 +173,7 @@ export component section(title: string) {
 
 impl View for section {
     fn node() -> Node {
-        Node {
-            role: .Section(self.title),
-            look: frame(self.gap, self.pad, self.fill, self.radius),
-            children: nodes(self.items),
-        }
+        framed(.Section(self.title), self.gap, self.pad, self.fill, self.radius, self.items)
     }
 }
 
@@ -206,13 +194,15 @@ impl View for item {
     fn node() -> Node { Node { role: .Item, children: nodes(self.items), key: self.key } }
 }
 
-/// The look every container shares.
-fn frame(gap: Size, pad: Size, fill: Tone?, radius: Size) -> List<Setting> {
+/// A container's node: its look is the settings it was given, the fill
+/// only when it has one.
+fn framed(role: Role, gap: Size, pad: Size, fill: Tone?, radius: Size, items: List<dyn View>) -> Node {
     let sized: List<Setting> = [Setting.Gap(gap), .Pad(pad), .Radius(radius)]
-    match fill {
+    let look = match fill {
         t? -> sized.concat([Setting.Fill(t)])
         null -> sized
     }
+    Node { role: role, look: look, children: nodes(items) }
 }
 
 /// Values listed as views, each through its `Shows`: a child of a
