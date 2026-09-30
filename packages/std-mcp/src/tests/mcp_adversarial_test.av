@@ -1,0 +1,175 @@
+use @std.json.{to_text}
+use @std.action.{destructive, routine}
+use @std.mcp.{schema, handle_text, Tool}
+use @std.text.{repeat}
+
+fn quirky_tool() -> Tool {
+    Tool {
+        name: "a\"b\\c",
+        description: "line one\nline \"two\"",
+        params: [param("", .Text, false), param("k\"ey", .Integer, true)],
+        impact: routine,
+        call: echo_call,
+    }
+}
+
+fn speculative_destroyer() -> Tool { wipe_tool() with { impact: destructive with { presentation: .Speculative } } }
+
+fn nested(depth: int) -> string { repeat("[", depth) + repeat("]", depth) }
+
+spec "@std.mcp — adversarial: degenerate shapes" {
+    given "empty and single shapes" {
+        then "an empty tool list answers an unknown tool" {
+            ask_with([], calling("1", "add", "{}")) == error_of("1", "-32602", "no tool `add`")
+        }
+        then "a tool with no params takes an empty object and refuses any key" {
+            ask(calling("1", "boom", "{\"x\":1}")) == error_of("1", "-32602", "param `x` is not declared")
+        }
+        then "an empty param name is a declared name like any other" {
+            ask_with([quirky_tool()], calling("1", "a\\\"b\\\\c", "{\"\":\"v\",\"k\\\"ey\":1}"))
+                .contains("\"isError\":false")
+        }
+        then "an empty tool name is found by an empty name" {
+            ask_with([boom_tool() with { name: "" }], calling("1", "", "{}"))
+                .contains("the ledger is locked")
+        }
+        then "an empty method is an unknown method" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"\"}") == error_of("1", "-32601", "no method ``")
+        }
+        then "an empty object is an invalid request" {
+            ask("{}") == error_of("null", "-32600", "`jsonrpc` is \\\"2.0\\\"")
+        }
+        then "whitespace around a request, CRLF included, is allowed" {
+            ask(" {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\r\n") == ok_result("1", "{}")
+        }
+    }
+}
+
+spec "@std.mcp — adversarial: wrong types in every slot" {
+    given "each member of a request" {
+        then "jsonrpc as a number is refused" {
+            ask("{\"jsonrpc\":2,\"id\":1,\"method\":\"ping\"}") == error_of("1", "-32600", "`jsonrpc` is \\\"2.0\\\"")
+        }
+        then "params as a string, list or number names no tool" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\"add\"}") == error_of("1", "-32602", "`tools/call` names its tool in `name`") &&
+                ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":[\"add\"]}") == error_of("1", "-32602", "`tools/call` names its tool in `name`") &&
+                ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":3}") == error_of("1", "-32602", "`tools/call` names its tool in `name`")
+        }
+        then "arguments of every non-object type are refused" {
+            ask(calling("1", "add", "\"x\"")) == error_of("1", "-32602", "`arguments` is an object") &&
+                ask(calling("1", "add", "null")) == error_of("1", "-32602", "`arguments` is an object") &&
+                ask(calling("1", "add", "7")) == error_of("1", "-32602", "`arguments` is an object") &&
+                ask(calling("1", "add", "true")) == error_of("1", "-32602", "`arguments` is an object")
+        }
+        then "an object, list or null value for a scalar param is the wrong kind" {
+            ask(calling("1", "add", "{\"a\":{},\"b\":1}")) == error_of("1", "-32602", "param `a` must be integer") &&
+                ask(calling("1", "add", "{\"a\":[1],\"b\":1}")) == error_of("1", "-32602", "param `a` must be integer") &&
+                ask(calling("1", "say hello", "{\"s\":5}")) == error_of("1", "-32602", "param `s` must be string") &&
+                ask(calling("1", "say hello", "{\"flag\":\"true\"}")) == error_of("1", "-32602", "param `flag` must be boolean")
+        }
+        then "a tool name that is an object or null is refused" {
+            ask(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":null}}",
+            ) == error_of("1", "-32602", "`tools/call` names its tool in `name`")
+        }
+        then "a fraction as an integer argument is a parse refusal, not a value" {
+            ask(calling("1", "add", "{\"a\":1.0,\"b\":1}")).contains("\"code\":-32700")
+        }
+    }
+}
+
+spec "@std.mcp — adversarial: hostile names and values" {
+    given "prototype-shaped and escaped keys" {
+        then "`constructor`, `__proto__` and `toString` are undeclared like any other" {
+            ask(calling("1", "add", "{\"a\":1,\"b\":2,\"constructor\":1}")) == error_of("1", "-32602", "param `constructor` is not declared") &&
+                ask(calling("1", "add", "{\"__proto__\":{\"a\":1},\"a\":1,\"b\":2}")) == error_of("1", "-32602", "param `__proto__` is not declared")
+        }
+        then "an escaped spelling of a declared name is that name, so a repeat is caught" {
+            ask(calling("1", "add", "{\"\\u0061\":1,\"a\":2,\"b\":3}")) == error_of("1", "-32602", "param `a` is given more than once")
+        }
+        then "a name differing by case or a trailing space is undeclared" {
+            ask(calling("1", "add", "{\"A\":1,\"a\":1,\"b\":2}")) == error_of("1", "-32602", "param `A` is not declared") &&
+                ask(calling("1", "add", "{\"a \":1,\"a\":1,\"b\":2}")) == error_of("1", "-32602", "param `a ` is not declared")
+        }
+        then "a tool name is matched exactly, not by prefix, case or trim" {
+            ask(calling("1", "Add", "{}")) == error_of("1", "-32602", "no tool `Add`") &&
+                ask(calling("1", "ad", "{}")) == error_of("1", "-32602", "no tool `ad`") &&
+                ask(calling("1", "add ", "{}")) == error_of("1", "-32602", "no tool `add `")
+        }
+        then "an escaped NUL in a name does not match the name before it" {
+            ask(calling("1", "add\\u0000x", "{}")).contains("no tool")
+        }
+        then "a NUL inside a string argument is carried whole" {
+            let out = ask(calling("1", "say hello", "{\"s\":\"a" + "\\u0000" + "b\"}"))
+            out.contains("isError\":false") && out.contains("u0000")
+        }
+        then "unicode in an id and an argument is echoed" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":\"héllo\",\"method\":\"ping\"}") == ok_result("\"héllo\"", "{}")
+        }
+    }
+    given "names and text that need escaping in the descriptor" {
+        then "quotes, backslashes and newlines in names and descriptions are escaped" {
+            to_text(schema(quirky_tool())) == "{\"name\":\"a\\\"b\\\\c\",\"description\":\"line one\\nline \\\"two\\\"\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"\":{\"type\":\"string\"},\"k\\\"ey\":{\"type\":\"integer\"}},\"required\":[\"k\\\"ey\"],\"additionalProperties\":false}}"
+        }
+        then "a tool's own failure text is escaped inside the content" {
+            ask_with([boom_tool() with { call: quoting_call }], calling("1", "boom", "{}")) == ok_result("1", text_result("say \\\"no\\\"\\n", "true"))
+        }
+    }
+    given "sizes" {
+        then "the smallest int passes an integer param" {
+            ask(calling("1", "say hello", "{\"n\":-9223372036854775808}"))
+                .contains("isError\":false")
+        }
+        then "one past the ceiling and one past the floor are -32700" {
+            ask(calling("1", "say hello", "{\"n\":9223372036854775808}")).contains("-32700") &&
+                ask(calling("1", "say hello", "{\"n\":-9223372036854775809}")).contains("-32700")
+        }
+        then "an exponent is -32700" {
+            ask(calling("1", "say hello", "{\"n\":1e3}")).contains("-32700")
+        }
+        then "a deeply nested unread argument is refused as undeclared without trouble" {
+            ask(calling("1", "boom", "{\"x\":" + nested(300) + "}")) == error_of("1", "-32602", "param `x` is not declared")
+        }
+        then "a very long string id is echoed whole" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":\"" + repeat("x", 100000) + "\",\"method\":\"ping\"}")
+                .length == 100000 + 37
+        }
+        then "many params are all validated" {
+            let keys = ["\"k${i}\":1" for i in 0..300].join(",")
+            ask(calling("1", "boom", "{" + keys + "}")) == error_of("1", "-32602", "param `k0` is not declared")
+        }
+    }
+}
+
+spec "@std.mcp — adversarial: the mandate" {
+    given "the presentation decides, and only it" {
+        then "a destructive impact made speculative is callable" {
+            ask_with([speculative_destroyer()], calling("1", "wipe", "{}")) == ok_result("1", text_result("\\\"wiped\\\"", "false"))
+        }
+        then "a routine impact made pending is refused" {
+            ask_with(
+                [boom_tool() with { impact: routine with { presentation: .Pending } }],
+                calling("1", "boom", "{}"),
+            ) == ok_result(
+                "1",
+                text_result("`boom` requires a mandate, and this door holds none", "true"),
+            )
+        }
+        then "a mandate-refused tool still lists" {
+            ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+                .contains("\"name\":\"wipe\"")
+        }
+        then "a mandate-refused tool called as a notification is neither run nor answered" {
+            ask("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"wipe\"}}") == "(none)"
+        }
+    }
+    given "duplicate names" {
+        then "the first declaration answers the call" {
+            ask_with(
+                [boom_tool(), boom_tool() with { call: quoting_call }],
+                calling("1", "boom", "{}"),
+            )
+                .contains("ledger")
+        }
+    }
+}
