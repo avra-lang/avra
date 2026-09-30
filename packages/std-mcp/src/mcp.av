@@ -300,7 +300,11 @@ export fn route(tools: List<Tool>) -> Route {
 }
 
 fn posted(tools: List<Tool>, q: Request<Unrouted>) -> Response {
-    match handle_octets(tools, q.body) {
+    let body = match q.body.gathered() {
+        .Ok(b) -> b,
+        .Err(_) -> { return Response { status: 400 } },
+    }
+    match handle_octets(tools, body) {
         answer? -> json_reply(answer)
         null -> Response { status: 202 }
     }

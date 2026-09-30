@@ -509,7 +509,7 @@ block, and a decoder that skips one is out of step with every block after it (§
 
 The connection is one value, fed octets and read back: `fed(buf, at)` takes every whole
 frame in the buffer and answers where the next read continues; `out` is what is owed the
-peer; `ready` the requests whose streams ended. Nothing touches a socket, so a law is a
+peer; `ready` the requests whose heads arrived. Nothing touches a socket, so a law is a
 fixture over bytes, as §1's are. A 1.1 framer refusal answers a status and closes; an h2
 refusal answers a CODE (§7), on RST_STREAM or on GOAWAY — the arm is the RFC's, law by
 law, never a choice.
@@ -565,10 +565,20 @@ destroy the GOAWAY before the peer reads it.
 
 ### 5.5 Flow control (§5.2, §6.9)
 
-Every DATA octet, padding included, is charged to both windows, and a window that falls
-below half is given back whole by one WINDOW_UPDATE — so a body is paced by
-`Limits.body`, never by the window's size, and a flood of one-octet DATA frames earns one
-update per half window rather than one per frame. Sending, an answer's DATA is cut to the lesser of the connection window, the
+Every DATA octet, padding included, is charged to both windows. The CONNECTION window
+that falls below half is given back whole by one WINDOW_UPDATE, so a flood of one-octet
+DATA frames earns one update per half window rather than one per frame. A STREAM's window
+is given back only for octets its body's reader has TAKEN (`arrived`), and padding at
+once, once half a window is free — so a peer can never have more than one window of body
+in flight that nobody read, however large the body, and a request's body is read as it
+arrives through the same `Body` a 1.1 request has. A body its handler never read is no
+longer heard: what arrives is dropped, its window is never given back, and once the answer
+has ended the stream is reset with NO_ERROR (§8.1). An answer's body is given whole or
+pulled piece by piece from a `Response.stream` — only while its stream's windows are open
+and nothing is owed on it, so an answer holds one piece at most; a piece past the declared
+length, an end short of it and a producer's failure reset the stream after what it sent.
+Measured: a gigabyte down and a gigabyte up over one h2c connection in 3 MB
+(`tools/bench/h2_gigabyte`, AVRA_MEM_STATS). Sending, an answer's DATA is cut to the lesser of the connection window, the
 stream window and the peer's MAX_FRAME_SIZE; what does not fit is owed on the stream and
 sent when a WINDOW_UPDATE — or a SETTINGS that grows INITIAL_WINDOW_SIZE — opens it. A
 SETTINGS may drive a window below zero; nothing is sent until it is positive again. An
@@ -596,13 +606,15 @@ bounded work. A request reset before its handler ran is dropped unanswered.
   only as `trailers` (§8.2.1, §8.2.2). ONE value class serves both versions, so a field
   that frames over 1.1 frames over h2 and the other way round — a request cannot become a
   different request by changing the version it arrives on.
-- A declared `content-length` must equal the DATA octets received (§8.1.1).
+- A declared `content-length` must equal the DATA octets received (§8.1.1): a body is
+  refused the moment it passes it, and at its end when short of it.
 - A second HEADERS is trailers: it must end the stream and carry no pseudo-field (§8.1).
 - Each of these is PROTOCOL_ERROR on the stream: the request is malformed and never
   reaches a handler (§8.1.1).
-- A head whose decoded list passes SETTINGS_MAX_HEADER_LIST_SIZE is answered 431; a body
-  past `Limits.body` is answered 413; either stream is then reset with NO_ERROR, asking
-  the client to stop sending (§8.1).
+- A head whose decoded list passes SETTINGS_MAX_HEADER_LIST_SIZE is answered 431 and the
+  stream reset with NO_ERROR, asking the client to stop sending (§8.1). A body that broke
+  while its handler read it — past `Limits.body` when gathered, and the rest — is answered
+  by the law it broke, as over 1.1 (§6).
 
 ### 5.7 HPACK (RFC 7541)
 
@@ -652,15 +664,18 @@ bounded work. A request reset before its handler ran is dropped unanswered.
 | H24 | 1000 × (HEADERS + RST_STREAM) | GOAWAY ENHANCE_YOUR_CALM at churn 201, nothing live | §10.5; CVE-2023-44487 | H2A "rapid reset: open-then-reset past twice the stream bound is ENHANCE_YOUR_CALM, with nothing live" |
 | H25 | 300 malformed HEADERS | GOAWAY ENHANCE_YOUR_CALM | §10.5 | H2A "made-you-reset: malformed streams past the budget are ENHANCE_YOUR_CALM" |
 | H26 | 500 answered streams beside 500 reset ones | never ENHANCE_YOUR_CALM | §10.5 | H2A "a client that cancels no more than it lets finish never meets the budget" |
-| H27 | 40 000 one-octet DATA frames | two WINDOW_UPDATEs in all | §6.9; §10.5 | H2A "a flood of one-octet DATA earns one WINDOW_UPDATE per half window, not one per frame" |
+| H27 | 40 000 one-octet DATA frames nobody reads | one connection WINDOW_UPDATE, none on the stream | §6.9; §10.5 | H2A "a flood of one-octet DATA nobody reads earns one connection WINDOW_UPDATE per half window and none on the stream" |
 | H28 | INITIAL_WINDOW_SIZE 0, a GET, then PINGs forever | GOAWAY NO_ERROR once the idle deadline passes; no DATA | §6.9; §10.5 | program `h2_starved` |
 | H29 | HEADERS or DATA on a stream that ENDED both ways | GOAWAY STREAM_CLOSED | §5.1 | H2 "DATA or HEADERS on a stream that ended both ways is STREAM_CLOSED on the connection" |
 | H30 | GOAWAY then PING | the PING is answered; this end's GOAWAY follows when quiet | §6.8 | H2 "a GOAWAY from the peer is read past: a PING after it is still answered" |
 
 ### 5.9 h2spec
 
-h2spec 2.6.0 against the h2c server (`get "/"` answering 100 KB, `post "/"`), three runs:
-**145 of 146 pass, 0 skipped.** The one failure is 3.5 #2, "Sends invalid connection
+`make h2spec` runs h2spec 2.6.0 against `tools/h2spec` (every request's body read, then
+100 KB answered), in the clear and over TLS: **TLS 146 of 146; h2c 145 of 146, 0 skipped.**
+The TLS run found one defect the clear run hid by timing — a handler that had read its
+declared octets answered before the excess DATA arrived (8.1.2.6 #2) — so a body is now
+refused the moment it passes its length. The one h2c failure is 3.5 #2, "Sends invalid connection
 preface": this port serves HTTP/1.1 AND HTTP/2 by prior knowledge, so octets that are not
 the preface are a 1.1 request, and `INVALID CONNECTION PREFACE` followed by a blank line is
 answered 400 as §1 requires. h2spec expects an h2-only port. The two h2spec failures that

@@ -141,20 +141,19 @@ fn h2_sendable(r: Response) -> Response {
 /// framed.
 export type H2Side = { conn: H2Conn, buf: Bytes }
 
-/// Stream `id`'s body as it arrives over `link`, `first` already here:
-/// a declared length read to its end, anything else read until the
-/// stream ends — each read given `patience`.
+/// How stream `id`'s body is read as it arrives over `link`, `first`
+/// already here: a declared length read to its end, anything else read
+/// until the stream ends — each read given `patience`.
 export fn stream_body(
     side: Cell<H2Side>,
     link: dyn Transport,
     id: int,
     first: Bytes,
-    kind: RequestBody,
     patience: Duration,
     lim: Limits,
-) -> Body {
+) -> fn(RequestBody) -> Body {
     let t: dyn Transport = Inbound { side: side, link: link, id: id }
-    match kind {
+    (kind) -> match kind {
         .Length(n) -> measured(t, first, 0, n, no_bytes, patience, lim),
         .None or .Chunked -> until_close(t, first, 0, patience, lim),
     }

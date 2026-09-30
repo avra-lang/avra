@@ -439,8 +439,8 @@ impl H2Conn {
 
     /// One frame taken, its connection error answered with GOAWAY.
     mut fn took(f: Frame) {
-        let why: H2Error? = self.dispatched(f)
-        if why != null { self.failed(why!) }
+        let why? = self.dispatched(f) else { return }
+        self.failed(why)
     }
 
     /// The frame's law, by kind — or the connection error it broke.
@@ -625,7 +625,7 @@ impl H2Conn {
     /// (§8.1), and what it had in flight is ignored.
     mut fn refused_with(id: int, status: int) -> H2Error? {
         self.respond(id, [field(":status", "${status}")], no_bytes)
-        if self.live_at(id) != null { self.reset(id, .NoError) }
+        self.cancelled(id, .NoError)
         null
     }
 

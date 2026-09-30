@@ -3,16 +3,23 @@
 //! the user-space work a connection does per request, alone.
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, text, wire}
+use @std.http.body.{Body}
 use @std.time.{now_ns}
 
 fn served(raw: Bytes) -> int {
     match framed(raw, 0, 0, limits()) {
         .Complete(head) -> {
-            let q = Request { raw: raw, head: head, body: "".bytes(), peer: "127.0.0.1:1", params: Unrouted {} }
+            let q = Request {
+                raw: raw,
+                head: head,
+                body: Body.Empty,
+                peer: "127.0.0.1:1",
+                params: Unrouted {},
+            }
             let r = text(200, "hello")
             let out = "".bytes().concat(wire(r, head.keep_alive, head.minor))
             let rest = raw.slice(head.end, raw.length)
-            out.length + rest.length + q.body.length
+            out.length + rest.length + q.peer.length
         },
         .Partial or .Refused(_) -> 0,
     }
