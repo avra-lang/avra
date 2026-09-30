@@ -1,0 +1,387 @@
+//! body.av — an INCOMING body, read as it arrives: the one reader a
+//! handler's request body and a client's reply body both are, and the
+//! seam a multipart reader and an HTTP/2 stream's receiver build on.
+//!
+//! A body is READ, never delivered: nothing of it is taken from the
+//! connection until someone asks, so a handler that refuses a request
+//! reads none of it, and a `100 Continue` is written only when the
+//! first read finds the body not yet sent. `read` answers the next
+//! piece — what one read of the socket brought, or what of it the
+//! body's framing claims — so a body of any size costs one piece of
+//! memory; `gathered` collects it whole, bounded by `Limits.body`.
+//!
+//! A FAILURE IS KEPT: a body that broke — too large to gather, a chunk
+//! against the law, a peer gone or silent — answers the same failure to
+//! every later read, and the server reads it after the handler answers,
+//! so a handler that never looked still cannot answer over a broken
+//! body.
+use @std.errors.{Error}
+use @std.net.{NetError}
+use @std.time.{Duration, within}
+use wire.{Transport, WireError}
+use frame.{Chunker, Limits, Refusal, Decoded, chunker, unchunked, limits}
+
+/// Why a body could not be read on: it holds more than the reader may
+/// gather, it breaks a framing law, the peer ended it short or went
+/// silent past its deadline, or the socket or its secure layer failed.
+export enum BodyError {
+    TooLarge
+    Malformed(why: Refusal)
+    Closed
+    TimedOut
+    Net(e: NetError)
+    Secure(e: dyn Error)
+}
+
+/// How much of a body is still to come: a length, chunks, everything
+/// until the peer's close, or nothing.
+enum Left {
+    Length(n: int)
+    Chunked(c: Chunker)
+    UntilClose
+    Done
+}
+
+/// A body in flight: the connection it arrives on (absent when every
+/// octet is already here), the octets read and not yet handed out from
+/// `at` on, what is still to come, what is owed the peer before the
+/// first read (`100 Continue`), how long a read may wait, the bounds,
+/// how much was handed out, and the failure, once there is one.
+type Inflow = {
+    conn: dyn Transport?,
+    buf: Bytes,
+    at: int,
+    left: Left,
+    owed: Bytes,
+    patience: Duration?,
+    limits: Limits,
+    taken: int,
+    failure: BodyError?,
+}
+
+/// A request's or a reply's body: none, or one flowing in.
+export enum Body {
+    Empty
+    Flowing(flow: Cell<Inflow>)
+}
+
+/// A body whose every octet is `b` — a whole body, already read.
+export fn whole(b: Bytes) -> Body {
+    if b.is_empty() { return .Empty }
+    Body.Flowing(Cell.new(inflow(null, b, 0, Left.Length(b.length), limits(), null)))
+}
+
+/// A body of length `n` from `at` in `buf`, the rest read from `conn`
+/// with `owed` written first — each read given `patience`, or the
+/// caller's own deadline when absent.
+export fn measured(
+    conn: dyn Transport,
+    buf: Bytes,
+    at: int,
+    n: int,
+    owed: Bytes,
+    patience: Duration?,
+    lim: Limits,
+) -> Body {
+    if n == 0 { return .Empty }
+    Body.Flowing(Cell.new(inflow(conn, buf, at, Left.Length(n), lim, patience) with { owed: owed }))
+}
+
+/// A chunked body from `at` in `buf`, the rest read from `conn`.
+export fn chunked_from(
+    conn: dyn Transport,
+    buf: Bytes,
+    at: int,
+    owed: Bytes,
+    patience: Duration?,
+    lim: Limits,
+) -> Body {
+    Body
+        .Flowing(
+            Cell
+                .new(
+                    inflow(conn, buf, at, Left.Chunked(chunker(at)), lim, patience) with { owed: owed },
+                ),
+        )
+}
+
+/// A body that runs until the peer closes, from `at` in `buf`.
+export fn until_close(conn: dyn Transport, buf: Bytes, at: int, patience: Duration?, lim: Limits) -> Body {
+    Body.Flowing(Cell.new(inflow(conn, buf, at, Left.UntilClose, lim, patience)))
+}
+
+fn inflow(conn: dyn Transport?, buf: Bytes, at: int, left: Left, lim: Limits, patience: Duration?) -> Inflow {
+    Inflow {
+        conn: conn,
+        buf: buf,
+        at: at,
+        left: left,
+        owed: nothing_owed(),
+        patience: patience,
+        limits: lim,
+        taken: 0,
+        failure: null,
+    }
+}
+
+fn nothing_owed() -> Bytes { "".bytes() }
+
+impl Body {
+    /// The next piece, the calling task parked until it arrives; null
+    /// once the body has ended. A failure answers every later read too.
+    fn read() -> Result<Bytes?, BodyError> {
+        match self { .Empty -> .Ok(null), .Flowing(flow) -> next_piece(flow) }
+    }
+
+    /// The rest of the body, whole — refused as `TooLarge` once it
+    /// would pass `Limits.body`, before a byte past the bound is read;
+    /// a declared length past it is refused before ANY byte is, and no
+    /// `100 Continue` goes out.
+    fn gathered() -> Result<Bytes, BodyError> {
+        match self { .Empty -> .Ok(nothing_owed()), .Flowing(flow) -> all_of(flow) }
+    }
+
+    /// The rest of the body as text — absent when it is not text, or
+    /// could not be gathered (`gathered` says why).
+    fn text() -> string? {
+        match self.gathered() { .Ok(b) -> b.text(), .Err(_) -> null }
+    }
+
+    /// The failure that ended this body, or absent while it has none.
+    fn failure() -> BodyError? {
+        match self { .Empty -> null, .Flowing(flow) -> flow.get().failure }
+    }
+
+    /// Whether every octet of the body has been read.
+    fn finished() -> bool {
+        match self { .Empty -> true, .Flowing(flow) -> flow.get().left is .Done }
+    }
+
+    /// The rest of the body read and dropped, up to `bound` octets —
+    /// whether it ended within the bound. A body whose peer was never
+    /// told to send it (its `100 Continue` still owed) is not waited
+    /// for: false.
+    fn skipped(bound: int) -> bool {
+        match self { .Empty -> true, .Flowing(flow) -> skipped_in(flow, bound) }
+    }
+
+    /// This body cut from its connection: every later read answers
+    /// what is already here and then `Closed`, and none reaches the
+    /// socket — which, once its connection has moved on, carries
+    /// another message's octets, or another connection's.
+    fn detached() {
+        let flow? = self.flowing() else { return }
+        flow.set(flow.get() with { conn: null })
+    }
+
+    /// The body's flow, absent for a body of nothing.
+    fn flowing() -> Cell<Inflow>? {
+        match self { .Flowing(flow) -> flow, .Empty -> null }
+    }
+
+    /// What the connection read past this body: the next message's
+    /// first octets. Asked once the body is finished.
+    fn tail() -> Bytes {
+        match self { .Empty -> nothing_owed(), .Flowing(flow) -> tail_of(flow.get()) }
+    }
+}
+
+// ── Reading ─────────────────────────────────────────────────────
+
+/// The next piece of the body `flow` holds: what is already here when
+/// the framing claims some, else a read from the connection and again.
+fn next_piece(flow: Cell<Inflow>) -> Result<Bytes?, BodyError> {
+    while true {
+        let f = flow.get()
+        if f.failure != null { return .Err(f.failure!) }
+        let got: Pull = here(flow, f)
+        match got {
+            .Piece(b) -> { return .Ok(b) },
+            .End -> { return .Ok(null) },
+            .Broke(e) -> { return failed(flow, flow.get(), e) },
+            .Wanting -> {
+                let refilled = refill(flow.get())
+                if refilled.failure != null { return failed(flow, refilled, refilled.failure!) }
+                flow.set(refilled)
+            },
+        }
+    }
+    .Ok(null)
+}
+
+/// What the octets already here give: a piece, the end, a broken law,
+/// or nothing until more are read.
+enum Pull {
+    Piece(b: Bytes)
+    End
+    Broke(e: BodyError)
+    Wanting
+}
+
+/// The next piece from the octets already read, the flow advanced past it.
+fn here(flow: Cell<Inflow>, f: Inflow) -> Pull {
+    let unread = f.buf.length - f.at
+    match f.left {
+        .Done -> .End,
+        .Length(n) -> if unread > 0 { Pull.Piece(sized_piece(flow, f, n)) } else { Pull.Wanting },
+        .UntilClose -> if unread > 0 { Pull.Piece(sized_piece(flow, f, unread)) } else { Pull.Wanting },
+        .Chunked(c) -> chunk_here(flow, f, c),
+    }
+}
+
+fn chunk_here(flow: Cell<Inflow>, f: Inflow, c: Chunker) -> Pull {
+    match unchunked(c, f.buf, f.limits.stream, f.limits) {
+        .Piece(b, next) -> {
+            flow.set(f with { left: .Chunked(next), taken: f.taken + b.length })
+            Pull.Piece(b)
+        },
+        .Done(end) -> {
+            flow.set(f with { at: end, left: .Done })
+            Pull.End
+        },
+        .Refused(why) -> Pull.Broke(refusal_error(why)),
+        .More(next) -> {
+            flow.set(f with { left: .Chunked(next) })
+            Pull.Wanting
+        },
+    }
+}
+
+/// The octets already here, up to the `n` still owed, handed out.
+fn sized_piece(flow: Cell<Inflow>, f: Inflow, n: int) -> Bytes {
+    let here = f.buf.length - f.at
+    let k = if here < n { here } else { n }
+    let left: Left = match f.left {
+        .Length(_) -> if k == n { Left.Done } else { Left.Length(n - k) },
+        .Chunked(_) or .UntilClose or .Done -> f.left,
+    }
+    flow.set(f with { at: f.at + k, left: left, taken: f.taken + k })
+    f.buf.slice(f.at, f.at + k)
+}
+
+/// A refusal the chunk law made, as a body's failure: past the bound
+/// is too large, anything else malformed.
+fn refusal_error(why: Refusal) -> BodyError {
+    if why == Refusal.BodyLength { return .TooLarge }
+    .Malformed(why)
+}
+
+/// The failure kept, and answered.
+fn failed(flow: Cell<Inflow>, f: Inflow, e: BodyError) -> Result<Bytes?, BodyError> {
+    flow.set(f with { failure: e })
+    .Err(e)
+}
+
+/// More octets read from the connection onto what is unread — the
+/// handed-out prefix dropped as they land, so the buffer holds one read
+/// and what the body has not yet taken — with what is owed the peer
+/// written first. A peer that ends first ends a body read to the close,
+/// and cuts any other short.
+fn refill(f: Inflow) -> Inflow {
+    let c? = f.conn else { return ended(f) }
+    if !f.owed.is_empty() {
+        match wrote(c, f.owed, f.patience) {
+            .Ok(_) -> {},
+            .Err(e) -> { return f with { failure: wire_error(e) } },
+        }
+    }
+    let kept = f with { owed: nothing_owed() }
+    match listened(c, f.patience) {
+        .Ok(b) -> if b == null { ended(kept) } else { rebased(kept, b!) },
+        .Err(e) -> kept with { failure: wire_error(e) },
+    }
+}
+
+/// One read, given `patience` — or the caller's own deadline when absent.
+fn listened(c: dyn Transport, patience: Duration?) -> Result<Bytes?, WireError> {
+    let d? = patience else { return c.wire_read(read_size()) }
+    within d { c.wire_read(read_size()) }
+}
+
+/// `b` written whole, given `patience` — or the caller's own deadline.
+fn wrote(c: dyn Transport, b: Bytes, patience: Duration?) -> Result<int, WireError> {
+    let d? = patience else { return c.wire_write(b) }
+    within d { c.wire_write(b) }
+}
+
+/// What reaches the peer's end: a body read to the close is done, any
+/// other is cut short.
+fn ended(f: Inflow) -> Inflow {
+    match f.left {
+        .UntilClose -> f with { left: .Done },
+        .Done -> f,
+        .Length(_) or .Chunked(_) -> f with { failure: BodyError.Closed },
+    }
+}
+
+/// `got` landed after the unread octets; everything before them is
+/// gone, so the unread begin the buffer.
+fn rebased(f: Inflow, got: Bytes) -> Inflow {
+    let from = unread_from(f)
+    let left: Left = match f.left {
+        .Chunked(c) -> Left.Chunked(c with { at: c.at - from }),
+        .Length(_) or .UntilClose or .Done -> f.left,
+    }
+    f with { buf: f.buf.slice(from, f.buf.length).concat(got), at: 0, left: left }
+}
+
+/// Where the octets not yet handed out begin.
+fn unread_from(f: Inflow) -> int {
+    match f.left { .Chunked(c) -> c.at, .Length(_) or .UntilClose or .Done -> f.at }
+}
+
+/// A transport's failure as the body's: a socket's deadline is
+/// `TimedOut`, every other failure carried whole.
+fn wire_error(e: WireError) -> BodyError {
+    match e { .Net(n) -> if n.timed_out() { .TimedOut } else { .Net(n) }, .Secure(s) -> .Secure(s) }
+}
+
+// ── Gathering, skipping, the tail ───────────────────────────────
+
+/// Every piece still to come, in one buffer — bounded by `Limits.body`.
+fn all_of(flow: Cell<Inflow>) -> Result<Bytes, BodyError> {
+    let f = flow.get()
+    if too_long(f) {
+        flow.set(f with { failure: BodyError.TooLarge })
+        return .Err(.TooLarge)
+    }
+    let first? = next_piece(flow)? else { return .Ok(nothing_owed()) }
+    mut all = first
+    while true {
+        let more? = next_piece(flow)? else { return .Ok(all) }
+        if all.length + more.length > f.limits.body {
+            flow.set(flow.get() with { failure: BodyError.TooLarge })
+            return .Err(.TooLarge)
+        }
+        all = all.concat(more)
+    }
+    .Ok(all)
+}
+
+/// Whether what is still owed already passes the gathered bound.
+fn too_long(f: Inflow) -> bool {
+    match f.left {
+        .Length(n) -> f.taken + n > f.limits.body,
+        .Chunked(_) or .UntilClose or .Done -> false,
+    }
+}
+
+fn skipped_in(flow: Cell<Inflow>, bound: int) -> bool {
+    let f = flow.get()
+    if f.failure != null { return false }
+    if !f.owed.is_empty() { return false }
+    let start = f.taken
+    while true {
+        match next_piece(flow) {
+            .Ok(b) -> {
+                if b == null { return true }
+                if flow.get().taken - start > bound { return false }
+            },
+            .Err(_) -> { return false },
+        }
+    }
+    false
+}
+
+/// The octets read past a finished body.
+fn tail_of(f: Inflow) -> Bytes { f.buf.slice(f.at, f.buf.length) }

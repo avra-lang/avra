@@ -12,6 +12,7 @@
 use frame.{Limits, Method, framed, status_of, no_bytes, admits}
 use hpack.{HeaderField, field}
 use h2.{Exchange, H2Conn, pseudo_of, value_at, connect_word, connection_specific}
+use body.{whole}
 use http.{Request, Unrouted, Response, as_sent, status}
 
 /// The 1.1 head a request's fields mean: the method and target — the
@@ -54,7 +55,7 @@ export fn scheme_of(x: Exchange) -> Bytes? {
 export fn request_of(x: Exchange, peer: string, limits: Limits) -> Result<Request<Unrouted>, int> {
     let raw = head_text(x.fields)
     match framed(raw, 0, 0, limits) {
-        .Complete(head) -> .Ok(Request { raw: raw, head: head, body: x.body, peer: peer, params: Unrouted {} }),
+        .Complete(head) -> .Ok(Request { raw: raw, head: head, body: whole(x.body), peer: peer, params: Unrouted {} }),
         .Refused(why) -> .Err(status_of(why)),
         .Partial -> .Err(400),
     }

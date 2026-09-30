@@ -25,10 +25,11 @@
 //! is.
 //!
 //! A connection's whole state is a `Link`: its transport, the bytes read
-//! and not yet consumed, how far the head scan reached, the head
-//! awaiting its body, the chunked decoder in flight, the output owed,
-//! whether the connection closes after this response, and how many
-//! requests it has served. Nothing else is needed (the framing laws,
+//! and not yet consumed, how far the head scan reached, the output
+//! owed, whether the connection closes after this response, and how
+//! many requests it has served. A request's body in flight is the
+//! request's own (`body.av`), read on this connection's task by the
+//! handler that asks for it. Nothing else is needed (the framing laws,
 //! §3.2).
 //!
 //! THE LAWS A CONNECTION HOLDS: responses go out in the order requests
@@ -36,14 +37,41 @@
 //! a refusal is answered with its status and `connection: close`, then
 //! the write side is shut and the socket closed; a peer's FIN is not a
 //! request delimiter and not disinterest — an owed response is still
-//! written; a `100 Continue` is written when a body is expected and
-//! none of it has arrived; a HEAD carries the body's length and none of
+//! written; the handler runs once its head is here and reads the body
+//! as it asks, and a `100 Continue` is written before its first read
+//! when none of the body has arrived — never for a body nobody reads;
+//! a body the handler left is dropped up to the gathered bound, else
+//! the connection closes behind the answer; a body that broke is
+//! answered by the law it broke, never by the handler; a HEAD carries the body's length and none of
 //! its bytes; a connection silent past the deadline its state names is
-//! dropped.
+//! dropped; a streamed response is pulled one piece at a time, each
+//! written before the next is asked for, and a stream that breaks after
+//! its head ends the connection with no second status; a `101` hands
+//! the connection to its upgrade, on this same task, and no more of it
+//! is read as HTTP.
 use @std.net.{Listener, Conn, NetError, listen}
-use @std.time.{Duration, ms, secs, within, now_ms}
-use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
-use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
+use @std.time.{Duration, ms, secs, sleep, now_ms, within}
+use frame.{Head, Limits, ReplyBody, framed, status_of, limits}
+use body.{Body, measured, chunked_from}
+use http.{
+    Request,
+    Unrouted,
+    Response,
+    Stream,
+    Upgrade,
+    upgrade_head,
+    wire,
+    status,
+    read_size,
+    sendable,
+    released,
+    delimited,
+    head_of,
+    piece_on_wire,
+    body_end,
+    within_length,
+    completes,
+}
 use wire.{Transport, Secure, plainly}
 use route.{Route, compiled, dispatch}
 use h2.{H2Conn, Exchange, h2_server, preface}
@@ -85,8 +113,6 @@ type Link = {
     peer: string,
     buf: Bytes,
     scanned: int,
-    head: Head?,
-    decoder: Chunker?,
     out: Bytes,
     closing: bool,
     served: int,
@@ -358,8 +384,6 @@ impl Serving {
             peer: c.wire_peer(),
             buf: "".bytes(),
             scanned: 0,
-            head: null,
-            decoder: null,
             out: "".bytes(),
             closing: false,
             served: 0,
@@ -389,85 +413,150 @@ impl Serving {
     /// request was served, so another may follow.
     mut fn stepped(mut l: Link) -> bool {
         if l.closing || awaits_preface(l) { return false }
-        if l.head == null { return self.framing(l) }
-        self.bodied(l, l.head!)
-    }
-
-    /// The head framed from the buffer's start, or waited for, or
-    /// refused with its status and a close.
-    mut fn framing(mut l: Link) -> bool {
         match framed(l.buf, 0, l.scanned, self.limits) {
             .Partial -> waited(l),
             .Refused(why) -> refused(l, status_of(why)),
             .Complete(head) -> {
-                l.head = head
                 l.scanned = 0
-                self.headed(l, head)
+                self.answered(l, head)
             },
         }
     }
 
-    /// A head in hand: a body-less request is served now; a body is
-    /// awaited, with `100 Continue` written when it was asked for and
-    /// none of it has arrived.
-    mut fn headed(mut l: Link, head: Head) -> bool {
-        match head.body {
-            .None -> self.answered(l, head, "".bytes(), head.end),
-            .Length(_) or .Chunked -> {
-                continued(l, head)
-                self.bodied(l, head)
-            },
+    /// The request answered by the handler and its response queued.
+    /// The handler runs ONCE ITS HEAD IS HERE, and reads the body as it
+    /// asks for it; what it did not read is read and dropped after —
+    /// or the connection closes, when that is more than a gathered body
+    /// may hold or its peer was never told to send it. A body that
+    /// broke is answered by the law it broke, never by the handler;
+    /// what the connection read past it is framed next. Whatever this
+    /// link owes is written before a body is read, so an earlier
+    /// answer never waits behind a later request's body.
+    mut fn answered(mut l: Link, head: Head) -> bool {
+        let body = self.body_of(l, head)
+        if !(head.body is .None) {
+            if !self.flushed(l) { return parted_early(l) }
+            l.out = "".bytes()
         }
-    }
-
-    /// The body gathered when the buffer holds it whole.
-    mut fn bodied(mut l: Link, head: Head) -> bool {
-        match head.body {
-            .None -> self.answered(l, head, "".bytes(), head.end),
-            .Length(n) -> if l.buf.length < head.end + n { false } else { self.answered(l, head, l.buf.slice(head.end, head.end + n), head.end + n) },
-            .Chunked -> self.chunked(l, head),
-        }
-    }
-
-    mut fn chunked(mut l: Link, head: Head) -> bool {
-        match fed(l.decoder ?? chunker(head.end), l.buf, self.limits) {
-            .More(c) -> {
-                l.decoder = c
-                false
-            },
-            .Refused(why) -> refused(l, status_of(why)),
-            .Done(body, end) -> {
-                l.decoder = null
-                self.answered(l, head, body, end)
-            },
-        }
-    }
-
-    /// The request answered by the handler and its response queued;
-    /// the consumed bytes leave the buffer so a pipelined tail is
-    /// framed next.
-    mut fn answered(mut l: Link, head: Head, body: Bytes, end: int) -> bool {
         let q = Request { raw: l.buf, head: head, body: body, peer: l.peer, params: Unrouted {} }
-        let r = self.answer(q, q.scheme(), l.conn.wire_secured())
+        let sent = judged(self.answer(q, q.scheme(), l.conn.wire_secured()))
         l.served = l.served + 1
-        let keep = head.keep_alive && l.served < self.timing.requests
-        l.out = l.out.concat(wired(r, keep, head))
-        l.buf = l.buf.slice(end, l.buf.length)
-        l.scanned = 0
-        l.head = null
+        let after = after_body(body, head, l.buf, self.limits)
+        body.detached()
+        match after {
+            .Next(tail) -> self.replied(l, sent, head, tail, true),
+            .Close -> self.replied(l, sent, head, "".bytes(), false),
+            .Refuse(code) -> {
+                released(sent)
+                refused(l, code)
+            },
+            .Gone -> {
+                released(sent)
+                parted_early(l)
+            },
+        }
+    }
+
+    /// The body of the request `head` frames, read from this link as
+    /// the handler asks — each read given the body deadline, and a
+    /// `100 Continue` owed when it was asked for and none of the body
+    /// has arrived.
+    fn body_of(l: Link, head: Head) -> Body {
+        let owed = if head.expects_continue && l.buf.length <= head.end { continue_line() } else { "".bytes() }
+        match head.body {
+            .None -> Body.Empty,
+            .Length(n) -> measured(l.conn, l.buf, head.end, n, owed, self.timing.body, self.limits),
+            .Chunked -> chunked_from(l.conn, l.buf, head.end, owed, self.timing.body, self.limits),
+        }
+    }
+
+    /// `sent` queued — or poured, when it streams — with `tail` framed
+    /// next; the connection kept only when `open` and the request and
+    /// the response both allow it.
+    fn replied(mut l: Link, sent: Response, head: Head, tail: Bytes, open: bool) -> bool {
+        let delim = delimited(sent, head.minor)
+        let keep = open &&
+            head.keep_alive &&
+            l.served < self.timing.requests &&
+            !(delim is .UntilClose)
+        l.buf = tail
         l.closing = !keep
+        if sent.upgrade != null { return self.handed(l, sent, sent.upgrade!) }
+        match sent.stream {
+            s? -> self.poured(l, head_of(sent, delim, keep, head.minor), s, delim, head)
+            null -> { l.out = l.out.concat(wired(sent, delim, keep, head)) }
+        }
         true
+    }
+
+    /// A 101 WRITTEN AND THE CONNECTION HANDED OVER: the head after
+    /// whatever this link owes, then `up` runs here, on this task, with
+    /// the socket and what the peer sent past its request. Nothing more
+    /// is read as HTTP; the connection ends when `up` returns.
+    fn handed(mut l: Link, sent: Response, up: Upgrade) -> bool {
+        let owed = l.out.concat(upgrade_head(sent))
+        l.out = "".bytes()
+        l.closing = true
+        if self.sent(l.conn, owed) { up.run(l.conn, l.buf) }
+        l.buf = "".bytes()
+        false
+    }
+
+    /// A STREAMED RESPONSE WRITTEN: its head after whatever this link
+    /// already owes, then each piece — a HEAD's answer ends at its head,
+    /// the stream released unpulled. A stream that did not go out whole
+    /// ends the connection: the head has spoken, so no second status
+    /// follows it.
+    fn poured(mut l: Link, said: Bytes, s: Stream, delim: ReplyBody, asked: Head) {
+        let owed = l.out.concat(said)
+        l.out = "".bytes()
+        let whole = if asked.method is .Head { self.sent(l.conn, owed) } else { self.pumped(l.conn, owed, s, delim) }
+        s.ended()
+        if !whole { l.closing = true }
+    }
+
+    /// `owed`, then every piece `s` answers, each pulled only once the
+    /// last is written and each written as soon as it is pulled — a
+    /// piece is a flush. Whether the body went out whole: a producer's
+    /// failure, a piece past its length, an end short of it, and a peer
+    /// that takes nothing within the idle deadline each answer false.
+    ///
+    /// NO STREAM HOLDS THE CORE OR THE CONNECTION PAST AN IDLE ONE'S LIFE.
+    /// Every pull is given the idle deadline, so a producer parked on a
+    /// source gone quiet fails its own wait; a producer answering empty
+    /// pieces is as quiet as one answering nothing, and is cut by the
+    /// same clock; and every piece yields, so a peer fast enough never
+    /// to fill the socket still leaves the other connections their turn.
+    fn pumped(c: dyn Transport, owed: Bytes, s: Stream, delim: ReplyBody) -> bool {
+        if !self.sent(c, owed) { return false }
+        mut total = 0
+        mut heard = now_ms()
+        while true {
+            match within self.timing.idle { s.pull() } {
+                .Data(b) -> {
+                    total = total + b.length
+                    if !within_length(delim, total) || !self.sent(c, piece_on_wire(b, delim)) { return false }
+                    if !b.is_empty() { heard = now_ms() }
+                    if now_ms() - heard > self.timing.idle.ms { return false }
+                    sleep(ms(0))
+                },
+                .End -> { return completes(delim, total) && self.sent(c, body_end(delim)) },
+                .Failed -> { return false },
+            }
+        }
+        false
+    }
+
+    /// `b` written whole within the idle deadline — nothing to write is
+    /// written at once.
+    fn sent(c: dyn Transport, b: Bytes) -> bool {
+        if b.is_empty() { return true }
+        match within self.timing.idle { c.wire_write(b) } { .Ok(_) -> true, .Err(_) -> false }
     }
 
     /// What the link owes written whole — false when the peer takes
     /// none of it within the idle deadline, or the socket fails.
-    fn flushed(l: Link) -> bool {
-        if l.out.is_empty() { return true }
-        match within self.timing.idle { l.conn.wire_write(l.out) } {
-            .Ok(_) -> true,
-            .Err(_) -> false,
-        }
-    }
+    fn flushed(l: Link) -> bool { self.sent(l.conn, l.out) }
 
     /// The write side shut after the last byte, the socket closed.
     fn parted(l: Link) -> int {
@@ -481,15 +570,12 @@ impl Serving {
         l.conn.wire_fd()
     }
 
-    /// How long this link may stay silent, in ms: a body in flight is
-    /// owed the body deadline, a head half-arrived the head's, an idle
-    /// keep-alive connection the idle one.
+    /// How long this link may stay silent, in ms: a head half-arrived
+    /// is owed the head deadline, an idle keep-alive connection the idle
+    /// one. A body is read under its own deadline, by whoever reads it.
     fn deadline(l: Link) -> int {
-        when {
-            l.head != null -> self.timing.body.ms
-            l.buf.length > 0 -> self.timing.head.ms
-            _ -> self.timing.idle.ms
-        }
+        if l.buf.length > 0 { return self.timing.head.ms }
+        self.timing.idle.ms
     }
 }
 
@@ -615,20 +701,49 @@ fn waited(mut l: Link) -> bool {
     false
 }
 
-/// A refused head: its status, `connection: close`, and no more
+/// A refused request: its status, `connection: close`, and no more
 /// requests read from this connection.
 fn refused(mut l: Link, code: int) -> bool {
     l.out = l.out.concat(wire(status(code), false, 1))
     l.closing = true
-    l.head = null
     l.buf = "".bytes()
     true
 }
 
-/// `100 Continue` owed, when the request asked for it and none of its
-/// body has arrived.
-fn continued(mut l: Link, head: Head) {
-    if head.expects_continue && l.buf.length <= head.end { l.out = l.out.concat(continue_line()) }
+/// A peer gone mid-body: nothing more is read, and nothing answered.
+fn parted_early(mut l: Link) -> bool {
+    l.closing = true
+    l.buf = "".bytes()
+    false
+}
+
+/// What follows a request's body once its handler has answered: the
+/// next request's octets, a close behind the answer, the status of the
+/// law a broken body broke in place of the answer, or nothing at all —
+/// the peer having gone.
+enum After {
+    Next(tail: Bytes)
+    Close
+    Refuse(code: int)
+    Gone
+}
+
+/// What follows `body`, of the request `head` framed from `buf`: a body
+/// that broke while the handler read it is answered by its own law; one
+/// left unread is dropped up to the gathered bound, else the connection
+/// closes behind the answer.
+fn after_body(body: Body, head: Head, buf: Bytes, lim: Limits) -> After {
+    if body is .Empty { return .Next(buf.slice(head.end, buf.length)) }
+    let broke? = body.failure() else {
+        if body.finished() || body.skipped(lim.body) { return .Next(body.tail()) }
+        return .Close
+    }
+    match broke {
+        .TooLarge -> .Refuse(413),
+        .Malformed(why) -> .Refuse(status_of(why)),
+        .TimedOut -> .Refuse(408),
+        .Closed or .Net(_) or .Secure(_) -> .Gone,
+    }
 }
 
 /// The bytes a read brought, or — at the peer's end — a link that
@@ -641,16 +756,20 @@ fn heard(mut l: Link, b: Bytes?) {
     l.buf = l.buf.concat(got)
 }
 
-/// The response on the wire for a request: a HEAD's answer carries
-/// the body's length and none of its bytes.
-///
-/// IT MEASURES THE BODY OF THE RESPONSE THAT WAS WRITTEN, never the
-/// handler's — `wire` answers the server's own 500 for a response no
-/// peer could read, and measuring the handler's body against that
-/// wire cuts the head mid-field.
-fn wired(r: Response, keep: bool, head: Head) -> Bytes {
-    let whole = wire(r, keep, head.minor)
-    // only a HEAD measures the body it does not send
-    if head.method is .Head { return whole.slice(0, whole.length - as_sent(r).body.length) }
-    whole
+/// The handler's answer as it will be written: itself when a peer
+/// could read it, the server's own 500 when not — and a stream the 500
+/// replaced is released, never pulled. Judged ONCE per request, and
+/// every reader of the wire after reads what this answers.
+fn judged(r: Response) -> Response {
+    if sendable(r) { return r }
+    released(r)
+    status(500)
+}
+
+/// A whole response on the wire for a request: its head, then its body
+/// — none of it for a HEAD, whose head still carries the length.
+fn wired(sent: Response, delim: ReplyBody, keep: bool, head: Head) -> Bytes {
+    mut w = head_of(sent, delim, keep, head.minor)
+    if !(head.method is .Head) { w = w.concat(sent.body) }
+    w
 }

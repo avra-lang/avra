@@ -16,6 +16,7 @@ use @std.http.h2.{
     frames_in,
 }
 use @std.http.hpack.{HeaderField, Decoder, field, encoder, decoder}
+use @std.http.body.{Body}
 use @std.http.frame.{limits, Method, no_bytes}
 use @std.http.http.{Response, Header, text}
 
@@ -96,7 +97,7 @@ spec "std.http h2 serve" {
             ) {
                 .Ok(q) -> q.path()! == "/p".bytes() &&
                     q.header("X-Who") == "ana" &&
-                    q.body == "hi".bytes() &&
+                    gathered_text(q.body) == "hi" &&
                     q.head.method == Method.Get,
                 .Err(_) -> false,
             }
@@ -163,4 +164,9 @@ spec "std.http h2 serve" {
         }
         then "folding lowercases ASCII letters alone" { folded("Content-Type-É".bytes()) == "content-type-É".bytes() }
     }
+}
+
+/// A body read whole, as text — or `!` when it broke.
+fn gathered_text(b: Body) -> string {
+    match b.gathered() { .Ok(x) -> x.text() ?? "?", .Err(_) -> "!" }
 }

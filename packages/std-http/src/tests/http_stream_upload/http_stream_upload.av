@@ -1,0 +1,60 @@
+//! proves: a gigabyte streams in in bounded memory — the handler runs
+//! once the head is here and reads the body a piece at a time, each no
+//! larger than one read of the socket, so the upload flows through a
+//! sink and nothing gathers
+use @std.net.{NetError, listen, connect}
+use @std.time.{secs, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.body.{Body}
+use @std.http.server.{served, timing}
+
+type App = {}
+
+fn pieces() -> int { 16384 }
+fn piece_size() -> int { 65536 }
+
+once fn piece() -> Bytes { [120 for _i in 0..piece_size()].bytes()! }
+
+/// Every piece of `b` poured into a sink that only counts: the octets,
+/// and whether any piece was larger than one read.
+fn poured(b: Body) -> string {
+    mut total = 0
+    mut largest = 0
+    while true {
+        match b.read() {
+            .Ok(p) -> {
+                let got? = p else { return "${total} octets, no piece past one read: ${largest <= 16384}" }
+                total = total + got.length
+                if got.length > largest { largest = got.length }
+            },
+            .Err(_) -> { return "failed after ${total}" },
+        }
+    }
+    "?"
+}
+
+/// A gigabyte sent by length, a piece at a time; the reply's last line.
+fn uploaded(port: int) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c
+        .write(
+            "POST /up HTTP/1.1\r\nHost: a\r\nContent-Length: ${pieces() * piece_size()}\r\n\r\n"
+                .bytes(),
+        )?
+    for _i in 0..pieces() { c.write(piece())? }
+    let got? = within secs(20) { c.read(4096) }? else { return .Ok("no reply") }
+    let _ = c.close()
+    let t = got.text() ?? ""
+    .Ok(t.substring(t.index_of("\r\n\r\n") + 4, t.length))
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), timing()) { _app, q -> text(200, poured(q.body)) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    uploaded(l.port)
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -1,7 +1,18 @@
 // The framer against the attack table of the framing-laws paper: every
 // row's bytes go in, the law's verdict comes out. A `then` asserts the
 // arm, the status, or the framed value it produced, never a disjunction.
-use @std.http.frame.{framed, chunker, fed, limits, status_of, Chunker, Refusal, Method, Body, Head}
+use @std.http.frame.{
+    framed,
+    chunker,
+    fed,
+    limits,
+    status_of,
+    Chunker,
+    Refusal,
+    Method,
+    RequestBody,
+    Head,
+}
 
 /// A 1.1 request line with a Host, then `more` lines, then the blank
 /// line — the fixture this suite and the adversarial one share.
@@ -24,7 +35,7 @@ fn status(b: Bytes) -> int { status_of(why(b)!) }
 fn length_of(h: Head) -> int { body_length(h.body) }
 
 /// The declared length, -1 for no body and -2 for chunked.
-fn body_length(b: Body) -> int {
+fn body_length(b: RequestBody) -> int {
     match b { .Length(n) -> n, .Chunked -> -2, .None -> -1 }
 }
 
@@ -199,8 +210,11 @@ spec "std.http frame" {
         then "trailing OWS is not part of the number" {
             length_of(head_of(req("Content-Length: 5 \r\n"))!) == 5
         }
-        then "a length past the body bound is 413" {
-            status(req("Content-Length: 1048577\r\n")) == 413
+        then "a length past the stream bound is 413" {
+            status(req("Content-Length: 1073741825\r\n")) == 413
+        }
+        then "a length past the gathered bound but within the stream bound frames, since it may be read in pieces" {
+            length_of(head_of(req("Content-Length: 1048577\r\n"))!) == 1048577
         }
     }
     given "transfer-encoding (rows 29 to 34)" {

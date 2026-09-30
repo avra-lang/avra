@@ -6,6 +6,7 @@
 use @std.http.frame.{framed, limits, Method}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Table, fixed, compiled, dispatch}
+use @std.http.body.{Body}
 
 fn serve_admin(q: Request<Unrouted>) -> Response { text(200, "admin@${q.authority() ?? "-"}") }
 fn serve_root(q: Request<Unrouted>) -> Response { text(200, "root") }
@@ -17,7 +18,7 @@ once fn routes() -> Table {
 fn asked(line: string) -> Request<Unrouted>? {
     let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
     match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "c", params: Unrouted {} },
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "c", params: Unrouted {} },
         .Partial or .Refused(_) -> null,
     }
 }

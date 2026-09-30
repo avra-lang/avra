@@ -18,7 +18,7 @@ use @std.http.hpack.{
 }
 
 /// A block of these octets.
-fn octets(xs: List<int>) -> Bytes { xs.bytes()! }
+fn octets_of(xs: List<int>) -> Bytes { xs.bytes()! }
 
 /// The law a block broke, against a fresh default decoder — or null.
 fn refusal_of(block: Bytes) -> HpackRefusal? {
@@ -54,7 +54,7 @@ fn huffman_refusal(b: Bytes) -> HpackRefusal? {
 /// A literal with incremental indexing, new name `name`, raw value of
 /// `n` copies of `a`.
 fn kept_literal(name: string, n: int) -> Bytes {
-    octets([64])
+    octets_of([64])
         .concat(string_literal(name.bytes(), false))
         .concat(string_literal([97 for i in 0..n].bytes()!, false))
 }
@@ -66,57 +66,58 @@ spec "std.http hpack adversarial" {
                 int_refusal(integer(int_bound + 1, 7, 0), 7) == HpackRefusal.Integer
         }
         then "a 64-bit overflow is refused, not wrapped" {
-            int_refusal(octets([127, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1]), 7) == HpackRefusal.Integer
+            int_refusal(octets_of([127, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1]), 7) == HpackRefusal.Integer
         }
         then "a flood of zero continuations is refused at the sixth" {
-            int_refusal(octets([127, 128, 128, 128, 128, 128, 0]), 7) == HpackRefusal.Integer &&
-                int_value(octets([127, 128, 128, 128, 128, 0]), 7) == 127
+            int_refusal(octets_of([127, 128, 128, 128, 128, 128, 0]), 7) == HpackRefusal.Integer &&
+                int_value(octets_of([127, 128, 128, 128, 128, 0]), 7) == 127
         }
         then "an integer the block ends inside is truncated" {
-            int_refusal(octets([127]), 7) == HpackRefusal.Truncated &&
-                int_refusal(octets([127, 200]), 7) == HpackRefusal.Truncated &&
-                int_refusal(octets([]), 7) == HpackRefusal.Truncated
+            int_refusal(octets_of([127]), 7) == HpackRefusal.Truncated &&
+                int_refusal(octets_of([127, 200]), 7) == HpackRefusal.Truncated &&
+                int_refusal(octets_of([]), 7) == HpackRefusal.Truncated
         }
     }
     given "indices" {
-        then "index zero is refused" { refusal_of(octets([128])) == HpackRefusal.Index }
+        then "index zero is refused" { refusal_of(octets_of([128])) == HpackRefusal.Index }
         then "the first index past an empty dynamic table is refused" {
-            refusal_of(octets([190])) == HpackRefusal.Index && refusal_of(octets([189])) == null
+            refusal_of(octets_of([190])) == HpackRefusal.Index &&
+                refusal_of(octets_of([189])) == null
         }
         then "a literal naming a missing index is refused" {
-            refusal_of(octets([126, 1, 97])) == HpackRefusal.Index &&
-                refusal_of(octets([15, 47, 1, 97])) == HpackRefusal.Index
+            refusal_of(octets_of([126, 1, 97])) == HpackRefusal.Index &&
+                refusal_of(octets_of([15, 47, 1, 97])) == HpackRefusal.Index
         }
         then "an index past int_bound is an integer refusal, not an index one" {
-            refusal_of(octets([255, 255, 255, 255, 255, 255, 1])) == HpackRefusal.Integer
+            refusal_of(octets_of([255, 255, 255, 255, 255, 255, 1])) == HpackRefusal.Integer
         }
     }
     given "strings" {
         then "a length past the block's end is truncated" {
-            refusal_of(octets([64, 10, 97, 98])) == HpackRefusal.Truncated &&
-                refusal_of(octets([4, 5, 97])) == HpackRefusal.Truncated
+            refusal_of(octets_of([64, 10, 97, 98])) == HpackRefusal.Truncated &&
+                refusal_of(octets_of([4, 5, 97])) == HpackRefusal.Truncated
         }
         then "a block ending after a literal's name is truncated" {
-            refusal_of(octets([64, 1, 97])) == HpackRefusal.Truncated
+            refusal_of(octets_of([64, 1, 97])) == HpackRefusal.Truncated
         }
         then "an empty name and an empty value decode" {
             mut d = decoder(4096, 65536)
-            let fs = fields_by(d, octets([64, 0, 0]))!
+            let fs = fields_by(d, octets_of([64, 0, 0]))!
             fs.length == 1 && fs[0].name.length == 0 && d.dynamic.size == 32
         }
     }
     given "Huffman" {
         then "the EOS symbol inside a string is refused" {
-            huffman_refusal(octets([255, 255, 255, 255])) == HpackRefusal.Eos
+            huffman_refusal(octets_of([255, 255, 255, 255])) == HpackRefusal.Eos
         }
         then "padding of zeros is refused" {
-            huffman_encoded("a".bytes()) == octets([31]) &&
-                huffman_refusal(octets([24])) == HpackRefusal.Padding
+            huffman_encoded("a".bytes()) == octets_of([31]) &&
+                huffman_refusal(octets_of([24])) == HpackRefusal.Padding
         }
-        then "eight bits of padding are refused" { huffman_refusal(octets([31, 255])) == HpackRefusal.Padding }
-        then "seven bits of padding are taken" { huffman_refusal(octets([31])) == null }
+        then "eight bits of padding are refused" { huffman_refusal(octets_of([31, 255])) == HpackRefusal.Padding }
+        then "seven bits of padding are taken" { huffman_refusal(octets_of([31])) == null }
         then "a Huffman literal with bad padding refuses the block" {
-            refusal_of(octets([64, 129, 24, 0])) == HpackRefusal.Padding
+            refusal_of(octets_of([64, 129, 24, 0])) == HpackRefusal.Padding
         }
     }
     given "table size updates" {
@@ -125,26 +126,26 @@ spec "std.http hpack adversarial" {
                 refusal_of(integer(int_bound, 5, 32)) == HpackRefusal.TableSize &&
                 refusal_of(integer(4096, 5, 32)) == null
         }
-        then "a resize after a field is refused" { refusal_of(octets([130, 32])) == HpackRefusal.Placement }
+        then "a resize after a field is refused" { refusal_of(octets_of([130, 32])) == HpackRefusal.Placement }
         then "two resizes may open a block" {
             mut d = decoder(4096, 65536)
-            fields_by(d, octets([32, 63, 225, 31, 130])) != null && d.dynamic.max == 4096
+            fields_by(d, octets_of([32, 63, 225, 31, 130])) != null && d.dynamic.max == 4096
         }
         then "a resize to zero empties the table" {
             mut d = decoder(4096, 65536)
             let first = fields_by(d, kept_literal("k", 10))
-            let second = fields_by(d, octets([32]))
+            let second = fields_by(d, octets_of([32]))
             first != null && second != null && d.dynamic.entries.length == 0 && d.dynamic.size == 0
         }
         then "a lowered limit is owed a resize: a field first is refused" {
             mut d = decoder(4096, 65536)
             d.limited(100)
-            refused_by(d, octets([130])) == HpackRefusal.Unresized
+            refused_by(d, octets_of([130])) == HpackRefusal.Unresized
         }
         then "a lowered limit takes a resize under it, then fields" {
             mut d = decoder(4096, 65536)
             d.limited(100)
-            fields_by(d, octets([63, 69, 130])) != null && d.dynamic.max == 100 && !d.owed
+            fields_by(d, octets_of([63, 69, 130])) != null && d.dynamic.max == 100 && !d.owed
         }
         then "a lowered limit refuses a resize over it" {
             mut d = decoder(4096, 65536)
@@ -166,7 +167,8 @@ spec "std.http hpack adversarial" {
         then "a literal may name the entry its own insert evicts" {
             mut d = decoder(4096, 65536)
             let first = kept_literal("n", 4000)
-            let named = octets([126]).concat(string_literal([98 for i in 0..4000].bytes()!, false))
+            let named = octets_of([126])
+                .concat(string_literal([98 for i in 0..4000].bytes()!, false))
             let fs = fields_by(d, first.concat(named))!
             fs[1].name == "n".bytes() &&
                 d.dynamic.entries.length == 1 &&
@@ -183,12 +185,12 @@ spec "std.http hpack adversarial" {
             mut d = decoder(4096, 65536)
             let bomb = kept_literal("x", 4000).concat([190 for i in 0..1000].bytes()!)
             let _ = d.decoded(bomb)
-            fields_by(d, octets([190]))![0].value.length == 4000
+            fields_by(d, octets_of([190]))![0].value.length == 4000
         }
         then "a list exactly at the bound is taken" {
             mut d = decoder(4096, cost(field(":method", "GET")) * 2)
-            fields_by(d, octets([130, 130]))!.length == 2 &&
-                d.decoded(octets([130, 130, 130])) is .TooLarge
+            fields_by(d, octets_of([130, 130]))!.length == 2 &&
+                d.decoded(octets_of([130, 130, 130])) is .TooLarge
         }
     }
     given "the encoder" {
@@ -218,8 +220,8 @@ spec "std.http hpack adversarial" {
             e.resized(100)
             e.resized(200)
             let block = e.encoded([field(":method", "GET")])
-            block == integer(100, 5, 32).concat(integer(200, 5, 32)).concat(octets([130])) &&
-                e.encoded([field(":method", "GET")]) == octets([130])
+            block == integer(100, 5, 32).concat(integer(200, 5, 32)).concat(octets_of([130])) &&
+                e.encoded([field(":method", "GET")]) == octets_of([130])
         }
         then "a peer allowing a huge table gets the encoder's own cap" {
             mut e = encoder(false)

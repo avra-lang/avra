@@ -667,3 +667,28 @@ answered 400 as §1 requires. h2spec expects an h2-only port. The two h2spec fai
 WERE defects — HEADERS on a stream that ended both ways (a stream error where §5.1 demands
 a connection error), and a peer's GOAWAY followed by a PING (the link stopped reading and
 the close became a reset) — are rows H29 and H30.
+
+## 6. Streamed bodies (as built)
+
+A body is either WHOLE (one buffer, written with its length) or a
+STREAM (a producer the connection pulls, `http.av`); an incoming body
+is READ as its handler asks (`body.av`). The laws, each a fixture:
+
+| Law | Fixture |
+|---|---|
+| The next piece is pulled only once the last is written, so a slow peer parks its own connection's task and memory is one piece per stream | `stream_test` (pulls hold still), `http_stream_laws`, `http_stream_download` (1 GiB, 1 MB peak native) |
+| A stalled write is cancelled at the idle deadline; the stream is ended once however the pulling stops | `stream_test`, `http_stream_laws` |
+| A failure after the head ends the stream where it stands — no last chunk, a length never reached — and never writes a second status | `stream_test`, `http_stream_laws` |
+| A pull is given the idle deadline; a producer answering empty pieces is as quiet as one answering nothing; every piece yields the core | `stream_test` (quiet source, spinner) |
+| An empty piece writes nothing: an empty chunk is the last one | `stream_test` |
+| A handler runs once its head is here; a piece is at most one socket read, a chunk of any size arrives in pieces | `body_test`, `http_stream_upload` (1 GiB, under 1 MB native) |
+| `100 Continue` goes out before the first read and never for a body nobody reads | `body_test` |
+| A body left unread is dropped up to `Limits.body`, else the connection closes behind the answer | `body_test` |
+| A body that broke is answered by its own law (413, 400, 408), never by the handler; a peer gone mid-body is answered nothing | `body_test`, `http_stream_laws` |
+| A body kept past its handler reads what it had and ends — never another message's socket | `body_test` |
+| An expired event cursor is told (`cursor-expired`) before the live stream, never silently skipped | `sse_test`, `http_sse` |
+| Every WebSocket protocol law is a close code, sent and answered alike | `ws_test`, `http_ws`, Autobahn (`tools/bench/autobahn`) |
+
+Native programs pass under `AVRA_RC_GUARD=1`; the evaluator cannot run
+under the guard, since the guard also holds the compiler's own freed
+boxes and its const budget runs out before the program starts.
