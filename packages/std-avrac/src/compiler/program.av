@@ -397,7 +397,8 @@ impl Program {
     /// to know is still true (compiler/db.av's `DocFacts`).
     fn explain_doc(name: string) -> DocAnswer? {
         let decls = self.ws.decls
-        let matches = [d for d in decls.all_decls() if d.name == name]
+        let db = decls.decl_rows.get()
+        let matches = [keyed_decl(db, k)! for k in named_decls(db, name)]
         if matches.length > 1 { return self.collision_answer(decls, name, matches) }
         let decl? = matches.first() else { return null }
         let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file) ?? []
@@ -432,7 +433,8 @@ impl Program {
     /// the same borrowed-paragraph hazard the rule listing had.
     fn dumped_decls(package: string) -> List<DocRow> {
         let decls = self.ws.decls
-        [self.dump_row(decls, d, package) for d in decls.all_decls() if d.exported && !(d.kind is .Builtin)]
+        let db = decls.decl_rows.get()
+        [self.dump_row(decls, keyed_decl(db, k)!, package) for k in exported_decls(db)]
     }
 
     fn dump_row(decls: Decls, d: Decl, package: string) -> DocRow {

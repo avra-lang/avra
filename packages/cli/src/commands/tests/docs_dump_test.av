@@ -43,6 +43,19 @@ spec "commands/docs dump" {
                 found.prose_lines.join("\n") == "adds one"
         }
     }
+    given "an exported fn with no doc and a documented private one" {
+        then "only the exported one is dumped, with no prose" {
+            let root = dump_pkg_named("undocumented")
+            let _ = write_text(
+                "${root}/src/main.av",
+                "export fn bare(n: int) -> int {\n    n\n}\n\n/// kept inside\nfn inner(n: int) -> int {\n    n\n}\n\nfn main() -> int {\n    bare(1) + inner(1)\n}\n",
+            )
+            mut p = root_program(root)
+            let rows = p.dumped_decls(root)
+            let found? = rows.first() else { return false }
+            rows.length == 1 && found.address.contains("bare") && found.prose_lines.is_empty()
+        }
+    }
     given "a package exporting nothing" {
         then "the dump is empty, not a defect" {
             let root = dump_pkg_named("nothing-exported")
