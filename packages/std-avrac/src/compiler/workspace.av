@@ -18,7 +18,7 @@ use core.{
     Table,
     new_table,
     list_cell,
-    NodeStore,
+    SyntaxArena,
     StmtId,
     same_decl,
     module_path,
@@ -74,7 +74,7 @@ use features.{
     BlockWords,
     ComponentWord,
 }
-use @std.meta.{Diagnostic, identity}
+use @std.meta.{Diagnostic, identity, plain_field}
 use core.{StmtId}
 use diagnostics.{
     SourceFile,
@@ -263,6 +263,12 @@ fn new_records() -> Records {
 /// type, so a copy of the workspace still reads and writes the same
 /// build.
 @identity
+@plain_field("host")
+@plain_field("root")
+@plain_field("lang")
+@plain_field("lone")
+@plain_field("per_file")
+@plain_field("clock")
 export type Workspace = {
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
@@ -540,7 +546,7 @@ fn key(f: Family, arg: int) -> Key {
 /// is linear, so summing raw fingerprints would carry over whatever
 /// structure made two of them collide; avalanching first breaks that
 /// (CLAUDE.md's arity law) and `fp_list` keeps the fold order-sensitive.
-fn syntax_hash(store: NodeStore, x: Decl) -> int {
+fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
     let exprs = [mix_final(store.expr_fingerprint(ExprId { index: i })) for i in x.lo..x.hi]
     fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
 }

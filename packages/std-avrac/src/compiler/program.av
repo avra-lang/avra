@@ -2,7 +2,7 @@
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{
-    NodeStore,
+    SyntaxArena,
     new_node_store,
     Expr,
     Stmt,
@@ -94,7 +94,7 @@ use compiler.format.{render_statement, render_expression}
 /// came from, and every diagnostic from lexing and parsing, in
 /// source order. THE value every later pass takes first.
 export type Parsed = {
-    store: NodeStore,
+    store: SyntaxArena,
     stmts: List<StmtId>,
     source: SourceFile,
     voices: Voices,
@@ -188,11 +188,11 @@ fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: boo
 /// Parse into a store ALREADY standing — the target file's, when a
 /// generated declaration's source is admitted beside the one that
 /// asked for it. The returned statements are the newly minted ones.
-export fn parse_into(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords) -> Parsed {
+export fn parse_into(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWords) -> Parsed {
     parsed_as(lang, store, src, words, true)
 }
 
-fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
+fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     if lang.syntax == null {
         return Parsed {
             store: store,
@@ -311,7 +311,7 @@ impl Decls {
 /// an ANNOTATION's, and nothing else stands between it and the
 /// next real statement to redeem it — is not forced onto whatever
 /// statement happens to follow; it survives as a remark instead.
-fn attach_docs(store: NodeStore, docs: List<DocComment>) {
+fn attach_docs(store: SyntaxArena, docs: List<DocComment>) {
     let starts = store.stmt_starts()
     for doc in docs {
         let target = doc_target(store, starts, doc)
@@ -330,7 +330,7 @@ fn attach_docs(store: NodeStore, docs: List<DocComment>) {
 /// keyword can precede. A `@word` anchor is ambiguous at the lexer,
 /// so it claims a statement only when the parse recorded an
 /// ANNOTATION starting at that exact offset; a MARK never does.
-fn doc_target(store: NodeStore, starts: List<StmtStart>, doc: DocComment) -> StmtId? {
+fn doc_target(store: SyntaxArena, starts: List<StmtStart>, doc: DocComment) -> StmtId? {
     let target? = statement_after(starts, doc.before) else { return null }
     if !doc.pkg { return target }
     if store.annotations_of(target).any(it.span != null && it.span!.lo == doc.before) { target } else { null }
@@ -338,7 +338,7 @@ fn doc_target(store: NodeStore, starts: List<StmtStart>, doc: DocComment) -> Stm
 
 /// The program's statements in order. A recovery hole becomes an
 /// explicit Stmt.Error node — the tree survives bad input visibly.
-fn program_stmts(store: NodeStore, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
+fn program_stmts(store: SyntaxArena, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
     mut out: List<StmtId> = []
     if o.result == null { return out }
     let items = list_at([o.result!], 0)
@@ -546,7 +546,7 @@ impl Program {
     /// What an instance became — its expansion as source, under the
     /// module its names resolve in. A comment, since those names are
     /// the provider's: a template may call what this file cannot name.
-    fn expansion_note(store: NodeStore, e: ExprId) -> string {
+    fn expansion_note(store: SyntaxArena, e: ExprId) -> string {
         let x? = store.expansion_of(e) else { return "" }
         let word? = store.instance_word(e) else { return "" }
         let home: string? = store.foreign_of(x)?.path
