@@ -112,6 +112,11 @@ fn fed_until_refused(s: Session, chunk: Bytes, n: int) -> Result<int, TlsError> 
     fed_until_refused(s, chunk, n + 1)
 }
 
+fn overlong_host_refused() -> Result<bool, TlsError> {
+    let host = ["a" for i in 0..300].join("")
+    words(session(trusting_localhost()?, host)).starts_with("session ${host}: ")
+}
+
 fn zero_max_refused() -> Result<bool, TlsError> {
     let p = localhost_pair()?
     shaken(p)?
@@ -129,6 +134,7 @@ spec "std.tls engine boundary" {
         then "empty PEM is refused as trust, naming its size" { passes(empty_pem_refused()) }
         then "an empty feed changes nothing" { passes(an_empty_feed_is_nothing()) }
         then "a receive of zero bytes is refused, never read as the end" { passes(zero_max_refused()) }
+        then "a host longer than a DNS name is refused at the session" { passes(overlong_host_refused()) }
     }
     given "PEM holding more or other than one certificate" {
         then "a bundle counts every anchor it adds" { passes(a_bundle_counts_its_anchors()) }

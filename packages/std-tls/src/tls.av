@@ -13,9 +13,11 @@
 //! connection's engine, touching no socket: the peer's ciphertext is
 //! `fed` in and its own `outgoing` drained out.
 //!
-//! VERIFICATION IS ON BY DEFAULT: a client checks the peer's chain
-//! against its anchors and the host it named. `unverified` is the one
-//! way off, named for what it gives up. A peer that hangs up without
+//! VERIFICATION IS ON BY DEFAULT: `client()` checks the peer's chain
+//! against the system's trust anchors (`roots_path`) and the host it
+//! named, and `anchored(pem)` against a private authority instead. A
+//! refusal names its reason. `unverified` is the one way off, named
+//! for what it gives up. A peer that hangs up without
 //! close_notify is `.Cut`, never an ordinary end: the stream may have
 //! been truncated.
 //!
@@ -24,6 +26,7 @@
 use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Conn, NetError, connect}
 use @std.time.{Duration, within}
+use @std.io.{env, is_file, read_bytes}
 
 extern fn avra_tls_config(server: int) -> int
 extern fn avra_tls_config_roots(cfg: int, pem: Bytes, n: int) -> int
@@ -43,23 +46,31 @@ extern fn avra_tls_close_notify(ses: int) -> int
 extern fn avra_tls_version(ses: int) -> int
 extern fn avra_tls_end(ses: int) -> int
 extern fn avra_tls_want_read() -> int
+extern fn avra_tls_unverified() -> int
+extern fn avra_tls_verify_words(ses: int) -> int
 extern fn avra_tls_words(code: int) -> int
 extern fn avra_tls_words_at() -> ptr?
 extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 
 /// Why a TLS verb failed: the engine refused it (the verb, its subject
-/// and the engine's code), the wire under it failed, or the peer hung
-/// up without close_notify.
+/// and the engine's code), the wire under it failed, the peer hung up
+/// without close_notify, a client found no trust anchors, or the
+/// peer's certificate failed verification — each reason named.
 export enum TlsError {
     Engine(verb: string, subject: string, code: int)
     Net(e: NetError)
     Cut(verb: string, subject: string)
+    Unanchored(why: string)
+    Untrusted(host: string, why: string)
 }
 
 impl TlsError {
     /// Whether the wire's deadline passed — a `within` running out.
     fn timed_out() -> bool {
-        match self { .Net(e) -> e.timed_out(), .Engine(_, _, _) or .Cut(_, _) -> false }
+        match self {
+            .Net(e) -> e.timed_out(),
+            .Engine(_, _, _) or .Cut(_, _) or .Unanchored(_) or .Untrusted(_, _) -> false,
+        }
     }
 }
 
@@ -69,11 +80,16 @@ impl Error for TlsError {
             .Engine(verb, subject, code) -> info("tls.${verb}", "${verb} ${subject}: ${words(code)}"),
             .Net(e) -> e.describe(),
             .Cut(verb, subject) -> info("tls.cut", "${verb} ${subject}: the peer closed without close_notify"),
+            .Unanchored(why) -> info("tls.unanchored", "no trust anchors: ${why}"),
+            .Untrusted(host, why) -> info("tls.untrusted", "${host}'s certificate is not trusted: ${why}"),
         }
     }
 
     fn cause() -> dyn Error? {
-        match self { .Net(e) -> e, .Engine(_, _, _) or .Cut(_, _) -> null }
+        match self {
+            .Net(e) -> e,
+            .Engine(_, _, _) or .Cut(_, _) or .Unanchored(_) or .Untrusted(_, _) -> null,
+        }
     }
 }
 
@@ -82,10 +98,18 @@ fn wired<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
     match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
 }
 
+/// `n` bytes the engine holds at `at`, copied into a value of ours.
+/// The pointer is foreign, so it is tested, never insisted on: `!`
+/// would take it for one of our boxes and read a header it lacks.
+fn adopted(at: ptr?, n: int) -> Bytes {
+    let p? = at else { return "".bytes() }
+    avra_bytes_adopted(p, n)
+}
+
 /// A code's words, as the engine states them.
 fn words(code: int) -> string {
     let n = avra_tls_words(code)
-    avra_bytes_adopted(avra_tls_words_at()!, n).text() ?? "TLS code ${code}"
+    adopted(avra_tls_words_at(), n).text() ?? "TLS code ${code}"
 }
 
 /// An engine answer as a count, or the verb that failed on it.
@@ -101,9 +125,49 @@ export enum Side { Client, Server }
 /// it once every session made from it has ended.
 export type Config = { handle: int, side: Side }
 
-/// A client config: verifying, trusting nothing until anchors are
-/// added.
-export fn client() -> Result<Config, TlsError> { configured(Side.Client) }
+/// A client config verifying its peers against the system's trust
+/// anchors: the bundle `SSL_CERT_FILE` names, else the first of the
+/// platform's usual bundles that exists.
+export fn client() -> Result<Config, TlsError> {
+    let path? = roots_path() else {
+        fail TlsError
+            .Unanchored("SSL_CERT_FILE is unset and none of ${root_bundles().join(", ")} exists")
+    }
+    let pem = match read_bytes(path) {
+        .Ok(b) -> b,
+        .Err(e) -> { fail TlsError.Unanchored(e.describe().message) },
+    }
+    let c = configured(Side.Client)?
+    c.trusting(pem)?
+    c
+}
+
+/// A client config trusting the authorities in `pem` and no other —
+/// a private CA, or a test's.
+export fn anchored(pem: Bytes) -> Result<Config, TlsError> {
+    let c = configured(Side.Client)?
+    c.trusting(pem)?
+    c
+}
+
+/// The trust bundle a client reads: `SSL_CERT_FILE` when it is set,
+/// else the first usual bundle present, else null.
+export fn roots_path() -> string? {
+    let named? = env("SSL_CERT_FILE") else { return root_bundles().find(is_file) }
+    named
+}
+
+/// Where the platforms keep their bundles: macOS and the BSDs, Debian
+/// and its family, Fedora and RHEL, openSUSE, Alpine.
+fn root_bundles() -> List<string> {
+    [
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/pki/tls/cacert.pem",
+    ]
+}
 
 /// A server config: presenting nothing until an identity is added,
 /// issuing resumption tickets.
@@ -134,8 +198,11 @@ impl Config {
         )
     }
 
-    /// A certificate chain, leaf first, and its private key, from PEM.
-    /// The first identity answers a peer that names no host.
+    /// A certificate chain, leaf first, and its private key, from PEM;
+    /// a key that is not the leaf's is refused. A server holding
+    /// several answers each client's SNI with the first whose leaf
+    /// names that host — a `*.` name covering exactly one label — and a
+    /// client naming no host, or one no leaf names, gets the first.
     fn presenting(chain: Bytes, key: Bytes) -> Result<Config, TlsError> {
         counted(
             avra_tls_config_identity(self.handle, chain, chain.length, key, key.length),
@@ -178,7 +245,11 @@ export type Session = { handle: int, host: string }
 /// server passes "".
 export fn session(config: Config, host: string) -> Result<Session, TlsError> {
     let name = host.bytes()
-    let h = counted(avra_tls_session(config.handle, name, name.length), "session", host)?
+    let h = counted(
+        avra_tls_session(config.handle, name, name.length),
+        "session",
+        if host.is_empty() { "naming no host" } else { host },
+    )?
     Session { handle: h, host: host }
 }
 
@@ -194,6 +265,7 @@ impl Session {
         let rc = avra_tls_handshake(self.handle)
         if rc == 0 { return Step.Done }
         if rc == avra_tls_want_read() { return Step.Reading }
+        if rc == avra_tls_unverified() { fail TlsError.Untrusted(self.named(), self.distrust()) }
         fail TlsError.Engine("handshake", self.named(), rc)
     }
 
@@ -202,7 +274,7 @@ impl Session {
     fn outgoing() -> Result<Bytes, TlsError> {
         let n = counted(avra_tls_outgoing(self.handle), "drain", self.named())?
         if n == 0 { return "".bytes() }
-        let b = avra_bytes_adopted(avra_tls_outgoing_at(self.handle)!, n)
+        let b = adopted(avra_tls_outgoing_at(self.handle), n)
         counted(avra_tls_sent(self.handle, n), "drain", self.named())?
         b
     }
@@ -221,7 +293,7 @@ impl Session {
         if rc == avra_tls_want_read() { return Opened.Reading }
         let n = counted(rc, "receive", self.named())?
         if n == 0 { return Opened.Closed }
-        Opened.Data(avra_bytes_adopted(avra_tls_received_at(self.handle)!, n))
+        Opened.Data(adopted(avra_tls_received_at(self.handle), n))
     }
 
     /// close_notify queued for the peer.
@@ -240,6 +312,12 @@ impl Session {
 
     fn named() -> string {
         if self.host.is_empty() { "session ${self.handle}" } else { self.host }
+    }
+
+    /// Why the peer's certificate was not trusted, one reason a line.
+    fn distrust() -> string {
+        let n = avra_tls_verify_words(self.handle)
+        adopted(avra_tls_words_at(), n).text() ?? "unreadable reasons"
     }
 }
 

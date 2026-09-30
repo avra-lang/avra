@@ -29,6 +29,7 @@ enum {
     TLS_ERR_KEY = -0x10008,    /* PEM holding no private key */
     TLS_ERR_PAIR = -0x10009,   /* a key that is not its certificate's */
     TLS_ERR_BUSY = -0x1000a,   /* a config freed under a live session */
+    TLS_ERR_NAMELESS = -0x1000b, /* a verifying client naming no host */
 };
 
 /* Fed ciphertext is bounded: a peer that sends faster than records are
@@ -120,10 +121,54 @@ typedef struct {
     Identity* identities;
     mbedtls_ssl_ticket_context tickets;
     int server;
+    int verifies;
     int64_t sessions;
 } Config;
 
 static Table g_configs;
+
+/* ── Serving by name ─────────────────────────────────────────────
+   A server holding several identities answers a client's SNI with the
+   first whose certificate names that host; a host none names, or no
+   SNI at all, gets the first identity added.  */
+
+static int ascii_caseeq(const unsigned char* a, const unsigned char* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char x = a[i] >= 'A' && a[i] <= 'Z' ? a[i] + 32 : a[i];
+        unsigned char y = b[i] >= 'A' && b[i] <= 'Z' ? b[i] + 32 : b[i];
+        if (x != y) return 0;
+    }
+    return 1;
+}
+
+/* Whether a certificate's DNS name answers `host`: equal ignoring
+   ASCII case, or `*.rest` standing for exactly one leftmost label. */
+static int name_answers(const unsigned char* name, size_t n, const unsigned char* host, size_t h) {
+    if (n == h && ascii_caseeq(name, host, n)) return 1;
+    if (n < 3 || name[0] != '*' || name[1] != '.') return 0;
+    const unsigned char* dot = memchr(host, '.', h);
+    if (!dot || dot == host) return 0;
+    size_t rest = h - (size_t)(dot - host);
+    return rest == n - 1 && ascii_caseeq(name + 1, dot, rest);
+}
+
+static int identity_answers(const Identity* id, const unsigned char* host, size_t h) {
+    for (const mbedtls_x509_sequence* san = &id->chain.subject_alt_names; san && san->buf.p; san = san->next) {
+        if ((san->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK) == MBEDTLS_X509_SAN_DNS_NAME &&
+            name_answers(san->buf.p, san->buf.len, host, h)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int sni_chosen(void* ctx, mbedtls_ssl_context* ssl, const unsigned char* host, size_t h) {
+    Config* c = ctx;
+    for (Identity* id = c->identities; id; id = id->next) {
+        if (identity_answers(id, host, h)) return mbedtls_ssl_set_hs_own_cert(ssl, &id->chain, &id->key);
+    }
+    return 0;
+}
 
 static int crypto_started(void) {
     static int started;
@@ -146,10 +191,12 @@ int64_t avra_tls_config(int64_t server) {
         MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
     if (!rc) {
         mbedtls_ssl_conf_min_tls_version(&c->conf, MBEDTLS_SSL_VERSION_TLS1_2);
-        mbedtls_ssl_conf_authmode(&c->conf, c->server ? MBEDTLS_SSL_VERIFY_NONE : MBEDTLS_SSL_VERIFY_REQUIRED);
+        c->verifies = !c->server;
+        mbedtls_ssl_conf_authmode(&c->conf, c->verifies ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_NONE);
         mbedtls_ssl_conf_ca_chain(&c->conf, &c->roots, NULL);
     }
     if (!rc && c->server) {
+        mbedtls_ssl_conf_sni(&c->conf, sni_chosen, c);
         rc = mbedtls_ssl_ticket_setup(&c->tickets, PSA_ALG_GCM, PSA_KEY_TYPE_AES, 256, 86400);
         if (!rc) mbedtls_ssl_conf_session_tickets_cb(&c->conf, mbedtls_ssl_ticket_write, mbedtls_ssl_ticket_parse, &c->tickets);
     }
@@ -232,7 +279,8 @@ int64_t avra_tls_config_identity(int64_t cfg, const unsigned char* chain, int64_
 int64_t avra_tls_config_verify(int64_t cfg, int64_t required) {
     Config* c = held(&g_configs, cfg);
     if (!c) return TLS_ERR_HANDLE;
-    mbedtls_ssl_conf_authmode(&c->conf, required ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_NONE);
+    c->verifies = required != 0;
+    mbedtls_ssl_conf_authmode(&c->conf, c->verifies ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_NONE);
     return cfg;
 }
 
@@ -285,13 +333,15 @@ static int wire_recv(void* ctx, unsigned char* p, size_t n) {
 
 /* A session under `cfg`. A client names the host it expects — the SNI
    it sends and the name its peer's certificate must carry; a server
-   names none. The name is read by its length: one holding a NUL would
-   mean a prefix of itself to mbedTLS, and is refused. */
+   names none, and a verifying client must name one. The name is read
+   by its length: one holding a NUL would mean a prefix of itself to
+   mbedTLS, and is refused. */
 int64_t avra_tls_session(int64_t cfg, const unsigned char* host, int64_t n) {
     Config* c = held(&g_configs, cfg);
     if (!c) return TLS_ERR_HANDLE;
     if (n < 0) return TLS_ERR_BOUNDS;
     if (n && memchr(host, 0, (size_t)n)) return TLS_ERR_HOST;
+    if (!n && !c->server && c->verifies) return TLS_ERR_NAMELESS;
     char* name = (char*)terminated(host, n);
     Session* s = name ? calloc(1, sizeof *s) : NULL;
     if (!s) {
@@ -432,9 +482,11 @@ int64_t avra_tls_end(int64_t ses) {
 
 int64_t avra_tls_want_read(void) { return MBEDTLS_ERR_SSL_WANT_READ; }
 
+int64_t avra_tls_unverified(void) { return MBEDTLS_ERR_X509_CERT_VERIFY_FAILED; }
+
 int64_t avra_tls_want_write(void) { return MBEDTLS_ERR_SSL_WANT_WRITE; }
 
-static char g_words[256];
+static char g_words[512];
 
 /* A code's words, landed where `avra_tls_words_at` points: their
    length. */
@@ -451,6 +503,7 @@ int64_t avra_tls_words(int64_t code) {
     case TLS_ERR_KEY: ours = "PEM text holding no private key this build reads"; break;
     case TLS_ERR_PAIR: ours = "a private key that is not its certificate's"; break;
     case TLS_ERR_BUSY: ours = "a config still serving sessions — end them first"; break;
+    case TLS_ERR_NAMELESS: ours = "a verifying client names the host it expects"; break;
     }
     if (ours) {
         strncpy(g_words, ours, sizeof g_words - 1);
@@ -461,3 +514,14 @@ int64_t avra_tls_words(int64_t code) {
 }
 
 const char* avra_tls_words_at(void) { return g_words; }
+
+/* Why the peer's certificate was not trusted, landed where
+   `avra_tls_words_at` points: its length. One reason a line. */
+int64_t avra_tls_verify_words(int64_t ses) {
+    Session* s = held(&g_sessions, ses);
+    if (!s) return avra_tls_words(TLS_ERR_HANDLE);
+    int n = mbedtls_x509_crt_verify_info(g_words, sizeof g_words, "", mbedtls_ssl_get_verify_result(&s->ssl));
+    if (n <= 0) return 0;
+    if (g_words[n - 1] == '\n') g_words[--n] = 0;
+    return n;
+}
