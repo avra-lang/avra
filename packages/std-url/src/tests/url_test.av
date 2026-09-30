@@ -1,0 +1,305 @@
+// A URL end to end: the components as written, absent kept apart from
+// empty, the refusals by octet, the canonical form, resolution by RFC
+// 3986 §5.4's own table, encoding per component and the builder.
+use @std.url.{Url, UrlError, Part, parse, encoded, decoded, default_port}
+
+/// The parse recomposed, or the refusal as a word.
+fn u_shown(text: string) -> string {
+    match parse(text) { .Ok(u) -> u.text(), .Err(e) -> u_refusal(e) }
+}
+
+fn u_refusal(e: UrlError) -> string {
+    match e {
+        .Relative -> "relative",
+        .Scheme(at) -> "scheme@${at}",
+        .Octet(at, part) -> "octet@${at} ${u_part(part)}",
+        .Escape(at) -> "escape@${at}",
+        .Host(at) -> "host@${at}",
+        .Port(at) -> "port@${at}",
+        .Dots -> "dots",
+    }
+}
+
+fn u_part(p: Part) -> string {
+    match p {
+        .Userinfo -> "userinfo",
+        .Host -> "host",
+        .Path -> "path",
+        .Segment -> "segment",
+        .Query -> "query",
+        .Param -> "param",
+        .Fragment -> "fragment",
+    }
+}
+
+fn u_ok(r: Result<Url, UrlError>) -> Url? {
+    match r { .Ok(u) -> u, .Err(_) -> null }
+}
+
+fn u_of(text: string) -> Url { u_ok(parse(text))! }
+
+/// An optional component as text, `-` when absent.
+fn u_opt(b: Bytes?) -> string {
+    let v? = b else { return "-" }
+    v.text() ?? "?"
+}
+
+/// Every component, `|`-separated, `-` for an absent one.
+fn u_parts(text: string) -> string {
+    let u = u_of(text)
+    let a = u.authority
+    let port = if a?.port == null { "-" } else { "${a!.port!}" }
+    let host = if a == null { "-" } else { a!.host.bytes().text() ?? "?" }
+    [
+        u.scheme,
+        u_opt(a?.userinfo),
+        host,
+        port,
+        u.path.text() ?? "?",
+        u_opt(u.query),
+        u_opt(u.fragment),
+    ]
+        .join("|")
+}
+
+fn u_norm(text: string) -> string { u_of(text).normalized().text() }
+
+const u_base: string = "http://a/b/c/d;p?q"
+
+fn u_res(r: string) -> string {
+    match u_of(u_base).resolve(r) { .Ok(u) -> u.text(), .Err(e) -> u_refusal(e) }
+}
+
+fn u_enc(s: string, part: Part) -> string { encoded(s.bytes(), part).text()! }
+
+fn u_dec(s: string) -> string { decoded(s.bytes())?.text() ?? "refused" }
+
+spec "@std.url" {
+    given "the components as written" {
+        then "every component of a full URL lands in its place" {
+            u_parts("https://u:p@Example.com:8443/a/b?x=1#top") == "https|u:p|Example.com|8443|/a/b|x=1|top"
+        }
+        then "the scheme alone is folded to lowercase" {
+            u_parts("HTTP://H/P") == "http|-|H|-|/P|-|-"
+        }
+        then "a URL with no authority has none" {
+            u_parts("mailto:someone@example.com") == "mailto|-|-|-|someone@example.com|-|-"
+        }
+        then "an empty query and fragment are empty, not absent" {
+            u_parts("http://h?#") == "http|-|h|-|||"
+        }
+        then "no query and no fragment are absent" {
+            u_parts("http://h") == "http|-|h|-||-|-"
+        }
+        then "an empty port is absent" {
+            u_parts("http://h:/x") == "http|-|h|-|/x|-|-"
+        }
+        then "an empty userinfo is empty" {
+            u_parts("http://@h/") == "http||h|-|/|-|-"
+        }
+        then "a later `=`, `?` or `/` belongs to the query" {
+            u_parts("http://h/p?a=b=c/d?e") == "http|-|h|-|/p|a=b=c/d?e|-"
+        }
+        then "a `?` after the `#` belongs to the fragment" {
+            u_parts("http://h/p#f?g") == "http|-|h|-|/p|-|f?g"
+        }
+        then "escapes are kept, never decoded" {
+            u_parts("http://h/a%2Fb?x=%26") == "http|-|h|-|/a%2Fb|x=%26|-"
+        }
+        then "a round trip gives the text back" {
+            u_shown("https://u@h:1/a/./b/../c?q#f") == "https://u@h:1/a/./b/../c?q#f"
+        }
+    }
+    given "hosts" {
+        then "a dotted quad is an address" {
+            u_parts("http://10.0.0.1:80/") == "http|-|10.0.0.1|80|/|-|-"
+        }
+        then "a bracketed IPv6 address is held bare and written bracketed" {
+            u_shown("http://[::1]:8080/") == "http://[::1]:8080/" &&
+                u_of("http://[::1]:8080/").hostname() == "::1"
+        }
+        then "a v6 address with an embedded quad is one" {
+            u_shown("http://[::ffff:10.0.0.1]/") == "http://[::ffff:10.0.0.1]/"
+        }
+        then "eight full groups are an address" {
+            u_shown("http://[1:2:3:4:5:6:7:8]/") == "http://[1:2:3:4:5:6:7:8]/"
+        }
+        then "the resolver's name is the host decoded" {
+            u_of("http://ex%61mple.com/").hostname() == "example.com"
+        }
+        then "no authority, no hostname" {
+            u_of("mailto:x@y").hostname() == null
+        }
+    }
+    given "ports" {
+        then "a written port wins" {
+            u_of("http://h:81/").port() == 81
+        }
+        then "the scheme's port stands in" {
+            u_of("https://h/").port() == 443 && u_of("http://h/").port() == 80
+        }
+        then "a scheme that names none answers none" {
+            u_of("ftp://h/").port() == null
+        }
+        then "the defaults are http's, https's and the socket schemes'" {
+            default_port("ws") == 80 && default_port("wss") == 443 && default_port("gopher") == null
+        }
+    }
+    given "refusals, at the octet" {
+        then "a reference with no scheme is not a URL" {
+            u_shown("/a/b") == "relative" && u_shown("") == "relative"
+        }
+        then "a scheme beginning with a digit is refused" {
+            u_shown("1http://h/") == "scheme@0"
+        }
+        then "an empty scheme is refused" {
+            u_shown("://h/") == "scheme@0"
+        }
+        then "a scheme holding an odd octet is refused where it does" {
+            u_shown("ht_tp://h/") == "scheme@2"
+        }
+        then "a space is no octet of a path" {
+            u_shown("http://h/a b") == "octet@10 path"
+        }
+        then "a `%` opening no escape is refused" {
+            u_shown("http://h/a%2") == "escape@10" && u_shown("http://h/%zz") == "escape@9"
+        }
+        then "a second `@` is refused by the host" {
+            u_shown("http://a@b@c/") == "octet@10 host"
+        }
+        then "a port past 65535 is refused" {
+            u_shown("http://h:65536/") == "port@9"
+        }
+        then "a port holding a letter is refused where it does" {
+            u_shown("http://h:8a/") == "port@10"
+        }
+        then "a bracket left open is refused" {
+            u_shown("http://[::1/") == "host@7"
+        }
+        then "a `[` in a path is refused" {
+            u_shown("http://h/[x]") == "octet@9 path"
+        }
+    }
+    given "the canonical form" {
+        then "the host's case is folded" {
+            u_norm("http://Ex.COM/") == "http://ex.com/"
+        }
+        then "the scheme's own port is dropped" {
+            u_norm("http://h:80/") == "http://h/" && u_norm("https://h:443/") == "https://h/"
+        }
+        then "another port is kept" {
+            u_norm("http://h:8080/") == "http://h:8080/"
+        }
+        then "an empty path under an authority is `/`" {
+            u_norm("http://h") == "http://h/"
+        }
+        then "an escaped unreserved octet is decoded" {
+            u_norm("http://h/%7Euser/%41") == "http://h/~user/A"
+        }
+        then "an escape's hex is uppercased and kept" {
+            u_norm("http://h/a%2fb") == "http://h/a%2Fb"
+        }
+        then "dot segments are spent" {
+            u_norm("http://h/a/./b/../c") == "http://h/a/c"
+        }
+        then "a v6 address's hex is folded" {
+            u_norm("http://[::ABCD]/") == "http://[::abcd]/"
+        }
+    }
+    given "resolution, by RFC 3986 §5.4.1" {
+        then "g:h" { u_res("g:h") == "g:h" }
+        then "g" { u_res("g") == "http://a/b/c/g" }
+        then "./g" { u_res("./g") == "http://a/b/c/g" }
+        then "g/" { u_res("g/") == "http://a/b/c/g/" }
+        then "/g" { u_res("/g") == "http://a/g" }
+        then "//g" { u_res("//g") == "http://g" }
+        then "?y" { u_res("?y") == "http://a/b/c/d;p?y" }
+        then "g?y" { u_res("g?y") == "http://a/b/c/g?y" }
+        then "#s" { u_res("#s") == "http://a/b/c/d;p?q#s" }
+        then "g#s" { u_res("g#s") == "http://a/b/c/g#s" }
+        then "g?y#s" { u_res("g?y#s") == "http://a/b/c/g?y#s" }
+        then ";x" { u_res(";x") == "http://a/b/c/;x" }
+        then "g;x" { u_res("g;x") == "http://a/b/c/g;x" }
+        then "g;x?y#s" { u_res("g;x?y#s") == "http://a/b/c/g;x?y#s" }
+        then "the empty reference" { u_res("") == "http://a/b/c/d;p?q" }
+        then "." { u_res(".") == "http://a/b/c/" }
+        then "./" { u_res("./") == "http://a/b/c/" }
+        then ".." { u_res("..") == "http://a/b/" }
+        then "../" { u_res("../") == "http://a/b/" }
+        then "../g" { u_res("../g") == "http://a/b/g" }
+        then "../.." { u_res("../..") == "http://a/" }
+        then "../../" { u_res("../../") == "http://a/" }
+        then "../../g" { u_res("../../g") == "http://a/g" }
+    }
+    given "resolution, by RFC 3986 §5.4.2" {
+        then "../../../g" { u_res("../../../g") == "http://a/g" }
+        then "../../../../g" { u_res("../../../../g") == "http://a/g" }
+        then "/./g" { u_res("/./g") == "http://a/g" }
+        then "/../g" { u_res("/../g") == "http://a/g" }
+        then "g." { u_res("g.") == "http://a/b/c/g." }
+        then ".g" { u_res(".g") == "http://a/b/c/.g" }
+        then "g.." { u_res("g..") == "http://a/b/c/g.." }
+        then "..g" { u_res("..g") == "http://a/b/c/..g" }
+        then "./../g" { u_res("./../g") == "http://a/b/g" }
+        then "./g/." { u_res("./g/.") == "http://a/b/c/g/" }
+        then "g/./h" { u_res("g/./h") == "http://a/b/c/g/h" }
+        then "g/../h" { u_res("g/../h") == "http://a/b/c/h" }
+        then "g;x=1/./y" { u_res("g;x=1/./y") == "http://a/b/c/g;x=1/y" }
+        then "g;x=1/../y" { u_res("g;x=1/../y") == "http://a/b/c/y" }
+        then "g?y/./x" { u_res("g?y/./x") == "http://a/b/c/g?y/./x" }
+        then "g?y/../x" { u_res("g?y/../x") == "http://a/b/c/g?y/../x" }
+        then "g#s/./x" { u_res("g#s/./x") == "http://a/b/c/g#s/./x" }
+        then "g#s/../x" { u_res("g#s/../x") == "http://a/b/c/g#s/../x" }
+        then "http:g, the strict reading" { u_res("http:g") == "http:g" }
+    }
+    given "percent-encoding, per component" {
+        then "a space is `%20` everywhere, never `+`" {
+            u_enc("a b", .Param) == "a%20b" && u_enc("a b", .Path) == "a%20b"
+        }
+        then "a param encodes its separators" {
+            u_enc("a&b=c+d#e", .Param) == "a%26b%3Dc%2Bd%23e"
+        }
+        then "a segment encodes `/` and a path keeps it" {
+            u_enc("a/b", .Segment) == "a%2Fb" && u_enc("a/b", .Path) == "a/b"
+        }
+        then "a `%` is data, so it is encoded" {
+            u_enc("100%", .Query) == "100%25"
+        }
+        then "non-ASCII is encoded octet by octet" {
+            u_enc("é", .Path) == "%C3%A9"
+        }
+        then "decoding undoes it" {
+            u_dec("a%20b%2Fc") == "a b/c"
+        }
+        then "a malformed escape decodes to nothing" {
+            u_dec("a%2") == "refused" && u_dec("%G0") == "refused"
+        }
+        then "`+` stays `+`" {
+            u_dec("a+b") == "a+b"
+        }
+    }
+    given "building" {
+        then "a param is appended, encoded" {
+            u_of("http://h/s").with_param("q", "a b&c").text() == "http://h/s?q=a%20b%26c"
+        }
+        then "params chain with `&`" {
+            u_of("http://h/s?x=1").with_param("y", "2").with_param("z", "").text() == "http://h/s?x=1&y=2&z="
+        }
+        then "an empty query takes the first param without an `&`" {
+            u_of("http://h/s?").with_param("a", "1").text() == "http://h/s?a=1"
+        }
+        then "a segment is joined with one `/`" {
+            u_ok(u_ok(u_of("http://h/api").joined("users"))!.joined("a/b"))!.text() == "http://h/api/users/a%2Fb"
+        }
+        then "a trailing `/` is not doubled" {
+            u_ok(u_of("http://h/api/").joined("x"))!.text() == "http://h/api/x"
+        }
+        then "a dot segment is refused" {
+            u_of("http://h/api").joined("..") is .Err && u_of("http://h/api").joined(".") is .Err
+        }
+        then "the target is the path and query, never the fragment" {
+            u_of("http://h/p?q#f").target().text() == "/p?q" &&
+                u_of("http://h").target().text() == "/"
+        }
+    }
+}
