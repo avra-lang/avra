@@ -92,6 +92,10 @@ if [ -z "${AVRA_LAND_TRAIN_SCRATCH:-}" ]; then train_scratch_owned=1; fi
 scratch="${AVRA_LAND_TRAIN_SCRATCH:-$scratch_root/$run_id}"
 export AVRA_LAND_TRAIN_SCRATCH="$scratch"
 mkdir -p "$scratch/logs" "$scratch/candidates"
+# land.sh's `--call` re-execs inherit one scratch: one that mints its own
+# first prunes every dead run's under /tmp/avra-land-scratch, seconds a call.
+export AVRA_LAND_SCRATCH="${AVRA_LAND_SCRATCH:-$scratch/land}"
+mkdir -p "$AVRA_LAND_SCRATCH/logs"
 
 log_of() { echo "$scratch/logs/$1.log"; }
 
