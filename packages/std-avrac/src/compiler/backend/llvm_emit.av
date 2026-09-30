@@ -247,7 +247,21 @@ impl Emit {
     fn call_rt_value(dst: Reg, callee: string, args: List<Reg>) -> ptr {
         let called = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
+        if self.census && self.mints(callee) {
+            avra_llvm_build_census_box(
+                self.b,
+                self.m,
+                "${self.types.name_of(self.tys[dst.index])} by ${callee}",
+            )
+        }
         self.unworded(self.answer_form(dst, callee), self.answered(callee, called))
+    }
+
+    /// Whether a row answers a box it made: it owns its answer and names
+    /// that box, where a row answering `Any` hands back one that stood.
+    fn mints(callee: string) -> bool {
+        let row? = self.rt.get(callee) else { return false }
+        match row.answer { .Any -> false, .Text or .Bytes or .List or .Map -> row.owns_result }
     }
 
     /// HOW A CALLEE'S ANSWER CROSSES BACK: the destination's slot form,

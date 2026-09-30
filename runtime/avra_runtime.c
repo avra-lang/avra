@@ -188,6 +188,47 @@ void note_retain(void* site) {
     if (s) s->made++;
 }
 
+// Boxes a row answered owned, by what they are: each label is a type
+// and the row (`List<int> by avra_array_sized`), counted where the
+// backend was asked to (AVRA_CENSUS_TYPES), keyed by the label's address.
+static Site g_type_sites[SITES];
+static int64_t g_type_slots = 0;
+
+static int by_label(const void* a, const void* b) {
+    return strcmp((const char*)((const Site*)a)->site, (const char*)((const Site*)b)->site);
+}
+
+static int by_made(const void* a, const void* b) {
+    int64_t x = ((const Site*)a)->made, y = ((const Site*)b)->made;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+// The labels with the most boxes, most first. One label stands at
+// one address per module that spells it, so equal texts are summed.
+static void report_types(int limit) {
+    if (g_type_slots == 0) return;
+    Site* rows = malloc((size_t)g_type_slots * sizeof(Site));
+    if (!rows) return;
+    int64_t n = 0;
+    for (int i = 0; i < SITES; i++) if (g_type_sites[i].site) rows[n++] = g_type_sites[i];
+    qsort(rows, (size_t)n, sizeof(Site), by_label);
+    int64_t merged = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (merged > 0 && by_label(&rows[merged - 1], &rows[i]) == 0) rows[merged - 1].made += rows[i].made;
+        else rows[merged++] = rows[i];
+    }
+    qsort(rows, (size_t)merged, sizeof(Site), by_made);
+    int64_t total = 0;
+    for (int64_t i = 0; i < merged; i++) total += rows[i].made;
+    fprintf(stderr, "type: %lld boxes answered by owning rows (a _reusing row may answer the box it was handed), %lld labels\n",
+            (long long)total, (long long)merged);
+    for (int64_t i = 0; i < merged && i < limit; i++) {
+        fprintf(stderr, "type: %12lld  %5.1f%%  %s\n", (long long)rows[i].made, 100.0 * rows[i].made / total,
+                (const char*)rows[i].site);
+    }
+    free(rows);
+}
+
 // A table's heaviest callers, most first. A printed row is SPENT —
 // its count goes negative — so the next pass finds the next one.
 static void report_made(const char* label, Site* tbl, int limit, intptr_t slide) {
@@ -269,6 +310,7 @@ static void acc_report(void) {
         report_made("push", g_push_sites, 16, slide);
         report_made("retain", g_retain_sites, 20, slide);
     }
+    report_types(40);
 #endif
     const char* wanted = getenv("AVRA_MEM_SITES");
     int limit = wanted ? atoi(wanted) : 24;
@@ -321,6 +363,18 @@ static void acc_settled(void) {
 }
 
 static inline int accounting(void) { return g_acc_on; }
+
+// A box a runtime row just minted, named by `label`: counted by a census
+// build, nothing in a shipping one. The calls exist only in a program
+// the backend built with AVRA_CENSUS_TYPES set.
+void avra_census_box(const char* label) {
+#ifdef AVRA_CENSUS
+    Site* s = site_in(g_type_sites, &g_type_slots, (void*)(uintptr_t)label);
+    if (s) s->made++;
+#else
+    (void)label;
+#endif
+}
 
 // EVERY BOX AND BUFFER ALIVE, in bytes, counted whether or not the
 // report is on: a settlement's memory ceiling reads it, so it is
