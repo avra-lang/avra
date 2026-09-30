@@ -3,7 +3,7 @@
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
 use core.{ExprId, StmtId, TypeId, DeclId, DeclKind, same_type}
-use features.{TypeCx, FnSig, this_is, MethodCall}
+use features.{TypeCx, FnSig, this_is, MethodCall, Dispatch}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
 
@@ -68,6 +68,8 @@ fn declared_call(
     let found? = cx.view.decls.sig(m)?.fn_sig() else {
         return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name)
     }
+    // a member chosen at run answers what every member answers
+    if choosing && cx.facts.dispatch_at(e) != null { return found.ret }
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found))
     let placed? = cx.placed(e, "${target}.${name}", m, args, seats_of(sig).params) else { return cx.error_type }
     if placed.args.length != placed.wants.length {
@@ -145,6 +147,14 @@ fn chosen_member(
     args: List<ExprId>,
 ) -> DeclId? {
     let by_args = [m for m in many if seats_fit(cx, m, args)]
+    if by_args.is_empty() {
+        let d? = dispatch_of(cx, many, args) else {
+            no_member_fits(cx, e, target, name, [cx.view.decls.method_key(m) for m in many])
+            return null
+        }
+        cx.record_dispatch(e, d)
+        return d.members[0]
+    }
     let want = cx.want_at(e)
     let fits = if by_args.length > 1 && want != null { [m for m in by_args if answers_fit(cx, m, want!)] } else { by_args }
     if fits.length == 1 {
@@ -154,6 +164,43 @@ fn chosen_member(
     let keys = (ms: List<DeclId>) -> [cx.view.decls.method_key(m) for m in ms]
     if fits.is_empty() { no_member_fits(cx, e, target, name, keys(many)) } else { members_ambiguous(cx, e, target, name, keys(fits)) }
     null
+}
+
+/// The members one `dyn` argument's run-time type chooses among: that
+/// argument is the only `dyn`, every other fits every member, each
+/// member's seat there implements its trait, and all answer one type.
+fn dispatch_of(cx: TypeCx, many: List<DeclId>, args: List<ExprId>) -> Dispatch? {
+    let dyns = [j for j, a in args if dyn_trait(cx, cx.type_at(a)) != null]
+    if dyns.length != 1 { return null }
+    let k = dyns[0]
+    let tr = dyn_trait(cx, cx.type_at(args[k]))!
+    let sigs = [cx.view.decls.sig(m)?.fn_sig() for m in many]
+    if !sigs.all((s) -> s != null && takes_dispatched(cx, s!, args, k, tr)) { return null }
+    let answer = sigs[0]!.ret
+    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
+    if sigs.any((s) -> s!.ret.index != answer.index) { return null }
+    Dispatch { seat: k, members: many }
+}
+
+/// Whether a member takes the call with its `k`th seat an implementor
+/// of `tr`, every other seat fitting its argument.
+fn takes_dispatched(cx: TypeCx, s: FnSig, args: List<ExprId>, k: int, tr: DeclId) -> bool {
+    s.params.length == args.length + 1 &&
+        [j for j, a in args if j != k && cx.types_disagree(cx.type_at(a), s.params[j + 1])].is_empty() &&
+        implements_at(cx, s.params[k + 1], tr)
+}
+
+fn implements_at(cx: TypeCx, ty: TypeId, tr: DeclId) -> bool {
+    let d? = cx.view.decls.implementor(ty) else { return false }
+    cx.view.decls.implements(d, tr)
+}
+
+/// The trait a `dyn` type is over, or none.
+fn dyn_trait(cx: TypeCx, ty: TypeId) -> DeclId? {
+    match cx.view.types.shape_of(ty) {
+        .Dyn(d, _) -> d,
+        _ -> null,
+    }
 }
 
 /// How many members the names share, a generic trait's arguments
