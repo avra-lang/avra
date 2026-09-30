@@ -905,6 +905,11 @@ registry is the idiom engine's spec, written by dogfooding.
   the bomb, holding its own output, ten minutes before anyone else saw
   it.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
+  `tests/` IS A MODULE LIKE ANY DIRECTORY: its files share one
+  namespace (F3017 names the sibling), and fixtures shared across
+  test files lean on exactly that (witness_fixtures.av). A test that
+  wants names of its own takes a directory of its own —
+  `tests/<name>/<name>_test.av` — as a program test does.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts

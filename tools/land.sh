@@ -383,14 +383,67 @@ absorbed_exit() {
 # A holder leaving before it answered strands no waiter.
 release_absorbed() {
     d="$(tickets_dir)"
+    why="the batch that absorbed this branch stopped before a verdict — land again"
+    [ -f "$scratch/wall-cap" ] && why="the landing that absorbed this branch ran past its wall cap — timed out — land again"
     for t in $absorbed; do
-        [ -f "$d/$t/verdict" ] || give_verdict "$d/$t" 1 "land: the batch that absorbed this branch stopped before a verdict — land again"
+        [ ! -d "$d/$t" ] || [ -f "$d/$t/verdict" ] || give_verdict "$d/$t" 1 "land: $why"
     done
+}
+
+# THE WALL CAP: a landing holding the lock past AVRA_LAND_WALL_CAP_S
+# (default 1800; 0 is none) stops. A shell runs its TERM trap only once
+# its foreground child ends, so the watchdog ends every child first;
+# the trap then frees the lock and answers every rider.
+wall_pid=""
+start_wall_cap() {
+    cap="${AVRA_LAND_WALL_CAP_S:-1800}"
+    [ "$cap" -gt 0 ] || return 0
+    holder=$$
+    (
+        sleep "$cap"
+        me="$(exec sh -c 'echo $PPID')"
+        echo "$cap" > "$scratch/wall-cap"
+        echo "the landing ran past its ${cap}s wall cap — timed out — land again" > "$scratch/tool-failure"
+        # A stopped process cannot fork, so the tree is frozen until a
+        # fresh look finds nothing new, then killed whole.
+        tree=""
+        n=0
+        while [ "$n" -lt 20 ]; do
+            now="$(tree_below "$holder" "$me")"
+            [ "$now" = "$tree" ] && break
+            tree="$now"
+            kill -STOP $tree 2>/dev/null
+            n=$((n + 1))
+        done
+        kill -KILL $tree 2>/dev/null
+        kill -TERM "$holder"
+    ) &
+    wall_pid=$!
+}
+# Every process below `$1` but outside `$2`'s own subtree, from one ps snapshot.
+tree_below() {
+    ps -eo pid=,ppid= | awk -v root="$1" -v skip="$2" '
+        { kids[$2] = kids[$2] " " $1 }
+        END {
+            n = split(kids[root], q, " ")
+            for (i = 1; i <= n; i++) {
+                if (q[i] == skip) continue
+                out = out " " q[i]
+                m = split(kids[q[i]], more, " ")
+                for (j = 1; j <= m; j++) q[++n] = more[j]
+            }
+            print substr(out, 2)
+        }'
+}
+stop_wall_cap() {
+    [ -n "$wall_pid" ] || return 0
+    kill $(tree_below "$wall_pid" "") "$wall_pid" 2>/dev/null || :
 }
 finish_lock() {
     exit_st="${1:-$?}"
     release_absorbed
     release_lock
+    [ -f "$scratch/wall-cap" ] || stop_wall_cap
     echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
     tool_reason=""
     [ -f "$scratch/tool-failure" ] && tool_reason="$(cat "$scratch/tool-failure")"
@@ -504,6 +557,25 @@ merge_ref_in() {
         case "$conflicts" in *"$f"*) git checkout --theirs -- "$f" && git add "$f" ;; esac
     done
     git commit --no-edit
+}
+
+# A MERGE CONFLICT IS NAMED AT ONCE, never bisected: every branch
+# merges in order onto the tree at `$1` (main's tip) before anything
+# builds, and one that does not merge onto main and the branches ahead
+# of it is a CULPRIT on stderr. Prints the branches that merged.
+conflict_sieve() {
+    tree="$1"
+    shift
+    kept=""
+    for b in "$@"; do
+        if ( merge_ref_in "$tree" "refs/heads/$b" ) > "$(log_of "sieve-$(printf '%s' "$b" | tr '/ ' '__')")" 2>&1; then
+            kept="$kept $b"
+        else
+            echo "land: $b does not merge onto main and the branches ahead of it — dropped, no bisection" >&2
+            echo "CULPRIT: $b" >&2
+        fi
+    done
+    echo "${kept# }"
 }
 
 # The single-landing shape land_test.sh's fixtures already call by
@@ -687,8 +759,9 @@ commit_chore_if_moved() {
 # store rather than re-derived. A body-only edit to ONE leaf file
 # (its text digest moves, its interface does not) should still leave
 # every OTHER file held, so a second check's `held` count is the
-# signal: a floor it must clear, ratcheted in tools/land.baseline
-# under `warm_held_floor`.
+# signal: at most AVRA_LAND_WARM_SLACK (default 5) of the M files may
+# be re-derived. The floor is relative to M, so a package that sheds
+# files never falls under a count it once cleared.
 #
 # compiler/format/receipt.av backs `avra fmt --write`'s own lossless
 # gate — nothing in analysis, typing or lowering reads it — so
@@ -740,13 +813,18 @@ warm_gate_step() {
     n="${nm%/*}"
     m="${nm#*/}"
 
+    cd "$land_wt"
+    floor=$((m - ${AVRA_LAND_WARM_SLACK:-5}))
     st=0
-    if [ "$n" -lt $((m - 10)) ]; then
-        echo "land: warm-reuse: held $n/$m after a leaf edit — FAIL (the floor is N-10 = $((m - 10)))"
-        st=1
+    if [ "$n" -ge "$floor" ]; then
+        echo "land: warm-reuse: held $n/$m (floor $floor) — PASS"
+    elif [ -n "${AVRA_LAND_WARM_OK:-}" ]; then
+        echo "land: warm-reuse: held $n/$m (floor $floor) — PASS (signed: $AVRA_LAND_WARM_OK)"
     else
-        echo "land: warm-reuse: held $n/$m after a leaf edit — PASS (floor N-10)"
+        echo "land: warm-reuse: held $n/$m (floor $floor) — FAIL"
+        st=1
     fi
+    cd "$wt"
     warm_edit_timed "packages/cli" "$warm_gate_command_path" \
         '275s/avra: \${path}/avra - ${path}/' || st=1
     cd "$land_wt"
@@ -766,7 +844,9 @@ now_s() { perl -MTime::HiRes=time -e 'printf "%.2f", time'; }
 
 # warm_edit_timed <package> <file> <sed-expr>: warm the package, edit one
 # line of <file>'s body, recheck; fail past AVRA_LAND_WARM_WALL_S (45) wall
-# seconds or below N-10 held. The edit is undone on every path out.
+# seconds or below N minus AVRA_LAND_WARM_EDIT_SLACK (10) held: a command
+# file's edit re-reads itself, the entry and what its reach probe lowers.
+# The edit is undone on every path out.
 warm_edit_timed() {
     pkg="$1"; file="$2"; expr="$3"
     limit="${AVRA_LAND_WARM_WALL_S:-45}"
@@ -788,7 +868,7 @@ warm_edit_timed() {
     n="${pair#held }"; m="${n#*/}"; n="${n%/*}"
     ok=1
     perl -e "exit($wall <= $limit ? 0 : 1)" || ok=0
-    [ -n "$pair" ] && [ "$n" -ge $((m - 10)) ] || ok=0
+    [ -n "$pair" ] && [ "$n" -ge $((m - ${AVRA_LAND_WARM_EDIT_SLACK:-10})) ] || ok=0
     word="PASS"; [ "$ok" -eq 1 ] || word="FAIL"
     echo "land: warm-edit: $file edited, check $pkg in ${wall}s (limit ${limit}s), ${pair:-no held line} — $word"
     [ "$ok" -eq 1 ]
@@ -904,7 +984,7 @@ sprites_by_load() {
 
 # One Sprite's load, cores and MB free, as three words.
 sprite_probe() {
-    timeout 30 sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); l=$1; c=$(nproc); a=$(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo); echo "$l $c $a"'
+    timeout -k 1 "${AVRA_SPRITE_PROBE_S:-30}" sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); l=$1; c=$(nproc); a=$(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo); echo "$l $c $a"'
 }
 
 linux_gate_step() {
@@ -1427,6 +1507,26 @@ report_parallel_failures() {
     done < "$scratch/jobs.result"
 }
 
+# THE REMOTE SUITES (AVRA_LAND_REMOTE, default on): every affected
+# package's tests and, when the diff touches `.av`, the idioms check,
+# each on its own Sprite through tools/sp -p. The first Sprite builds
+# the tree's compiler (both generations) and the rest copy it, so this
+# runs beside the local builds and replaces the Linux leg.
+remote_suites() {
+    wt="$1"
+    has_av="$2"
+    shift 2
+    idioms=true
+    n=$#
+    for p in "$@"; do
+        idioms="$idioms && build/avra check packages/$p --baseline tools/idioms.baseline"
+        set -- "$@" "build/avra test packages/$p"
+    done
+    shift "$n"
+    [ "$has_av" -eq 1 ] && set -- "$idioms" "$@"
+    AVRA_SP_TREE="$wt" sh "${AVRA_LAND_SP:-$tools_dir/sp}" -p "$@"
+}
+
 # One package's idioms check — `--call`-invoked (never a bare function
 # name) because heavy() hands its command to memcap.sh, a SEPARATE
 # process that never sourced this script and knows no shell function.
@@ -1493,10 +1593,14 @@ run_checks() {
     # fmt-lossless 29s, everything else <=12s — the speed and Linux
     # gates run a full second build (or a whole Sprite) each, so they
     # slot in right after seed-check, ahead of cli.
-    if listed std-avrac "$affected"; then
+    if remote_on; then
+        echo "land: the package suites and idioms$suffix run on Sprites (tools/sp)" >&2
+    elif listed std-avrac "$affected"; then
         job_launch "test-std-avrac$suffix" heavy "test-std-avrac$suffix" sh -c "cd '$wt' && build/avra test packages/std-avrac"
     fi
-    if [ "$has_av" -eq 1 ]; then
+    if remote_on; then
+        :
+    elif [ "$has_av" -eq 1 ]; then
         job_launch "idioms$suffix" heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $affected
     else
         skipped "idioms and fmt-lossless$suffix" ".av file"
@@ -1509,12 +1613,13 @@ run_checks() {
     else
         echo "land: skipped the speed gate$suffix: AVRA_LAND_SPEED_GATE is off" >&2
     fi
-    if listed cli "$affected"; then
+    if ! remote_on && listed cli "$affected"; then
         job_launch "test-cli$suffix" heavy "test-cli$suffix" sh -c "cd '$wt' && build/avra test packages/cli"
     fi
 
     # Everything else, in any order.
     for pkg in $affected; do
+        remote_on && continue
         [ "$pkg" = "std-avrac" ] && continue
         [ "$pkg" = "cli" ] && continue
         job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
@@ -1672,6 +1777,9 @@ check_phase() {
 # THE LINUX GATE RUNS REMOTELY, so it takes no local slot and starts
 # before the local builds: the Sprite builds its own compiler from the
 # merged tree while this machine builds ours.
+# The remote suites ride the Linux leg, so they are on only while it is.
+remote_on() { [ "${AVRA_LAND_REMOTE:-1}" = "1" ] && [ "${AVRA_LAND_LINUX:-1}" = "1" ]; }
+
 linux_pid=""
 linux_launch() {
     linux_pid=""
@@ -1686,7 +1794,9 @@ linux_launch() {
     fi
     linux_suffix="$4"
     linux_wt="$1"
-    ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
+    linux_call="linux_gate_step $1"
+    remote_on && linux_call="remote_suites $1 $has_av"
+    ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call $linux_call $linux_pkgs ) &
     linux_pid=$!
 }
 
@@ -1709,12 +1819,13 @@ linux_collect() {
     fi
     lst=0
     wait "$linux_pid" || lst=$?
+    remote_on && sed -n '/^#   sprite/,$p' "$(log_of "linux$linux_suffix")" | sed 's/^/land: sp: /' >&2
     grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     if linux_saw_old_seed "$linux_wt" "$lst"; then
         echo "land: linux: the leg ran before the seed was re-emitted — once more, with the new seed" >&2
         rm -f "$scratch/tool-failure"
         lst=0
-        AVRA_LAND_PARALLEL_SLOT=1 heavy "linux-reseeded$linux_suffix" sh "$self" --call linux_gate_step "$linux_wt" $linux_pkgs || lst=$?
+        AVRA_LAND_PARALLEL_SLOT=1 heavy "linux-reseeded$linux_suffix" sh "$self" --call $linux_call $linux_pkgs || lst=$?
         grep -h '^land-linux: ' "$(log_of "linux-reseeded$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     fi
     return "$lst"
@@ -2125,9 +2236,15 @@ batch_core() {
     echo "land: batch of: $branches (tree $batch_wt)"
 
     # A whole batch failing is a truthful answer, never a script error.
-    good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
-    culprits="$(grep -h '^CULPRIT: ' "$(log_of batch-bisect-stderr)" 2>/dev/null | sed 's/^CULPRIT: //' | tr '\n' ' ')"
-    cat "$(log_of batch-bisect-stderr)" >&2
+    : > "$(log_of batch-bisect-stderr)"
+    kept=""
+    if reset_batch_wt; then
+        kept="$(conflict_sieve "$batch_wt" $branches 2>"$(log_of batch-sieve-stderr)")" || true
+    fi
+    good=""
+    [ -z "$kept" ] || good="$(bisect_land $kept 2>"$(log_of batch-bisect-stderr)")" || true
+    culprits="$(cat "$(log_of batch-sieve-stderr)" "$(log_of batch-bisect-stderr)" 2>/dev/null | grep '^CULPRIT: ' | sed 's/^CULPRIT: //' | tr '\n' ' ')"
+    cat "$(log_of batch-sieve-stderr)" "$(log_of batch-bisect-stderr)" >&2 2>/dev/null
     if [ -f "$scratch/tool-failure" ]; then
         good=""
         culprits=""
@@ -2258,6 +2375,7 @@ main_batch() {
     trap 'release_lock_and_exit INT' INT
     trap 'release_lock_and_exit TERM' TERM
     acquire_lock
+    start_wall_cap
 
     main_wt="$(worktree_for_branch main)"
     if [ -z "$main_wt" ]; then
@@ -2331,6 +2449,7 @@ main() {
     trap 'release_lock_and_exit INT' INT
     trap 'release_lock_and_exit TERM' TERM
     acquire_lock
+    start_wall_cap
 
     main_wt="$(worktree_for_branch main)"
     if [ -z "$main_wt" ]; then

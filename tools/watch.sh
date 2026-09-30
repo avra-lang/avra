@@ -33,13 +33,57 @@
 # END before the step does, or `sample` writes nothing.
 # Exit status is the command's, or 137 when the cap fired.
 
-# TWO FIXTURES, EACH IN A LOCK OF ITS OWN (AVRA_BUILD_LOCK), so a
-# self-test never contends the real machine-wide queue every other
-# session on this box is standing in. Fixture 1 proves a QUEUED
-# waiter's ticket is dropped and the process actually exits on TERM,
-# never just detouring through the trap and looping on. Fixture 2
-# proves a HOLDING watcher's TERM kills the guarded child before
-# releasing the lock, rather than orphaning it unwatched.
+# THE TREE WALKERS, DEFINED BEFORE ANY TRAP OR SELF-TEST CAN CALL
+# THEM: no state, safe wherever a trap needs them, and callable from
+# fixture 3 below.
+#
+# MEMBERSHIP IS BY PROCESS GROUP, NEVER A ppid WALK. A pgid is
+# assigned once and never goes stale; a ppid does, the instant a
+# parent dies and is reparented away — and once that freed pid is
+# reused by an unrelated process elsewhere on a loaded machine, a
+# walk matching on ppid attributes the reused pid's whole subtree to
+# the wrong root. `tree_pids` takes a `ps -eo pid=,pgid=` snapshot on
+# stdin so a hand-built one can prove this by construction.
+tree_pids() {
+    awk -v root="$1" '$2 == root { print $1 }'
+}
+tree_mem() {
+    pids=$(ps -eo pid=,pgid= | tree_pids "$1")
+    [ -n "$AVRA_WATCH_TRACE" ] && footprint $pids 2>/dev/null | awk '/\[[0-9]+\]:.*Footprint:/ { for (i=1; i<=NF; i++) if ($i=="Footprint:") printf "%s %s%s  ", $1, $(i+1), $(i+2) } END { print "" }' >&2
+    # a per-process header reads `name [pid]: … Footprint: N MB`; the
+    # Summary that follows several pids repeats their total
+    footprint $pids 2>/dev/null | awk '
+        /\[[0-9]+\]:.*Footprint:/ {
+            for (i=1; i<=NF; i++) if ($i=="Footprint:") {
+                v=$(i+1)+0; u=$(i+2)
+                if (u=="GB") v*=1024; else if (u=="KB") v/=1024; else if (u=="B") v=0
+                s+=v
+            }
+        }
+        END { print int(s) }'
+}
+tree_kill() {
+    ps -eo pid=,pgid= | tree_pids "$1" | xargs kill -9 2>/dev/null
+}
+# THE TRIPWIRE IS RSS, read by ps in milliseconds; the footprint —
+# `footprint` walks the process's whole map, seconds on a big one —
+# is read every fourth poll for the honest peak. A process once grew
+# from 7 GB to 16 GB between two footprint polls.
+tree_rss() {
+    ps -eo pid=,pgid=,rss= | awk -v root="$1" '$2 == root { s += $3 } END { print int(s/1024) }'
+}
+
+# THREE FIXTURES. Fixtures 1 and 2 each take a LOCK OF THEIR OWN
+# (AVRA_BUILD_LOCK), so a self-test never contends the real
+# machine-wide queue every other session on this box is standing in.
+# Fixture 1 proves a QUEUED waiter's ticket is dropped and the process
+# actually exits on TERM, never just detouring through the trap and
+# looping on. Fixture 2 proves a HOLDING watcher's TERM kills the
+# guarded child before releasing the lock, rather than orphaning it
+# unwatched. Fixture 3 takes no lock at all — it feeds `tree_pids` a
+# hand-built snapshot and proves a decoy sharing a coincidental pid or
+# ppid with the watched tree is never counted, by construction rather
+# than by winning a real pid-reuse race.
 self_test() {
     # A self-test run FROM INSIDE a held lock (`make gate` under this
     # very watchdog) inherits AVRA_WATCH_HELD, and the re-entrancy
@@ -109,7 +153,29 @@ self_test() {
         echo "watch: self-test: a TERM'd holder orphaned its guarded child"; kill -9 "$child" 2>/dev/null
         return 1
     fi
-    echo "watch: self-test passed — 2 fixtures"
+
+    # A REUSED pid IS A DECOY'S ppid field STILL NAMING A NUMBER THAT
+    # NOW BELONGS TO A LIVE TREE MEMBER. 501 is a genuine child of root
+    # 500; the decoy at 777 is an unrelated process, in an unrelated
+    # group, whose own ppid happens to equal 501 (as an exited child's
+    # freed pid, reused elsewhere, would) and whose rss dwarfs the real
+    # tree's. A ppid-chain walk would follow 501 straight to it; pgid
+    # membership cannot, because pgid is never consulted from a stale
+    # number.
+    snapshot="500 500 500 1024
+501 500 500 2048
+777 501 9999 999999"
+    got=$(printf '%s\n' "$snapshot" | awk '{print $1, $3}' | tree_pids 500 | sort -n | tr '\n' ' ')
+    if [ "$got" != "500 501 " ]; then
+        echo "watch: self-test: fixture 3 wanted pids '500 501 ', got '$got'"
+        return 1
+    fi
+    rss=$(printf '%s\n' "$snapshot" | awk '{print $1, $3, $4}' | awk -v root=500 '$2 == root { s += $3 } END { print int(s/1024) }')
+    if [ "$rss" != 3 ]; then
+        echo "watch: self-test: fixture 3 wanted 3 MB, the decoy's rss leaked in as $rss MB"
+        return 1
+    fi
+    echo "watch: self-test passed — 3 fixtures"
 }
 if [ "$1" = "--self-test" ]; then
     self_test
@@ -119,55 +185,14 @@ cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
+# THE GUARDED COMMAND BECOMES A PROCESS-GROUP LEADER: job control
+# gives a background job its own pgid, equal to its own pid, that
+# every descendant inherits. The tree walkers above key on that pgid,
+# never on a ppid chain.
+set -m
 slots="${AVRA_BUILD_SLOTS:-1}"
 lock="${AVRA_BUILD_LOCK:-/tmp/avra-build.lock}"
 floor="${AVRA_MEM_FLOOR:-20}"
-
-# THE TREE WALKERS, DEFINED BEFORE ANY TRAP CAN FIRE. A signal trap
-# that calls tree_kill must find it already a function, not a line
-# further down the file that has not run yet — so these three own no
-# state and are safe wherever a trap needs them.
-tree_mem() {
-    pids=$(ps -eo pid=,ppid= | awk -v root="$1" '
-        { pp[$1]=$2 }
-        END {
-            n=0; q[n++]=root
-            for (i=0; i<n; i++) { printf "%s ", q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
-        }')
-    [ -n "$AVRA_WATCH_TRACE" ] && footprint $pids 2>/dev/null | awk '/\[[0-9]+\]:.*Footprint:/ { for (i=1; i<=NF; i++) if ($i=="Footprint:") printf "%s %s%s  ", $1, $(i+1), $(i+2) } END { print "" }' >&2
-    # a per-process header reads `name [pid]: … Footprint: N MB`; the
-    # Summary that follows several pids repeats their total
-    footprint $pids 2>/dev/null | awk '
-        /\[[0-9]+\]:.*Footprint:/ {
-            for (i=1; i<=NF; i++) if ($i=="Footprint:") {
-                v=$(i+1)+0; u=$(i+2)
-                if (u=="GB") v*=1024; else if (u=="KB") v/=1024; else if (u=="B") v=0
-                s+=v
-            }
-        }
-        END { print int(s) }'
-}
-tree_kill() {
-    ps -eo pid=,ppid= | awk -v root="$1" '
-        { pp[$1]=$2 }
-        END {
-            n=0; q[n++]=root
-            for (i=0; i<n; i++) { print q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
-        }' | xargs kill -9 2>/dev/null
-}
-# THE TRIPWIRE IS RSS, read by ps in milliseconds; the footprint —
-# `footprint` walks the process's whole map, seconds on a big one —
-# is read every fourth poll for the honest peak. A process once grew
-# from 7 GB to 16 GB between two footprint polls.
-tree_rss() {
-    ps -eo pid=,ppid=,rss= | awk -v root="$1" '
-        { pp[$1]=$2; rss[$1]=$3 }
-        END {
-            n=0; q[n++]=root; s=0
-            for (i=0; i<n; i++) { s+=rss[q[i]]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
-            print int(s/1024)
-        }'
-}
 
 # A LINK THAT RUNS OUT OF DISK DELETES `build/avra`. `make bootstrap`
 # links straight at it (`-o build/avra`), so an ENOSPC there leaves the

@@ -1,0 +1,179 @@
+// `compiler.bypass_outside_bracket`: a hook-free verb (`sig_so_far`,
+// `seat_written_so_far`, `inferred_errors_so_far`, `registered_methods`)
+// called from a member not wearing that verb's `@bracket(name)`, or the
+// method table's raw `.methods.get()` cell read the same way. Packaged
+// rather than a lone source, since a lone source cannot import
+// `@std/meta` (compiler/dev/witnesses.av's `identity_golden`, features/
+// structs/tests/identity_test.av) — `provided` vendors the real
+// package so the annotation genuinely resolves. The subject type's own
+// methods are named after the covered verbs on purpose: the rule
+// matches by NAME, syntactically, never by resolving a receiver's type
+// (there is no real `Decls` here to call).
+use @std.avrac.testing.{provided}
+use @std.avrac.compiler.{rule_findings}
+use @std.avrac.features.{Analysed}
+
+const bracket_test_decl: string = "type Decls = { n: int, methods: int }\n" +
+    "impl Decls {\n" +
+    "    fn sig_so_far(d: int) -> int { d }\n" +
+    "    fn seat_written_so_far(d: int, i: int) -> bool { true }\n" +
+    "    fn inferred_errors_so_far(d: int) -> int { d }\n" +
+    "    fn registered_methods(target: int) -> int { target }\n" +
+    "    fn methods_of(target: int) -> int { target }\n" +
+    "}\n"
+
+/// The entry file's RULE findings rendered — `Program.report()` never
+/// carries them (they join the CLI's own `checked_at` pipeline, over a
+/// derived `Checked`, never a bare `Program`), so a rule's own test
+/// reads `rule_findings` off the file's `Analysed` directly, the same
+/// door `avra check`'s findings and `avra fix`'s proof both share
+/// (compiler/rule_pass.av).
+fn bracket_checked(body: string) -> string {
+    let p = provided("use @std.meta.{bracket}\n" + bracket_test_decl + body, "")
+    let a = p.entry_file()!
+    a
+        .rendered(rule_findings(Analysed { view: a.view, names: a.names, facts: a.facts }, a.view.stmts))
+}
+
+fn bracket_fires(body: string) -> bool {
+    bracket_checked(body).contains("[compiler.bypass_outside_bracket]")
+}
+
+spec "compiler/idioms (bypass_outside_bracket)" {
+    given "a member wearing the verb's own bracket" {
+        then "sig_so_far is clean" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"fail_summary\")\n" +
+                    "    fn caller(x: Decls, d: int) -> int { x.sig_so_far(d) }\n" +
+                    "}\n1",
+            )
+        }
+        then "seat_written_so_far is clean" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"receivers\")\n" +
+                    "    fn caller(x: Decls, d: int, i: int) -> bool { x.seat_written_so_far(d, i) }\n" +
+                    "}\n1",
+            )
+        }
+        then "inferred_errors_so_far is clean" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"fail_summary\")\n" +
+                    "    fn caller(x: Decls, d: int) -> int { x.inferred_errors_so_far(d) }\n" +
+                    "}\n1",
+            )
+        }
+        then "registered_methods is clean" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"methods\")\n" +
+                    "    fn caller(x: Decls, target: int) -> int { x.registered_methods(target) }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "a caller with no `@bracket` at all" {
+        then "the call fires" {
+            bracket_fires(
+                "impl Decls {\n" +
+                    "    fn caller(x: Decls, target: int) -> int { x.registered_methods(target) }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "a caller wearing the WRONG bracket" {
+        then "the call fires" {
+            bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"wrong\")\n" +
+                    "    fn caller(x: Decls, target: int) -> int { x.registered_methods(target) }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "a package's OWN fn named `bracket`, never `@std/meta`'s" {
+        then "the mark never satisfies the law — bracket is a DECLARATION, not a word" {
+            bracket_fires(
+                "fn bracket(name: string) {}\n" +
+                    "impl Decls {\n" +
+                    "    @bracket(\"methods\")\n" +
+                    "    fn caller(x: Decls, target: int) -> int { x.registered_methods(target) }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "a covered verb called from a LAMBDA nested inside a member" {
+        then "the lambda's own enclosing declaration is the member — its bracket covers the call" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"methods\")\n" +
+                    "    fn caller(x: Decls, target: int) -> int {\n" +
+                    "        let g = () -> x.registered_methods(target)\n" +
+                    "        g()\n" +
+                    "    }\n" +
+                    "}\n1",
+            )
+        }
+        then "the same lambda under an UNANNOTATED member still fires" {
+            bracket_fires(
+                "impl Decls {\n" +
+                    "    fn caller(x: Decls, target: int) -> int {\n" +
+                    "        let g = () -> x.registered_methods(target)\n" +
+                    "        g()\n" +
+                    "    }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "an unrelated method name that merely sounds alike" {
+        then "the rule never fires on it" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    fn sig(d: int) -> int { d }\n" +
+                    "    fn caller(x: Decls, d: int) -> int { x.sig(d) }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "the recorded door onto the SAME table" {
+        then "methods_of needs no bracket at all — it records its own dependency" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    fn caller(x: Decls, target: int) -> int { x.methods_of(target) }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "the method table's own raw cell, `.methods.get()`" {
+        then "read inside its bracket, it is clean" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"methods\")\n" +
+                    "    fn caller(x: Decls) -> int { x.methods.get() }\n" +
+                    "}\n1",
+            )
+        }
+        then "read with no bracket at all, it fires" {
+            bracket_fires(
+                "impl Decls {\n" + "    fn caller(x: Decls) -> int { x.methods.get() }\n" + "}\n1",
+            )
+        }
+        then "read under the WRONG bracket, it fires" {
+            bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"receivers\")\n" +
+                    "    fn caller(x: Decls) -> int { x.methods.get() }\n" +
+                    "}\n1",
+            )
+        }
+    }
+    given "a `.get()` call on a field that merely isn't named `methods`" {
+        then "the raw-cell arm never fires on it" {
+            !bracket_fires(
+                "impl Decls {\n" + "    fn caller(x: Decls) -> int { x.n.get() }\n" + "}\n1",
+            )
+        }
+    }
+}
