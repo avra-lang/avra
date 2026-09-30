@@ -839,9 +839,8 @@ S "maybe_bump now writes; relay's flow edge carries it into lib's held record, a
 got_w=$($R/w/src/main 2>&1)
 [ "$got_w" = "w 5 6" ] || { fails=$((fails+1)); echo "FAIL  w (relay's inferred write, read back from lib's held record) printed '$got_w', wanted 'w 5 6' — pair[1] must stay unaliased"; }
 
-# M5 S2: `Decls.decl(d)` now fetches its row through the pinned
-# `Rows<Decl>` handle, `row(d.index)`, never the relation's own
-# recorded `get` — but it must still call `rows_read(x.file)`, the SAME
+# `Decls.decl(d)` fetches its row through the pinned row storage, never
+# the relation's own recorded `get` — so it must still call `rows_read(x.file)`, the SAME
 # file-grain edge the hand table's read always fed the kernel. `drm`'s
 # held const `M` reads `drl`'s `seed` — a Const it runs — through a
 # fresh query frame every settle; editing `seed`'s body alone, warm,
