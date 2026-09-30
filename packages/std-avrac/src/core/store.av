@@ -201,20 +201,6 @@ export fn statement_after(starts: List<StmtStart>, at: int) -> StmtId? {
     if lo < starts.length { starts[lo].stmt } else { null }
 }
 
-/// The first index in `xs` (sorted ascending) whose value is `>=
-/// target` — `xs.length` when every value is smaller. Halving,
-/// `statement_after`'s twin over a bare `List<int>`: a kind's bucket
-/// sliced to one declaration's range never walks past it.
-fn lower_bound(xs: List<int>, target: int) -> int {
-    mut lo = 0
-    mut hi = xs.length
-    while lo < hi {
-        let mid = (lo + hi) / 2
-        if xs[mid] < target { lo = mid + 1 } else { hi = mid }
-    }
-    lo
-}
-
 impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
@@ -990,52 +976,16 @@ impl SyntaxArena {
     fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints.get()[id.index] }
     fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints.get()[id.index] }
 
-    /// Every kind's own bucket of `ExprId`s, in arena order — built
-    /// ONCE per file, on first ask (COMPILER DB townhall §6.11's
-    /// `@index kind`), kept behind `self.exprs.kind_index`
-    /// (`Arena`'s own identity law, never a new field on `SyntaxArena`
-    /// itself — a hot, constantly copied/dropped record costs one
-    /// retain/release per field per copy, DOGFOODING.md): a copy of
-    /// `self` still reads and grows the same buckets. Keyed by
-    /// `tag_expr`'s own int, `@derive(Matchable)`'s variant-order
-    /// tag — never a hand-kept mirror enum.
-    fn expr_kind_buckets() -> Map<string, Cell<List<int>>> {
-        let built? = self.exprs.kind_index.get() else {
-            let fresh = self.built_expr_kind_index()
-            self.exprs.kind_index.set(fresh)
-            return fresh
-        }
-        built
-    }
-
-    /// The one pass every later `exprs_by_kind` ask shares. A map
-    /// keys by TEXT (CLAUDE.md's subset), so `tag_expr`'s int is
-    /// interpolated once per node — cheap, and paid only at this
-    /// one-time build, never per ask.
-    fn built_expr_kind_index() -> Map<string, Cell<List<int>>> {
-        mut m: Map<string, Cell<List<int>>> = {}
-        for i in self.expr_ids() {
-            let key = "${self.tag_expr(self.expr(i))}"
-            let bucket = m.get(key) ?? {
-                let fresh: Cell<List<int>> = list_cell()
-                m.set(key, fresh)
-                fresh
-            }
-            bucket.push(i.index)
-        }
-        m
-    }
-
-    /// Every expression of kind `k` (a `tag_expr` int) inside
-    /// `[lo, hi)` — the `Expr` ARENA RELATION's `@index kind`/
-    /// `@index decl` (COMPILER DB townhall §6.11): `k`'s own bucket,
-    /// sliced by two binary searches, so a caller never visits a node
-    /// of another kind or outside its declaration's own range.
+    /// Every expression tagged `k` (`tag_expr`, `@derive(Matchable)`'s
+    /// variant order) inside `[lo, hi)`: the `Expr` arena relation's
+    /// `@index kind`, sliced to one declaration's `@index decl` range.
     fn exprs_by_kind(lo: int, hi: int, k: int) -> List<ExprId> {
-        let ids = self.expr_kind_buckets().get("${k}")?.get() ?? []
-        let start = lower_bound(ids, lo)
-        let end = lower_bound(ids, hi)
-        [ExprId { index: i } for i in ids.slice(start, end)]
+        [ExprId { index: i } for i in self.exprs.of_kind(lo, hi, k, (e: Expr) -> self.tag_expr(e))]
+    }
+
+    /// `exprs_by_kind`'s twin over the `Stmt` arena relation.
+    fn stmts_by_kind(lo: int, hi: int, k: int) -> List<StmtId> {
+        [StmtId { index: i } for i in self.stmts.of_kind(lo, hi, k, (s: Stmt) -> self.tag_stmt(s))]
     }
 
     /// The span containing both expressions, when both are known.

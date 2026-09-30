@@ -869,7 +869,9 @@ static int hot_keep(const char* name) {
         || strcmp(name, "avra_rc_release") == 0
         || strcmp(name, "avra_array_len") == 0
         || strcmp(name, "avra_array_get") == 0
-        || strcmp(name, "avra_array_get_owned") == 0;
+        || strcmp(name, "avra_array_get_owned") == 0
+        || strcmp(name, "avra_slot_get") == 0
+        || strcmp(name, "avra_slot_get_owned") == 0;
 }
 
 static void hot_linked(LLVMModuleRef m) {

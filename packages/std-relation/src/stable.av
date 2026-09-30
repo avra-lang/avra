@@ -169,6 +169,25 @@ export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
     for x in xs { each(w, x) }
 }
 
+/// One value as a record, through its writer.
+export fn encoded_with<T>(v: T, each: fn(Writer, T) -> void) -> Bytes {
+    let w = writer()
+    each(w, v)
+    w.bytes()
+}
+
+/// A record read back through its reader — one with octets to spare
+/// refused, never half read.
+export fn decoded_with<T>(b: Bytes, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T,
+    CodecFault,
+> {
+    let r = reader(b)
+    let v = each(r)?
+    if !r.done() { fail CodecFault.Trailing }
+    v
+}
+
 /// Why a record does not decode. A record that does not decode is
 /// dropped and recomputed, never guessed at.
 export enum CodecFault {

@@ -1,0 +1,100 @@
+//! A `@query` answer kept under a file's key parts: a fresh Db over the
+//! same store (a later process) reads it back instead of running, while
+//! a moved part — the file's text, a seen module's interface — runs it
+//! again, and a part of ANOTHER file moving leaves it standing.
+use @std.relation.{query}
+use @std.relation.db.{Db, durable_db, quiet_hooks}
+use @std.time.{now_ns}
+use compiler.db.{fresh_db}
+use compiler.record.{KeyParts, SeenPart}
+use compiler.store.{Store, store_at}
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+@query
+fn scaled(_db: Db, n: int) -> int {
+    let c = computes()
+    c.set(c.get() + 1)
+    n * 3
+}
+
+/// A store no earlier run wrote into.
+fn fresh_store(name: string) -> Store { store_at("/tmp/avra-answers-test/${now_ns()}/${name}") }
+
+/// `main.av`'s parts: its text's digest and the interface of the one
+/// module it sees.
+fn main_parts(text: string, iface: string) -> KeyParts {
+    KeyParts {
+        module: "app",
+        path: "app/main.av",
+        text: text,
+        runs: [],
+        seen: [SeenPart { module: "lib", bytes_key: iface, files: 1 }],
+    }
+}
+
+fn other_parts(text: string) -> KeyParts { KeyParts { module: "app", path: "app/other.av", text: text, runs: [], seen: [] } }
+
+/// A Db standing for a fresh process checking the file `parts` names.
+fn checking(store: Store, parts: KeyParts) -> Db { durable_db(quiet_hooks(), fresh_db().answers(store, parts)) }
+
+/// How many times `scaled(n)` ran over the calls, each in its own process.
+fn runs_over(store: Store, calls: List<KeyParts>, n: int) -> string {
+    let before = computes().get()
+    let answers = [scaled(checking(store, p), n) for p in calls]
+    "${listed(answers)} ${computes().get() - before}"
+}
+
+fn listed(xs: List<int>) -> string { ["${x}" for x in xs].join(",") }
+
+spec "compiler/answers — a @query answer kept under its file's key parts" {
+    given "one file checked twice, its parts unchanged" {
+        then "the second process reads the answer back and runs nothing" {
+            let s = fresh_store("warm")
+            runs_over(s, [main_parts("t1", "i1"), main_parts("t1", "i1")], 4) == "12,12 1"
+        }
+    }
+    given "the file's own text moved" {
+        then "the answer runs again" {
+            let s = fresh_store("text")
+            runs_over(s, [main_parts("t1", "i1"), main_parts("t2", "i1")], 4) == "12,12 2"
+        }
+    }
+    given "the interface of a module the file sees moved" {
+        then "the answer runs again" {
+            let s = fresh_store("iface")
+            runs_over(s, [main_parts("t1", "i1"), main_parts("t1", "i2")], 4) == "12,12 2"
+        }
+    }
+    given "another file edited between the two checks" {
+        then "the answer still stands" {
+            let s = fresh_store("unrelated")
+            let first = runs_over(s, [main_parts("t1", "i1"), other_parts("o1")], 4)
+            let second = runs_over(s, [other_parts("o2"), main_parts("t1", "i1")], 4)
+            first == "12,12 2" && second == "12,12 1"
+        }
+    }
+    given "the same call from two files" {
+        then "each file keeps its own record" {
+            let s = fresh_store("two")
+            runs_over(
+                s,
+                [
+                    main_parts("t1", "i1"),
+                    other_parts("o1"),
+                    main_parts("t1", "i1"),
+                    other_parts("o1"),
+                ],
+                5,
+            ) == "15,15,15,15 2"
+        }
+    }
+    given "a different argument under the same file" {
+        then "it runs, and the first call's record still stands" {
+            let s = fresh_store("args")
+            let _ = runs_over(s, [main_parts("t1", "i1")], 4)
+            runs_over(s, [main_parts("t1", "i1"), main_parts("t1", "i1")], 6) == "18,18 1" &&
+                runs_over(s, [main_parts("t1", "i1")], 4) == "12 0"
+        }
+    }
+}

@@ -10,6 +10,7 @@ use core.{
     joined,
     flatten,
     sorted_texts,
+    distinct,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized}
 use features.{Decl, Import, nothing}
@@ -80,6 +81,13 @@ impl Workspace {
         let file = m.file_under(src)
         if self.host.exists(file) { return [file] }
         []
+    }
+
+    /// THE MODULES WHOSE RECORDS KEEP WHAT A PATH NAMES. A `use` may name ONE
+    /// FILE of a directory module (`@std.http.frame`), and a record is kept
+    /// under the name of the module that file belongs to.
+    fn record_modules(m: ModulePath) -> List<ModulePath> {
+        [module_path(name.split(".")) for name in distinct([self.module_of(f) for f in self.module_files(m)])]
     }
 
     /// THE MODULES A MODULE IMPORTS — read from the PARSE, which is the ONE time

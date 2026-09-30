@@ -1,0 +1,61 @@
+// The arena relations' `@index kind`: a bucket per variant tag, sliced
+// to a range, and caught up with every node appended after an ask.
+use @std.avrac.core.{new_node_store, SyntaxArena, Expr, ExprId, Stmt}
+
+fn int_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.IntLit(0)) }
+
+fn indexes(ids: List<ExprId>) -> string { ["${i.index}" for i in ids].join(",") }
+
+/// Five nodes: ints at 0, 2 and 4, `null` at 1 and 3.
+fn mixed() -> SyntaxArena {
+    let store = new_node_store()
+    for i in 0..5 {
+        let _ = store.alloc_expr(if i % 2 == 0 { Expr.IntLit(i) } else { Expr.NullLit })
+    }
+    store
+}
+
+spec "core/arena — the kind index" {
+    given "ints at 0, 2 and 4 among nulls" {
+        then "the int bucket over the whole arena is 0, 2, 4" {
+            let store = mixed()
+            indexes(store.exprs_by_kind(0, 5, int_tag(store))) == "0,2,4"
+        }
+        then "a range keeps only the ints inside it" {
+            let store = mixed()
+            indexes(store.exprs_by_kind(1, 4, int_tag(store))) == "2"
+        }
+        then "an empty range answers nothing" {
+            let store = mixed()
+            store.exprs_by_kind(3, 3, int_tag(store)).is_empty()
+        }
+        then "a kind the arena never holds answers nothing" {
+            let store = mixed()
+            store.exprs_by_kind(0, 5, store.tag_expr(Expr.BoolLit(true))).is_empty()
+        }
+    }
+    given "a node appended after the index was asked" {
+        then "the next ask finds it" {
+            let store = mixed()
+            let _ = store.exprs_by_kind(0, 5, int_tag(store))
+            let _ = store.alloc_expr(Expr.IntLit(9))
+            indexes(store.exprs_by_kind(0, 6, int_tag(store))) == "0,2,4,5"
+        }
+        then "a copy of the arena reads the same caught-up buckets" {
+            let store = mixed()
+            let copy = store
+            let _ = store.alloc_expr(Expr.IntLit(9))
+            indexes(copy.exprs_by_kind(0, 6, int_tag(copy))) == "0,2,4,5"
+        }
+    }
+    given "the statement arena" {
+        then "its buckets are its own, never the expression arena's" {
+            let store = mixed()
+            let v = ExprId { index: 0 }
+            let _ = store.alloc_stmt(Stmt.Fail(v))
+            let _ = store.alloc_stmt(Stmt.Return(v))
+            let _ = store.alloc_stmt(Stmt.Fail(v))
+            store.stmts_by_kind(0, 3, store.tag_stmt(Stmt.Fail(v))).length == 2
+        }
+    }
+}

@@ -1,7 +1,10 @@
 //! `avra rules` — every rule the compiler carries (compiler/
 //! rules_table.av's `rules` collect), by identity: the ground truth a
-//! native idiom finding's kind is checked against.
-use @std.cli.{CliResult, Runnable, command, flag}
+//! native idiom finding's kind is checked against. `--markdown` renders
+//! DOGFOODING.md's generated block, and `--check-markdown <doc>` holds
+//! a doc's committed block to that one rendering.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{read_text}
 use @std.avrac.compiler.{RuleEntry, rule_id, declared_law}
 use @std.json.{Json, field, to_text}
 
@@ -10,6 +13,8 @@ type RulesCmd = {}
 impl Runnable for RulesCmd {
     fn run(args: CliResult) -> int {
         let entries = root_program(here()).rule_listing()
+        let doc = args.option("check-markdown")
+        if doc != "" { return markdown_said(doc, entries) }
         println(
             if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in entries])) } else if args.has_flag("markdown") { rules_markdown(entries) } else { rules_listing(entries) },
         )
@@ -53,16 +58,126 @@ export fn rules_listing(entries: List<RuleEntry>) -> string {
 /// `_defaulted` family, the raw region Ins, the raw mint-emit Ins) —
 /// it earns its own bullet the day it earns its own `///`.
 export fn rules_markdown(entries: List<RuleEntry>) -> string {
-    [documented_bullet(r) for r in entries if r.doc != ""].join("\n")
+    [documented_bullet(r) for r in documented(entries)].join("\n")
+}
+
+fn documented(entries: List<RuleEntry>) -> List<RuleEntry> {
+    [r for r in entries if r.doc != ""]
 }
 
 fn documented_bullet(r: RuleEntry) -> string {
     "- ${rule_id(r)} ${r.doc}"
 }
 
+/// A doc's generated block held to `rules_markdown`'s rendering of
+/// the same table, byte for byte: the count of rules rendered and
+/// compared, or the first place the two disagree. A doc with no
+/// block, or a table with no documented rule, examined nothing and
+/// is refused.
+export fn block_checked(path: string, doc: string, listed: List<RuleEntry>) -> Result<int, string> {
+    if doc.contains("\r") { fail carriage_return(path) }
+    let lines = doc.split("\n")
+    let start = block_marker(path, lines, block_start)?
+    let end = block_marker(path, lines, block_end)?
+    if end < start { fail markers_reversed(path, start + 1, end + 1) }
+    let n = documented(listed).length
+    if n == 0 { fail nothing_rendered(path) }
+    let committed = lines.slice(start + 1, end)
+    let rendered = rules_markdown(listed).split("\n")
+    let at? = first_drift(committed, rendered) else { return .Ok(n) }
+    fail block_stale(path, start + at + 2, line_at(committed, at), line_at(rendered, at))
+}
+
+const block_start = "<!-- GENERATED:RULES:START -->"
+const block_end = "<!-- GENERATED:RULES:END -->"
+
+/// The one line a marker stands on — refused absent or doubled.
+fn block_marker(path: string, lines: List<string>, marker: string) -> Result<int, string> {
+    let count = [l for l in lines if l == marker].length
+    if count == 0 { fail marker_missing(path, marker) }
+    if count > 1 { fail marker_doubled(path, marker, count) }
+    .Ok(lines.index_of(marker))
+}
+
+fn first_drift(committed: List<string>, rendered: List<string>) -> int? {
+    let n = if committed.length > rendered.length { committed.length } else { rendered.length }
+    [i for i in 0..n if line_at(committed, i) != line_at(rendered, i)].first()
+}
+
+fn line_at(lines: List<string>, i: int) -> string? {
+    if i < lines.length { return lines[i] }
+    null
+}
+
+/// `rules --check-markdown <doc>`: the verdict printed, 0 or 1.
+fn markdown_said(path: string, entries: List<RuleEntry>) -> int {
+    let doc = match read_text(rooted(path)) {
+        .Ok(text) -> text,
+        .Err(_) -> {
+            eprintln(unreadable(path))
+            return 1
+        },
+    }
+    match block_checked(path, doc, entries) {
+        .Ok(n) -> {
+            println(block_matches(path, n, entries.length))
+            0
+        },
+        .Err(why) -> {
+            eprintln(why)
+            1
+        },
+    }
+}
+
 export command rules {
     description: "Every rule the compiler carries, by identity — the ground truth a native idiom finding's kind is checked against"
     flag json { description: "one JSON array of {id, module, name, doc, law}" }
     flag markdown { description: "DOGFOODING.md's generated registry block: one bullet per documented rule" }
+    option {
+        name: "check-markdown"
+        description: "hold a doc's generated registry block to the table's own rendering; refuse the first line that differs"
+    }
     run: RulesCmd {}
+}
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn block_matches(path: string, n: int, total: int) -> string {
+    "${path}: the generated block matches the rule table — ${n} documented rule(s) rendered and compared, of ${total}"
+}
+
+fn unreadable(path: string) -> string {
+    "${path}: cannot be read — no generated block to compare"
+}
+
+fn carriage_return(path: string) -> string {
+    "${path}: holds a carriage return — the generated block is compared line by line, and a line ends at `\\n` alone"
+}
+
+fn marker_missing(path: string, marker: string) -> string {
+    "${path}: no `${marker}` line — a doc with no generated block has nothing to compare"
+}
+
+fn marker_doubled(path: string, marker: string, count: int) -> string {
+    "${path}: `${marker}` stands on ${count} lines — the generated block has one start and one end"
+}
+
+fn markers_reversed(path: string, start: int, end: int) -> string {
+    "${path}:${end}: the block's end marker stands above its start (line ${start})"
+}
+
+fn nothing_rendered(path: string) -> string {
+    "${path}: the rule table renders no documented rule — a block compared against nothing proves nothing"
+}
+
+fn block_stale(path: string, line: int, committed: string?, rendered: string?) -> string {
+    "${path}:${line}: the generated block is stale — it holds ${quoted_line(committed)}, the rule table renders ${quoted_line(rendered)}; regenerate it with `avra rules --markdown`"
+}
+
+fn quoted_line(line: string?) -> string {
+    match line {
+        l? -> "`${l}`"
+        null -> "nothing"
+    }
 }

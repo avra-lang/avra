@@ -1,0 +1,46 @@
+//! A FILE'S KEPT QUERY ANSWERS — where a `@query` answer computed while a
+//! file is checked outlives the process: a Db `Answer` row under the
+//! file's KEY PARTS (record.av), the hold path's durable witness. A later
+//! process whose file stands names the same key and reads the record
+//! back; a moved part — the file's text, a run it read, a seen module's
+//! interface — names another key, and the query runs again.
+use @std.relation.db.{Durable}
+use compiler.store.{Store}
+
+impl Db {
+    /// The durable doors of a `@query` Db checking the file `parts` names.
+    fn answers(store: Store, parts: KeyParts) -> Durable {
+        let file = key_of_parts(parts)
+        Durable {
+            answer: (query: string, args: int) -> self.answer_record(store, answer_name(file, query, args)),
+            keep: (query: string, args: int, record: Bytes) -> self
+                .insert(store, DbRow.Answer(answer_name(file, query, args), hex(record))),
+        }
+    }
+
+    /// A kept answer's record, when its row reads back.
+    fn answer_record(store: Store, name: string) -> Bytes? {
+        let row? = self.get(store, DbKind.Answer, name) else { return null }
+        match row { .Answer(_, text) -> unhex(text), rest -> null }
+    }
+}
+
+/// An answer's row name: the file's key, the query, its arguments' hash.
+fn answer_name(file: string, query: string, args: int) -> string { "${file}\t${query}\t${args}" }
+
+const hex_digits: string = "0123456789abcdef"
+
+/// Octets as two lowercase hex digits each.
+fn hex(b: Bytes) -> string { [hex_pair(b.at(i)) for i in 0..b.length].join("") }
+
+fn hex_pair(v: int) -> string { "${hex_digit(v >> 4)}${hex_digit(v & 15)}" }
+
+fn hex_digit(v: int) -> string { hex_digits.substring(v, v + 1) }
+
+/// `hex` read back; absent for text that is not whole pairs of digits.
+fn unhex(s: string) -> Bytes? {
+    if s.length % 2 != 0 { return null }
+    let nibbles = [hex_digits.index_of(s.substring(i, i + 1)) for i in 0..s.length]
+    if nibbles.any(it < 0) { return null }
+    [nibbles[2 * i] * 16 + nibbles[2 * i + 1] for i in 0..s.length / 2].bytes()
+}

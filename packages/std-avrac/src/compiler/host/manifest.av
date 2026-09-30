@@ -75,7 +75,9 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     }
     let name = r.word("name", "manifest.no_name", "a name — `name = \"@scope/name\"`")
     let version = r.word("version", "manifest.no_version", "a version — `version = \"0.1.0\"`")
-    if name != "" && !lawful_name(name) { r.speak(r.bad_name(name)) }
+    if name != "" {
+        if lawful_name(name) { r.lib_named(name) } else { r.speak(r.bad_name(name)) }
+    }
     if version != "" && !is_semver(version) { r.speak(r.bad_version(version)) }
     r.profiles()
     Manifest {
@@ -102,6 +104,16 @@ export fn read_manifest(src: SourceFile) -> Manifest {
 /// that nothing imports.
 fn lawful_name(name: string) -> bool {
     is_package_key(name) || is_name_word(name)
+}
+
+/// A package's name as a library stem: `@std/sqlite` becomes
+/// `std-sqlite` — ONE leading `@` dropped, every `/` a `-`. The rule
+/// is spelled twice, here and in `tools/libs.py`, and the halves must
+/// be copyable into each other: "strip one leading `@`" is,
+/// "strip every `@`" is not.
+export fn library_stem(named: string) -> string {
+    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
+    stripped.replace("/", "-")
 }
 
 /// `MAJOR.MINOR.PATCH`, an optional `-` suffix after.
@@ -404,6 +416,14 @@ impl Reader {
         toml_text(v) ?? default_path
     }
 
+    /// `[lib] name`, when written, is the stem the package's name
+    /// derives — the one name its library is built and found by.
+    fn lib_named(package: string) {
+        let e? = self.doc.entry("lib", "name") else { return }
+        let written = toml_text(e.value) ?? ""
+        if written != library_stem(package) { self.speak(self.lib_name(e, written, package)) }
+    }
+
     /// Every profile's name is a word, and its opt level is one the
     /// spec names.
     fn profiles() {
@@ -513,6 +533,16 @@ impl Reader {
             "a version is `MAJOR.MINOR.PATCH` — `${version}` is not",
             "here",
             null,
+        )
+    }
+
+    fn lib_name(e: TomlEntry, written: string, package: string) -> Diag {
+        refusal(
+            "manifest.lib_name",
+            self.entry_at(e),
+            "a library is named for its package — `${package}` is `${library_stem(package)}`, not `${written}`",
+            "here",
+            "write `name = \"${library_stem(package)}\"`, or drop the key",
         )
     }
 

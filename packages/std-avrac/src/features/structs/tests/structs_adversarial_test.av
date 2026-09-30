@@ -102,6 +102,61 @@ spec "features/structs (adversarial)" {
             refused_with(src, "an interpolation hole prints as a scalar or string, found `P`")
         }
     }
+    given "a field written twice is one mistake" {
+        then "a repeat whose value needs the field's enum speaks once" {
+            refused_with(
+                "enum Tone { Muted, Danger }\ntype T = { tone: Tone }\nlet t = T { tone: .Muted, tone: .Danger }\n0",
+                "field `tone` is written more than once",
+            )
+        }
+        then "a third write adds no voice" {
+            refused_with(
+                "enum Tone { Muted, Danger, Text }\ntype T = { tone: Tone }\nlet t = T { tone: .Muted, tone: .Danger, tone: .Text }\n0",
+                "field `tone` is written more than once",
+            )
+        }
+        then "a repeat's value is not judged against the field" {
+            refused_with(
+                "type P = { x: int }\nlet p = P { x: 1, x: true }\n0",
+                "field `x` is written more than once",
+            )
+        }
+        then "each repeated field speaks for itself" {
+            refusals(
+                "enum Tone { Muted, Danger }\ntype T = { tone: Tone, n: int }\nlet t = T { tone: .Muted, tone: .Danger, n: 1, n: 2 }\n0",
+            ) == 2
+        }
+        then "a repeat through `with` speaks once" {
+            refused_with(
+                "enum Tone { Muted, Danger }\ntype T = { tone: Tone }\nlet t = T { tone: .Muted }\nlet u = t with { tone: .Muted, tone: .Danger }\n0",
+                "field `tone` is written more than once",
+            )
+        }
+        then "an unknown field's value is not asked for its enum" {
+            refused_with(
+                "enum Tone { Muted, Danger }\ntype T = { tone: Tone }\nlet t = T { tone: .Muted, hue: .Danger }\n0",
+                "`T` has no field `hue`",
+            )
+        }
+        then "nothing nested in a repeat's value speaks" {
+            refused_with(
+                "enum Tone { Muted, Danger }\ntype T = { tone: Tone }\nlet t = T { tone: .Muted, tone: if true { .Danger } else { .Muted } }\n0",
+                "field `tone` is written more than once",
+            )
+        }
+        then "a generic record's repeat speaks once" {
+            refused_with(
+                "enum Tone { Muted, Danger }\ntype B<X> = { v: X, n: int }\nlet b = B { v: 1, n: 1, n: .Danger }\n0",
+                "field `n` is written more than once",
+            )
+        }
+        then "a repeat in a fn's answer speaks once" {
+            refused_with(
+                "enum Tone { Muted, Danger }\ntype T = { tone: Tone }\nfn f() -> T { T { tone: .Muted, tone: .Danger } }\n0",
+                "field `tone` is written more than once",
+            )
+        }
+    }
     given "a default is a body of its own" {
         then "it cannot read the top level's run-time bindings — one refusal, the floor's" {
             refused_with(
