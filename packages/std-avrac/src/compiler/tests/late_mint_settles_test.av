@@ -1,6 +1,6 @@
 // A LATE WRITE IS AN INPUT ARRIVING: a file minted after a query read its
-// module's file bucket bumps the revision, so that query re-verifies, and
-// the whole-program pass asks again until nothing moves — it settles.
+// module's file bucket moves the revision at the pass's end, so that query
+// re-verifies, and the whole-program pass asks again until nothing moves.
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
@@ -18,12 +18,13 @@ fn late_workspace() -> Workspace {
 
 spec "compiler/late mint — a re-verified enumeration settles" {
     given "a query that read its module's files, then a file minted in that module" {
-        then "the late mint bumps the revision" {
+        then "the late mint waits for the pass's end, then moves the revision" {
             let ws = late_workspace()
             let _ = ws.analysis(ws.file_id("/w/src/a.av"))
             let before = ws.db.revision()
             let _ = ws.file_id("/w/src/b.av")
-            ws.db.revision() > before
+            let held = ws.db.revision() == before
+            held && ws.decls.settle_late() && ws.db.revision() > before
         }
         then "the whole program still settles, the late file in it and clean" {
             let ws = late_workspace()
