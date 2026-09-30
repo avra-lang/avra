@@ -61,11 +61,12 @@ typedef struct {
 // A string-keyed, insertion-ordered map: keys and values as two
 // arrays, and an open-addressing index over key hashes. An index of
 // ZERO capacity is UNBUILT — static data arrives so, and the first
-// lookup builds it.
+// lookup builds it. The word BEFORE a built index says which hash
+// filed it (nonzero: the keyed fallback).
 typedef struct {
     AvraArray* keys;
     AvraArray* vals;
-    int64_t* index;   // slot + 1, 0 when empty
+    int64_t* index;   // slot + 1 in the low half, 0 when empty; the hash's high half above
     int64_t icap;
 } AvraMap;
 

@@ -1281,6 +1281,9 @@ impl Machine {
             .ArrayPushMaybe -> self.push_maybe_val(vals),
             .MapSetMaybe -> self.map_set_maybe_val(vals),
             .MapValuePresent -> self.map_value_present_val(vals),
+            .MapSlot -> self.map_slot_val(vals),
+            .MapValueAt -> self.map_value_at_val(vals),
+            .MapPresentAt -> self.map_present_at_val(vals),
             .SlotSetMaybe -> self.set_maybe_val(vals),
             .SlotPresent -> self.present_val(vals),
             .ArrayLastPresent -> self.last_present_val(vals),
@@ -1854,6 +1857,21 @@ impl Machine {
         let id? = map_id(vals[0]) else { return self.unlooked() }
         let s = self.map_slot(id, self.text_val(vals[1]))
         Val.I(if s >= 0 && !(self.maps[id].vals[s] is .Gone) { 1 } else { 0 })
+    }
+
+    fn map_slot_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        Val.I(self.map_slot(id, self.text_val(vals[1])))
+    }
+
+    fn map_value_at_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        read_out(self.maps[id].vals[self.whole(vals[1])])
+    }
+
+    fn map_present_at_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        Val.I(if self.maps[id].vals[self.whole(vals[1])] is .Gone { 0 } else { 1 })
     }
 
     fn unread_presence() -> Val { self.defect_val("a presence read of a non-array") }

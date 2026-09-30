@@ -46,7 +46,10 @@
 #else
 #include <link.h>
 #include <malloc.h>
+#include <sys/random.h>
 #endif
+#include <time.h>
+#include <unistd.h>
 #include "avra_box.h"
 #include "avra_runtime.h"
 #include "avra_hot.h"
@@ -653,6 +656,7 @@ static void array_reclaim(void* p);
 static void array_poison(void* p);
 static void map_reclaim(void* p);
 static void guard_kept(void* p, Header* h);
+static inline int64_t index_words(AvraMap* m);
 static void* box_clone(void* p);
 
 // DEBUG GUARD (AVRA_RC_GUARD=1): a box that reaches rc 0 is KEPT,
@@ -1462,7 +1466,7 @@ static int64_t once_box_credit(void* p) {
         }
         case KIND_MAP: {
             AvraMap* m = (AvraMap*)p;
-            int64_t total = (int64_t)(sizeof(Header) + sizeof(AvraMap)) + (int64_t)(m->icap * (int64_t)sizeof(int64_t));
+            int64_t total = (int64_t)(sizeof(Header) + sizeof(AvraMap)) + index_words(m) * (int64_t)sizeof(int64_t);
             return total + once_box_credit(m->keys) + once_box_credit(m->vals);
         }
         case KIND_STR:
@@ -1869,26 +1873,196 @@ int64_t avra_slot_present(void* arr, int64_t i) {
 // Two arrays keep the written order (keys owned — the map holds
 // its own reference to every key; values marked owned at set) and
 // an open-addressing index over key hashes finds a slot. Kind 2.
+//
+// KEYS ARE REQUEST DATA — headers, query parameters, JSON object keys —
+// so a hash an adversary can predict is a probe chain an adversary can
+// build. Three laws hold the cost of a map to the number of its keys:
+// - THE HASH READS THE WHOLE KEY, by its header length, as equality
+//   does: a NUL is a character, and a hash that stopped at one filed
+//   every key sharing the prefix before it on one chain.
+// - THE HASH IS KEYED, by secrets drawn from the OS once per process,
+//   so no collision can be computed ahead of time. A fork INHERITS
+//   them: a core's maps were indexed before it was forked, and a
+//   reseed would strand every one.
+// - A PROBE PAST THE TRIPWIRE REKEYS THE MAP under SipHash-1-3 —
+//   a seed-independent weakness in the fast hash, or a leaked seed,
+//   costs that one map a slower hash, never a quadratic one.
+// A probe steps by growing strides (1, 2, 3, …), which visits every
+// word of a power-of-two index and keeps runs short where a step of one
+// lets them merge. An index word holds the slot + 1 in its low half
+// (0 is empty) and the key's hash in its high half, so a probe passing
+// another key's word rarely reads that key's text. The word before the
+// index says which hash filed it.
 
-static uint64_t str_hash(const char* s) {
-    uint64_t h = 1469598103934665603ull;
-    for (; *s; s++) { h ^= (unsigned char)*s; h *= 1099511628211ull; }
-    return h;
+enum { PROBE_TRIPWIRE = 128 };
+
+// The fast hash's seed and secret; then SipHash's key.
+static uint64_t g_text_key[2];
+static uint64_t g_sip_key[2];
+
+static uint64_t splitmix(uint64_t* x) {
+    uint64_t z = (*x += 0x9e3779b97f4a7c15ull);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
 }
 
-static void map_index_rebuild(AvraMap* m, int64_t icap) {
-    if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
-    acc_add(ACC_INDEX, (int64_t)((icap - m->icap) * (int64_t)sizeof(int64_t)));
-    free(m->index);
-    m->icap = icap;
-    mem_ceiling_check();
-    m->index = (int64_t*)calloc((size_t)icap, sizeof(int64_t));
-    for (int64_t s = 0; s < m->keys->len; s++) {
-        const char* k = (const char*)(uintptr_t)m->keys->data[s];
-        uint64_t i = str_hash(k) & (uint64_t)(icap - 1);
-        while (m->index[i] != 0) i = (i + 1) & (uint64_t)(icap - 1);
-        m->index[i] = s + 1;
+// n words of the kernel's entropy; the clock and the address space
+// when it has none to give, which the tripwire still bounds.
+static void os_entropy(uint64_t* w, size_t n) {
+#ifdef __APPLE__
+    arc4random_buf(w, n * sizeof *w);
+#else
+    size_t got = 0;
+    while (got < n * sizeof *w) {
+        ssize_t r = getrandom((char*)w + got, n * sizeof *w - got, 0);
+        if (r > 0) { got += (size_t)r; continue; }
+        if (r < 0 && errno == EINTR) continue;
+        struct timespec t;
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        uint64_t x = (uint64_t)t.tv_nsec ^ ((uint64_t)t.tv_sec << 32) ^ (uint64_t)(uintptr_t)&t ^ (uint64_t)getpid();
+        for (size_t i = 0; i < n; i++) w[i] = splitmix(&x);
+        return;
     }
+#endif
+}
+
+static inline uint64_t wide_mix(uint64_t a, uint64_t b) {
+    __uint128_t r = (__uint128_t)a * b;
+    return (uint64_t)r ^ (uint64_t)(r >> 64);
+}
+
+// Drawn before any program code runs; `AVRA_HASH_SEED` pins them, so a
+// run can be replayed. The seed never reaches output: a map iterates
+// in written order.
+__attribute__((constructor(101)))
+static void hash_seeded(void) {
+    uint64_t w[4];
+    const char* pinned = getenv("AVRA_HASH_SEED");
+    if (pinned) {
+        uint64_t x = strtoull(pinned, NULL, 0);
+        for (int i = 0; i < 4; i++) w[i] = splitmix(&x);
+    } else {
+        os_entropy(w, 4);
+    }
+    g_text_key[0] = w[0];
+    g_text_key[1] = w[1] | 1;
+    g_sip_key[0] = w[2];
+    g_sip_key[1] = w[3];
+}
+
+static inline uint64_t read8(const uint8_t* p) { uint64_t v; memcpy(&v, p, 8); return v; }
+static inline uint64_t read4(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+
+// The fast hash: wyhash's shape, every secret the process's own.
+__attribute__((always_inline))
+static inline uint64_t fast_hash(const char* s, size_t n) {
+    const uint8_t* p = (const uint8_t*)s;
+    const uint64_t* k = g_text_key;
+    uint64_t seed = k[0], a, b;
+    if (__builtin_expect(n <= 16, 1)) {
+        if (n >= 4) {
+            size_t q = (n >> 3) << 2;
+            a = (read4(p) << 32) | read4(p + q);
+            b = (read4(p + n - 4) << 32) | read4(p + n - 4 - q);
+        } else if (n > 0) {
+            a = ((uint64_t)p[0] << 16) | ((uint64_t)p[n >> 1] << 8) | p[n - 1];
+            b = 0;
+        } else {
+            a = b = 0;
+        }
+    } else {
+        size_t i = n;
+        for (; i > 16; i -= 16, p += 16) seed = wide_mix(read8(p) ^ k[1], read8(p + 8) ^ seed);
+        a = read8(p + i - 16);
+        b = read8(p + i - 8);
+    }
+    __uint128_t r = (__uint128_t)(a ^ k[1]) * (b ^ seed);
+    return wide_mix((uint64_t)r ^ k[0] ^ n, (uint64_t)(r >> 64) ^ k[1]);
+}
+
+#define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
+#define SIP_ROUND do { \
+    v0 += v1; v1 = SIP_ROTL(v1, 13); v1 ^= v0; v0 = SIP_ROTL(v0, 32); \
+    v2 += v3; v3 = SIP_ROTL(v3, 16); v3 ^= v2; \
+    v0 += v3; v3 = SIP_ROTL(v3, 21); v3 ^= v0; \
+    v2 += v1; v1 = SIP_ROTL(v1, 17); v1 ^= v2; v2 = SIP_ROTL(v2, 32); \
+} while (0)
+
+// SipHash-1-3 under the process's key: what a rekeyed map files by.
+// Out of line, so the fast path carries none of it.
+__attribute__((noinline, cold))
+static uint64_t sip_hash(uint64_t k0, uint64_t k1, const char* s, size_t n) {
+    const uint8_t* p = (const uint8_t*)s;
+    uint64_t v0 = 0x736f6d6570736575ull ^ k0, v1 = 0x646f72616e646f6dull ^ k1;
+    uint64_t v2 = 0x6c7967656e657261ull ^ k0, v3 = 0x7465646279746573ull ^ k1;
+    for (const uint8_t* end = p + (n & ~(size_t)7); p != end; p += 8) {
+        uint64_t m = read8(p);
+        v3 ^= m;
+        SIP_ROUND;
+        v0 ^= m;
+    }
+    uint64_t last = (uint64_t)n << 56;
+    for (size_t i = 0; i < (n & 7); i++) last |= (uint64_t)p[i] << (8 * i);
+    v3 ^= last;
+    SIP_ROUND;
+    v0 ^= last;
+    v2 ^= 0xff;
+    SIP_ROUND;
+    SIP_ROUND;
+    SIP_ROUND;
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+static inline int map_keyed(AvraMap* m) { return m->index[-1] != 0; }
+
+__attribute__((always_inline))
+static inline uint64_t key_hash(int keyed, const char* key) {
+    size_t n = str_len(key);
+    return __builtin_expect(keyed, 0) ? sip_hash(g_sip_key[0], g_sip_key[1], key, n) : fast_hash(key, n);
+}
+
+static inline int64_t index_word(uint64_t hash, int64_t slot) {
+    return (int64_t)((hash & 0xffffffff00000000ull) | (uint64_t)(slot + 1));
+}
+
+// The index's words, the keying word included; none while unbuilt.
+static inline int64_t index_words(AvraMap* m) { return m->index ? m->icap + 1 : 0; }
+
+static void index_free(AvraMap* m) {
+    acc_add(ACC_INDEX, -index_words(m) * (int64_t)sizeof(int64_t));
+    if (m->index) free(m->index - 1);
+    m->index = NULL;
+    m->icap = 0;
+}
+
+// Every key filed afresh in `icap` words under the hash `keyed` names. A
+// key placed past the tripwire by the fast hash files them all again,
+// keyed.
+static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
+    if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
+    index_free(m);
+    int64_t* words = (int64_t*)calloc((size_t)icap + 1, sizeof(int64_t));
+    words[0] = keyed;
+    m->index = words + 1;
+    m->icap = icap;
+    acc_add(ACC_INDEX, index_words(m) * (int64_t)sizeof(int64_t));
+    mem_ceiling_check();
+    uint64_t mask = (uint64_t)icap - 1;
+    for (int64_t s = 0; s < m->keys->len; s++) {
+        uint64_t h = key_hash(keyed, (const char*)(uintptr_t)m->keys->data[s]);
+        uint64_t i = h & mask;
+        int64_t walked = 0;
+        for (; m->index[i] != 0; i = (i + ++walked) & mask) {}
+        if (walked > PROBE_TRIPWIRE && !keyed) { map_index_rebuild(m, icap, 1); return; }
+        m->index[i] = index_word(h, s);
+    }
+}
+
+// A map whose probe passed the tripwire: every key filed again, keyed.
+__attribute__((noinline, cold))
+static void map_rekeyed(AvraMap* m) {
+    map_index_rebuild(m, m->icap, 1);
 }
 
 void* avra_map_new(void) {
@@ -1897,7 +2071,7 @@ void* avra_map_new(void) {
     m->vals = (AvraArray*)avra_array_new();
     m->index = NULL;
     m->icap = 0;
-    map_index_rebuild(m, 16);
+    map_index_rebuild(m, 16, 0);
     return m;
 }
 
@@ -1906,8 +2080,7 @@ static void map_reclaim(void* p) {
     AvraMap* m = (AvraMap*)p;
     avra_rc_release(m->keys);
     avra_rc_release(m->vals);
-    acc_add(ACC_INDEX, -(int64_t)(m->icap * (int64_t)sizeof(int64_t)));
-    free(m->index);
+    index_free(m);
     box_free(m);
 }
 
@@ -1921,23 +2094,50 @@ __attribute__((noinline, cold))
 static void map_index_first(AvraMap* m) {
     int64_t icap = 16;
     while (m->keys->len * 10 >= icap * 7) icap *= 2;
-    map_index_rebuild(m, icap);
+    map_index_rebuild(m, icap, 0);
 }
 
 static inline void map_indexed(AvraMap* m) {
     if (__builtin_expect(m->icap == 0, 0)) map_index_first(m);
 }
 
-// The slot a key names, or -1.
-static int64_t map_find(AvraMap* m, const char* key) {
+// Where a key's probe ended: its slot or -1, and for a miss the empty
+// word it stopped at, the key's hash and how far it walked.
+typedef struct { int64_t slot; uint64_t hash; uint64_t at; int64_t walked; } Probe;
+
+__attribute__((always_inline))
+static inline Probe map_probe(AvraMap* m, const char* key) {
     map_indexed(m);
-    uint64_t i = str_hash(key) & (uint64_t)(m->icap - 1);
-    while (m->index[i] != 0) {
-        int64_t s = m->index[i] - 1;
-        if (avra_streq((const char*)(uintptr_t)m->keys->data[s], key)) return s;
-        i = (i + 1) & (uint64_t)(m->icap - 1);
+    uint64_t mask = (uint64_t)m->icap - 1;
+    uint64_t h = key_hash(map_keyed(m), key);
+    uint64_t i = h & mask;
+    int64_t walked = 0;
+    for (int64_t w; (w = m->index[i]) != 0; i = (i + ++walked) & mask) {
+        if (((uint64_t)w ^ h) >> 32) continue;
+        int64_t s = (int64_t)((uint64_t)w & 0xffffffffu) - 1;
+        if (avra_streq((const char*)(uintptr_t)m->keys->data[s], key)) return (Probe){ s, h, i, walked };
     }
-    return -1;
+    return (Probe){ -1, h, i, walked };
+}
+
+// The slot a key names, or -1.
+static inline int64_t map_find(AvraMap* m, const char* key) {
+    return map_probe(m, key).slot;
+}
+
+// The slot a key names — a NEW key appended in written order and
+// filed, the map taking its own reference to it. `*fresh` says which;
+// a fresh slot's value is the caller's to push.
+static int64_t map_claim(AvraMap* m, const char* key, int* fresh) {
+    Probe p = map_probe(m, key);
+    *fresh = p.slot < 0;
+    if (p.slot >= 0) return p.slot;
+    avra_array_push_owned(m->keys, (void*)key);
+    int64_t s = m->keys->len - 1;
+    if (m->keys->len * 10 >= m->icap * 7) map_index_rebuild(m, m->icap * 2, map_keyed(m));
+    else if (__builtin_expect(p.walked > PROBE_TRIPWIRE && !map_keyed(m), 0)) map_rekeyed(m);
+    else m->index[p.at] = index_word(p.hash, s);
+    return s;
 }
 
 int64_t avra_map_len(void* map) {
@@ -1961,27 +2161,48 @@ void* avra_map_get_owned(void* map, const char* key) {
     return v;
 }
 
+// A key's ONE probe: the slot it names, or -1. The reads below take
+// that slot, so `get` hashes once whatever it asks after.
+int64_t avra_map_slot(void* map, const char* key) {
+    return map_find((AvraMap*)map, key);
+}
+
+// The value in a slot `avra_map_slot` named.
+int64_t avra_map_value_at(void* map, int64_t slot) {
+    return avra_array_get(((AvraMap*)map)->vals, slot);
+}
+
+void* avra_map_value_at_owned(void* map, int64_t slot) {
+    void* v = (void*)(uintptr_t)avra_map_value_at(map, slot);
+    avra_rc_retain(v);
+    return v;
+}
+
+// Whether the value in a slot `avra_map_slot` named is there.
+int64_t avra_map_present_at(void* map, int64_t slot) {
+    return avra_slot_present(((AvraMap*)map)->vals, slot);
+}
+
 // A write under a key: an existing slot is overwritten (the old
 // owned value released), a new key appends in written order and
-// the map takes its own reference to the key.
+// the map takes its own reference to the key. Answers the slot.
+static int64_t map_put(AvraMap* m, const char* key, int64_t v) {
+    int fresh;
+    int64_t s = map_claim(m, key, &fresh);
+    if (fresh) avra_array_push(m->vals, v);
+    else avra_slot_set(m->vals, s, v);
+    return s;
+}
+
 void avra_map_set(void* map, const char* key, int64_t v) {
-    AvraMap* m = (AvraMap*)map;
-    int64_t s = map_find(m, key);
-    if (s >= 0) { avra_slot_set(m->vals, s, v); return; }
-    avra_array_push_owned(m->keys, (void*)key);
-    avra_array_push(m->vals, v);
-    if (m->keys->len * 10 >= m->icap * 7) { map_index_rebuild(m, m->icap * 2); return; }
-    uint64_t i = str_hash(key) & (uint64_t)(m->icap - 1);
-    while (m->index[i] != 0) i = (i + 1) & (uint64_t)(m->icap - 1);
-    m->index[i] = m->keys->len;
+    map_put((AvraMap*)map, key, v);
 }
 
 // A nullable scalar under a key: its word, its absence in the value
 // cell's mark — the slots' own law, one table over.
 void avra_map_set_maybe(void* map, const char* key, int64_t present, int64_t v) {
-    avra_map_set(map, key, present ? v : 0);
     AvraMap* m = (AvraMap*)map;
-    m->vals->marks[map_find(m, key)] = present ? 0 : MARK_ABSENT;
+    m->vals->marks[map_put(m, key, present ? v : 0)] = present ? 0 : MARK_ABSENT;
 }
 
 // Whether the value under a key is there — 0 for a key that is not.
@@ -1993,12 +2214,10 @@ int64_t avra_map_value_present(void* map, const char* key) {
 
 void avra_map_set_owned(void* map, const char* key, void* v) {
     AvraMap* m = (AvraMap*)map;
-    int64_t s = map_find(m, key);
-    if (s >= 0) { avra_slot_set_owned(m->vals, s, v); return; }
-    avra_map_set(map, key, (int64_t)(uintptr_t)v);
-    s = map_find(m, key);
-    m->vals->marks[s] = MARK_OWNED;
-    avra_rc_retain(v);
+    int fresh;
+    int64_t s = map_claim(m, key, &fresh);
+    if (fresh) avra_array_push_owned(m->vals, v);
+    else avra_slot_set_owned(m->vals, s, v);
 }
 
 void avra_map_set_maybe_owned(void* map, const char* key, int64_t present, void* v) {
@@ -2006,8 +2225,39 @@ void avra_map_set_maybe_owned(void* map, const char* key, int64_t present, void*
     else avra_map_set_maybe(map, key, 0, 0);
 }
 
+// THE INDEX, MEASURED — for the runtime's own tests, never a hot path:
+// the longest walk any present key takes from its home, whether the map
+// fell back to its keyed hash, and the fast hash a fresh map files text by.
+int64_t avra_map_worst_probe(void* map) {
+    AvraMap* m = (AvraMap*)map;
+    map_indexed(m);
+    uint64_t mask = (uint64_t)m->icap - 1;
+    int64_t worst = 0;
+    for (int64_t s = 0; s < m->keys->len; s++) {
+        uint64_t i = key_hash(map_keyed(m), (const char*)(uintptr_t)m->keys->data[s]) & mask;
+        int64_t walked = 0;
+        for (; ((uint64_t)m->index[i] & 0xffffffffu) != (uint64_t)(s + 1); i = (i + ++walked) & mask) {}
+        if (walked > worst) worst = walked;
+    }
+    return worst;
+}
+
+int64_t avra_map_keyed(void* map) {
+    AvraMap* m = (AvraMap*)map;
+    map_indexed(m);
+    return map_keyed(m);
+}
+
+uint64_t avra_text_hash(const char* s) { return fast_hash(s, str_len(s)); }
+
+// SipHash-1-3 under a given key, for the runtime's own tests to hold to
+// a reference vector.
+uint64_t avra_sip_hash_keyed(uint64_t k0, uint64_t k1, const char* s, int64_t n) {
+    return sip_hash(k0, k1, s, (size_t)n);
+}
+
 // A map's shallow clone: both arrays cloned (their owned slots
-// retained), the index rebuilt. A fresh box, rc 1.
+// retained), the index rebuilt under the same keying. A fresh box, rc 1.
 static void* map_clone(AvraMap* m) {
     map_indexed(m);
     AvraMap* c = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
@@ -2015,7 +2265,7 @@ static void* map_clone(AvraMap* m) {
     c->vals = (AvraArray*)array_clone(m->vals);
     c->index = NULL;
     c->icap = 0;
-    map_index_rebuild(c, m->icap);
+    map_index_rebuild(c, m->icap, map_keyed(m));
     return c;
 }
 

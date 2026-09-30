@@ -2,7 +2,7 @@
 //! side by side. `get` answers the value as a nullable through the
 //! nullable protocol's own adoption; `set` is the place law on a
 //! method, like `push`.
-use core.{ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
+use core.{BinOp, ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
 use diagnostics.{refusal}
 use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs}
 
@@ -66,17 +66,18 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
     cx.type(void)
 }
 
-/// `m.get(k)`: presence asked first, the value adopted into the
-/// nullable only when there — a cell seeded absent, like `find`.
+/// `m.get(k)`: ONE probe names the key's slot, and the value is
+/// adopted into the nullable only when there is one — a cell seeded
+/// absent, like `find`.
 fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let opt = cx.type_at(e)
     let m = cx.reg_of(subject)
     let k = cx.reg_of(key)
     let cell = cx.seeded_cell(opt, cx.absent_of(opt))
-    let has = cx.map_has(Type.Bool, m, k)
+    let slot = cx.map_slot(Type.Int, m, k)
     cx
-        .void_region(has) { cx ->
-            let raw = cx.map_value(m, k, cx.carried_type(opt))
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
+            let raw = cx.map_value(m, slot, cx.carried_type(opt))
             cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
         }
     cx.loaded(e, cell)
