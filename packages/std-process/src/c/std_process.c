@@ -4,6 +4,10 @@
    runtime's descriptor rows, which are the only door that mints a
    managed box (docs/2026_09_07_PACKAGE_C_STANDARD.md §2.5).  */
 
+/* A TARGET WITHOUT PROCESSES (wasm32-wasip1) CARRIES NO BODY here: the
+   build refuses a program reaching one of these rows there, by name. */
+#ifndef __wasm32__
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -582,3 +586,5 @@ int64_t avra_proc_close(int64_t h) {
     p->gen++;
     return 0;
 }
+
+#endif

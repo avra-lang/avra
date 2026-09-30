@@ -19,6 +19,10 @@
 // section already needs _DEFAULT_SOURCE or _GNU_SOURCE on glibc
 // under a strict -std=c11 (posix_spawn, clock_gettime, strdup).
 
+// A TARGET WITHOUT SOCKETS (wasm32-wasip1) CARRIES NO BODY here: the build
+// refuses a program reaching one of these rows there, by name.
+#ifndef __wasm32__
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -446,3 +450,5 @@ int64_t avra_net_local_port(int64_t fd) {
     }
     return -EAFNOSUPPORT;
 }
+
+#endif

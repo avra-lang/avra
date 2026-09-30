@@ -166,6 +166,51 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 	@rm -f $@
 	@ar rcs $@ $^
 
+# THE wasm32-wasip1 TARGET: its whole toolchain in ONE directory the CLI
+# finds beside the compiler (`avra build --target wasm32-wasip1`) — the
+# runtime's library, every package's own C as an object, `rows`, the
+# linker, the sysroot and the host that runs a program (node's WASI).
+# The SAME sources as the host, by the same globs: a file whose machinery
+# the target lacks compiles EMPTY there (`#ifndef __wasm32__`), so no
+# list names what a target skips. `rows` is every symbol those objects
+# define — what the compiler refuses a program against, before a link.
+WASI_SYSROOT ?= /opt/homebrew/opt/wasi-libc/share/wasi-sysroot
+WASM_LD ?= wasm-ld
+# lld loads its OWN LLVM, which a pinned `opt/llvm` may not be: where the
+# loader finds it (Homebrew with llvm pinned at 21:
+# WASM_LD_LIBS=/opt/homebrew/opt/llvm@23/lib:/opt/homebrew/lib).
+WASM_LD_LIBS ?=
+WASM32 := build/wasm32
+WASM32_CC = $(LLVM_PREFIX)/bin/clang --target=wasm32-wasip1 --sysroot=$(WASI_SYSROOT)
+WASM32_RUNTIME = $(patsubst runtime/%.c,$(WASM32)/%.o,$(wildcard runtime/*.c))
+WASM32_PACKAGE = $(patsubst %.c,$(WASM32)/%.o,$(notdir $(wildcard packages/*/src/c/*.c)))
+
+$(WASM32)/%.o: %.c
+	@mkdir -p $(WASM32)
+	$(WASM32_CC) -c -O2 -MMD -MP -Wall -Werror -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID $(CFLAGS_$*) -Iruntime -o $@ $<
+
+-include $(wildcard $(WASM32)/*.d)
+
+$(WASM32)/libavra_runtime.a: $(WASM32_RUNTIME)
+	@rm -f $@
+	@$(LLVM_PREFIX)/bin/llvm-ar rcs $@ $^
+
+$(WASM32)/rows: $(WASM32)/libavra_runtime.a $(WASM32_PACKAGE)
+	@$(LLVM_PREFIX)/bin/llvm-nm --defined-only --extern-only --just-symbol-name $^ | grep -v -e '^$$' -e ':$$' | sort -u > $@
+
+$(WASM32)/wasm-ld: Makefile
+	@mkdir -p $(WASM32)
+	@printf '#!/bin/sh\nDYLD_FALLBACK_LIBRARY_PATH="$(WASM_LD_LIBS)" exec $(WASM_LD) "$$@"\n' > $@
+	@chmod +x $@
+
+$(WASM32)/run.mjs: runtime/wasi_run.mjs
+	@mkdir -p $(WASM32)
+	@cp $< $@
+
+wasm32: $(WASM32)/libavra_runtime.a $(WASM32)/rows $(WASM32)/wasm-ld $(WASM32)/run.mjs
+	@ln -sfn $(WASI_SYSROOT) $(WASM32)/sysroot
+	@echo "wasm32: $(words $(WASM32_RUNTIME)) runtime object(s), $(words $(WASM32_PACKAGE)) package object(s), `wc -l < $(WASM32)/rows | tr -d ' '` row(s) in $(WASM32)"
+
 # Every package that carries tests, in dependency order — DERIVED from
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
@@ -173,7 +218,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm32
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.

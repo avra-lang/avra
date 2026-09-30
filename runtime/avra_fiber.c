@@ -9,6 +9,10 @@
 // signal handler exists before the first spawn, park or sleep, and a
 // program that never calls one does not link this object at all.
 
+// A TARGET WITHOUT A STACK SWITCH (wasm32) CARRIES NO SCHEDULER: the build
+// refuses a program reaching a task row there, by name.
+#ifndef __wasm32__
+
 #include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -937,3 +941,5 @@ int64_t avra_vtask_next(void) {
     next->state = FIBER_RUNNING;
     return (int64_t)(uintptr_t)next;
 }
+
+#endif

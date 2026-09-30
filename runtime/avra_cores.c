@@ -16,6 +16,10 @@
 // its OWN pipe: the kernel closes it when the core ends, however it
 // ends, so the supervisor learns of a crash without a signal.
 
+// A TARGET WITHOUT PROCESSES (wasm32) CARRIES NO CORES: the build refuses
+// a program reaching a cores row there, by name.
+#ifndef __wasm32__
+
 #if defined(__linux__)
 #define _GNU_SOURCE
 #endif
@@ -277,3 +281,5 @@ int64_t avra_cores_result(int64_t g) {
     group_free(gr);
     return err != 0 ? -err : accepted;
 }
+
+#endif

@@ -567,7 +567,7 @@ void avra_rc_dead_check(void* p, const char* what) {
 __attribute__((noinline, cold))
 void avra_retain_noted(void* p, Header* h) {
     h->rc++;
-    rc_note(p, 1, __builtin_return_address(0), h->rc);
+    rc_note(p, 1, AVRA_CALLER(), h->rc);
 }
 
 
@@ -577,7 +577,7 @@ __attribute__((noinline, cold))
 void avra_release_guarded(void* p, Header* h) {
     if (h->kind == KIND_DEAD) {
         fprintf(stderr, "avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
-        fprintf(stderr, "  this one from %p\n", __builtin_return_address(0));
+        fprintf(stderr, "  this one from %p\n", AVRA_CALLER());
         rc_history(p);
         for (int k = g_chain_len - 1; k >= 0; k--) {
             fprintf(stderr, "  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
@@ -586,7 +586,7 @@ void avra_release_guarded(void* p, Header* h) {
     }
     if (h->kind < 0) return;
     h->rc--;
-    rc_note(p, -1, __builtin_return_address(0), h->rc);
+    rc_note(p, -1, AVRA_CALLER(), h->rc);
     if (h->rc > 0) return;
     int32_t kind = h->kind;
     h->kind = KIND_DEAD;
@@ -1017,9 +1017,9 @@ static AvraArray* array_made(int64_t cap, void* ra) {
     return a;
 }
 
-void* avra_array_sized(int64_t n) { return array_made(n, __builtin_return_address(0)); }
+void* avra_array_sized(int64_t n) { return array_made(n, AVRA_CALLER()); }
 
-void* avra_array_new(void) { return array_made(0, __builtin_return_address(0)); }
+void* avra_array_new(void) { return array_made(0, AVRA_CALLER()); }
 
 // The guard's reclaim: children released as usual, the box kept and
 // its cells poisoned, so a stale reader trips instead of finding a
@@ -1110,7 +1110,7 @@ void avra_array_reserve(void* arr, int64_t spare) {
 
 void avra_array_push(void* arr, int64_t v) {
     CENSUS(g_list_pushes++);
-    CENSUS(note_push(__builtin_return_address(0)));
+    CENSUS(note_push(AVRA_CALLER()));
     AvraArray* a = (AvraArray*)arr;
     if (__builtin_expect(a->len == a->cap, 0)) { push_grown(a, v); return; }
     a->data[a->len] = v;
@@ -1122,7 +1122,7 @@ void avra_array_push(void* arr, int64_t v) {
 // value and remembers the slot, so reclaim releases it.
 void avra_array_push_owned(void* arr, void* v) {
     CENSUS(g_list_pushes++);
-    CENSUS(note_push(__builtin_return_address(0)));
+    CENSUS(note_push(AVRA_CALLER()));
     avra_array_push(arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
     a->marks[a->len - 1] = MARK_OWNED;
@@ -1133,7 +1133,7 @@ void avra_array_push_owned(void* arr, void* v) {
 // into the new slot.
 void avra_array_push_moved(void* arr, void* v) {
     CENSUS(g_list_pushes++);
-    CENSUS(note_push(__builtin_return_address(0)));
+    CENSUS(note_push(AVRA_CALLER()));
     avra_array_push(arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
     a->marks[a->len - 1] = MARK_OWNED;
@@ -1502,8 +1502,8 @@ void avra_cell_forget(void* slot) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
-    CENSUS(note_copy(__builtin_return_address(0)));
-    g_clone_site = __builtin_return_address(0);
+    CENSUS(note_copy(AVRA_CALLER()));
+    g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
@@ -1542,7 +1542,7 @@ void* avra_box_thawed_cloned(void* p, void* ra) {
 // A nullable's absent tag (-1) is the null pointer.
 void* avra_enum_boxed(int64_t tag, int64_t word, int64_t counted) {
     if (tag < 0) return NULL;
-    void* box = array_made(2, __builtin_return_address(0));
+    void* box = array_made(2, AVRA_CALLER());
     avra_array_push(box, tag);
     if ((counted >> tag) & 1) avra_array_push_owned(box, (void*)(uintptr_t)word);
     else avra_array_push(box, word);
@@ -1566,7 +1566,7 @@ void* avra_slot_unique(void* arr, int64_t i) {
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
     AvraArray* a = (AvraArray*)arr;
-    g_clone_site = __builtin_return_address(0);
+    g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
@@ -1821,7 +1821,7 @@ static void* map_clone(AvraMap* m) {
 
 // The clone a place opens — by the box's kind.
 static void* box_clone(void* p) {
-    CENSUS(note_copy(__builtin_return_address(0)));
+    CENSUS(note_copy(AVRA_CALLER()));
     Header* h = hdr(p);
     return (h && KIND_SHAPE(h->kind) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
@@ -1931,8 +1931,8 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
 
 // A fresh list: `a`'s slots, then `b`'s. Owned.
 void* avra_array_concat(void* a, void* b) {
-    CENSUS(note_copy(__builtin_return_address(0)));
-    void* site = g_clone_site ? g_clone_site : __builtin_return_address(0);
+    CENSUS(note_copy(AVRA_CALLER()));
+    void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
     g_clone_site = site;
     void* out = avra_array_new();
     g_clone_site = NULL;
@@ -1947,7 +1947,7 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
-    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : __builtin_return_address(0));
+    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : AVRA_CALLER());
     if (lo < hi) array_append(out, a, lo, hi);
     return out;
 }
@@ -1962,7 +1962,7 @@ static inline int sole_array(void* p) {
 // alone: the slots cut away released, the kept ones moved down.
 void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
     if (!sole_array(arr)) {
-        g_clone_site = __builtin_return_address(0);
+        g_clone_site = AVRA_CALLER();
         void* out = avra_array_slice(arr, lo, hi);
         g_clone_site = NULL;
         avra_rc_release(arr);
@@ -1988,7 +1988,7 @@ void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
 // `a`'s slots then `b`'s, onto `a` when it is held alone.
 void* avra_array_concat_reusing(void* a, void* b) {
     if (a == b || !sole_array(a)) {
-        g_clone_site = __builtin_return_address(0);
+        g_clone_site = AVRA_CALLER();
         void* out = avra_array_concat(a, b);
         g_clone_site = NULL;
         avra_rc_release(a);
@@ -2748,8 +2748,10 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 // verdicts and statuses as words, listings as newline-joined names.
 
 #include <sys/stat.h>
+#ifndef __wasm32__
 #include <sys/wait.h>
 #include <spawn.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <fcntl.h>
@@ -2757,6 +2759,13 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 // A child's cwd bound through a file action: POSIX-2024's name where
 // the SDK has it (macOS 26), the `_np` spelling before (Darwin
 // 10.15, glibc 2.29); elsewhere a cwd is refused as unsupported.
+// A TARGET WITHOUT PROCESSES (wasm32) CARRIES NO BODY for the rows that
+// spawn, exec or redirect fd 1: the build refuses a program reaching one,
+// by name, before anything links. Their prototypes stand on every target,
+// so the rows' own claims (avra_rt.h) still read them.
+int64_t avra_spawn_status(const char* prog, void* args);
+int64_t avra_spawn_in(const char* dir, const char* prog, void* args);
+int64_t avra_exec_self(void* args);
 #if defined(__APPLE__)
 #include <Availability.h>
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
@@ -3038,6 +3047,7 @@ const char* avra_errno_text(int64_t err) {
     return str_static(strerror((int)(err < 0 ? -err : err)));
 }
 
+#ifndef __wasm32__
 // THE SEED'S SHIM: the seed that predates @std/process links this;
 // nothing in Avra declares it. Deleted once a refreshed seed has
 // landed (ROADMAP, lane B slice C).
@@ -3093,6 +3103,7 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return (int64_t)WEXITSTATUS(status);
 }
+#endif
 
 // THIS PROGRAM AGAIN, with new words: the image is replaced, so the
 // memory the program held is gone — how a heavy phase hands the
@@ -3121,6 +3132,7 @@ const char* avra_self_dir(void) {
     return dir;
 }
 
+#ifndef __wasm32__
 int64_t avra_exec_self(void* args) {
     AvraArray* a = (AvraArray*)args;
     char self[4096];
@@ -3141,6 +3153,7 @@ int64_t avra_exec_self(void* args) {
     free(argv);
     return 127;
 }
+#endif
 
 // Every directory along the path made, 1 when the whole path stands.
 int64_t avra_mkdir_p(const char* path) {
@@ -3167,6 +3180,7 @@ const char* avra_host_list_dir(const char* path) {
 // THE CAPTURE: between avra_capture_begin and avra_capture_end, fd 1
 // is a temp file — a child process's output lands there too — and
 // the end answers the text written, its final newline dropped.
+#ifndef __wasm32__
 static int g_cap_saved = -1;
 static int g_cap_file = -1;
 
@@ -3203,6 +3217,7 @@ const char* avra_capture_end(void) {
     free(buf);
     return out;
 }
+#endif
 
 // THE ROWS CLAIM THE RUNTIME. `runtime/avra_rt.h` is generated from
 // `rt_sigs()` and asserts, in the C compiler, that every body answers

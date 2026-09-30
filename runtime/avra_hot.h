@@ -19,6 +19,14 @@ void note_retain(void* site);
 #define CENSUS(x)
 #endif
 
+// The caller's return address, for the accounting's site notes. A
+// target that cannot read one (wasm32) notes no site.
+#ifdef __wasm32__
+#define AVRA_CALLER() ((void*)0)
+#else
+#define AVRA_CALLER() __builtin_return_address(0)
+#endif
+
 // The lowest address a box may have: the page no mapping ever gets.
 #define AVRA_NULL_PAGE 0x10000ull
 
