@@ -350,6 +350,47 @@ fn story() -> string {
 story()
 '
 
+# THE MEMORY CEILING, in both engines. A program that allocates forever
+# ends as a wreck at AVRA_MEM_CEILING_MB, never as the machine's. Native:
+# the program's own runtime counts it. Evaluated: the compiler's runtime
+# counts the values it holds for the program, so the same words end it.
+FOREVER='mut xs: List<string> = []
+while true { xs.push("${xs.length} and more text to fill the box") }
+xs.length'
+rows=$((rows + 1))
+scaffold ceiling_native '' "$FOREVER"
+if ./avra build "$dir" > "$dir/build.out" 2>&1; then
+    got=$(AVRA_MEM_CEILING_MB=64 "$dir/src/main" 2>&1) && status=0 || status=$?
+    verdict ceiling_native "avra: memory ceiling exceeded: 64 MB (AVRA_MEM_CEILING_MB)" 2 "$got" "$status"
+else
+    echo "traps: ceiling_native did not COMPILE"; sed -n '1,4p' "$dir/build.out"; fails=$((fails + 1))
+fi
+rows=$((rows + 1))
+scaffold ceiling_run '' "$FOREVER"
+AVRA_MEM_CEILING_MB=512 ./avra run "$dir" > "$dir/run.out" 2>&1 && status=0 || status=$?
+verdict ceiling_run "avra: memory ceiling exceeded: 512 MB (AVRA_MEM_CEILING_MB)" 2 "$(grep -v '^watch: ' "$dir/run.out")" "$status"
+
+# A CHILD CARRIES THE CEILING: the variable is inherited, so a process a
+# program spawns meets the same ceiling in its own runtime, and a server
+# or worker cannot outlive the cap its parent was started under.
+rows=$((rows + 1))
+scaffold ceiling_child '' 'extern fn avra_selfhost_argc() -> int
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+mut xs: List<string> = []
+if avra_selfhost_argc() > 1 {
+    while true { xs.push("${xs.length} and more text to fill the box") }
+}
+println("child exited ${avra_spawn_status(avra_selfhost_get_arg_cstr(0), ["child"])}")
+'
+if ./avra build "$dir" > "$dir/build.out" 2>&1; then
+    got=$(AVRA_MEM_CEILING_MB=64 "$dir/src/main" 2>&1) && status=0 || status=$?
+    verdict ceiling_child "avra: memory ceiling exceeded: 64 MB (AVRA_MEM_CEILING_MB)
+child exited 2" 0 "$got" "$status"
+else
+    echo "traps: ceiling_child did not COMPILE"; sed -n '1,4p' "$dir/build.out"; fails=$((fails + 1))
+fi
+
 rm -rf "$ROOT"
 if [ "$fails" -gt 0 ]; then
     echo "traps: $fails of $rows contracts broken"
