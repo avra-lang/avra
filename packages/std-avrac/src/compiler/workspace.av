@@ -72,6 +72,7 @@ use features.{
     Elsewhere,
     SettleRoot,
     BlockWords,
+    ComponentWord,
 }
 use @std.meta.{Diagnostic, identity}
 use core.{StmtId}
@@ -230,6 +231,10 @@ type Records = {
     /// pre-filter, asked once per file per build no matter how many
     /// `use` lines reach for the module it stands in.
     grammar_scanned: Cell<Map<string, bool>>,
+    /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
+    /// `component NAME {` declaration — what its module's other files
+    /// stand under.
+    component_scanned: Cell<Map<string, bool>>,
 }
 
 fn new_records() -> Records {
@@ -246,6 +251,7 @@ fn new_records() -> Records {
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
         grammar_scanned: Cell.new(no_scanned),
+        component_scanned: Cell.new(no_scanned),
     }
 }
 
@@ -1282,22 +1288,35 @@ impl Workspace {
     /// The module a source path belongs to, by name.
     fn module_at(path: string) -> string { self.decls.module_name(self.decls.file(self.file_id(path)).module_id) }
 
-    /// The block words a file's `use` lines bring in: each item a
-    /// provider module declares as a named grammar (readied) or as a
-    /// template component, under its alias. A module's own words are
-    /// not block words in its own files.
+    /// The block words a file stands under: each item its `use` lines
+    /// take that a provider module declares as a named grammar
+    /// (readied) or a component, under its alias — and every component
+    /// its own module declares, which needs no `use`, as no name a
+    /// module declares does in its own files.
     fn block_words(f: FileId, p: Parsed) -> BlockWords {
-        if self.lone { return BlockWords {} }
+        if self.lone { return BlockWords { components: declared_components(p) } }
         let from = self.packages()[self.holder_of_path(p.source.file)]
         let own = self.decls.module_name(self.decls.file(f).module_id)
         let lines = [self.line_words(from, own, u) for u in p.store.built_uses()]
-        let components = flatten([l.components for l in lines])
+        let components = self.module_components(f, p).concat(flatten([l.components for l in lines]))
         let local = if components.is_empty() { [] } else { named_instances(p.source.text, components) }
         BlockWords {
             grammars: flatten([l.grammars for l in lines]),
             components: components,
             instances: local.concat(flatten([l.instances for l in lines])),
         }
+    }
+
+    /// The components a file's own module declares: its own file's, read
+    /// off the parse in hand, and each sibling file's that can declare one.
+    fn module_components(f: FileId, p: Parsed) -> List<ComponentWord> {
+        let siblings = [self.file_id(s) for s in self.module_files(self.module_path_of(p.source.file)) if file_declares_component(self, s)]
+        declared_components(p)
+            .concat(
+                flatten(
+                    [declared_components(self.provider_parsed(s)) for s in siblings if !same_file(s, f)],
+                ),
+            )
     }
 
     /// One `use` line's block words — none from a module that is not
@@ -1915,4 +1934,9 @@ fn is_warning(d: Diag) -> bool {
 /// own, and each impl block's methods.
 fn declaring_stmts(p: Parsed) -> List<StmtId> {
     flatten([[s].concat(p.store.impl_parts(s)?.fns ?? []) for s in p.stmts])
+}
+
+/// Every component a parse declares, as a word its own module stands under.
+fn declared_components(p: Parsed) -> List<ComponentWord> {
+    [w with { own: true } for w in flatten([some_list(word_of(p.store, s, p.source.file)) for s in p.stmts])]
 }
