@@ -641,17 +641,19 @@ impl Workspace {
     }
 
     /// An annotation argument crossed — a LITERAL straight off the
-    /// parse tree (an isolated run needs this file's analysis, which
-    /// is the very resolve the two-tier miss is serving: a cycle),
-    /// anything else through the isolated evaluator.
+    /// parse tree, written there or as the value of a const naming one
+    /// (an isolated run needs this file's analysis, which is the very
+    /// resolve the two-tier miss is serving: a cycle), anything else
+    /// through the isolated evaluator.
     fn crossed_arg(f: FileId, e: ExprId, want: TypeId, mut heap: MetaHeap) -> Result<
         MetaVal,
         Unsettled,
     > {
         let named: DeclId? = if self.decls.takes_a_decl(want) { bound_decl_of(self.resolved(f), e) } else { null }
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
-        let p = self.parsed(f)
-        let raw = p.store.expr(e)
+        let at? = self.spelled_at(f, e, 0) else { return self.crossed_expr(f, e, heap) }
+        let store = self.decls.store_of(at.file)
+        let raw = store.expr(at.e)
         let n: int? = raw.int_of()
         if n != null { return .Ok(MetaVal.Int(n!)) }
         let t: string? = raw.text_of()
@@ -660,7 +662,7 @@ impl Workspace {
         if b != null { return .Ok(MetaVal.Bool(b!)) }
         let bits: int? = raw.bits_of()
         if bits != null { return .Ok(MetaVal.Float(bits!)) }
-        let code: MetaVal? = quote_meta(p.store, self.decls, self.decls.file(f).path, e, heap)
+        let code: MetaVal? = quote_meta(store, self.decls, self.decls.file(at.file).path, at.e, heap)
         if code != null { return .Ok(code!) }
         self.crossed_expr(f, e, heap)
     }

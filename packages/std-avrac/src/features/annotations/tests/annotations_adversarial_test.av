@@ -279,6 +279,28 @@ spec "features/annotations — the compile-time call's laws" {
                 1,
             )
         }
+        then "a declaring annotation reads a const whose value is a literal" {
+            mut p = packaged(
+                directive_use() +
+                    "const Label = \"x\"\n@traced(Label)\nfn sum(a: int, b: int) -> int { a + b }\nsum_traced(1, 2)",
+            )
+            said(p).is_empty() && p.generated_lines(p.entry_file()!.view.file).length == 1
+        }
+        then "a const computed from more than a literal is refused at the argument" {
+            refused_in(
+                packaged(
+                    directive_use() +
+                        "const Label = \"a\" + \"b\"\n@traced(Label)\nfn sum() -> int { 1 }\nsum()",
+                ),
+                "`@traced` generates declarations, so `Label` must name a literal",
+            )
+        }
+        then "a const holding an aggregate is refused at the argument" {
+            refused_in(
+                packaged(sampled_use() + "const Picks = [1, 2]\n@sampled(Picks)\nfn answer() -> int { 1 }\nanswer()"),
+                "`@sampled` generates declarations, so `Picks` must name a literal",
+            )
+        }
         then "a twin naming the annotated fn's OWN name is refused, not silently doubled" {
             refused_n(
                 packaged(
