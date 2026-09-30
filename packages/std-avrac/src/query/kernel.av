@@ -342,12 +342,15 @@ impl Kernel {
         if seen.open.any(same_key(it, key)) { return Verdict.Cycle }
         let cell? = state_cell(seen, key) else { return self.miss() }
         if cell.verified_at == state_revision(seen) { return self.hit() }
-        // A verifier may recursively update this same database. No
-        // snapshot is written across that call.
+        // Marked verified at this revision BEFORE its deps are walked: a
+        // verifier may recursively update this database and re-enter this
+        // key, and a re-entry reads the mark and reuses rather than walking
+        // again. The mark names the revision the walk began at, so a late
+        // write during the walk leaves it stale.
+        mut marked = seen
+        write_cell(marked, key, cell with { verified_at: state_revision(seen) })
+        self.replace(marked)
         if self.any_dep_changed(cell) { return self.miss() }
-        mut latest = self.snapshot()
-        write_cell(latest, key, cell with { verified_at: state_revision(latest) })
-        self.replace(latest)
         self.hit()
     }
 
