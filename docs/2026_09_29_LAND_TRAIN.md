@@ -199,6 +199,29 @@ uptime'`) while writing this doc: `avra-comptime` idle (load ~0.6,
 step must treat "did not answer" as a tool failure and fall back, the
 same as `linux_gate_step` already does for an unreachable Sprite.
 
+BOTH FACTS WERE STILL TRUE, DIFFERENTLY, DURING STAGE 1's REAL PROOF
+RUN (below): `avra-idioms-pay` never answered a single `sprite exec`
+all session — a standing connectivity problem, not a one-off timeout.
+`avra-comptime` answered a plain `exec` instantly throughout, but its
+FILE PUSH (`sprite file push`, tools/sprite-build.sh's own tarball
+transfer) failed three attempts running with "context deadline
+exceeded," and `ps` named the cause while the proof was still
+red: another session's REAL landing (`avra-docs`) had been running its
+own Linux gate against the SAME `avra-comptime` for over 35 minutes,
+via a plain `tools/sprite-build.sh` call with no serialization of its
+own — the doc-comment at the top of that file says so outright
+("nothing here serialises concurrent callers"). So the landing pool's
+own steady-state load is not zero: a Sprite named "idle" by `uptime`
+a minute ago can be mid-push for a real landing the next, and a POOL
+OF TWO SERVES AT MOST TWO CONCURRENT LANDINGS TODAY BEFORE ANY TRAIN
+EXISTS — the train's own appetite (up to N candidates wanting a
+Sprite each) is additional demand on top of that, not instead of it.
+THIS IS A REAL ARGUMENT FOR GROWING THE POOL, not just a nuisance the
+proof ran into: two Sprites already contend under ordinary traffic,
+and a train's whole value proposition (many candidates verified at
+once) is throttled to the pool's size regardless of how parallel the
+scheduler is.
+
 Proposed additions, from `sprite list` against SPRITES.md's table (an
 assigned pool is that session's; only spares are candidates):
 - `avra-unions-p2` / `avra-unions-p2-b` — present but NOT in
@@ -234,29 +257,68 @@ that gets OOM-killed and reads as a false red).
 
 ## Expected wall time
 
-Per-candidate cost on a Sprite (from SPRITES.md's own numbers): a
-COLD tree (any merge — which every candidate is, by construction)
-bootstraps in ~4-5 minutes; the portable gate set (suites, idioms,
-fmt-lossless, seed-check, cache-attacks) on a warm compiler is on the
-order of 1-3 minutes more, depending on how many packages the merge
-touches. Call it **6-9 minutes per candidate**, mostly bootstrap.
+MEASURED, not estimated — a scratch clone of this repo, `main` reset
+to `c27db18`, three real already-landed commits played as three
+queued branches (`land-proof-1/2/3` = `b0fd739`, `41c6515`,
+`a702869`), verified for real by `tools/land_train.sh --dry-run`
+against a real Sprite (`avra-unions-p2`, a spare, idle Sprite outside
+the documented landing pool — both pool members were degraded when
+this was run; see "The Sprite pool" above). Six real attempts total,
+kept because each answered a different question:
+
+- **Cold Sprite, this exact compiler hash never cached:**
+  `sprite-build.sh`'s own pre-command `advance_and_cache` bootstraps
+  from nothing before the timed run even starts — the FIRST proof run
+  (candidate 1 alone) took **5:25 wall**, of which the timed command
+  itself was only 55.2s; the other ~4:30 was the cold bootstrap plus
+  the local tar/push. This is the one-time cost of a Sprite that has
+  never built this source before.
+- **Warm Sprite, compiler hash cached, candidate genuinely red:** a
+  real, then-latent bug (below) failed `fmt-lossless` after 55s of
+  `objects`+`libs` — **2:08 wall** total, most of it now the
+  tar/push/sync (~1:10) rather than any build.
+- **Warm Sprite, all green — the number that matters:** after fixing
+  the bug, one candidate's FULL portable gate set, per step:
+  `objects` 52s, `libs` 4s, `fmt-lossless` 27s, `seed-check` 67s,
+  `cache-attacks` 73s — **223s (3:43) timed**, plus ~1:10 of
+  tar/push/sync overhead — **~4:50 wall for one candidate on a warm
+  Sprite**, `land-proof-1` alone (no affected packages, so idioms and
+  the suites loop were no-ops for it — a candidate that touches real
+  packages pays more there, not less elsewhere).
+
+So: **cold-Sprite tax ~4:30, one-time per (Sprite, compiler-hash)
+pair; warm per-candidate cost ~5 minutes** for a small, package-light
+change, dominated by `seed-check`'s link and `cache-attacks`'
+fixtures, not by the compiler build itself (`objects`+`libs` together
+were under a minute). A candidate touching more packages adds its own
+suites on top, run in parallel inside the SAME Sprite call the way
+`linux_gate_step` already does.
 
 The Mac finalization pass (the two-generation compile plus the
-Mac-only gates) is what `land.sh` measures today for one branch:
-**~7-16 minutes**, unchanged, because it is unchanged — same steps,
-same tree, run once instead of once-per-branch.
+Mac-only gates) is UNMEASURED here on purpose — the rules for this
+build were "don't run the compiler's heavy builds on the Mac; use
+Sprites," so this number is carried over from `land.sh`'s own,
+already-measured serial run: **~7-16 minutes**, unchanged, because it
+is the exact same steps over the exact same tree, run once instead of
+once per branch.
 
-**N=5, one Sprite pool of 2, all green:** five candidates queue two at
-a time on two Sprites — three waves — call it 3 x 8 min = ~24 min of
-Sprite time, PLUS the one Mac finalization pass (~10 min) for the
-final combined head. Total **~30-35 min**, wall clock, versus 5 x
-(7-16 min) = 35-80 min serial today. The saving grows with the pool:
-at 5 Sprites all 5 run at once, ~8 min, then ~10 min Mac = **~18 min**.
+**N=5, one Sprite pool of 2, all green, each candidate ~5 min warm:**
+five candidates queue two at a time — three waves — **~15 min of
+Sprite time**, plus the one Mac pass (~10 min) = **~25 min**, versus
+5 x (7-16 min) = 35-80 min serial today. At a 5-Sprite pool: one wave,
+~5 min, then ~10 min Mac = **~15 min**.
 
-**N=10, pool of 2:** five waves of two, ~40 min of Sprite time, plus
-one ~10 min Mac pass = **~50 min**, versus 70-160 min serial. At a
+**N=10, pool of 2:** five waves, **~25 min** of Sprite time, plus one
+~10 min Mac pass = **~35 min**, versus 70-160 min serial. At a
 4-Sprite pool (adding the two idle unions Sprites, if their owner
-agrees): three waves, ~27 min, plus Mac = **~37 min**.
+agrees): three waves, ~15 min, plus Mac = **~25 min**.
+
+**The cold-Sprite tax matters more than N** once a pool member is
+genuinely new to a tree: growing the pool with a Sprite that has
+never built this compiler pays ~4:30 on its FIRST candidate,
+one-time, then joins the warm ~5-minute rate — worth knowing before
+reading a fresh Sprite's first landing as evidence the pool addition
+was a bad idea.
 
 **A failure mid-train costs a re-wave**, not a re-run of everything
 before it: dropping `bj` and rebuilding `Cj'..CN'` re-dispatches only
@@ -264,14 +326,22 @@ the tail, on top of the already-known-good prefix's merge (which is
 not rebuilt — it is the SAME tree bj was merged onto, minus bj). The
 worst case (every candidate but the first is a culprit, one at a time)
 degrades toward the serial bound; the common case (zero or one bad
-branch in a batch) stays close to the numbers above.
+branch in a batch) stays close to the numbers above — and the real
+run above IS that mid-train-failure case (candidate 1 failed real
+fmt-lossless, got fixed, re-ran green), so the "drop and re-verify"
+path is not just fixture-tested, it happened for real while proving
+this document.
 
-These are estimates from the existing Linux-gate timings recorded in
-this repo (SPRITES.md, land.sh's own comments) and the honest CLAUDE.md
-law that a prediction is not a measurement — stage 1's real proof run
-(below) records ACTUAL wall times from a real scratch clone and real
-Sprites, and this section gets corrected against them once that run
-completes, not left standing on the estimate alone.
+A REAL BUG WAS THE PAYLOAD OF THIS MEASUREMENT, WHICH IS THE POINT OF
+MEASURING RATHER THAN ASSUMING: `tools/fmt_lossless.sh`'s `shift ||
+true` is an ordinary catchable failure under bash (macOS's `/bin/sh`)
+and a FATAL, uncatchable one under dash (Ubuntu's `/bin/sh`, and so
+every Sprite's) — `make fmt-lossless` calls it with zero arguments,
+so every real Linux run died at that line, every time, until fixed
+(`[ "$#" -gt 0 ] && shift`). Nothing in the EXISTING Linux gate had
+ever run `make fmt-lossless` on a Sprite before this proof did, so the
+bug was real, latent, and would have bitten the first production use
+of a wider Linux gate regardless of who built it.
 
 ## Staged build (each stage its own commit on `tools/land-train`)
 
