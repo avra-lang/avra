@@ -1924,10 +1924,11 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
-- ALL WORK MOVES THROUGH FOUR COMMANDS, and nothing else touches main:
+- ALL WORK MOVES THROUGH FIVE COMMANDS, and nothing else touches main:
 
       sh tools/work new <name>   # worktree ../avra-<name>, off main, compiler seeded
       sh tools/work test         # what the branch touches, built and tested on Sprites
+      sh tools/work run <cmd>    # any command in this worktree, on a Sprite
       sh tools/work land         # push, open the PR, queue it to merge
       sh tools/work status       # every open PR, its checks and queue state
 

@@ -3,10 +3,11 @@
 #
 #   sh tools/work new <name>   worktree ../avra-<name> on branch <name>, off main, compiler seeded
 #   sh tools/work test         build and test what the branch touches, on Sprites
+#   sh tools/work run <cmd>    run any command in this worktree, on a Sprite
 #   sh tools/work land         push the branch, open its PR, queue it to merge
 #   sh tools/work status       every open PR: checks and queue state
 #
-# `test` and `land` run from inside the worktree. Main moves only through
+# `test`, `run` and `land` run from inside the worktree. Main moves only through
 # GitHub's merge queue; nothing here writes main.
 set -eu
 
@@ -53,6 +54,12 @@ test_() {
     AVRA_SP_TREE=$PWD sh "$tools/sp" -p "$@"
 }
 
+run() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run from inside a worktree"
+    [ $# -gt 0 ] || die "usage: work run <command…>"
+    AVRA_SP_TREE=$PWD sh "$tools/sp" "$*"
+}
+
 land() {
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run from inside a worktree"
     branch=$(git branch --show-current)
@@ -79,7 +86,8 @@ status() {
 case "${1:-}" in
     new) shift; new "$@" ;;
     test) test_ ;;
+    run) shift; run "$@" ;;
     land) land ;;
     status) status ;;
-    *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
