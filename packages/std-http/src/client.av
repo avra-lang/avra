@@ -290,14 +290,15 @@ const request_writes: List<Bytes> = [w.bytes() for w in ["host", "content-length
 impl Client {
     /// The request written whole, the task parked while the socket is
     /// full; `asked` is the method, which decides whether the reply has
-    /// a body. Refused on a connection an exchange ended, and for a
-    /// head the framer would not frame — it judges what a client sends
-    /// by the law a server reads it by, and says whether it asked to
-    /// close.
+    /// a body, so it must be the head's own. Refused on a connection an
+    /// exchange ended, and for a head the framer would not frame — it
+    /// judges what a client sends by the law a server reads it by, and
+    /// says whether it asked to close.
     mut fn sent(asked: Method, req: Bytes) -> Result<int, ClientError> {
         if self.owing { self.persists = false }
         if !self.persists { return .Err(.Spent) }
         let head? = own_head(req, self.limits) else { return .Err(.Unwritable) }
+        if head.method != asked { return .Err(.Unwritable) }
         self.persists = head.keep_alive
         self.owing = true
         self.asked = asked

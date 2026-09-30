@@ -43,6 +43,7 @@ reaped() {
 trap reaped EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 AVRA_MEM_STATS=1 SOAK_SECS=$((secs + 60)) SOAK_PORT="$port" "$bin" > "$out/server.log" 2>&1 &
 server=$!

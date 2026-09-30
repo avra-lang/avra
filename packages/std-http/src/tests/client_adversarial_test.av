@@ -278,7 +278,8 @@ fn unframed_unsent() -> Result<bool, ClientError> {
     let hostless = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\r\n\r\n".bytes()))
     let bare_lf = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\nhost: a\n\n".bytes()))
     let unended = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\r\nhost: a\r\n".bytes()))
-    .Ok(hostless && bare_lf && unended)
+    let misnamed = is_unwritable(c.sent(.Get, request("HEAD", "/", "a", [], "".bytes())!))
+    .Ok(hostless && bare_lf && unended && misnamed)
 }
 
 /// Whether `r` is the text `want`.
@@ -426,6 +427,6 @@ spec "std.http client adversarial" {
                     ),
                 ) == "unwritable"
         }
-        then "a head the framer refuses is not sent" { passes(unframed_unsent()) }
+        then "a head the framer refuses, or one whose method is not the one asked, is not sent" { passes(unframed_unsent()) }
     }
 }
