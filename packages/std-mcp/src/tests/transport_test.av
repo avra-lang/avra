@@ -1,0 +1,104 @@
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{compiled, dispatch}
+use @std.mcp.{route, split_lines}
+
+/// A `POST /mcp` carrying these octets.
+fn post_of(body: Bytes) -> Request<Unrouted>? {
+    let raw = "POST /mcp HTTP/1.1\r\nHost: h\r\n\r\n".bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: body, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+fn served(body: Bytes) -> Response? {
+    let q? = post_of(body) else { return null }
+    dispatch(compiled([route(tools())]), q)
+}
+
+fn served_text(body: string) -> string {
+    let r? = served(body.bytes()) else { return "unframed" }
+    "${r.status} ${r.body.text() ?? ""}"
+}
+
+fn words(b: Bytes) -> string { b.text() ?? "?" }
+
+spec "@std.mcp — POST /mcp" {
+    given "a request" {
+        then "a request is answered as JSON with a 200" {
+            served_text("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}") == "200 " + ok_result("1", "{}")
+        }
+        then "the answer's content type is application/json" {
+            served("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}".bytes())!.headers[0].value == "application/json"
+        }
+        then "a tool call goes through" {
+            served_text(calling("5", "add", "{\"a\":1,\"b\":2}")) == "200 " + ok_result("5", text_result("3", "false"))
+        }
+    }
+    given "a notification" {
+        then "it is accepted with a 202 and no body" {
+            served_text("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}") == "202 "
+        }
+    }
+    given "a body that is no request" {
+        then "text that is no JSON is a 200 carrying -32700" {
+            served_text("{")
+                .contains("200 {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,")
+        }
+        then "an empty body is -32700" {
+            served_text("").contains("\"code\":-32700")
+        }
+        then "octets that are no UTF-8 are -32700" {
+            let r? = served(["{}".bytes(), [255].bytes()!].bytes()) else { return false }
+            r.body.text()!.contains("\"code\":-32700")
+        }
+    }
+    given "another method or path" {
+        then "a GET of /mcp is no route" {
+            let raw = "GET /mcp HTTP/1.1\r\nHost: h\r\n\r\n".bytes()
+            match framed(raw, 0, 0, limits()) {
+                .Complete(head) -> dispatch(
+                    compiled([route(tools())]),
+                    Request {
+                        raw: raw,
+                        head: head,
+                        body: "".bytes(),
+                        peer: "t",
+                        params: Unrouted {},
+                    },
+                )
+                    .status != 200,
+                .Partial or .Refused(_) -> false,
+            }
+        }
+    }
+}
+
+spec "@std.mcp — stdio framing" {
+    given "a buffer" {
+        then "complete lines are cut and the tail kept" {
+            let c = split_lines("a\nbb\nccc".bytes())
+            c.lines.length == 2 &&
+                words(c.lines[0]) == "a" &&
+                words(c.lines[1]) == "bb" &&
+                words(c.rest) == "ccc"
+        }
+        then "a buffer ending at a newline has an empty tail" {
+            let c = split_lines("a\n".bytes())
+            c.lines.length == 1 && c.rest.length == 0
+        }
+        then "no newline is no line" {
+            let c = split_lines("abc".bytes())
+            c.lines.length == 0 && words(c.rest) == "abc"
+        }
+        then "an empty buffer is nothing" {
+            let c = split_lines("".bytes())
+            c.lines.length == 0 && c.rest.length == 0
+        }
+        then "blank lines are kept as empty lines" {
+            let c = split_lines("\n\nx\n".bytes())
+            c.lines.length == 3 && c.lines[0].length == 0 && words(c.lines[2]) == "x"
+        }
+    }
+}
