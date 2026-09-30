@@ -878,6 +878,38 @@ MK
     echo "$d"
 }
 
+# A branch that does not merge onto main and the branches ahead of it
+# is named at once and never bisected: one build attempt, over the rest.
+test_batch_conflict_drops_at_once() {
+    d="$(batch_repo batch-conflict)"
+    git -C "$d" checkout -q -b b2 main
+    printf 'export fn seed_a() -> int { 2 }\n' > "$d/packages/a/src/lib.av"
+    commit_all "$d" "b2 rewrites a's line"
+    git -C "$d" checkout -q main
+    lockdir="$scratch/batch-conflict-lock"
+    batchwt="$scratch/batch-conflict-wt"
+    rm -rf "$lockdir" "$batchwt"
+    ( cd "$d" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$scratch/batch-conflict-slots" \
+        branch=x sh "$land" --call main_batch 1 a b2 c ) > "$scratch/batch-conflict.out" 2>&1
+    if grep -q "b2 does not merge onto main and the branches ahead of it" "$scratch/batch-conflict.out"; then
+        ok "batch-conflict: names the conflicting branch"
+    else
+        bad "batch-conflict: did not name b2 as not merging"
+    fi
+    if grep -qE "green subset: (a c|c a)" "$scratch/batch-conflict.out"; then
+        ok "batch-conflict: the rest land"
+    else
+        bad "batch-conflict: the green subset was not a and c"
+    fi
+    attempts="$(grep -c '^land: batch attempt \[[^]]*\]: ' "$scratch/batch-conflict.out")"
+    if [ "$attempts" -eq 1 ]; then
+        ok "batch-conflict: one build attempt, no bisection"
+    else
+        bad "batch-conflict: $attempts build attempts, wanted 1"
+        cat "$scratch/batch-conflict.out"
+    fi
+}
+
 test_batch_mode() {
     d="$(batch_repo batch)"
     lockdir="$scratch/batch-lock"
@@ -2582,6 +2614,7 @@ run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order
 run_test test_remote_suites
+run_test test_batch_conflict_drops_at_once
 run_test test_tools_only_gate_script_runs_its_step
 run_test test_tools_only_several_gate_scripts_run_all_steps
 

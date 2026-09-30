@@ -506,6 +506,25 @@ merge_ref_in() {
     git commit --no-edit
 }
 
+# A MERGE CONFLICT IS NAMED AT ONCE, never bisected: every branch
+# merges in order onto the tree at `$1` (main's tip) before anything
+# builds, and one that does not merge onto main and the branches ahead
+# of it is a CULPRIT on stderr. Prints the branches that merged.
+conflict_sieve() {
+    tree="$1"
+    shift
+    kept=""
+    for b in "$@"; do
+        if ( merge_ref_in "$tree" "refs/heads/$b" ) > "$(log_of "sieve-$(printf '%s' "$b" | tr '/ ' '__')")" 2>&1; then
+            kept="$kept $b"
+        else
+            echo "land: $b does not merge onto main and the branches ahead of it — dropped, no bisection" >&2
+            echo "CULPRIT: $b" >&2
+        fi
+    done
+    echo "${kept# }"
+}
+
 # The single-landing shape land_test.sh's fixtures already call by
 # name — unchanged behavior, just merge_ref_in with the ref fixed.
 merge_main_in() { merge_ref_in "$1" "refs/heads/main"; }
@@ -2108,9 +2127,15 @@ batch_core() {
     echo "land: batch of: $branches (tree $batch_wt)"
 
     # A whole batch failing is a truthful answer, never a script error.
-    good="$(bisect_land $branches 2>"$(log_of batch-bisect-stderr)")" || true
-    culprits="$(grep -h '^CULPRIT: ' "$(log_of batch-bisect-stderr)" 2>/dev/null | sed 's/^CULPRIT: //' | tr '\n' ' ')"
-    cat "$(log_of batch-bisect-stderr)" >&2
+    : > "$(log_of batch-bisect-stderr)"
+    kept=""
+    if reset_batch_wt; then
+        kept="$(conflict_sieve "$batch_wt" $branches 2>"$(log_of batch-sieve-stderr)")" || true
+    fi
+    good=""
+    [ -z "$kept" ] || good="$(bisect_land $kept 2>"$(log_of batch-bisect-stderr)")" || true
+    culprits="$(cat "$(log_of batch-sieve-stderr)" "$(log_of batch-bisect-stderr)" 2>/dev/null | grep '^CULPRIT: ' | sed 's/^CULPRIT: //' | tr '\n' ' ')"
+    cat "$(log_of batch-sieve-stderr)" "$(log_of batch-bisect-stderr)" >&2 2>/dev/null
     if [ -f "$scratch/tool-failure" ]; then
         good=""
         culprits=""
