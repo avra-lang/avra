@@ -12,7 +12,7 @@ use core.{
     StmtId,
     DeclId,
     FileId,
-    NodeStore,
+    SyntaxArena,
     Span,
     same_decl,
     same_stmt,
@@ -96,20 +96,20 @@ impl Decls {
     /// one such use — an import nobody in this file ever read is a
     /// DIFFERENT rule's own finding (`modules.unused_import`), never
     /// this cascade's to claim.
-    fn orphaned_imports(store: NodeStore, file: FileId, target: Decl, rows: List<Ref>) -> List<
+    fn orphaned_imports(store: SyntaxArena, file: FileId, target: Decl, rows: List<Ref>) -> List<
         DeclId,
     > {
         let sp? = decl_span(store, target.stmt) else { return [] }
         [r.decl for r in rows if self.orphaned_by(store, file, sp, r)]
     }
 
-    fn orphaned_by(store: NodeStore, file: FileId, sp: Span, r: Ref) -> bool {
+    fn orphaned_by(store: SyntaxArena, file: FileId, sp: Span, r: Ref) -> bool {
         let here = [u for u in self.used(r.decl) if same_file(u.file, file)]
         !here.is_empty() && here.all((u: Ref) -> at_within(store, u.at, sp))
     }
 }
 
-fn at_within(store: NodeStore, at: At, sp: Span) -> bool {
+fn at_within(store: SyntaxArena, at: At, sp: Span) -> bool {
     let usp? = store.span_at(at) else { return false }
     usp.lo >= sp.lo && usp.hi <= sp.hi
 }
@@ -117,13 +117,13 @@ fn at_within(store: NodeStore, at: At, sp: Span) -> bool {
 /// A declaration's own span, its leading doc group's start included
 /// when it has one — the deletion's own reach, wider than the bare
 /// statement's.
-fn decl_span(store: NodeStore, s: StmtId) -> Span? {
+fn decl_span(store: SyntaxArena, s: StmtId) -> Span? {
     let sp? = store.stmt_span(s) else { return null }
     let doc_at = store.doc_at(s)
     Span { lo: if doc_at >= 0 && doc_at < sp.lo { doc_at } else { sp.lo }, hi: sp.hi }
 }
 
-fn decl_delete_edit(store: NodeStore, text: string, file: string?, target: Decl) -> Edit? {
+fn decl_delete_edit(store: SyntaxArena, text: string, file: string?, target: Decl) -> Edit? {
     let sp? = decl_span(store, target.stmt) else { return null }
     let loc? = loc_at(file, sp) else { return null }
     deletion_edit(loc, text)
@@ -146,7 +146,7 @@ fn distinct_decls(ds: List<DeclId>) -> List<DeclId> {
 /// well-formed either way — the line rewritten around the survivors,
 /// or the whole line gone when none are left.
 fn use_line_edits(
-    store: NodeStore,
+    store: SyntaxArena,
     text: string,
     file: string?,
     rows: List<Ref>,
@@ -175,7 +175,7 @@ fn distinct_stmts(ats: List<At>) -> List<StmtId> {
 /// longer matches its own References rows for this statement, the
 /// honest miss a resolve error already spoke elsewhere.
 fn use_stmt_edit(
-    store: NodeStore,
+    store: SyntaxArena,
     text: string,
     file: string?,
     s: StmtId,

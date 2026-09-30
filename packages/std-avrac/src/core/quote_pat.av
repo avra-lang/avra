@@ -35,7 +35,7 @@ export type QuoteHole = { name: string?, kind: HoleKind, run: bool }
 /// Every hole a quote pattern's body carries, raw, one per
 /// occurrence — never deduped: a name written twice is two
 /// occurrences of ONE binder, and the caller decides what that means.
-export fn quote_pat_holes(store: NodeStore, body: ExprId) -> List<QuoteHole> {
+export fn quote_pat_holes(store: SyntaxArena, body: ExprId) -> List<QuoteHole> {
     let q? = store.expr(body).body_of() else { return [] }
     let kinds = hole_kinds(store, body)
     [QuoteHole { name: store.ident_name(h), kind: kinds[k], run: store.is_run_hole(h) } for k, h in q.holes]
@@ -113,7 +113,7 @@ export fn quote_pat_run_mixed(holes: List<QuoteHole>, n: string) -> bool {
 /// anchored scan can split them (design's own open item, §9). Walks
 /// every node's own flattened kids, since that is the one list an
 /// anchored pass ever runs over.
-export fn quote_pat_adjacent_runs(store: NodeStore, at: At, holes: List<QuoteHole>) -> bool {
+export fn quote_pat_adjacent_runs(store: SyntaxArena, at: At, holes: List<QuoteHole>) -> bool {
     let kids = store.kids_at(at)
     let runs = [is_run_kid(store, k, holes) for k in kids]
     if has_adjacent(runs) { return true }
@@ -130,7 +130,7 @@ fn has_adjacent(runs: List<bool>) -> bool {
 /// (`quote { \${..xs} }`) has no enclosing `Node` to bind a span
 /// inside, so `features/quote/check.av` refuses it before this ever
 /// reaches a match.
-export fn is_run_kid(store: NodeStore, at: At, holes: List<QuoteHole>) -> bool {
+export fn is_run_kid(store: SyntaxArena, at: At, holes: List<QuoteHole>) -> bool {
     let w? = quote_hole_at(store, at) else { return false }
     holes[w].run
 }
@@ -138,7 +138,7 @@ export fn is_run_kid(store: NodeStore, at: At, holes: List<QuoteHole>) -> bool {
 /// The single node a quote pattern's body names — the root its Shape
 /// is built from — or absence when the body is not exactly one
 /// statement with no arms.
-export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
+export fn quote_pat_root(store: SyntaxArena, body: ExprId) -> At? {
     let q? = store.expr(body).body_of() else { return null }
     match q.view {
         .Verbatim(stmts, arms) if arms.is_empty() && stmts.length == 1 -> root_of(store, stmts[0]),
@@ -152,7 +152,7 @@ export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
 /// disagree. Absence ("any node") only when a SINGLE pattern cannot
 /// narrow at all; may repeat a kind when two patterns share one, and
 /// the caller reads it as a set.
-export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> List<int>? {
+export fn root_kind_of(store: SyntaxArena, arms: List<Arm>) -> List<int>? {
     let pats = flatten([a.pats for a in arms])
     if pats.is_empty() { return null }
     let kinds = [pat_root_kind(store, p) for p in pats]
@@ -169,7 +169,7 @@ export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> List<int>? {
 /// agree with, and by its kind, which it always does. Absence ("any
 /// node") only when nothing narrows: not a quote, no single root, or a
 /// root that IS a hole.
-fn pat_root_kind(store: NodeStore, p: PatId) -> int? {
+fn pat_root_kind(store: SyntaxArena, p: PatId) -> int? {
     let body? = match store.pat(p) { .Quote(b) -> b, rest -> null } else { return null }
     let at? = quote_pat_root(store, body) else { return null }
     // a root that IS the whole hole binds any subject, so its index
@@ -194,7 +194,7 @@ fn pat_root_kind(store: NodeStore, p: PatId) -> int? {
 /// pattern and the subject it is matched against agree by construction
 /// (avra-8sb5.25.21); `compiler/rule_examples.av`'s `example_root`
 /// shares this door for exactly that reason.
-export fn root_of(store: NodeStore, s: StmtId) -> At {
+export fn root_of(store: SyntaxArena, s: StmtId) -> At {
     match store.stmt(s) { .ExprStmt(v) -> At.Expr(v), rest -> At.Stmt(s) }
 }
 
@@ -207,7 +207,7 @@ export fn root_of(store: NodeStore, s: StmtId) -> At {
 /// (`quote_pat_names`), so a binder's index here is its position
 /// there. Total once every hole is `quote_pat_reached` — the caller's
 /// typing already refused otherwise.
-export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> Shape {
+export fn quote_pat_shape(store: SyntaxArena, at: At, holes: List<QuoteHole>, names: List<string>) -> Shape {
     let w? = quote_hole_at(store, at) else {
         // `opens` is `[]` at a node with neither field open, one
         // `Open` at a node with a NAME or a TYPE open alone, and both
@@ -226,7 +226,7 @@ export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, name
 /// open when a lone hole stands at its name-bearing field, a TYPE
 /// open the same way at its written-type field — both, in that
 /// order, when it carries both (`let ${x}: ${T} = ...`).
-fn node_opens(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> List<Open> {
+fn node_opens(store: SyntaxArena, at: At, holes: List<QuoteHole>, names: List<string>) -> List<Open> {
     let named = [Open.Name(binder_index(holes, names, i)) for i in some_list(name_hole_at(store, at))]
     named
         .concat([Open.Type(binder_index(holes, names, i)) for i in some_list(type_hole_at(store, at))])
@@ -243,7 +243,7 @@ fn binder_index(holes: List<QuoteHole>, names: List<string>, i: int) -> int {
 /// makes a non-lone Name or Type occurrence (`l${x}_y`, `${T}<int>`)
 /// a refusal rather than a silently-ignored one: `quote_hole_ok`'s
 /// kind-only test cannot tell the two apart, this walk can.
-export fn quote_pat_reached(store: NodeStore, at: At) -> List<int> {
+export fn quote_pat_reached(store: SyntaxArena, at: At) -> List<int> {
     let w? = quote_hole_at(store, at) else {
         let kids = flatten([quote_pat_reached(store, kid) for kid in store.kids_at(at)])
         return own_hole_indices(store, at).concat(kids)
@@ -255,7 +255,7 @@ export fn quote_pat_reached(store: NodeStore, at: At) -> List<int> {
 /// lone hole placeholder filling a whole expression or statement;
 /// null for every other seat — a Pat, a Field or a Param included,
 /// none a whole-node hole this matcher can hold open yet.
-fn quote_hole_at(store: NodeStore, at: At) -> int? {
+fn quote_hole_at(store: SyntaxArena, at: At) -> int? {
     match at {
         .Expr(e) -> lone_hole_of(store.ident_name(e)),
         .Stmt(s) -> store.hole_stmt(s),
@@ -266,7 +266,7 @@ fn quote_hole_at(store: NodeStore, at: At) -> int? {
 /// The occurrence index `at`'s own NAME field is, when that field is
 /// nothing but a hole — absence when the kind names no field
 /// (`own_name_at`'s catalog) or the field carries more than the hole.
-fn name_hole_at(store: NodeStore, at: At) -> int? {
+fn name_hole_at(store: SyntaxArena, at: At) -> int? {
     let t? = own_name_at(store, at) else { return null }
     lone_hole_of(t)
 }
@@ -279,7 +279,7 @@ fn name_hole_at(store: NodeStore, at: At) -> int? {
 /// more than the hole (`${T}<int>`, `${T}?`) — a LONE hole fills the
 /// whole field only when it stands utterly alone there, `name_hole_at`'s
 /// law over a `TypeRef` instead of a `string`.
-fn type_hole_at(store: NodeStore, at: At) -> int? {
+fn type_hole_at(store: SyntaxArena, at: At) -> int? {
     let t? = own_type_at(store, at) else { return null }
     if !bare_type(t) { return null }
     lone_hole_of(t.name)
@@ -295,7 +295,7 @@ fn bare_type(t: TypeRef) -> bool {
 /// `holes`, never yet the pattern's deduped binder position) — its
 /// NAME hole's, its TYPE hole's, both when it carries both, empty
 /// when it carries neither.
-fn own_hole_indices(store: NodeStore, at: At) -> List<int> {
+fn own_hole_indices(store: SyntaxArena, at: At) -> List<int> {
     some_list(name_hole_at(store, at)).concat(some_list(type_hole_at(store, at)))
 }
 

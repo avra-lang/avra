@@ -1,6 +1,6 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use core.{StmtId, ExprId, NodeStore, some_list}
+use core.{StmtId, ExprId, SyntaxArena, some_list}
 use features.{Code, Fix, rule, Decl, Decls, NameFacts}
 
 /// An `impl Trait for T` method whose body is the trait's own
@@ -60,10 +60,10 @@ fn trait_default(decls: Decls, names: NameFacts, x: Decl) -> Decl? {
 
 /// Whether two fn bodies answer the same program: the same statement
 /// count once a bare `nothing()` call is dropped from each, every
-/// kept statement's fingerprint equal in order (`core.NodeStore`'s
+/// kept statement's fingerprint equal in order (`core.SyntaxArena`'s
 /// own span-blind fold — a copy in a different file still matches),
 /// and the same tail.
-fn bodies_equivalent(os: NodeStore, ob: ExprId?, ds: NodeStore, db: ExprId?) -> bool {
+fn bodies_equivalent(os: SyntaxArena, ob: ExprId?, ds: SyntaxArena, db: ExprId?) -> bool {
     let ome? = ob else { return false }
     let dme? = db else { return false }
     let ok? = kept_block(os, ome) else { return false }
@@ -80,14 +80,14 @@ fn bodies_equivalent(os: NodeStore, ob: ExprId?, ds: NodeStore, db: ExprId?) -> 
 /// somehow is not).
 type KeptBlock = { stmts: List<StmtId>, tail: ExprId? }
 
-fn kept_block(store: NodeStore, e: ExprId) -> KeptBlock? {
+fn kept_block(store: SyntaxArena, e: ExprId) -> KeptBlock? {
     match store.expr(e) {
         .Block(stmts, tail) -> KeptBlock { stmts: [s for s in stmts if !is_nothing_call(store, s)], tail: tail },
         rest -> null,
     }
 }
 
-fn same_tail(os: NodeStore, ot: ExprId?, ds: NodeStore, dt: ExprId?) -> bool {
+fn same_tail(os: SyntaxArena, ot: ExprId?, ds: SyntaxArena, dt: ExprId?) -> bool {
     if ot == null || dt == null { return ot == null && dt == null }
     os.expr_fingerprint(ot!) == ds.expr_fingerprint(dt!)
 }
@@ -96,11 +96,11 @@ fn same_tail(os: NodeStore, ot: ExprId?, ds: NodeStore, dt: ExprId?) -> bool {
 /// method calls to say it deliberately does no work
 /// (`features.nothing`), which two otherwise-identical bodies may
 /// carry on either side, or neither.
-fn is_nothing_call(store: NodeStore, s: StmtId) -> bool {
+fn is_nothing_call(store: SyntaxArena, s: StmtId) -> bool {
     match store.stmt(s) { .ExprStmt(e) -> is_nothing_call_expr(store, e), rest -> false }
 }
 
-fn is_nothing_call_expr(store: NodeStore, e: ExprId) -> bool {
+fn is_nothing_call_expr(store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) {
         .Call(callee, _, args) -> callee.of == "nothing" && args.is_empty(),
         rest -> false,
