@@ -1,0 +1,30 @@
+//! proves: HMAC-SHA256 against RFC 4231's vectors — a short key, a
+//! word key, a key longer than a block — and the empty key and empty
+//! message, then same_mac on equal, different and differently long
+//! MACs.
+use @std.tls.mac.{hmac_sha256, same_mac}
+
+fn hex(b: Bytes) -> string { [hex_byte(b.at(i)) for i in 0..b.length].join("") }
+
+fn hex_byte(v: int) -> string {
+    "0123456789abcdef".substring(v >> 4, (v >> 4) + 1) +
+        "0123456789abcdef".substring(v & 15, (v & 15) + 1)
+}
+
+let short = hmac_sha256([11 for i in 0..20].bytes()!, "Hi There".bytes())
+let word = hmac_sha256("Jefe".bytes(), "what do ya want for nothing?".bytes())
+let long = hmac_sha256(
+    [170 for i in 0..131].bytes()!,
+    "Test Using Larger Than Block-Size Key - Hash Key First".bytes(),
+)
+let empty = hmac_sha256("".bytes(), "".bytes())
+let flipped = [if i == 31 { word.at(i) + 1 & 255 } else { word.at(i) } for i in 0..32].bytes()!
+[
+    hex(short),
+    hex(word),
+    hex(long),
+    hex(empty),
+    "${same_mac(word, hmac_sha256("Jefe".bytes(), "what do ya want for nothing?".bytes()))} ${same_mac(word, flipped)} ${same_mac(word, word.slice(0, 31))} ${same_mac("".bytes(), "".bytes())}",
+    "${same_mac(hmac_sha256("".bytes(), "m".bytes()), hmac_sha256([0].bytes()!, "m".bytes()))}",
+]
+    .join("\n")

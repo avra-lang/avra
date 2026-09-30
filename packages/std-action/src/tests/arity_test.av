@@ -1,0 +1,84 @@
+// The generated call at every seat count a derive spells, and the
+// optional and required seats mixed.
+use @std.action.derive.{action, impact}
+use @std.action.{routine}
+use @std.action.wire.{ActionRefusal}
+
+@action
+@impact(routine)
+fn take1(a: int) -> int { a }
+
+@action
+@impact(routine)
+fn take2(a: int, b: int) -> int { a + b }
+
+@action
+@impact(routine)
+fn take3(a: int, b: int, c: int) -> int { a + b + c }
+
+@action
+@impact(routine)
+fn take4(a: int, b: int, c: int, d: int) -> int { a + b + c + d }
+
+@action
+@impact(routine)
+fn take5(a: int, b: int, c: int, d: int, e: int) -> int { a + b + c + d + e }
+
+@action
+@impact(routine)
+fn take6(a: int, b: int, c: int, d: int, e: int, f: int) -> int { a + b + c + d + e + f }
+
+@action
+@impact(routine)
+fn take7(a: int, b: int, c: int, d: int, e: int, f: int, g: int) -> int { a + b + c + d + e + f + g }
+
+@action
+@impact(routine)
+fn take8(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> int { a + b + c + d + e + f + g + h }
+
+@action
+@impact(routine)
+fn optionals(a: int?, b: string?, c: bool?) -> string { "${a ?? 0}|${b ?? "-"}|${c ?? false}" }
+
+fn ones(n: int) -> Map<string, string> {
+    mut m: Map<string, string> = {}
+    for name in ["a", "b", "c", "d", "e", "f", "g", "h"].slice(0, n) { m.set(name, "1") }
+    m
+}
+
+fn joined(xs: List<int>) -> string { ["${x}" for x in xs].join(",") }
+
+fn total(r: Result<int, List<ActionRefusal>>) -> int {
+    match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+spec "the generated call" {
+    given "every seat count from one to eight" {
+        then "sums what each seat read" {
+            joined(
+                [
+                    total(take1_from_text(ones(1))),
+                    total(take2_from_text(ones(2))),
+                    total(take3_from_text(ones(3))),
+                    total(take4_from_text(ones(4))),
+                    total(take5_from_text(ones(5))),
+                    total(take6_from_text(ones(6))),
+                    total(take7_from_text(ones(7))),
+                    total(take8_from_text(ones(8))),
+                ],
+            ) == "1,2,3,4,5,6,7,8"
+        }
+        then "refuses the one absent seat of the widest call" {
+            match take8_from_text(ones(7)) { .Ok(_) -> "ok", .Err(rs) -> rs[0].field ?? "" } == "h"
+        }
+    }
+    given "only optional seats" {
+        then "call with nothing sent" {
+            match optionals_from_text({}) { .Ok(s) -> s, .Err(_) -> "refused" } == "0|-|false"
+        }
+        then "read what was sent" {
+            let m = ones(1)
+            match optionals_from_text(m) { .Ok(s) -> s, .Err(_) -> "refused" } == "1|-|false"
+        }
+    }
+}

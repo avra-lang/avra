@@ -1,0 +1,110 @@
+//! What an action says about itself and how its arguments cross as
+//! text: the description every door reads, the per-field refusal a form
+//! places, and one reader per kind a text field can carry. `@action`
+//! (derive.av) generates calls to these; nothing here knows a fn.
+use action.{Impact}
+use @std.text.{parse_int}
+
+/// One seat of an action: its name, its type as written, and whether
+/// a value must be supplied.
+export type ActionParam = { name: string, kind: string, required: bool }
+
+/// An action's description: what a door needs to offer it.
+export type ActionInfo = { name: string, params: List<ActionParam>, impact: Impact, answer: string }
+
+/// A refusal placed on one field, or on the submission when `field` is
+/// absent.
+export type ActionRefusal = { field: string?, message: string }
+
+/// A refusal on a named field.
+export fn refusal(field: string, message: string) -> ActionRefusal {
+    ActionRefusal { field: field, message: message }
+}
+
+/// The refusal as one line: `field: message`, the message alone when
+/// it names no field.
+export fn line_of(r: ActionRefusal) -> string {
+    let field? = r.field else { return r.message }
+    "${field}: ${r.message}"
+}
+
+/// A required text field. An empty value is a value.
+export fn text_field(
+    fields: Map<string, string>,
+    name: string,
+    required: bool,
+    mut problems: List<ActionRefusal>,
+) -> string? {
+    supplied(fields, name, required, problems)
+}
+
+/// A whole number, `-`? digits and nothing else.
+export fn int_field(
+    fields: Map<string, string>,
+    name: string,
+    required: bool,
+    mut problems: List<ActionRefusal>,
+) -> int? {
+    let text? = supplied(fields, name, required, problems) else { return null }
+    let n? = parse_int(text) else { return unread(name, not_a_number(), problems) }
+    n
+}
+
+/// A checkbox: absent reads as unchecked, since an unchecked box sends
+/// nothing. An optional boolean keeps absence as absence.
+export fn bool_field(
+    fields: Map<string, string>,
+    name: string,
+    required: bool,
+    mut problems: List<ActionRefusal>,
+) -> bool? {
+    let text? = fields.get(name) else { return if required { false } else { null } }
+    let b? = truth(text) else { return unread(name, not_a_truth(), problems) }
+    b
+}
+
+/// A field of a kind text cannot carry: always refused, so the action
+/// is never called with a value that was not read.
+export fn unread_field<T>(name: string, kind: string, mut problems: List<ActionRefusal>) -> T? {
+    problems.push(refusal(name, cannot_read(kind)))
+    null
+}
+
+/// The text of a field, or a refusal when a required one is missing.
+fn supplied(
+    fields: Map<string, string>,
+    name: string,
+    required: bool,
+    mut problems: List<ActionRefusal>,
+) -> string? {
+    let text? = fields.get(name) else {
+        if required { problems.push(refusal(name, missing())) }
+        return null
+    }
+    text
+}
+
+/// A refusal recorded, and the absence that stands for the value.
+fn unread<T>(name: string, message: string, mut problems: List<ActionRefusal>) -> T? {
+    problems.push(refusal(name, message))
+    null
+}
+
+/// The checkbox words a browser or a person writes.
+fn truth(text: string) -> bool? {
+    match text {
+        "true" or "on" or "yes" or "1" -> true,
+        "false" or "off" or "no" or "0" or "" -> false,
+        _ -> null,
+    }
+}
+
+// ── The voices ──────────────────────────────────────────────────
+
+fn missing() -> string { "a value is required" }
+
+fn not_a_number() -> string { "not a whole number" }
+
+fn not_a_truth() -> string { "not a yes or a no" }
+
+fn cannot_read(kind: string) -> string { "a `${kind}` cannot be read from text" }

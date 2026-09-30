@@ -1,0 +1,30 @@
+// An absolute-form target's scheme judged against the connection it
+// arrived on (RFC 9110 §7.4): an `https` target over a plain socket is
+// answered 421 and never reaches a route, in any case of its letters;
+// `http`, an unregistered scheme and origin-form route as they always
+// have. The TLS side of the same law is @std/https's https_test.
+use @std.net.{NetError}
+use @std.http.server.{timing}
+
+/// The status line a plain server answers `target` with.
+fn status_line_for(target: string) -> Result<string, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "GET ${target} HTTP/1.1\r\nHost: h\r\n\r\n")?
+    .Ok(r.split("\r\n").first() ?? "")
+}
+
+fn line_for(target: string) -> string {
+    status_line_for(target) catch e -> e.describe().message
+}
+
+spec "std.http a target's scheme against its connection" {
+    given "a plain server" {
+        then "an https target is misdirected" { line_for("https://h/x") == "HTTP/1.1 421 Misdirected Request" }
+        then "the scheme is judged ignoring case" { line_for("HTTPS://h/x") == "HTTP/1.1 421 Misdirected Request" }
+        then "an http target routes" { line_for("http://h/x") == "HTTP/1.1 200 OK" }
+        then "an origin-form target routes" { line_for("/x") == "HTTP/1.1 200 OK" }
+        then "a scheme that only starts like https routes" { line_for("httpsx://h/x") == "HTTP/1.1 200 OK" }
+    }
+}

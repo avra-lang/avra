@@ -1,0 +1,107 @@
+// ALPN and resumption over memory: which protocol a pair agrees on
+// under every overlap, the names a config refuses, and a client's
+// second connection to a host resuming from the ticket the first was
+// given — counted by the server that accepted it.
+use @std.tls.{Config, TlsError, session}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+/// The protocol a client offering `mine` and a server accepting
+/// `theirs` agree on, both sides' view joined; "<none>" when neither
+/// names one.
+fn agreed(mine: List<string>, theirs: List<string>) -> Result<string, TlsError> {
+    let cc = (trusting_localhost()?).offering(mine)?
+    let sc = (serving_localhost()?).offering(theirs)?
+    let p = paired(cc, sc, "localhost")?
+    shaken(p)?
+    "${p.c.protocol() ?? "<none>"}/${p.s.protocol() ?? "<none>"}"
+}
+
+fn agreed_words(mine: List<string>, theirs: List<string>) -> string {
+    agreed(mine, theirs) catch e -> e.describe().message
+}
+
+fn offered_words(names: List<string>) -> string {
+    match trusting_localhost() {
+        .Ok(c) -> words(c.offering(names)),
+        .Err(e) -> e.describe().message,
+    }
+}
+
+/// A handshake between `cc` and `sc`, then the server's first flight
+/// after it — the ticket — read by the client.
+fn ticketed(cc: Config, sc: Config) -> Result<bool, TlsError> {
+    let p = paired(cc, sc, "localhost")?
+    let done = shaken(p)?
+    p.s.sealed("hi".bytes(), 0)?
+    p.c.fed(p.s.outgoing()?)?
+    let _ = p.c.opened(64)?
+    p.c.end()?
+    p.s.end()?
+    done
+}
+
+fn second_connection_resumes() -> Result<bool, TlsError> {
+    let cc = trusting_localhost()?
+    let sc = serving_localhost()?
+    ticketed(cc, sc)?
+    let before = sc.resumed()
+    ticketed(cc, sc)?
+    before == 0 && sc.resumed() == 1
+}
+
+fn another_host_does_not_resume() -> Result<bool, TlsError> {
+    let cc = trusting_localhost()?
+    let sc = serving_localhost()?
+    ticketed(cc, sc)?
+    let p = paired(cc, sc, "127.0.0.1")?
+    shaken(p)?
+    sc.resumed() == 0
+}
+
+fn another_servers_ticket_falls_back() -> Result<bool, TlsError> {
+    let cc = trusting_localhost()?
+    ticketed(cc, serving_localhost()?)?
+    let other = serving_localhost()?
+    let done = ticketed(cc, other)?
+    done && other.resumed() == 0
+}
+
+fn a_fresh_client_does_not_resume() -> Result<bool, TlsError> {
+    let sc = serving_localhost()?
+    ticketed(trusting_localhost()?, sc)?
+    ticketed(trusting_localhost()?, sc)?
+    sc.resumed() == 0
+}
+
+spec "std.tls ALPN and resumption" {
+    given "a client offering and a server accepting" {
+        then "both prefer h2 and both agree on it" { agreed_words(["h2", "http/1.1"], ["h2", "http/1.1"]) == "h2/h2" }
+        then "a server taking only http/1.1 is answered in it" {
+            agreed_words(["h2", "http/1.1"], ["http/1.1"]) == "http/1.1/http/1.1"
+        }
+        then "the server's order decides between two both speak" {
+            agreed_words(["h2", "http/1.1"], ["http/1.1", "h2"]) == "http/1.1/http/1.1"
+        }
+        then "a client offering none leaves the protocol unnamed" { agreed_words([], ["h2"]) == "<none>/<none>" }
+        then "no overlap is refused, never settled on nothing" {
+            agreed_words(["http/1.1"], ["h2"]).starts_with("handshake ")
+        }
+    }
+    given "the names a config takes" {
+        then "an empty name is refused" { offered_words([""]).starts_with("protocol : ") }
+        then "a name longer than 255 bytes is refused" {
+            offered_words([["x" for i in 0..256].join("")]).ends_with("eight at most")
+        }
+        then "a ninth name is refused" {
+            offered_words(["a", "b", "c", "d", "e", "f", "g", "h", "i"]).starts_with("protocol i: ")
+        }
+    }
+    given "a client connecting twice" {
+        then "the second connection resumes from the first's ticket" { passes(second_connection_resumes()) }
+        then "a ticket is offered only to the host that issued it" { passes(another_host_does_not_resume()) }
+        then "a config's tickets are its own" { passes(a_fresh_client_does_not_resume()) }
+        then "a ticket another server issued falls back to a full handshake" {
+            passes(another_servers_ticket_falls_back())
+        }
+    }
+}

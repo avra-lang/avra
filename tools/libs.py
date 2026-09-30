@@ -109,6 +109,18 @@ def platform():
     return PLATFORMS[key]
 
 
+# AN ARCHIVE IS LINKED WHOLE INTO A LIBRARY. A program's link pulls only
+# the members it references, which is why a package archives its C; a
+# library has no references of its own to pull by, so without this a
+# library of an archive holds nothing and the evaluator finds no row.
+def linked_whole(obj):
+    if not obj.endswith(".a"):
+        return [obj]
+    if sys.platform == "darwin":
+        return ["-Wl,-force_load," + obj]
+    return ["-Wl,--whole-archive", obj, "-Wl,--no-whole-archive"]
+
+
 def libname(pkg_name):
     """The library stem a package's MANIFEST NAME derives.
 
@@ -279,7 +291,8 @@ def build(name):
               f"{' '.join(missing)}", file=sys.stderr)
         return 1
     _, mode = platform()
-    argv = ["cc"] + mode + HOST_BOUND + ["-o", row["output"]] + row["objects"] + row["words"]
+    argv = (["cc"] + mode + HOST_BOUND + ["-o", row["output"]]
+            + [w for o in row["objects"] for w in linked_whole(o)] + row["words"])
     return subprocess.call(argv, cwd=ROOT)
 
 

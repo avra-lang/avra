@@ -16,7 +16,7 @@ land="$here/land.sh"
 slot="$here/slot.sh"
 affected="$here/affected_packages.sh"
 
-# The Linux, speed and warm gates default ON for a real landing
+# The Linux, speed and warm gates and the train default ON for a real landing
 # (land.sh's own header) — a bare run_checks call in a fixture below must never
 # reach a live Sprite or run a real compiler. OFF here, by default;
 # the fixtures that exercise these two gates re-arm them locally
@@ -24,7 +24,9 @@ affected="$here/affected_packages.sh"
 AVRA_LAND_LINUX=0
 AVRA_LAND_SPEED_GATE=0
 AVRA_LAND_WARM_GATE=0
-export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
+AVRA_LAND_REMOTE=0
+AVRA_LAND_TRAIN=0
+export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE AVRA_LAND_REMOTE AVRA_LAND_TRAIN
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
@@ -103,8 +105,10 @@ fixture_kill() {
     :
 }
 
+# AVRA_LAND_TEST_ONLY names the one fixture to run.
 run_test() {
     name="$1"
+    [ -z "${AVRA_LAND_TEST_ONLY:-}" ] || [ "$name" = "$AVRA_LAND_TEST_ONLY" ] || return 0
     cap="${AVRA_LAND_TEST_JOBS:-8}"
     while [ "$(tests_running)" -ge "$cap" ]; do sleep 0.2; done
     ( set +e; fixture_timed "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
@@ -874,6 +878,38 @@ MK
     echo "$d"
 }
 
+# A branch that does not merge onto main and the branches ahead of it
+# is named at once and never bisected: one build attempt, over the rest.
+test_batch_conflict_drops_at_once() {
+    d="$(batch_repo batch-conflict)"
+    git -C "$d" checkout -q -b b2 main
+    printf 'export fn seed_a() -> int { 2 }\n' > "$d/packages/a/src/lib.av"
+    commit_all "$d" "b2 rewrites a's line"
+    git -C "$d" checkout -q main
+    lockdir="$scratch/batch-conflict-lock"
+    batchwt="$scratch/batch-conflict-wt"
+    rm -rf "$lockdir" "$batchwt"
+    ( cd "$d" && AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$batchwt" AVRA_SLOTS_DIR="$scratch/batch-conflict-slots" \
+        branch=x sh "$land" --call main_batch 1 a b2 c ) > "$scratch/batch-conflict.out" 2>&1
+    if grep -q "b2 does not merge onto main and the branches ahead of it" "$scratch/batch-conflict.out"; then
+        ok "batch-conflict: names the conflicting branch"
+    else
+        bad "batch-conflict: did not name b2 as not merging"
+    fi
+    if grep -qE "green subset: (a c|c a)" "$scratch/batch-conflict.out"; then
+        ok "batch-conflict: the rest land"
+    else
+        bad "batch-conflict: the green subset was not a and c"
+    fi
+    attempts="$(grep -c '^land: batch attempt \[[^]]*\]: ' "$scratch/batch-conflict.out")"
+    if [ "$attempts" -eq 1 ]; then
+        ok "batch-conflict: one build attempt, no bisection"
+    else
+        bad "batch-conflict: $attempts build attempts, wanted 1"
+        cat "$scratch/batch-conflict.out"
+    fi
+}
+
 test_batch_mode() {
     d="$(batch_repo batch)"
     lockdir="$scratch/batch-lock"
@@ -1057,6 +1093,54 @@ test_auto_batch() {
     else
         bad "auto-batch: main's content does not match a and b in, c out"
     fi
+}
+
+# A landing past its wall cap stops, frees the lock, and tells every
+# rider it timed out.
+test_wall_cap() {
+    d="$(batch_repo wall-cap)"
+    wt_a="$scratch/wall-cap-a"
+    git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
+    lockdir="$scratch/wall-cap-lock"
+    hold="$scratch/wall-cap-hold"
+    export AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$scratch/wall-cap-integration-wt" AVRA_SLOTS_DIR="$scratch/wall-cap-slots" \
+        AVRA_LAND_ABSORB=1 SLOW_BUILD=30 AVRA_LAND_WALL_CAP_S=4
+    ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/wall-cap-holder.out" 2>&1 &
+    wait_for_line "$scratch/wall-cap-holder.out" "^acquired ticket 1$" 150 > /dev/null
+    ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/wall-cap-a.out" 2>&1 &
+    a_pid=$!
+    wait_for_line "$scratch/wall-cap-a.out" "waiting behind" 150 > /dev/null
+    ( cd "$d" && exec sh "$land" b ) > "$scratch/wall-cap-b.out" 2>&1 &
+    b_pid=$!
+    wait_for_line "$scratch/wall-cap-b.out" "waiting behind" 150 > /dev/null
+    touch "$hold"
+    start="$(date +%s)"
+    n=0
+    while kill -0 "$a_pid" 2>/dev/null && [ "$n" -lt 60 ]; do sleep 1; n=$((n + 1)); done
+    a_st=0; kill -0 "$a_pid" 2>/dev/null && a_st=running || { wait "$a_pid" || a_st=$?; }
+    took=$(( $(date +%s) - start ))
+    n=0
+    while kill -0 "$b_pid" 2>/dev/null && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
+    b_st=0; kill -0 "$b_pid" 2>/dev/null && b_st=running || { wait "$b_pid" || b_st=$?; }
+    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR AVRA_LAND_ABSORB SLOW_BUILD AVRA_LAND_WALL_CAP_S
+    if [ "$a_st" != running ] && [ "$a_st" -ne 0 ] && [ "$took" -lt 25 ] && grep -q "wall cap" "$scratch/wall-cap-a.out"; then
+        ok "wall-cap: the landing stops at its cap and says so"
+    else
+        bad "wall-cap: a ($a_st, ${took}s) did not stop at its cap"
+        cat "$scratch/wall-cap-a.out"
+    fi
+    if [ "$b_st" != running ] && [ "$b_st" -ne 0 ] && grep -q "timed out — land again" "$scratch/wall-cap-b.out"; then
+        ok "wall-cap: a rider is told it timed out and to land again"
+    else
+        bad "wall-cap: b ($b_st) was not told it timed out"
+        cat "$scratch/wall-cap-b.out"
+    fi
+    if [ -z "$(ls "$lockdir/tickets" 2>/dev/null)" ]; then
+        ok "wall-cap: the lock is free afterwards"
+    else
+        bad "wall-cap: tickets remain: $(ls "$lockdir/tickets")"
+    fi
+    kill "$a_pid" "$b_pid" 2>/dev/null
 }
 
 test_auto_batch_holder_stopped() {
@@ -1687,7 +1771,7 @@ test_warm_gate_prints_held_pass() {
     mkdir -p "$scr"
     out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
     st=$?
-    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -qE 'land: warm-reuse: held 41/42 \(floor 5\) — PASS'; then
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -qE 'land: warm-reuse: held 41/42 \(floor 37\) — PASS'; then
         ok "warm-gate: prints held N/M, the floor, and PASS"
     else
         bad "warm-gate: expected the held/floor/PASS line — got ($st): $out"
@@ -1701,7 +1785,7 @@ test_warm_gate_prints_held_pass() {
 
 test_warm_gate_fails_below_floor() {
     heldfile="$scratch/warm-held-fail-value"
-    echo "held 41/42" > "$heldfile"
+    echo "held 30/42" > "$heldfile"
     d="$(warm_gate_repo warm-held-fail "$heldfile")"
     printf 'warm_held_floor=100\n' > "$d/tools/land.baseline"
     scr="$scratch/warm-held-fail-scratch"
@@ -1716,9 +1800,36 @@ test_warm_gate_fails_below_floor() {
     fi
 }
 
+# The floor is relative to the files checked, so a package that sheds
+# files never falls under a number it once cleared.
+test_warm_gate_floor_is_relative() {
+    heldfile="$scratch/warm-held-relative-value"
+    echo "held 700/702" > "$heldfile"
+    d="$(warm_gate_repo warm-held-relative "$heldfile")"
+    printf 'warm_held_floor=775\n' > "$d/tools/land.baseline"
+    scr="$scratch/warm-held-relative-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q 'held 700/702 (floor 697) — PASS'; then
+        ok "warm-gate: 700 of 702 held clears the relative floor 697, whatever the old absolute one"
+    else
+        bad "warm-gate: expected held 700/702 (floor 697) to PASS — got ($st): $out"
+    fi
+    echo "held 696/702" > "$heldfile"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q 'held 696/702 (floor 697) — FAIL'; then
+        ok "warm-gate: six files re-derived is under the floor"
+    else
+        bad "warm-gate: expected held 696/702 (floor 697) to FAIL — got ($st): $out"
+    fi
+}
+
 test_warm_gate_override_passes() {
     heldfile="$scratch/warm-held-override-value"
-    echo "held 41/42" > "$heldfile"
+    echo "held 30/42" > "$heldfile"
     d="$(warm_gate_repo warm-held-override "$heldfile")"
     printf 'warm_held_floor=100\n' > "$d/tools/land.baseline"
     scr="$scratch/warm-held-override-scratch"
@@ -1904,6 +2015,69 @@ test_linux_rerun_after_reseed() {
     printf 'new\n' > "$d/bootstrap/seed.ll"
     if sh "$land" --call linux_saw_old_seed "$d" 1; then ok "linux-seed: a failure after a re-emitted seed re-runs"; else bad "linux-seed: a failure after a re-emitted seed stood"; fi
     if sh "$land" --call linux_saw_old_seed "$d" 0; then bad "linux-seed: re-ran a passing leg"; else ok "linux-seed: a passing leg is never re-run"; fi
+}
+
+# The main guard refuses a bare update of main, allows one made under
+# tools/land.sh (by the flag or as an ancestor), and never touches a
+# branch that is not main.
+test_main_guard() {
+    hook="$(cd "$(dirname "$land")" && pwd)/hooks/reference-transaction"
+    z=0000000000000000000000000000000000000000
+    o=1111111111111111111111111111111111111111
+    upd() { printf '%s %s %s\n' "$o" "$z" "$1"; }
+    if upd refs/heads/main | sh "$hook" prepared > /dev/null 2>&1; then bad "main-guard: a bare update of main passed"; else ok "main-guard: a bare update of main is refused"; fi
+    if upd refs/heads/main | AVRA_LANDING=1 sh "$hook" prepared > /dev/null 2>&1; then ok "main-guard: land.sh's flag passes"; else bad "main-guard: the flag was refused"; fi
+    fake="$scratch/guard/tools"
+    mkdir -p "$fake"
+    printf '#!/bin/sh\nprintf "%%s %%s refs/heads/main\\n" "%s" "%s" | sh "%s" prepared\n' "$o" "$z" "$hook" > "$fake/land.sh"
+    if sh "$fake/land.sh" > /dev/null 2>&1; then ok "main-guard: an update made under tools/land.sh passes"; else bad "main-guard: an update under tools/land.sh was refused"; fi
+    if upd refs/heads/lane/x | sh "$hook" prepared > /dev/null 2>&1; then ok "main-guard: a branch that is not main is never refused"; else bad "main-guard: a branch update was refused"; fi
+}
+
+# MAIN MOVES WHOLE OR NOT AT ALL: a fast-forward refused after git has
+# written the files (a hook the incoming tree adds refuses the ref)
+# leaves main's checkout at HEAD again; a dirty file the landing changes
+# refuses first, by name; an unrelated dirty file survives a landing.
+test_main_ff_whole_or_not() {
+    d="$(git_repo main-ff)"
+    printf 'one\n' > "$d/a.txt"
+    printf 'mine\n' > "$d/local.txt"
+    commit_all "$d" "base"
+    git -C "$d" config core.hooksPath hooks
+    git -C "$d" checkout -q -b cand
+    mkdir -p "$d/hooks"
+    printf '#!/bin/sh\nexit 1\n' > "$d/hooks/reference-transaction"
+    chmod +x "$d/hooks/reference-transaction"
+    printf 'two\n' > "$d/a.txt"
+    printf 'new\n' > "$d/b.txt"
+    git -C "$d" add -A
+    git -C "$d" -c core.hooksPath=/dev/null commit -q -m cand
+    git -C "$d" -c core.hooksPath=/dev/null checkout -q main
+    head="$(git -C "$d" rev-parse HEAD)"
+    out="$(sh "$land" --call main_ff "$d" cand 2>&1)"; st=$?
+    if [ "$st" -ne 0 ] && [ "$(git -C "$d" rev-parse HEAD)" = "$head" ] && git -C "$d" diff --quiet HEAD && [ ! -e "$d/b.txt" ] && [ ! -e "$d/hooks/reference-transaction" ]; then
+        ok "main-ff: a fast-forward refused after writing files leaves main's checkout at HEAD"
+    else
+        bad "main-ff: half-applied checkout left behind (exit $st): $(git -C "$d" status --porcelain | tr '\n' ' ')"
+    fi
+    case "$out" in *"main's checkout restored to HEAD"*) ok "main-ff: the restore announces itself" ;; *) bad "main-ff: silent restore ($out)" ;; esac
+    git -C "$d" config --unset core.hooksPath
+    git -C "$d" -c core.hooksPath=/dev/null branch -q -f cand2 main
+    git -C "$d" -c core.hooksPath=/dev/null checkout -q cand2
+    printf 'three\n' > "$d/a.txt"
+    git -C "$d" commit -q -am cand2
+    git -C "$d" checkout -q main
+    printf 'edited\n' > "$d/a.txt"
+    out="$(sh "$land" --call main_ff "$d" cand2 2>&1)"; st=$?
+    case "$st|$out" in 0*) bad "main-ff: fast-forwarded over a dirty file it changes" ;; *"a.txt"*) ok "main-ff: a dirty file the landing changes refuses first, by name" ;; *) bad "main-ff: refusal did not name the file ($out)" ;; esac
+    [ "$(cat "$d/a.txt")" = edited ] && ok "main-ff: the refused landing left the local edit intact" || bad "main-ff: the local edit was lost"
+    git -C "$d" checkout -q -- a.txt
+    printf 'still mine\n' > "$d/local.txt"
+    if sh "$land" --call main_ff "$d" cand2 > /dev/null 2>&1 && [ "$(cat "$d/local.txt")" = "still mine" ] && [ "$(cat "$d/a.txt")" = three ]; then
+        ok "main-ff: an unrelated dirty file survives a landing"
+    else
+        bad "main-ff: the landing did not pass beside an unrelated edit"
+    fi
 }
 
 # A landing that reached the compiler leaves main's checkout holding the
@@ -2360,6 +2534,45 @@ EOF
     fi
 }
 
+# ══ THE REMOTE SUITES RIDE THE LINUX LEG ══════════════════════════════
+# With the leg on, the suites and idioms leave the local pool for
+# tools/sp -p; with it off they stay local, or nothing would run them.
+test_remote_suites() {
+    read -r d base_sha <<EOF
+$(gates_order_repo remote-suites)
+EOF
+    sp_stub="$scratch/remote-suites-sp.sh"
+    printf '#!/bin/sh\nfor a in "$@"; do echo "$a"; done > %s\n' "$scratch/remote-suites-argv" > "$sp_stub"
+    sprite_stub="$scratch/remote-suites-sprite.sh"
+    sprite_stub_write "$sprite_stub" pass
+    for leg in 1 0; do
+        scr="$scratch/remote-suites-scr-$leg"
+        rm -rf "$scr"
+        AVRA_LAND_JOBS=8 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$scratch/remote-suites-slots-$leg" \
+            AVRA_LAND_REMOTE=1 AVRA_LAND_LINUX=$leg AVRA_LAND_SPRITE_BUILD="$sprite_stub" \
+            branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 1 1 \
+            > "$scratch/remote-suites-$leg.out" 2>&1
+        local_suites="$(awk '{print $2}' "$scr/jobs.list" 2>/dev/null | grep -E '^(test-|idioms)' | sort | tr '\n' ' ')"
+        if [ "$leg" = 1 ]; then
+            if [ -z "$local_suites" ]; then ok "remote-suites: with the leg on, no suite or idioms runs locally"
+            else bad "remote-suites: with the leg on, ran locally [$local_suites]"; fi
+        elif [ "$local_suites" = "idioms test-cli test-pa test-std-avrac " ]; then
+            ok "remote-suites: with the leg off, every suite and idioms runs locally"
+        else
+            bad "remote-suites: with the leg off, wanted every suite and idioms locally, got [$local_suites]"
+        fi
+    done
+    AVRA_LAND_SP="$sp_stub" sh "$land" --call remote_suites "$d" 1 pa cli > /dev/null 2>&1
+    want="-p|true && build/avra check packages/pa --baseline tools/idioms.baseline && build/avra check packages/cli --baseline tools/idioms.baseline|build/avra test packages/pa|build/avra test packages/cli|"
+    got="$(tr '\n' '|' < "$scratch/remote-suites-argv" 2>/dev/null)"
+    if [ "$got" = "$want" ]; then ok "remote-suites: sp -p gets idioms, then one suite per package"
+    else bad "remote-suites: sp -p got [$got]"; fi
+    AVRA_LAND_SP="$sp_stub" sh "$land" --call remote_suites "$d" 0 pa > /dev/null 2>&1
+    got="$(tr '\n' '|' < "$scratch/remote-suites-argv" 2>/dev/null)"
+    if [ "$got" = "-p|build/avra test packages/pa|" ]; then ok "remote-suites: no .av change sends no idioms"
+    else bad "remote-suites: without .av, sp -p got [$got]"; fi
+}
+
 # ══ A CHANGED GATE SCRIPT RUNS ITS OWN GATE, TOOLS-ONLY ══════════════
 test_tools_only_gate_script_runs_its_step() {
     d="$(batch_repo gate-script-one)"
@@ -2452,6 +2665,8 @@ run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
+run_test test_main_ff_whole_or_not
+run_test test_main_guard
 run_test test_exit_verdict
 run_test test_sprites_by_load
 run_test test_linux_watchdog
@@ -2473,6 +2688,10 @@ run_test test_speed_gate_object_hit_tool_failure
 run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order
+run_test test_remote_suites
+run_test test_batch_conflict_drops_at_once
+run_test test_warm_gate_floor_is_relative
+run_test test_wall_cap
 run_test test_tools_only_gate_script_runs_its_step
 run_test test_tools_only_several_gate_scripts_run_all_steps
 

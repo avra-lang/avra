@@ -1,0 +1,24 @@
+// The four profiles are sound; a contradiction is named.
+use @std.action.{routine, reversible, destructive, external, faults, Impact}
+
+spec "std/action" {
+    given "the profiles" {
+        then "each starting profile has no fault" {
+            faults(routine).length == 0 &&
+                faults(reversible).length == 0 &&
+                faults(destructive).length == 0 &&
+                faults(external).length == 0
+        }
+    }
+    given "an override" {
+        then "an undo safeguard with no recovery is a fault" {
+            faults(routine with { safeguard: .Undo })[0] == "an undo safeguard needs a recovery"
+        }
+        then "speculating on an external commitment is a fault" {
+            faults(external with { presentation: .Speculative }).length == 1
+        }
+        then "a pending loss with nothing behind it is a fault" {
+            faults(destructive with { safeguard: .None }).length == 1
+        }
+    }
+}

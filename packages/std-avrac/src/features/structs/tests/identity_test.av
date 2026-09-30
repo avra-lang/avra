@@ -6,10 +6,18 @@
 // a lone source, since a lone source cannot import `@std/meta`
 // (compiler/dev/witnesses.av's `identity_golden`) — `provided`
 // vendors the real package so the annotation genuinely resolves.
+//
+// A PLAIN field is licensed by `@plain_field("name")` beside
+// `@identity`, read off the record's own declaration and nothing
+// else — no type name licenses anything.
 use @std.avrac.testing.{provided}
 
 fn checked(main: string) -> string {
     provided("use @std.meta.{identity}\n" + main, "").report()
+}
+
+fn checked_plain(main: string) -> string {
+    provided("use @std.meta.{identity, plain_field}\n" + main, "").report()
 }
 
 spec "features/structs (identity)" {
@@ -47,6 +55,28 @@ spec "features/structs (identity)" {
             )
                 .report()
                 .contains("type.identity_field")
+        }
+    }
+    given "a plain field licensed AT THE TYPE's own site, `@plain_field(\"name\")`" {
+        then "the licensed field is accepted, no table entry anywhere" {
+            !checked_plain(
+                "@identity\n@plain_field(\"b\")\ntype Licensed = { a: Cell<int>, b: int }\n1",
+            )
+                .contains("field `b`")
+        }
+        then "the license is scoped to its OWN type's annotation, never a shared table" {
+            let out = checked_plain(
+                "@identity\n@plain_field(\"b\")\ntype Licensed = { a: Cell<int>, b: int }\n@identity\ntype Unlicensed = { c: Cell<int>, b: int }\n1",
+            )
+            out.contains("[type.identity_field]") && out.contains("field `b` is `int`")
+        }
+        then "the remedy names `@plain_field(\"b\")` and no table" {
+            let out = checked("@identity\ntype Bad = { a: Cell<int>, b: int }\n1")
+            out.contains("@plain_field(\"b\")") && !out.contains("identity_plain")
+        }
+        then "a type named `Workspace` with an unmarked plain `host` is refused" {
+            checked("@identity\ntype Workspace = { a: Cell<int>, host: int }\n1")
+                .contains("field `host` is `int`")
         }
     }
 }

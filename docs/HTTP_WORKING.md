@@ -1,5 +1,8 @@
 # HTTP working state
 
+> The CLOSED campaign ledger, 2026-09-06 to 2026-09-08, kept as history.
+> The live plan is `docs/2026_09_29_HTTP_ROADMAP.md`.
+
 - Worktree `../avra-lane-http`, branch `lane/http`. Taken over 2026-09-06 by
   session avra-2a [1fab91] after the first session died; fast-forwarded to main
   at `957ba39`. The design papers are `2026_09_06_STD_HTTP_DESIGN.md` and

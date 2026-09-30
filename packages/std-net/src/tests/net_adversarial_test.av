@@ -7,6 +7,10 @@
 // compile refusal, so they are recorded in the working log.
 use @std.net.{listen, connect, poller, Read, NetError}
 use @std.time.{secs, ms}
+use @std.text.{from_codepoint}
+
+/// A host whose bytes end early for C: the resolver would read `127.0.0.1`.
+fn holed() -> string { "127.0.0.1" + from_codepoint(0) + "junk" }
 
 fn words<T>(r: Result<T, NetError>) -> string {
     match r { .Err(e) -> e.describe().message, .Ok(_) -> "<ok>" }
@@ -126,6 +130,11 @@ spec "std.net adversarial" {
         then "connect refuses an empty host and a port past 65535" {
             words(connect("", 80, secs(1))) == "connect \"\":80: Invalid argument" &&
                 words(connect("127.0.0.1", 70000, secs(1))).starts_with("connect 127.0.0.1:70000: ")
+        }
+        then "listen refuses an empty host, and both verbs refuse a host holding a NUL before it crosses" {
+            words(listen("", 0)) == "listen \"\":0: Invalid argument" &&
+                words(listen(holed(), 0)) == "listen \"${holed()}\":0: Invalid argument" &&
+                words(connect(holed(), 80, secs(1))) == "connect \"${holed()}\":80: Invalid argument"
         }
     }
     given "a timeout is a budget, never a sentinel" {

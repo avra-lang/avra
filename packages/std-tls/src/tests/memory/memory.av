@@ -1,0 +1,48 @@
+//! proves: a TLS handshake between a client and a server session in
+//! one process, the wire a pair of hand-moved buffers — the client
+//! verifying the test authority's leaf for localhost — then one
+//! message each way and close_notify.
+use @std.tls.{Session, Step, Opened, TlsError, session}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+/// Both sides stepped, each flight moved to the other, until both are
+/// done: the number of turns it took.
+fn shaken(c: Session, s: Session, turn: int) -> Result<int, TlsError> {
+    let cs = c.step()?
+    s.fed(c.outgoing()?)?
+    let ss = s.step()?
+    c.fed(s.outgoing()?)?
+    if cs is .Done && ss is .Done { return turn }
+    if turn == 10 { return -1 }
+    shaken(c, s, turn + 1)
+}
+
+fn shown(o: Opened) -> string {
+    match o { .Data(b) -> b.text() ?? "<bytes>", .Reading -> "<reading>", .Closed -> "<closed>" }
+}
+
+fn exchange() -> Result<string, TlsError> {
+    let cc = trusting_localhost()?
+    let sc = serving_localhost()?
+    let c = session(cc, "localhost")?
+    let s = session(sc, "")?
+    let turns = shaken(c, s, 1)?
+    let hello = "ping".bytes()
+    let took = c.sealed(hello, 0)?
+    s.fed(c.outgoing()?)?
+    let got = shown(s.opened(64)?)
+    s.sealed("pong".bytes(), 0)?
+    c.fed(s.outgoing()?)?
+    let back = shown(c.opened(64)?)
+    c.closing()?
+    s.fed(c.outgoing()?)?
+    let closed = shown(s.opened(64)?)
+    let v = c.version()
+    c.end()?
+    s.end()?
+    cc.free()?
+    sc.free()?
+    "${turns > 0} ${took} ${got} ${back} ${closed} ${v == 772}"
+}
+
+match exchange() { .Ok(line) -> line, .Err(e) -> e.describe().message }

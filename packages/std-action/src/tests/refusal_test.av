@@ -1,0 +1,150 @@
+// The action law, spoken as diagnostics over a hand-built `Fn`: what the
+// annotation would be handed, without a file to annotate.
+use @std.action.derive.{action, impact}
+use @std.action.{routine, faults}
+use @std.meta.{Fn, Param, Kind, Annotation, Diagnostic}
+
+fn seat(name: string, kind: Kind) -> Param {
+    Param { name: name, ty: kind.spelled(), mutable: false, settled: false, at: null, kind: kind }
+}
+
+fn impact_mark(args: List<string>) -> Annotation { Annotation { name: "impact", args: args, at: null } }
+
+fn card(params: List<Param>, answers: Kind, marks: List<Annotation>) -> Fn {
+    Fn {
+        name: "card",
+        params: params,
+        answer: answers.spelled(),
+        at: null,
+        answers: answers,
+        annotations: marks,
+    }
+}
+
+/// A fn that breaks no law.
+fn sound() -> Fn { card([seat("title", Kind.Str)], Kind.Int, [impact_mark(["routine"])]) }
+
+fn kinds_of(ds: List<Diagnostic>) -> string { [d.kind ?? "" for d in ds].join(",") }
+
+fn problems_of(f: Fn) -> string { kinds_of(action(f).problems) }
+
+spec "@action's refusals" {
+    given "a fn that breaks no law" {
+        then "generates one directive and speaks nothing" {
+            let d = action(sound())
+            d.made.length == 1 && d.problems.length == 0
+        }
+    }
+    given "the impact" {
+        then "a missing impact is refused, and nothing is generated over it" {
+            let d = action(card([seat("title", Kind.Str)], Kind.Int, []))
+            kinds_of(d.problems) == "missing_impact" && d.made.length == 0
+        }
+        then "an impact that names no value is refused" {
+            problems_of(card([], Kind.Int, [impact_mark([])])) == "unnamed_impact"
+        }
+        then "an impact written as an expression is unnamed, not empty text" {
+            problems_of(card([], Kind.Int, [impact_mark([""])])) == "unnamed_impact"
+        }
+        then "an impact spelled as a path or a number is unnamed" {
+            problems_of(card([], Kind.Int, [impact_mark(["a.b"])])) == "unnamed_impact" &&
+                problems_of(card([], Kind.Int, [impact_mark(["7"])])) == "unnamed_impact" &&
+                problems_of(card([], Kind.Int, [impact_mark(["a b"])])) == "unnamed_impact"
+        }
+        then "two impacts are refused, never the first silently" {
+            problems_of(
+                card([], Kind.Int, [impact_mark(["routine"]), impact_mark(["destructive"])]),
+            ) == "repeated_impact"
+        }
+        then "another annotation is not an impact" {
+            let other = Annotation { name: "traced", args: ["routine"], at: null }
+            problems_of(card([], Kind.Int, [other])) == "missing_impact"
+        }
+        then "a sound profile has no fault" {
+            impact(sound(), routine).length == 0
+        }
+        then "a contradictory impact is refused with the law's own words" {
+            let ds = impact(sound(), routine with { safeguard: .Undo })
+            kinds_of(ds) == "impact_fault" &&
+                ds[0].message.contains(faults(routine with { safeguard: .Undo })[0])
+        }
+        then "every fault is its own refusal" {
+            impact(sound(), routine with { safeguard: .Undo, commitment: .External }).length == 2
+        }
+    }
+    given "the answer" {
+        then "a fn that answers nothing is refused" {
+            problems_of(card([], Kind.Void, [impact_mark(["routine"])])) == "no_answer"
+        }
+    }
+    given "a Result answer" {
+        then "with a text failure is sound" {
+            problems_of(card([], Kind.Result(Kind.Int, Kind.Str), [impact_mark(["routine"])])) == ""
+        }
+        then "with a failure a form cannot show is refused" {
+            problems_of(card([], Kind.Result(Kind.Int, Kind.Int), [impact_mark(["routine"])])) == "failure_kind"
+        }
+    }
+    given "a generic fn" {
+        then "is refused when a seat or the answer mentions a type parameter" {
+            problems_of(card([seat("x", Kind.Var("A"))], Kind.Int, [impact_mark(["routine"])])) == "generic_action" &&
+                problems_of(
+                    card([], Kind.List(Kind.Opt(Kind.Var("A"))), [impact_mark(["routine"])]),
+                ) == "generic_action" &&
+                problems_of(
+                    card(
+                        [seat("x", Kind.Named("Box", [Kind.Var("A")]))],
+                        Kind.Int,
+                        [impact_mark(["routine"])],
+                    ),
+                ) == "generic_action"
+        }
+        then "is sound over concrete nested kinds" {
+            problems_of(
+                card(
+                    [seat("x", Kind.Named("Box", [Kind.Int]))],
+                    Kind.Map(Kind.Str, Kind.Int),
+                    [impact_mark(["routine"])],
+                ),
+            ) == ""
+        }
+    }
+    given "the seats" {
+        then "a name the wire reserves is refused" {
+            problems_of(card([seat("_next", Kind.Str)], Kind.Int, [impact_mark(["routine"])])) == "reserved_seat"
+        }
+        then "a name that merely contains a protocol word is not" {
+            problems_of(
+                card(
+                    [
+                        seat("next", Kind.Str),
+                        seat("confirm", Kind.Str),
+                        seat("idempotency", Kind.Str),
+                    ],
+                    Kind.Int,
+                    [impact_mark(["routine"])],
+                ),
+            ) == ""
+        }
+        then "a mut seat is refused" {
+            let p = seat("title", Kind.Str) with { mutable: true }
+            problems_of(card([p], Kind.Int, [impact_mark(["routine"])])) == "marked_seat"
+        }
+        then "a const seat is refused" {
+            let p = seat("title", Kind.Str) with { settled: true }
+            problems_of(card([p], Kind.Int, [impact_mark(["routine"])])) == "marked_seat"
+        }
+        then "eight seats are the most" {
+            let eight = [seat("s${i}", Kind.Int) for i in 0..8]
+            problems_of(card(eight, Kind.Int, [impact_mark(["routine"])])) == "" &&
+                problems_of(
+                    card(eight.concat([seat("s8", Kind.Int)]), Kind.Int, [impact_mark(["routine"])]),
+                ) == "too_many_params"
+        }
+    }
+    given "several laws broken at once" {
+        then "each is spoken, seats first" {
+            problems_of(card([seat("_a", Kind.Str)], Kind.Void, [])) == "reserved_seat,no_answer,missing_impact"
+        }
+    }
+}
