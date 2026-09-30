@@ -8,8 +8,8 @@
 //! an HTTP POST.
 //!
 //! AN AGENT DISCHARGES A SAFEGUARD WITH A MANDATE, and there are none
-//! yet: a tool whose `impact.presentation` is not `Speculative` is
-//! refused, uncalled, with "requires a mandate"
+//! yet: a tool whose impact is not speculative, or asks any safeguard,
+//! is refused, uncalled, with "requires a mandate"
 //! (docs/2026_09_29_AUTHORITY_AND_RECEIPTS.md §5).
 //!
 //! ARGUMENTS ARE CHECKED WHOLE BEFORE A TOOL RUNS: an undeclared
@@ -208,9 +208,15 @@ fn called(tools: List<Tool>, params: Json) -> Result<Json, Fault> {
     }
 }
 
-/// No agent holds a mandate yet, so only a speculative tool is called.
+/// No agent holds a mandate yet, so only a tool that speculates and
+/// asks no safeguard of its invoker is called — a safeguard is
+/// discharged by a mandate here, never by the agent itself.
 fn needs_mandate(i: Impact) -> bool {
-    match i.presentation { .Speculative -> false, .Pending or .Sending -> true }
+    let guarded = match i.safeguard {
+        .None -> false,
+        .Undo or .Confirm or .Reauth or .Typed -> true,
+    }
+    guarded || match i.presentation { .Speculative -> false, .Pending or .Sending -> true }
 }
 
 /// Every problem with `args` against the declared params: repeated,
