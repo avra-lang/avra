@@ -528,6 +528,7 @@ static void rc_history(void* p) {
 static void array_reclaim(void* p);
 static void array_poison(void* p);
 static void map_reclaim(void* p);
+static void guard_kept(void* p, Header* h);
 static void* box_clone(void* p);
 
 // DEBUG GUARD (AVRA_RC_GUARD=1): a box that reaches rc 0 is KEPT,
@@ -589,13 +590,15 @@ void avra_release_guarded(void* p, Header* h) {
     rc_note(p, -1, __builtin_return_address(0), h->rc);
     if (h->rc > 0) return;
     int32_t kind = h->kind;
-    h->kind = KIND_DEAD;
-    h->rc = 0;
+    guard_kept(p, h);
     if (kind == KIND_ARRAY) {
         int pushed = g_chain_len < 64;
         if (pushed) { g_chain[g_chain_len] = p; g_chain_len++; }
         array_poison(p);
         if (pushed) g_chain_len--;
+    } else if (kind == KIND_MAP) {
+        avra_rc_release(((AvraMap*)p)->keys);
+        avra_rc_release(((AvraMap*)p)->vals);
     }
 }
 
@@ -695,9 +698,8 @@ static char* sized_moved(char* p, size_t need) {
         oh->len = (uint32_t)n;
         memcpy(out, p, n);
         if (rc_guarded()) {
+            guard_kept(p, h);
             memset(p, 0xDD, n);
-            h->kind = KIND_DEAD;
-            h->rc = 0;
         } else {
             box_free(p);
         }
@@ -1030,6 +1032,24 @@ static void array_poison(void* p) {
         if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
     memset(a->data, 0xDD, (size_t)a->len * sizeof(int64_t));
+}
+
+// A BOX THE GUARD KEEPS IS FREED TO EVERY LEDGER: marked dead, and the
+// bytes its reclaim would free — the box, a list's cells, a map's index —
+// leave the live and mortal counts, so a guarded run's budget and leak
+// line read what an unguarded run holds. Asked before the mark, while
+// the header still says what the box is.
+static void guard_kept(void* p, Header* h) {
+    if (h->kind == KIND_ARRAY) {
+        AvraArray* a = (AvraArray*)p;
+        if (a->site) acc_site(a->site, -array_bytes(a), -1);
+        if (!laid_out(a)) acc_add(ACC_BUF, -(int64_t)buf_bytes(a->cap));
+    } else if (h->kind == KIND_MAP) {
+        acc_add(ACC_INDEX, -(int64_t)(((AvraMap*)p)->icap * (int64_t)sizeof(int64_t)));
+    }
+    acc_box(h->kind, -(int64_t)(sizeof(Header) + box_bytes(h)));
+    h->kind = KIND_DEAD;
+    h->rc = 0;
 }
 
 static int64_t guard_len(void* p) {
