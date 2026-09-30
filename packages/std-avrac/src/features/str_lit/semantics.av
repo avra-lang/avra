@@ -14,6 +14,7 @@ impl NodeSemantics for StrSemantics {
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         match cx.view.store.expr(e) {
             .Body(_, _, holes, _) -> interp_type(cx, holes),
+            .BytesLit(_) -> cx.type(Bytes),
             _ -> cx.type(string),
         }
     }
@@ -21,6 +22,8 @@ impl NodeSemantics for StrSemantics {
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         match cx.view.store.expr(e) {
             .Body(_, parts, holes, _) -> interp_reg(cx, e, parts, holes),
+            .BytesLit(_) -> cx.spelled_static(e) ?? cx
+                .lower_defect(e, "a byte string the lexer admitted did not decode"),
             _ -> str_reg(cx, e),
         }
     }
