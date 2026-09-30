@@ -51,6 +51,11 @@ spec "@action's refusals" {
                 problems_of(card([], Kind.Int, [impact_mark(["7"])])) == "unnamed_impact" &&
                 problems_of(card([], Kind.Int, [impact_mark(["a b"])])) == "unnamed_impact"
         }
+        then "two impacts are refused, never the first silently" {
+            problems_of(
+                card([], Kind.Int, [impact_mark(["routine"]), impact_mark(["destructive"])]),
+            ) == "repeated_impact"
+        }
         then "another annotation is not an impact" {
             let other = Annotation { name: "traced", args: ["routine"], at: null }
             problems_of(card([], Kind.Int, [other])) == "missing_impact"
@@ -78,6 +83,30 @@ spec "@action's refusals" {
         }
         then "with a failure a form cannot show is refused" {
             problems_of(card([], Kind.Result(Kind.Int, Kind.Int), [impact_mark(["routine"])])) == "failure_kind"
+        }
+    }
+    given "a generic fn" {
+        then "is refused when a seat or the answer mentions a type parameter" {
+            problems_of(card([seat("x", Kind.Var("A"))], Kind.Int, [impact_mark(["routine"])])) == "generic_action" &&
+                problems_of(
+                    card([], Kind.List(Kind.Opt(Kind.Var("A"))), [impact_mark(["routine"])]),
+                ) == "generic_action" &&
+                problems_of(
+                    card(
+                        [seat("x", Kind.Named("Box", [Kind.Var("A")]))],
+                        Kind.Int,
+                        [impact_mark(["routine"])],
+                    ),
+                ) == "generic_action"
+        }
+        then "is sound over concrete nested kinds" {
+            problems_of(
+                card(
+                    [seat("x", Kind.Named("Box", [Kind.Int]))],
+                    Kind.Map(Kind.Str, Kind.Int),
+                    [impact_mark(["routine"])],
+                ),
+            ) == ""
         }
     }
     given "the seats" {

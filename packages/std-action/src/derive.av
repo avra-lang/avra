@@ -51,7 +51,10 @@ export fn impact(f: Fn, i: Impact) -> List<Diagnostic> {
 /// pile of errors over the refusal.
 export fn action(f: Fn) -> Declared {
     let problems = shape_problems(f)
-    Declared { made: if problems.is_empty() { [directive(f)] } else { [] }, problems: problems }
+    Declared {
+        made: if problems.is_empty() && impact_word(f) != null { [directive(f)] } else { [] },
+        problems: problems,
+    }
 }
 
 /// Every way a fn breaks the action law.
@@ -61,6 +64,7 @@ fn shape_problems(f: Fn) -> List<Diagnostic> {
         .concat(if f.answers is .Void { [no_answer(f)] } else { [] })
         .concat(if f.params.length > MAX_PARAMS { [too_many_params(f)] } else { [] })
         .concat(if unreadable_failure(f) { [failure_kind(f)] } else { [] })
+        .concat(if generic(f) { [generic_action(f)] } else { [] })
         .concat(impact_problems(f))
 }
 
@@ -86,13 +90,30 @@ fn is_name_octet(octet: int) -> bool {
     is_digit(octet) || octet >= 65 && octet <= 90 || octet >= 97 && octet <= 122 || octet == 95
 }
 
-/// A missing `@impact`, or one that names no value the generated
-/// code could refer to.
+/// A missing or repeated `@impact`, or one that is no bare name. A
+/// literal one is refused at its own seat too: the second word is the
+/// remedy, and no text tells a refused literal from a valid path.
 fn impact_problems(f: Fn) -> List<Diagnostic> {
-    let written = f.annotations.any(it.name == "impact")
-    if !written { return [missing_impact(f)] }
+    let written = [a for a in f.annotations if a.name == "impact"]
+    if written.is_empty() { return [missing_impact(f)] }
+    if written.length > 1 { return [repeated_impact(f)] }
     if impact_word(f) == null { return [unnamed_impact(f)] }
     []
+}
+
+/// Whether the fn is over a type parameter, which a generated body
+/// cannot name.
+fn generic(f: Fn) -> bool { f.params.any(mentions_var(it.kind)) || mentions_var(f.answers) }
+
+fn mentions_var(k: Kind) -> bool {
+    match k {
+        .Var(_) -> true,
+        .List(inner) or .Cell(inner) or .Opt(inner) -> mentions_var(inner),
+        .Map(a, b) or .Result(a, b) -> mentions_var(a) || mentions_var(b),
+        .Named(_, args) -> args.any(mentions_var(it)),
+        .Fn(seats, answer) -> seats.any(mentions_var(it.kind)) || mentions_var(answer),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Dyn(_) or .Unspelled(_) -> false,
+    }
 }
 
 /// A `Result` answer whose failure is not text a form can show.
@@ -235,6 +256,24 @@ fn unnamed_impact(f: Fn) -> Diagnostic {
         f.at,
         "`@impact` on `${f.name}` names no value — the impact is a profile or a const",
         "bind it — `const mine: Impact = destructive with { … }` — and write `@impact(mine)`",
+    )
+}
+
+fn repeated_impact(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "repeated_impact",
+        f.at,
+        "`${f.name}` declares its impact more than once",
+        "keep one `@impact`",
+    )
+}
+
+fn generic_action(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "generic_action",
+        f.at,
+        "`${f.name}` is generic, and an action is called from text with concrete seats",
+        "write the seats' types out",
     )
 }
 
