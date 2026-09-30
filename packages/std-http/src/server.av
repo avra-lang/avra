@@ -36,7 +36,7 @@
 //! dropped.
 use @std.net.{Listener, Conn, NetError, listen}
 use @std.time.{Duration, ms, secs, within}
-use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
+use frame.{Head, Method, Chunker, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
 use route.{Route, compiled, dispatch}
 
@@ -490,8 +490,16 @@ fn heard(mut l: Link, b: Bytes?) {
 /// peer could read, and measuring the handler's body against that
 /// wire cuts the head mid-field.
 fn wired(r: Response, keep: bool, head: Head) -> Bytes {
-    let whole = wire(r, keep, head.minor)
+    let sent = untunnelled(r, head)
+    let whole = wire(sent, keep, head.minor)
     // only a HEAD measures the body it does not send
-    if head.method is .Head { return whole.slice(0, whole.length - as_sent(r).body.length) }
+    if head.method is .Head { return whole.slice(0, whole.length - as_sent(sent).body.length) }
     whole
+}
+
+/// A 2xx to CONNECT promises a tunnel and carries no length (RFC 9110
+/// §9.3.6); this server opens no tunnel, so it answers its own 500.
+fn untunnelled(r: Response, head: Head) -> Response {
+    if head.method == Method.Connect && r.status >= 200 && r.status < 300 { return status(500) }
+    r
 }

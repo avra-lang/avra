@@ -172,7 +172,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -471,6 +471,12 @@ suites:
 # invisible to it.
 cited:
 	@python3 tools/cited.py
+
+# THE HTTP DOCS' FIXTURE CITATIONS RESOLVE: every `<suite> › "<then>"`
+# in the framing laws and the conformance checklist names a test that
+# exists, or the checklist claims coverage the tree does not have.
+http-cites:
+	@python3 tools/http_cites.py
 
 # DOGFOODING.md's own registry keeps a GENERATED block current
 # against `avra rules --markdown` — a rule's doc changes here or the

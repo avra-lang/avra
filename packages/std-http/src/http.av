@@ -278,9 +278,11 @@ fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
         w = w.concat(h.value.bytes())
         w = w.concat(crlf)
     }
-    w = w.concat(length_field)
-    w = w.concat("${r.body.length}".bytes())
-    w = w.concat(crlf)
+    if measured(r.status) {
+        w = w.concat(length_field)
+        w = w.concat("${r.body.length}".bytes())
+        w = w.concat(crlf)
+    }
     w = w.concat(fate(keep_alive, minor).bytes())
     w = w.concat(crlf)
     w = w.concat(r.body)
@@ -311,13 +313,27 @@ fn fate(keep_alive: bool, minor: int) -> string {
     }
 }
 
-/// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a status of three
-/// digits — the status line's own grammar, which is why 1000 and 99
-/// are not statuses — and every field a field the framer would frame.
-/// Public so a handler can ask before it answers.
+/// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a FINAL status of
+/// three digits — the status line's own grammar, which is why 1000 is
+/// not a status, and a 1xx is interim, never an answer (RFC 9110
+/// §15.2) — no content where the status forbids it, and every field a
+/// field the framer would frame. Public so a handler can ask before
+/// it answers.
 export fn sendable(r: Response) -> bool {
-    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes)
+    r.status >= 200 &&
+        r.status <= 999 &&
+        (r.body.is_empty() || !contentless(r.status)) &&
+        fields_writable(r.headers, reply_writes)
 }
+
+/// A status whose response carries no content (RFC 9110 §15.3.5,
+/// §15.3.6, §15.4.5).
+fn contentless(status: int) -> bool { status == 204 || status == 205 || status == 304 }
+
+/// Whether a response of this status states its length: never for a
+/// 204 (RFC 9110 §8.6), and never for a 304, whose length would be the
+/// 200's it stands for.
+fn measured(status: int) -> bool { status != 204 && status != 304 }
 
 /// EVERY FIELD A WRITER MAY WRITE: each one a field the framer would
 /// frame, and none of the ones the writer writes ITSELF. A second

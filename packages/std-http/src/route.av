@@ -438,14 +438,27 @@ export fn dispatch(t: Table, q: Request<Unrouted>) -> Response {
     let target? = q.path() else { return status(404) }
     let node = landed(t, target)
     if node < 0 { return status(404) }
+    served_as(t, node, q, target, q.head.method) ?? as_get(t, node, q, target) ?? status(404)
+}
+
+/// The first route at `node` declared for `m` that answers.
+fn served_as(t: Table, node: int, q: Request<Unrouted>, target: Bytes, m: Method) -> Response? {
     for i in t.nodes[node].rows {
         let r = t.routes[i]
-        if r.method == q.head.method {
+        if r.method == m {
             let answer: Response? = r.serve(q, target)
-            if answer != null { return answer! }
+            if answer != null { return answer }
         }
     }
-    status(404)
+    null
+}
+
+/// A HEAD that no HEAD route answers is answered as its GET: every
+/// general-purpose server supports both (RFC 9110 §9.1), and the loop
+/// sends the length and none of the body.
+fn as_get(t: Table, node: int, q: Request<Unrouted>, target: Bytes) -> Response? {
+    if q.head.method != Method.Head { return null }
+    served_as(t, node, q, target, Method.Get)
 }
 
 /// The node a target lands on, or -1 when the walk falls off the

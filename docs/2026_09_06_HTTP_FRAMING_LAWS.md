@@ -491,3 +491,68 @@ every other row (rows 2–3 are the harness that proves it).
 
 Near-miss rule for the harness: rows 12 and 33 both fail on a bare LF — assert the reason
 names line termination, not header parsing; row 37 must fail at the SP, not at the CR.
+
+## 5. Where each row is pinned
+
+Suite letters as `docs/2026_09_29_HTTP_CONFORMANCE.md` names them
+(`packages/std-http/src/tests/`). Where the code chose differently from
+§4, the row says so.
+
+| # | Fixture |
+|---|---|
+| 1 | F › "a minimal request frames complete at 27 bytes with no body, persistent" |
+| 2 | SA › "a request in one-byte reads is the unsplit verdict" |
+| 3 | F › "every two-read split of a request agrees with the whole" (two reads, not three) |
+| 4 | F › "a torn blank line is partial, then complete, never refused"; SA › "a terminator torn at each of its seams completes, never refuses" |
+| 5 | F › "the second of two requests in one read frames from the first's end"; S › "two pipelined requests are answered in order" |
+| 6 | F › "a body's bytes are never read as the next request line"; C › "a body is read whole before the request behind it, and both answer in order" |
+| 7 | F › "one leading empty line is ignored and two are refused" |
+| 8 | F › "two spaces, a tab, or a trailing space refuse the line" |
+| 9 | F › "a lowercase method is a token, framed as Other" |
+| 10 | F › "a version that is not HTTP/d.d refuses" |
+| 11 | F › "another major version is 505 and a higher minor is framed as its own"; SA › "HTTP/2.0 is 505" |
+| 12 | F › "a bare LF or a bare CR is a line-end refusal"; SA › "bare LF is 400" |
+| 13 | FA › "a CR with no LF in the request line is refused"; FA › "a NUL is not a target octet, so the line ends where it sits" |
+| 14 | F › "a space inside the target refuses" |
+| 15 | F › "authority-form is CONNECT's and the asterisk is OPTIONS'" |
+| 16 | T › "authority-form earns the same"; C › "a handler's 2xx to CONNECT goes out as the server's 500, with no tunnel promised"; C › "CONNECT with no port is refused" |
+| 17 | F › "absolute-form is accepted"; T › "absolute-form hands it over" |
+| 18 | F › "a fragment in the target refuses" |
+| 19 | F › "a request line past the line bound is 414, before any line has ended" |
+| 20 | F › "1.1 needs exactly one valid Host; 1.0 needs none"; C › "a Host with a slash in it is refused" |
+| 21 | F › "space before the colon or an empty name refuses; OWS around a value is not the value" |
+| 22 | F › "obs-fold and a whitespace-led first line refuse" |
+| 23 | F › "a control byte in a value refuses, a high byte too" — `\x80` is REFUSED, not kept |
+| 24 | F › "too many fields, a field past its bound, a head past its bound are 431" |
+| 25–26 | F › "a list, a duplicate, or a disagreement refuses" |
+| 27 | F › "anything but 1*DIGIT refuses, and so does a 20-digit number" |
+| 28 | F › "trailing OWS is not part of the number" |
+| 29 | F › "chunked beside a content-length refuses"; C › "a length beside chunks is 400 and the connection closes" |
+| 30–31 | F › "chunked that is not final refuses; unknown codings before a final chunked are 501" |
+| 32 | F › "HTAB is OWS and the coding's case does not matter" |
+| 33 | F › "a leading space or a bare LF in the line before it refuses" |
+| 34 | F › "chunked on HTTP/1.0 refuses" |
+| 35 | F › "sizes in either case, with leading zeros, and the empty body all decode" |
+| 36 | F › "extensions are ignored" |
+| 37 | F › "a space after the size refuses" — but whitespace before a `;` is BWS, which 9110 §5.6.3 says MUST be parsed: C › "bad whitespace before a chunk extension is dropped" |
+| 38 | F › "data longer than its size refuses at the byte past it" |
+| 39 | F › "a torn body waits at every cut and resumes to the same end"; C › "a body cut short by the peer's close is not answered, and the connection closes" |
+| 40 | F › "a size that is not hex refuses" |
+| 41 | F › "seventeen digits refuse and sixteen past the body bound are 413" |
+| 42 | F › "a bare LF after data or inside an extension refuses" |
+| 43 | F › "trailers are parsed and dropped, framing unchanged" |
+| 44 | F › "a next request glued to the last chunk is a trailer line without a colon" |
+| 45 | F › "chunks summing past the body bound are 413 before any is gathered"; F › "an extension past its bound refuses" |
+| 46 | S › "100 Continue is written before the body is sent"; C › "a body sent with its head earns no 100 Continue" |
+| 47 | F › "100-continue is noted in any case; another expectation is 417; 1.0 ignores it" |
+| 48 | SA › "a body past its bound is 413 and the connection closes" — the body is read before a handler runs, so its bound answers first |
+| 49 | F › "persistence follows the version and the connection field" |
+| 50 | C › "a request pipelined behind connection: close is never processed" |
+| 51 | CA › "a body cut short by the close is an error" |
+| 52 | CA › "a reply with no length is whole at the close" |
+| 53 | R › "a HEAD's answer has none whatever its length says"; R › "a 204 has none" |
+| 54 | gap `avra-8sb5.1.30.5` — the client hands a 1xx back as its answer |
+| 55 | R › "a reason may be empty"; R › "a reason may be absent"; R › "a two-digit status is refused" |
+| 56 | none — a reply coded without chunked is REFUSED (`.Coding`), not read to the close |
+| 57 | C › "a CONNECT's 2xx is a tunnel, its length ignored" |
+| 58 | R › "chunked beside a length is refused" — refused rather than taken as chunked |
