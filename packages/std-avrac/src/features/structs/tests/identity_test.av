@@ -6,10 +6,19 @@
 // a lone source, since a lone source cannot import `@std/meta`
 // (compiler/dev/witnesses.av's `identity_golden`) — `provided`
 // vendors the real package so the annotation genuinely resolves.
+//
+// A PLAIN field licenses either way (avra-8sb5.57.113's bridge): the
+// name-keyed `identity_plain` table, or `@plain_field("name")` beside
+// `@identity`, read off the record's own declaration — a fixture
+// type using the marker needs no table entry anywhere.
 use @std.avrac.testing.{provided}
 
 fn checked(main: string) -> string {
     provided("use @std.meta.{identity}\n" + main, "").report()
+}
+
+fn checked_plain(main: string) -> string {
+    provided("use @std.meta.{identity, plain_field}\n" + main, "").report()
 }
 
 spec "features/structs (identity)" {
@@ -47,6 +56,24 @@ spec "features/structs (identity)" {
             )
                 .report()
                 .contains("type.identity_field")
+        }
+    }
+    given "a plain field licensed AT THE TYPE's own site, `@plain_field(\"name\")`" {
+        then "the licensed field is accepted, no table entry anywhere" {
+            !checked_plain(
+                "@identity\n@plain_field(\"b\")\ntype Licensed = { a: Cell<int>, b: int }\n1",
+            )
+                .contains("field `b`")
+        }
+        then "the license is scoped to its OWN type's annotation, never a shared table" {
+            let out = checked_plain(
+                "@identity\n@plain_field(\"b\")\ntype Licensed = { a: Cell<int>, b: int }\n@identity\ntype Unlicensed = { c: Cell<int>, b: int }\n1",
+            )
+            out.contains("[type.identity_field]") && out.contains("field `b` is `int`")
+        }
+        then "the remedy names `@plain_field` at the site, beside the table" {
+            let out = checked("@identity\ntype Bad = { a: Cell<int>, b: int }\n1")
+            out.contains("@plain_field") && out.contains("identity_plain")
         }
     }
 }
