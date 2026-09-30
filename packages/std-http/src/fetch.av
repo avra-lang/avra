@@ -259,10 +259,13 @@ fn wire_of(method: Method, aim: Aim, body: Payload, o: Options) -> Result<Bytes,
 }
 
 /// A deadline's stage as `.Total` once the whole request's deadline
-/// has passed: the stage that noticed is not the one that ran out.
-fn overran(r: Result<Answer, ClientError>, deadline: int) -> Result<Answer, ClientError> {
+/// has passed: the stage that noticed is not the one that ran out. A
+/// read no stage bounds — the body after its first byte — was bounded
+/// by the whole request's deadline alone.
+fn overran(r: Fetched, deadline: int) -> Fetched {
     match r {
         .Err(.TimedOut(_)) if now_ms() >= deadline -> .Err(.TimedOut(.Total)),
+        .Err(.Net(e)) if e.timed_out() -> .Err(.TimedOut(.Total)),
         .Err(e) -> .Err(e),
         .Ok(a) -> .Ok(a),
     }
