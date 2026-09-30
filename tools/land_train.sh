@@ -438,10 +438,10 @@ train_cleanup_candidates() {
 
 # ── INTERRUPT CLEANUP — mirrors land.sh's own trap shape (`finish_lock`
 # resumed-after-handler style; `release_lock_and_exit`'s signal-then-
-# exit). A killed train: (1) kills every in-flight candidate subshell's
-# WHOLE process tree, through land.sh's own `kill_tree`, so no local
-# `watched()`/`sprite-build.sh` call keeps polling for a run nobody is
-# waiting on; (2) tells every Sprite it currently has a lease on to
+# exit). A killed train: (1) kills its WHOLE local process tree — every
+# child of this process, through land.sh's own `kill_tree` — since the
+# wave and its candidates run in subshells whose pids this process
+# never holds; each sprite-build stops its own remote group as it goes; (2) tells every Sprite it currently has a lease on to
 # stop that candidate's remote run, through `stop_remote` — `run_candidate`
 # records the (sprite, label) pair for exactly this window, in
 # `$scratch/inflight-<label>`, removed the instant that candidate's own
@@ -451,8 +451,8 @@ train_cleanup_candidates() {
 # via `--call` from land.sh's `train_core`).
 train_interrupt() {
     sig="$1"
-    for p in ${pids:-}; do
-        kill -0 "$p" 2>/dev/null && sh "$land" --call kill_tree "$p" 2>/dev/null
+    for p in $(pgrep -P $$); do
+        sh "$land" --call kill_tree "$p" 2>/dev/null
     done
     for f in "$scratch"/inflight-*; do
         [ -f "$f" ] || continue

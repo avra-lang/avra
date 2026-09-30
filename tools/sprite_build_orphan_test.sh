@@ -40,6 +40,11 @@ started() {
 t=$((40000 + tag % 10000))
 p="$(started "$t")"
 if await "$t" 240 1; then
+    if sh "$sb" "$s" "$tree" -- true > "/tmp/avra-orphan-$tag-beside.log" 2>&1; then
+        ok "sprite-build: a second run beside a live one from this host runs"
+    else
+        bad "sprite-build: a run beside a live one failed (see /tmp/avra-orphan-$tag-beside.log)"
+    fi
     kill -TERM "$p"
     if await "$t" 90 0; then
         ok "sprite-build: a TERM of the driver stops its remote run"

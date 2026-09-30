@@ -230,8 +230,8 @@ cache_flag=$(printf '%s\n' "$info" | sed -n 's/^CACHE://p')
 
 # Runs this host started whose owner is gone: stopped before this one starts.
 orphans=$(printf '%s\n' "$info" | sed -n 's/^RUN://p' | while read -r r h p; do
-    [ "$h" = "$host" ] && ! kill -0 "$p" 2>/dev/null && printf '%s ' "$r"
-done; :)
+    if [ "$h" = "$host" ] && ! kill -0 "$p" 2>/dev/null; then printf '%s ' "$r"; fi
+done)
 if [ -n "$orphans" ]; then
     echo "sprite-build: $sprite: stopping runs whose owner is gone: $orphans" >&2
     stop_runs "$sprite" $orphans || :
