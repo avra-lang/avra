@@ -603,8 +603,11 @@ impl H2Conn {
     }
 
     /// A stream error: RST_STREAM owed, and the connection lives on —
-    /// unless the peer's churn is past its budget.
+    /// unless the peer's churn is past its budget. An IDLE stream is
+    /// never reset (§6.4), so its error is the connection's, under the
+    /// same code (§5.4.1).
     mut fn stream_error(id: int, why: H2Error) -> H2Error? {
+        if id > self.last { return why }
         self.reset(id, why)
         self.churn = self.churn + 1
         self.churned()

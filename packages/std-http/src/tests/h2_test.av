@@ -97,6 +97,9 @@ fn reset_of(c: H2Conn, id: int) -> int {
 
 fn code(e: H2Error) -> int { error_code(e) }
 
+/// How many RST_STREAMs the connection owes.
+fn resets_owed(c: H2Conn) -> int { kinds_owed(c, .Reset) }
+
 /// The connection is whole: no GOAWAY owed.
 fn alive(c: H2Conn) -> bool { goaway_of(c) == -1 && !c.closing }
 
@@ -450,8 +453,15 @@ spec "std.http h2" {
             let c = conn_after([get_on(1), frame_bytes(.Reset, 0, 1, u32_bytes(8)), get_on(3)])
             paths_ready(c) == "/s3" && c.churn == 1
         }
-        then "PRIORITY of four octets is a stream FRAME_SIZE_ERROR" {
-            reset_of(conn_after([frame_bytes(.Priority, 0, 1, u32_bytes(0))]), 1) == code(.FrameSize)
+        then "PRIORITY of four octets is a FRAME_SIZE_ERROR — a reset on an opened stream, the connection's on an idle one (§6.4)" {
+            reset_of(
+                    conn_after(
+                        [heads(1, get_head("/"), 0), frame_bytes(.Priority, 0, 1, u32_bytes(0))],
+                    ),
+                    1,
+                ) == code(.FrameSize) &&
+                resets_owed(conn_after([frame_bytes(.Priority, 0, 1, u32_bytes(0))])) == 0 &&
+                goaway_of(conn_after([frame_bytes(.Priority, 0, 1, u32_bytes(0))])) == code(.FrameSize)
         }
         then "PRIORITY on stream 0 is a PROTOCOL_ERROR" {
             goaway_of(
@@ -464,11 +474,11 @@ spec "std.http h2" {
             )
             alive(c) && paths_ready(c) == "/s1"
         }
-        then "a PRIORITY that depends on its own stream is a stream PROTOCOL_ERROR" {
-            reset_of(
-                conn_after([frame_bytes(.Priority, 0, 1, u32_bytes(1).concat([15].bytes()!))]),
-                1,
-            ) == code(.Protocol)
+        then "a PRIORITY that depends on its own stream is a PROTOCOL_ERROR — a reset on an opened stream, the connection's on an idle one (§6.4)" {
+            let own = frame_bytes(.Priority, 0, 1, u32_bytes(1).concat([15].bytes()!))
+            reset_of(conn_after([heads(1, get_head("/"), 0), own]), 1) == code(.Protocol) &&
+                resets_owed(conn_after([own])) == 0 &&
+                goaway_of(conn_after([own])) == code(.Protocol)
         }
         then "a WINDOW_UPDATE of zero is a PROTOCOL_ERROR — on the stream or the connection" {
             reset_of(
@@ -478,6 +488,10 @@ spec "std.http h2" {
                     1,
                 ) == code(.Protocol) &&
                 goaway_of(conn_after([frame_bytes(.WindowUpdate, 0, 0, u32_bytes(0))])) == code(.Protocol)
+        }
+        then "a WINDOW_UPDATE of zero on an idle stream resets nothing: the connection ends PROTOCOL_ERROR (§6.4)" {
+            let c = conn_after([get_on(1), frame_bytes(.WindowUpdate, 0, 3, u32_bytes(0))])
+            resets_owed(c) == 0 && goaway_of(c) == code(.Protocol)
         }
         then "a WINDOW_UPDATE past 2^31-1 is a FLOW_CONTROL_ERROR — on the stream or the connection" {
             reset_of(
