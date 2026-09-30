@@ -290,3 +290,173 @@ Grammar-constrained sampling (§7.8) makes most refusals impossible.
 
 **One interop trait.** Any validator implements `Validates<T>` (Standard
 Schema's idea), so a framework accepts any rule set, not only this one.
+
+## 11. Every decision as code
+
+Marked **[basics]** when it is part of the first build, **[later]** when
+it follows once the basics land, and **[talk]** when the syntax is
+aspirational and needs a conversation with the owner before anyone
+builds it.
+
+**Field rules** [basics]
+```avra
+type Signup = {
+    @email            email: string
+    @range(13, 130)   age: int
+    @length(min: 12)  password: string
+    @matches(password) confirm: string     // a typo in `password` is a compile error
+}
+```
+
+**Rules on a named type** [basics]
+```avra
+@length(min: 3, max: 32) @pattern(slug)
+type Username = string
+```
+
+**Unions with a tag field** [later]
+```avra
+@tag("type")
+enum Payment {
+    Card(@luhn @secret number: string, @expiry exp: string)
+    Bank(@iban iban: string)
+}
+// {"type": "Card", "number": "4242…", "exp": "12/27"}
+```
+
+**Effectful rules, batched** [talk]
+```avra
+type Item = { @exists(products.sku) sku: string, @range(1, 99) qty: int }
+// 50 items → one query
+```
+
+**Money** [later — blocked on the core `decimal` type]
+```avra
+@scale(2) @positive unit_price: Money
+```
+
+**Conditional required** [talk]
+```avra
+@required_if(country in ["US", "CA"]) state: string?
+```
+
+**A rule that reads a sibling** [basics for `@matches`, talk for the rest]
+```avra
+@postal_for(country) postal: string
+```
+
+**Recursion bounded** [later]
+```avra
+@depth(max: 8) replies: List<Comment>
+```
+
+**Versions** [talk]
+```avra
+@version(2) @renamed_from(1, "addr", "shipping")
+type Order = { shipping: Address, @since(2) gift: bool = false }
+```
+
+**List rules vs item rules** [basics for `@length`, later for `@unique` and `@each`]
+```avra
+@length(1, 50) @unique(by: sku) items: List<Item>
+@each(email) cc: List<string>
+```
+
+**Maps** [later]
+```avra
+@keys(pattern: meta_key) @values(length(max: 200)) @size(max: 20)
+meta: Map<string, string>
+```
+
+**The clock and the user through a context** [later]
+```avra
+@after(now) deliver_by: Date?
+decode<Order>(json, cx: Context { now: fixed_time, role: .Admin })
+```
+
+**Files** [talk]
+```avra
+@file(types: ["image/png"], max: 5 MB) receipt: Upload?
+```
+
+**Cross-field rules** [basics without context, later with it]
+```avra
+fn check(o: Order, cx: Context) -> Issues {
+    when { o.discount > 0.1 && !cx.role.is(.Admin) -> issue("discount", "over 10% needs an admin") }
+}
+```
+
+**PATCH** [talk]
+```avra
+@patch("/orders/{id}")
+fn amend(id: OrderId, change: Partial<Order>) -> Order? { … }
+```
+
+## 12. Other APIs and services as code
+
+**Inbound request, refused** [later — rides the HTTP DX sub-epic]
+```avra
+@post("/orders")
+fn place(o: Order) -> Created<Order> { … }
+```
+```json
+{ "status": 422, "errors": [{ "path": "items[3].qty", "rule": "range",
+  "message": "must be between 1 and 99", "received": 0 }] }
+```
+
+**Calling someone else's API** [later]
+```avra
+let w = http.get<Weather>("https://api.weather.com/today")?
+```
+
+**Importing their schema** [talk]
+```avra
+@from_openapi("vendor/stripe.json")
+module stripe
+```
+
+**Exporting ours** [later]
+```sh
+avra export schema Order --as json-schema > order.schema.json
+avra export schema Order --as zod        > order.ts
+```
+
+**Avra to Avra** [later]
+```avra
+let api = client(orders_app, "https://orders.internal")
+api.place(order)?
+```
+
+**Queue consumer** [talk — no queue package exists]
+```avra
+on queue("orders") { msg: Order -> fulfil(msg) }
+```
+
+**Database** [later — rides `@model`]
+```avra
+@model type Order = { @range(1, 99) qty: int }   // CHECK (qty BETWEEN 1 AND 99)
+```
+
+**Config at start-up** [basics for JSON and TOML]
+```avra
+let cfg = decode<Config>(toml_file("app.toml"))?
+```
+
+**Agents** [later]
+```avra
+@tool fn refund(order: OrderId, @range(0.01, 500.0) amount: float) -> Refund { … }
+```
+
+## 13. The first build
+
+The basics, and nothing past them until the owner has seen it run:
+
+1. `Issue` with a path, rule, message and received value; all issues,
+   never the first.
+2. The core rules as plain functions: `email`, `range`, `length`,
+   `pattern`, `one_of`, `matches`.
+3. The neutral `Value` tree, `decode`, strict and lax coercion.
+4. JSON and TOML adapters.
+5. Annotations on record fields and named types, type-checked against
+   the field, and a derive that makes §11's `Signup` work as written.
+6. `check(t)` for cross-field rules, without a context.
