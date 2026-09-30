@@ -246,6 +246,10 @@ static int64_t net_dialed_to(const struct addrinfo* ai) {
 int64_t avra_net_errno_reset(void) { return ECONNRESET; }
 int64_t avra_net_errno_pipe(void) { return EPIPE; }
 
+// The errno a verb on a closed connection answers: its descriptor is
+// no longer its own.
+int64_t avra_net_errno_closed(void) { return EBADF; }
+
 // A dial's outcome once its descriptor is writable: 0 connected, or
 // the -errno the connect failed with.
 int64_t avra_net_dialed(int64_t fd) {

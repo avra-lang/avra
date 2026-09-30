@@ -22,9 +22,9 @@ All of it is in `src/net.av`, imported as `@std.net`.
 
 | Export | What it is |
 |---|---|
-| `NetError` | A failed verb: `verb`, `subject`, `errno`. `timed_out()` says whether a deadline ended it. Implements `Error`. |
+| `NetError` | A failed verb: `verb`, `subject`, `errno`. `timed_out()` says whether a deadline ended it, `closed()` whether the conn was already closed. Implements `Error`. |
 | `Listener` | A bound, listening port. `port` is the one the kernel gave. |
-| `Conn` | A nonblocking stream to a peer. |
+| `Conn` | A nonblocking stream to a peer: its `fd`, and an `open` cell every copy shares. |
 | `Poller` | A readiness queue over descriptors. |
 | `Event` | One readiness report: `fd`, `readable`, `writable`, `hangup`, `failed`. |
 | `Interest` | What a poller watches for: `Read`, `Write`, `Both`, `None`. |
@@ -46,7 +46,8 @@ Methods:
 | `Conn.try_read(max)` | `.Data`, `.Eof` or `.Pending`. Never waits. |
 | `Conn.try_write(bytes, from)` | As much as the socket takes from `from`; 0 when it would block. |
 | `Conn.shutdown_write()` | Closes the write side; the peer reads EOF. |
-| `Conn.close()` | Closes; answers the descriptor. |
+| `Conn.close()` | Closes in every copy; answers the descriptor. |
+| `Conn.live(verb)` | The descriptor while open; refused as closed, naming `verb`, once any copy closed it. |
 | `Conn.peer()` | The peer as `ip:port`, v6 in brackets; `""` once gone. |
 | `Conn.named()` | The connection's name in a refusal. |
 | `Poller.watch(fd, interest)` | Sets interest in `fd`; `.None` stops watching. |
@@ -62,6 +63,11 @@ Methods:
 - **A budget is never a sentinel.** A negative `timeout` is refused, never
   read as "forever". Forever is a null `Poller.wait` timeout. A zero
   `connect` budget looks once.
+- **A closed conn is closed in every copy.** The kernel hands a closed
+  descriptor's number to the next connection, so every `Conn` verb reaches
+  the kernel through `live`, which asks the `open` cell the copies share.
+  A verb on a closed conn, through any copy, is refused with `closed()`
+  true and never touches the number.
 - **One interface, or all, asked for by name.** `listen("")` is refused;
   the wildcard is `listen_all`.
 - **The NUL boundary.** A host crosses to the resolver as a C string, so a

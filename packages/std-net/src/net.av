@@ -49,6 +49,7 @@ extern fn avra_errno_invalid() -> int
 extern fn avra_errno_timed_out() -> int
 extern fn avra_net_errno_reset() -> int
 extern fn avra_net_errno_pipe() -> int
+extern fn avra_net_errno_closed() -> int
 extern fn avra_net_entropy32() -> int
 
 /// 32 bits the kernel drew from its entropy, as a non-negative word —
@@ -72,6 +73,9 @@ impl NetError {
     /// Whether the peer dropped the connection under the verb — reset
     /// it, or closed it before a write landed.
     fn reset() -> bool { self.errno == avra_net_errno_reset() || self.errno == avra_net_errno_pipe() }
+
+    /// Whether the verb was asked of a connection already closed.
+    fn closed() -> bool { self.errno == avra_net_errno_closed() }
 }
 
 impl Error for NetError {
@@ -105,8 +109,11 @@ fn would_block(code: int) -> bool { code == 0 - avra_errno_again() }
 /// listener asked for port 0 knows where it is.
 export type Listener = { fd: int, port: int }
 
-/// A nonblocking stream to a peer.
-export type Conn = { fd: int }
+/// A nonblocking stream to a peer: the descriptor it was given, and
+/// whether it is still open — held in a cell every copy shares, since
+/// a closed descriptor's number is the next connection's. Every verb
+/// asks the cell before the number reaches the kernel.
+export type Conn = { fd: int, open: Cell<bool> = Cell.new(true) }
 
 /// A readiness queue over descriptors.
 export type Poller = { fd: int }
@@ -174,6 +181,10 @@ fn timed_out<T>(verb: string, subject: string) -> Result<T, NetError> {
     failed(verb, subject, 0 - avra_errno_timed_out())
 }
 
+fn gone<T>(verb: string, fd: int) -> Result<T, NetError> {
+    failed(verb, "fd ${fd}", 0 - avra_net_errno_closed())
+}
+
 /// Whether text names a host at all: not empty, and holding no NUL —
 /// judged over its bytes, which is what the resolver will read; a
 /// door built from `==` would read a C string and stop at the NUL.
@@ -238,12 +249,13 @@ impl Conn {
     /// drained is waited on before it is read, never read to find
     /// nothing.
     fn read(max: int) -> Result<Bytes?, NetError> {
-        if avra_fiber_fd_ready(self.fd, 0) == 0 && !parked(self.fd, false) { return timed_out("read", self.named()) }
+        let fd = self.live("read")?
+        if avra_fiber_fd_ready(fd, 0) == 0 && !parked(fd, false) { return timed_out("read", self.named()) }
         match self.try_read(max)? {
             .Data(b) -> .Ok(b),
             .Eof -> .Ok(null),
             .Pending -> {
-                if !parked(self.fd, false) { return timed_out("read", self.named()) }
+                if !parked(fd, false) { return timed_out("read", self.named()) }
                 self.read(max)
             },
         }
@@ -266,7 +278,7 @@ impl Conn {
     /// read answers a token its take presents, so a read that lands
     /// between the two is a trap and never a stranger's bytes.
     fn try_read(max: int) -> Result<Read, NetError> {
-        let token = avra_fd_read(self.fd, max)
+        let token = avra_fd_read(self.live("read")?, max)
         if would_block(token) { return .Ok(.Pending) }
         if token < 0 { return failed("read", self.named(), token) }
         if token == 0 { return .Ok(.Eof) }
@@ -277,7 +289,7 @@ impl Conn {
     /// the count, which is 0 when it would block — a short count is
     /// normal, and the caller keeps its cursor.
     fn try_write(bytes: Bytes, from: int) -> Result<int, NetError> {
-        let n = avra_fd_write(self.fd, bytes, from)
+        let n = avra_fd_write(self.live("write")?, bytes, from)
         if would_block(n) { return .Ok(0) }
         if n < 0 { return failed("write", self.named(), n) }
         .Ok(n)
@@ -285,15 +297,28 @@ impl Conn {
 
     /// The write side closed: the peer reads EOF after what was sent.
     fn shutdown_write() -> Result<int, NetError> {
-        let r = avra_net_shutdown(self.fd, 1)
+        let fd = self.live("shutdown")?
+        let r = avra_net_shutdown(fd, 1)
         if r < 0 { return failed("shutdown", self.named(), r) }
-        .Ok(self.fd)
+        .Ok(fd)
     }
 
-    /// Closed; answers the descriptor it held.
+    /// Closed in every copy; answers the descriptor it held. The cell
+    /// empties before the descriptor goes, so no copy ever reaches the
+    /// number after the kernel may have handed it on.
     fn close() -> Result<int, NetError> {
-        let r = avra_net_close(self.fd)
-        if r < 0 { return failed("close", "fd ${self.fd}", r) }
+        let fd = self.live("close")?
+        self.open.set(false)
+        let r = avra_net_close(fd)
+        if r < 0 { return failed("close", "fd ${fd}", r) }
+        .Ok(fd)
+    }
+
+    /// The descriptor while the connection is open — the one door every
+    /// verb reaches the kernel through; refused as closed, naming
+    /// `verb`, once any copy has closed it.
+    fn live(verb: string) -> Result<int, NetError> {
+        if !self.open.get() { return gone(verb, self.fd) }
         .Ok(self.fd)
     }
 
@@ -307,12 +332,12 @@ impl Conn {
     /// The peer as "ip:port" — a v6 address in brackets — or "" once
     /// it is gone.
     fn peer() -> string {
-        let port = avra_net_peer_port(self.fd)
+        if !self.open.get() { return "" }
         let fd = self.fd
         let word = (i: int) -> avra_net_peer_word(fd, i)
-        match avra_net_peer_family(self.fd) {
-            4 -> "${dotted(word)}:${port}",
-            6 -> "[${grouped(word)}]:${port}",
+        match avra_net_peer_family(fd) {
+            4 -> "${dotted(word)}:${avra_net_peer_port(fd)}",
+            6 -> "[${grouped(word)}]:${avra_net_peer_port(fd)}",
             _ -> "",
         }
     }
