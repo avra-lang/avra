@@ -1,0 +1,50 @@
+// proves: a borrow of a Cell's content is a view only while nothing can
+// write the cell. A Cell is an identity — its writes land in place
+// whatever its count — so every user call between the read and the use
+// may replace what the borrow rides: through a field of `self`, through a
+// flat record over the cell, through a parameter, and through no argument
+// at all. Each borrow here is still read after the cell was replaced;
+// noise reuses any slot a wrongly-early release would leave.
+type Holder = { c: Cell<List<string>>, n: Cell<int> }
+type Rows = { rows: Cell<List<string>> }
+impl Holder {
+    fn clobber() { self.c.set(["gone"]) }
+    fn read(i: int) -> string { self.c.get()[i] }
+    fn across(i: int) -> string {
+        let xs = self.c.get()
+        self.clobber()
+        xs[i]
+    }
+    fn counted(i: int) -> int {
+        let xs = self.c.get()
+        self.n.set(xs.length)
+        xs[i].length + self.n.get()
+    }
+}
+impl Rows {
+    fn swap() { self.rows.set(["swapped"]) }
+    fn across(i: int) -> string {
+        let xs = self.rows.get()
+        self.swap()
+        xs[i]
+    }
+}
+fn replaced(c: Cell<List<string>>) { c.set(["other"]) }
+fn through_param(c: Cell<List<string>>) -> string {
+    let xs = c.get()
+    replaced(c)
+    xs[0]
+}
+once fn shared() -> Cell<List<string>> { Cell.new(["i" + "j"]) }
+fn reset() { shared().set(["reset"]) }
+fn zero_arg() -> string {
+    let xs = shared().get()
+    reset()
+    xs[0]
+}
+mut noise: List<string> = []
+for j in 0..200 { noise = noise.concat(["pad-${j}-to-force-a-reused-slot"]) }
+let h = Holder { c: Cell.new(["a" + "b", "c" + "d"]), n: Cell.new(0) }
+let r = Rows { rows: Cell.new(["e" + "f"]) }
+let p = Cell.new(["g" + "h"])
+"${h.read(1)} ${h.counted(0)} ${h.across(0)} ${h.read(0)} ${r.across(0)} ${through_param(p)} ${zero_arg()} ${shared().get()[0]} ${noise.length}"

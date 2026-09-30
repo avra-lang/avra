@@ -592,7 +592,7 @@ impl LowerCx {
     mut fn boxed_field(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
         let at = self.field_offset(subject_ty, n)
         if ty != null && self.view.types.lays_inline(ty!) { return self.unboxed_at(subject, at, ty!) }
-        self.slot_read(subject, at, ty)
+        self.proven_read(subject, at, ty)
     }
 
     /// `v` written as a boxed record's Nth field: at its offset, a value
@@ -637,6 +637,15 @@ impl LowerCx {
         let at = self.const_int(n)
         let held? = ty else { return self.array_get(Type.Int, v, at) }
         self.elem_read(v, at, held)
+    }
+
+    /// A slot the box's own type PROVES — a declared field, a cell's one
+    /// slot — read with no bounds test. A nullable scalar's pair keeps
+    /// the checked read.
+    mut fn proven_read(v: Reg, n: int, ty: TypeId?) -> Reg {
+        if ty != null && self.scalar_nullable(ty!) { return self.slot_read(v, n, ty) }
+        let at = self.const_int(n)
+        self.slot_get(if ty == null { Type.Int } else { self.view.types.shape_of(ty!) }, v, at)
     }
 
     // ── The Result, behind its verbs ────────────────────────────────

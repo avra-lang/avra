@@ -41,6 +41,8 @@ void avra_rc_retain_tagged(int64_t word, int64_t tag, int64_t counted);
 void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted);
 int64_t avra_array_get(void* arr, int64_t i);
 void* avra_array_get_owned(void* arr, int64_t i);
+int64_t avra_slot_get(void* box, int64_t i);
+void* avra_slot_get_owned(void* box, int64_t i);
 int64_t avra_array_len(void* arr);
 void* avra_box_thawed(void* p);
 

@@ -43,8 +43,12 @@ fn boxes_built(l: Lowered) -> int {
     n
 }
 
+/// An owned +1 read, by index or by a slot the type proves.
 fn is_owned_get(i: Ins) -> bool {
-    match i { .CallRt(_, callee, _) -> callee == "avra_array_get_owned", _ -> false }
+    match i {
+        .CallRt(_, callee, _) -> ["avra_array_get_owned", "avra_slot_get_owned"].contains(callee),
+        _ -> false,
+    }
 }
 
 fn is_box_call(i: Ins) -> bool {
@@ -204,10 +208,16 @@ spec "compiler/lower" {
             !render_ir(ir_of(viewed_seat())).contains("retain r8")
         }
         then "a VIEW whose root the SAME call also receives takes its own reference at the read instead" {
-            render_ir(ir_of(viewed_seat_with_root())).contains("avra_array_get_owned")
+            all_ins(ir_of(viewed_seat_with_root())).any(is_owned_get(it))
         }
         then "a call in a SIBLING branch the value's last use never reaches is no barrier to it" {
-            !render_ir(ir_of(cross_branch_call())).contains("avra_array_get_owned")
+            !all_ins(ir_of(cross_branch_call())).any(is_owned_get(it))
+        }
+        then "a Cell's content read with no call between is a VIEW — no reference of its own" {
+            !all_ins(ir_of(cell_read(""))).any(is_owned_get(it))
+        }
+        then "a Cell's content read past ANY user call owns — the callee may replace it" {
+            all_ins(ir_of(cell_read("clear()"))).any(is_owned_get(it))
         }
     }
     given "THE LAW: nullability never allocates" {
@@ -317,7 +327,7 @@ spec "compiler/lower" {
   store r4 <- r9
   r10 = load r4
   r11 = int 0
-  r12 = call avra_array_get(r10, r11)
+  r12 = call avra_slot_get(r10, r11)
   r13 = call avra_int_text(r12)
   call avra_puts(r13)
   release r13
@@ -455,6 +465,12 @@ fn viewed_seat_with_root() -> string {
 /// either: the Cell field stays a view, taking no reference of its own.
 fn cross_branch_call() -> string {
     "type Kernel = { tag: int }\ntype Decls = { rows_state: Cell<List<int>>, kernel: Cell<Kernel> }\nimpl Kernel {\n    fn touch(i: int) { }\n}\nimpl Decls {\n    fn rows_read(f: int) {\n        let state = self.rows_state.get()\n        if f >= state.length { return }\n        if state[f] == 1 {\n            self.kernel.get().touch(f)\n        } else if state[f] == 2 {\n        }\n    }\n}\nlet d = Decls { rows_state: Cell.new([1, 2, 3]), kernel: Cell.new(Kernel { tag: 0 }) }\nd.rows_read(0)"
+}
+
+/// A Cell's content borrowed, then `between` run, then the borrow read.
+/// `clear` reaches the cell through no argument at all.
+fn cell_read(between: string) -> string {
+    "once fn shared() -> Cell<List<string>> { Cell.new([\"a\" + \"b\"]) }\nfn clear() { shared().set([]) }\nfn at(i: int) -> int {\n    let xs = shared().get()\n    ${between}\n    xs[i].length\n}\nat(0)"
 }
 
 /// No `@lent` seat of any call in the slice is retained: each stands.
