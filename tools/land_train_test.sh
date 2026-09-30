@@ -139,13 +139,43 @@ train_env() {
     export AVRA_LAND_TRAIN_RETRIES=2
     export AVRA_LAND_WATCH_POLL_S=1
     export AVRA_LAND_TRAIN_PROBE_INTERVAL_S=2
+    export AVRA_SP_SLOTS="$scratch/sp-slots-$(basename "$d")"
 }
 unset_train_env() {
     unset AVRA_LAND_SPRITE_BUILD AVRA_LAND_SPRITE_PROBE AVRA_LAND_SPRITE
     unset AVRA_LAND_SPRITE_STOP STOP_LOG AVRA_LAND_TRAIN_PROBE_INTERVAL_S
     unset AVRA_LAND_TRAIN_SCRATCH AVRA_LAND_TRAIN_CAP_S AVRA_LAND_TRAIN_QUIET_S
     unset AVRA_LAND_TRAIN_RETRIES AVRA_LAND_WATCH_POLL_S
+    unset AVRA_SP_SLOTS AVRA_SPRITES AVRA_LAND_TRAIN_SLOTS
 }
+
+# A Sprite stub that holds each run until a second run shares its
+# Sprite (or 30s pass), then records its Sprite, its tree's name and
+# how many runs that Sprite held at once (one file per live run under
+# $CONC_DIR). Waiting for a peer makes overlap independent of load.
+busy_stub() {
+    cat > "$1" <<'STUB'
+#!/bin/sh
+sprite="$1"
+wt="$2"
+echo "land-train: body started"
+mkdir -p "$CONC_DIR"
+touch "$CONC_DIR/$sprite.$$"
+i=0
+while [ "$(ls "$CONC_DIR" | grep -c "^$sprite\.")" -lt 2 ] && [ "$i" -lt 30 ]; do
+    sleep 1
+    i=$((i + 1))
+done
+n="$(ls "$CONC_DIR" | grep -c "^$sprite\.")"
+echo "$sprite $(basename "$wt") $n" >> "$RUN_LOG"
+sleep 2
+rm -f "$CONC_DIR/$sprite.$$"
+echo "land-train: fake-check OK 0s"
+exit 0
+STUB
+    chmod +x "$1"
+}
+most_at_once() { awk -v s="$1" '$1 == s && $3 > m { m = $3 } END { print m + 0 }' "$RUN_LOG"; }
 
 # ══ ORDERING: three good branches all pass — the whole ladder lands ═
 test_train_all_green() {
@@ -374,6 +404,126 @@ STUB
     unset_train_env
 }
 
+# ══ PROGRESS: a quiet step spending CPU is alive; one spending none is not
+# The stub's heartbeat holds its byte count still for 12s while the
+# CPU count grows (QUIET_CPU=grow) or holds too (QUIET_CPU=hold).
+quiet_stub() {
+    cat > "$1" <<'STUB'
+#!/bin/sh
+echo "land-train: body started"
+i=0
+while [ "$i" -lt 12 ]; do
+    i=$((i + 1))
+    [ "$QUIET_CPU" = grow ] && c="$i" || c=7
+    echo "land-train: progress 100 cpu $c"
+    sleep 1
+done
+echo "land-train: fake-check OK 0s"
+STUB
+    chmod +x "$1"
+}
+test_train_cpu_is_progress() {
+    d="$(ladder_repo cpu a)"
+    stub="$scratch/cpu-sprite.sh"
+    quiet_stub "$stub"
+    train_env "$d" "$stub"
+    export AVRA_LAND_SPRITE="s1" AVRA_LAND_TRAIN_QUIET_S=5 AVRA_LAND_TRAIN_RETRIES=0 QUIET_CPU=grow
+    out="$scratch/cpu-grow.out"
+    good="$(cd "$d" && sh "$land_train" --call train_ladder a 2>"$out")"
+    if [ "$good" = "a" ] && ! grep -q "no progress" "$out"; then
+        ok "train: a step whose log is quiet but whose CPU grows is never cut off"
+    else
+        bad "train: a busy quiet step was cut off (got '$good')" "$out"
+    fi
+    export QUIET_CPU=hold AVRA_LAND_TRAIN_SCRATCH="$scratch/train-run-cpu-hold"
+    out="$scratch/cpu-hold.out"
+    good="$(cd "$d" && sh "$land_train" --call train_ladder a 2>"$out")"
+    if [ -z "$good" ] && grep -q "no progress on s1" "$out"; then
+        ok "train: a step whose log and CPU both hold still is cut off"
+    else
+        bad "train: a wedged step was not cut off (got '$good')" "$out"
+    fi
+    unset QUIET_CPU
+    unset_train_env
+}
+
+# ══ SLOTS: one Sprite runs two candidates at once, each in its own tree ═
+test_train_two_slots_per_sprite() {
+    d="$(ladder_repo slots a b c)"
+    stub="$scratch/slots-sprite.sh"
+    busy_stub "$stub"
+    train_env "$d" "$stub"
+    export AVRA_LAND_SPRITE="s1"
+    export AVRA_LAND_TRAIN_QUIET_S=60 AVRA_LAND_TRAIN_CAP_S=300
+    export CONC_DIR="$scratch/slots-conc" RUN_LOG="$scratch/slots-runs.log"
+    out="$scratch/slots.out"
+    good="$(cd "$d" && sh "$land_train" --call train_ladder a b c 2>"$out")"
+    if [ "$good" = "a b c" ]; then
+        ok "train: three candidates land through one Sprite's two slots"
+    else
+        bad "train: expected 'a b c', got '$good'" "$out"
+    fi
+    m="$(most_at_once s1)"
+    if [ "$m" -eq 2 ]; then
+        ok "train: one Sprite held two candidates at once, never three"
+    else
+        bad "train: s1 held at most $m candidates at once, expected 2" "$RUN_LOG"
+    fi
+    trees="$(awk '{ print $2 }' "$RUN_LOG" | sort -u | wc -l | tr -d ' ')"
+    if [ "$trees" -eq 3 ]; then
+        ok "train: each candidate synced into its own remote tree"
+    else
+        bad "train: 3 runs shared $trees tree name(s)" "$RUN_LOG"
+    fi
+    unset CONC_DIR RUN_LOG
+    unset_train_env
+}
+
+# ══ SHARED POOL: unset, the pool is sp's, and sp's slots are shared ═
+test_train_shared_pool() {
+    d="$(ladder_repo shared a b c)"
+    stub="$scratch/shared-sprite.sh"
+    busy_stub "$stub"
+    train_env "$d" "$stub"
+    unset AVRA_LAND_SPRITE
+    export AVRA_SPRITES="p1 p2"
+    export AVRA_LAND_TRAIN_QUIET_S=60 AVRA_LAND_TRAIN_CAP_S=300
+    export CONC_DIR="$scratch/shared-conc" RUN_LOG="$scratch/shared-runs.log"
+    # An `sp` job already holds slot 1 on each Sprite.
+    sleep 3600 &
+    job=$!
+    for s in p1 p2; do
+        mkdir -p "$AVRA_SP_SLOTS/$s/slot-1"
+        echo "$job" > "$AVRA_SP_SLOTS/$s/slot-1/pid"
+    done
+    out="$scratch/shared.out"
+    good="$(cd "$d" && sh "$land_train" --call train_ladder a b c 2>"$out")"
+    if [ "$good" = "a b c" ]; then
+        ok "train: the shared pool lands all three"
+    else
+        bad "train: expected 'a b c', got '$good'" "$out"
+    fi
+    others="$(awk '$1 != "p1" && $1 != "p2" { print $1 }' "$RUN_LOG" | sort -u | tr '\n' ' ')"
+    if [ -s "$RUN_LOG" ] && [ -z "$others" ]; then
+        ok "train: with AVRA_LAND_SPRITE unset, candidates run on sp's pool alone"
+    else
+        bad "train: candidates ran outside sp's pool: '$others'" "$RUN_LOG"
+    fi
+    if [ "$(most_at_once p1)" -le 1 ] && [ "$(most_at_once p2)" -le 1 ]; then
+        ok "train: an sp job's slot counts — two slots, one taken, one candidate per Sprite"
+    else
+        bad "train: a Sprite ran two candidates beside an sp job" "$RUN_LOG"
+    fi
+    if [ "$(cat "$AVRA_SP_SLOTS/p1/slot-1/pid" 2>/dev/null)" = "$job" ]; then
+        ok "train: the sp job's slot is left as it was"
+    else
+        bad "train: the sp job's slot was taken or removed"
+    fi
+    kill "$job" 2>/dev/null
+    unset CONC_DIR RUN_LOG
+    unset_train_env
+}
+
 # ══ dry-run main(): never touches real main, prints the winning head ═
 test_train_dry_run_prints_head() {
     d="$(ladder_repo dry-run a b)"
@@ -539,6 +689,9 @@ run_test test_train_first_fails
 run_test test_train_tool_failure_retries
 run_test test_train_all_sprites_bad_is_tool_failure
 run_test test_train_watchdog_moves_to_another_sprite
+run_test test_train_cpu_is_progress
+run_test test_train_two_slots_per_sprite
+run_test test_train_shared_pool
 run_test test_train_dry_run_prints_head
 run_test test_train_core_lands_the_sprite_verified_prefix
 

@@ -30,10 +30,36 @@
 # between two builds of the same source, so byte equality would refuse
 # a real fixed point.
 #
+# ONE RUN, ONE PROCESS GROUP: every command started on the Sprite runs
+# under `setsid`, its group id in /home/sprite/avra-runs/<run>/pid beside
+# its owner (this host and pid). Leaving by a signal, or losing the
+# connection, stops that group; a run whose owner is gone is stopped by
+# the next sprite-build to reach the Sprite. `--stop <sprite> <run...>`
+# is that stop on its own.
+#
 # The command runs in the synced tree and its exit status comes
 # straight back; a --receipt is written for the CALLER's worktree,
 # never the Sprite's copy, which carries no git history.
 set -eu
+
+# Stops each named run's process group on the Sprite and removes its
+# directory; a dropped connection is retried once.
+stop_body='for r in "$@"; do d=/home/sprite/avra-runs/$r; p=$(cat "$d/pid" 2>/dev/null) && { kill -TERM -"$p" 2>/dev/null; sleep 2; kill -KILL -"$p" 2>/dev/null; }; rm -rf "$d"; done'
+stop_runs() {
+    s=$1
+    shift
+    for _ in 1 2; do
+        timeout -k 1 30 sprite -s "$s" exec --no-port-forward -- sh -c "$stop_body" avra-stop "$@" >/dev/null 2>&1 && return 0
+        sleep 2
+    done
+    echo "sprite-build: could not stop run(s) $* on $s" >&2
+    return 1
+}
+if [ "${1:-}" = --stop ]; then
+    shift
+    stop_runs "$@"
+    exit $?
+fi
 
 sprite=
 worktree=
@@ -63,7 +89,23 @@ slug=$(basename "$worktree")
 
 info_script=$(mktemp -t avra-sprite-info.XXXXXX)
 run_script=$(mktemp -t avra-sprite-run.XXXXXX)
-trap 'rm -f "$info_script" "$run_script"' EXIT
+host=$(hostname -s)
+run="$host-$$-$(date +%s)"
+hash_lock=
+started=
+xpid=
+# Leaving with a remote run still standing stops it from a detached
+# process, so a KILL that follows this one's TERM cannot cancel the stop.
+leave() {
+    rm -f "$info_script" "$run_script"
+    [ -z "$hash_lock" ] || rm -rf "$hash_lock"
+    [ -z "$xpid" ] || kill "$xpid" 2>/dev/null || :
+    [ -z "$started" ] || nohup sh "$here/sprite-build.sh" --stop "$sprite" "$run" >/dev/null 2>&1 &
+}
+trap leave EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # THE COMPILER'S SOURCE CLOSURE: packages/cli plus every package its
 # `use @std.x` graph reaches, walked breadth-first over real `use`
@@ -116,6 +158,7 @@ compiler_hash=$(compiler_hash)
 remote="/home/sprite/avra-build/$slug/tree"
 info_remote="/home/sprite/.avra-info-$slug.sh"
 run_remote="/home/sprite/.avra-run-$slug.sh"
+grouped="AVRA_RUN='$run' AVRA_RUN_OWNER='$host $$' setsid -w"
 
 # A Sprite waking from sleep answers before its home is mounted, and a
 # first exec can drop its connection: wait until /home/sprite stands.
@@ -173,6 +216,10 @@ if [ -x "/home/sprite/avra-compilers/$chash/avra" ]; then
 else
     printf 'CACHE:no\n'
 fi
+for o in /home/sprite/avra-runs/*/owner; do
+    [ -f "$o" ] || continue
+    printf 'RUN:%s %s\n' "$(basename "$(dirname "$o")")" "$(cat "$o")"
+done
 SCRIPT
 retried "the info push" push "$info_script" "$info_remote" || exit 3
 info=$(sprite -s "$sprite" exec --no-port-forward -- bash -lc "sh '$info_remote' '$remote' '$compiler_hash'" 2>/dev/null) || info=""
@@ -180,6 +227,15 @@ build_marker=$(printf '%s\n' "$info" | sed -n 's/^BUILD://p')
 cache_flag=$(printf '%s\n' "$info" | sed -n 's/^CACHE://p')
 [ -n "$build_marker" ] || build_marker=none
 [ -n "$cache_flag" ] || cache_flag=no
+
+# Runs this host started whose owner is gone: stopped before this one starts.
+orphans=$(printf '%s\n' "$info" | sed -n 's/^RUN://p' | while read -r r h p; do
+    [ "$h" = "$host" ] && ! kill -0 "$p" 2>/dev/null && printf '%s ' "$r"
+done; :)
+if [ -n "$orphans" ]; then
+    echo "sprite-build: $sprite: stopping runs whose owner is gone: $orphans" >&2
+    stop_runs "$sprite" $orphans || :
+fi
 
 do_restore=0; [ "$cache_flag" = yes ] && [ "$build_marker" != "$compiler_hash" ] && do_restore=1
 do_store=0; [ "$cache_flag" = no ] && do_store=1
@@ -205,8 +261,17 @@ set -eu
 remote=$1; chash=$2; do_restore=$3; do_store=$4; do_prebuild=$5
 shift 5
 
+# This run's group, for whoever must stop it: started under setsid, so
+# this shell's pid is the group's id.
+rd=/home/sprite/avra-runs/$AVRA_RUN
+mkdir -p "$rd"
+echo $$ > "$rd/pid"
+printf '%s\n' "$AVRA_RUN_OWNER" > "$rd/owner"
+trap 'rm -rf "$rd"' EXIT
+
 mkdir -p "$remote/build"
 cd "$remote"
+rm -f build/.avra-run-info
 
 # Idempotent toolchain provisioning: a Sprite is a stock Ubuntu image.
 test -f tools/sprite-provision.sh || { mkdir -p tools; cp /home/sprite/.avra-provision.sh tools/sprite-provision.sh; }
@@ -367,14 +432,14 @@ copied=
 prebuilt=
 pre_s=
 if [ "$do_store" = 1 ]; then
-    hash_lock="/tmp/avra-sp-hash-$compiler_hash"
-    until mkdir "$hash_lock" 2>/dev/null; do
-        owner=$(cat "$hash_lock/pid" 2>/dev/null || echo)
-        [ -z "$owner" ] || kill -0 "$owner" 2>/dev/null || rm -rf "$hash_lock"
+    lock="/tmp/avra-sp-hash-$compiler_hash"
+    until mkdir "$lock" 2>/dev/null; do
+        owner=$(cat "$lock/pid" 2>/dev/null || echo)
+        [ -z "$owner" ] || kill -0 "$owner" 2>/dev/null || rm -rf "$lock"
         sleep 3
     done
+    hash_lock=$lock
     echo $$ > "$hash_lock/pid"
-    trap 'rm -f "$info_script" "$run_script"; rm -rf "$hash_lock"' EXIT
     pre_t0=$(date +%s)
     echo "sprite-build: $sprite: compiler — looking for a Sprite that holds it" >&2
     from=$(donor)
@@ -384,21 +449,31 @@ if [ "$do_store" = 1 ]; then
         do_store=0
         do_restore=1
     else
-        sprite -s "$sprite" exec --no-port-forward -- bash -lc "sh '$run_remote' '$remote' '$compiler_hash' 0 1 0 true" >/dev/null 2>&1 || :
+        started=1
+        sprite -s "$sprite" exec --no-port-forward -- bash -lc "$grouped sh '$run_remote' '$remote' '$compiler_hash' 0 1 0 true" >/dev/null 2>&1 &
+        xpid=$!
+        wait "$xpid" || :
+        xpid=
         if holds "$sprite"; then
+            started=
             prebuilt=built
             do_store=0
         fi
     fi
     pre_s=$(( $(date +%s) - pre_t0 ))
     rm -rf "$hash_lock"
+    hash_lock=
 fi
 
 [ -z "$copied" ] || echo "sprite-build: $sprite: compiler copied from $copied" >&2
 echo "sprite-build: $sprite: cmd" >&2
 status=0
-remote_run_cmd="sh '$run_remote' '$remote' '$compiler_hash' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
-sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sprite-run "$@" || status=$?
+remote_run_cmd="$grouped sh '$run_remote' '$remote' '$compiler_hash' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
+started=1
+sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sprite-run "$@" &
+xpid=$!
+wait "$xpid" || status=$?
+xpid=
 
 # RT3: the run's own report — timing and the store outcome — never
 # read from stdout or stderr, which stayed the command's alone.
@@ -409,6 +484,9 @@ compile_s=$(printf '%s\n' "$run_info" | sed -n 's/^COMPILE://p')
 [ -n "$compile_s" ] || compile_s="?"
 [ -n "$wall" ] || wall="?"
 [ -n "$store_result" ] || store_result=none
+# The run's own report arrived, so its group has ended; with none, the
+# connection may have dropped under a run still going, and `leave` stops it.
+[ -z "$run_info" ] || started=
 
 for spec in $pulls; do
     from=${spec%%:*}

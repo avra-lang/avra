@@ -8,7 +8,7 @@
 # GIVEN branches b1..bN (in FIFO arrival order, the same order
 # `tools/land.sh`'s ticket queue already keeps), this builds the
 # candidate ladder C1=main+b1, C2=main+b1+b2, ... CN=main+b1..bN, and
-# verifies every candidate IN ONE WAVE, one Sprite each, concurrently
+# verifies every candidate IN ONE WAVE, concurrently, up to two per Sprite
 # — never one Mac bisecting them one attempt at a time. A wave's
 # verdict is the longest all-green PREFIX; a red candidate drops its
 # OWN branch (never an earlier one — a prefix that already answered
@@ -20,18 +20,18 @@
 # ONE WATCHDOG, NEVER TWO: every remote step runs through land.sh's
 # OWN `watched()` (cap + no-progress quiet window, one poll loop) via
 # its `--call` seam — this file defines no timeout primitive of its
-# own. The Sprite POOL and its ORDERING are main's too:
+# own. The Sprite POOL and its ORDERING are shared too:
 # `sh "$land" --call sprites_by_load $(pool_list)` ranks the pool by
 # load per core then free memory, and `pool_list` answers
-# `AVRA_LAND_SPRITE` when set, else land.sh's own `land_sprite_pool`
-# (`--call land_pool`) — the ONE list the Linux gate already uses, so
-# the train never reaches for a Sprite (avra-unions-* included) that
-# is not that pool's to claim. What THIS file adds beyond land.sh's
-# own primitives is the one thing a single `linux_gate_step` call
-# never needed: EXCLUSIVITY across several CONCURRENT candidates — a
-# wave dispatches many at once, and `sprite-build.sh` serialises
-# nothing on its own, so a lease (a lock directory per Sprite,
-# `claim_sprite`/`release_sprite`) is layered under the load-ordering.
+# `AVRA_LAND_SPRITE` when set, else `tools/sp --pool` — every awake
+# Sprite but avra-bench and web-terminal, the same pool `sp` jobs use.
+# What THIS file adds beyond those primitives is EXCLUSIVITY across
+# several CONCURRENT candidates: a lease is one of `sp`'s own slots
+# (`sp --lease`, in its shared slot directory), up to
+# AVRA_LAND_TRAIN_SLOTS (default 2) per Sprite, so train candidates and
+# `sp` jobs never oversubscribe one Sprite. Each candidate syncs into
+# its own remote tree, since sprite-build.sh keys the tree by the
+# candidate worktree's unique name.
 #
 # WHAT RUNS ON A SPRITE, PER CANDIDATE — the Linux-portable half of
 # what `land.sh` runs locally today: the compiler build itself
@@ -82,6 +82,8 @@ land="$tools_dir/land.sh"
 : "${AVRA_LAND_TRAIN_CAP_S:=1200}"
 : "${AVRA_LAND_TRAIN_QUIET_S:=420}"
 : "${AVRA_LAND_TRAIN_RETRIES:=2}"
+: "${AVRA_LAND_TRAIN_SLOTS:=2}"
+sp="$tools_dir/sp"
 
 run_id="$$-$(date +%s)"
 scratch_root="${AVRA_LAND_TRAIN_SCRATCH_ROOT:-/tmp/avra-land-train-scratch}"
@@ -98,7 +100,7 @@ usage() {
 usage: sh tools/land_train.sh [--dry-run] <branch> [<branch>...]
 
 Builds the candidate ladder over `main`, verifies every candidate
-concurrently (one Sprite each), and prints the winning green prefix
+concurrently (up to AVRA_LAND_TRAIN_SLOTS per Sprite), and prints the winning green prefix
 and its head sha. `--dry-run` (the default shape this file's own
 `main()` always takes) never touches real main — see train_core in
 tools/land.sh for the real hand-off.
@@ -123,27 +125,34 @@ resolve_main_wt() {
     fi
 }
 
-# ── THE SPRITE POOL — main's own list and load order, one lease each ─
+# ── THE SPRITE POOL — sp's pool, main's load order, sp's slots ─────
 # `AVRA_LAND_SPRITE` overrides exactly as it already does for
-# `linux_gate_step`; unset, `land_pool` (a tiny land.sh accessor,
-# defined beside `land_sprite_pool`) answers the SAME pool the Linux
-# gate reads today, so this file names no Sprite of its own.
+# `linux_gate_step`; unset, `sp --pool` answers, asked once per run and
+# kept in the scratch dir. An empty answer (the Sprites API down) falls
+# back to land.sh's `land_pool`, so this file names no Sprite of its own.
 pool_list() {
     if [ -n "${AVRA_LAND_SPRITE:-}" ]; then
         printf '%s' "$AVRA_LAND_SPRITE"
-    else
-        sh "$land" --call land_pool
+        return 0
     fi
+    [ -s "$scratch/pool" ] || {
+        p="$(sh "$sp" --pool 2>/dev/null || true)"
+        [ -n "$(printf '%s' "$p" | tr -d '[:space:]')" ] || p="$(sh "$land" --call land_pool)"
+        printf '%s' "$p" > "$scratch/pool"
+    }
+    cat "$scratch/pool"
 }
 
-# Blocks until a Sprite in the pool is both FREE (no lease held here)
-# and ranked reachable by main's own `sprites_by_load` (an unreachable
+# Blocks until a Sprite in the pool has a FREE slot (`sp --lease`,
+# owned by this train's process, so a dead train frees it) and is ranked reachable by main's own `sprites_by_load` (an unreachable
 # one sorts last, never first) — a Sprite that never answers is what
 # `run_candidate`'s own retry-on-tool-failure exists for, so this
 # never waits past its OWN deadline. `$2`, optional: Sprites this
 # CANDIDATE already tried and failed on — a retry prefers any OTHER
 # Sprite first, and only falls back to one of them once every other
 # pool member is busy, so a small pool never deadlocks avoiding one.
+# Slots fill level by level, so a wave spreads before it stacks. Prints
+# "<sprite> <slot dir>".
 claim_sprite() {
     deadline="$1"
     avoid="${2:-}"
@@ -156,7 +165,7 @@ claim_sprite() {
     # lockstep). Refreshed only every AVRA_LAND_TRAIN_PROBE_INTERVAL_S
     # seconds (default 10) — stale for at most that long, which only
     # ever costs picking a slightly-less-idle Sprite, never a wrong
-    # answer about which ones are FREE (that check is the lease
+    # answer about which ones are FREE (that check is the slot
     # directory, read fresh every iteration, never cached).
     probe_interval="${AVRA_LAND_TRAIN_PROBE_INTERVAL_S:-10}"
     ordered=""
@@ -167,20 +176,20 @@ claim_sprite() {
             ordered="$(sh "$land" --call sprites_by_load $(pool_list) 2>/dev/null)"
             ordered_at="$now"
         fi
-        for pass in fresh any; do
-            for s in $ordered; do
-                if [ "$pass" = fresh ]; then
-                    case " $avoid " in *" $s "*) continue ;; esac
-                fi
-                [ -d "$scratch/lease-$s" ] && continue
-                mkdir "$scratch/lease-$s" 2>/dev/null && { echo "$s"; return 0; }
-            done
+        fresh=""
+        for s in $ordered; do
+            case " $avoid " in *" $s "*) ;; *) fresh="$fresh $s" ;; esac
+        done
+        for list in "$fresh" "$ordered"; do
+            [ -n "$(printf '%s' "$list" | tr -d '[:space:]')" ] || continue
+            slot="$(sh "$sp" --lease "$AVRA_LAND_TRAIN_SLOTS" "$$" $list 2>/dev/null)" &&
+                { echo "$(basename "$(dirname "$slot")") $slot"; return 0; }
         done
         [ "$now" -lt "$deadline" ] || return 1
         sleep 1
     done
 }
-release_sprite() { rmdir "$scratch/lease-$1" 2>/dev/null || true; }
+release_sprite() { rm -rf "$1"; }
 
 # ── ONE CANDIDATE'S TREE — a fresh worktree at main's tip, every
 # branch in ITS OWN ORDER merged in through land.sh's real merge_ref_in
@@ -207,26 +216,35 @@ build_candidate_tree() {
 # candidate. `land-train: body started` is the tool-failure boundary,
 # the same convention `linux_gate_step`'s `land-linux: body started`
 # is; the heartbeat (every 30s, a byte count over every log this body
-# writes) is `train_progress`'s (tools/land.sh) own signal, read by
-# `watched()` exactly as `linux_progress` reads `linux_gate_step`'s.
+# writes, then the CPU ticks the body's process tree has spent, the
+# heartbeat's own excluded) is `train_progress`'s (tools/land.sh) own
+# signal, read by `watched()` exactly as `linux_progress` reads
+# `linux_gate_step`'s. A suite prints nothing while it builds, for
+# longer than the quiet window, so bytes alone would call it wedged;
+# a wedged step spends no CPU, so the ticks still stop. Suites run
+# line-buffered, so their own lines reach the log as they are said.
 candidate_body() {
     pkgs="$*"
     cat <<BODY
 echo 'land-train: body started'
 d=\$(mktemp -d)
-( while sleep 30; do echo "land-train: progress \$(cat /tmp/land-train-*.log "\$d"/*.log 2>/dev/null | wc -c)"; done ) &
+tree() { [ "\$1" = "\${skip:-}" ] && return; echo "\$1"; for c in \$(ps -o pid= --ppid "\$1" 2>/dev/null); do tree "\$c"; done; }
+cpu() { for p in \$(tree \$\$); do sed 's/.*) //' "/proc/\$p/stat" 2>/dev/null; done | awk '{ s += \$12 + \$13 + \$14 + \$15 } END { print s + 0 }'; }
+( skip=\$BASHPID; while sleep 30; do echo "land-train: progress \$(cat "\$d"/*.log 2>/dev/null | wc -c) cpu \$(cpu)"; done ) &
 hb=\$!
 trap 'pkill -P \$hb 2>/dev/null; kill \$hb 2>/dev/null' EXIT
 export LLVM_PREFIX=/usr/lib/llvm-22
+lined=
+command -v stdbuf >/dev/null && lined="stdbuf -oL -eL"
 run_step() {
     n="\$1"; shift
     t=\$(date +%s)
-    if "\$@" > "/tmp/land-train-\$n.log" 2>&1; then
+    if "\$@" > "\$d/step-\$n.log" 2>&1; then
         echo "land-train: \$n OK \$(( \$(date +%s) - t ))s"
     else
         st=\$?
         echo "land-train: \$n FAILED (exit \$st) \$(( \$(date +%s) - t ))s"
-        tail -60 "/tmp/land-train-\$n.log"
+        tail -60 "\$d/step-\$n.log"
         exit 1
     fi
 }
@@ -239,7 +257,7 @@ for p in $pkgs; do
     run_step "idioms-\$p" ./build/avra check "packages/\$p" --baseline tools/idioms.baseline
 done
 for p in $pkgs; do
-    ( t=\$(date +%s); build/avra test "packages/\$p" > "\$d/\$p.log" 2>&1; echo \$? > "\$d/\$p.st"; \
+    ( t=\$(date +%s); \$lined build/avra test "packages/\$p" > "\$d/\$p.log" 2>&1; echo \$? > "\$d/\$p.st"; \
       echo "land-train: test-\$p \$(( \$(date +%s) - t ))s" > "\$d/\$p.time" ) &
 done
 wait
@@ -281,11 +299,13 @@ run_candidate() {
     while :; do
         attempt=$((attempt + 1))
         deadline=$(( $(date +%s) + cap_s ))
-        sprite="$(claim_sprite "$deadline" "$tried")" || {
+        claimed="$(claim_sprite "$deadline" "$tried")" || {
             echo "no Sprite in the pool became free within ${cap_s}s" > "$out_dir/tool-failure"
             echo 1 > "$out_dir/status"
             return 1
         }
+        sprite="${claimed%% *}"
+        slot="${claimed#* }"
         tried="$tried $sprite"
         echo "$sprite" > "$scratch/inflight-$label"
         body_file="$scratch/body-$label.sh"
@@ -295,7 +315,7 @@ run_candidate() {
         train_out="$log" sh "$land" --call watched "$cap_s" "$quiet_s" train_progress \
             sh "$AVRA_LAND_SPRITE_BUILD" "$sprite" "$tree" -- bash -lc "$(cat "$body_file")" > "$log" 2>&1 || st=$?
         rm -f "$scratch/inflight-$label"
-        release_sprite "$sprite"
+        release_sprite "$slot"
         if [ "$st" -eq 125 ]; then
             echo "land-train: [$label] no progress on $sprite for $((quiet_s / 60)) min — retrying" >&2
             sh "$land" --call stop_remote "$sprite" "$label"
@@ -319,8 +339,8 @@ run_candidate() {
 }
 
 # ── ONE WAVE — every candidate for the given tail, launched together,
-# bounded only by the Sprite pool's own size (claim_sprite blocks a
-# launch until a lease is free). Prints, on stdout, the longest green
+# bounded only by the pool's slots (claim_sprite blocks a launch until
+# one is free). Prints, on stdout, the longest green
 # PREFIX of `tail` (space-separated branch names; empty when even the
 # first fails), and leaves per-candidate results under
 # `$scratch/wave-$id/C<k>/`. Every candidate's label carries THIS

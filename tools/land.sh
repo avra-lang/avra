@@ -869,7 +869,7 @@ watched() {
         wnext=$((wnow + poll))
         if [ $((wnow - w0)) -ge "$cap_s" ]; then
             kill_tree "$wpid"
-            wait "$wpid" 2>/dev/null
+            wait "$wpid" 2>/dev/null || :
             return 124
         fi
         [ "$quiet_s" -gt 0 ] || continue
@@ -879,7 +879,7 @@ watched() {
             wlast_t="$wnow"
         elif [ $((wnow - wlast_t)) -ge "$quiet_s" ]; then
             kill_tree "$wpid"
-            wait "$wpid" 2>/dev/null
+            wait "$wpid" 2>/dev/null || :
             return 125
         fi
     done
@@ -1021,10 +1021,12 @@ linux_progress() {
 # The train's own leg, `linux_progress`'s twin over a `land-train:`
 # log — one `watched()` covers every remote step regardless of which
 # gate's own body it is running (docs/2026_09_29_LAND_TRAIN.md).
+# Progress is the heartbeat's log bytes and CPU ticks, or any line that
+# is not a heartbeat: a heartbeat line alone says only that it beat.
 train_progress() {
     grep -q '^land-train: body started' "$train_out" 2>/dev/null || return 0
-    grep '^land-train: progress ' "$train_out" | tail -1 | awk '{ print $3 }'
-    grep -c '' "$train_out"
+    grep '^land-train: progress ' "$train_out" | tail -1 | awk '{ print $3, $5 }'
+    grep -vc '^land-train: progress ' "$train_out"
 }
 
 # The landing pool's own list — the ONE place tools/land_train.sh
