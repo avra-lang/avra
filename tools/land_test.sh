@@ -1906,6 +1906,52 @@ test_linux_rerun_after_reseed() {
     if sh "$land" --call linux_saw_old_seed "$d" 0; then bad "linux-seed: re-ran a passing leg"; else ok "linux-seed: a passing leg is never re-run"; fi
 }
 
+# MAIN MOVES WHOLE OR NOT AT ALL: a fast-forward refused after git has
+# written the files (a hook the incoming tree adds refuses the ref)
+# leaves main's checkout at HEAD again; a dirty file the landing changes
+# refuses first, by name; an unrelated dirty file survives a landing.
+test_main_ff_whole_or_not() {
+    d="$(git_repo main-ff)"
+    printf 'one\n' > "$d/a.txt"
+    printf 'mine\n' > "$d/local.txt"
+    commit_all "$d" "base"
+    git -C "$d" config core.hooksPath hooks
+    git -C "$d" checkout -q -b cand
+    mkdir -p "$d/hooks"
+    printf '#!/bin/sh\nexit 1\n' > "$d/hooks/reference-transaction"
+    chmod +x "$d/hooks/reference-transaction"
+    printf 'two\n' > "$d/a.txt"
+    printf 'new\n' > "$d/b.txt"
+    git -C "$d" add -A
+    git -C "$d" -c core.hooksPath=/dev/null commit -q -m cand
+    git -C "$d" -c core.hooksPath=/dev/null checkout -q main
+    head="$(git -C "$d" rev-parse HEAD)"
+    out="$(sh "$land" --call main_ff "$d" cand 2>&1)"; st=$?
+    if [ "$st" -ne 0 ] && [ "$(git -C "$d" rev-parse HEAD)" = "$head" ] && git -C "$d" diff --quiet HEAD && [ ! -e "$d/b.txt" ] && [ ! -e "$d/hooks/reference-transaction" ]; then
+        ok "main-ff: a fast-forward refused after writing files leaves main's checkout at HEAD"
+    else
+        bad "main-ff: half-applied checkout left behind (exit $st): $(git -C "$d" status --porcelain | tr '\n' ' ')"
+    fi
+    case "$out" in *"main's checkout restored to HEAD"*) ok "main-ff: the restore announces itself" ;; *) bad "main-ff: silent restore ($out)" ;; esac
+    git -C "$d" config --unset core.hooksPath
+    git -C "$d" -c core.hooksPath=/dev/null branch -q -f cand2 main
+    git -C "$d" -c core.hooksPath=/dev/null checkout -q cand2
+    printf 'three\n' > "$d/a.txt"
+    git -C "$d" commit -q -am cand2
+    git -C "$d" checkout -q main
+    printf 'edited\n' > "$d/a.txt"
+    out="$(sh "$land" --call main_ff "$d" cand2 2>&1)"; st=$?
+    case "$st|$out" in 0*) bad "main-ff: fast-forwarded over a dirty file it changes" ;; *"a.txt"*) ok "main-ff: a dirty file the landing changes refuses first, by name" ;; *) bad "main-ff: refusal did not name the file ($out)" ;; esac
+    [ "$(cat "$d/a.txt")" = edited ] && ok "main-ff: the refused landing left the local edit intact" || bad "main-ff: the local edit was lost"
+    git -C "$d" checkout -q -- a.txt
+    printf 'still mine\n' > "$d/local.txt"
+    if sh "$land" --call main_ff "$d" cand2 > /dev/null 2>&1 && [ "$(cat "$d/local.txt")" = "still mine" ] && [ "$(cat "$d/a.txt")" = three ]; then
+        ok "main-ff: an unrelated dirty file survives a landing"
+    else
+        bad "main-ff: the landing did not pass beside an unrelated edit"
+    fi
+}
+
 # A landing that reached the compiler leaves main's checkout holding the
 # landing's compiler and runtime; one that did not leaves main's alone;
 # a process running main's old binary keeps its file.
@@ -2452,6 +2498,7 @@ run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
+run_test test_main_ff_whole_or_not
 run_test test_exit_verdict
 run_test test_sprites_by_load
 run_test test_linux_watchdog

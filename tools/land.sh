@@ -1716,7 +1716,47 @@ seed_policy() {
     echo "land: seed-check passed after a fresh emit" >&2
 }
 
-try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
+try_ff() { main_ff "$main_wt" "$branch"; }
+
+# MAIN MOVES WHOLE OR NOT AT ALL. Before the fast-forward, a tracked
+# change in main's checkout to a file this landing changes refuses, by
+# name — an unrelated local edit stays where it is. After a refused one
+# (a hook the incoming tree adds can refuse the ref after git has
+# already written the files), every file the landing touched is put back
+# to HEAD, and the restore says so.
+main_ff() {
+    mwt="$1"
+    target="$2"
+    incoming="$(git -C "$mwt" diff --name-only HEAD "$target")"
+    dirty="$(git -C "$mwt" diff --name-only HEAD)"
+    if [ -n "$dirty" ] && [ -n "$incoming" ]; then
+        hit="$(printf '%s\n' "$dirty" | while IFS= read -r f; do printf '%s\n' "$incoming" | grep -Fxq -- "$f" && echo "$f"; done || :)"
+        if [ -n "$hit" ]; then
+            echo "land: main's checkout has uncommitted changes to files this landing changes — commit or set them aside:" >&2
+            printf '  %s\n' $hit >&2
+            return 1
+        fi
+    fi
+    before="$(git -C "$mwt" rev-parse HEAD)"
+    ffst=0
+    git -C "$mwt" merge --ff-only "$target" || ffst=$?
+    [ "$ffst" -eq 0 ] && return 0
+    if [ "$(git -C "$mwt" rev-parse HEAD)" = "$before" ]; then
+        restored=""
+        for f in $incoming; do
+            if git -C "$mwt" cat-file -e "HEAD:$f" 2>/dev/null; then
+                git -C "$mwt" diff --quiet HEAD -- "$f" 2>/dev/null && continue
+                git -C "$mwt" checkout -q HEAD -- "$f" && restored="$restored $f"
+            elif [ -e "$mwt/$f" ] || git -C "$mwt" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+                git -C "$mwt" rm -q -f --cached -- "$f" 2>/dev/null
+                rm -f "$mwt/$f"
+                restored="$restored $f"
+            fi
+        done
+        [ -n "$restored" ] && echo "land: the fast-forward was refused after it wrote files — main's checkout restored to HEAD:$restored" >&2
+    fi
+    return "$ffst"
+}
 
 # MAIN'S CHECKOUT RUNS WHAT MAIN SAYS: after a landing that reached the
 # compiler, the landing tree's fixed-point compiler and runtime library
@@ -2033,7 +2073,7 @@ batch_core() {
         return 0
     fi
     ff_log="$(log_of batch-ff)"
-    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
+    if main_ff "$main_wt" "$batch_branch" > "$ff_log" 2>&1; then
         landed="$(git -C "$main_wt" rev-parse HEAD)"
         refresh_main_compiler "$batch_wt" "$main_wt"
         return 0
