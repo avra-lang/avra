@@ -5,7 +5,8 @@
 use @std.net.{NetError, Conn, listen, connect, Listener}
 use @std.time.{secs}
 use @std.http.frame.{limits}
-use @std.http.client.{Client, ClientError, client_over}
+use @std.http.client.{Client, ClientError, over}
+use @std.http.wire.{plainly}
 use @std.http.pool.{Pool, Carrier, pool}
 
 fn pa_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
@@ -18,13 +19,13 @@ type PaPeer = { l: Listener, client: Client }
 fn pa_peer() -> Result<PaPeer, ClientError> {
     let l = pa_lifted(listen("127.0.0.1", 0))?
     let c = pa_lifted(connect("127.0.0.1", l.port, secs(2)))?
-    .Ok(PaPeer { l: l, client: client_over(c, limits()) })
+    .Ok(PaPeer { l: l, client: over(plainly(c), limits()) })
 }
 
 fn pa_carried(c: Client) -> Result<Carrier, ClientError> { .Ok(.H1(c)) }
 
 fn pa_dial(port: int) -> Result<Carrier, ClientError> {
-    pa_carried(client_over(pa_lifted(connect("127.0.0.1", port, secs(2)))?, limits()))
+    pa_carried(over(plainly(pa_lifted(connect("127.0.0.1", port, secs(2)))?), limits()))
 }
 
 fn pa_give_untaken() -> Result<bool, ClientError> {
@@ -80,7 +81,7 @@ fn pa_many_origins() -> Result<bool, ClientError> {
     let p = pool()
     for i in 0..300 {
         let o = "o${i}"
-        let c = p.take(o, () -> pa_carried(client_over(Conn { fd: -1 }, limits())))?
+        let c = p.take(o, () -> pa_carried(over(plainly(Conn { fd: -1 }), limits())))?
         p.drop(o, c)
     }
     .Ok(p.out.get().is_empty() && p.kept.get().is_empty())

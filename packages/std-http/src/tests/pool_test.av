@@ -7,7 +7,8 @@ use @std.time.{secs, ms}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
 use @std.http.server.{Server, served, timing}
-use @std.http.client.{Client, ClientError, connected, client_over, request}
+use @std.http.client.{Client, ClientError, connected, over, request}
+use @std.http.wire.{plainly}
 use @std.http.pool.{Pool, Carrier, pool, origin_of}
 
 fn pl_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
@@ -117,7 +118,7 @@ type PlRaw = { l: Listener, client: Client }
 fn pl_raw() -> Result<PlRaw, ClientError> {
     let l = pl_lifted(listen("127.0.0.1", 0))?
     let c = pl_lifted(connect("127.0.0.1", l.port, secs(2)))?
-    .Ok(PlRaw { l: l, client: client_over(c, limits()) with { persists: true } })
+    .Ok(PlRaw { l: l, client: over(plainly(c), limits()) with { persists: true } })
 }
 
 fn pl_peer_closed() -> Result<bool, ClientError> {
@@ -129,9 +130,9 @@ fn pl_peer_closed() -> Result<bool, ClientError> {
     let server_side = pl_lifted(raw.l.accept())?
     pl_lifted(server_side.close())?
     let fresh = pl_lifted(connect("127.0.0.1", raw.l.port, secs(2)))?
-    let got = pl_client(p.take(o, () -> pl_carried(client_over(fresh, limits())))?)
+    let got = pl_client(p.take(o, () -> pl_carried(over(plainly(fresh), limits())))?)
     let _ = raw.l.close()
-    .Ok(got.conn.fd == fresh.fd && p.kept_for(o) == 0)
+    .Ok(got.conn.wire_fd() == fresh.fd && p.kept_for(o) == 0)
 }
 
 fn pl_peer_wrote() -> Result<bool, ClientError> {
@@ -143,9 +144,9 @@ fn pl_peer_wrote() -> Result<bool, ClientError> {
     let server_side = pl_lifted(raw.l.accept())?
     pl_lifted(server_side.write("HTTP/1.1 200 OK\r\n".bytes()))?
     let fresh = pl_lifted(connect("127.0.0.1", raw.l.port, secs(2)))?
-    let got = pl_client(p.take(o, () -> pl_carried(client_over(fresh, limits())))?)
+    let got = pl_client(p.take(o, () -> pl_carried(over(plainly(fresh), limits())))?)
     let _ = raw.l.close()
-    .Ok(got.conn.fd == fresh.fd)
+    .Ok(got.conn.wire_fd() == fresh.fd)
 }
 
 fn pl_carried(c: Client) -> Result<Carrier, ClientError> { .Ok(.H1(c)) }

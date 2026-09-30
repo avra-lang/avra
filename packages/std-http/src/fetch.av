@@ -36,7 +36,7 @@ use client.{
     last_chunk,
     method_word,
     staged,
-    netted,
+    carried,
 }
 use pool.{Pool, Carrier, pool, origin_of}
 
@@ -238,13 +238,13 @@ fn poured(c: Client, next: fn() -> Bytes?, deadline: int) -> Result<int, ClientE
         if now_ms() >= deadline { return .Err(.TimedOut(.Total)) }
         match next() {
             piece? -> {
-                netted(c.conn.write(chunk(piece)))?
+                carried(c.conn.wire_write(chunk(piece)))?
                 total = total + piece.length
             }
             null -> { more = false }
         }
     }
-    netted(c.conn.write(last_chunk))?
+    carried(c.conn.wire_write(last_chunk))?
     .Ok(total)
 }
 

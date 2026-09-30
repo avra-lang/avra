@@ -1,0 +1,99 @@
+//! @std.https — HTTP over TLS, composed from `@std/http` and
+//! `@std/tls`. A package of its own so a plain HTTP program links no TLS:
+//! `@std/http` knows only its `Transport` seam, and this is where TLS
+//! is plugged into it.
+//!
+//! A server: `served(…).secured(over_tls(config))`, or a declaration's
+//! `tls: over_tls(config)`. Each connection's first bytes are read
+//! before the handshake sees them — plain HTTP is answered `400` in
+//! the clear and closed, never left waiting on a handshake that will
+//! not come.
+//!
+//! A client: `secured(host, port, timeout, limits, config)` connects,
+//! verifies the server as `host`, and answers a `Client` that fetches
+//! exactly as a plain one does.
+use @std.net.{Conn}
+use @std.time.{Duration, within}
+use @std.tls.{Config, TlsConn, TlsError, dial, handshake_after}
+use @std.http.frame.{Limits}
+use @std.http.http.{Response, text, wire, read_size}
+use @std.http.wire.{Transport, WireError, Secure, silent}
+use @std.http.client.{Client, ClientError, carried, over}
+
+/// Connections secured with TLS under `config`.
+export fn over_tls(config: Config) -> Secure {
+    Secure { open: (c: Conn, d: Duration) -> opened_within(c, config, d) }
+}
+
+/// A client connected to host:port over TLS within `timeout`, the
+/// server verified under `config` as `host`.
+export fn secured(host: string, port: int, timeout: Duration, limits: Limits, config: Config) -> Result<
+    Client,
+    ClientError,
+> {
+    let t = tls_carried(dial(host, port, timeout, config))?
+    .Ok(over(Secured { t: t }, limits))
+}
+
+/// A TLS result as the client's: a socket's failure wears `.Net`,
+/// TLS's own `.Secure`.
+export fn tls_carried<T>(r: Result<T, TlsError>) -> Result<T, ClientError> { carried(as_wire(r)) }
+
+/// A TLS result as the wire's: a socket's failure stays `.Net`, so a
+/// deadline reads the same over either transport.
+fn as_wire<T>(r: Result<T, TlsError>) -> Result<T, WireError> {
+    match r { .Ok(v) -> .Ok(v), .Err(.Net(e)) -> .Err(.Net(e)), .Err(e) -> .Err(.Secure(e)) }
+}
+
+/// A TLS connection as a transport — this package's own, since the
+/// trait is `@std/http`'s and the connection `@std/tls`'s.
+type Secured = { t: TlsConn }
+
+impl Transport for Secured {
+    fn wire_read(max: int) -> Result<Bytes?, WireError> { as_wire(self.t.read(max)) }
+    fn wire_write(bytes: Bytes) -> Result<int, WireError> { as_wire(self.t.write(bytes)) }
+    fn wire_shutdown() -> Result<int, WireError> { as_wire(self.t.shutdown_write()) }
+    fn wire_close() -> Result<int, WireError> { as_wire(self.t.close()) }
+    fn wire_peer() -> string { self.t.peer() }
+    fn wire_fd() -> int { self.t.fd }
+    fn wire_secured() -> bool { true }
+    fn wire_protocol() -> string? { self.t.protocol() }
+    fn wire_silent() -> bool { silent(self.t.conn) }
+}
+
+fn opened_within(c: Conn, config: Config, d: Duration) -> dyn Transport? {
+    match within d { tls_opened(c, config) } { .Ok(t) -> t, .Err(_) -> null }
+}
+
+/// A connection to a TLS port opened: its first bytes read, a plain
+/// HTTP request among them answered `400` in the clear and closed —
+/// null — and anything else handed to the handshake as its first
+/// flight. A socket that fails here is closed here; a handshake that
+/// fails closes its own.
+fn tls_opened(c: Conn, config: Config) -> Result<dyn Transport?, TlsError> {
+    let first = match c.read(read_size()) {
+        .Ok(b) -> b,
+        .Err(e) -> {
+            let _ = c.close()
+            fail TlsError.Net(e)
+        },
+    }
+    let heard? = first else {
+        let _ = c.close()
+        return .Ok(null)
+    }
+    if !opens_tls(heard) {
+        let _ = c.write(wire(plain_at_tls(), false, 1))
+        let _ = c.shutdown_write()
+        let _ = c.close()
+        return .Ok(null)
+    }
+    let t: dyn Transport = Secured { t: handshake_after(c, config, "", heard)? }
+    .Ok(t)
+}
+
+/// Whether a connection's first byte opens a TLS handshake record.
+fn opens_tls(first: Bytes) -> bool { first.at(0) == 22 }
+
+/// The answer to plain HTTP spoken at a TLS port.
+fn plain_at_tls() -> Response { text(400, "this port speaks HTTPS; the request was plain HTTP\n") }
