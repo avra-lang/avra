@@ -426,7 +426,6 @@ impl TypeCx {
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
         self.view.decls.record_seats(d, [pp.promises for pp in seats])
-        self.keep_boxed(seats, ptypes)
         self.declare(s, DeclSig.Fn(sig))
     }
 
@@ -515,8 +514,12 @@ impl TypeCx {
     /// site (a free fn, an inherent method, a trait member) shares, called before
     /// `answer_type`: an inferred `Result<T, _>` answer may ask any `_`-declared
     /// fn's own seats mid-fixpoint, and they must already be typed by then.
+    /// Every `mut` seat's record seals boxed IN the fold, so a method's seat
+    /// seals exactly as a free fn's does.
     fn typed_seats(s: StmtId, params: List<Param>, receiver: TypeId?) -> List<TypeId> {
-        let ptypes = [self.param_type(s, pp) for pp in written_seats(self.keywords, params)]
+        let seats = written_seats(self.keywords, params)
+        let ptypes = [self.param_type(s, pp) for pp in seats]
+        self.keep_boxed(seats, ptypes)
         let r? = receiver else { return ptypes }
         [r].concat(ptypes)
     }

@@ -132,23 +132,34 @@ impl LowerCx {
         match step {
             .Root(_) -> {
                 let cell: Reg? = self.cell_of(s)
-                if cell != null {
-                    // a cell opens unique — copy-on-write
-                    return self.cell_unique(self.shape_at(s), cell!)
-                }
-                // a method's receiver, a borrowed parameter: no cell
-                // stands behind it, so its box is thawed once here —
-                // idempotent, since the call site already thawed it
-                let reg? = self.def_reg(s) else {
-                    return self
-                        .lower_defect(s, "a mutation rooted outside a mut cell survived resolve")
-                }
-                self.box_thawed(self.shape_at(s), reg)
+                // a cell opens unique — copy-on-write
+                if cell != null { return self.cell_unique(self.shape_at(s), cell!) }
+                self.captured_box(s) ?? self.borrowed_box(s)
             },
             .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),
             .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),
             .Unwrap(subject) -> self.unwrapped_box(s, subject),
         }
+    }
+
+    /// A capture's box, opened unique in its lane of the lambda's env: the
+    /// write lands in the lambda's copy, never the captured value. Null
+    /// for any other binding.
+    mut fn captured_box(s: ExprId) -> Reg? {
+        let b? = self.names.binding(s) else { return null }
+        match b {
+            .Capture(_, j) -> self
+                .owned_slot_unique(self.shape_at(s), self.env_box(), self.const_int(capture_lane(j))),
+            _ -> null,
+        }
+    }
+
+    /// A method's receiver, a borrowed parameter: no cell stands behind
+    /// it, so its box is thawed once here — idempotent, since the call
+    /// site already thawed it.
+    mut fn borrowed_box(s: ExprId) -> Reg {
+        let reg? = self.def_reg(s) else { return self.lower_defect(s, "a mutation rooted outside a mut cell survived resolve") }
+        self.box_thawed(self.shape_at(s), reg)
     }
 
     /// The box a nullable carries, unique and insisted present. Only a

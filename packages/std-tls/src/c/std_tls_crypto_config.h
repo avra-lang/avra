@@ -67,10 +67,13 @@
 #define MBEDTLS_BASE64_C
 #define MBEDTLS_PEM_PARSE_C
 
-/* speed: the CPU's AES instructions and the tuned curves */
+/* speed: the CPU's AES instructions, the tuned curves, and Everest's
+   verified X25519 for the key agreement (Apache-2.0, as the engine is
+   taken) */
 #define MBEDTLS_AESNI_C
 #define MBEDTLS_AESCE_C
 #define MBEDTLS_ECP_NIST_OPTIM
+#define MBEDTLS_ECDH_VARIANT_EVEREST_ENABLED
 #define MBEDTLS_HAVE_ASM
 
 #endif
