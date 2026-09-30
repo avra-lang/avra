@@ -2182,17 +2182,31 @@ const char* avra_bytes_slice_reusing(const char* b, int64_t lo, int64_t hi) {
     return b;
 }
 
+// Where `needle` first lies wholly inside lo..hi, or -1; an empty
+// needle is found at lo. The search reads no octet at or past hi.
+static inline int64_t index_within(const char* b, const char* needle, int64_t lo, int64_t hi) {
+    int64_t m = (int64_t)bytes_len(needle);
+    if (m == 0) return lo;
+    if (m > hi - lo) return -1;
+    const char* end = b + hi - m + 1;
+    for (const char* p = b + lo; (p = (const char*)memchr(p, needle[0], (size_t)(end - p))) != NULL; p++)
+        if (memcmp(p, needle, (size_t)m) == 0) return (int64_t)(p - b);
+    return -1;
+}
+
 // Where `needle` first begins at or after `from`, or -1. `from` may
 // equal the length, and an empty needle is found there.
 int64_t avra_bytes_index_of(const char* b, const char* needle, int64_t from) {
-    int64_t n = (int64_t)bytes_len(b), m = (int64_t)bytes_len(needle);
+    int64_t n = (int64_t)bytes_len(b);
     if (__builtin_expect(from < 0 || from > n, 0)) avra_trap_bounds(from, n);
-    if (m == 0) return from;
-    if (m > n - from) return -1;
-    const char* end = b + n - m + 1;
-    for (const char* p = b + from; (p = (const char*)memchr(p, needle[0], (size_t)(end - p))) != NULL; p++)
-        if (memcmp(p, needle, (size_t)m) == 0) return (int64_t)(p - b);
-    return -1;
+    return index_within(b, needle, from, n);
+}
+
+// `index_of` over lo..hi alone: a needle crossing hi is not found.
+int64_t avra_bytes_index_in(const char* b, const char* needle, int64_t lo, int64_t hi) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    return index_within(b, needle, lo, hi);
 }
 
 // Text to octets: total, and FREE — text and octets are one layout

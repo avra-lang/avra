@@ -203,6 +203,20 @@ gate — there is no amnesty left to hide in.
 - style.hand_rolled_scan  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
       `int?`), as `core/modules.av` reads a key's cut.
+- bytes.clipped_scan  a scan CLIPPED AFTER it ran — `i = b.index_of(n, lo)`
+      then `if i < hi { i } else { -1 }` — is right about the answer and
+      wrong about the cost: it reads past `hi`, into every later field
+      and the body, once per call. `b.index_in(n, lo, hi)` never reads
+      past `hi` (std-http's framer paid 5.6 s -> 0.05 s native over
+      2000 hostile heads). No rule: the clip is any comparison.
+- lists.range_built_to_find  `[i for i in lo..n].find(p)` BUILDS the whole range
+      before `find` reads it, so an early hit still costs `n - lo`. Where
+      the range is a buffer's rest and the hit is near, that is the whole
+      buffer per call: the evaluator's `index_of`/`run` twins cost a
+      megabyte per scan until they became `while` walks. A range whose
+      every element is read anyway (`all` over two equal lengths) is not
+      this smell. No rule: the harmful half cannot be told from the
+      harmless by shape. Sugar backlog: a lazy range `find`.
 - style.dedupe_union_fold  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
       only on purpose — `contains` compares non-strings by
       identity). The grammar's own folds use it — `first.av`,

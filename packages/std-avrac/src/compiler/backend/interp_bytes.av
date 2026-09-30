@@ -50,7 +50,15 @@ impl Machine {
         let data = self.octets(vals[0])
         let from = self.whole(vals[2])
         if from < 0 || from > data.length { return self.out_of_bounds(from, data.length) }
-        Val.I(index_of_octets(data, self.octets(vals[1]), from))
+        Val.I(index_of_octets(data, self.octets(vals[1]), from, data.length))
+    }
+
+    fn bytes_index_in_val(vals: List<Val>) -> Val {
+        let data = self.octets(vals[0])
+        let lo = self.whole(vals[2])
+        let hi = self.whole(vals[3])
+        if lo < 0 || hi < lo || hi > data.length { return self.slice_out_of_bounds(lo, hi, data.length, Val.I(-1)) }
+        Val.I(index_of_octets(data, self.octets(vals[1]), lo, hi))
     }
 
     fn bytes_run_val(vals: List<Val>) -> Val {
@@ -62,7 +70,7 @@ impl Machine {
             self.trapped("a class table holds 256 bytes (length ${admits.length})")
             return Val.I(0)
         }
-        Val.I([i for i in from..data.length].find(admits[data[it]] == 0) ?? data.length)
+        Val.I(run_end(data, admits, from))
     }
 
     fn bytes_eq_at_val(vals: List<Val>, folded: bool) -> Val {
@@ -113,9 +121,23 @@ fn octets_of(text: string) -> List<int> {
 }
 
 /// Where `needle` first begins at or after `from`, or -1.
-fn index_of_octets(data: List<int>, needle: List<int>, from: int) -> int {
-    let last = data.length - needle.length + 1
-    [i for i in from..last].find(begins_at(data, needle, it)) ?? -1
+/// Where the run of octets `admits` accepts, starting at `from`,
+/// ends — stopping at the first refusal, so a run costs its length.
+fn run_end(data: List<int>, admits: List<int>, from: int) -> int {
+    mut at = from
+    while at < data.length && admits[data[at]] != 0 { at = at + 1 }
+    at
+}
+
+/// Where `needle` first lies wholly inside lo..hi, or -1 — stopping
+/// at the first match, so a search costs the distance it walked.
+fn index_of_octets(data: List<int>, needle: List<int>, lo: int, hi: int) -> int {
+    mut at = lo
+    while at + needle.length <= hi {
+        if begins_at(data, needle, at) { return at }
+        at = at + 1
+    }
+    -1
 }
 
 fn begins_at(data: List<int>, needle: List<int>, at: int) -> bool {

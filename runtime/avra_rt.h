@@ -156,6 +156,7 @@ extern const char avra_rt_held_avra_bytes_slice_reusing __asm__(AVRA_RT_LABEL(av
 extern const char avra_rt_held_avra_bytes_concat __asm__(AVRA_RT_LABEL(avra_bytes_concat));
 extern const char avra_rt_held_avra_bytes_concat_reusing __asm__(AVRA_RT_LABEL(avra_bytes_concat_reusing));
 extern const char avra_rt_held_avra_bytes_index_of __asm__(AVRA_RT_LABEL(avra_bytes_index_of));
+extern const char avra_rt_held_avra_bytes_index_in __asm__(AVRA_RT_LABEL(avra_bytes_index_in));
 extern const char avra_rt_held_avra_bytes_of_str __asm__(AVRA_RT_LABEL(avra_bytes_of_str));
 extern const char avra_rt_held_avra_bytes_of_str_reusing __asm__(AVRA_RT_LABEL(avra_bytes_of_str_reusing));
 extern const char avra_rt_held_avra_bytes_of_list __asm__(AVRA_RT_LABEL(avra_bytes_of_list));
@@ -308,6 +309,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_bytes_concat,
     &avra_rt_held_avra_bytes_concat_reusing,
     &avra_rt_held_avra_bytes_index_of,
+    &avra_rt_held_avra_bytes_index_in,
     &avra_rt_held_avra_bytes_of_str,
     &avra_rt_held_avra_bytes_of_str_reusing,
     &avra_rt_held_avra_bytes_of_list,
@@ -555,6 +557,8 @@ _Static_assert(__builtin_classify_type(avra_bytes_concat_reusing(AVRA_RT_PTR, AV
     "avra_bytes_concat_reusing: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_index_of(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
     "avra_bytes_index_of: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_index_in(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_bytes_index_in: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_bytes_of_str(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_bytes_of_str: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_bytes_of_str_reusing(AVRA_RT_PTR)) == AVRA_RT_POINTER,
