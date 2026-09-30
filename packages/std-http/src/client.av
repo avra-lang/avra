@@ -2,12 +2,16 @@
 //! whole, the reply framed as it arrives, its body gathered by the
 //! reply's own rule.
 //!
+//! `connected` speaks plain HTTP and `secured` HTTPS, verifying the
+//! server under a TLS client config; everything after is the same.
+//!
 //! `received` is one read — the calling task parked until bytes
 //! arrive — answering the reply when it is whole; `fetched` sends and
 //! receives until the reply, all of it within one deadline.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.net.{Conn, NetError, connect}
+use @std.net.{NetError, connect}
 use @std.time.{Duration, within}
+use @std.tls.{Config, TlsError, dial}
 use frame.{
     Method,
     Reply,
@@ -23,6 +27,7 @@ use frame.{
     is_target,
 }
 use http.{Header, read_size, every_octet, fields_writable, token_char}
+use wire.{Wire}
 
 /// What a fetch answers: the status, the fields as text, the body
 /// whole.
@@ -41,7 +46,7 @@ fn same_name(a: string, b: string) -> bool {
     octets.ieq_at(0, octets.length, b.bytes())
 }
 
-/// Why a fetch did not answer: the network, a reply the framer
+/// Why a fetch did not answer: the network, TLS, a reply the framer
 /// refuses (with the status the refusal names, as a server would
 /// answer it), the peer closing before a reply, or the deadline.
 export enum ClientError {
@@ -49,6 +54,7 @@ export enum ClientError {
     Refused(why: Refusal)
     Closed
     TimedOut
+    Tls(e: TlsError)
 }
 
 impl Error for ClientError {
@@ -58,17 +64,18 @@ impl Error for ClientError {
             .Refused(why) -> info("http.refused", "the reply breaks a framing law and would earn ${status_of(why)}"),
             .Closed -> info("http.closed", "the peer closed before a reply"),
             .TimedOut -> info("http.timed_out", "no reply within the deadline"),
+            .Tls(e) -> e.describe(),
         }
     }
 
     fn cause() -> dyn Error? {
-        match self { .Net(e) -> e, .Refused(_) or .Closed or .TimedOut -> null }
+        match self { .Net(n) -> n, .Tls(t) -> t, .Refused(_) or .Closed or .TimedOut -> null }
     }
 }
 
 /// A connection with a request in flight.
 export type Client = {
-    conn: Conn,
+    conn: Wire,
     asked: Method,
     buf: Bytes,
     scanned: int,
@@ -82,23 +89,41 @@ fn netted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
     match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
 }
 
+/// A wire result as the client's: a socket's failure wears `.Net`,
+/// as a plain connection's always has, and TLS's own wears `.Tls`.
+fn carried<T>(r: Result<T, TlsError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(.Net(e)) -> .Err(.Net(e)), .Err(e) -> .Err(.Tls(e)) }
+}
+
 /// A client connected to host:port within `timeout`.
 export fn connected(host: string, port: int, timeout: Duration, limits: Limits) -> Result<
     Client,
     ClientError,
 > {
     let c = netted(connect(host, port, timeout))?
-    .Ok(
-        Client {
-            conn: c,
-            asked: .Get,
-            buf: "".bytes(),
-            scanned: 0,
-            reply: null,
-            decoder: null,
-            limits: limits,
-        },
-    )
+    .Ok(client_on(Wire.Plain(c), limits))
+}
+
+/// A client connected to host:port over TLS within `timeout`, the
+/// server verified under `config` as `host`.
+export fn secured(host: string, port: int, timeout: Duration, limits: Limits, config: Config) -> Result<
+    Client,
+    ClientError,
+> {
+    let t = carried(dial(host, port, timeout, config))?
+    .Ok(client_on(Wire.Secure(t), limits))
+}
+
+fn client_on(w: Wire, limits: Limits) -> Client {
+    Client {
+        conn: w,
+        asked: .Get,
+        buf: "".bytes(),
+        scanned: 0,
+        reply: null,
+        decoder: null,
+        limits: limits,
+    }
 }
 
 /// A request on the wire: the line, `host`, the fields, the body's
@@ -142,13 +167,13 @@ impl Client {
         self.asked = asked
         self.reply = null
         self.decoder = null
-        netted(self.conn.write(req))
+        carried(self.conn.write(req))
     }
 
     /// One read, the task parked until bytes arrive: the answer when
     /// the reply is whole, null while it is not.
     mut fn received() -> Result<Answer?, ClientError> {
-        match netted(self.conn.read(read_size()))? {
+        match carried(self.conn.read(read_size()))? {
             b? -> self.grown(b)
             null -> self.ended()
         }
@@ -234,7 +259,7 @@ impl Client {
         )
     }
 
-    fn close() -> Result<int, NetError> { self.conn.close() }
+    fn close() -> Result<int, ClientError> { carried(self.conn.close()) }
 }
 
 /// A net failure that was the deadline passing reads as `.TimedOut`.

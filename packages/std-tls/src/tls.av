@@ -371,9 +371,25 @@ export fn dial(host: string, port: int, timeout: Duration, config: Config) -> Re
 /// server passes "". A failed handshake closes `conn`, after the
 /// engine's alert is offered to the peer.
 export fn handshake(conn: Conn, config: Config, host: string) -> Result<TlsConn, TlsError> {
-    let s = session(config, host)?
+    handshake_after(conn, config, host, "".bytes())
+}
+
+/// `handshake` for a connection whose first bytes were already read —
+/// a server that looked at them before deciding they were TLS. They
+/// are the peer's opening flight, fed before anything else is read.
+export fn handshake_after(conn: Conn, config: Config, host: string, heard: Bytes) -> Result<
+    TlsConn,
+    TlsError,
+> {
+    let s = match session(config, host) {
+        .Ok(made) -> made,
+        .Err(e) -> {
+            let _ = conn.close()
+            fail e
+        },
+    }
     let t = TlsConn { conn: conn, session: s, fd: conn.fd }
-    match t.shaken() {
+    match t.begun(heard) {
         .Ok(_) -> .Ok(t),
         .Err(e) -> {
             let _ = t.abandoned()
@@ -437,6 +453,12 @@ impl TlsConn {
 
     /// The application protocol the handshake agreed, or null.
     fn protocol() -> string? { self.session.protocol() }
+
+    /// The peer's first bytes fed, then the handshake run.
+    fn begun(heard: Bytes) -> Result<int, TlsError> {
+        self.session.fed(heard)?
+        self.shaken()
+    }
 
     /// The handshake stepped until it completes: every flight written,
     /// every reply read.

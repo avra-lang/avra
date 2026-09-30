@@ -1,0 +1,55 @@
+//! wire.av — the TRANSPORT a connection rides: a plain socket, or TLS
+//! over one. Every verb parks where its transport's own verb parks, so
+//! the framer, the router and every handler read one and the same
+//! stream whichever it is — a route's meaning never changes with the
+//! transport.
+//!
+//! A failure is a `TlsError` either way: a plain socket's wears `.Net`,
+//! exactly as TLS's own wire failures do.
+use @std.net.{Conn, NetError}
+use @std.tls.{TlsConn, TlsError}
+
+/// A connection's transport.
+export enum Wire {
+    Plain(c: Conn)
+    Secure(t: TlsConn)
+}
+
+/// A net result as the wire's: the failure wears `.Net`.
+fn plain<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+impl Wire {
+    /// Up to `max` bytes, the task parked until some arrive; null at
+    /// the peer's end.
+    fn read(max: int) -> Result<Bytes?, TlsError> {
+        match self { .Plain(c) -> plain(c.read(max)), .Secure(t) -> t.read(max) }
+    }
+
+    /// All of `bytes`, the task parked while the transport is full.
+    fn write(bytes: Bytes) -> Result<int, TlsError> {
+        match self { .Plain(c) -> plain(c.write(bytes)), .Secure(t) -> t.write(bytes) }
+    }
+
+    /// The write side ended: the peer reads its end after what was
+    /// sent.
+    fn shutdown_write() -> Result<int, TlsError> {
+        match self { .Plain(c) -> plain(c.shutdown_write()), .Secure(t) -> t.shutdown_write() }
+    }
+
+    /// Closed; answers the descriptor.
+    fn close() -> Result<int, TlsError> {
+        match self { .Plain(c) -> plain(c.close()), .Secure(t) -> t.close() }
+    }
+
+    /// The peer as "ip:port", or "" once it is gone.
+    fn peer() -> string {
+        match self { .Plain(c) -> c.peer(), .Secure(t) -> t.peer() }
+    }
+
+    /// The descriptor under the transport.
+    fn fd() -> int {
+        match self { .Plain(c) -> c.fd, .Secure(t) -> t.fd }
+    }
+}
