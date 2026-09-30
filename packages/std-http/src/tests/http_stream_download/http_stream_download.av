@@ -1,0 +1,65 @@
+//! proves: a gigabyte streams out in bounded memory — the connection
+//! pulls one 64 KB piece at a time, writes it, and only then asks for
+//! the next, so the producer and the peer move in step and nothing
+//! gathers; the client counts every octet as it lands
+use @std.net.{NetError, listen, connect}
+use @std.time.{secs, within}
+use @std.http.frame.{limits}
+use @std.http.http.{Response, Stream, Pulled}
+use @std.http.server.{served, timing}
+
+type App = {}
+
+/// How many pieces, and how large each: a gigabyte.
+fn pieces() -> int { 16384 }
+fn piece_size() -> int { 65536 }
+
+/// The one piece every pull answers — laid out once, never copied.
+once fn piece() -> Bytes { [120 for _i in 0..piece_size()].bytes()! }
+
+/// A gigabyte, measured: `pieces()` pulls of the one piece, then the end.
+fn gigabyte(pulled: Cell<int>) -> Stream {
+    Stream { pull: () -> next_piece(pulled), length: pieces() * piece_size() }
+}
+
+fn next_piece(pulled: Cell<int>) -> Pulled {
+    if pulled.get() == pieces() { return .End }
+    pulled.set(pulled.get() + 1)
+    .Data(piece())
+}
+
+/// Every octet after the head, counted as it arrives, never kept.
+fn downloaded(port: int) -> Result<int, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c.write("GET /big HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
+    mut head = "".bytes()
+    mut body = -1
+    mut total = 0
+    while body < 0 || total < body {
+        let got? = within secs(20) { c.read(1048576) }? else { return .Ok(total) }
+        if body < 0 {
+            head = head.concat(got)
+            let end = head.index_of("\r\n\r\n".bytes(), 0)
+            if end >= 0 {
+                body = pieces() * piece_size()
+                total = head.length - end - 4
+            }
+        } else {
+            total = total + got.length
+        }
+    }
+    let _ = c.close()
+    .Ok(total)
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let pulled = Cell.new(0)
+    let s = served(l, () -> App {}, limits(), timing()) { _app, _q -> Response { stream: gigabyte(pulled) } }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let n = downloaded(l.port)?
+    .Ok("downloaded ${n} octets in ${pulled.get()} pulls")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
