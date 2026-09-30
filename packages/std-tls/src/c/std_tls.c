@@ -30,6 +30,7 @@ enum {
     TLS_ERR_PAIR = -0x10009,   /* a key that is not its certificate's */
     TLS_ERR_BUSY = -0x1000a,   /* a config freed under a live session */
     TLS_ERR_NAMELESS = -0x1000b, /* a verifying client naming no host */
+    TLS_ERR_PROTOCOL = -0x1000c, /* an ALPN name empty, too long, holding a NUL, or one too many */
 };
 
 /* Fed ciphertext is bounded: a peer that sends faster than records are
@@ -115,6 +116,20 @@ typedef struct Identity {
     struct Identity* next;
 } Identity;
 
+/* ALPN names in preference order, NULL-terminated as mbedTLS reads
+   them. */
+enum { TLS_PROTOCOLS = 8 };
+
+/* A client remembers the last session each host granted, so its next
+   connection there resumes; the oldest is forgotten first. */
+enum { TLS_REMEMBERED = 32, TLS_HOST_MAX = 255 };
+
+typedef struct {
+    char host[TLS_HOST_MAX + 1];
+    mbedtls_ssl_session session;
+    int held;
+} Remembered;
+
 typedef struct {
     mbedtls_ssl_config conf;
     mbedtls_x509_crt roots;
@@ -123,6 +138,11 @@ typedef struct {
     int server;
     int verifies;
     int64_t sessions;
+    char* protocols[TLS_PROTOCOLS + 1];
+    int nprotocols;
+    Remembered remembered[TLS_REMEMBERED];
+    int next_remembered;
+    int64_t resumed;
 } Config;
 
 static Table g_configs;
@@ -170,6 +190,53 @@ static int sni_chosen(void* ctx, mbedtls_ssl_context* ssl, const unsigned char* 
     return 0;
 }
 
+/* ── Resumption ──────────────────────────────────────────────────
+   A server issues tickets and counts the ones it accepts back; a
+   client keeps the last session per host and offers it next time.  */
+
+static int ticket_written(void* ctx, const mbedtls_ssl_session* session, unsigned char* start,
+                          const unsigned char* end, size_t* len, uint32_t* lifetime) {
+    Config* c = ctx;
+    return mbedtls_ssl_ticket_write(&c->tickets, session, start, end, len, lifetime);
+}
+
+static int ticket_parsed(void* ctx, mbedtls_ssl_session* session, unsigned char* buf, size_t len) {
+    Config* c = ctx;
+    int rc = mbedtls_ssl_ticket_parse(&c->tickets, session, buf, len);
+    if (!rc) c->resumed++;
+    return rc;
+}
+
+static Remembered* remembered_for(Config* c, const char* host) {
+    for (int i = 0; i < TLS_REMEMBERED; i++) {
+        if (c->remembered[i].held && !strcmp(c->remembered[i].host, host)) return &c->remembered[i];
+    }
+    return NULL;
+}
+
+static void remember(Config* c, const mbedtls_ssl_context* ssl, const char* host) {
+    Remembered* r = remembered_for(c, host);
+    if (!r) {
+        r = &c->remembered[c->next_remembered];
+        c->next_remembered = (c->next_remembered + 1) % TLS_REMEMBERED;
+    }
+    if (r->held) mbedtls_ssl_session_free(&r->session);
+    mbedtls_ssl_session_init(&r->session);
+    r->held = !mbedtls_ssl_get_session(ssl, &r->session);
+    if (r->held) {
+        strncpy(r->host, host, TLS_HOST_MAX);
+    } else {
+        mbedtls_ssl_session_free(&r->session);
+    }
+}
+
+static void forgotten(Config* c) {
+    for (int i = 0; i < TLS_REMEMBERED; i++) {
+        if (c->remembered[i].held) mbedtls_ssl_session_free(&c->remembered[i].session);
+    }
+    for (int i = 0; i < c->nprotocols; i++) free(c->protocols[i]);
+}
+
 static int crypto_started(void) {
     static int started;
     if (!started) started = psa_crypto_init() == PSA_SUCCESS;
@@ -198,7 +265,7 @@ int64_t avra_tls_config(int64_t server) {
     if (!rc && c->server) {
         mbedtls_ssl_conf_sni(&c->conf, sni_chosen, c);
         rc = mbedtls_ssl_ticket_setup(&c->tickets, PSA_ALG_GCM, PSA_KEY_TYPE_AES, 256, 86400);
-        if (!rc) mbedtls_ssl_conf_session_tickets_cb(&c->conf, mbedtls_ssl_ticket_write, mbedtls_ssl_ticket_parse, &c->tickets);
+        if (!rc) mbedtls_ssl_conf_session_tickets_cb(&c->conf, ticket_written, ticket_parsed, c);
     }
     int64_t h = rc ? rc : handle_of(&g_configs, c);
     if (h < 0) {
@@ -284,6 +351,27 @@ int64_t avra_tls_config_verify(int64_t cfg, int64_t required) {
     return cfg;
 }
 
+/* An application protocol offered (a client) or accepted (a server),
+   after those already named — a server picks by its own order. A name
+   is 1 to 255 bytes with no NUL; eight at most. */
+int64_t avra_tls_config_protocol(int64_t cfg, const unsigned char* name, int64_t n) {
+    Config* c = held(&g_configs, cfg);
+    if (!c) return TLS_ERR_HANDLE;
+    if (n < 1 || n > 255 || memchr(name, 0, (size_t)n) || c->nprotocols == TLS_PROTOCOLS) return TLS_ERR_PROTOCOL;
+    char* copy = (char*)terminated(name, n);
+    if (!copy) return TLS_ERR_MEMORY;
+    c->protocols[c->nprotocols++] = copy;
+    c->protocols[c->nprotocols] = NULL;
+    int rc = mbedtls_ssl_conf_alpn_protocols(&c->conf, (const char**)c->protocols);
+    return rc ? rc : c->nprotocols;
+}
+
+/* How many sessions a server has resumed from its tickets. */
+int64_t avra_tls_config_resumed(int64_t cfg) {
+    Config* c = held(&g_configs, cfg);
+    return c ? c->resumed : TLS_ERR_HANDLE;
+}
+
 int64_t avra_tls_config_free(int64_t cfg) {
     Config* c = held(&g_configs, cfg);
     if (!c) return TLS_ERR_HANDLE;
@@ -296,6 +384,7 @@ int64_t avra_tls_config_free(int64_t cfg) {
         free(id);
         id = next;
     }
+    forgotten(c);
     mbedtls_ssl_ticket_free(&c->tickets);
     mbedtls_x509_crt_free(&c->roots);
     mbedtls_ssl_config_free(&c->conf);
@@ -311,6 +400,7 @@ int64_t avra_tls_config_free(int64_t cfg) {
 typedef struct {
     mbedtls_ssl_context ssl;
     Config* config;
+    char host[TLS_HOST_MAX + 1];
     Run in, out;
     unsigned char plain[TLS_PLAIN_CAP];
 } Session;
@@ -351,6 +441,11 @@ int64_t avra_tls_session(int64_t cfg, const unsigned char* host, int64_t n) {
     mbedtls_ssl_init(&s->ssl);
     int rc = mbedtls_ssl_setup(&s->ssl, &c->conf);
     if (!rc && !c->server && n) rc = mbedtls_ssl_set_hostname(&s->ssl, name);
+    if (!rc && !c->server && n) {
+        strncpy(s->host, name, TLS_HOST_MAX);
+        Remembered* r = remembered_for(c, s->host);
+        if (r) (void)mbedtls_ssl_set_session(&s->ssl, &r->session);
+    }
     free(name);
     int64_t h = rc ? rc : handle_of(&g_sessions, s);
     if (h < 0) {
@@ -380,8 +475,11 @@ int64_t avra_tls_feed(int64_t ses, const unsigned char* b, int64_t from, int64_t
    caller only when the fed ciphertext is spent or holds no whole
    record. */
 static int progressed(Session* s, size_t before, int rc) {
-    return rc == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ||
-           (rc == MBEDTLS_ERR_SSL_WANT_READ && s->in.len < before);
+    if (rc == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+        if (s->host[0]) remember(s->config, &s->ssl, s->host);
+        return 1;
+    }
+    return rc == MBEDTLS_ERR_SSL_WANT_READ && s->in.len < before;
 }
 
 /* One handshake step: 0 once it is complete, else a negative code —
@@ -395,6 +493,9 @@ int64_t avra_tls_handshake(int64_t ses) {
         before = s->in.len;
         rc = mbedtls_ssl_handshake(&s->ssl);
     } while (progressed(s, before, rc));
+    if (!rc && s->host[0] && mbedtls_ssl_get_version_number(&s->ssl) == MBEDTLS_SSL_VERSION_TLS1_2) {
+        remember(s->config, &s->ssl, s->host);
+    }
     return rc;
 }
 
@@ -465,6 +566,20 @@ int64_t avra_tls_version(int64_t ses) {
     return mbedtls_ssl_is_handshake_over(&s->ssl) ? (int64_t)mbedtls_ssl_get_version_number(&s->ssl) : 0;
 }
 
+/* The application protocol the handshake settled: its length, then
+   where its name is; 0 when none was agreed. */
+int64_t avra_tls_protocol(int64_t ses) {
+    Session* s = held(&g_sessions, ses);
+    if (!s) return TLS_ERR_HANDLE;
+    const char* p = mbedtls_ssl_get_alpn_protocol(&s->ssl);
+    return p ? (int64_t)strlen(p) : 0;
+}
+
+const char* avra_tls_protocol_at(int64_t ses) {
+    Session* s = held(&g_sessions, ses);
+    return s ? mbedtls_ssl_get_alpn_protocol(&s->ssl) : NULL;
+}
+
 int64_t avra_tls_end(int64_t ses) {
     Session* s = held(&g_sessions, ses);
     if (!s) return TLS_ERR_HANDLE;
@@ -504,6 +619,7 @@ int64_t avra_tls_words(int64_t code) {
     case TLS_ERR_PAIR: ours = "a private key that is not its certificate's"; break;
     case TLS_ERR_BUSY: ours = "a config still serving sessions — end them first"; break;
     case TLS_ERR_NAMELESS: ours = "a verifying client names the host it expects"; break;
+    case TLS_ERR_PROTOCOL: ours = "an ALPN name is 1 to 255 bytes with no NUL, eight at most"; break;
     }
     if (ours) {
         strncpy(g_words, ours, sizeof g_words - 1);

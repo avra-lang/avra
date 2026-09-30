@@ -33,6 +33,8 @@ extern fn avra_tls_config_roots(cfg: int, pem: Bytes, n: int) -> int
 extern fn avra_tls_config_identity(cfg: int, chain: Bytes, chain_n: int, key: Bytes, key_n: int) -> int
 extern fn avra_tls_config_verify(cfg: int, required: int) -> int
 extern fn avra_tls_config_free(cfg: int) -> int
+extern fn avra_tls_config_protocol(cfg: int, name: Bytes, n: int) -> int
+extern fn avra_tls_config_resumed(cfg: int) -> int
 extern fn avra_tls_session(cfg: int, host: Bytes, n: int) -> int
 extern fn avra_tls_feed(ses: int, b: Bytes, from: int, n: int) -> int
 extern fn avra_tls_handshake(ses: int) -> int
@@ -44,6 +46,8 @@ extern fn avra_tls_receive(ses: int, max: int) -> int
 extern fn avra_tls_received_at(ses: int) -> ptr?
 extern fn avra_tls_close_notify(ses: int) -> int
 extern fn avra_tls_version(ses: int) -> int
+extern fn avra_tls_protocol(ses: int) -> int
+extern fn avra_tls_protocol_at(ses: int) -> ptr?
 extern fn avra_tls_end(ses: int) -> int
 extern fn avra_tls_want_read() -> int
 extern fn avra_tls_unverified() -> int
@@ -127,7 +131,8 @@ export type Config = { handle: int, side: Side }
 
 /// A client config verifying its peers against the system's trust
 /// anchors: the bundle `SSL_CERT_FILE` names, else the first of the
-/// platform's usual bundles that exists.
+/// platform's usual bundles that exists. A client remembers the last
+/// session each host granted, and its next connection there resumes.
 export fn client() -> Result<Config, TlsError> {
     let path? = roots_path() else {
         fail TlsError
@@ -219,6 +224,22 @@ impl Config {
         self
     }
 
+    /// Application protocols, most preferred first: offered by a
+    /// client, accepted by a server, which picks by its own order
+    /// (`["h2", "http/1.1"]`). A peer offering none of a server's is
+    /// refused.
+    fn offering(protocols: List<string>) -> Result<Config, TlsError> {
+        for p in protocols {
+            let name = p.bytes()
+            counted(avra_tls_config_protocol(self.handle, name, name.length), "protocol", p)?
+        }
+        self
+    }
+
+    /// How many connections a server has resumed from the tickets it
+    /// issued, skipping the certificate and its signature.
+    fn resumed() -> int { avra_tls_config_resumed(self.handle) }
+
     /// The config's handle returned to the engine — refused while a
     /// session made from it has not ended.
     fn free() -> Result<int, TlsError> {
@@ -304,6 +325,13 @@ impl Session {
     /// The protocol settled: 0x0303 for TLS 1.2, 0x0304 for 1.3, 0
     /// before the handshake settles it or once the session has ended.
     fn version() -> int { avra_tls_version(self.handle) }
+
+    /// The application protocol agreed, or null when none was.
+    fn protocol() -> string? {
+        let n = avra_tls_protocol(self.handle)
+        if n <= 0 { return null }
+        adopted(avra_tls_protocol_at(self.handle), n).text()
+    }
 
     /// The engine's state returned; answers the handle.
     fn end() -> Result<int, TlsError> {
@@ -406,6 +434,9 @@ impl TlsConn {
     /// The protocol the handshake settled: 0x0303 for TLS 1.2, 0x0304
     /// for 1.3, 0 once closed.
     fn version() -> int { self.session.version() }
+
+    /// The application protocol the handshake agreed, or null.
+    fn protocol() -> string? { self.session.protocol() }
 
     /// The handshake stepped until it completes: every flight written,
     /// every reply read.
