@@ -30,6 +30,20 @@ ulimit -n 30000 2> /dev/null || { echo "soak-http: cannot raise the descriptor l
 build/avra build packages/std-http/soak > "$out/build.log" 2>&1 || { tail -20 "$out/build.log"; exit 1; }
 : > "$out/samples"
 
+# Every process this driver starts dies with it, on any exit: a server
+# outliving its driver escapes every memory cap the driver ran under.
+server= sampler= load=
+reaped() {
+    touch "$out/stop"
+    for p in $load $sampler; do kill "$p" 2> /dev/null; done
+    [ -n "$server" ] || return 0
+    pkill -P "$server" 2> /dev/null
+    kill "$server" 2> /dev/null
+}
+trap reaped EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 AVRA_MEM_STATS=1 SOAK_SECS=$((secs + 60)) SOAK_PORT="$port" "$bin" > "$out/server.log" 2>&1 &
 server=$!
 tries=0
@@ -40,7 +54,8 @@ until curl -s -o /dev/null "http://127.0.0.1:$port/up"; do
 done
 
 procs() { echo "$server"; pgrep -P "$server"; }
-fds() { t=0; for p in $(procs); do t=$((t + $(lsof -p "$p" 2> /dev/null | wc -l))); done; echo "$t"; }
+open_fds() { if [ -d "/proc/$1/fd" ]; then ls "/proc/$1/fd" 2> /dev/null | wc -l; else lsof -p "$1" 2> /dev/null | wc -l; fi; }
+fds() { t=0; for p in $(procs); do t=$((t + $(open_fds "$p"))); done; echo "$t"; }
 rss() { t=0; for p in $(procs); do t=$((t + $(ps -o rss= -p "$p" 2> /dev/null || echo 0))); done; echo "$t"; }
 
 fd_before=$(fds)
@@ -62,7 +77,7 @@ wait "$server"
 wait "$sampler"
 
 ok=0
-echo "soak-http: $conns connections for ${secs}s on every core, $(sysctl -n hw.ncpu) here"
+echo "soak-http: $conns connections for ${secs}s on every core, $(getconf _NPROCESSORS_ONLN) here"
 grep -E 'Success rate|Requests/sec|99.00% in|Total:' "$out/oha.txt" | sed 's/^ */  /'
 total=$(awk -F'[][]' '/\[200\]/ {print $0}' "$out/oha.txt" | grep -o '[0-9]* responses' | head -1)
 [ -n "$total" ] && echo "  answered: $total"

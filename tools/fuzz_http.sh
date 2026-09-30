@@ -26,6 +26,12 @@ mkdir -p "$out" "$out/rows-corpus" "$dir/crashes" "$dir/rows-crashes"
 found=0
 kept_n=0
 
+# A bounded child and its watchdog die with this driver, on any exit.
+pid= dog=
+trap 'for p in $pid $dog; do kill -9 "$p" 2> /dev/null; done' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # A command under a wall-clock bound; a kill answers 137.
 bounded() {
     lim="$1"; log="$2"; shift 2
