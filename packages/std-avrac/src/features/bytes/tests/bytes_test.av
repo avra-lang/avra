@@ -188,6 +188,24 @@ spec "features/bytes" {
             )
         }
     }
+    given "a text literal as a pattern over octets" {
+        then "it compares its own UTF-8 octets, the empty text and a non-ASCII one included" {
+            shown(
+                "fn named(r: Bytes) -> string {\n    match r {\n        \"k-1\" -> \"one\"\n        \"\" -> \"empty\"\n        \"é\" -> \"accent\"\n        _ -> \"other\"\n    }\n}\n[named(\"k-1\".bytes()), named(\"\".bytes()), named(\"é\".bytes()), named([107, 45, 49, 0].bytes()!)].join(\" \")",
+            ) == "one empty accent other"
+        }
+        then "it stands beside a format arm over the same octets" {
+            shown(
+                "fn named(r: Bytes) -> string {\n    match r {\n        \"k-1\" -> \"one\"\n        \"k-{n: int}\" -> \"k \${n}\"\n        _ -> \"other\"\n    }\n}\nnamed(\"k-7\".bytes())",
+            ) == "k 7"
+        }
+        then "a nullable subject still refuses it, as a nullable string does" {
+            refused_with(
+                "fn f(r: Bytes?) -> int {\n    match r {\n        \"a\" -> 1\n        _ -> 0\n    }\n}\nf(null)",
+                "never matches `Bytes?`",
+            )
+        }
+    }
     given "scans" {
         then "run ends at the first byte the table refuses" {
             shown(

@@ -205,8 +205,16 @@ fn lit_types(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<Type
     let got = cx.walk_type(v)
     let seen = cx.seen(expected)
     if cx.view.types.shape_of(got) is .Null && cx.view.types.shape_of(seen) is .Opt { return [] }
+    if octets_of_text(cx, got, seen) { return [] }
     if cx.types_disagree(got, seen) { literal_mismatch(cx, p, got, expected) }
     []
+}
+
+/// A TEXT LITERAL READ AS OCTETS: over a `Bytes` subject a string
+/// pattern compares its own UTF-8 octets, as a holed format already
+/// cuts them — a literal has no type until a want lands on it.
+fn octets_of_text(cx: TypeCx, got: TypeId, seen: TypeId) -> bool {
+    cx.view.types.shape_of(got) is .Str && cx.view.types.shape_of(seen) is .Bytes
 }
 
 /// THE COVERAGE LAW: arms are tried in order, so the subject is
