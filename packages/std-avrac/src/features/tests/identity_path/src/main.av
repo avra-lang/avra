@@ -1,0 +1,41 @@
+// proves: a copy of an `@identity` shares its cells, so a write
+// through a cell reaches every holder; but replacing a SLOT of one is
+// a write to its box, so a write through a `mut` local's path opens
+// it and the other holders keep the slot they had. A plain field
+// reached through an identity is opened the same way.
+use @std.meta.{identity, plain_field}
+
+@identity
+type T = { rows: Cell<List<int>> }
+impl T {
+    fn add(v: int) { self.rows.push(v) }
+    fn reset() {
+        let none: List<int> = []
+        self.rows = Cell.new(none)
+    }
+    fn count() -> int { self.rows.get().length }
+}
+fn grow(t: T, v: int) { t.rows.push(v) }
+
+@identity
+@plain_field("log")
+type P = { rows: Cell<List<int>>, log: List<int> }
+impl P { fn note(v: int) { self.log.push(v) } }
+
+type H = { t: T, p: P, xs: List<int> }
+type B = { h: H }
+
+let seed: List<int> = []
+let t = T { rows: Cell.new(seed) }
+let p = P { rows: Cell.new(seed), log: [] }
+mut b = B { h: H { t: t, p: p, xs: [] } }
+let keep = b
+b.h.t.add(1)
+grow(b.h.t, 2)
+let shared = "${b.h.t.count()} ${keep.h.t.count()} ${t.count()}"
+b.h.t.reset()
+b.h.t.add(3)
+b.h.xs.push(4)
+b.h.p.note(5)
+b.h.p.log.push(6)
+"${shared} ${b.h.t.count()} ${keep.h.t.count()} ${t.count()} ${b.h.xs.length} ${keep.h.xs.length} ${b.h.p.log.length} ${keep.h.p.log.length} ${p.log.length}"

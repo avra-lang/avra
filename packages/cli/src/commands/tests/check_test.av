@@ -6,12 +6,18 @@
 //! is the fix: the same choice `file_workspace` already makes, for a
 //! directory taken as the root itself rather than a file under it.
 use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
 use commands.{checked_at}
+
+/// One directory per run, so no earlier run's cache answers for this one.
+once fn check_nothing_base() -> string { "/tmp/avra-check-nothing-test/${now_ns()}" }
+
+fn dir_named(name: string) -> string { "${check_nothing_base()}/${name}" }
 
 /// A package root of one bare manifest, no `src/` — the shape this repo's
 /// own root carries, and the shape that read clean before this fix.
 fn rootless_root(name: string) -> string {
-    let root = "/tmp/avra-check-nothing-test/${name}"
+    let root = dir_named(name)
     let _ = make_dirs(root)
     let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
     root
@@ -54,7 +60,7 @@ spec "commands/check root_workspace" {
     }
     given "a src-less root with no program files AND a broken manifest" {
         then "the manifest's own refusal speaks — never shadowed by the more generic manifest.no_source" {
-            let root = "/tmp/avra-check-nothing-test/broken-manifest"
+            let root = dir_named("broken-manifest")
             let _ = make_dirs(root)
             let _ = write_text("${root}/avra.toml", "this is not toml [[[\n")
             let report = report_of(root)
@@ -63,7 +69,7 @@ spec "commands/check root_workspace" {
     }
     given "a root with a real src/ — the sibling branch this fix does not touch" {
         then "the ordinary package path runs, untouched" {
-            let root = "/tmp/avra-check-nothing-test/has-src"
+            let root = dir_named("has-src")
             let _ = make_dirs("${root}/src")
             let _ = write_text(
                 "${root}/avra.toml",

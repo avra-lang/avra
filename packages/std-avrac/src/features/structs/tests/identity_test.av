@@ -10,7 +10,8 @@
 // A PLAIN field is licensed by `@plain_field("name")` beside
 // `@identity`, read off the record's own declaration and nothing
 // else — no type name licenses anything.
-use @std.avrac.testing.{provided}
+use @std.avrac.testing.{provided, said}
+use @std.avrac.compiler.{Program}
 
 fn checked(main: string) -> string {
     provided("use @std.meta.{identity}\n" + main, "").report()
@@ -19,6 +20,12 @@ fn checked(main: string) -> string {
 fn checked_plain(main: string) -> string {
     provided("use @std.meta.{identity, plain_field}\n" + main, "").report()
 }
+
+/// Whether the program spoke `type.alias_copy` — a `mut` local's
+/// path was opened.
+fn copies(p: Program) -> bool { said(p).any(it.kind == "type.alias_copy") }
+
+fn opened(main: string) -> bool { copies(provided("use @std.meta.{identity, plain_field}\n" + main, "")) }
 
 spec "features/structs (identity)" {
     given "a type marked `@identity`, resolved to `@std/meta`'s own" {
@@ -77,6 +84,28 @@ spec "features/structs (identity)" {
         then "a type named `Workspace` with an unmarked plain `host` is refused" {
             checked("@identity\ntype Workspace = { a: Cell<int>, host: int }\n1")
                 .contains("field `host` is `int`")
+        }
+    }
+    given "a write through a `mut` local's path to an `@identity`" {
+        then "replacing a slot of an all-`Cell` identity opens it — a copy does not share its slots" {
+            opened(
+                "@identity\ntype T = { rows: Cell<List<int>> }\nimpl T {\n    fn reset() {\n        let none: List<int> = []\n        self.rows = Cell.new(none)\n    }\n}\ntype H = { t: T }\nlet seed: List<int> = []\nmut h = H { t: T { rows: Cell.new(seed) } }\nh.t.reset()\n1",
+            )
+        }
+        then "an `@identity` holding a plain field is opened" {
+            opened(
+                "@identity\n@plain_field(\"log\")\ntype T = { rows: Cell<List<int>>, log: List<int> }\nimpl T { fn note(v: int) { self.log.push(v) } }\ntype H = { t: T }\nlet seed: List<int> = []\nmut h = H { t: T { rows: Cell.new(seed), log: [] } }\nh.t.note(1)\n1",
+            )
+        }
+        then "an `@identity` nesting one that holds a plain field is opened" {
+            opened(
+                "@identity\n@plain_field(\"log\")\ntype In = { rows: Cell<List<int>>, log: List<int> }\nimpl In { fn note(v: int) { self.log.push(v) } }\n@identity\ntype Out = { i: In }\nimpl Out { fn poke() { self.i.note(1) } }\ntype H = { o: Out }\nlet seed: List<int> = []\nmut h = H { o: Out { i: In { rows: Cell.new(seed), log: [] } } }\nh.o.poke()\n1",
+            )
+        }
+        then "a write through a cell alone opens nothing" {
+            !opened(
+                "@identity\ntype T = { rows: Cell<List<int>> }\nimpl T { fn add(v: int) { self.rows.push(v) } }\ntype H = { t: T }\nlet seed: List<int> = []\nmut h = H { t: T { rows: Cell.new(seed) } }\nh.t.add(1)\n1",
+            )
         }
     }
 }

@@ -72,7 +72,7 @@ impl Workspace {
     /// nothing to read.
     fn audit_exempt(r: Bypassed) -> bool {
         match r {
-            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> self.decls.is_builtin(d) || !self.audit_known(self.decls.decls.get()[d.index].file),
+            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> self.decls.is_builtin(d) || !self.audit_known(self.decls.raw_decl(d).file),
             .Store(f) -> !self.audit_known(f),
         }
     }
@@ -86,7 +86,7 @@ impl Workspace {
     /// file's parse; and what a whole-program pass computes of that pass.
     fn audit_covers(r: Bypassed) -> List<Key> {
         match r {
-            .Decl(d) or .Facts(d) -> self.file_covers(self.decls.decls.get()[d.index].file, true),
+            .Decl(d) or .Facts(d) -> self.file_covers(self.decls.raw_decl(d).file, true),
             .SigSoFar(d) -> [key(Family.Sig, d.index)],
             .Methods(d) -> [key(Family.Methods, d.index)],
             .Store(f) -> self.file_covers(f, false),
@@ -113,12 +113,12 @@ impl Workspace {
     /// The read as the report says it: the verb, the file it read in, the declaration.
     fn audit_note(r: Bypassed) -> string {
         match r {
-            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> "${bypass_word(r)}\t${self.decl_home(d)}\t${self.decls.decls.get()[d.index].name}",
+            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> "${bypass_word(r)}\t${self.decl_home(d)}\t${self.decls.raw_decl(d).name}",
             .Store(f) -> "${bypass_word(r)}\t${self.decls.file(f).path}\t-",
         }
     }
 
-    fn decl_home(d: DeclId) -> string { self.decls.file(self.decls.decls.get()[d.index].file).path }
+    fn decl_home(d: DeclId) -> string { self.decls.file(self.decls.raw_decl(d).file).path }
 
     /// A read nothing covered, counted under its verb, its scope and the queries it
     /// was made inside.

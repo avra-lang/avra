@@ -1,13 +1,15 @@
-// S6 STEP (a)'s PARITY KEEPER: `DeclRow` carries the real shape. Every written
-// declaration's shadow row agrees with the hand table on every field the shadow does
-// not mark `@local` — name, kind, exported, owner, nested. The `@local` fields (file,
-// stmt, parent, root, lo, hi) are snapshotted at FIRST MINT and are not asserted equal
-// to the table's current values: `range_bodies` and `adopt` move lo/hi/parent after
-// mint, and a `@local` column carries no cross-process meaning by design (decl_rows.av)
-// — a shadow inserted once, keyless, was never going to track them.
-use core.{DeclId}
+// M5 S2's PARITY KEEPER: `Decl` is the declaration table's real storage now —
+// `Decls.decl(d)` reads through it — and the hand table (`Decls.decls`) is kept
+// written beside it, for this keeper alone and for ERRORS to delete in .8.2. Every
+// written declaration's row agrees with the hand table on every field: the STABLE
+// ones (name, kind, exported, owner, nested) and the `@local` ones a write reseats
+// through `set_decl` (file, stmt, parent, root, lo, hi) — a `@local` column carries
+// no cross-process meaning (decl_rows.av), but within THIS process `decl(d)` answers
+// from the row alone, so a write that moved one and forgot to reseat it would read
+// back stale forever.
+use core.{DeclId, ExprId, DeclKind, no_stmt, same_file, same_stmt, same_decl, same_expr}
 use compiler.{Workspace}
-use features.{DeclRow, kind_word}
+use features.{Decl, Decls, new_decls, kind_word}
 
 fn parity_files() -> Map<string, string> {
     {
@@ -15,20 +17,42 @@ fn parity_files() -> Map<string, string> {
     }
 }
 
-/// Every written declaration's stable fields, side by side with its shadow row —
-/// `null` where the shadow has no row at all.
+/// Every written declaration's stable fields, side by side with its row — `null`
+/// where the row is missing outright.
 fn parity_lines(ws: Workspace) -> List<string> {
     [stable_line(ws, d.id) for d in ws.decls.decls.get()]
 }
 
 fn stable_line(ws: Workspace, id: DeclId) -> string {
     let x = ws.decls.decl(id)
-    let row? = DeclRow.get(ws.decls.decl_rows.get(), id) else { return "no-row" }
+    let row? = Decl.get(ws.decls.decl_rows.get(), id) else { return "no-row" }
     "${x.name == row.name} ${kind_word(x.kind) == kind_word(row.kind)} ${x.exported == row.exported} ${x.owner == row.owner} ${x.nested == row.nested}"
 }
 
-spec "compiler/decl_rows — the shadow agrees with the table on every stable field" {
-    then "fixture: the shadow holds a row for every written declaration" {
+/// The `@local` fields, the same way — `decl(d)` answers them from the row, so a
+/// mismatch here is a stale read every later pass would inherit.
+fn local_lines(ws: Workspace) -> List<string> {
+    [local_line(ws, d.id) for d in ws.decls.decls.get()]
+}
+
+fn local_line(ws: Workspace, id: DeclId) -> string {
+    let x = ws.decls.decl(id)
+    let row? = Decl.get(ws.decls.decl_rows.get(), id) else { return "no-row" }
+    "${same_file(x.file, row.file)} ${same_stmt(x.stmt, row.stmt)} ${same_parent(x.parent, row.parent)} ${same_root(x.root, row.root)} ${x.lo == row.lo} ${x.hi == row.hi}"
+}
+
+fn same_parent(a: DeclId?, b: DeclId?) -> bool {
+    let av? = a else { return b == null }
+    b != null && same_decl(av, b!)
+}
+
+fn same_root(a: ExprId?, b: ExprId?) -> bool {
+    let av? = a else { return b == null }
+    b != null && same_expr(av, b!)
+}
+
+spec "compiler/decl_rows — the row is the table's real storage" {
+    then "fixture: every written declaration has a row" {
         let ws = a_process_over(parity_files(), ["/w/src/a.av"], fresh_pack_path("parity_fixture"))
         let _ = checked(ws, "/w/src/a.av")
         !parity_lines(ws).is_empty() && !parity_lines(ws).any(it == "no-row")
@@ -37,5 +61,26 @@ spec "compiler/decl_rows — the shadow agrees with the table on every stable fi
         let ws = a_process_over(parity_files(), ["/w/src/a.av"], fresh_pack_path("parity_agree"))
         let _ = checked(ws, "/w/src/a.av")
         parity_lines(ws).all(it == "true true true true true")
+    }
+    then "every local field agrees too — a write moved it in both tables" {
+        let ws = a_process_over(parity_files(), ["/w/src/a.av"], fresh_pack_path("parity_local"))
+        let _ = checked(ws, "/w/src/a.av")
+        local_lines(ws).all(it == "true true true true true true")
+    }
+}
+
+// THE PINNED HANDLE'S IDENTITY: `Decls.decl_row_rows` is read once at
+// construction and never re-pinned — a declaration a later `mint` inserts
+// must still be visible through that SAME pin, or `decl(d)` would answer
+// for a row that was never there when the pin was taken. Reads through
+// `decl`, the one door every pass uses, proving it directly rather than
+// through the relation's own generated `get`.
+spec "compiler/decl_rows — the pinned Rows<Decl> handle sees a row inserted after Decls was built" {
+    then "a declaration minted after Decls was constructed reads back through the pin" {
+        let d: Decls = new_decls()
+        let f = d.file_id("/w/src/pinned.av", "pinned", false)
+        let id = d
+            .mint("pinned::fn::seed", f, no_stmt, "seed", DeclKind.Fn, true, "", null, false, null)
+        d.decl(id).name == "seed" && d.decl(id).kind is .Fn && d.decl(id).exported
     }
 }

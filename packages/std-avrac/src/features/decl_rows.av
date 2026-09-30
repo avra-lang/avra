@@ -1,25 +1,31 @@
-//! S6, STEP (a): A SHADOW `@relation` OVER `Decl`, inserted beside the real table,
-//! read by nobody yet. `DeclRow` mirrors `Decl`'s own fields (decls.av) so a parity
-//! keeper can prove the derive carries the real shape before anything reads through
-//! it. `id`/`file`/`stmt`/`parent`/`root`/`lo`/`hi` are process-local (`@dense`,
-//! `@local`): a dense id, an offset or an arena index means nothing across processes,
-//! so none of them enters the stable hash. `file` keeps an `@index` so a reader can
-//! ask for a file's rows, the shape the grain law (S1) records against.
+//! `Decl` — the declaration table's relation. Every declaration the compiler
+//! mints is one row here, inserted once at `mint` and reseated by `set_decl`,
+//! read everywhere through `Decls.decl`, never a hand-kept table. The type
+//! stands alone in its file: the relation derive types this file while the
+//! files that use `Decl` are still registering.
 //!
-//! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `File` is a
-//! relation and `file` stops being `@local` (decision 10(a)) — owner: ERRORS. That
-//! tuple, not the interning string, is the row's stable name (townhall doc §6,
-//! "same-(owner, name) siblings only"): the key and the name a witness stores a
-//! dependency under are one derivation, or a second caller gets a wrong answer. No
-//! `sibling` column exists on `Decl` yet — it is an ordinal among same-(owner, name)
-//! declarations, computed, not stored, and the shadow carries none until it does.
-//! `DeclRow` is keyless meanwhile: a rerun replaces the whole set, which is sound for
-//! a shadow inserted by one query (`mint`) and read by nobody.
+//! `id` is `@dense`, so it names a slot in this process alone. `file`, `stmt`,
+//! `parent`, `root`, `lo` and `hi` are process-local (`@dense` ids, arena
+//! indexes, offsets) and `@local`, so none enters the stable hash, and so is
+//! `key`, the process's own interning text. `name`, `word`, `marks` and `key`
+//! are indexed, each index numbered in field order: a lookup reads a bucket,
+//! never a hand-kept table.
+//!
+//! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `file`
+//! stops being `@local` (decision 10(a)) — owner: ERRORS. That tuple, not the
+//! interning string, is the row's stable name (townhall doc §6, "same-(owner,
+//! name) siblings only"); no `sibling` column exists yet — it is an ordinal
+//! among same-(owner, name) declarations, computed, not stored. `Decl` is
+//! keyless meanwhile: `mint` inserts once and `set_decl` reseats by id.
 use core.{DeclId, FileId, StmtId, ExprId, DeclKind}
 use @std.relation.{relation}
 
+/// One declaration: where it lives, what it is, the expression its body IS (a
+/// fn's, a default's; absent for the rest), and the expression range [lo, hi)
+/// that body occupies in its file's arena — a method or a default also names
+/// the type it serves.
 @relation
-export type DeclRow = {
+export type Decl = {
     id: DeclId,
     @local file: FileId,
     @local stmt: StmtId,
@@ -32,4 +38,10 @@ export type DeclRow = {
     @local root: ExprId?,
     @local lo: int,
     @local hi: int,
+    /// The component a declared instance instances; absent for every other kind.
+    @index word: string?,
+    /// Every `@name` the declaration wears, filed once per distinct name.
+    @index marks: List<string>,
+    /// The interning key `mint` files it under — one row per key.
+    @local @index key: string,
 }

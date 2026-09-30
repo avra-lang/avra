@@ -2,7 +2,8 @@
 // real program — a concrete-typed fn that fails, and a `_`-declared
 // fn that catches it and re-raises.
 use @std.avrac.compiler.{avra, new_workspace}
-use compiler.{Workspace, ErrorSite}
+use compiler.{Workspace, ErrorSite, Raised}
+use @std.relation.db.{Db as RelDb, Hooks, hooked_db}
 use compiler.host.{memory_host}
 use core.{DeclId, same_decl, same_expr}
 
@@ -21,7 +22,7 @@ fn sites_workspace(main: string) -> Workspace {
 }
 
 fn decl_named(ws: Workspace, name: string) -> DeclId {
-    [x.id for x in ws.decls.decls.get() if x.name == name][0]
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
 }
 
 fn source() -> string {
@@ -45,14 +46,14 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let a = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        a.clean() && !ErrorSite.all(ws.error_sites_db.get()).is_empty()
+        a.clean() && !ErrorSite.all(ws.failures_db.get()).is_empty()
     }
     then "invariant: a site `within` a catch shares that catch's own owner" {
         let ws = sites_workspace(source())
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let sites = ErrorSite.all(ws.error_sites_db.get())
+        let sites = ErrorSite.all(ws.failures_db.get())
         let catches = [s for s in sites if s.how is .Catch]
         catches
             .all(
@@ -66,7 +67,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let sites = ErrorSite.all(ws.error_sites_db.get())
+        let sites = ErrorSite.all(ws.failures_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
     then "raised_by(b) includes the re-raised string error" {
@@ -80,7 +81,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let catches = [s for s in ErrorSite.all(ws.error_sites_db.get()) if s.how is .Catch]
+        let catches = [s for s in ErrorSite.all(ws.failures_db.get()) if s.how is .Catch]
         let c = catches[0]
         let tree = ws.chain(c, [])
         tree.next.length == 1 && tree.next[0].next.length == 0
@@ -129,7 +130,7 @@ fn nested_source() -> string {
 }
 
 fn outer_catch_of(ws: Workspace, owner: DeclId) -> ErrorSite {
-    let all: List<ErrorSite> = ErrorSite.all(ws.error_sites_db.get())
+    let all: List<ErrorSite> = ErrorSite.all(ws.failures_db.get())
     [s for s in all if s.how is .Catch && same_decl(s.owner, owner) && s.within == null][0]
 }
 
@@ -175,7 +176,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vf)
         let _ = ws.raised_by(vm)
         let _ = ws.raised_by(vn)
-        let sites = ErrorSite.all(ws.error_sites_db.get())
+        let sites = ErrorSite.all(ws.failures_db.get())
         let catches = [s for s in sites if s.how is .Catch]
         catches
             .all(
@@ -193,7 +194,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vf)
         let _ = ws.raised_by(vm)
         let _ = ws.raised_by(vn)
-        let sites = ErrorSite.all(ws.error_sites_db.get())
+        let sites = ErrorSite.all(ws.failures_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
 }
@@ -243,7 +244,7 @@ spec "compiler/failures — two files whose catch sites share one raw ExprId ind
         let two = decl_named(ws, "two")
         let _ = ws.raised_by(one)
         let _ = ws.raised_by(two)
-        let sites = ErrorSite.all(ws.error_sites_db.get())
+        let sites = ErrorSite.all(ws.failures_db.get())
         let catch_one = [s for s in sites if s.how is .Catch && same_decl(s.owner, one)][0]
         let catch_two = [s for s in sites if s.how is .Catch && same_decl(s.owner, two)][0]
         // the collision this test exists to force: same raw index, different files
@@ -255,5 +256,88 @@ spec "compiler/failures — two files whose catch sites share one raw ExprId ind
             same_decl(tree_one.next[0].site.owner, one) &&
             tree_two.next.length == 1 &&
             same_decl(tree_two.next[0].site.owner, two)
+    }
+}
+
+// `Raised` is the fixpoint's own relation: one row per inferring fn,
+// written by the solve alone, the last solve's rows swept by the next.
+fn mutual_source() -> string {
+    "enum A {\n    A\n}\nenum B {\n    B\n}\n" +
+        "fn f(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail A.A\n    }\n    g(n - 1)?\n}\n" +
+        "fn g(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail B.B\n    }\n    f(n - 1)?\n}\n"
+}
+
+spec "compiler/failures — `Raised` rows are the fixpoint's own" {
+    then "one row, for the one inferring fn, holding its re-raised error" {
+        let ws = sites_workspace(source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let b = decl_named(ws, "b")
+        let _ = ws.raised_by(b)
+        let rows = Raised.all(ws.failures_db.get())
+        rows.length == 1 && same_decl(rows[0].owner, b) && rows[0].errors.length == 1
+    }
+    then "a concretely typed fn has no row, and reads empty" {
+        let ws = sites_workspace(source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let a = decl_named(ws, "a")
+        ws.raised_by(a).is_empty() && Raised.by_owner(ws.failures_db.get(), a).is_empty()
+    }
+    then "a mutually recursive pair's rows each hold the closed union" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let g = decl_named(ws, "g")
+        ws.raised_by(f).length == 2 &&
+            ws.raised_by(g).length == 2 &&
+            Raised.all(ws.failures_db.get()).length == 2
+    }
+    then "a second solve replaces the first's rows rather than adding to them" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let g = decl_named(ws, "g")
+        let _ = ws.failures()
+        ws.solve_raised([f, g])
+        ws.solve_raised([f])
+        let rows = Raised.all(ws.failures_db.get())
+        rows.length == 1 && same_decl(rows[0].owner, f) && rows[0].errors.length == 2
+    }
+}
+
+once fn raised_heard() -> Cell<List<string>> { Cell.new([]) }
+
+fn raised_noted(w: string) {
+    let h = raised_heard()
+    h.push(w)
+}
+
+fn raised_quiet() {}
+
+/// A Db that records a refusal instead of trapping, so the ownership
+/// law's own words can be asserted.
+fn noting_db() -> RelDb {
+    hooked_db(
+        Hooks {
+            family: (_verify: fn(int) -> int) -> 0,
+            record: (_fam: int, _cell: int) -> 0,
+            revision: () -> 0 - 1,
+            reader: (token: int) -> "reader ${token}",
+            refused: raised_noted,
+            opened: (_fam: int, _cell: int) -> 0 - 1,
+            settled: (_fam: int, _cell: int) -> raised_quiet(),
+            running: () -> 0 - 1,
+        },
+    )
+}
+
+spec "compiler/failures — `Raised` read inside its owner's own run" {
+    then "is refused, naming `prior(db)`" {
+        let db = noting_db()
+        let owner = db.cell(0, 0)
+        db.began(owner)
+        let _ = Raised.insert(db, owner: DeclId { index: 0 }, errors: [])
+        let _ = Raised.by_owner(db, DeclId { index: 0 })
+        db.ended(owner)
+        raised_heard().get().length == 1 && raised_heard().get()[0].contains("prior(db)")
     }
 }
