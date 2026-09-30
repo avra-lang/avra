@@ -88,15 +88,19 @@ apart (`tool_failed` vs. an ordinary red step):
   contract `land.sh`'s own `tool_failed` already gives a caller reading
   its scratch dir.
 
-A watchdog wraps every remote step: a hard wall-clock timeout (bounded
-by `AVRA_TRAIN_STEP_TIMEOUT`, default generous enough for a cold
-bootstrap) AND a no-progress check (the remote log's mtime must move
-every `AVRA_TRAIN_HEARTBEAT` seconds once the command has started) —
-either one firing kills the remote job, frees the Sprite, and files a
-tool failure for that attempt. A Sprite that fails before printing its
-own start marker (`sprite-build.sh`'s existing convention, `land-linux:
-body started`) was never reached in the first place — same tell
-`linux_gate_step` already uses.
+A watchdog wraps every remote step — land.sh's OWN `watched()`, never
+a second one: a hard wall-clock cap (`AVRA_LAND_TRAIN_CAP_S`, default
+generous enough for a cold bootstrap) AND a no-progress window
+(`AVRA_LAND_TRAIN_QUIET_S`, checked against a heartbeat the candidate
+body itself prints — `land-train: progress N`, `train_progress`'s own
+twin of `linux_gate_step`'s `linux_progress`) — either one firing
+kills the remote job (`kill_tree`) and tells the Sprite to stop that
+run (`stop_remote`), and the candidate retries on another Sprite
+before being filed as a tool failure. A Sprite that fails before
+printing its own start marker (`sprite-build.sh`'s existing
+convention, `land-train: body started`) was never reached in the
+first place — same tell `linux_gate_step` already uses for
+`land-linux: body started`.
 
 ## Which gates run where, and why
 
@@ -228,32 +232,41 @@ assigned pool is that session's; only spares are candidates):
   SPRITES.md's table at all (undocumented, or newly provisioned).
   Both read idle just now (load < 1, ~7 GB free). Worth asking their
   owner directly before the train claims them — an undocumented
-  Sprite may simply be between uses, not spare.
+  Sprite may simply be between uses, not spare. NOT wired into the
+  code at all: `land_pool()` (below) answers only main's own list.
 - `avra-bench` is PERF's, reserved for quiet census runs — a train
   candidate's build would add noise to exactly the measurements that
   Sprite exists to keep clean. Not proposed.
-- Every other listed Sprite (avra-phase-c, avra-sq-ffi, avra-phase-d,
-  avra-cores, avra-dev, avra-reuse, avra-phase-i) is assigned to a
-  live session's own work; the train must not schedule onto them
-  without that session's say-so, load or no load — the failure mode
-  ("no session runs ad-hoc work here") is a policy statement, not a
-  load threshold.
+- Every other listed Sprite (avra-phase-c, avra-sq-ffi, avra-dev,
+  avra-reuse, avra-phase-i) is assigned to a live session's own work;
+  the train must not schedule onto them without that session's
+  say-so, load or no load — the failure mode ("no session runs
+  ad-hoc work here") is a policy statement, not a load threshold.
 
-So: build and prove the train against the CURRENT pool
-(`avra-idioms-pay`, `avra-comptime`), and treat pool growth as a
-config change (`AVRA_LAND_TRAIN_SPRITES`, space-separated, same
-convention `AVRA_LAND_SPRITE` already uses) — not a code change —
-once whoever owns a spare Sprite says it can join.
+RETRACTED IN PART BY THE TIME OF THE REBASE: `avra-phase-d` and
+`avra-cores` are no longer proposals — IDIOMS' own landed work
+(`land_sprite_pool="avra-idioms-pay avra-comptime avra-phase-d
+avra-cores"`, real main) already widened the pool to four while this
+was being built. The train claims no Sprite of its own: `pool_list`
+answers `AVRA_LAND_SPRITE` when set, else `sh land.sh --call
+land_pool` — a one-line accessor for `land_sprite_pool` added beside
+`sprites_by_load`, so growing the pool from here on is a ONE-LINE
+change to that ONE variable in land.sh, read by the Linux gate and
+the train alike, never a second list to keep in sync.
 
-Placement: least-loaded first (load average per core, then free
-memory — `MemAvailable`), read fresh before EVERY dispatch, never
-cached across the train's own run (a Sprite that was idle when
-candidate 1 started may be the one candidate 2 lands on, or may not).
-A Sprite under 512 MB `MemAvailable` is skipped for new work (the task
-brief: 8 cores / ~8 GB, and a cold bootstrap alone has been measured
-elsewhere in this repo's own history spiking well past a naive guess —
-better to queue a candidate behind a busy Sprite than to start a build
-that gets OOM-killed and reads as a false red).
+Placement is main's own `sprites_by_load` — load per core, then free
+memory, unreachable last — never a scheme of this file's own.
+`claim_sprite` re-ranks the pool at most every
+`AVRA_LAND_TRAIN_PROBE_INTERVAL_S` (default 10s) while it waits for a
+lease, a cache added after a real measurement during this rebase (see
+"a real load problem", staged build, below) — the FREENESS check (a
+lease directory) is still read fresh every single iteration, never
+cached, since a Sprite going from free to claimed between two ranking
+refreshes is the exact race the lease exists to close. No explicit
+memory floor of this file's own remains: `sprites_by_load`'s own
+ordering already reads `MemAvailable` and sorts accordingly, and
+duplicating a threshold on top of a ranking that already accounts for
+it would be a second, driftable copy of the same judgment.
 
 ## Expected wall time
 
