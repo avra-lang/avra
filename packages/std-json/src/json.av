@@ -1,12 +1,14 @@
 //! @std.json — JSON as a value. `parse` reads text into a `Json`;
 //! `to_text` writes one back compact, `pretty` with two-space
 //! indents. An object keeps its fields in order — a list of `Field`,
-//! never a map, so what is written reads back the same. Numbers are
-//! integers: the language has no float yet, so a fraction or an
-//! exponent is refused by name rather than rounded. Strings decode
-//! every escape, `\uXXXX` and surrogate pairs included. Every
-//! refusal is a `JsonError` that says where.
-use @std.text.{builder, repeat, from_codepoint, parse_int}
+//! never a map, so what is written reads back the same. A number
+//! spelled as an integer is an `Int`, and one with a fraction or an
+//! exponent is a `Float`; RFC 8259's grammar is the whole door, so a
+//! leading zero, a bare point and a `+` are refused, and a number
+//! past what its kind holds is refused by name rather than rounded to
+//! infinity. Strings decode every escape, `\uXXXX` and surrogate
+//! pairs included. Every refusal is a `JsonError` that says where.
+use @std.text.{builder, repeat, from_codepoint, parse_int, parse_float}
 use @std.errors.{Error, ErrorInfo, info}
 
 // ── The value ───────────────────────────────────────────────────
@@ -17,6 +19,7 @@ export enum Json {
     Null
     Bool(truth: bool)
     Int(n: int)
+    Float(x: float)
     Str(s: string)
     Arr(items: List<Json>)
     Obj(fields: List<Field>)
@@ -60,6 +63,11 @@ impl Json {
         match self { .Int(n) -> n, rest -> null }
     }
 
+    /// A number spelled with a fraction or an exponent.
+    fn float() -> float? {
+        match self { .Float(x) -> x, rest -> null }
+    }
+
     fn truth() -> bool? {
         match self { .Bool(b) -> b, rest -> null }
     }
@@ -91,10 +99,18 @@ export fn to_text(j: Json) -> string {
         .Null -> "null",
         .Bool(b) -> if b { "true" } else { "false" },
         .Int(n) -> "${n}",
+        .Float(x) -> float_text(x),
         .Str(s) -> quoted(s),
         .Arr(items) -> "[${[to_text(x) for x in items].join(",")}]",
         .Obj(fields) -> "{${[compact_field(f) for f in fields].join(",")}}",
     }
+}
+
+/// A float as JSON spells it: the shortest text that reads back as
+/// the same float, a `.0` kept so it reads back a `Float`. JSON has
+/// no spelling for infinity or NaN, so those write `null`.
+fn float_text(x: float) -> string {
+    if x - x == 0.0 { "${x}" } else { "null" }
 }
 
 fn compact_field(f: Field) -> string {
@@ -115,7 +131,7 @@ fn indented(j: Json, depth: int) -> string {
     match j {
         .Arr(items) -> block("[", "]", [indented(x, depth + 1) for x in items], depth),
         .Obj(fields) -> block("{", "}", [pretty_field(f, depth + 1) for f in fields], depth),
-        .Null or .Bool(_) or .Int(_) or .Str(_) -> to_text(j),
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> to_text(j),
     }
 }
 
@@ -167,9 +183,10 @@ export enum JsonError {
     Unexpected(at: int, found: string)
     Unterminated(at: int)
     BadEscape(at: int)
-    Fraction(at: int)
+    LeadingZero(at: int)
     Trailing(at: int)
     Overflow(at: int)
+    PastFloat(at: int)
 }
 
 impl Error for JsonError {
@@ -178,12 +195,10 @@ impl Error for JsonError {
             .Unexpected(at, found) -> info("json.unexpected", "unexpected ${found} at byte ${at}"),
             .Unterminated(at) -> info("json.unterminated", "the string opened at byte ${at} never closes"),
             .BadEscape(at) -> info("json.bad_escape", "the escape at byte ${at} names nothing"),
-            .Fraction(at) -> info(
-                "json.fraction",
-                "the number at byte ${at} has a fraction or exponent — numbers are integers here",
-            ),
+            .LeadingZero(at) -> info("json.leading_zero", "the number at byte ${at} has a leading zero"),
             .Trailing(at) -> info("json.trailing", "text goes on past the value, at byte ${at}"),
-            .Overflow(at) -> info("json.overflow", "the number at byte ${at} does not fit an int"),
+            .Overflow(at) -> info("json.overflow", "the integer at byte ${at} does not fit an int"),
+            .PastFloat(at) -> info("json.past_float", "the number at byte ${at} is past the largest float"),
         }
     }
 }
@@ -367,18 +382,43 @@ fn hex_value(c: int) -> int? {
     }
 }
 
-/// `-`? digits — an integer. A `.`, `e` or `E` after them is the
-/// fraction this reader refuses by name; past the ceiling on either
-/// side is `Overflow`.
+/// RFC 8259's number: `-`? an integer part with no leading zero, then
+/// `.` digits and an exponent each optional. Without either it is an
+/// `Int`, refused past the ceiling; with one it is a `Float`, refused
+/// past the largest float.
 fn scan_number(text: string, n: int, i: int) -> Scan {
     mut j = i
     if at(text, n, j, 45) { j = j + 1 }
-    let digits_from = j
+    let whole = digits_end(text, n, j)
+    if whole == j { return Scan.Refused(unexpected(text, n, j, "a digit")) }
+    if at(text, n, j, 48) && whole > j + 1 { return Scan.Refused(JsonError.LeadingZero(i)) }
+    j = whole
+    if at(text, n, j, 46) {
+        let frac = digits_end(text, n, j + 1)
+        if frac == j + 1 { return Scan.Refused(unexpected(text, n, j + 1, "a digit after the point")) }
+        j = frac
+    }
+    if at(text, n, j, 101) || at(text, n, j, 69) {
+        j = j + 1
+        if at(text, n, j, 43) || at(text, n, j, 45) { j = j + 1 }
+        let exp = digits_end(text, n, j)
+        if exp == j { return Scan.Refused(unexpected(text, n, j, "a digit in the exponent")) }
+        j = exp
+    }
+    let spelled = text.substring(i, j)
+    if j == whole {
+        let v? = parse_int(spelled) else { return Scan.Refused(JsonError.Overflow(i)) }
+        return Scan.Value(Json.Int(v), j)
+    }
+    let x? = parse_float(spelled) else { return Scan.Refused(JsonError.PastFloat(i)) }
+    Scan.Value(Json.Float(x), j)
+}
+
+/// Where the run of digits starting at `i` ends.
+fn digits_end(text: string, n: int, i: int) -> int {
+    mut j = i
     while j < n && is_digit(text.char_code(j)) { j = j + 1 }
-    if j == digits_from { return Scan.Refused(unexpected(text, n, j, "a digit")) }
-    if at(text, n, j, 46) || at(text, n, j, 101) || at(text, n, j, 69) { return Scan.Refused(JsonError.Fraction(i)) }
-    let v? = parse_int(text.substring(i, j)) else { return Scan.Refused(JsonError.Overflow(i)) }
-    Scan.Value(Json.Int(v), j)
+    j
 }
 
 /// `true`, `false` or `null` — any other word is unexpected.

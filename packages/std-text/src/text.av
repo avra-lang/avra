@@ -13,11 +13,14 @@
 //! character: text carrying one is longer than its prefix and unequal
 //! to it. `nul_at` and `has_nul` guard the C seats, where it is not.
 //! `parse_int` reads the other way: `-`? digits, the ceiling on both
-//! sides, absence for anything else.
+//! sides, absence for anything else; `parse_float` adds a fraction
+//! and an exponent, and absence past the largest float.
 
 extern fn avra_str_from_codepoint(code: int) -> string
 extern fn avra_str_parses_int(s: string) -> bool
 extern fn avra_str_parsed_int(s: string) -> int
+extern fn avra_str_parses_float(s: string) -> int
+extern fn avra_str_parsed_float(s: string) -> float
 
 // ── The builder ─────────────────────────────────────────────────
 
@@ -48,6 +51,17 @@ impl Text {
 export fn parse_int(s: string) -> int? {
     if !avra_str_parses_int(s) { return null }
     avra_str_parsed_int(s)
+}
+
+/// The text as a float: `-`? digits, then `.` digits and an exponent
+/// (`e`, a sign, digits) each optional. No leading `+`, no space, no
+/// `inf`, `nan` or hex. Absent past the largest float rather than
+/// infinite; a value too small to hold reads as the nearest float.
+/// A NUL is no digit, so text carrying one is absent before it
+/// crosses to C.
+export fn parse_float(s: string) -> float? {
+    if has_nul(s) || avra_str_parses_float(s) == 0 { return null }
+    avra_str_parsed_float(s)
 }
 
 // ── Shaping ─────────────────────────────────────────────────────

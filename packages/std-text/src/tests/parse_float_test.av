@@ -1,0 +1,52 @@
+// text -> float: `-`? digits, an optional fraction, an optional
+// exponent, and nothing strtod would add — absence for the rest,
+// and absence past the largest float rather than infinity.
+use @std.text.{parse_float, from_codepoint, repeat}
+
+fn shown(s: string) -> string {
+    let v? = parse_float(s) else { return "absent" }
+    "${v}"
+}
+
+spec "std/text — parse_float" {
+    given "the empty case, written first" {
+        then "empty text is absent" { parse_float("") == null }
+        then "a lone sign is absent" { parse_float("-") == null }
+    }
+    given "ordinary numbers" {
+        then "an integer spelling is a float" { parse_float("3") == 3.0 }
+        then "a fraction" { parse_float("1.5") == 1.5 }
+        then "a negative fraction" { parse_float("-2.25") == 0.0 - 2.25 }
+        then "an exponent" { parse_float("1e3") == 1000.0 }
+        then "an upper-case exponent with a sign" { parse_float("25E-1") == 2.5 }
+        then "a fraction and an exponent" { parse_float("1.5e+2") == 150.0 }
+        then "0.1 reads back as the shortest text" { shown("0.1") == "0.1" }
+        then "negative zero keeps its sign" { shown("-0") == "-0.0" }
+    }
+    given "the ceiling and the floor" {
+        then "the largest float" { parse_float("1.7976931348623157e308") != null }
+        then "past the largest float is absent, not infinity" { parse_float("1e400") == null }
+        then "past it negatively is absent too" { parse_float("-1e400") == null }
+        then "a value too small to hold is the nearest float" { parse_float("1e-400") == 0.0 }
+        then "a subnormal is kept" { parse_float("5e-324") != null && parse_float("5e-324") != 0.0 }
+        then "a mantissa longer than any double rounds, never refuses" {
+            parse_float("1" + repeat("0", 400) + "e-400") == 1.0
+        }
+    }
+    given "what strtod would add is absent" {
+        then "a leading `+`" { parse_float("+1.5") == null }
+        then "surrounding space" { parse_float(" 1.5") == null && parse_float("1.5 ") == null }
+        then "infinity and nan" { parse_float("inf") == null &&
+                parse_float("nan") == null &&
+                parse_float("infinity") == null }
+        then "hex" { parse_float("0x1p3") == null }
+        then "a bare point on either side" { parse_float(".5") == null && parse_float("5.") == null }
+        then "an exponent with no digits" { parse_float("1e") == null && parse_float("1e+") == null }
+        then "a double sign" { parse_float("--1") == null && parse_float("1e--1") == null }
+        then "a trailing letter" { parse_float("1.5f") == null }
+    }
+    given "a NUL is an ordinary byte the walk refuses on sight" {
+        then "a NUL after the digits" { parse_float("1.5" + from_codepoint(0)) == null }
+        then "a NUL inside the digits" { parse_float("1" + from_codepoint(0) + ".5") == null }
+    }
+}
