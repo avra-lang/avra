@@ -1,0 +1,156 @@
+// Cookies in, cookies out: a request's cookies across fields, a
+// `set-cookie` line with the safe defaults, every attribute and prefix
+// law refused by name, and signed values and sessions under a MAC.
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.cookie.{Cookie, SetCookie, SameSite, CookieFault, Signer, Session, removed, same_tag}
+use @std.text.{from_codepoint}
+
+/// A request carrying these field lines.
+fn with_fields(lines: string) -> Request<Unrouted> {
+    framed_from("GET / HTTP/1.1\r\nHost: h\r\n${lines}\r\n".bytes())!
+}
+
+fn jar_said(q: Request<Unrouted>) -> string {
+    [c.name + "=" + c.value for c in q.cookies()].join("|")
+}
+
+fn line_of(c: SetCookie) -> string {
+    match c.header() { .Ok(h) -> h.value, .Err(e) -> e.describe().message }
+}
+
+/// A stand-in MAC for the signing logic's own tests: keyed, and
+/// changed by every octet of the message. Not a secure MAC.
+fn toy_mac(key: Bytes, msg: Bytes) -> Bytes {
+    mut acc = 7
+    for i in 0..msg.length { acc = (acc * 31 + msg.at(i) + key.at(i % key.length)) % 1000003 }
+    [acc % 256, acc / 256 % 256, acc / 65536 % 256, key.length].bytes()!
+}
+
+fn signer() -> Signer { Signer { key: "k3y".bytes(), mac: toy_mac } }
+
+spec "std/http — cookies" {
+    given "the empty cases, written first" {
+        then "no cookie field is no cookies" { with_fields("").cookies().is_empty() }
+        then "an empty cookie field is no cookies" { with_fields("Cookie: \r\n").cookies().is_empty() }
+        then "an absent cookie reads null" { with_fields("Cookie: a=1\r\n").cookie("b") == null }
+        then "an empty value is a value" { with_fields("Cookie: a=\r\n").cookie("a") == "" }
+    }
+    given "reading a request's cookies" {
+        then "pairs in order" { jar_said(with_fields("Cookie: a=1; b=2;c=3\r\n")) == "a=1|b=2|c=3" }
+        then "every cookie field, in order" { jar_said(with_fields("Cookie: a=1\r\ncookie: b=2\r\n")) == "a=1|b=2" }
+        then "a quoted value loses its quotes" { with_fields("Cookie: a=\"x y\"\r\n").cookie("a") == "x y" }
+        then "a value keeps its own `=`" { with_fields("Cookie: t=a=b==\r\n").cookie("t") == "a=b==" }
+        then "a pair with no `=` or no name is skipped" { jar_said(with_fields("Cookie: junk; =v; a=1\r\n")) == "a=1" }
+        then "the first of a name wins" { with_fields("Cookie: a=1; a=2\r\n").cookie("a") == "1" }
+    }
+    given "setting a cookie" {
+        then "the safe defaults" { line_of(SetCookie { name: "id", value: "42" }) == "id=42; Path=/; Secure; HttpOnly; SameSite=Lax" }
+        then "every attribute" {
+            line_of(
+                SetCookie {
+                    name: "id",
+                    value: "42",
+                    path: "/app",
+                    domain: "example.com",
+                    max_age: 60,
+                    secure: false,
+                    http_only: false,
+                    same_site: SameSite.Strict,
+                },
+            ) == "id=42; Path=/app; Domain=example.com; Max-Age=60; SameSite=Strict"
+        }
+        then "no path at all" { line_of(SetCookie { name: "a", value: "b", path: null }) == "a=b; Secure; HttpOnly; SameSite=Lax" }
+        then "removing writes Max-Age=0" { line_of(removed("id")) == "id=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax" }
+        then "a negative age is zero" { line_of(SetCookie { name: "a", value: "b", max_age: 0 - 5 }).contains("Max-Age=0;") }
+        then "SameSite=None with Secure" { line_of(SetCookie { name: "a", value: "b", same_site: SameSite.None })
+                .ends_with("SameSite=None") }
+        then "a response carries it" {
+            match Response { status: 204 }.with_cookie(SetCookie { name: "a", value: "b" }) {
+                .Ok(r) -> r.headers.any(it.name == "set-cookie" && it.value.starts_with("a=b;")),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a cookie that would be two things at once is refused" {
+        then "`;` in a value would start an attribute" { line_of(SetCookie { name: "a", value: "x; Domain=evil" }) == "cookie `a`'s value holds a character a cookie cannot carry" }
+        then "a CR in a value" { line_of(SetCookie { name: "a", value: "x\r\nSet-Cookie: b=1" })
+                .starts_with("cookie `a`'s value") }
+        then "a space, a quote, a comma, a backslash in a value" {
+            ["a b", "a\"b", "a,b", "a\\b"]
+                .all(line_of(SetCookie { name: "c", value: it }).starts_with("cookie `c`'s value"))
+        }
+        then "a NUL in a value" { line_of(SetCookie { name: "a", value: "x" + from_codepoint(0) })
+                .starts_with("cookie `a`'s value") }
+        then "a name that is not a token" { line_of(SetCookie { name: "a=b", value: "1" }) == "the cookie name `a=b` is not a token" }
+        then "an empty name" { line_of(SetCookie { name: "", value: "1" }) == "the cookie name `` is not a token" }
+        then "`;` in a path" { line_of(SetCookie { name: "a", value: "1", path: "/; Domain=evil" }) == "cookie `a`'s Path holds `;` or a control character" }
+        then "a newline in a domain" { line_of(SetCookie { name: "a", value: "1", domain: "e.com\r\nX: y" }) == "cookie `a`'s Domain holds `;` or a control character" }
+        then "SameSite=None without Secure" { line_of(SetCookie { name: "a", value: "1", secure: false, same_site: SameSite.None })
+                .starts_with("cookie `a` is `SameSite=None` without `Secure`") }
+        then "a refused cookie leaves the response unwritten" {
+            match Response { status: 204 }.with_cookie(SetCookie { name: "a", value: "x;y" }) {
+                .Ok(_) -> false,
+                .Err(e) -> e is .Value,
+            }
+        }
+    }
+    given "the prefixes a browser enforces" {
+        then "__Host- as it must be" { line_of(SetCookie { name: "__Host-s", value: "1" }).starts_with("__Host-s=1") }
+        then "__Host- with a Domain" { line_of(SetCookie { name: "__Host-s", value: "1", domain: "e.com" })
+                .contains("breaks its prefix") }
+        then "__Host- off the root path" { line_of(SetCookie { name: "__Host-s", value: "1", path: "/app" })
+                .contains("breaks its prefix") }
+        then "__Host- not Secure" { line_of(SetCookie { name: "__Host-s", value: "1", secure: false })
+                .contains("breaks its prefix") }
+        then "__Secure- not Secure" { line_of(SetCookie { name: "__Secure-s", value: "1", secure: false })
+                .contains("breaks its prefix") }
+    }
+    given "a signed value" {
+        then "it opens under its own name" { signer().opened("s", signer().signed("s", "hello")) == "hello" }
+        then "a value holding dots opens" { signer().opened("s", signer().signed("s", "a.b.c")) == "a.b.c" }
+        then "an empty value opens" { signer().opened("s", signer().signed("s", "")) == "" }
+        then "it is still a cookie value" { line_of(SetCookie { name: "s", value: signer().signed("s", "hello") })
+                .starts_with("s=hello.") }
+        then "moved to another cookie's name it does not open" { signer().opened("t", signer().signed("s", "hello")) == null }
+        then "a changed value does not open" { signer().opened("s", signer().signed("s", "hello").replace("hello", "hellp")) == null }
+        then "another key does not open it" {
+            Signer { key: "other".bytes(), mac: toy_mac }.opened("s", signer().signed("s", "hello")) == null
+        }
+        then "no tag, a bad tag, nothing" {
+            signer().opened("s", "hello") == null &&
+                signer().opened("s", "hello.!!") == null &&
+                signer().opened("s", null) == null
+        }
+    }
+    given "comparing tags" {
+        then "equal" { same_tag("abc".bytes(), "abc".bytes()) }
+        then "differing in the last octet" { !same_tag("abc".bytes(), "abd".bytes()) }
+        then "differing in length" { !same_tag("abc".bytes(), "ab".bytes()) }
+        then "both empty" { same_tag("".bytes(), "".bytes()) }
+    }
+    given "a session" {
+        then "issued then opened before it expires" {
+            let s = Session { signer: signer() }
+            s.opened(s.issued("user=7", 1000).value, 1000 + 86399) == "user=7"
+        }
+        then "opened at its expiry it is gone" {
+            let s = Session { signer: signer() }
+            s.opened(s.issued("user=7", 1000).value, 1000 + 86400) == null
+        }
+        then "its expiry cannot be extended by the client" {
+            let s = Session { signer: signer() }
+            let sealed = s.issued("user=7", 1000).value
+            s.opened(sealed.replace("87400.", "99999."), 90000) == null
+        }
+        then "its cookie is a __Host- cookie with the safe defaults" {
+            let s = Session { signer: signer() }
+            line_of(s.issued("x", 0)).starts_with("__Host-session=") &&
+                line_of(s.issued("x", 0)).ends_with("Max-Age=86400; Secure; HttpOnly; SameSite=Lax")
+        }
+        then "any text rides it" {
+            let s = Session { signer: signer() }
+            s.opened(s.issued("a; b=\"c\"\n", 0).value, 1) == "a; b=\"c\"\n"
+        }
+        then "ending it removes the cookie" { line_of(Session { signer: signer() }.ended()).contains("Max-Age=0") }
+    }
+}

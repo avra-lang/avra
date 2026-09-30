@@ -1,0 +1,262 @@
+//! COOKIES — read from a request, set on a response, signed.
+//!
+//! A `Set-Cookie` IS A GRAMMAR THE BROWSER PARSES, so a value is two
+//! things at once unless its characters are held to RFC 6265's
+//! cookie-octets: a `;` in a value would start an attribute of the
+//! caller's choosing (`x; Domain=evil`). Every name, value and
+//! attribute is judged before a line is written, and a cookie that
+//! fails is a `CookieFault`, never a quietly escaped line.
+//!
+//! THE DEFAULTS ARE THE SAFE ONES: `Secure`, `HttpOnly`,
+//! `SameSite=Lax`, `Path=/`. A cookie loosens them by saying so.
+//!
+//! A SIGNED cookie carries its value and a MAC over its NAME and
+//! value, so a value cannot be moved to another cookie; the MAC is a
+//! seat (`Mac`) the caller fills, and the tag is compared in constant
+//! time.
+use @std.text.{base64url, from_base64url, parse_int}
+use @std.errors.{Error, ErrorInfo, info}
+use frame.{is_tchar}
+
+/// One cookie a request carried.
+export type Cookie = { name: string, value: string }
+
+impl Request {
+    /// Every cookie the request carried, across every `cookie` field,
+    /// in the order sent. A pair with no `=` or an empty name is
+    /// skipped; a value's surrounding quotes are dropped.
+    fn cookies() -> List<Cookie> {
+        [c for line in self.headers("cookie") for c in pairs_of(line)]
+    }
+
+    /// The first cookie of this name — the most specific, since a
+    /// browser sends the longest path first.
+    fn cookie(name: string) -> string? {
+        self.cookies().find(it.name == name)?.value
+    }
+}
+
+fn pairs_of(line: string) -> List<Cookie> {
+    [c! for c in [cookie_pair(p) for p in line.split(";")] if c != null]
+}
+
+/// One `name=value`, trimmed, or null when it names nothing.
+fn cookie_pair(piece: string) -> Cookie? {
+    let at = piece.index_of("=")
+    if at < 0 { return null }
+    let name = piece.substring(0, at).trim()
+    if name.is_empty() { return null }
+    Cookie { name: name, value: unquoted(piece.substring(at + 1, piece.length).trim()) }
+}
+
+fn unquoted(v: string) -> string {
+    if v.length >= 2 && v.starts_with("\"") && v.ends_with("\"") { v.substring(1, v.length - 1) } else { v }
+}
+
+// ── Setting ─────────────────────────────────────────────────────
+
+/// Where a browser sends a cookie from another site's page.
+export enum SameSite {
+    Strict
+    Lax
+    None
+}
+
+/// A cookie to set, and its attributes. `max_age` in seconds: `0`
+/// removes it, absent makes it last the session.
+export type SetCookie = {
+    name: string,
+    value: string,
+    path: string? = "/",
+    domain: string? = null,
+    max_age: int? = null,
+    secure: bool = true,
+    http_only: bool = true,
+    same_site: SameSite = SameSite.Lax,
+}
+
+/// The cookie that removes `name` — at the path it was set on.
+export fn removed(name: string) -> SetCookie {
+    SetCookie { name: name, value: "", max_age: 0 }
+}
+
+/// Why a cookie cannot be written.
+export enum CookieFault {
+    Name(name: string)
+    Value(name: string)
+    Attribute(name: string, which: string)
+    NoneInsecure(name: string)
+    Prefix(name: string)
+}
+
+impl Error for CookieFault {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Name(n) -> info("cookie.name", "the cookie name `${n}` is not a token"),
+            .Value(n) -> info("cookie.value", "cookie `${n}`'s value holds a character a cookie cannot carry"),
+            .Attribute(n, which) -> info("cookie.attribute", "cookie `${n}`'s ${which} holds `;` or a control character"),
+            .NoneInsecure(n) -> info(
+                "cookie.none_insecure",
+                "cookie `${n}` is `SameSite=None` without `Secure`, which browsers refuse",
+            ),
+            .Prefix(n) -> info(
+                "cookie.prefix",
+                "cookie `${n}` breaks its prefix's rule — `__Secure-` wants `Secure`, `__Host-` also `Path=/` and no `Domain`",
+            ),
+        }
+    }
+}
+
+impl SetCookie {
+    /// The `set-cookie` field that sets this cookie, or why none can.
+    fn header() -> Result<Header, CookieFault> {
+        if self.name.is_empty() || !every_octet(self.name, token_char) { fail CookieFault.Name(self.name) }
+        if !every_octet(self.value, cookie_octet) { fail CookieFault.Value(self.name) }
+        if !attribute_safe(self.path) { fail CookieFault.Attribute(self.name, "Path") }
+        if !attribute_safe(self.domain) { fail CookieFault.Attribute(self.name, "Domain") }
+        if self.same_site is .None && !self.secure { fail CookieFault.NoneInsecure(self.name) }
+        if !self.prefix_kept() { fail CookieFault.Prefix(self.name) }
+        Header { name: "set-cookie", value: self.line() }
+    }
+
+    /// `__Secure-` and `__Host-`, the two prefixes a browser enforces.
+    fn prefix_kept() -> bool {
+        if self.name.starts_with("__Host-") { return self.secure && self.path == "/" && self.domain == null }
+        if self.name.starts_with("__Secure-") { return self.secure }
+        true
+    }
+
+    fn line() -> string {
+        [
+            "${self.name}=${self.value}",
+            attribute("Path", self.path),
+            attribute("Domain", self.domain),
+            attribute("Max-Age", age_text(self.max_age)),
+            flag("Secure", self.secure),
+            flag("HttpOnly", self.http_only),
+            "; SameSite=${same_site_word(self.same_site)}",
+        ]
+            .join("")
+    }
+}
+
+fn attribute(word: string, v: string?) -> string {
+    let s? = v else { return "" }
+    "; ${word}=${s}"
+}
+
+fn age_text(n: int?) -> string? {
+    let s? = n else { return null }
+    if s < 0 { "0" } else { "${s}" }
+}
+
+fn flag(word: string, on: bool) -> string { if on { "; ${word}" } else { "" } }
+
+fn same_site_word(s: SameSite) -> string {
+    match s { .Strict -> "Strict", .Lax -> "Lax", .None -> "None" }
+}
+
+fn attribute_safe(v: string?) -> bool {
+    let s? = v else { return true }
+    every_octet(s, attribute_octet)
+}
+
+/// RFC 6265's cookie-octet: visible ASCII but for DQUOTE, `,`, `;`
+/// and `\`.
+const cookie_octet: Bytes = admits(
+    (c) -> c > 32 && c < 127 && c != 34 && c != 44 && c != 59 && c != 92,
+)
+
+/// An attribute value: visible ASCII or a space, but never `;`.
+const attribute_octet: Bytes = admits((c) -> c >= 32 && c < 127 && c != 59)
+
+impl Response {
+    /// This response setting `c` too, or why it cannot.
+    fn with_cookie(c: SetCookie) -> Result<Response, CookieFault> {
+        self with { headers: self.headers.concat([c.header()?]) }
+    }
+}
+
+// ── Signing ─────────────────────────────────────────────────────
+
+/// A message authentication code: the tag of a message under a key.
+export alias Mac = fn(Bytes, Bytes) -> Bytes
+
+/// What signs and opens cookie values: a secret key and its MAC.
+export type Signer = { key: Bytes, mac: Mac }
+
+impl Signer {
+    /// `value` carrying its tag over the cookie's name and value, as
+    /// `value.tag` — every character a cookie-octet when `value` is.
+    fn signed(name: string, value: string) -> string {
+        "${value}.${base64url(self.tag(name, value))}"
+    }
+
+    /// The value a signed cookie carries, when its tag is this
+    /// signer's for this name; absent for anything else.
+    fn opened(name: string, sealed: string?) -> string? {
+        let s? = sealed else { return null }
+        let dot = last_dot(s)
+        if dot < 0 { return null }
+        let value = s.substring(0, dot)
+        let carried? = from_base64url(s.substring(dot + 1, s.length)) else { return null }
+        if !same_tag(carried, self.tag(name, value)) { return null }
+        value
+    }
+
+    fn tag(name: string, value: string) -> Bytes {
+        (self.mac)(self.key, "${name}=${value}".bytes())
+    }
+}
+
+/// Where the last `.` is, or -1 — the tag carries none, so it ends
+/// the value.
+fn last_dot(s: string) -> int {
+    mut i = s.length - 1
+    while i >= 0 && s.char_code(i) != 46 { i = i - 1 }
+    i
+}
+
+/// WHETHER TWO TAGS ARE EQUAL, IN TIME THAT DOES NOT DEPEND ON WHERE
+/// THEY DIFFER: every octet is compared and the differences folded, so
+/// a forger cannot learn a tag one octet at a time from the clock.
+export fn same_tag(a: Bytes, b: Bytes) -> bool {
+    if a.length != b.length { return false }
+    mut diff = 0
+    for i in 0..a.length { diff = diff | (a.at(i) ^ b.at(i)) }
+    diff == 0
+}
+
+// ── Sessions ────────────────────────────────────────────────────
+
+/// A session held in a signed cookie: its data and when it expires,
+/// under one tag, so neither can be changed or extended by the
+/// client. The data is the caller's text, carried base64url.
+export type Session = { signer: Signer, name: string = "__Host-session", max_age: int = 86400 }
+
+impl Session {
+    /// The cookie that starts a session holding `data`, at `now` in
+    /// seconds since the epoch.
+    fn issued(data: string, now: int) -> SetCookie {
+        let payload = "${now + self.max_age}.${base64url(data.bytes())}"
+        SetCookie {
+            name: self.name,
+            value: self.signer.signed(self.name, payload),
+            max_age: self.max_age,
+        }
+    }
+
+    /// The session's data, when `sealed` (the request's cookie of
+    /// this name) is this signer's and has not expired at `now`.
+    fn opened(sealed: string?, now: int) -> string? {
+        let payload? = self.signer.opened(self.name, sealed) else { return null }
+        let dot = payload.index_of(".")
+        if dot < 0 { return null }
+        let until? = parse_int(payload.substring(0, dot)) else { return null }
+        if now >= until { return null }
+        from_base64url(payload.substring(dot + 1, payload.length))?.text()
+    }
+
+    /// The cookie that ends the session.
+    fn ended() -> SetCookie { removed(self.name) }
+}

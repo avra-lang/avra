@@ -228,3 +228,96 @@ fn lead_mark(width: int) -> int {
         _ -> 192
     }
 }
+
+// ── Base64 ──────────────────────────────────────────────────────
+
+/// The octets in RFC 4648's base64, padded with `=`.
+export fn base64(b: Bytes) -> string { encoded64(b, standard_alphabet, true) }
+
+/// The octets in RFC 4648's URL-safe base64 — `-` and `_`, unpadded —
+/// the form a cookie, a URL and a token carry.
+export fn base64url(b: Bytes) -> string { encoded64(b, url_alphabet, false) }
+
+/// Padded base64 read back, absent for anything `base64` would not
+/// have written: a wrong length or padding, a character outside the
+/// alphabet, or bits past the last octet that are not zero — so one
+/// value has exactly one spelling.
+export fn from_base64(s: string) -> Bytes? { decoded64(s.bytes(), false, true) }
+
+/// Unpadded URL-safe base64 read back, as strictly.
+export fn from_base64url(s: string) -> Bytes? { decoded64(s.bytes(), true, false) }
+
+const standard_alphabet: Bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    .bytes()
+
+const url_alphabet: Bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    .bytes()
+
+fn encoded64(b: Bytes, alphabet: Bytes, pad: bool) -> string {
+    let n = b.length
+    mut out: List<int> = []
+    mut i = 0
+    while i + 3 <= n {
+        let v = (b.at(i) << 16) | (b.at(i + 1) << 8) | b.at(i + 2)
+        out = out
+            .concat(
+                [
+                    alphabet.at(v >> 18),
+                    alphabet.at((v >> 12) & 63),
+                    alphabet.at((v >> 6) & 63),
+                    alphabet.at(v & 63),
+                ],
+            )
+        i = i + 3
+    }
+    let left = n - i
+    if left == 1 {
+        let v = b.at(i) << 16
+        out = out.concat([alphabet.at(v >> 18), alphabet.at((v >> 12) & 63)])
+    }
+    if left == 2 {
+        let v = (b.at(i) << 16) | (b.at(i + 1) << 8)
+        out = out
+            .concat([alphabet.at(v >> 18), alphabet.at((v >> 12) & 63), alphabet.at((v >> 6) & 63)])
+    }
+    if pad && left > 0 { out = out.concat([61 for _k in left..3]) }
+    out.bytes()!.text()!
+}
+
+/// The sextet a character spells in one alphabet, absent outside it.
+fn sextet(c: int, url: bool) -> int? {
+    when {
+        c >= 65 && c <= 90 -> c - 65
+        c >= 97 && c <= 122 -> c - 71
+        c >= 48 && c <= 57 -> c + 4
+        c == 43 && !url -> 62
+        c == 47 && !url -> 63
+        c == 45 && url -> 62
+        c == 95 && url -> 63
+        _ -> null
+    }
+}
+
+fn decoded64(s: Bytes, url: bool, padded: bool) -> Bytes? {
+    let n = s.length
+    if padded && n % 4 != 0 { return null }
+    let pads = if padded && n > 0 && s.at(n - 1) == 61 { if s.at(n - 2) == 61 { 2 } else { 1 } } else { 0 }
+    let body = n - pads
+    if body % 4 == 1 { return null }
+    mut out: List<int> = []
+    mut acc = 0
+    mut bits = 0
+    mut i = 0
+    while i < body {
+        let d? = sextet(s.at(i), url) else { return null }
+        acc = ((acc << 6) | d) & 4095
+        bits = bits + 6
+        if bits >= 8 {
+            bits = bits - 8
+            out.push((acc >> bits) & 255)
+        }
+        i = i + 1
+    }
+    if acc & (1 << bits) - 1 != 0 { return null }
+    out.bytes()
+}
