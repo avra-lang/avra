@@ -1230,7 +1230,9 @@ fn repeated_projection_found(a: Code) -> Fix {
 /// takes whatever its arity — gating a NAMED wrapper alone would still
 /// leave `self.methods.get()` itself open to a new site reading it
 /// inline, so that raw field-then-`.get()` shape is a second arm over
-/// the SAME "methods" bracket.
+/// the SAME "methods" bracket. The declaration relation's two pinned
+/// handles (`decl_cells`, `decl_row_rows`) are that shape too, over the
+/// "decls" bracket: only `Decls`' own readers see its rows unrecorded.
 ///
 /// NO REWRITE: the fix is either routing the read through the table's
 /// own recording accessor (`sig`, `writes_receiver`/`declares_writing`,
@@ -1242,9 +1244,12 @@ fn repeated_projection_found(a: Code) -> Fix {
 @keeps("x.declared_methods(target)")
 @keeps("x.writes_receiver(d)")
 @keeps("x.methods_of(target)")
+@keeps("x.decl(d)")
 export rule bypass_outside_bracket {
     quote { ${recv}.${name}(${..args}) } if bypasses_bracket(it, name) -> bypass_found(it, name, covered_bracket(name)!),
     quote { ${r}.methods.get() } if bypasses_methods_cell(it) -> bypass_found(it, "methods.get()", "methods"),
+    quote { ${r}.decl_cells.get() } if bypasses_decls_cell(it) -> bypass_found(it, "decl_cells.get()", "decls"),
+    quote { ${r}.decl_row_rows.get() } if bypasses_decls_cell(it) -> bypass_found(it, "decl_row_rows.get()", "decls"),
 }
 
 /// The bracket a covered verb belongs to — the rule's own verb→bracket
@@ -1271,6 +1276,12 @@ fn bypasses_bracket(c: Code, name: string) -> bool {
 /// shape carries no callee name for `covered_bracket` to look up.
 fn bypasses_methods_cell(c: Code) -> bool {
     !bracketed(c, "methods")
+}
+
+/// The declaration relation's pinned handles, read only by `Decls`' own
+/// bracket: every other reader goes through `decl`, which records.
+fn bypasses_decls_cell(c: Code) -> bool {
+    !bracketed(c, "decls")
 }
 
 /// Whether `c`'s own ENCLOSING DECLARATION wears `@std/meta`'s

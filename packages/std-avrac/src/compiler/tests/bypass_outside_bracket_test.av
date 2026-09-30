@@ -169,6 +169,31 @@ spec "compiler/idioms (bypass_outside_bracket)" {
             )
         }
     }
+    given "the declaration relation's pinned handles, `.decl_cells.get()` and `.decl_row_rows.get()`" {
+        then "read inside the decls bracket, they are clean" {
+            !bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"decls\")\n" +
+                    "    fn caller(x: Decls) -> int { x.decl_cells.get().length + x.decl_row_rows.get().count() }\n" +
+                    "}\n1",
+            )
+        }
+        then "the row cell read with no bracket fires" {
+            bracket_fires(
+                "impl Decls {\n" +
+                    "    fn caller(x: Decls) -> int { x.decl_cells.get().length }\n" +
+                    "}\n1",
+            )
+        }
+        then "the rows handle read under the WRONG bracket fires" {
+            bracket_fires(
+                "impl Decls {\n" +
+                    "    @bracket(\"methods\")\n" +
+                    "    fn caller(x: Decls) -> int { x.decl_row_rows.get().count() }\n" +
+                    "}\n1",
+            )
+        }
+    }
     given "a `.get()` call on a field that merely isn't named `methods`" {
         then "the raw-cell arm never fires on it" {
             !bracket_fires(
