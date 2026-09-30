@@ -1,6 +1,6 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
-use @std.meta.{identity}
+use @std.meta.{identity, plain_field}
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
@@ -24,7 +24,8 @@ export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
-export type NodeStore = {
+@plain_field("file")
+export type SyntaxArena = {
     exprs: Arena<Expr>,
     expr_fingerprints: Cell<List<int>>,
     stmts: Arena<Stmt>,
@@ -42,7 +43,8 @@ export type NodeStore = {
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     hoisted: Cell<List<StmtId>>,
-    // the path of the file this store parsed — "" for a fragment
+    // plain for its identity: the path of the file this store
+    // parsed, set once at construction — "" for a fragment
     file: string,
     // `@name(args)` marks per statement, in written order
     annotations: Cell<List<List<Annotation>>>,
@@ -114,9 +116,9 @@ export type NodeStore = {
     foreign: Cell<List<ForeignRange>>,
 }
 
-export fn new_node_store(file: string = "") -> NodeStore {
+export fn new_node_store(file: string = "") -> SyntaxArena {
     let no_file_doc: List<string>? = null
-    NodeStore {
+    SyntaxArena {
         file: file,
         exprs: new_arena(),
         expr_fingerprints: list_cell(),
@@ -199,21 +201,7 @@ export fn statement_after(starts: List<StmtStart>, at: int) -> StmtId? {
     if lo < starts.length { starts[lo].stmt } else { null }
 }
 
-/// The first index in `xs` (sorted ascending) whose value is `>=
-/// target` — `xs.length` when every value is smaller. Halving,
-/// `statement_after`'s twin over a bare `List<int>`: a kind's bucket
-/// sliced to one declaration's range never walks past it.
-fn lower_bound(xs: List<int>, target: int) -> int {
-    mut lo = 0
-    mut hi = xs.length
-    while lo < hi {
-        let mid = (lo + hi) / 2
-        if xs[mid] < target { lo = mid + 1 } else { hi = mid }
-    }
-    lo
-}
-
-impl NodeStore {
+impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
@@ -475,6 +463,10 @@ impl NodeStore {
         if hole == null || !hole!.lone() { return null }
         hole!.holes[0]
     }
+
+    /// A lone hole standing as a statement with nothing written on it —
+    /// an annotated one is a declaration's seat.
+    fn bare_hole(s: StmtId) -> bool { self.hole_stmt(s) != null && self.annotations_of(s).is_empty() }
 
     /// Whether a statement DECLARES: a fn, a type, an enum, a trait,
     /// an impl, a top-level const.
@@ -984,52 +976,16 @@ impl NodeStore {
     fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints.get()[id.index] }
     fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints.get()[id.index] }
 
-    /// Every kind's own bucket of `ExprId`s, in arena order — built
-    /// ONCE per file, on first ask (COMPILER DB townhall §6.11's
-    /// `@index kind`), kept behind `self.exprs.kind_index`
-    /// (`Arena`'s own identity law, never a new field on `NodeStore`
-    /// itself — a hot, constantly copied/dropped record costs one
-    /// retain/release per field per copy, DOGFOODING.md): a copy of
-    /// `self` still reads and grows the same buckets. Keyed by
-    /// `tag_expr`'s own int, `@derive(Matchable)`'s variant-order
-    /// tag — never a hand-kept mirror enum.
-    fn expr_kind_buckets() -> Map<string, Cell<List<int>>> {
-        let built? = self.exprs.kind_index.get() else {
-            let fresh = self.built_expr_kind_index()
-            self.exprs.kind_index.set(fresh)
-            return fresh
-        }
-        built
-    }
-
-    /// The one pass every later `exprs_by_kind` ask shares. A map
-    /// keys by TEXT (CLAUDE.md's subset), so `tag_expr`'s int is
-    /// interpolated once per node — cheap, and paid only at this
-    /// one-time build, never per ask.
-    fn built_expr_kind_index() -> Map<string, Cell<List<int>>> {
-        mut m: Map<string, Cell<List<int>>> = {}
-        for i in self.expr_ids() {
-            let key = "${self.tag_expr(self.expr(i))}"
-            let bucket = m.get(key) ?? {
-                let fresh: Cell<List<int>> = list_cell()
-                m.set(key, fresh)
-                fresh
-            }
-            bucket.push(i.index)
-        }
-        m
-    }
-
-    /// Every expression of kind `k` (a `tag_expr` int) inside
-    /// `[lo, hi)` — the `Expr` ARENA RELATION's `@index kind`/
-    /// `@index decl` (COMPILER DB townhall §6.11): `k`'s own bucket,
-    /// sliced by two binary searches, so a caller never visits a node
-    /// of another kind or outside its declaration's own range.
+    /// Every expression tagged `k` (`tag_expr`, `@derive(Matchable)`'s
+    /// variant order) inside `[lo, hi)`: the `Expr` arena relation's
+    /// `@index kind`, sliced to one declaration's `@index decl` range.
     fn exprs_by_kind(lo: int, hi: int, k: int) -> List<ExprId> {
-        let ids = self.expr_kind_buckets().get("${k}")?.get() ?? []
-        let start = lower_bound(ids, lo)
-        let end = lower_bound(ids, hi)
-        [ExprId { index: i } for i in ids.slice(start, end)]
+        [ExprId { index: i } for i in self.exprs.of_kind(lo, hi, k, (e: Expr) -> self.tag_expr(e))]
+    }
+
+    /// `exprs_by_kind`'s twin over the `Stmt` arena relation.
+    fn stmts_by_kind(lo: int, hi: int, k: int) -> List<StmtId> {
+        [StmtId { index: i } for i in self.stmts.of_kind(lo, hi, k, (s: Stmt) -> self.tag_stmt(s))]
     }
 
     /// The span containing both expressions, when both are known.
@@ -1179,7 +1135,7 @@ fn named_binders(id: PatId, names: List<string>) -> List<Binder> {
     [Binder { pat: id, name: n } for n in names]
 }
 
-impl NodeStore {
+impl SyntaxArena {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
         [fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)]) for c in cases]
@@ -1242,7 +1198,7 @@ impl NodeStore {
 // list of them, an Arm/Param/Variant/Case that holds one) is walked
 // here instead — `case_fps`/`param_fps`/`variant_fps`'s own siblings,
 // comparing rather than folding.
-impl NodeStore {
+impl SyntaxArena {
     fn exact_opt_expr(a: ExprId?, b: ExprId?) -> bool {
         if a == null || b == null { return a == null && b == null }
         self.exact_expr(self.expr(a!), self.expr(b!))

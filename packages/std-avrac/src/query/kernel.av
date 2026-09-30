@@ -50,19 +50,21 @@ fn input_cell(rev: int, value_hash: int) -> QueryCell {
 /// it from — `record_dep`, `settle`.
 type Restore = { key: Key, previous: int }
 
-// A shared KernelState's cell list copies on write. Bound each copy to
-// one short row rather than a table that grows with the program.
-const cell_chunk: int = 256
-
 type KernelState = {
     rev: int,
-    /// ONE SLOT, SHARED — see `features/decls.av`'s member tables: a write must
-    /// not copy the block.
+    /// ONE TABLE PER FAMILY, each its own `Cell` (a write must not copy
+    /// the family it lands in) — `cells[family]` holds that family's
+    /// cells, indexed directly by `arg`. Grown in lockstep with
+    /// `verifiers` (`family`, below): a cell's address never depends
+    /// on a count that can grow, so a family registered after others
+    /// have already written cells cannot remap a single one of them —
+    /// the earlier flat, multiplied addressing did exactly that the
+    /// moment a later family registered (avra-8sb5.57.81).
     cells: List<Cell<List<QueryCell?>>>,
-    // The last-reader stamps, chunked and addressed exactly as `cells`
-    // is (same `state_slot`) but held apart from it: a stamp is a bare
-    // int, so reading one never retains a `QueryCell` or its `deps`
-    // list, and a repeat read touches nothing but this array.
+    // The last-reader stamps, one table per family exactly as `cells`
+    // is, held apart from it: a stamp is a bare int, so reading one
+    // never retains a `QueryCell` or its `deps` list, and a repeat
+    // read touches nothing but this array.
     stamps: List<Cell<List<int>>>,
     verifiers: List<fn(int) -> int>,
     // One dependency list per open query, EACH IN ITS OWN CELL. A shared
@@ -302,6 +304,10 @@ impl Kernel {
     fn family(verify: fn(int) -> int) -> int {
         mut s = self.snapshot()
         s.verifiers.push(verify)
+        let no_cells: List<QueryCell?> = []
+        s.cells.push(Cell.new(no_cells))
+        let no_stamps: List<int> = []
+        s.stamps.push(Cell.new(no_stamps))
         let ordinal = s.verifiers.length - 1
         self.replace(s)
         ordinal
@@ -342,12 +348,15 @@ impl Kernel {
         if seen.open.any(same_key(it, key)) { return Verdict.Cycle }
         let cell? = state_cell(seen, key) else { return self.miss() }
         if cell.verified_at == state_revision(seen) { return self.hit() }
-        // A verifier may recursively update this same database. No
-        // snapshot is written across that call.
+        // Marked verified at this revision BEFORE its deps are walked: a
+        // verifier may recursively update this database and re-enter this
+        // key, and a re-entry reads the mark and reuses rather than walking
+        // again. The mark names the revision the walk began at, so a late
+        // write during the walk leaves it stale.
+        mut marked = seen
+        write_cell(marked, key, cell with { verified_at: state_revision(seen) })
+        self.replace(marked)
         if self.any_dep_changed(cell) { return self.miss() }
-        mut latest = self.snapshot()
-        write_cell(latest, key, cell with { verified_at: state_revision(latest) })
-        self.replace(latest)
         self.hit()
     }
 
@@ -372,6 +381,14 @@ impl Kernel {
     /// passed in.
     fn family_active(family: int) -> bool {
         self.snapshot().open.any(it.family == family)
+    }
+
+    /// The innermost open frame's own reader id — the same number
+    /// `record_dep` stamps a cell with, so a repeat ask by the frame
+    /// still running answers the SAME identity every time and two
+    /// different frames never share one. -1 when nothing is open.
+    fn reader() -> int {
+        self.snapshot().reading.last() ?? 0 - 1
     }
 
     fn changed_at(key: Key) -> int {
@@ -561,17 +578,10 @@ impl Kernel {
     /// evicted with it, so a later ask cannot reuse bookkeeping after
     /// its value has been released.
     fn evict_family(family: int) {
-        mut s = self.snapshot()
-        mut at = family
-        let stride = s.verifiers.length
-        while at < s.cells.length * cell_chunk {
-            let block = at / cell_chunk
-            let offset = at % cell_chunk
-            if offset < s.cells[block].get().length {
-                s.cells[block].set_at(offset, null)
-            }
-            at = at + stride
-        }
+        let s = self.snapshot()
+        if family < 0 || family >= s.cells.length { return }
+        let none: List<QueryCell?> = []
+        s.cells[family].set(none)
         self.replace(s)
     }
 
@@ -599,13 +609,13 @@ fn state_revision(s: KernelState) -> int { s.rev }
 
 // A bound check by length compare, not by indexing `verifiers`: that
 // index would answer a `fn` value nobody wants, and retaining one to
-// discard it is the one cost this slot math must never carry — it
-// runs on every dep read, hit or miss.
-fn state_slot(s: KernelState, key: Key) -> int {
-    if key.family < 0 || key.family >= s.verifiers.length {
-        avra_trap("defect: key names family ${key.family}, no such family is registered")
+// discard it is the one cost this check must never carry — it runs
+// on every dep read, hit or miss.
+fn checked_family(s: KernelState, family: int) -> int {
+    if family < 0 || family >= s.cells.length {
+        avra_trap("defect: key names family ${family}, no such family is registered")
     }
-    key.arg * s.verifiers.length + key.family
+    family
 }
 
 /// Hands one overwritten stamp back to the key it came from. Stamps
@@ -622,49 +632,33 @@ fn kept_since(prior: QueryCell?, value_hash: int) -> int? {
 }
 
 fn state_cell(s: KernelState, key: Key) -> QueryCell? {
-    let at = state_slot(s, key)
-    let block = at / cell_chunk
-    let offset = at % cell_chunk
-    if block >= s.cells.length { return null }
-    let row = s.cells[block].get()
-    if offset >= row.length { return null }
-    row[offset]
+    let fam = checked_family(s, key.family)
+    let row = s.cells[fam].get()
+    if key.arg < 0 || key.arg >= row.length { return null }
+    row[key.arg]
 }
 
 fn write_cell(mut s: KernelState, key: Key, cell: QueryCell) {
-    let at = state_slot(s, key)
-    let block = at / cell_chunk
-    let offset = at % cell_chunk
-    while s.cells.length <= block {
-        let no_row: List<QueryCell?> = []
-        s.cells.push(Cell.new(no_row))
-    }
-    while s.cells[block].get().length <= offset { s.cells[block].push(null) }
-    s.cells[block].set_at(offset, cell)
+    let fam = checked_family(s, key.family)
+    let row = s.cells[fam]
+    while row.get().length <= key.arg { row.push(null) }
+    row.set_at(key.arg, cell)
 }
 
 /// The stamp at `key`'s slot, or 0 (never assigned — no reader id is
-/// ever minted as 0) when its block or row has not grown that far.
+/// ever minted as 0) when its row has not grown that far.
 fn state_stamp(s: KernelState, key: Key) -> int {
-    let at = state_slot(s, key)
-    let block = at / cell_chunk
-    let offset = at % cell_chunk
-    if block >= s.stamps.length { return 0 }
-    let row = s.stamps[block].get()
-    if offset >= row.length { return 0 }
-    row[offset]
+    let fam = checked_family(s, key.family)
+    let row = s.stamps[fam].get()
+    if key.arg < 0 || key.arg >= row.length { return 0 }
+    row[key.arg]
 }
 
 fn write_stamp(mut s: KernelState, key: Key, stamp: int) {
-    let at = state_slot(s, key)
-    let block = at / cell_chunk
-    let offset = at % cell_chunk
-    while s.stamps.length <= block {
-        let no_row: List<int> = []
-        s.stamps.push(Cell.new(no_row))
-    }
-    while s.stamps[block].get().length <= offset { s.stamps[block].push(0) }
-    s.stamps[block].set_at(offset, stamp)
+    let fam = checked_family(s, key.family)
+    let row = s.stamps[fam]
+    while row.get().length <= key.arg { row.push(0) }
+    row.set_at(key.arg, stamp)
 }
 
 extern fn avra_trap(message: string)

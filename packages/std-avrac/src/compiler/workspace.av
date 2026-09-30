@@ -18,7 +18,7 @@ use core.{
     Table,
     new_table,
     list_cell,
-    NodeStore,
+    SyntaxArena,
     StmtId,
     same_decl,
     module_path,
@@ -73,7 +73,7 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use @std.meta.{Diagnostic, identity}
+use @std.meta.{Diagnostic, bracket, identity, plain_field}
 use core.{StmtId}
 use diagnostics.{
     SourceFile,
@@ -87,7 +87,7 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
+use query.{Kernel, new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -257,6 +257,12 @@ fn new_records() -> Records {
 /// type, so a copy of the workspace still reads and writes the same
 /// build.
 @identity
+@plain_field("host")
+@plain_field("root")
+@plain_field("lang")
+@plain_field("lone")
+@plain_field("per_file")
+@plain_field("clock")
 export type Workspace = {
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
@@ -534,7 +540,7 @@ fn key(f: Family, arg: int) -> Key {
 /// is linear, so summing raw fingerprints would carry over whatever
 /// structure made two of them collide; avalanching first breaks that
 /// (CLAUDE.md's arity law) and `fp_list` keeps the fold order-sensitive.
-fn syntax_hash(store: NodeStore, x: Decl) -> int {
+fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
     let exprs = [mix_final(store.expr_fingerprint(ExprId { index: i })) for i in x.lo..x.hi]
     fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
 }
@@ -710,9 +716,10 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
     built(host, dir, dir, lang, clock, false, true)
 }
 
-/// The declaration table with the language's own declarations in it.
-fn language_decls(lang: Language) -> Decls {
-    let decls = new_decls() with { rows: lang.rows.types.concat(scalar_types()) }
+/// The declaration table with the language's own declarations in it, its reads
+/// recording into `kernel`.
+fn language_decls(lang: Language, kernel: Kernel) -> Decls {
+    let decls = new_decls() with { record_kernel: kernel, rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -774,7 +781,7 @@ fn built(
         root: root,
         lang: lang,
         db: new_db(kernel),
-        decls: language_decls(lang),
+        decls: language_decls(lang, kernel),
         store: Cell.new(no_store),
         pack: Cell.new(no_pack),
         witness_hits: Cell.new(0),
@@ -846,7 +853,7 @@ fn built(
     ws.decls.arm_lifter(lift)
     ws
         .decls
-        .arm_recording(kernel, ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
+        .arm_recording(ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.arm_audit()
     ws.load_packages(src)
@@ -1627,6 +1634,7 @@ impl Workspace {
     /// body depends on exactly the impls it dispatches through. Asked
     /// again from inside one of those impls' own registration, it
     /// answers what stands.
+    @bracket("methods")
     fn methods(target: DeclId) -> List<DeclId> {
         // A GENERATED IMPL IS MINTED INTO THE TARGET'S OWN FILE, so the
         // table must not be read before that file's expansion has run —

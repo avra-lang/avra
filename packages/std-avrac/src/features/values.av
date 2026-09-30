@@ -20,7 +20,7 @@ use core.{
     TypeRegistry,
     ExprId,
     Expr,
-    NodeStore,
+    SyntaxArena,
     filled,
     flatten,
     BodyParts,
@@ -41,7 +41,7 @@ use @std.meta.{Node}
 /// every compile-time value already travels as. Null the moment a
 /// part needs the evaluator — an omitted default, a call, a name.
 export fn literal_meta(
-    store: NodeStore,
+    store: SyntaxArena,
     decls: Decls,
     facts: TypeFacts,
     e: ExprId,
@@ -71,7 +71,7 @@ export fn literal_meta(
 
 /// Every element spelled, in order — null when any one is not.
 fn spelled_all(
-    store: NodeStore,
+    store: SyntaxArena,
     decls: Decls,
     facts: TypeFacts,
     es: List<ExprId>,
@@ -87,7 +87,7 @@ fn spelled_all(
 
 /// A map literal's ordered key/value rows — keys are text, always.
 fn literal_map(
-    store: NodeStore,
+    store: SyntaxArena,
     decls: Decls,
     facts: TypeFacts,
     keys: List<ExprId>,
@@ -110,7 +110,7 @@ fn literal_map(
 /// written: an omitted one carries a default, and a default is a body
 /// the evaluator runs — not something the source alone spells.
 fn literal_record(
-    store: NodeStore,
+    store: SyntaxArena,
     decls: Decls,
     facts: TypeFacts,
     e: ExprId,
@@ -163,7 +163,7 @@ fn valued_slots(v: MetaVal, heap: MetaHeap) -> List<MetaVal> {
 /// A variant literal: the tag first, the payloads after — the tagged
 /// slot array both engines already read.
 fn literal_variant(
-    store: NodeStore,
+    store: SyntaxArena,
     decls: Decls,
     facts: TypeFacts,
     e: ExprId,
@@ -191,7 +191,7 @@ fn literal_variant(
 /// anything else, a quote with holes included: a hole is a body the
 /// evaluator runs, and null for a program that loads no `@std/meta`,
 /// where a template has no type to be.
-export fn quote_meta(store: NodeStore, decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+export fn quote_meta(store: SyntaxArena, decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
     let held: BodyParts? = store.expr(e).body_of()
     if held == null || !held!.holes.is_empty() { return null }
     if decls.meta_named("Node") == null { return null }
@@ -592,7 +592,7 @@ impl LowerCx {
     mut fn boxed_field(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
         let at = self.field_offset(subject_ty, n)
         if ty != null && self.view.types.lays_inline(ty!) { return self.unboxed_at(subject, at, ty!) }
-        self.slot_read(subject, at, ty)
+        self.proven_read(subject, at, ty)
     }
 
     /// `v` written as a boxed record's Nth field: at its offset, a value
@@ -637,6 +637,15 @@ impl LowerCx {
         let at = self.const_int(n)
         let held? = ty else { return self.array_get(Type.Int, v, at) }
         self.elem_read(v, at, held)
+    }
+
+    /// A slot the box's own type PROVES — a declared field, a cell's one
+    /// slot — read with no bounds test. A nullable scalar's pair keeps
+    /// the checked read.
+    mut fn proven_read(v: Reg, n: int, ty: TypeId?) -> Reg {
+        if ty != null && self.scalar_nullable(ty!) { return self.slot_read(v, n, ty) }
+        let at = self.const_int(n)
+        self.slot_get(if ty == null { Type.Int } else { self.view.types.shape_of(ty!) }, v, at)
     }
 
     // ── The Result, behind its verbs ────────────────────────────────

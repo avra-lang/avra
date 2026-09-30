@@ -11,7 +11,6 @@ use core.{
     HoleKind,
     MetaKind,
     FillClass,
-    At,
     Shape,
     Open,
     Slot,
@@ -29,7 +28,7 @@ use core.{
     quote_pat_is_run,
     quote_pat_is_type,
 }
-use features.{LowerCx, EnumSig}
+use features.{LowerCx, EnumSig, FnSig}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let q? = cx.view.store.expr(e).body_of() else { return cx.lower_defect(e, "a quote without its body") }
@@ -162,21 +161,37 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let holes = quote_pat_holes(cx.view.store, body)
     let names = quote_pat_names(holes)
     let shape = quote_pat_shape(cx.view.store, root, holes, names)
-    let at_ty = avrac_self(cx, "At")
-    let shape_ty = avrac_self(cx, "Shape")
-    let open_ty = avrac_self(cx, "Open")
-    let store_ty = avrac_self_any(cx, ["SyntaxArena", "NodeStore"])
-    let of_ty = avrac_self(cx, "Analysed")
-    let view_ty = avrac_self(cx, "FileView")
-    let of = cx.field_named(v, vty, "of", of_ty)
-    let view = cx.field_named(of, of_ty, "view", view_ty)
-    let subj_store = cx.field_named(view, view_ty, "store", store_ty)
-    let subj_at = cx.field_named(v, vty, "at", at_ty)
-    let s = shape_static(cx, shape_ty, open_ty, "qshape\$${cx.view.file.index}\$${p.index}", shape)
-    let answer_ty = cx.type(List<List<at_ty>>?)
-    let answer = avrac_call(cx, "matched_runs", [subj_store, subj_at, s], answer_ty)
+    let subj = subject_of(cx, v, vty)
+    let runs? = avrac_sig(cx, "matched_runs") else { return cx.const_bool(false) }
+    let s = shape_static(cx, runs.params[2], "qshape\$${cx.view.file.index}\$${p.index}", shape)
+    let answer = avrac_call(cx, "matched_runs", [subj.store, subj.at, s], runs.ret)
     cx.bind_test(p, [answer])
-    cx.presence_of(answer, answer_ty)
+    cx.presence_of(answer, runs.ret)
+}
+
+/// A quote subject's reads: its `of`, its `at` (and the `At` type,
+/// which the binds unpack), and the store its `of.view` carries.
+type Subject = { of: Reg, at: Reg, at_ty: TypeId, store: Reg }
+
+/// `v`'s reads, every type taken off `code_ty`'s declared fields —
+/// the subject's type is the anchor, so no type is looked up by name.
+fn subject_of(mut cx: LowerCx, v: Reg, code_ty: TypeId) -> Subject {
+    let of_ty = avrac_field_type(cx, code_ty, "of")
+    let view_ty = avrac_field_type(cx, of_ty, "view")
+    let at_ty = avrac_field_type(cx, code_ty, "at")
+    let of = cx.field_named(v, code_ty, "of", of_ty)
+    Subject {
+        of: of,
+        at: cx.field_named(v, code_ty, "at", at_ty),
+        at_ty: at_ty,
+        store: cx
+            .field_named(
+                cx.field_named(of, of_ty, "view", view_ty),
+                view_ty,
+                "store",
+                avrac_field_type(cx, view_ty, "store"),
+            ),
+    }
 }
 
 /// One binder per name, in first-occurrence order — an ordinary code
@@ -193,18 +208,8 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     let answer = regs[0]
     let holes = quote_pat_holes(cx.view.store, body)
     let names = quote_pat_names(holes)
-    let at_ty = avrac_self(cx, "At")
-    let code_ty = avrac_self(cx, "Code")
-    let type_ty = avrac_self(cx, "TypeRef")
-    let of_ty = avrac_self(cx, "Analysed")
-    let of = cx.field_named(v, vty, "of", of_ty)
-    let subj_store = cx
-        .field_named(
-            cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")),
-            avrac_self(cx, "FileView"),
-            "store",
-            avrac_self_any(cx, ["SyntaxArena", "NodeStore"]),
-        )
+    let subj = subject_of(cx, v, vty)
+    let at_ty = subj.at_ty
     let carried = cx.carried_of(answer, cx.type(List<List<at_ty>>?))
     let list_at_ty = cx.type(List<at_ty>)
     mut out: List<Reg> = []
@@ -215,12 +220,9 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
             .push(
                 bind_of(
                     cx,
-                    of,
-                    code_ty,
-                    type_ty,
-                    subj_store,
+                    subj,
+                    vty,
                     span_j,
-                    at_ty,
                     quote_pat_is_text(holes, n),
                     quote_pat_is_run(holes, n),
                     quote_pat_is_type(holes, n),
@@ -238,21 +240,18 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
 /// written type.
 fn bind_of(
     mut cx: LowerCx,
-    of: Reg,
+    subj: Subject,
     code_ty: TypeId,
-    type_ty: TypeId,
-    store: Reg,
     span_j: Reg,
-    at_ty: TypeId,
     text: bool,
     run: bool,
     ty: bool,
 ) -> Reg {
-    if run { return avrac_call(cx, "run_coded", [of, span_j], cx.type(List<code_ty>)) }
-    let at_j = cx.slot_read(span_j, 0, at_ty)
-    if text { return text_bind(cx, store, at_j) }
-    if ty { return type_bind(cx, store, at_j, type_ty) }
-    cx.packed_struct(code_ty, [of, at_j])
+    if run { return avrac_call(cx, "run_coded", [subj.of, span_j], cx.type(List<code_ty>)) }
+    let at_j = cx.slot_read(span_j, 0, subj.at_ty)
+    if text { return text_bind(cx, subj.store, at_j) }
+    if ty { return type_bind(cx, subj.store, at_j) }
+    cx.packed_struct(code_ty, [subj.of, at_j])
 }
 
 /// The `At`'s own name, insisted on — present by construction (see
@@ -266,18 +265,18 @@ fn text_bind(mut cx: LowerCx, store: Reg, at_j: Reg) -> Reg {
 /// The `At`'s own written type, insisted on — `text_bind`'s twin,
 /// present by construction: `match_typed_node` never binds a TYPE
 /// open whose `own_type_at` answered null.
-fn type_bind(mut cx: LowerCx, store: Reg, at_j: Reg, type_ty: TypeId) -> Reg {
-    let opt_ty = cx.type(type_ty?)
-    let ty = avrac_call(cx, "own_type_at", [store, at_j], opt_ty)
-    cx.insisted(ty, opt_ty)
+fn type_bind(mut cx: LowerCx, store: Reg, at_j: Reg) -> Reg {
+    let own? = avrac_sig(cx, "own_type_at") else { return cx.hollow_of(cx.type(string)) }
+    cx.insisted(avrac_call(cx, "own_type_at", [store, at_j], own.ret), own.ret)
 }
 
 /// The pattern's own Shape, laid out as static data and read by
 /// address — its tags resolved once, up front (a missing variant
 /// speaks its defect here and nowhere inside the recursion), then
 /// every box pushed child-first by `ShapeBuild`.
-fn shape_static(mut cx: LowerCx, shape_ty: TypeId, open_ty: TypeId, name: string, s: Shape) -> Reg {
+fn shape_static(mut cx: LowerCx, shape_ty: TypeId, name: string, s: Shape) -> Reg {
     let sig? = cx.variants_of(shape_ty) else { return untagged(cx, shape_ty, "Shape") }
+    let open_ty = opens_of(cx, sig)
     let open_sig? = cx.variants_of(open_ty) else { return untagged(cx, open_ty, "Open") }
     mut build = ShapeBuild {
         tags: ShapeTags {
@@ -359,24 +358,47 @@ fn untagged(mut cx: LowerCx, ty: TypeId, tyname: string) -> Reg {
     cx.hollow_of(ty)
 }
 
-fn avrac_self(mut cx: LowerCx, name: string) -> TypeId {
-    let d? = cx.view.decls.avrac_named(name) else { return avrac_type_missing(cx, name) }
-    cx.view.decls.self_type_of(d)
+/// `Open`, read off `Shape.TypedNode`'s `opens: List<Open>` payload.
+fn opens_of(mut cx: LowerCx, shape: EnumSig) -> TypeId {
+    let typed = shape.payloads[variant_tag(cx, shape, "Shape", "TypedNode")]
+    let open? = cx.view.decls.elem_of(typed.last() ?? cx.type(string)) else { return opens_moved(cx) }
+    open
 }
 
-/// A self-lookup across a rename in progress: the binary compiling
-/// THIS source may predate a name this source now answers to, so it
-/// tries every name in order — licensed ahead of the NodeStore ->
-/// SyntaxArena rename (avra-8sb5.57.18.4).
-fn avrac_self_any(mut cx: LowerCx, names: List<string>) -> TypeId {
-    let hit? = names.find((n: string) -> cx.view.decls.avrac_named(n) != null) else {
-        return avrac_type_missing(cx, names[0])
+fn opens_moved(mut cx: LowerCx) -> TypeId {
+    cx
+        .defect(
+            "`@std.avrac.Shape.TypedNode` ends in no `List<Open>` — the compiler's own enum moved under this lowering",
+        )
+    cx.type(string)
+}
+
+/// A `@std/avrac` verb's declared signature — the door the quote
+/// lowering reads its vocabulary's types through, by declaration.
+fn avrac_sig(mut cx: LowerCx, verb: string) -> FnSig? {
+    let d? = cx.view.decls.avrac_named(verb) else {
+        avrac_missing(cx, verb, cx.type(string))
+        return null
     }
-    cx.view.decls.self_type_of(cx.view.decls.avrac_named(hit)!)
+    cx.view.decls.sig(d)?.fn_sig()
 }
 
-fn avrac_type_missing(mut cx: LowerCx, name: string) -> TypeId {
-    cx.defect("`@std.avrac.${name}` is not declared")
+/// One field's declared type, read off `owner_ty`'s OWN struct sig
+/// rather than named directly — a field access through a NAME that
+/// never changes (`FileView.store`) instead of the field's own type's
+/// name, which a rename moves. No self-lookup by that name is needed
+/// at all: the field's type IS whatever the declaration says today.
+fn avrac_field_type(mut cx: LowerCx, owner_ty: TypeId, field: string) -> TypeId {
+    let sig? = cx.fields_of(owner_ty) else { return avrac_field_missing(cx, owner_ty, field) }
+    let slot? = sig.slot_of(field) else { return avrac_field_missing(cx, owner_ty, field) }
+    sig.types[slot]
+}
+
+fn avrac_field_missing(mut cx: LowerCx, owner_ty: TypeId, field: string) -> TypeId {
+    cx
+        .defect(
+            "`${cx.view.types.name_of(owner_ty)}` has no field `${field}` — the compiler's own struct moved under this lowering",
+        )
     cx.type(string)
 }
 

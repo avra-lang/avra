@@ -8,7 +8,7 @@
 //! body, so declarations settle independently, one seat's answer
 //! never depends on a fixpoint, and a recursive callee needs no
 //! special case.
-use core.{DeclId, ExprId, StmtId, TypeId, NodeStore, MethodParts, WithParts, filled}
+use core.{DeclId, Expr, ExprId, Stmt, StmtId, TypeId, SyntaxArena, MethodParts, WithParts, filled}
 use features.{NameFacts, Decls, Decl, Ref}
 use compiler.memory.{is_managed}
 
@@ -111,12 +111,16 @@ impl Workspace {
 /// What one body's survey reads and gathers: its file's parts, the
 /// expression range its declaration owns, which seats are still
 /// candidates, and the evidence as it accrues.
-type Consumed = { store: NodeStore, names: NameFacts, lo: int, hi: int, eligible: List<bool>, out: List<bool> }
+type Consumed = { store: SyntaxArena, names: NameFacts, lo: int, hi: int, eligible: List<bool>, out: List<bool> }
 
 impl Consumed {
+    /// Reads only the kinds that can hold evidence: their `Expr` buckets
+    /// in the declaration's range, and the file's `Return` bucket.
     mut fn scan() {
-        for i in self.lo..self.hi { self.site_evidence(ExprId { index: i }) }
-        for s in self.store.stmt_ids() { self.return_evidence(s) }
+        for k in evidence_tags(self.store) {
+            for e in self.store.exprs_by_kind(self.lo, self.hi, k) { self.site_evidence(e) }
+        }
+        for s in self.store.stmts_by_kind(0, self.store.stmts.count(), return_tag(self.store)) { self.return_evidence(s) }
     }
 
     fn in_range(e: ExprId) -> bool {
@@ -175,3 +179,18 @@ impl Consumed {
         if self.in_range(v) { self.mark(self.seat_of(v)) }
     }
 }
+
+/// The tags of every expression `site_evidence` reads; each payload is a
+/// placeholder `tag_expr` never reads.
+fn evidence_tags(store: SyntaxArena) -> List<int> {
+    let at = ExprId { index: 0 }
+    [
+        store.tag_expr(Expr.With(at, [], [])),
+        store.tag_expr(Expr.MethodCall(at, "", [])),
+        store.tag_expr(Expr.StructLit("", [], [])),
+        store.tag_expr(Expr.ListLit([])),
+    ]
+}
+
+/// `Return`'s own tag; the payload is a placeholder `tag_stmt` never reads.
+fn return_tag(store: SyntaxArena) -> int { store.tag_stmt(Stmt.Return(null)) }

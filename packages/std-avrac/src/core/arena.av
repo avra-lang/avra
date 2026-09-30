@@ -4,23 +4,24 @@
 use @std.meta.{identity}
 
 /// ONE IDENTITY: every table is a `Cell`, so a copy of the arena
-/// appends into the same storage as the original. `kind_index` is
-/// `Expr`'s alone (COMPILER DB townhall §6.11's `@index kind`,
-/// `core/store.av`'s `exprs_by_kind`) — a `Stmt`/`Pat` arena carries
-/// the field unbuilt, never populated, at the cost of one always-null
-/// slot rather than a field on `NodeStore` itself, which every one of
-/// its ~30 sibling fields would pay a retain/release for on every
-/// copy and drop.
+/// appends into the same storage as the original. `kinds` is the arena
+/// relation's `@index kind`: one bucket of raw indexes per variant tag,
+/// ascending, covering the first `kinded` nodes and caught up on each ask.
 @identity
 export type Arena<N> = {
     nodes: Cell<List<N>>,
     spans: Cell<List<Span?>>,
-    kind_index: Cell<Map<string, Cell<List<int>>>?>,
+    kinds: Cell<Map<string, Cell<List<int>>>>,
+    kinded: Cell<int>,
 }
 
 export fn new_arena<N>() -> Arena<N> {
-    let no_kind_index: Map<string, Cell<List<int>>>? = null
-    Arena { nodes: list_cell<N>(), spans: list_cell<Span?>(), kind_index: Cell.new(no_kind_index) }
+    Arena {
+        nodes: list_cell<N>(),
+        spans: list_cell<Span?>(),
+        kinds: map_cell(),
+        kinded: Cell.new(0),
+    }
 }
 
 impl Arena {
@@ -37,4 +38,40 @@ impl Arena {
         if i >= 0 && i < spans.length { spans[i] } else { null }
     }
     fn count() -> int { self.nodes.get().length }
+
+    /// Every node tagged `k` inside `[lo, hi)`, ascending: `k`'s bucket
+    /// sliced by two binary searches, so no node of another kind is read.
+    fn of_kind(lo: int, hi: int, k: int, tag: fn(N) -> int) -> List<int> {
+        self.index_kinds(tag)
+        let ids = self.kinds.get().get("${k}")?.get() ?? []
+        ids.slice(lower_bound(ids, lo), lower_bound(ids, hi))
+    }
+
+    /// Files every node appended since the last ask under its tag.
+    fn index_kinds(tag: fn(N) -> int) {
+        let nodes = self.nodes.get()
+        for i in self.kinded.get()..nodes.length { self.bucket("${tag(nodes[i])}").push(i) }
+        self.kinded.set(nodes.length)
+    }
+
+    /// The bucket a tag files into, opened on first use.
+    fn bucket(key: string) -> Cell<List<int>> {
+        self.kinds.get().get(key) ?? {
+            let fresh: Cell<List<int>> = list_cell()
+            self.kinds.put(key, fresh)
+            fresh
+        }
+    }
+}
+
+/// The first index in `xs` (ascending) whose value is `>= target`;
+/// `xs.length` when every value is smaller.
+fn lower_bound(xs: List<int>, target: int) -> int {
+    mut lo = 0
+    mut hi = xs.length
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if xs[mid] < target { lo = mid + 1 } else { hi = mid }
+    }
+    lo
 }

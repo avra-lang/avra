@@ -1,7 +1,7 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
-    NodeStore,
+    SyntaxArena,
     DeclId,
     FileId,
     UseParts,
@@ -18,6 +18,7 @@ use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
+use compiler.host.{library_stem}
 
 impl Workspace {
 
@@ -162,7 +163,7 @@ impl Workspace {
 
     /// The case's group from its spec's own list — its body is the key
     /// — and its line from the source.
-    fn test_case(src: SourceFile, store: NodeStore, x: Decl) -> TestCase {
+    fn test_case(src: SourceFile, store: SyntaxArena, x: Decl) -> TestCase {
         let parts: SpecParts? = store.spec_parts(x.stmt)
         let written: Case = parts!.cases.find(same_body(it, x.root!))!
         let lo = self.decls.decl_span(x.id)!.lo
@@ -317,7 +318,7 @@ impl Decls {
     /// `refuse_as_at`) whose kind is a literal; null for any other
     /// expression — the callee is judged by its DECLARATION's package,
     /// never by its written name.
-    fn kinded_call(names: NameFacts, store: NodeStore, e: ExprId) -> Kinded? {
+    fn kinded_call(names: NameFacts, store: SyntaxArena, e: ExprId) -> Kinded? {
         let args? = match store.expr(e) { .Call(_, _, xs) -> xs, rest -> null } else { return null }
         let d: DeclId? = bound_decl_of(names, e)
         if d == null || self.package_of(d!) != "@std.meta" { return null }
@@ -355,16 +356,6 @@ fn same_body(c: Case, body: ExprId) -> bool {
 /// that fill to nothing. A hole naming nothing asks for NO WORD:
 /// an empty one would be an argument the linker still counts, and a
 /// bare `-L` eats the word after it.
-/// A package's manifest name as a library stem: `@std/sqlite` becomes
-/// `std-sqlite` — ONE leading `@` dropped, every `/` a `-`. The rule
-/// is spelled twice, here and in `tools/libs.py`, and the halves must
-/// be copyable into each other: "strip one leading `@`" is,
-/// "strip every `@`" is not.
-fn library_stem(named: string) -> string {
-    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
-    stripped.replace("/", "-")
-}
-
 fn filled_words(words: List<string>) -> List<string> {
     [w for w in [expanded(x) for x in words] if !w.is_empty()]
 }

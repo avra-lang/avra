@@ -68,7 +68,7 @@ use core.{
     Inits,
     spoiled_inits,
     Rebuilder,
-    NodeStore,
+    SyntaxArena,
     copier,
     hole_runs,
     quote_kind,
@@ -77,6 +77,13 @@ use core.{
 }
 use diagnostics.{loc_at}
 use @std.testing.{words}
+
+/// A literal an annotation argument reaches, in the file it stands.
+export type Spelled = { file: FileId, e: ExprId }
+
+/// How many consts a chain of names may pass through — past it, a
+/// cycle the const law refuses.
+const const_chain_limit: int = 64
 
 impl Workspace {
 
@@ -122,6 +129,7 @@ impl Workspace {
         // a loaded `@std/meta` the crossing cannot read generates
         // nothing; the annotation law speaks it
         if self.decls.meta_disagreement() != null { return [] }
+        if !self.is_derived(w.ret) && self.spoke_unspelled(f, w, p) { return [] }
         let directives = if self.is_derived(w.ret) {
             self.derive_directives(w, f, p, vis)
         } else if self.is_declared(w.ret) {
@@ -130,6 +138,45 @@ impl Workspace {
             self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
         }
         flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
+    }
+
+    /// Whether an argument names a declaration where the seat takes a
+    /// VALUE the source does not spell — spoken at the argument.
+    fn spoke_unspelled(f: FileId, w: DeclareWork, p: Parsed) -> bool {
+        let seats = self.decls.sig(w.ann)?.fn_sig()?.params ?? []
+        for j, e in w.args {
+            let name: string? = p.store.ident_name(e)
+            if name != null && j + 1 < seats.length && self.unspelled(f, e, name!, seats[j + 1]) {
+                let at = loc_at(self.decls.file(f).path, p.store.expr_span(e))
+                self
+                    .decls
+                    .speak_expansion(f, [unspelled_const(self.decls.decl(w.ann).name, name!, at)])
+                return true
+            }
+        }
+        false
+    }
+
+    /// A declaration's name in a VALUE seat that reaches no literal. A
+    /// name no declaration answers is typing's to refuse.
+    fn unspelled(f: FileId, e: ExprId, name: string, seat: TypeId) -> bool {
+        self.visible(f).fn_decl(name) != null &&
+            !self.decls.takes_a_decl(seat) &&
+            self.spelled_at(f, e, 0) == null
+    }
+
+    /// Where the literal an argument spells stands: the argument
+    /// itself, or through a const naming one — however many consts
+    /// deep — that const's own value. Null for anything computed.
+    fn spelled_at(f: FileId, e: ExprId, depth: int) -> Spelled? {
+        let store = self.decls.store_of(f)
+        if source_spelled(store.expr(e)) { return Spelled { file: f, e: e } }
+        if depth > const_chain_limit { return null }
+        let name? = store.ident_name(e) else { return null }
+        let c? = self.visible(f).fn_decl(name) else { return null }
+        let x = self.decls.decl(c)
+        let v? = self.decls.store_of(x.file).const_value(x.stmt) else { return null }
+        self.spelled_at(x.file, v, depth + 1)
     }
 
     /// One directive: a `source` is generated CODE parsed and admitted
@@ -445,7 +492,7 @@ impl Workspace {
     /// those, rebuilt, never the declaration that wrapped them.
     fn lifted_from(
         f: FileId,
-        src: NodeStore,
+        src: SyntaxArena,
         ss: List<StmtId>,
         seat: HoleKind,
         file: string,
@@ -466,7 +513,7 @@ impl Workspace {
     /// A declaration's fields — a type's, or a fn's parameters — and a
     /// refusal for a declaration that carries none. A statement that
     /// declares nothing is a template typing already refused here.
-    fn carried_fields(f: FileId, src: NodeStore, s: StmtId, file: string, at: int) -> List<Param> {
+    fn carried_fields(f: FileId, src: SyntaxArena, s: StmtId, file: string, at: int) -> List<Param> {
         let fields? = fields_of(src.stmt(s)) else {
             if src.declares(s) { self.decls.speak_expansion(f, [unliftable(file, at, no_fields("${file}:${at}"))]) }
             return []
@@ -478,7 +525,7 @@ impl Workspace {
     /// a template that is not one.
     fn carried_inits(
         f: FileId,
-        src: NodeStore,
+        src: SyntaxArena,
         ss: List<StmtId>,
         file: string,
         at: int,
@@ -917,7 +964,7 @@ fn absent_lifted() -> Lifted { Lifted { answer: MetaVal.Absent, heap: new_meta_h
 /// never has to name — or even know — the owner type. A method
 /// nested inside a spliced `impl` block is found too, for a template
 /// that prefers writing one.
-fn wrap_target_stmt(store: NodeStore, stmts: List<StmtId>, name: string) -> StmtId? {
+fn wrap_target_stmt(store: SyntaxArena, stmts: List<StmtId>, name: string) -> StmtId? {
     let top? = stmts.find((s: StmtId) -> is_free_fn_named(store, s, name)) else {
         let members = flatten([store.impl_parts(s)?.fns ?? [] for s in stmts])
         return members.find((m: StmtId) -> store.fn_parts(m)?.name == name)
@@ -925,7 +972,7 @@ fn wrap_target_stmt(store: NodeStore, stmts: List<StmtId>, name: string) -> Stmt
     top
 }
 
-fn is_free_fn_named(store: NodeStore, s: StmtId, name: string) -> bool {
+fn is_free_fn_named(store: SyntaxArena, s: StmtId, name: string) -> bool {
     let k? = store.declared_kind(s) else { return false }
     k is .Fn && store.fn_parts(s)?.name == name
 }
@@ -935,7 +982,7 @@ fn is_free_fn_named(store: NodeStore, s: StmtId, name: string) -> bool {
 /// `const`, default PRESENCE) in order, and the answer type's own
 /// spelling. Compared as WRITTEN — expansion runs before typing, so
 /// this is the only signature either side has yet.
-fn wrap_signature_matches(store: NodeStore, found: StmtId, w: DeclareWork) -> bool {
+fn wrap_signature_matches(store: SyntaxArena, found: StmtId, w: DeclareWork) -> bool {
     let parts? = store.fn_parts(found) else { return false }
     same_tparams(w.tparams, parts.tparams) &&
         same_params(w.params, store.declared_params(found)) &&

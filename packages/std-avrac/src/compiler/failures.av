@@ -25,11 +25,12 @@ use core.{
     DeclId,
     Expr,
     ExprId,
+    Stmt,
     StmtId,
     TypeId,
     TypeRef,
     Type,
-    NodeStore,
+    SyntaxArena,
     Span,
     flatten,
     fp,
@@ -40,6 +41,7 @@ use core.{
     touch,
 }
 use features.{Decls, Decl, TypeCx, bound_decl_of, written_seats}
+use @std.meta.{bracket}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb}
 use query.{FixpointRefusal, spoken as fixpoint_spoken}
@@ -262,46 +264,43 @@ fn propagate_contribution(fs: FailSurvey, decls: Decls, v: ExprId) -> Contributi
     result_error_contribution(fs, decls, v)
 }
 
-fn fail_values(store: NodeStore) -> List<ExprId> {
-    flatten([fail_value(store, s) for s in store.stmt_ids()])
+/// Every `fail`'s value in the file: the `Stmt` relation's `Fail` bucket.
+fn fail_values(store: SyntaxArena) -> List<ExprId> {
+    flatten(
+        [fail_value(store, s) for s in store.stmts_by_kind(0, store.stmts.count(), fail_tag(store))],
+    )
 }
 
-fn fail_value(store: NodeStore, s: StmtId) -> List<ExprId> {
+/// `Fail`'s own tag; the payload is a placeholder `tag_stmt` never reads.
+fn fail_tag(store: SyntaxArena) -> int { store.tag_stmt(Stmt.Fail(ExprId { index: 0 })) }
+
+fn fail_value(store: SyntaxArena, s: StmtId) -> List<ExprId> {
     match store.stmt(s) { .Fail(v) -> [v], rest -> [] }
 }
 
-fn fail_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
+fn fail_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
     [v for v in fail_values(store) if v.index >= lo && v.index < hi]
 }
 
-/// `Propagate`'s own tag — `tag_expr` reads only the variant, so the
-/// payload here is a placeholder never inspected.
-fn propagate_tag(store: NodeStore) -> int {
-    store.tag_expr(Expr.Propagate(ExprId { index: 0 }))
-}
+/// `Propagate`'s own tag; the payload is a placeholder `tag_expr` never reads.
+fn propagate_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Propagate(ExprId { index: 0 })) }
 
-/// M5b PREP (COMPILER DB townhall §6.11): a bucket lookup over the
-/// `Expr` arena relation's `@index kind`, scoped to the decl's own
-/// `@index decl` range — never a hand-matched sweep of every node.
-fn propagate_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
+/// Every `?` value in `[lo, hi)`: the `Expr` relation's `Propagate`
+/// bucket, sliced to the declaration's range.
+fn propagate_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> {
     flatten([propagate_value(store, e) for e in store.exprs_by_kind(lo, hi, propagate_tag(store))])
 }
 
-fn propagate_value(store: NodeStore, e: ExprId) -> List<ExprId> {
+fn propagate_value(store: SyntaxArena, e: ExprId) -> List<ExprId> {
     match store.expr(e) { .Propagate(v) -> [v], rest -> [] }
 }
 
-/// M6 PREP: every `catch` expression in `[lo, hi)` — the same
-/// index-range sweep `propagate_sites` already uses, since a `catch`
-/// expression is addressed the same way (an `ExprId` in the decl's own
-/// range), no new arena assumption needed. Finds a catch AT ANY DEPTH,
-/// a nested catch included — this is a flat index-range scan, blind to
-/// AST shape, same as `fail_sites`/`propagate_sites`.
-fn catch_sites(store: NodeStore, lo: int, hi: int) -> List<ExprId> {
-    [ExprId { index: i } for i in lo..hi if is_catch(store, ExprId { index: i })]
-}
+/// Every `catch` in `[lo, hi)`, at any depth: the `Expr` relation's
+/// `Catch` bucket, sliced to the declaration's range.
+fn catch_sites(store: SyntaxArena, lo: int, hi: int) -> List<ExprId> { store.exprs_by_kind(lo, hi, catch_tag(store)) }
 
-fn is_catch(store: NodeStore, e: ExprId) -> bool { store.expr(e) is .Catch }
+/// `Catch`'s own tag; the payload is a placeholder `tag_expr` never reads.
+fn catch_tag(store: SyntaxArena) -> int { store.tag_expr(Expr.Catch(ExprId { index: 0 }, [], [], [])) }
 
 /// M6 PREP: one catch arm's OWN source span — the whole text a re-raise
 /// nested anywhere inside it (an `if`, a `match`, any depth) still falls
@@ -311,18 +310,18 @@ fn is_catch(store: NodeStore, e: ExprId) -> bool { store.expr(e) is .Catch }
 /// top-level declaration.
 type ArmOwner = { catch_at: ExprId, span: Span }
 
-fn arm_owners(store: NodeStore, catches: List<ExprId>) -> List<ArmOwner> {
+fn arm_owners(store: SyntaxArena, catches: List<ExprId>) -> List<ArmOwner> {
     flatten([catch_arm_owners(store, c) for c in catches])
 }
 
-fn catch_arm_owners(store: NodeStore, c: ExprId) -> List<ArmOwner> {
+fn catch_arm_owners(store: SyntaxArena, c: ExprId) -> List<ArmOwner> {
     match store.expr(c) {
         .Catch(_, _, _, values) -> flatten([some_list(arm_owner(store, c, arm)) for arm in values]),
         rest -> [],
     }
 }
 
-fn arm_owner(store: NodeStore, c: ExprId, arm: ExprId) -> ArmOwner? {
+fn arm_owner(store: SyntaxArena, c: ExprId, arm: ExprId) -> ArmOwner? {
     let sp? = store.expr_span(arm) else { return null }
     ArmOwner { catch_at: c, span: sp }
 }
@@ -331,7 +330,7 @@ fn arm_owner(store: NodeStore, c: ExprId, arm: ExprId) -> ArmOwner? {
 /// when `v` sits in none. A catch nested inside another's arm hands
 /// back the NEARER one, exactly as `decls_mint.av`'s `innermost` picks
 /// the smallest containing span among several candidates.
-fn innermost_catch(store: NodeStore, owners: List<ArmOwner>, v: ExprId) -> ExprId? {
+fn innermost_catch(store: SyntaxArena, owners: List<ArmOwner>, v: ExprId) -> ExprId? {
     let sp? = store.expr_span(v) else { return null }
     let containing = [o for o in owners if o.span.lo <= sp.lo && sp.hi <= o.span.hi]
     if containing.is_empty() { return null }
@@ -350,7 +349,7 @@ fn smallest_owner(owners: List<ArmOwner>) -> ArmOwner {
 /// site at any nesting depth (they are index-range scans, blind to AST
 /// shape), so tagging each with `innermost_catch` is the whole of
 /// `within` — no separate arm walk, and so no double count either.
-fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: NodeStore, lo: int, hi: int) -> List<
+fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: SyntaxArena, lo: int, hi: int) -> List<
     ErrorSite,
 > {
     let catches_at = catch_sites(store, lo, hi)
@@ -401,7 +400,7 @@ fn catch_error_site(
     fs: FailSurvey,
     decls: Decls,
     d: DeclId,
-    store: NodeStore,
+    store: SyntaxArena,
     c: ExprId,
     within: ExprId?,
 ) -> ErrorSite {
@@ -442,6 +441,7 @@ impl Workspace {
     /// The pass: every `_`-declared fn's inferred error union,
     /// settled once per program state. ONE whole-program key, never
     /// a per-decl memo (see this file's header).
+    @bracket("fail_summary")
     fn failures() -> int {
         if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
         let k = key(Family.Failures, 0)
@@ -520,7 +520,7 @@ impl Workspace {
     /// around, one level up. A method-shaped fn's parent is always one of
     /// these three (`declare_member`'s own exhaustive dispatch refuses every
     /// other kind before a DeclSig is ever asked for it).
-    fn seated_target(parent_id: DeclId, store: NodeStore, t: TypeCx) -> DeclId? {
+    fn seated_target(parent_id: DeclId, store: SyntaxArena, t: TypeCx) -> DeclId? {
         let parent = self.decls.decl(parent_id)
         match parent.kind {
             .Trait or .Record -> parent_id,
@@ -692,6 +692,7 @@ impl Decls {
         }
     }
 
+    @bracket("fail_summary")
     fn settle_fail_one(d: DeclId, s: FailSummary) -> bool {
         let before = self.inferred_errors_so_far(d).length
         for ty in s.direct { self.record_inferred_error(d, ty) }

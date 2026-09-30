@@ -1,0 +1,155 @@
+//! The Avra website. A screen is a fn answering a View; the table of
+//! screens is the routes AND the navigation; the page is HTML with no
+//! script.
+//!
+//!     build/avra build packages/site && packages/site/src/main    # http://127.0.0.1:8788
+use @std.ui.{View, Shows, column, row, section, heading, text, link, list, item, rows}
+use @std.ui_web.{Screen}
+use @std.ui_gallery.{gallery}
+use gallery.{site_gallery}
+use @std.http.http.{Request, Unrouted, Response, Handler, Respond}
+use @std.http.route.{Route, fixed}
+use @std.http.frame.{Method}
+use @std.http.server.{server, layer}
+
+export server site {
+    port: 8788
+    not_found
+    routes: [route(s) for s in screens()]
+}
+
+/// One address, its title, and the fn that draws it.
+type Address = { path: string, title: string, draw: fn() -> dyn View }
+
+/// The screens, in the order the navigation lists them.
+fn screens() -> List<Address> {
+    [
+        Address { path: "/", title: "Avra", draw: home },
+        Address { path: "/why", title: "Why Avra", draw: why },
+        Address { path: "/principles", title: "Principles", draw: principles },
+        Address { path: "/gallery", title: "Gallery", draw: views },
+    ]
+}
+
+fn route(e: Address) -> Route { fixed(Method.Get, e.path, (_q: Request<Unrouted>) -> screen(e.title, e.draw()).response()) }
+
+/// A screen in the site's chrome.
+fn screen(title: string, body: dyn View) -> Screen { Screen { title: title, body: shell(body) } }
+
+/// A route nobody declared answers a page, not an empty 404.
+export layer not_found { q, next ->
+    let r = next(q)
+    if r.status == 404 { (screen("Not found", missing()) with { status: 404 }).response() } else { r }
+}
+
+// ── Screens ─────────────────────────────────────────────────────
+
+export fn home() -> dyn View {
+    column {
+        gap: .L
+        heading "Avra is the language machines write software in, and the one compiler that knows the whole program."
+        text "One program, one compiler, one binary. Infrastructure, docs, schemas, tests and agent tools are projections of one source of truth."
+        proofs()
+    }
+}
+
+export fn why() -> dyn View {
+    column {
+        gap: .M
+        heading "Why Avra exists"
+        text "Software is increasingly written by machines. The stacks they write into were built for humans, one layer at a time: eleven languages and forty config files for one system, each keeping its own copy of the truth."
+        text "The glue is where generated code fails. A model writes a good function and then breaks at the seams: the config, the schema, the deploy, the string that was secretly a permission."
+        text "Avra's answer is not another framework. It is a language whose compiler holds the knowledge no other tool has, and makes everything else a consequence of it."
+    }
+}
+
+fn principles() -> dyn View { principles_of(beliefs()) }
+
+/// The principles screen over these beliefs.
+export fn principles_of(bs: List<Belief>) -> dyn View {
+    column {
+        gap: .M
+        heading "What Avra believes"
+        list {
+            rows([b for b in bs])
+        }
+    }
+}
+
+/// Every site view in every state.
+fn views() -> dyn View { gallery(site_gallery()) }
+
+export fn missing() -> dyn View {
+    column {
+        heading "Not found"
+        text "No screen answers this address."
+    }
+}
+
+// ── Pieces ──────────────────────────────────────────────────────
+
+/// Every screen inside the site's chrome: the navigation, then the body.
+fn shell(body: dyn View) -> dyn View {
+    column {
+        gap: .L
+        pad: .M
+        row {
+            gap: .M
+            [nav_link(e) for e in screens()]
+        }
+        body
+    }
+}
+
+fn nav_link(e: Address) -> dyn View {
+    link e.title {
+        to: e.path
+    }
+}
+
+/// Three receipts, each true today.
+export fn proofs() -> dyn View {
+    section "Proof points" {
+        gap: .S
+        text "The compiler is written in Avra and compiles itself, to a fixed point."
+        text "Every program test runs through an interpreter and a native build, and they must agree."
+        text "A warm check of a real package costs 0.36 billion instructions where a cold one costs 251.8 billion."
+    }
+}
+
+export type Belief = { name: string, says: string }
+
+export fn beliefs() -> List<Belief> {
+    [
+        Belief {
+            name: "Correct on the first try",
+            says: "every choice is judged by whether a model generates it right, first time.",
+        },
+        Belief {
+            name: "Collapse the paradox",
+            says: "binary choices are usually false dichotomies; find the design where both sides win.",
+        },
+        Belief {
+            name: "Visible magic",
+            says: "the compiler does enormous work, and you can always ask what it did.",
+        },
+        Belief {
+            name: "Escape hatches everywhere",
+            says: "every automatic thing has a manual override.",
+        },
+        Belief {
+            name: "One source of truth, many projections",
+            says: "the schema, the API, the docs and the agent's tool derive from one declaration.",
+        },
+    ]
+}
+
+/// A belief is a keyed list item wherever it is listed.
+impl Shows for Belief {
+    fn view() -> dyn View {
+        item {
+            key: self.name
+            text "${self.name} — ${self.says}"
+        }
+    }
+}
