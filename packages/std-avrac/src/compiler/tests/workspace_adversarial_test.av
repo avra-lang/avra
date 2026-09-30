@@ -3,7 +3,7 @@
 // module's line, and the crossings that must simply work. The
 // vertical story lives in workspace_test.av; these are the programs
 // that tried to break it.
-use @std.avrac.compiler.{avra, new_workspace, analyze_source}
+use @std.avrac.compiler.{avra, new_workspace, analyze_source, Analysis}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 
@@ -23,6 +23,38 @@ fn runs(files: Map<string, string>, names: List<string>) -> string? {
         .Ok(text) -> text,
         .Err(_) -> null,
     }
+}
+
+/// One file's analysis in the package `files` holds.
+fn analysed_at(files: Map<string, string>, names: List<string>, at: string) -> Analysis {
+    package(files, names).analyze_file(at)
+}
+
+/// A test file's own helper, the name every attack below reuses.
+fn thing() -> string {
+    "fn make_thing() -> int {\n    1\n}\n"
+}
+
+/// Where the second test file stands: beside the first when `shared`, in a
+/// directory of its own otherwise.
+fn b_at(shared: bool) -> string {
+    if shared { "/w/src/tests/b_test.av" } else { "/w/src/tests/b/b_test.av" }
+}
+
+/// The root file, and a test tree holding `thing` in each of three files — the
+/// third always in a directory of its own.
+fn tested(shared: bool) -> Map<string, string> {
+    mut files = {
+        "/w/src/main.av": "1\n",
+        "/w/src/tests/a_test.av": thing(),
+        "/w/src/tests/c/c_test.av": thing(),
+    }
+    files.set(b_at(shared), thing())
+    files
+}
+
+fn tested_names(shared: bool) -> List<string> {
+    ["/w/src/main.av", "/w/src/tests/a_test.av", b_at(shared), "/w/src/tests/c/c_test.av"]
 }
 
 fn twice() -> string {
@@ -72,6 +104,27 @@ spec "compiler/workspace (adversarial)" {
                 ["/w/src/main.av", "/w/src/a.av"],
                 "`helper` is declared twice in this module — here and in `a.av`",
             )
+        }
+        then "two test files beside each other share their directory's namespace — one refusal, naming the way out" {
+            let a = analysed_at(tested(true), tested_names(true), "/w/src/tests/a_test.av")
+            let b = analysed_at(tested(true), tested_names(true), "/w/src/tests/b_test.av")
+            let said = a.report() + b.report()
+            a.diagnostics.length + b.diagnostics.length == 1 &&
+                said.contains("`make_thing` is declared twice in this module") &&
+                said.contains("move one into a directory of its own")
+        }
+        then "a test file in a directory of its own redeclares its siblings' helper with no refusal" {
+            [analysed_at(tested(false), tested_names(false), at) for at in tested_names(false)]
+                .all(it.diagnostics.is_empty())
+        }
+        then "a helper declared twice in one test file still refuses" {
+            let a = analysed_at(
+                {"/w/src/main.av": "1\n", "/w/src/tests/a_test.av": thing() + thing()},
+                ["/w/src/main.av", "/w/src/tests/a_test.av"],
+                "/w/src/tests/a_test.av",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("`make_thing` is defined more than once")
         }
         then "an import shadowed by a local declaration refuses" {
             refuses_once(

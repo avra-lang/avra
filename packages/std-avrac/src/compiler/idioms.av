@@ -8,7 +8,7 @@
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
 use core.{TypeRef, flatten}
-use features.{ArmBind, ArmInfo, Code, Fix, Scan, Ty, enclosing_decl, rule, said}
+use features.{AnnotationFact, ArmBind, ArmInfo, Code, Fix, Scan, Ty, enclosing_decl, rule, said}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -1036,7 +1036,9 @@ fn merge_index(lit: Code) -> int? {
         if a.guard == null &&
             b.guard == null &&
             a.value.text() == b.value.text() &&
-            binds_agree(a.binds(), b.binds()) { return i }
+            binds_agree(a.binds(), b.binds()) {
+            return i
+        }
     }
     null
 }
@@ -1215,52 +1217,86 @@ fn repeated_projection_found(a: Code) -> Fix {
         )
 }
 
-/// THE METHOD TABLE'S RAW CELL, READ ANYWHERE OUTSIDE ITS OWN VOCABULARY. Gating a
-/// NAMED wrapper (a call to `registered_methods`) leaves the field itself open: a new
-/// site can read `self.methods.get()` inline and record nothing, calling no wrapper at
-/// all — the hand-kept audit list is only as wide as the sites someone remembered to
-/// name. So the field access is what this rule refuses, not the wrapper's name: the
-/// vocabulary is `methods` (makes the table), `declare_method`/`held_method`/
-/// `method_clashes` (read inside that bracket, recording nothing — an edge from a
-/// reader the table waits on is a cycle), and `registered_methods`/`methods_of`/
-/// `declared_methods` (the two doors onto the same read, one unrecorded for the bracket,
-/// one recorded for a consumer). Any OTHER fn, anywhere, touching `.methods.get()` is
-/// refused, whether or not it also happens to call a named wrapper.
+/// A HOOK-FREE TABLE READ (features/bypass.av's `Bypassed`) called from
+/// outside its own bracket, or the method table's own CELL read past
+/// every wrapper's name. `sig_so_far`, `seat_written_so_far` and
+/// `inferred_errors_so_far` answer a fixpoint's table AS IT STANDS,
+/// mid-computation, and `registered_methods` a type's method table the
+/// same way — none of the four records a dependency, so each is safe
+/// only from inside the member that IS the computation trusted to see
+/// the table that way. THE CALLEE'S OWN NAME is held open (`${name}`,
+/// a text seat, never a held code position) so the four verbs are ONE
+/// arm sharing ONE bracket-lookup, over the one call shape a bypass
+/// takes whatever its arity — gating a NAMED wrapper alone would still
+/// leave `self.methods.get()` itself open to a new site reading it
+/// inline, so that raw field-then-`.get()` shape is a second arm over
+/// the SAME "methods" bracket.
 ///
-/// NO REWRITE: the fix is to read through `methods_of` instead, a judgement call this
-/// pattern's one bound field access cannot make on its own.
-@keeps("fn declare_method(target: int) {\n    let held = decls.methods.get()[target.index].get()\n}")
-@keeps("fn f(target: int) {\n    let held = decls.methods_of(target)\n}")
-export rule methods_cell_outside {
-    // LICENSED compiler.methods_cell_outside: the pattern's own text names the shape it detects
-    quote { ${r}.methods.get() } if outside_methods_bracket(it) -> methods_cell_outside_found(it),
+/// NO REWRITE: the fix is either routing the read through the table's
+/// own recording accessor (`sig`, `writes_receiver`/`declares_writing`,
+/// `inferred_errors`, `declared_methods`, `methods_of`) or marking the
+/// caller `@bracket(...)` — a judgement call about which is right for
+/// THIS caller, which this pattern's one bound call cannot make.
+@keeps("x.sig(d)")
+@keeps("x.inferred_errors(d)")
+@keeps("x.declared_methods(target)")
+@keeps("x.writes_receiver(d)")
+@keeps("x.methods_of(target)")
+export rule bypass_outside_bracket {
+    quote { ${recv}.${name}(${..args}) } if bypasses_bracket(it, name) -> bypass_found(it, name, covered_bracket(name)!),
+    quote { ${r}.methods.get() } if bypasses_methods_cell(it) -> bypass_found(it, "methods.get()", "methods"),
 }
 
-/// The fns that hold `Methods`'s own vocabulary — the table's own bracket, and the
-/// two doors onto its read.
-const methods_bracket_fns: List<string> = [
-    "methods",
-    "methods_of",
-    "declared_methods",
-    "registered_methods",
-    "declare_method",
-    "held_method",
-    "method_clashes",
-]
-
-fn outside_methods_bracket(c: Code) -> bool {
-    if c.of.view.source.file.contains("/tests/") { return false }
-    let d? = enclosing_decl(c.of.view, c.at) else { return true }
-    !methods_bracket_fns.contains(c.of.view.decls.decl(d).name)
+/// The bracket a covered verb belongs to — the rule's own verb→bracket
+/// map, null for every other name (`recv`/`args` never even judged for
+/// those, since a name outside this table answers null before either
+/// is read).
+fn covered_bracket(name: string) -> string? {
+    match name {
+        "sig_so_far" or "inferred_errors_so_far" -> "fail_summary",
+        "seat_written_so_far" -> "receivers",
+        "registered_methods" -> "methods",
+        rest -> null,
+    }
 }
 
-fn methods_cell_outside_found(c: Code) -> Fix {
+/// Whether `c` is a call to a covered verb whose own enclosing
+/// declaration does not wear that verb's bracket.
+fn bypasses_bracket(c: Code, name: string) -> bool {
+    let bracket? = covered_bracket(name) else { return false }
+    !bracketed(c, bracket)
+}
+
+/// The raw cell's own guard — `bracketed`'s door directly, since the
+/// shape carries no callee name for `covered_bracket` to look up.
+fn bypasses_methods_cell(c: Code) -> bool {
+    !bracketed(c, "methods")
+}
+
+/// Whether `c`'s own ENCLOSING DECLARATION wears `@std/meta`'s
+/// `@bracket(name)` — by DECLARATION, never a bare compare of the
+/// word: a package's own fn named `bracket` answers false, exactly as
+/// `marks_identity` (compiler/typing/declare.av) reads `@identity`.
+fn bracketed(c: Code, name: string) -> bool {
+    let d? = enclosing_decl(c.of.view, c.at) else { return false }
+    let decls = c.of.view.decls
+    let file = decls.annotation_home(d)
+    decls
+        .annotations_of(d)
+        .any(
+            (a: AnnotationFact) -> a.args.length == 1 &&
+                a.args[0] == name &&
+                decls.is_meta_annotation(a, file, "bracket"),
+        )
+}
+
+fn bypass_found(c: Code, verb: string, bracket: string) -> Fix {
     Fix
         .Say(
             said(
                 c.loc(),
-                "the method table's raw cell, read outside its own vocabulary — a consumer reads through `methods_of`, which records the dependency",
-                "this read",
+                "a hook-free read lives inside its own bracket — `${verb}` is legal only inside `@bracket(\"${bracket}\")`, and this caller wears no such mark; read it through the recording accessor, or annotate the caller `@bracket(\"${bracket}\")` if it IS a member",
+                "this call",
                 null,
             ),
         )
