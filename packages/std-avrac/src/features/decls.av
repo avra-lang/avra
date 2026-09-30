@@ -21,7 +21,7 @@ use core.{
     PatId,
     ParamId,
     Span,
-    NodeStore,
+    SyntaxArena,
     TypeRegistry,
     new_type_registry,
     Param,
@@ -143,7 +143,7 @@ impl AnnotationFact {
 }
 
 /// An argument's literal text, when it has one — a computed expression answers "".
-fn arg_text(store: NodeStore, e: ExprId) -> string {
+fn arg_text(store: SyntaxArena, e: ExprId) -> string {
     let expr = store.expr(e)
     let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
     t
@@ -161,7 +161,7 @@ fn bool_text(e: Expr) -> string? {
 
 /// A parsed `Annotation` as the fact a declaration keeps: its callee's args
 /// re-read as literal text, since the fact outlives the store a held file has none of.
-fn annotation_fact(store: NodeStore, a: Annotation) -> AnnotationFact {
+fn annotation_fact(store: SyntaxArena, a: Annotation) -> AnnotationFact {
     AnnotationFact { name: a.name, args: [arg_text(store, e) for e in a.args], span: a.span }
 }
 
@@ -235,7 +235,7 @@ impl DeclFacts {
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
-fn extern_host(store: NodeStore, s: StmtId) -> List<string> {
+fn extern_host(store: SyntaxArena, s: StmtId) -> List<string> {
     let ext? = store.extern_parts(s) else { return [] }
     let seats = [p.ty?.name ?? "" for p in ext.params]
     seats.concat([ext.ret.name])
@@ -244,7 +244,7 @@ fn extern_host(store: NodeStore, s: StmtId) -> List<string> {
 /// The source a declaration occupies: a default's or a case's root, else
 /// its statement — and none for a hoisted one, whose nodes lie inside
 /// the statement that minted it.
-fn occupied(store: NodeStore, x: Decl) -> Span? {
+fn occupied(store: SyntaxArena, x: Decl) -> Span? {
     if store.is_hoisted(x.stmt) { return null }
     if !(x.kind is .Default || x.kind is .Case) { return store.stmt_span(x.stmt) }
     let root? = x.root else { return null }
@@ -253,7 +253,7 @@ fn occupied(store: NodeStore, x: Decl) -> Span? {
 
 /// THE ONE CAPTURE — a parsed declaration's facts, read from its store exactly once.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a store and a declaration in, its facts out.
-fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
+fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
     // A GENERATED declaration's statement lives in an expanded range the written part
     // tables do not cover — `statics`, `grammars`, the parts tables trap past their end.
     // Absence there is "declares nothing", not a defect.
@@ -278,7 +278,7 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
 }
 
 /// The type names a fn's own `mut` parameters write, from its parse.
-fn mut_seat_names(store: NodeStore, s: StmtId) -> List<string> {
+fn mut_seat_names(store: SyntaxArena, s: StmtId) -> List<string> {
     [pp.ty!.name for pp in store.fn_parts(s)?.params ?? [] if pp.promises.mutable && pp.ty != null]
 }
 
@@ -325,20 +325,8 @@ export type Ref = { @local @index decl: DeclId, @local @index file: FileId, @loc
 @identity
 export type Decls = {
     types: TypeRegistry,
-    /// OUTER-TABLE GROWTH, SHARED: `mint`/`file_id`/`module_id` run
-    /// behind captured hooks (`built()`'s registrations), so the
-    /// table itself — not only a per-slot Cell inside it — must be a
-    /// shared referent, or the append lands in a copy and is lost.
-    files: Cell<List<FileInfo>>,
-    paths: Cell<Map<string, FileId>>,
-    modules: Cell<List<string>>,
-    module_ids: Cell<Map<string, ModuleId>>,
-    /// TWO LAYERS SHARED: the per-module slot (see `children`) AND the
-    /// outer table itself (see `files` above) — appending a MODULE's
-    /// slot is outer-table growth exactly as appending a FILE's row is.
-    module_files: Cell<List<Cell<List<FileId>>>>,
     mains: Cell<List<DeclId?>>,
-    stores: Cell<List<NodeStore?>>,
+    stores: Cell<List<SyntaxArena?>>,
     ensure_store: Cell<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
@@ -569,12 +557,8 @@ export enum ConstType {
 fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 
 export fn new_decls() -> Decls {
-    let no_files: List<FileInfo> = []
-    let no_paths: Map<string, FileId> = {}
-    let no_modules: List<string> = []
-    let no_module_ids: Map<string, ModuleId> = {}
     let no_mains: List<DeclId?> = []
-    let no_stores: List<NodeStore?> = []
+    let no_stores: List<SyntaxArena?> = []
     let no_generations: List<List<Generation>> = []
     let no_origins: List<Origins> = []
     let no_decls: List<Decl> = []
@@ -587,7 +571,6 @@ export fn new_decls() -> Decls {
     let no_targets: List<DeclId?> = []
     let no_seat_marks: List<List<SeatMark>> = []
     let no_declared_writes: List<bool> = []
-    let no_module_files: List<Cell<List<FileId>>> = []
     let no_decl_ids: List<Cell<SideTable<DeclId?>>> = []
     let no_file_decls: List<Cell<List<DeclId>>> = []
     let no_expansion_voices: List<Cell<List<Diag>>> = []
@@ -600,11 +583,6 @@ export fn new_decls() -> Decls {
     let db = new_db()
     let d = Decls {
         types: new_type_registry(),
-        files: Cell.new(no_files),
-        paths: Cell.new(no_paths),
-        modules: Cell.new(no_modules),
-        module_ids: Cell.new(no_module_ids),
-        module_files: Cell.new(no_module_files),
         mains: Cell.new(no_mains),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
@@ -928,7 +906,7 @@ impl Decls {
     /// The declaration a statement of a file makes, when it does.
     fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids.get()[f.index].get().get(s.index) }
 
-    fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
+    fn store(d: DeclId) -> SyntaxArena { self.store_of(self.decl(d).file) }
 
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
 
@@ -1029,8 +1007,8 @@ impl Decls {
 
     /// The word a declaration answers `collect` under: for a `Const`
     /// (the ONLY kind a named instance promotes to,
-    /// `NodeStore.declared_instance`) the component its own statement
-    /// instances (`NodeStore.instance_of`, `rule` among them) —
+    /// `SyntaxArena.declared_instance`) the component its own statement
+    /// instances (`SyntaxArena.instance_of`, `rule` among them) —
     /// absent for everything else, a `Builtin`'s sentinel file and
     /// stmt among them, which no store carries.
     fn collect_word(d: Decl) -> string? {
@@ -2280,7 +2258,7 @@ export const self_word: string = "Self"
 
 /// A member's body, when it wrote one — a sig's is a HOLE no pass
 /// walks, and declares nothing to type.
-fn declared_body(store: NodeStore, m: StmtId) -> ExprId? {
+fn declared_body(store: SyntaxArena, m: StmtId) -> ExprId? {
     let body: ExprId? = store.fn_parts(m)?.body
     if body == null || store.expr(body!) is .Error { return null }
     body
