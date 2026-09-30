@@ -10,6 +10,8 @@ use @std.http.files.{Files, directory}
 use @std.http.form.{Part, Sink}
 use @std.http.guard.{Cors, cors, hardened}
 use @std.http.observe.{Observe, Served, observing}
+use @std.http.quota.{Rate, rated}
+use @std.time.{secs}
 use @std.http_compress.{compressed}
 use @std.json.{parse}
 use @std.json.codec.{json}
@@ -142,6 +144,8 @@ println(
     ),
 )
 println(timed("security headers", n, get, "", "".bytes(), (q) -> hardened(q, hello)))
+let paced = rated(Rate { requests: 1000000000, per: secs(1) })
+println(timed("rate, a client within it", n, get, "", "".bytes(), (q) -> paced(q, hello)))
 let watched = observing(Observe { log: quiet })
 println(
     timed(

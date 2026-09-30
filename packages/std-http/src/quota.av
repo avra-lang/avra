@@ -1,0 +1,169 @@
+//! QUOTAS — what a route may take: how often a client may ask, how many
+//! octets it may send, and how long its I/O may wait, as layers — and
+//! the two probes an orchestrator asks a server.
+//!
+//!     server app {
+//!         layer { wraps: rated(Rate { requests: 100, per: secs(60) }) }
+//!         layer { wraps: held_to(Bounds { under: "/upload", body: 10485760, deadline: secs(30) }) }
+//!         …
+//!     }
+//!
+//! A quota names the routes it holds by PATH PREFIX, through the
+//! router's own segment law (`Request.under`), so a layer and the
+//! routes it guards read one path alike. Absent, it holds them all.
+//!
+//! THE RATE IS COUNTED PER PROCESS, in a token bucket per client: a
+//! server on N cores grants each client up to N times the rate. The
+//! buckets are bounded — past `clients` distinct keys the table starts
+//! over — so a flood of new addresses costs memory once and never
+//! grows it. A refusal is 429 with `retry-after`.
+//!
+//! A BODY BOUND is checked against a declared length before the handler
+//! runs, and held on the body as it is read, so a chunked body meets it
+//! too. A DEADLINE bounds every park of the handler's I/O — a body read
+//! answers 408 when it passes.
+use @std.time.{Duration, now_ms, within}
+use @std.text.{parse_int}
+
+/// A rate: `requests` per `per`, per client as `key` names it (the
+/// peer's address by default), for the routes `under` names, with at
+/// most `clients` buckets held.
+export type Rate = {
+    requests: int,
+    per: Duration,
+    under: string? = null,
+    key: fn(Request<Unrouted>) -> string = peer_address,
+    clients: int = 65536,
+}
+
+/// One client's bucket: its tokens, in thousandths so a refill is
+/// exact, and when it was last filled.
+type Bucket = { tokens: int, at_ms: int }
+
+/// The rate layer under `r`: one table of buckets for the layer's life.
+export fn rated(r: Rate) -> fn(Request<Unrouted>, Handler) -> Response {
+    let buckets: Cell<Map<string, Bucket>> = Cell.new({})
+    (q: Request<Unrouted>, next: Handler) -> r.admitted(buckets, q, next)
+}
+
+impl Rate {
+    /// `q` answered by `next` when its client has a token left, or 429
+    /// saying when one will be.
+    fn admitted(buckets: Cell<Map<string, Bucket>>, q: Request<Unrouted>, next: Handler) -> Response {
+        if !quota_covers(self.under, q) || self.requests <= 0 { return next(q) }
+        let k = (self.key)(q)
+        let now = now_ms()
+        let b = self.refilled(buckets.get().get(k), now)
+        if b.tokens < 1000 {
+            self.kept(buckets, k, b)
+            return too_many(self.wait_s(b))
+        }
+        self.kept(buckets, k, b with { tokens: b.tokens - 1000 })
+        next(q)
+    }
+
+    /// `b` filled for the time since it was last, capped at a full
+    /// bucket — a clock that stepped back fills nothing; a client never
+    /// seen starts full.
+    fn refilled(b: Bucket?, now: int) -> Bucket {
+        let full = self.requests * 1000
+        let held? = b else { return Bucket { tokens: full, at_ms: now } }
+        let gained = if now > held.at_ms { (now - held.at_ms) * full / least_one(self.per.ms) } else { 0 }
+        Bucket {
+            tokens: if held.tokens + gained > full { full } else { held.tokens + gained },
+            at_ms: now,
+        }
+    }
+
+    /// `b` kept under `k` — the table started over once it holds
+    /// `clients` keys.
+    fn kept(buckets: Cell<Map<string, Bucket>>, k: string, b: Bucket) {
+        if buckets.get().get(k) == null && buckets.get().length >= self.clients { buckets.set({}) }
+        buckets.put(k, b)
+    }
+
+    /// Whole seconds until `b` holds one token again, at least one.
+    fn wait_s(b: Bucket) -> int {
+        let per_token_ms = least_one(self.per.ms) / least_one(self.requests)
+        let ms = (1000 - b.tokens) * per_token_ms / 1000
+        if ms < 1000 { 1 } else { (ms + 999) / 1000 }
+    }
+}
+
+/// The peer's address, its port dropped: the key a rate counts by.
+export fn peer_address(q: Request<Unrouted>) -> string {
+    let parts = q.peer.split(":")
+    if parts.length < 2 { return q.peer }
+    parts.slice(0, parts.length - 1).join(":")
+}
+
+fn least_one(n: int) -> int { if n < 1 { 1 } else { n } }
+
+/// Whether a quota naming `under` holds `q`: every request when it
+/// names nothing.
+fn quota_covers(under: string?, q: Request<Unrouted>) -> bool {
+    let prefix? = under else { return true }
+    q.under(prefix)
+}
+
+// ── Bounds ──────────────────────────────────────────────────────
+
+/// What the routes `under` names may take: at most `body` octets, and
+/// `deadline` for their I/O.
+export type Bounds = { under: string? = null, body: int? = null, deadline: Duration? = null }
+
+/// The bounds layer under `b`.
+export fn held_to(b: Bounds) -> fn(Request<Unrouted>, Handler) -> Response {
+    (q: Request<Unrouted>, next: Handler) -> b.held(q, next)
+}
+
+impl Bounds {
+    /// `q` answered by `next` under these bounds — refused 413 before
+    /// the handler when it declares more than `body`.
+    fn held(q: Request<Unrouted>, next: Handler) -> Response {
+        if !quota_covers(self.under, q) { return next(q) }
+        let bounded_q = match self.body {
+            n? -> {
+                if parse_int(q.header("content-length") ?? "0") ?? 0 > n { return past_route(n) }
+                q with { body: q.body.bounded(n) }
+            }
+            null -> q
+        }
+        let d? = self.deadline else { return next(bounded_q) }
+        within d { next(bounded_q) }
+    }
+}
+
+// ── Probes ──────────────────────────────────────────────────────
+
+/// What a readiness check answers: ready, or not yet and why.
+export enum Readiness {
+    Ready
+    NotReady(why: string)
+}
+
+/// The two probes an orchestrator asks: `live` answers 200 while the
+/// process can answer at all, and `ready` 200 when `check` says so and
+/// 503 with its reason when it does not — each to GET and HEAD.
+export fn probes(check: fn() -> Readiness, live: string = "/livez", ready: string = "/readyz") -> List<
+    Route,
+> {
+    let alive = (_q: Request<Unrouted>) -> text(200, "ok")
+    let asked = (_q: Request<Unrouted>) -> readiness_answer(check())
+    [
+        fixed(Method.Get, live, alive),
+        fixed(Method.Head, live, alive),
+        fixed(Method.Get, ready, asked),
+        fixed(Method.Head, ready, asked),
+    ]
+}
+
+fn readiness_answer(r: Readiness) -> Response {
+    match r { .Ready -> text(200, "ready"), .NotReady(why) -> text(503, "not ready: ${why}") }
+}
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn too_many(wait_s: int) -> Response { text(429, "too many requests").with_header("retry-after", "${wait_s}") }
+
+fn past_route(n: int) -> Response { text(413, "the body is larger than this route takes (${n} octets)") }

@@ -185,6 +185,19 @@ impl Body {
         flow.set(flow.get() with { conn: null })
     }
 
+    /// This body held to at most `n` octets — read whole or streamed —
+    /// from here on: tighter than the server's own bound, never looser.
+    /// A route that takes less than the server allows says so this way.
+    fn bounded(n: int) -> Body {
+        let flow? = self.flowing() else { return self }
+        let f = flow.get()
+        flow
+            .set(
+                f with { limits: f.limits with { body: least(f.limits.body, n), stream: least(f.limits.stream, n) } },
+            )
+        self
+    }
+
     /// The body's flow, absent for a body of nothing.
     fn flowing() -> Cell<Inflow>? {
         match self { .Flowing(flow) -> flow, .Empty -> null }
@@ -398,3 +411,5 @@ fn skipped_in(flow: Cell<Inflow>, bound: int) -> bool {
 
 /// The octets read past a finished body.
 fn tail_of(f: Inflow) -> Bytes { f.buf.slice(f.at, f.buf.length) }
+
+fn least(a: int, b: int) -> int { if a < b { a } else { b } }
