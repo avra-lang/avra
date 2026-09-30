@@ -3,12 +3,16 @@
 //! programs never recurses (`all_files`), so a file it cannot reach is a
 //! LONE file, judged on its own — never silently reported clean.
 use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
 use commands.{file_workspace}
+
+/// One directory per run, so no earlier run's cache answers for this one.
+once fn checknoop_base() -> string { "/tmp/avra-checknoop-test/${now_ns()}" }
 
 /// A tree root of one bare manifest, no `src/` — the shape this repo's own
 /// root carries, and the shape `programs_workspace` was built for.
 fn rootless_pkg(name: string) -> string {
-    let root = "/tmp/avra-checknoop-test/${name}"
+    let root = "${checknoop_base()}/${name}"
     let _ = make_dirs(root)
     let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
     root
@@ -35,7 +39,7 @@ fn direct_file(root: string, text: string) -> string {
 /// A package with a real `src/` — the ORDINARY shape `file_workspace`'s
 /// sibling branch (`under_dir(path, src)`) routes, untouched by this fix.
 fn pkg_with_src(name: string) -> string {
-    let root = "/tmp/avra-checknoop-test/${name}"
+    let root = "${checknoop_base()}/${name}"
     let _ = make_dirs("${root}/src")
     let _ = write_text(
         "${root}/avra.toml",

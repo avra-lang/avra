@@ -2,12 +2,16 @@
 //! (features/values.av) names for a type expression: flat, boxed, niche,
 //! or a one-slot box.
 use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
 use commands.{root_program}
+
+/// One directory per run, so no earlier run's cache answers for this one.
+once fn repr_base() -> string { "/tmp/avra-explain-repr-test/${now_ns()}" }
 
 /// A package declaring one flat struct — enough to resolve a scalar, a
 /// `List`, and a declared name, bare and under `?`.
 fn pkg_with_id(name: string) -> string {
-    let root = "/tmp/avra-explain-repr-test/${name}"
+    let root = "${repr_base()}/${name}"
     let _ = make_dirs("${root}/src")
     let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
     let _ = write_text("${root}/src/main.av", "type Id = { n: int }\n\nfn main() -> int { 0 }\n")
@@ -18,7 +22,7 @@ fn pkg_with_id(name: string) -> string {
 /// an enum, and a named alias — every declared-kind the resolver could
 /// be asked about, not just the one it answers.
 fn pkg_wide(name: string) -> string {
-    let root = "/tmp/avra-explain-repr-test/${name}"
+    let root = "${repr_base()}/${name}"
     let _ = make_dirs("${root}/src")
     let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
     let src = "type Id = { n: int }\ntype Pair = { a: int, b: string }\nenum Color { Red Green Blue }\ntype Alias = int\n\nfn main() -> int { 0 }\n"
