@@ -1,0 +1,134 @@
+#!/bin/sh
+# sp — run a command on the idlest free Sprite, against THIS worktree.
+#
+#   sh tools/sp <cmd...>                 one command, output streamed, its exit status
+#   sh tools/sp -p "<cmd1>" "<cmd2>" ... each on its own Sprite at once, lines
+#                                        labelled, a summary table, exit 1 on any failure
+#
+#   sh tools/sp build/avra test packages/std-avrac
+#   sh tools/sp -p "build/avra test packages/std-avrac" "build/avra test packages/cli"
+#
+# The tree syncs by rsync and build/avra comes from the Sprite's compiler cache
+# (tools/sprite-build.sh); LLVM_PREFIX is set. Pool: `sprite list` minus
+# web-terminal and avra-bench, or AVRA_SPRITES. AVRA_SP_TREE names another tree. Slots per Sprite:
+# AVRA_SP_JOBS_PER_SPRITE (default 2). A Sprite that misses its probe is skipped.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+worktree=$(cd "${AVRA_SP_TREE:-$here/..}" && pwd)
+slug=$(basename "$worktree")
+jobs=${AVRA_SP_JOBS_PER_SPRITE:-2}
+slots=/tmp/avra-sp-slots
+llvm=/usr/lib/llvm-22
+
+# The pool, idlest first; a Sprite that did not answer its probe is dropped.
+ranked() {
+    pool=${AVRA_SPRITES:-$(sprite list 2>/dev/null | grep -vx -e web-terminal -e avra-bench)}
+    probe_log=$(mktemp -t avra-sp-probe.XXXXXX)
+    order=$(AVRA_SPRITE_PROBE_S=10 sh "$here/land.sh" --call sprites_by_load $pool 2>"$probe_log")
+    dead=$(sed -n 's/^land-linux: \(.*\) did not answer its load probe$/\1/p' "$probe_log")
+    rm -f "$probe_log"
+    for s in $order; do
+        case " $(echo $dead) " in *" $s "*) ;; *) printf '%s ' "$s" ;; esac
+    done
+}
+
+# A slot is a directory holding its owner's pid; a dead owner's slot is free.
+# The tree lock keeps one run per (Sprite, worktree), since both share a tree.
+take() {
+    d=$1
+    mkdir "$d" 2>/dev/null && { echo $$ > "$d/pid"; return 0; }
+    p=$(cat "$d/pid" 2>/dev/null || echo)
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 1
+    rm -rf "$d"
+    mkdir "$d" 2>/dev/null && { echo $$ > "$d/pid"; return 0; }
+    return 1
+}
+
+# Claims a Sprite from $1 (ranked), avoiding the names in $2 while any other
+# has room. Prints "<sprite> <slot dir> <tree dir>".
+claim() {
+    for avoid in "$2" ""; do
+        for s in $1; do
+            case " $avoid " in *" $s "*) continue ;; esac
+            mkdir -p "$slots/$s"
+            take "$slots/$s/tree-$slug" || continue
+            n=1
+            while [ "$n" -le "$jobs" ]; do
+                if take "$slots/$s/slot-$n"; then
+                    echo "$s $slots/$s/slot-$n $slots/$s/tree-$slug"
+                    return 0
+                fi
+                n=$((n + 1))
+            done
+            rm -rf "$slots/$s/tree-$slug"
+        done
+    done
+    return 1
+}
+
+claim_waiting() {
+    while :; do
+        claim "$1" "$2" && return 0
+        sleep 2
+    done
+}
+
+# Runs one command string on a claimed Sprite; its status is the command's.
+run_on() {
+    sh "$here/sprite-build.sh" "$1" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $2"
+}
+
+[ "$#" -gt 0 ] || { sed -n '2,14p' "$0" >&2; exit 2; }
+sprites=$(ranked)
+[ -n "$sprites" ] || { echo "sp: no Sprite answered its probe" >&2; exit 3; }
+
+if [ "$1" != -p ]; then
+    set -- "$(for a in "$@"; do printf "'%s' " "$(printf '%s' "$a" | sed "s/'/'\\\\''/g")"; done)"
+    set -- $(claim_waiting "$sprites" "") "$1"
+    trap 'rm -rf "$2" "$3"' EXIT
+    echo "sp: $1" >&2
+    st=0
+    run_on "$1" "$4" || st=$?
+    exit "$st"
+fi
+
+shift
+out=$(mktemp -d -t avra-sp.XXXXXX)
+trap 'rm -rf "$out"' EXIT
+used=""
+i=0
+for cmd in "$@"; do
+    i=$((i + 1))
+    set -- $(claim_waiting "$sprites" "$used")
+    used="$used $1"
+    printf '%s\n' "$cmd" > "$out/$i.cmd"
+    echo "$1" > "$out/$i.sprite"
+    : > "$out/$i.pipe"
+    (
+        trap 'rm -rf "$2" "$3"' EXIT
+        t=$(date +%s)
+        st=0
+        run_on "$1" "$cmd" > "$out/$i.pipe" 2>&1 || st=$?
+        echo "$st" > "$out/$i.st"
+        echo $(( $(date +%s) - t )) > "$out/$i.s"
+    ) &
+    runners="${runners:-} $!"
+    tail -n +1 -f "$out/$i.pipe" 2>/dev/null | awk -v p="[$i $1] " '{ print p $0; fflush() }' &
+done
+n=$i
+wait $runners
+sleep 0.5
+pkill -f "tail -n \+1 -f $out/" 2>/dev/null || :
+
+fail=0
+echo
+printf '%-3s %-18s %6s %5s  %s\n' '#' sprite seconds exit command
+i=0
+while [ "$i" -lt "$n" ]; do
+    i=$((i + 1))
+    st=$(cat "$out/$i.st")
+    [ "$st" = 0 ] || fail=1
+    printf '%-3s %-18s %6s %5s  %s\n' "$i" "$(cat "$out/$i.sprite")" "$(cat "$out/$i.s")" "$st" "$(cat "$out/$i.cmd")"
+done
+exit "$fail"
