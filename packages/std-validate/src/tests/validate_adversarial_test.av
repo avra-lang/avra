@@ -1,0 +1,133 @@
+// The red team's survivors, one class per `given`: each case failed
+// before the fix it names.
+use @std.validate.{
+    one_of,
+    nearest,
+    Decoding,
+    Slot,
+    Coercion,
+    decode,
+    list,
+    ruled,
+    from_json,
+    Issue,
+    Issues,
+    root,
+    Value,
+}
+use @std.text.{repeat}
+use @std.json.{MAX_DEPTH}
+
+type A = { a: int }
+
+fn a(mut d: Decoding, s: Slot) -> A? {
+    let o? = d.object(s) else { return null }
+    let x = d.int(o.field("a"))
+    if !d.closed(o, ["a"]) { return null }
+    A { a: x! }
+}
+
+fn pin(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "one_of", one_of(v, ["1234"]))
+}
+
+fn pins(mut d: Decoding, s: Slot) -> List<string>? { list(d, s.secret(), pin) }
+fn card(mut d: Decoding, s: Slot) -> A? { a(d, s.secret()) }
+fn nothing(_d: Decoding, _s: Slot) -> int? { null }
+
+fn issues<T>(text: string, dec: fn(mut Decoding, Slot) -> T?) -> List<Issue> {
+    match decode(from_json(text) catch Value.Null, dec) { .Ok(_) -> [], .Err(e) -> e.all }
+}
+
+fn refusal(text: string) -> string {
+    match from_json(text) { .Ok(_) -> "parsed", .Err(e) -> e.all[0].message }
+}
+
+spec "std/validate, attacked" {
+    given "a secret is secret all the way down" {
+        then "a secret list's element never shows what it received" {
+            let all = issues("[\"9999\"]", pins)
+            all.length == 1 && all[0].path.text() == "[0]" && all[0].received == null
+        }
+        then "a secret object's field never shows it either" {
+            let all = issues("{\"a\": \"4242424242424242\"}", card)
+            all.length == 1 && all[0].rule == "type" && all[0].received == null
+        }
+    }
+    given "one input, one meaning" {
+        then "a field written twice is refused, not read as its first copy" {
+            let all = issues("{\"a\": 1, \"a\": 2}", a)
+            all.length == 1 && all[0].rule == "repeated" && all[0].path.text() == "a"
+        }
+        then "under lax too" {
+            match decode(from_json("{\"a\": 1, \"a\": 2}") catch Value.Null, a, Coercion.Lax) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].rule == "repeated",
+            }
+        }
+        then "a field written three times is refused twice" { issues("{\"a\": 1, \"a\": 2, \"a\": 3}", a).length == 2 }
+    }
+    given "nesting is bounded before it is read" {
+        then "twenty thousand arrays deep is one refusal, not a crash" {
+            refusal(repeat("[", 20000) + repeat("]", 20000)) ==
+                "is not json: the value at byte ${MAX_DEPTH} nests deeper than ${MAX_DEPTH} arrays and objects"
+        }
+        then "exactly the parser's bound reads" { refusal(repeat("[", MAX_DEPTH) + repeat("]", MAX_DEPTH)) == "parsed" }
+    }
+    given "the suggestion costs nothing on a huge value" {
+        then "lengths far apart are never measured" { nearest(repeat("x", 1000000), ["pro", "free"]) == null }
+    }
+    given "a decoder that answers nothing" {
+        then "names the defect rather than succeeding" {
+            let all = issues("1", nothing)
+            all.length == 1 && all[0].rule == "decode"
+        }
+    }
+    given "every kind in every reader" {
+        then "null is required by every reader" { outcomes("null") == "required required required required required" }
+        then "each reader takes its own kind and names the rest as the wrong type" {
+            outcomes("true") == "type type ok type type" &&
+                outcomes("1") == "type ok type type type" &&
+                outcomes("\"t\"") == "ok type type type type" &&
+                outcomes("[]") == "type type type ok type" &&
+                outcomes("{}") == "type type type type required"
+        }
+    }
+    given "the report" {
+        then "aligns by characters, not bytes" {
+            let e = Issues {
+                all: [
+                    Issue { path: root().key("日本"), rule: "r", message: "m" },
+                    Issue { path: root().key("ab"), rule: "r", message: "m" },
+                ],
+            }
+            e.report() == "  [\"日本\"]  m  r\n  [\"ab\"]  m  r"
+        }
+        then "no issues is no lines" { Issues { all: [] }.report() == "" }
+    }
+}
+
+/// What each reader — text, int, bool, list, record — makes of the
+/// JSON text: `ok`, or the first issue's rule.
+fn outcomes(text: string) -> string {
+    let v = from_json(text) catch Value.Null
+    [
+        outcome(v, text_of),
+        outcome(v, int_of),
+        outcome(v, bool_of),
+        outcome(v, list_of),
+        outcome(v, a_of),
+    ]
+        .join(" ")
+}
+
+fn outcome<T>(v: Value, dec: fn(mut Decoding, Slot) -> T?) -> string {
+    match decode(v, dec) { .Ok(_) -> "ok", .Err(e) -> e.all[0].rule }
+}
+
+fn text_of(mut d: Decoding, s: Slot) -> string? { d.text(s) }
+fn int_of(mut d: Decoding, s: Slot) -> int? { d.int(s) }
+fn bool_of(mut d: Decoding, s: Slot) -> bool? { d.bool(s) }
+fn list_of(mut d: Decoding, s: Slot) -> List<int>? { list(d, s, int_of) }
+fn a_of(mut d: Decoding, s: Slot) -> A? { a(d, s) }

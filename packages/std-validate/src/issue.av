@@ -1,0 +1,120 @@
+//! Where a problem is, and what it says. A decode never stops at the
+//! first problem: every one is an `Issue` carrying its `Path`, the
+//! rule that refused, the message, what was received, and a fix when
+//! one can be named.
+use @std.text.{pad_right, codepoint_count}
+use @std.errors.{Error, ErrorInfo, info}
+use value.{Value, quoted}
+
+/// One step into a value.
+export enum Step {
+    Field(name: string)
+    Index(at: int)
+    Key(key: string)
+    Variant(name: string)
+}
+
+/// A place inside a value, from its root: `items[3].qty`,
+/// `payment.Card.exp`, `meta["x-y"]`.
+export type Path = { steps: List<Step> }
+
+/// The value itself — the path with no steps.
+export fn root() -> Path {
+    Path { steps: [] }
+}
+
+impl Path {
+    fn field(name: string) -> Path { self.then(Step.Field(name)) }
+    fn index(at: int) -> Path { self.then(Step.Index(at)) }
+    fn key(key: string) -> Path { self.then(Step.Key(key)) }
+    fn variant(name: string) -> Path { self.then(Step.Variant(name)) }
+
+    /// This path, read from `prefix` rather than the root.
+    fn under(prefix: Path) -> Path {
+        Path { steps: prefix.steps.concat(self.steps) }
+    }
+
+    fn then(s: Step) -> Path {
+        Path { steps: self.steps.concat([s]) }
+    }
+
+    /// How many steps down from the root.
+    fn depth() -> int { self.steps.length }
+
+    /// The path as code spells it; the root is empty.
+    fn text() -> string {
+        [spelled(j, s) for j, s in self.steps].join("")
+    }
+}
+
+fn spelled(j: int, s: Step) -> string {
+    match s {
+        .Field(name) or .Variant(name) -> if j == 0 { name } else { ".${name}" },
+        .Index(at) -> "[${at}]",
+        .Key(key) -> "[${quoted(key)}]",
+    }
+}
+
+/// One problem: where, which rule, what it says, what was received
+/// (absent when the input held nothing there, or it is secret), and
+/// the value a fix would put there when one can be named.
+export type Issue = { path: Path, rule: string, message: string, received: Value? = null, fix: Value? = null }
+
+/// Every issue a decode or a check found, in the order the input
+/// was written.
+export type Issues = { all: List<Issue> }
+
+impl Issues {
+    fn count() -> int { self.all.length }
+
+    /// One issue per line, the columns aligned: path, message, rule,
+    /// what was received and the fix.
+    fn report() -> string {
+        let paths = widest([shown_path(i.path) for i in self.all])
+        let messages = widest([i.message for i in self.all])
+        let rules = widest([i.rule for i in self.all])
+        [row(i, paths, messages, rules) for i in self.all].join("\n")
+    }
+}
+
+impl Error for Issues {
+    fn describe() -> ErrorInfo {
+        info("validate.refused", refused(self.all))
+    }
+}
+
+/// A report's line; the rule column pads only when a tail follows it.
+fn row(i: Issue, paths: int, messages: int, rules: int) -> string {
+    let t = tail(i)
+    let rule = if t.is_empty() { i.rule } else { pad_right(i.rule, rules) }
+    "  ${pad_right(shown_path(i.path), paths)}  ${pad_right(i.message, messages)}  ${rule}${t}"
+}
+
+fn tail(i: Issue) -> string {
+    let got = i.received?.shown()
+    let fix = i.fix?.shown()
+    when {
+        got != null && fix != null -> "  got ${got!}, did you mean ${fix!}?"
+        got != null -> "  got ${got!}"
+        fix != null -> "  did you mean ${fix!}?"
+        _ -> ""
+    }
+}
+
+/// The widest of the texts, for a column.
+fn widest(texts: List<string>) -> int {
+    mut w = 0
+    for t in texts { if codepoint_count(t) > w { w = codepoint_count(t) } }
+    w
+}
+
+fn shown_path(p: Path) -> string {
+    if p.steps.is_empty() { "(value)" } else { p.text() }
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn refused(all: List<Issue>) -> string {
+    if all.length == 1 { return "${shown_path(all[0].path)} ${all[0].message}" }
+    "${all.length} issues, the first: ${shown_path(all[0].path)} ${all[0].message}"
+}

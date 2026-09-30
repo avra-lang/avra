@@ -1,0 +1,308 @@
+//! A `Value` read into a typed value, every rule run, every issue
+//! kept. A decoder is a fn over a `Decoding` and a `Slot` — the value
+//! at a place — answering the typed value, or null when it recorded
+//! why not. A rule's verdict is `ruled` at the slot it read:
+//!
+//!     fn age(mut d: Decoding, s: Slot) -> int? {
+//!         let v? = d.int(s) else { return null }
+//!         ruled(d, s, "range", range(v, 13, 130))
+//!     }
+//!
+//!     fn signup(mut d: Decoding, s: Slot) -> Signup? {
+//!         let o? = d.object(s) else { return null }
+//!         let years = age(d, o.field("age"))
+//!         let plan = d.text(o.field("plan").optional())
+//!         if !d.closed(o, ["age", "plan"]) { return null }
+//!         Signup { age: years!, plan: plan ?? "free" }
+//!     }
+//!
+//! `decode(value, signup)` runs one. A decoder reads every field
+//! before it answers, so one pass finds every issue. Coercion is a
+//! policy: `Strict` takes each value only as itself, `Lax` also reads
+//! text as the number or truth it spells (a query string's `"42"`).
+//! The nesting depth and a list's length are bounded before anything
+//! below them is read.
+use validate.{Refusal, nearest}
+use issue.{Issue, Issues, Path, root}
+use value.{Value, Entry}
+use @std.text.{parse_int}
+
+/// How a value may be read as another kind.
+export enum Coercion {
+    Strict
+    Lax
+}
+
+/// The bounds a decode refuses past, before reading further.
+export type Limits = { depth: int = 128, items: int = 100000 }
+
+/// A value at a place — absent when the input holds nothing there.
+export type Slot = { value: Value?, at: Path, required: bool = true, hidden: bool = false }
+
+impl Slot {
+    /// Absence and null are a value here, never an issue.
+    fn optional() -> Slot { self with { required: false } }
+
+    /// What was received is never shown in an issue.
+    fn secret() -> Slot { self with { hidden: true } }
+}
+
+/// An object being read: its entries in order, where it sits,
+/// whether it is secret, and how many issues stood before it was
+/// opened.
+export type Obj = { entries: List<Entry>, at: Path, hidden: bool, before: int }
+
+impl Obj {
+    /// The field `name`, absent when the object has none; secret
+    /// when the object is.
+    fn field(name: string) -> Slot {
+        Slot {
+            value: self.entries.find(it.key == name)?.value,
+            at: self.at.field(name),
+            hidden: self.hidden,
+        }
+    }
+}
+
+/// A decode in flight: its policy, its bounds, every issue so far.
+export type Decoding = { coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}, issues: List<Issue> = [] }
+
+/// A decoder: the typed value at a slot, or null with the reason
+/// recorded.
+export alias Decoder<T> = fn(mut Decoding, Slot) -> T?
+
+/// Read `v` with `dec`: the typed value, or every issue.
+export fn decode<T>(v: Value, dec: Decoder<T>, coercion: Coercion = Coercion.Strict) -> Result<
+    T,
+    Issues,
+> {
+    // LICENSED let_stmt.unmutated_mut: `dec`'s `mut` seat writes through it
+    mut d = Decoding { coercion: coercion }
+    let got = dec(d, Slot { value: v, at: root() })
+    if !d.issues.is_empty() { fail Issues { all: d.issues } }
+    let answer? = got else { fail Issues { all: [Issue { path: root(), rule: "decode", message: unanswered() }] } }
+    answer
+}
+
+impl Decoding {
+    fn count() -> int { self.issues.length }
+
+    mut fn say(i: Issue) { self.issues.push(i) }
+
+    /// A rule's refusal at the slot it read: under the slot's path,
+    /// named for the rule unless it named itself, and showing what
+    /// was received unless the slot is secret.
+    mut fn refused(s: Slot, rule: string, i: Issue) {
+        let named = if i.rule.is_empty() { rule } else { i.rule }
+        let got = if s.hidden { null } else { i.received ?? s.value }
+        self.say(i with { path: i.path.under(s.at), rule: named, received: got })
+    }
+
+    /// The slot's value when it holds one worth reading; absence and
+    /// null say why when the slot requires a value.
+    mut fn present(s: Slot) -> Value? {
+        let v? = s.value else {
+            if s.required { self.say(Issue { path: s.at, rule: "required", message: required() }) }
+            return null
+        }
+        if v is .Null {
+            if s.required { self
+                    .say(
+                        Issue {
+                            path: s.at,
+                            rule: "required",
+                            message: not_null(),
+                            received: Value.Null,
+                        },
+                    ) }
+            return null
+        }
+        v
+    }
+
+    /// The wrong kind of value at a slot.
+    mut fn mistyped(s: Slot, v: Value, want: string) {
+        self
+            .say(
+                Issue {
+                    path: s.at,
+                    rule: "type",
+                    message: must_be(want, v),
+                    received: if s.hidden { null } else { v },
+                },
+            )
+    }
+
+    /// The slot as an object; deeper than the bound is refused
+    /// before a field is read.
+    mut fn object(s: Slot) -> Obj? {
+        let entries? = scalar(self, s, "an object", as_entries) else { return null }
+        if !self.within(s) { return null }
+        Obj { entries: entries, at: s.at, hidden: s.hidden, before: self.count() }
+    }
+
+    /// The object read cleanly: no issue since it was opened, no
+    /// field it names written twice — a reader that took the other
+    /// copy would see another value — and, under `Strict`, no field
+    /// it does not name.
+    mut fn closed(o: Obj, names: List<string>) -> bool {
+        mut seen = [false for _n in names]
+        for e in o.entries {
+            let k = names.index_of(e.key)
+            if k < 0 {
+                if self.coercion is .Strict { self.say(stray(o.at.field(e.key), e.key, names)) }
+            } else if seen[k] {
+                self.say(Issue { path: o.at.field(e.key), rule: "repeated", message: twice() })
+            } else {
+                seen.set(k, true)
+            }
+        }
+        self.count() == o.before
+    }
+
+    /// Deep enough to read; past the bound is one issue.
+    mut fn within(s: Slot) -> bool {
+        if s.at.depth() < self.limits.depth { return true }
+        self.say(Issue { path: s.at, rule: "depth", message: too_deep(self.limits.depth) })
+        false
+    }
+
+    /// No more than the bound's elements; past it is one issue.
+    mut fn bounded(s: Slot, n: int) -> bool {
+        if n <= self.limits.items { return true }
+        self
+            .say(
+                Issue {
+                    path: s.at,
+                    rule: "items",
+                    message: too_many(self.limits.items),
+                    received: Value.Int(n),
+                },
+            )
+        false
+    }
+
+    /// The slot as a list's elements, within both bounds. Under
+    /// `Lax` one value reads as a list of one — a query string's
+    /// `?tag=a`.
+    mut fn items(s: Slot) -> List<Value>? {
+        let xs? = scalar(self, s, "a list", as_items) else { return null }
+        if self.within(s) && self.bounded(s, xs.length) { xs } else { null }
+    }
+
+    mut fn text(s: Slot) -> string? { scalar(self, s, "text", as_text) }
+    mut fn int(s: Slot) -> int? { scalar(self, s, "an integer", as_int) }
+    mut fn float(s: Slot) -> float? { scalar(self, s, "a number", as_float) }
+    mut fn bool(s: Slot) -> bool? { scalar(self, s, "true or false", as_bool) }
+}
+
+/// The slot's value read as one kind, or the wrong kind named.
+fn scalar<T>(mut d: Decoding, s: Slot, want: string, read: fn(Coercion, Value) -> T?) -> T? {
+    let v? = d.present(s) else { return null }
+    let x? = read(d.coercion, v) else {
+        d.mistyped(s, v, want)
+        return null
+    }
+    x
+}
+
+fn as_entries(_c: Coercion, v: Value) -> List<Entry>? {
+    match v { .Map(entries) -> entries, rest -> null }
+}
+
+fn as_items(c: Coercion, v: Value) -> List<Value>? {
+    match v {
+        .List(xs) -> xs,
+        .Map(_) -> null,
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Text(_) -> if c is .Lax { [v] } else { null },
+    }
+}
+
+fn as_text(_c: Coercion, v: Value) -> string? {
+    match v { .Text(t) -> t, rest -> null }
+}
+
+fn as_float(_c: Coercion, v: Value) -> float? {
+    match v { .Float(x) -> x, rest -> null }
+}
+
+/// Itself, or under `Lax` the text that spells one.
+fn as_int(c: Coercion, v: Value) -> int? {
+    match v {
+        .Int(n) -> n,
+        .Text(t) -> if c is .Lax { parse_int(t.trim()) } else { null },
+        rest -> null,
+    }
+}
+
+/// Itself, or under `Lax` the words and digits a form or a flag
+/// spells one with.
+fn as_bool(c: Coercion, v: Value) -> bool? {
+    match v {
+        .Bool(b) -> b,
+        .Text(t) -> if c is .Lax { truth_word(t.trim()) } else { null },
+        .Int(n) -> if c is .Lax { truth_digit(n) } else { null },
+        rest -> null,
+    }
+}
+
+fn truth_word(t: string) -> bool? {
+    when {
+        t == "true" || t == "1" || t == "yes" || t == "on" -> true
+        t == "false" || t == "0" || t == "no" || t == "off" -> false
+        _ -> null
+    }
+}
+
+fn truth_digit(n: int) -> bool? {
+    when {
+        n == 1 -> true
+        n == 0 -> false
+        _ -> null
+    }
+}
+
+/// A rule's verdict at the slot it read: what the rule answered, or
+/// null with its refusal recorded — the rule named `rule` unless its
+/// issue names one.
+export fn ruled<T, E: Refusal>(mut d: Decoding, s: Slot, rule: string, verdict: Result<T, E>) -> T? {
+    match verdict {
+        .Ok(v) -> v,
+        .Err(e) -> {
+            d.refused(s, rule, e.issue())
+            null
+        },
+    }
+}
+
+/// A field the decoder does not name, and the one it may have meant.
+fn stray(at: Path, key: string, names: List<string>) -> Issue {
+    let near = nearest(key, names)
+    Issue {
+        path: at,
+        rule: "unknown",
+        message: not_here(),
+        fix: if near == null { null } else { Value.Text(near!) },
+    }
+}
+
+/// A list, each element read by `each` at its index. Longer than the
+/// bound is refused before an element is read.
+export fn list<T>(mut d: Decoding, s: Slot, each: Decoder<T>) -> List<T>? {
+    let items? = d.items(s) else { return null }
+    let before = d.count()
+    let read = [each(d, Slot { value: x, at: s.at.index(i), hidden: s.hidden }) for i, x in items]
+    if d.count() > before { return null }
+    [x! for x in read]
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn required() -> string { "is required" }
+fn not_null() -> string { "is required, and null is not a value here" }
+fn must_be(want: string, got: Value) -> string { "must be ${want}, not ${got.kind()}" }
+fn not_here() -> string { "is not a field here" }
+fn twice() -> string { "is written more than once" }
+fn too_deep(most: int) -> string { "nests deeper than ${most} levels" }
+fn too_many(most: int) -> string { "holds more than ${most} items" }
+fn unanswered() -> string { "the decoder answered nothing and named no issue" }

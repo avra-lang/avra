@@ -1,0 +1,55 @@
+//! The neutral data model every format reads into. A JSON body, a TOML
+//! file, a query string and an env var all become one `Value`, so a
+//! decoder written once reads them all. A map keeps its entries in
+//! written order — a list of `Entry`, never a `Map` — so an issue list
+//! reads in the order the input was written.
+
+export type Entry = { key: string, value: Value }
+
+export enum Value {
+    Null
+    Bool(truth: bool)
+    Int(n: int)
+    Float(x: float)
+    Text(s: string)
+    List(items: List<Value>)
+    Map(entries: List<Entry>)
+}
+
+impl Value {
+    /// The value as a person reads it in a report: JSON's spelling,
+    /// compact.
+    fn shown() -> string {
+        match self {
+            .Null -> "null",
+            .Bool(b) -> "${b}",
+            .Int(n) -> "${n}",
+            .Float(x) -> "${x}",
+            .Text(s) -> quoted(s),
+            .List(items) -> "[${[i.shown() for i in items].join(", ")}]",
+            .Map(entries) -> "{${[shown_entry(e) for e in entries].join(", ")}}",
+        }
+    }
+
+    /// What kind of value this is, as a report names it.
+    fn kind() -> string {
+        match self {
+            .Null -> "null",
+            .Bool(_) -> "a boolean",
+            .Int(_) -> "an integer",
+            .Float(_) -> "a number",
+            .Text(_) -> "text",
+            .List(_) -> "a list",
+            .Map(_) -> "an object",
+        }
+    }
+}
+
+fn shown_entry(e: Entry) -> string {
+    "${quoted(e.key)}: ${e.value.shown()}"
+}
+
+/// Text in double quotes, the quote and the backslash escaped.
+export fn quoted(s: string) -> string {
+    "\"${s.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+}
