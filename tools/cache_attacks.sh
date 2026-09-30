@@ -843,6 +843,27 @@ S "maybe_bump now writes; relay's flow edge carries it into lib's held record, a
 got_w=$($R/w/src/main 2>&1)
 [ "$got_w" = "w 5 6" ] || { fails=$((fails+1)); echo "FAIL  w (relay's inferred write, read back from lib's held record) printed '$got_w', wanted 'w 5 6' — pair[1] must stay unaliased"; }
 
+# `Decls.decl(d)` fetches its row through the pinned row storage, never
+# the relation's own recorded `get` — so it must still call `rows_read(x.file)`, the SAME
+# file-grain edge the hand table's read always fed the kernel. `drm`'s
+# held const `M` reads `drl`'s `seed` — a Const it runs — through a
+# fresh query frame every settle; editing `seed`'s body alone, warm,
+# must still move `M`. A lost edge would leave `drm` reusing the value
+# it settled before the edit.
+mkdir -p $R/drl/src $R/drm/src
+printf '[package]\nname = "@rt/drl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-drl"\npath = "src/lib.av"\n' > $R/drl/avra.toml
+printf 'export fn seed() -> int { 21 }\n' > $R/drl/src/seed.av
+printf 'export const M: int = seed()\n' > $R/drl/src/lib.av
+printf '[package]\nname = "rt-drm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/drl" = { path = "../drl" }\n' > $R/drm/avra.toml
+printf 'use @rt.drl.{M}\nprintln("drm ${M}")\n' > $R/drm/src/main.av
+S "cold drm: a held const reads its callee's Decl row through the pinned handle" drm
+got_drm1=$($R/drm/src/main 2>&1)
+[ "$got_drm1" = "drm 21" ] || { fails=$((fails+1)); echo "FAIL  cold drm printed '$got_drm1', wanted 'drm 21'"; }
+ed $R/drl/src/seed.av "{ 21 }" "{ 22 }"
+S "drm: the callee's body moves — decl()'s file edge must still force a fresh frame" drm
+got_drm2=$($R/drm/src/main 2>&1)
+[ "$got_drm2" = "drm 22" ] || { fails=$((fails+1)); echo "FAIL  warm drm printed '$got_drm2', wanted 'drm 22' — decl()'s pinned-handle read lost the file-grain edge"; }
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

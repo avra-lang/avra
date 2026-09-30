@@ -1,0 +1,108 @@
+# The merge queue's check: each train's combined commit, built once, then
+# every affected package's suite on its own runner at once. `test` is the
+# one required check. The machine is .github/ci/Dockerfile's image; a train
+# is at most ten entries over its base, so twenty commits of history reach it.
+name: checks
+
+on:
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  compiler:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 30
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      packages: ${{ steps.plan.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 20 }
+      - id: key
+        run: echo "key=avra-${{ hashFiles('Makefile', 'backend/**', 'runtime/**', 'bootstrap/**', 'packages/**', '!packages/**/tests/**') }}" >> "$GITHUB_OUTPUT"
+      - id: plan
+        run: |
+          base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
+          sh tools/affected_packages.sh "$base" HEAD "$PWD" 2>/dev/null \
+            | python3 -c 'import json,sys; print("packages=" + json.dumps([l.strip() for l in sys.stdin if l.strip()]))' \
+            >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: build/avra
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: avra-
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/avra
+          key: ${{ steps.key.outputs.key }}
+
+  lint:
+    needs: compiler
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 20 }
+      - uses: actions/cache/restore@v4
+        with:
+          path: build/avra
+          key: ${{ needs.compiler.outputs.key }}
+          fail-on-cache-miss: true
+      - name: fmt
+        run: |
+          base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
+          changed=$(git diff --name-only --diff-filter=d "$base" HEAD -- '*.av')
+          [ -z "$changed" ] || build/avra fmt --check $changed
+      - name: idioms
+        run: build/avra check packages/std-avrac --baseline tools/idioms.baseline
+
+  suite:
+    needs: compiler
+    if: needs.compiler.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.compiler.outputs.packages) }}
+    name: suite (${{ matrix.package }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: build/avra
+          key: ${{ needs.compiler.outputs.key }}
+          fail-on-cache-miss: true
+      - run: make -s -o avra objects libs
+      - run: build/avra test ${{ matrix.package }}
+
+  test:
+    needs: [compiler, lint, suite]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for r in "${{ needs.compiler.result }}" "${{ needs.lint.result }}" "${{ needs.suite.result }}"; do
+            case $r in success|skipped) ;; *) echo "a check failed: $r"; exit 1 ;; esac
+          done
