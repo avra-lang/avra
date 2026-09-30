@@ -177,7 +177,7 @@ enum Stepped {
 /// the handle, the refusal names the package, and holding them as
 /// parallel lists made the second index one list by the other's
 /// position.
-type OpenLibrary = { name: string, handle: int }
+type OpenLibrary = { name: string, handle: int, externs: List<string> }
 
 /// The program's closure opened, in package order. A handle of 0 is
 /// ORDINARY rather than a failure: a package the compiler's own image
@@ -185,7 +185,7 @@ type OpenLibrary = { name: string, handle: int }
 /// it. The stem carries no suffix, so the platform question stays out
 /// of the compiler and the machine tries the ones it knows.
 fn opened_libraries(l: Lowered) -> List<OpenLibrary> {
-    [OpenLibrary { name: p.name, handle: opened(p.library) } for p in l.libraries]
+    [OpenLibrary { name: p.name, handle: opened(p.library), externs: p.externs } for p in l.libraries]
 }
 
 fn opened(stem: string) -> int {
@@ -1517,19 +1517,19 @@ impl Machine {
     fn no_symbol(callee: string) -> Val {
         self
             .trapped(
-                "`${callee}` is extern and this image does not carry it${self.unopened()} — build natively",
+                "`${callee}` is extern and this image does not carry it${self.owner_note(callee)} — build natively",
             )
         Val.I(0)
     }
 
-    /// The packages in this program's closure whose library did not
-    /// open, named for the refusal — so "not found" can say WHERE
-    /// else it would have looked. Empty when every one opened, and
-    /// then the refusal is the plain one.
-    fn unopened() -> string {
-        let missing = [o.name for o in self.libs if o.handle == 0]
-        if missing.is_empty() { return "" }
-        ", and ${joined(missing, ", ")} owns native code whose library is not built — run `make libs`"
+    /// Where a missing symbol should have come from: the package that
+    /// DECLARES it — its library unbuilt, or built without it. Nothing
+    /// when no package of the closure declares it; a package the image
+    /// carries declares nothing it lacks, so it is never named.
+    fn owner_note(callee: string) -> string {
+        let owner? = self.libs.find(it.externs.contains(callee)) else { return "" }
+        if owner.handle == 0 { return unbuilt_library(owner.name) }
+        library_without(owner.name)
     }
 
     /// A declaration wider than one frame. The frame is fully applied
@@ -2034,4 +2034,16 @@ impl Machine {
 /// null pointer, the word the runtime's slot holds under it.
 fn read_out(v: Val) -> Val {
     if v is .Gone { Val.N } else { v }
+}
+
+// ── The voices ──
+
+/// A declaring package's library that did not open.
+fn unbuilt_library(package: string) -> string {
+    ", and ${package} declares it but has no library built — run `make libs`"
+}
+
+/// A declaring package's library that opened without the symbol.
+fn library_without(package: string) -> string {
+    ", and ${package} declares it but its library does not carry it — rebuild it with `make libs`"
 }
