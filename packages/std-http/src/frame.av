@@ -662,6 +662,47 @@ export fn framed_reply(buf: Bytes, from: int, scanned: int, limits: Limits, aske
     status_line(buf, from, mark, limits, asked)
 }
 
+/// The reply's head at `from` with every obs-fold — the whitespace
+/// around a line end that continues the field before it — spelled as
+/// spaces, which a user agent MUST do before it reads a value (RFC 9112
+/// §5.2); the buffer itself while the head is unfinished or folds
+/// nothing. A fold keeps its length, so every offset past it stands. A
+/// request is never unfolded: a server refuses the fold instead.
+export fn unfolded(buf: Bytes, from: int, scanned: int) -> Bytes {
+    let mark = buf.index_of(blank_line, if scanned - 3 > from { scanned - 3 } else { from })
+    if mark < 0 { return buf }
+    let folds = folds_in(buf, from, mark)
+    if folds.is_empty() { return buf }
+    mut out = "".bytes()
+    mut at = 0
+    for f in folds {
+        let lo = if f.lo > at { f.lo } else { at }
+        out = out.concat(buf.slice(at, lo)).concat([32 for i in lo..f.hi].bytes()!)
+        at = f.hi
+    }
+    out.concat(buf.slice(at, buf.length))
+}
+
+/// Every obs-fold in `from..mark` — `OWS CRLF RWS` — as the span it
+/// covers, in order; a run of whitespace is walked by the one fold it
+/// precedes, so the whole head costs one pass.
+fn folds_in(buf: Bytes, from: int, mark: int) -> List<Span> {
+    mut folds: List<Span> = []
+    mut p = buf.index_of(crlf, from)
+    while p >= 0 && p < mark {
+        if is_ows(buf.at(p + 2)) { folds.push(Span { lo: ows_before(buf, p, from), hi: buf.run(p + 2, ows) }) }
+        p = buf.index_of(crlf, p + 2)
+    }
+    folds
+}
+
+/// Where the whitespace ending at `at` begins, no earlier than `from`.
+fn ows_before(buf: Bytes, at: int, from: int) -> int {
+    mut lo = at
+    while lo > from && is_ows(buf.at(lo - 1)) { lo = lo - 1 }
+    lo
+}
+
 fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
     match unfinished(buf, from, limits) {
         .Refused(why) -> .Refused(why),

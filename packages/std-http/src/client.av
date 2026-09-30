@@ -14,6 +14,7 @@ use @std.url.{UrlError}
 use @std.net.{NetError, connect}
 use @std.time.{Duration, within}
 use frame.{
+    Head,
     Method,
     Reply,
     Refusal,
@@ -21,6 +22,8 @@ use frame.{
     Limits,
     Fields,
     framed_reply,
+    framed,
+    unfolded,
     chunker,
     fed,
     status_of,
@@ -49,11 +52,13 @@ impl Answer {
 /// server would answer it), the peer closing before a reply, a
 /// deadline and the stage it bounded, a pool with every connection to
 /// the origin already lent, a URL that does not parse or names nothing
-/// this client can reach, or a request the framer would not frame.
+/// this client can reach, a request the framer would not frame, or a
+/// connection an earlier exchange ended.
 export enum ClientError {
     Net(e: NetError)
     Refused(why: Refusal)
     Closed
+    Spent
     TimedOut(stage: Stage)
     Exhausted(origin: string, per_host: int)
     Url(e: UrlError)
@@ -85,6 +90,10 @@ impl Error for ClientError {
             .Net(e) -> e.describe(),
             .Refused(why) -> info("http.refused", "the reply breaks a framing law and would earn ${status_of(why)}"),
             .Closed -> info("http.closed", "the peer closed before a reply"),
+            .Spent -> info(
+                "http.spent",
+                "this connection carries no further request — an earlier exchange on it ended it",
+            ),
             .TimedOut(stage) -> info("http.timed_out", "${stage_word(stage)} outran its deadline"),
             .Exhausted(origin, n) -> info("http.exhausted", "all ${n} connections to ${origin} are lent"),
             .Url(e) -> e.describe(),
@@ -109,13 +118,18 @@ impl Error for ClientError {
             .Net(n) -> n,
             .Secure(t) -> t,
             .Url(u) or .Redirect(.BadLocation(u)) -> u,
-            .Refused(_) or .Closed or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoTls or .NoHost or .Userinfo or .Unwritable or .Redirect(.TooMany(_)) or .Redirect(.Loop(_)) or .Redirect(.NoLocation(_)) or .Redirect(.Unreplayable(_)) -> null,
+            .Refused(_) or .Closed or .Spent or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoTls or .NoHost or .Userinfo or .Unwritable or .Redirect(.TooMany(_)) or .Redirect(.Loop(_)) or .Redirect(.NoLocation(_)) or .Redirect(.Unreplayable(_)) -> null,
         }
     }
 }
 
-/// A connection with a request in flight. `persists` is what the last
-/// reply said of the connection (RFC 9112 §9.3).
+/// A connection with a request in flight. `owing` is whether a reply
+/// is owed to the request sent; `persists` is whether the connection
+/// may carry another: true until an exchange ends it (RFC 9112 §9.3,
+/// §9.6) — a request or a reply saying `close`, a reply read to the
+/// close, a switch away from HTTP, a byte past a reply that no request
+/// asked for, a reply refused or cut short, or an exchange abandoned
+/// with its reply still owed, whose framing is lost.
 export type Client = {
     conn: dyn Transport,
     asked: Method,
@@ -124,7 +138,8 @@ export type Client = {
     reply: Reply?,
     decoder: Chunker?,
     limits: Limits,
-    persists: bool = false,
+    owing: bool = false,
+    persists: bool = true,
 }
 
 fn redirect_info(why: Redirected) -> ErrorInfo {
@@ -267,14 +282,24 @@ fn is_word(s: string) -> bool { !s.is_empty() && every_octet(s, word_char) }
 
 const word_char: Bytes = admits(is_target)
 
-/// The framing fields `request` writes itself.
-const request_writes: List<Bytes> = [w.bytes() for w in ["host", "content-length", "transfer-encoding"]]
+/// The fields `request` writes itself: the framing, and `te` — this
+/// client asks for no transfer coding, and a `chunked` there is one a
+/// client MUST NOT name (RFC 9112 §7.4).
+const request_writes: List<Bytes> = [w.bytes() for w in ["host", "content-length", "transfer-encoding", "te"]]
 
 impl Client {
     /// The request written whole, the task parked while the socket is
     /// full; `asked` is the method, which decides whether the reply has
-    /// a body.
+    /// a body. Refused on a connection an exchange ended, and for a
+    /// head the framer would not frame — it judges what a client sends
+    /// by the law a server reads it by, and says whether it asked to
+    /// close.
     mut fn sent(asked: Method, req: Bytes) -> Result<int, ClientError> {
+        if self.owing { self.persists = false }
+        if !self.persists { return .Err(.Spent) }
+        let head? = own_head(req, self.limits) else { return .Err(.Unwritable) }
+        self.persists = head.keep_alive
+        self.owing = true
         self.asked = asked
         self.reply = null
         self.decoder = null
@@ -307,17 +332,35 @@ impl Client {
         self.framed()
     }
 
-    /// The buffer framed: the head first, then the body by its rule.
+    /// The buffer framed: the head first — every interim reply before
+    /// it read and passed over (RFC 9110 §15.2) — then the body by its
+    /// rule.
     mut fn framed() -> Result<Answer?, ClientError> {
-        if self.reply == null {
+        while self.reply == null {
+            self.buf = unfolded(self.buf, 0, self.scanned)
             match framed_reply(self.buf, 0, self.scanned, self.limits, self.asked) {
-                .Partial -> { self.scanned = self.buf.length },
-                .Refused(why) -> { return .Err(.Refused(why)) },
-                .Complete(r) -> { self.reply = r },
+                .Partial -> {
+                    self.scanned = self.buf.length
+                    return .Ok(null)
+                },
+                .Refused(why) -> { return self.lost(.Refused(why)) },
+                .Complete(r) -> if interim(r.status) { self.consumed(r.end) } else { self.reply = r },
             }
         }
-        if self.reply == null { return .Ok(null) }
         self.bodied(self.reply!)
+    }
+
+    /// The first `end` bytes read and gone, framing starting over.
+    mut fn consumed(end: int) {
+        self.buf = self.buf.slice(end, self.buf.length)
+        self.scanned = 0
+    }
+
+    /// A failure after which the connection's framing cannot be
+    /// trusted, so it carries nothing more.
+    mut fn lost(e: ClientError) -> Result<Answer?, ClientError> {
+        self.persists = false
+        .Err(e)
     }
 
     mut fn bodied(r: Reply) -> Result<Answer?, ClientError> {
@@ -332,7 +375,7 @@ impl Client {
     mut fn chunked(r: Reply) -> Result<Answer?, ClientError> {
         match fed(self.decoder ?? chunker(r.end), self.buf, self.limits) {
             .More(c) -> self.decoding(c),
-            .Refused(why) -> .Err(.Refused(why)),
+            .Refused(why) -> self.lost(.Refused(why)),
             .Done(body, end) -> self.answered(r, body, end),
         }
     }
@@ -346,22 +389,24 @@ impl Client {
     /// The peer has finished: a reply read to the close is whole now;
     /// anything else was cut short.
     mut fn ended() -> Result<Answer?, ClientError> {
-        let r? = self.reply else { return .Err(.Closed) }
+        let r? = self.reply else { return self.lost(.Closed) }
         match r.body {
             .UntilClose -> self.answered(r, self.buf.slice(r.end, self.buf.length), self.buf.length),
-            .None or .Length(_) or .Chunked -> .Err(.Closed),
+            .None or .Length(_) or .Chunked -> self.lost(.Closed),
         }
     }
 
-    /// The answer built, the consumed bytes dropped so a next reply
-    /// on the same connection frames from the buffer's start.
+    /// The answer built and the consumed bytes dropped. A byte past
+    /// the reply answers no request, so it is never framed as the next
+    /// one's reply: the connection ends there (RFC 9112 §6.3, §9.2).
     mut fn answered(r: Reply, body: Bytes, end: int) -> Result<Answer?, ClientError> {
         let raw = self.buf
         self.buf = raw.slice(end, raw.length)
         self.scanned = 0
         self.reply = null
         self.decoder = null
-        self.persists = r.keep_alive && !(r.body is .UntilClose)
+        self.owing = false
+        self.persists = self.persists && r.keep_alive && r.status != 101 && self.buf.is_empty()
         .Ok(
             Answer {
                 status: r.status,
@@ -371,18 +416,26 @@ impl Client {
         )
     }
 
-    /// Whether another request may follow on this connection: the last
-    /// reply kept it, it was read to its end, and nothing arrived past
-    /// it — a byte no request asked for means the framing is lost.
-    fn reusable() -> bool {
-        self.persists && self.reply == null && self.decoder == null && self.buf.is_empty()
-    }
+    /// Whether another request may follow on this connection: nothing
+    /// ended it, no reply is owed, and no byte waits that no request
+    /// asked for.
+    fn reusable() -> bool { self.persists && !self.owing && self.buf.is_empty() }
 
     /// The application protocol agreed with the server, or null.
     fn protocol() -> string? { self.conn.wire_protocol() }
 
     /// Closed; answers the descriptor.
     fn close() -> Result<int, ClientError> { carried(self.conn.wire_close()) }
+}
+
+/// Whether a status is an interim reply, read and passed over on the
+/// way to the answer: a 1xx other than 101, which only an upgrade the
+/// request asked for can earn and which ends the exchange as HTTP.
+fn interim(status: int) -> bool { status >= 100 && status < 200 && status != 101 }
+
+/// The head of a request this client wrote, as a server frames it.
+fn own_head(req: Bytes, limits: Limits) -> Head? {
+    match framed(req, 0, 0, limits) { .Complete(h) -> h, .Partial or .Refused(_) -> null }
 }
 
 /// Field `i` of a reply, as text — values are ASCII by framing.
