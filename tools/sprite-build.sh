@@ -5,12 +5,11 @@
 #   sh tools/sprite-build.sh <sprite> <worktree> [--pull <remote>:<local>]... -- <command...>
 #
 # ONE PERSISTENT TREE PER (sprite, worktree slug):
-# /home/sprite/avra-build/$slug/tree is synced IN PLACE — the pushed
-# archive extracts over it and a file the archive no longer lists is
-# removed, so an unchanged tree skips the push and an edit updates only
-# what moved. build/, .avra-cache/ and .claude/ are never scanned or
-# touched by the sync, at any depth, so a warm build/ and test cache
-# survive every run. Only one build may touch a given persistent tree
+# /home/sprite/avra-build/$slug/tree is synced IN PLACE by rsync over
+# `sprite exec` (tools/sprite-rsh.sh) — an edit moves only what changed
+# and a file the worktree no longer has is deleted. build/, .avra-cache/,
+# .claude/ and .git are never touched by the sync, at any depth, so a
+# warm build/ and test cache survive every run. Only one build may touch a given persistent tree
 # at a time — nothing here serialises concurrent callers.
 #
 # A SHARED COMPILER CACHE PER SPRITE, keyed by the hash of the
@@ -62,25 +61,9 @@ done
 worktree=$(cd "$worktree" && pwd)
 slug=$(basename "$worktree")
 
-tarfile=$(mktemp -t avra-sprite.XXXXXX)
 info_script=$(mktemp -t avra-sprite-info.XXXXXX)
 run_script=$(mktemp -t avra-sprite-run.XXXXXX)
-chunks=$(mktemp -d -t avra-sprite-chunks.XXXXXX)
-trap 'rm -f "$tarfile" "$info_script" "$run_script"; rm -rf "$chunks"' EXIT
-
-# The archive IS the tree's identity: hashing it means a changed file,
-# a new file and a deleted file all name a different tree. The gate
-# reads doctrine as data (tools/idioms.baseline, tools/cited.py), so
-# those files travel even though they are not source.
-(
-    cd "$worktree"
-    find Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
-         backend runtime packages tools bootstrap corpus \
-        -type f ! -path '*/build/*' ! -path '*/.claude/*' ! -path '*/.avra-cache/*' 2>/dev/null \
-        | LC_ALL=C sort \
-        | COPYFILE_DISABLE=1 tar --no-mac-metadata -cf "$tarfile" -T -
-)
-tree_hash=$(shasum -a 256 "$tarfile" | cut -d' ' -f1)
+trap 'rm -f "$info_script" "$run_script"' EXIT
 
 # THE COMPILER'S SOURCE CLOSURE: packages/cli plus every package its
 # `use @std.x` graph reaches, walked breadth-first over real `use`
@@ -131,7 +114,6 @@ compiler_hash() {
 compiler_hash=$(compiler_hash)
 
 remote="/home/sprite/avra-build/$slug/tree"
-staging="/home/sprite/.avra-sprite-$slug.tar"
 info_remote="/home/sprite/.avra-info-$slug.sh"
 run_remote="/home/sprite/.avra-run-$slug.sh"
 
@@ -149,34 +131,6 @@ sprite_ready() {
 }
 sprite_ready || exit 3
 
-# A push is bounded by the client's fixed deadline, so a file past one
-# chunk travels as 4 MB parts, four at a time, each retried; the Sprite
-# joins them in order and the join must match the local sha256.
-chunk_bytes=4194304
-push_file() {
-    size=$(wc -c < "$1" | tr -d ' ')
-    if [ "$size" -le "$chunk_bytes" ]; then
-        sprite -s "$sprite" file push "$1" "$2" >/dev/null
-        return
-    fi
-    find "$chunks" -type f -exec rm -f {} +
-    split -b "$chunk_bytes" "$1" "$chunks/part."
-    ( cd "$chunks" && ls ) | SPRITE="$sprite" DEST="$2" DIR="$chunks" xargs -P 4 -I{} sh -c '
-        n=0
-        until sprite -s "$SPRITE" file push "$DIR/$1" "$DEST.$1" >/dev/null; do
-            n=$((n + 1))
-            [ $n -lt 3 ] || { echo "sprite-build: push of $1 failed 3 times" >&2; exit 1; }
-        done' _ {} || return 1
-    parts=$( (cd "$chunks" && ls) | tr '\n' ' ')
-    sum=$(shasum -a 256 "$1" | cut -d' ' -f1)
-    sprite -s "$sprite" exec --no-port-forward -- sh -c '
-        dest=$1; sum=$2; shift 2
-        for p in "$@"; do cat "$dest.$p"; done > "$dest"
-        rm -f "$dest".part.*
-        [ "$(sha256sum "$dest" | cut -d" " -f1)" = "$sum" ] || { echo "sprite-build: joined $dest does not match its sha256" >&2; exit 1; }' \
-        _ "$2" "$sum" $parts
-}
-
 sprite -s "$sprite" file push "$provision_script" "/home/sprite/.avra-provision.sh" >/dev/null
 
 # RT1: what the persistent tree and the shared cache already hold, so
@@ -187,7 +141,7 @@ cat > "$info_script" <<'SCRIPT'
 set -eu
 remote=$1
 chash=$2
-printf 'TREE:%s\n' "$(cat "$remote/build/.avra-tree-hash" 2>/dev/null || echo none)"
+mkdir -p "$remote/build"
 printf 'BUILD:%s\n' "$(cat "$remote/build/.avra-compiler-hash" 2>/dev/null || echo none)"
 if [ -x "/home/sprite/avra-compilers/$chash/avra" ]; then
     printf 'CACHE:yes\n'
@@ -197,19 +151,23 @@ fi
 SCRIPT
 sprite -s "$sprite" file push "$info_script" "$info_remote" >/dev/null
 info=$(sprite -s "$sprite" exec --no-port-forward -- bash -lc "sh '$info_remote' '$remote' '$compiler_hash'" 2>/dev/null) || info=""
-tree_marker=$(printf '%s\n' "$info" | sed -n 's/^TREE://p')
 build_marker=$(printf '%s\n' "$info" | sed -n 's/^BUILD://p')
 cache_flag=$(printf '%s\n' "$info" | sed -n 's/^CACHE://p')
-[ -n "$tree_marker" ] || tree_marker=none
 [ -n "$build_marker" ] || build_marker=none
 [ -n "$cache_flag" ] || cache_flag=no
 
-do_sync=1; [ "$tree_marker" = "$tree_hash" ] && do_sync=0
 do_restore=0; [ "$cache_flag" = yes ] && [ "$build_marker" != "$compiler_hash" ] && do_restore=1
 do_store=0; [ "$cache_flag" = no ] && do_store=1
 do_prebuild=0; [ -n "$prebuild" ] && do_prebuild=1
 
-if [ "$do_sync" = 1 ]; then push_file "$tarfile" "$staging" || exit 3; fi
+# The doctrine files travel with the source: the gate reads them as data
+# (tools/idioms.baseline, tools/cited.py). rsync is its own no-op check.
+sync_paths=$(cd "$worktree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
+    backend runtime packages tools bootstrap corpus; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+changes=$(cd "$worktree" && rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
+    --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git \
+    $sync_paths "$sprite:$remote/") || { echo "sprite-build: rsync to $sprite failed" >&2; exit 3; }
+sync_state=unchanged; [ -n "$changes" ] && sync_state=synced
 
 # RT2: sync (if needed), idempotent provisioning, compiler restore or
 # a verified store, then the caller's own command, timed. Nothing here
@@ -218,30 +176,11 @@ if [ "$do_sync" = 1 ]; then push_file "$tarfile" "$staging" || exit 3; fi
 cat > "$run_script" <<'SCRIPT'
 #!/bin/sh
 set -eu
-remote=$1; chash=$2; tree_hash=$3; do_sync=$4; do_restore=$5; do_store=$6; do_prebuild=$7
-shift 7
+remote=$1; chash=$2; do_restore=$3; do_store=$4; do_prebuild=$5
+shift 5
 
 mkdir -p "$remote/build"
 cd "$remote"
-slug=$(basename "$(dirname "$remote")")
-staging="/home/sprite/.avra-sprite-$slug.tar"
-
-# THE SYNC: a file the archive no longer lists is stale and removed;
-# build/, .avra-cache/ and .claude/ are pruned from the scan at any
-# depth, so a warm build/ and test cache never touch this path.
-if [ "$do_sync" = 1 ] && [ -f "$staging" ]; then
-    tar -tf "$staging" | LC_ALL=C sort > "/tmp/.avra-expect-$$"
-    tar -xf "$staging" -C "$remote"
-    find "$remote" \( -name build -o -name .avra-cache -o -name .claude \) -type d -prune -o -type f -print \
-        | sed "s#^$remote/##" | LC_ALL=C sort > "/tmp/.avra-present-$$"
-    comm -23 "/tmp/.avra-present-$$" "/tmp/.avra-expect-$$" > "/tmp/.avra-stale-$$"
-    while IFS= read -r f; do rm -f "$remote/$f"; done < "/tmp/.avra-stale-$$"
-    find "$remote" \( -name build -o -name .avra-cache -o -name .claude \) -prune -o -type d -empty -print \
-        | awk '{ print gsub(/\//,"/"), $0 }' | sort -rn | cut -d' ' -f2- \
-        | while IFS= read -r d; do [ "$d" = "$remote" ] || rmdir "$d" 2>/dev/null || true; done
-    rm -f "/tmp/.avra-expect-$$" "/tmp/.avra-present-$$" "/tmp/.avra-stale-$$" "$staging"
-    printf '%s' "$tree_hash" > build/.avra-tree-hash
-fi
 
 # Idempotent toolchain provisioning: a Sprite is a stock Ubuntu image.
 test -f tools/sprite-provision.sh || { mkdir -p tools; cp /home/sprite/.avra-provision.sh tools/sprite-provision.sh; }
@@ -370,7 +309,7 @@ SCRIPT
 sprite -s "$sprite" file push "$run_script" "$run_remote" >/dev/null
 
 status=0
-remote_run_cmd="sh '$run_remote' '$remote' '$compiler_hash' '$tree_hash' '$do_sync' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
+remote_run_cmd="sh '$run_remote' '$remote' '$compiler_hash' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
 sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sprite-run "$@" || status=$?
 
 # RT3: the run's own report — timing and the store outcome — never
@@ -402,7 +341,6 @@ if [ -n "$receipt" ]; then
     fi
 fi
 
-if [ "$do_sync" = 1 ]; then sync_state=synced; else sync_state=unchanged; fi
 if [ "$do_restore" = 1 ]; then
     compiler_state=restored
 elif [ "$do_store" = 1 ]; then
