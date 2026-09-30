@@ -182,7 +182,7 @@ impl TypeCx {
         }
         let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
-        if self.marks_identity(record) { self.identity_law(s, owner, record, names, types) }
+        if self.marks_identity(record) { self.identity_law(s, record, names, types) }
         let sig = StructSig {
             names: [t.of for t in names],
             types: types,
@@ -194,25 +194,14 @@ impl TypeCx {
     /// AN IDENTITY'S TABLES ARE SHARED BY EVERY COPY: a field a
     /// writing path could open unique — anything but a `Cell`, or
     /// another `@identity` type — would fork them the moment one
-    /// copy's write stops reaching the other. A field is licensed
-    /// PLAIN either way: the name-keyed `identity_plain` table, or
-    /// `record`'s OWN `@plain_field` annotations — a transitional
-    /// bridge (avra-8sb5.57.113) that reads both, so a compiler built
-    /// from this source can still check source that predates the
-    /// annotation as well as source that has moved onto it.
-    fn identity_law(
-        s: StmtId,
-        owner: string,
-        record: DeclId,
-        names: List<Scoped>,
-        types: List<TypeId>,
-    ) {
+    /// copy's write stops reaching the other. A field licensed PLAIN
+    /// is read off `record`'s OWN `@plain_field` annotations, so the
+    /// license travels with the declaration through any rename.
+    fn identity_law(s: StmtId, record: DeclId, names: List<Scoped>, types: List<TypeId>) {
         let plain = self.identity_plain_fields(record)
         for j, ty in types {
             let field = names[j].of
-            if !self.identity_field_ok(ty) &&
-                !identity_licensed(owner, field) &&
-                !plain.contains(field) {
+            if !self.identity_field_ok(ty) && !plain.contains(field) {
                 self.non_identity_field(s, field, ty)
             }
         }
@@ -258,7 +247,7 @@ impl TypeCx {
                     self.stmt_loc(s),
                     identity_field_law,
                     "field `${field}` is `${self.view.types.name_of(found)}`",
-                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `@plain_field(\"${field}\")` beside `@identity`, or `identity_plain` in compiler/typing/declare.av",
+                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `@plain_field(\"${field}\")` beside `@identity`",
                 ),
             )
     }
@@ -1061,90 +1050,6 @@ impl TypeCx {
 }
 
 const identity_field_law: string = "an identity's tables are shared by every copy — its fields are `Cell`s"
-
-/// A field an `@identity` type carries plain, reviewed here rather
-/// than wrapped: a scalar or a fn value set once at construction and
-/// never reassigned, so no writing path ever reaches it to fork it.
-/// THE ONE SPELLING: no field carries its own license comment — this
-/// table is the license, and its `reason` is the review. A `@plain`
-/// FIELD MARK would say the same thing at the site, but "EVERY MARK
-/// OWES A READER" (compiler/expand.av's `hold_marks_to_a_reader`)
-/// claims a mark only through a `@derive` trait's `marks()`, run over
-/// a declaration that ANSWERS `@std/meta`'s `Derived`/`Declared`
-/// shape — `@identity` generates nothing and derives nothing, so no
-/// trait stands behind it to claim one. Inventing a trait solely to
-/// open that door would be machinery built to argue a decision
-/// already made, not a real derive; the table stays the one license.
-type PlainField = { of: string, field: string, reason: string }
-
-const identity_plain: List<PlainField> = [
-    PlainField {
-        of: "SyntaxArena",
-        field: "file",
-        reason: "the path this store parsed, set once at construction",
-    },
-    PlainField {
-        of: "NodeStore",
-        field: "file",
-        reason: "the path this store parsed, set once at construction — kept for a tree still built on the pre-rename name (avra-8sb5.57.18.4): the speed gate runs a candidate compiler over the base tree's own source, which lags the candidate's own rename until a landing refreshes it",
-    },
-    PlainField {
-        of: "Decls",
-        field: "rows",
-        reason: "the language's own builtin rows, built once at workspace construction and never written after",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "host",
-        reason: "the host capability table, set once at construction and never reassigned",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "root",
-        reason: "the tree's root path, set once at construction",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "lang",
-        reason: "the assembled grammar and features, set once at construction and never reassigned",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "lone",
-        reason: "a build-wide config flag, set once at construction",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "per_file",
-        reason: "a directory of programs, every file its own module — set once at construction",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "clock",
-        reason: "the injected clock fn, set once at construction",
-    },
-    PlainField {
-        of: "Fixpoint",
-        field: "family",
-        reason: "registered once at the family's construction, then read only",
-    },
-    PlainField { of: "Fixpoint", field: "bottom", reason: "the lattice's floor, registered once" },
-    PlainField { of: "Fixpoint", field: "join", reason: "the lattice's join fn, registered once" },
-    PlainField {
-        of: "Fixpoint",
-        field: "fp",
-        reason: "the lattice's fingerprint fn, registered once",
-    },
-    PlainField {
-        of: "Fixpoint",
-        field: "turn_cap",
-        reason: "set at registration, `with` swaps in a fresh value rather than writing through a path",
-    },
-]
-
-fn identity_licensed(owner: string, field: string) -> bool {
-    identity_plain.any((p: PlainField) -> p.of == owner && p.field == field)
-}
 
 /// The remedy for a type parameter whose name is taken.
 fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }
