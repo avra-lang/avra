@@ -83,6 +83,10 @@
 # the chore commit (commit_chore_if_moved) that carries the seed and
 # every moved baseline together — at most one per landing.
 set -eu
+verdict_ok=0
+# THE LANDING POOL: every Sprite no session keeps for itself, the idlest
+# chosen per leg (sprites_by_load); PERF's quiet census box is never in it.
+land_sprite_pool="avra-idioms-pay avra-comptime avra-phase-d avra-cores"
 
 LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
@@ -202,19 +206,28 @@ heavy() {
     echo "land: $name …" >&2
     t_start="$(date +%s)"
     st=0
+    # A HARD CAP per step: past it the step is killed and the landing
+    # stops as a TOOL failure naming it. The Linux leg is bounded by its
+    # own per-Sprite cap instead.
+    step_cap="${AVRA_LAND_STEP_CAP_S:-2700}"
+    case "$name" in linux*) step_cap=0 ;; esac
     if [ "${AVRA_LAND_PARALLEL_SLOT:-0}" = "1" ]; then
         # A step running inside the parallel job pool (job_launch) is
         # already bounded by AVRA_LAND_JOBS — the machine-wide slot.sh(2)
         # gate is for a landing that runs ONE heavy step at a time, which
         # this one no longer does. memcap still applies, per step.
-        sh "$tools_dir/capped.sh" "$log" 2000000 \
+        capped_step "$step_cap" sh "$tools_dir/capped.sh" "$log" 2000000 \
             sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
     else
-        sh "$tools_dir/capped.sh" "$log" 2000000 \
+        capped_step "$step_cap" sh "$tools_dir/capped.sh" "$log" 2000000 \
             sh "$tools_dir/slot.sh" 2 \
             sh "$tools_dir/memcap.sh" "${AVRA_MEMCAP_MB:-4000}" "$@" || st=$?
     fi
     timeline_emit "$name" "$t_start" "$st"
+    if [ "$st" -eq 124 ] && [ "$step_cap" -gt 0 ]; then
+        tool_failed "the step $name ran past its $((step_cap / 60)) min cap"
+        return 1
+    fi
     if [ "$st" -eq 0 ]; then
         echo "land: $name OK" >&2
         return 0
@@ -222,6 +235,13 @@ heavy() {
     # 137 is the memory cap's kill: a finding about the change, never a retry.
     fail_report "$name" "$st" "$log"
     return "$st"
+}
+
+# A command under a hard cap of `$1` seconds (0: none).
+capped_step() {
+    cap="$1"
+    shift
+    if [ "$cap" -gt 0 ]; then watched "$cap" 0 true "$@"; else "$@"; fi
 }
 
 # A step's exit status is read as `cmd || st=$?`: after `if cmd; then …
@@ -355,6 +375,7 @@ give_verdict() {
 absorbed_exit() {
     cat "$1/verdict"
     st="$(cat "$1/status" 2>/dev/null)"
+    [ "${st:-1}" = 0 ] && verdict_ok=1
     release_lock
     exit "${st:-1}"
 }
@@ -371,8 +392,29 @@ finish_lock() {
     release_absorbed
     release_lock
     echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
-    [ "$exit_st" -eq 0 ] || restore_generated "${branch_wt:-}"
-    clean_own_scratch "$exit_st"
+    tool_reason=""
+    [ -f "$scratch/tool-failure" ] && tool_reason="$(cat "$scratch/tool-failure")"
+    final_st=0
+    exit_verdict "$exit_st" "${verdict_ok:-0}" "$tool_reason" || final_st=$?
+    [ "$final_st" -eq 0 ] || restore_generated "${branch_wt:-}"
+    clean_own_scratch "$final_st"
+    exit "$final_st"
+}
+
+# A STATUS IS A VERDICT. 0 only where a verdict said so (a landing, a
+# dry run's OK); a tool failure is 3 and says NOT LANDED; a run that
+# ended 0 with no verdict is 3 too, never a silent success.
+exit_verdict() {
+    if [ "$2" -eq 1 ] && [ "$1" -eq 0 ]; then return 0; fi
+    if [ -n "$3" ]; then
+        echo "NOT LANDED — tool failure: $3"
+        return 3
+    fi
+    if [ "$1" -eq 0 ]; then
+        echo "NOT LANDED — the run ended with no verdict"
+        return 3
+    fi
+    return "$1"
 }
 
 # A failed run leaves the branch tree as it found it: the seed is
@@ -410,13 +452,12 @@ release_lock_and_exit() {
 # FIFO fixture is the one caller.
 hold_lock_for() {
     signal="$1"
+    order="${2:-/dev/null}"
     acquire_lock
     echo "acquired ticket $ticket"
-    i=0
-    while [ ! -f "$signal" ] && [ "$i" -lt 300 ]; do
-        sleep 0.2
-        i=$((i + 1))
-    done
+    echo "acquired $branch $ticket" >> "$order"
+    while [ ! -f "$signal" ]; do sleep 0.2; done
+    echo "released $branch" >> "$order"
     release_lock
     echo "released ticket $ticket"
 }
@@ -731,11 +772,109 @@ warm_gate_step() {
 # trailing "sprite-build: … -> exit N" line — which a REAL remote
 # command failure, guarded by `|| status=$?`, always reaches. Absence
 # of that line is the tell.
+# A WATCHED COMMAND: `watched <cap_s> <quiet_s> <progress_fn> <cmd…>`
+# runs the command and polls it every AVRA_LAND_WATCH_POLL_S seconds,
+# noticing its exit within a second. Past `cap_s` seconds it is killed and
+# answers 124; with `quiet_s` above 0, a `progress_fn` answer that has
+# not changed for `quiet_s` seconds kills it too and answers 125. An
+# empty progress answer measures nothing yet and never trips. Otherwise
+# the command's own status.
+watched() {
+    cap_s="$1"
+    quiet_s="$2"
+    progress_fn="$3"
+    shift 3
+    poll="${AVRA_LAND_WATCH_POLL_S:-10}"
+    "$@" &
+    wpid=$!
+    w0="$(date +%s)"
+    wlast=""
+    wlast_t="$w0"
+    wnext=$((w0 + poll))
+    while kill -0 "$wpid" 2>/dev/null; do
+        sleep 1
+        kill -0 "$wpid" 2>/dev/null || break
+        wnow="$(date +%s)"
+        [ "$wnow" -ge "$wnext" ] || continue
+        wnext=$((wnow + poll))
+        if [ $((wnow - w0)) -ge "$cap_s" ]; then
+            kill_tree "$wpid"
+            wait "$wpid" 2>/dev/null
+            return 124
+        fi
+        [ "$quiet_s" -gt 0 ] || continue
+        wp="$("$progress_fn")"
+        if [ -z "$wp" ] || [ "$wp" != "$wlast" ]; then
+            wlast="$wp"
+            wlast_t="$wnow"
+        elif [ $((wnow - wlast_t)) -ge "$quiet_s" ]; then
+            kill_tree "$wpid"
+            wait "$wpid" 2>/dev/null
+            return 125
+        fi
+    done
+    wst=0
+    wait "$wpid" || wst=$?
+    return "$wst"
+}
+
+# A process and every descendant, children first. A TRAILING `:` ON
+# ITS OWN LINE GUARDS NOTHING BEFORE IT — `set -e` aborts the instant
+# the PRECEDING command fails, never waiting to see whether a later
+# line would have absorbed it. The KILL right above one is exactly
+# that command: it finds nothing to kill (ESRCH) in the ORDINARY case
+# where the TERM just above it already worked, so the trailing `:`
+# was a no-op every time this function was about to return cleanly —
+# `watched()`'s own two callers (the cap and the no-progress paths)
+# never reached their `return 124`/`return 125` at all, the whole
+# process dying with `kill -KILL`'s own exit status instead. Found
+# calling `watched()` directly (`sh land.sh --call watched …`, exactly
+# tools/land_train.sh's own calling convention) and confirmed with a
+# five-line reproduction before touching this function. Each kill now
+# guards ITSELF.
+kill_tree() {
+    for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
+    kill -TERM "$1" 2>/dev/null || :
+    sleep 1
+    kill -KILL "$1" 2>/dev/null || :
+}
+
+# THE IDLEST SPRITE FIRST: every Sprite in the pool is asked, in
+# parallel, for its load and free memory; the answer orders them by
+# load per core, then free memory, with any that did not answer last.
+# Each probe is one exec under a timeout, and each answer is printed; a
+# pool of one is not probed.
+sprites_by_load() {
+    if [ "$#" -le 1 ]; then echo "$* "; return 0; fi
+    probe="${AVRA_LAND_SPRITE_PROBE:-sprite_probe}"
+    d="$(mktemp -d "${TMPDIR:-/tmp}/avra-sprite-load.XXXXXX")"
+    for s in "$@"; do
+        ( "$probe" "$s" > "$d/$s" 2>/dev/null || : ) &
+    done
+    wait
+    for s in "$@"; do
+        read -r load cores avail < "$d/$s" 2>/dev/null || load=""
+        if [ -n "$load" ] && [ -n "$cores" ] && [ -n "$avail" ]; then
+            echo "land-linux: $s load $load on $cores cores, $avail MB free" >&2
+            awk -v s="$s" -v l="$load" -v c="$cores" -v a="$avail" 'BEGIN { printf "%012.4f %012d %s\n", l / c, 999999999 - a, s }'
+        else
+            echo "land-linux: $s did not answer its load probe" >&2
+            printf '%012.4f %012d %s\n' 99999 999999999 "$s"
+        fi
+    done | sort | awk '{ print $3 }' | tr '\n' ' '
+    rm -rf "$d"
+}
+
+# One Sprite's load, cores and MB free, as three words.
+sprite_probe() {
+    timeout 30 sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); l=$1; c=$(nproc); a=$(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo); echo "$l $c $a"'
+}
+
 linux_gate_step() {
     wt="$1"
     shift
     pkgs="$*"
-    sprites="${AVRA_LAND_SPRITE:-avra-idioms-pay avra-comptime}"
+    sprites="$(sprites_by_load ${AVRA_LAND_SPRITE:-$land_sprite_pool})"
     sprite_build="${AVRA_LAND_SPRITE_BUILD:-$tools_dir/sprite-build.sh}"
     # `-o avra` skips avra's OWN prerequisites too (libavra_runtime.a
     # among them, COMPILER_OBJS) — `make objects` first, whether or
@@ -748,7 +887,10 @@ linux_gate_step() {
     # The first word the body says is the boundary: before it, a failure
     # is the Sprite's (unreachable, reset, a sync that died); after it,
     # the branch's own.
-    body="echo 'land-linux: body started'; export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
+    # A HEARTBEAT: every 30 s the body prints how many bytes its logs
+    # hold, so the watcher reads progress as a number that grows, never
+    # as time passing.
+    body="echo 'land-linux: body started'; d=\$(mktemp -d); ( while sleep 30; do echo \"land-linux: progress \$(cat /tmp/land-linux-*.log \"\$d\"/*.log 2>/dev/null | wc -c)\"; done ) & hb=\$!; trap 'pkill -P \$hb 2>/dev/null; kill \$hb 2>/dev/null' EXIT; export LLVM_PREFIX=/usr/lib/llvm-22; t=\$(date +%s); test -x build/avra || make bootstrap > /tmp/land-linux-boot.log 2>&1 || { tail -50 /tmp/land-linux-boot.log; exit 1; }; echo \"land-linux: bootstrap \$((\$(date +%s) - t))s\"; t=\$(date +%s); make objects > /tmp/land-linux-objects.log 2>&1 || { tail -50 /tmp/land-linux-objects.log; exit 1; }; make -o avra libs > /tmp/land-linux-libs.log 2>&1 || { tail -50 /tmp/land-linux-libs.log; exit 1; }; echo \"land-linux: objects+libs \$((\$(date +%s) - t))s\""
     # The suites run in parallel on the Sprite, the longest first; each
     # keeps its own log and status, and every failure is printed after
     # all have finished. The cap is AVRA_LAND_SPRITE_JOBS when set, else
@@ -762,24 +904,86 @@ linux_gate_step() {
     done
     body="$body; pkgs='$first $rest'; cap='${AVRA_LAND_SPRITE_JOBS:-}'; per=${AVRA_LAND_SPRITE_SUITE_MB:-1800}; meminfo='${AVRA_LAND_SPRITE_MEMINFO:-/proc/meminfo}'"
     body="$body"'; if [ -z "$cap" ]; then avail=$(awk '"'"'/^MemAvailable:/ { print int($2 / 1024) }'"'"' "$meminfo" 2>/dev/null); cap=$(( ${avail:-0} / per )); [ "$cap" -ge 1 ] || cap=1; [ "$cap" -le 4 ] || cap=4; fi; echo "land-linux: $cap suites at once"'
-    body="$body"'; d=$(mktemp -d); for p in $pkgs; do while [ "$(jobs -r | wc -l)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & done; wait; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
+    body="$body"'; running() { n=0; for q in $pids; do kill -0 "$q" 2>/dev/null && n=$((n + 1)); done; echo "$n"; }; pids=""; for p in $pkgs; do while [ "$(running)" -ge "$cap" ]; do sleep 0.2; done; ( t=$(date +%s); build/avra test "packages/$p" > "$d/$p.log" 2>&1; echo $? > "$d/$p.st"; echo "land-linux: test $p $(( $(date +%s) - t ))s" > "$d/$p.time" ) & pids="$pids $!"; done; wait $pids; fail=0; for p in $pkgs; do cat "$d/$p.time" 2>/dev/null; st=$(cat "$d/$p.st" 2>/dev/null || echo 1); if [ "$st" -ne 0 ]; then fail=1; echo "land-linux: FAILED $p (exit $st)"; tail -40 "$d/$p.log"; fi; done; exit $fail'
 
-    # A Sprite that fails before the body starts is a TOOL failure that
-    # names it; the next Sprite in the list is tried.
+    # A Sprite that fails before the body starts, that stops making
+    # progress, or that runs past the leg's cap is a TOOL failure that
+    # names it; its remote run is stopped and the next Sprite is tried.
+    # A failure after the body started is the branch's.
     tried=""
+    leg_cap="${AVRA_LAND_LINUX_CAP_S:-1500}"
+    leg_quiet="${AVRA_LAND_LINUX_QUIET_S:-300}"
+    slug="$(basename "$wt")"
     for sprite in $sprites; do
         out="$scratch/linux-sprite-$sprite.out"
+        linux_out="$out"
         st=0
-        sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
+        watched "$leg_cap" "$leg_quiet" linux_progress sh "$sprite_build" "$sprite" "$wt" -- bash -lc "$body" > "$out" 2>&1 || st=$?
         cat "$out"
-        if grep -q '^land-linux: body started' "$out"; then
+        next="$(next_after "$sprite" $sprites)"
+        if [ "$st" -eq 125 ]; then
+            echo "land-linux: no progress on $sprite for $((leg_quiet / 60)) min — moved to ${next:-no other Sprite}"
+            stop_remote "$sprite" "$slug"
+        elif [ "$st" -eq 124 ]; then
+            echo "land-linux: $sprite ran past the leg's $((leg_cap / 60)) min cap — moved to ${next:-no other Sprite}"
+            stop_remote "$sprite" "$slug"
+        elif grep -q '^land-linux: body started' "$out"; then
+            echo "land-linux: ran on $sprite"
             return "$st"
+        else
+            echo "land: linux: the Sprite $sprite failed before the command ran (exit $st)" >&2
         fi
-        echo "land: linux: the Sprite $sprite failed before the command ran (exit $st)" >&2
         tried="$tried $sprite"
     done
     tool_failed "no Linux Sprite could run the suites (tried:$tried)"
     return 1
+}
+
+# The leg's progress: the heartbeat's last byte count once the body has
+# started, nothing measurable before it (a sync and a compiler advance
+# print nothing while they work; the leg's cap bounds them).
+linux_progress() {
+    grep -q '^land-linux: body started' "$linux_out" 2>/dev/null || return 0
+    grep '^land-linux: progress ' "$linux_out" | tail -1 | awk '{ print $3 }'
+    grep -c '' "$linux_out"
+}
+
+# The train's own leg, `linux_progress`'s twin over a `land-train:`
+# log — one `watched()` covers every remote step regardless of which
+# gate's own body it is running (docs/2026_09_29_LAND_TRAIN.md).
+train_progress() {
+    grep -q '^land-train: body started' "$train_out" 2>/dev/null || return 0
+    grep '^land-train: progress ' "$train_out" | tail -1 | awk '{ print $3 }'
+    grep -c '' "$train_out"
+}
+
+# The landing pool's own list — the ONE place tools/land_train.sh
+# reads it, so it never drifts from `linux_gate_step`'s own default
+# (`${AVRA_LAND_SPRITE:-$land_sprite_pool}`) and never names a Sprite
+# (avra-unions-* included) that is not this pool's to claim.
+land_pool() { printf '%s' "${AVRA_LAND_SPRITE:-$land_sprite_pool}"; }
+
+# The Sprite after `$1` in the rest of the list.
+next_after() {
+    want="$1"
+    shift
+    seen=0
+    for s in "$@"; do
+        [ "$seen" -eq 1 ] && { echo "$s"; return 0; }
+        [ "$s" = "$want" ] && seen=1
+    done
+    :
+}
+
+# Stops a leg's run on the Sprite: the runner sprite-build started for
+# this tree, and every process under it.
+stop_remote() {
+    remote_stop="${AVRA_LAND_SPRITE_STOP:-sprite_stop}"
+    "$remote_stop" "$1" "$2" || echo "land: linux: could not stop the run on $1" >&2
+}
+
+sprite_stop() {
+    timeout 60 sprite exec -s "$1" -- sh -c 'kids() { for c in $(ps -o pid= --ppid "$1"); do kids "$c"; echo "$c"; done; }; for r in $(pgrep -f "\.avra-run-$0\.sh"); do t="$(kids "$r") $r"; kill -TERM $t 2>/dev/null; sleep 2; kill -KILL $t 2>/dev/null; done; :' "$2"
 }
 
 # ── THE SPEED GATE (PERF's method): instructions retired and peak memory footprint
@@ -1434,7 +1638,7 @@ linux_launch() {
     fi
     linux_suffix="$4"
     linux_wt="$1"
-    ( heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
+    ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
     linux_pid=$!
 }
 
@@ -1460,8 +1664,9 @@ linux_collect() {
     grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     if linux_saw_old_seed "$linux_wt" "$lst"; then
         echo "land: linux: the leg ran before the seed was re-emitted — once more, with the new seed" >&2
+        rm -f "$scratch/tool-failure"
         lst=0
-        heavy "linux-reseeded$linux_suffix" sh "$self" --call linux_gate_step "$linux_wt" $linux_pkgs || lst=$?
+        AVRA_LAND_PARALLEL_SLOT=1 heavy "linux-reseeded$linux_suffix" sh "$self" --call linux_gate_step "$linux_wt" $linux_pkgs || lst=$?
         grep -h '^land-linux: ' "$(log_of "linux-reseeded$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     fi
     return "$lst"
@@ -1538,7 +1743,47 @@ seed_policy() {
     echo "land: seed-check passed after a fresh emit" >&2
 }
 
-try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
+try_ff() { main_ff "$main_wt" "$branch"; }
+
+# MAIN MOVES WHOLE OR NOT AT ALL. Before the fast-forward, a tracked
+# change in main's checkout to a file this landing changes refuses, by
+# name — an unrelated local edit stays where it is. After a refused one
+# (a hook the incoming tree adds can refuse the ref after git has
+# already written the files), every file the landing touched is put back
+# to HEAD, and the restore says so.
+main_ff() {
+    mwt="$1"
+    target="$2"
+    incoming="$(git -C "$mwt" diff --name-only HEAD "$target")"
+    dirty="$(git -C "$mwt" diff --name-only HEAD)"
+    if [ -n "$dirty" ] && [ -n "$incoming" ]; then
+        hit="$(printf '%s\n' "$dirty" | while IFS= read -r f; do printf '%s\n' "$incoming" | grep -Fxq -- "$f" && echo "$f"; done || :)"
+        if [ -n "$hit" ]; then
+            echo "land: main's checkout has uncommitted changes to files this landing changes — commit or set them aside:" >&2
+            printf '  %s\n' $hit >&2
+            return 1
+        fi
+    fi
+    before="$(git -C "$mwt" rev-parse HEAD)"
+    ffst=0
+    AVRA_LANDING=1 git -C "$mwt" merge --ff-only "$target" || ffst=$?
+    [ "$ffst" -eq 0 ] && return 0
+    if [ "$(git -C "$mwt" rev-parse HEAD)" = "$before" ]; then
+        restored=""
+        for f in $incoming; do
+            if git -C "$mwt" cat-file -e "HEAD:$f" 2>/dev/null; then
+                git -C "$mwt" diff --quiet HEAD -- "$f" 2>/dev/null && continue
+                git -C "$mwt" checkout -q HEAD -- "$f" && restored="$restored $f"
+            elif [ -e "$mwt/$f" ] || git -C "$mwt" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+                git -C "$mwt" rm -q -f --cached -- "$f" 2>/dev/null
+                rm -f "$mwt/$f"
+                restored="$restored $f"
+            fi
+        done
+        [ -n "$restored" ] && echo "land: the fast-forward was refused after it wrote files — main's checkout restored to HEAD:$restored" >&2
+    fi
+    return "$ffst"
+}
 
 # MAIN'S CHECKOUT RUNS WHAT MAIN SAYS: after a landing that reached the
 # compiler, the landing tree's fixed-point compiler and runtime library
@@ -1855,7 +2100,7 @@ batch_core() {
         return 0
     fi
     ff_log="$(log_of batch-ff)"
-    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
+    if main_ff "$main_wt" "$batch_branch" > "$ff_log" 2>&1; then
         landed="$(git -C "$main_wt" rev-parse HEAD)"
         refresh_main_compiler "$batch_wt" "$main_wt"
         return 0
@@ -1869,6 +2114,91 @@ batch_core() {
 
 # Whether `b` is among the space-separated `set`.
 listed() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+
+# ── THE TRAIN HAND-OFF (AVRA_LAND_TRAIN=1) ───────────────────────────
+# docs/2026_09_29_LAND_TRAIN.md. Drop-in for `batch_core`, same
+# contract (sets `good`, `culprits`, `landed`, `batch_note` — never a
+# return value, exactly as batch_core's own callers already read it):
+# tools/land_train.sh verifies the WHOLE queue's candidate ladder on
+# Sprites, in parallel, and hands back the longest green prefix — this
+# function never re-enters the FIFO lock train_ladder runs under none
+# of (it takes none), and runs the ordinary local pipeline exactly
+# ONCE, over that prefix alone, for the Mac-only half (speed, warm-
+# reuse, codesign, the real fast-forward) — AVRA_LAND_LINUX=0 for that
+# one pass, since the Linux suites already ran, MORE of them, once per
+# candidate, on the Sprites the train just used.
+train_core() {
+    train_dry_run="$1"
+    shift
+    branches="$*"
+    good=""
+    culprits=""
+    landed=""
+    batch_note=""
+    batch_base="$(git -C "$main_wt" rev-parse refs/heads/main)"
+    [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
+    echo "land: train over: $branches"
+
+    # A DETERMINISTIC scratch, named from THIS run's own — never left
+    # for land_train.sh to mint its own under /tmp, which this
+    # function could then never point back at to read its tool-failure
+    # marker (a temp var read only from the ENVIRONMENT, never from a
+    # child process's own private default).
+    train_scratch="$scratch/train-ladder"
+    ladder_log="$(log_of train-ladder)"
+    good="$(AVRA_LAND_TRAIN_SCRATCH="$train_scratch" sh "$tools_dir/land_train.sh" --call train_ladder $branches 2>"$ladder_log")" || true
+    cat "$ladder_log" >&2
+    culprits="$(grep -h '^CULPRIT: ' "$ladder_log" 2>/dev/null | sed 's/^CULPRIT: //' | tr '\n' ' ')"
+    if grep -q '^TOOLFAIL' "$ladder_log" 2>/dev/null || [ -f "$train_scratch/tool-failure" ]; then
+        good=""
+        culprits=""
+        reason="$(cat "$train_scratch/tool-failure" 2>/dev/null || grep -h '^TOOLFAIL' "$ladder_log" | head -1)"
+        batch_note="land: TOOL FAILURE in the train, no branch judged — see $ladder_log"
+        # THE TOP-LEVEL SCRATCH, not the ladder's own nested one — this
+        # is what finish_lock's exit_verdict reads to answer exit 3
+        # ("NOT LANDED — tool failure") rather than the generic exit 1
+        # a plain batch_note alone would fall through to.
+        tool_failed "$reason"
+        return 0
+    fi
+    if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
+        batch_note="land: every branch failed the train — nothing to land"
+        return 0
+    fi
+    echo "land: train green prefix: $good"
+    [ -n "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && echo "land: culprit(s), excluded: $culprits"
+    if [ "$train_dry_run" -eq 1 ]; then
+        batch_note="land: --dry-run — skipping the Mac finalization pass and the fast-forward"
+        return 0
+    fi
+    AVRA_LAND_LINUX=0
+    export AVRA_LAND_LINUX
+    if ! try_integration "train-final" $good; then
+        [ -f "$scratch/tool-failure" ] || batch_note="land: the train's own green prefix disagreed once combined and Mac-finalized — logs: $scratch/logs"
+        return 0
+    fi
+    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$(log_of train-ff)" 2>&1; then
+        landed="$(git -C "$main_wt" rev-parse HEAD)"
+        refresh_main_compiler "$batch_wt" "$main_wt"
+        return 0
+    fi
+    if main_moved_since "$batch_base"; then
+        batch_note="land: main moved during the train's finalization — land it again once it settles"
+    else
+        batch_note="land: the fast-forward was refused and main did not move — git says: $(cat "$(log_of train-ff)")"
+    fi
+}
+
+# batch_core, or the train when AVRA_LAND_TRAIN=1 — the ONE place that
+# decides which, so a queue is served identically either way from both
+# of this file's own call sites.
+dispatch_batch() {
+    if [ "${AVRA_LAND_TRAIN:-0}" = "1" ]; then
+        train_core "$@"
+    else
+        batch_core "$@"
+    fi
+}
 
 main_batch() {
     dry_run="$1"
@@ -1892,12 +2222,13 @@ main_batch() {
             exit 1
         fi
     done
-    batch_core "$dry_run" "$@"
+    dispatch_batch "$dry_run" "$@"
     if [ -n "$batch_note" ] && [ -z "$landed" ]; then
         echo "$batch_note" >&2
-        [ "$dry_run" -eq 1 ] && [ -n "$good" ] && [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && exit 0
+        [ "$dry_run" -eq 1 ] && [ -n "$good" ] && [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && { verdict_ok=1; exit 0; }
         exit 1
     fi
+    verdict_ok=1
     echo "LANDED $landed — $good"
     [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]
 }
@@ -1909,7 +2240,7 @@ land_absorbed() {
     riders=""
     for t in $absorbed; do riders="$riders $(ticket_field "$d/$t" branch)"; done
     echo "land: absorbing the queue behind ticket $ticket:$riders"
-    batch_core 0 "$branch" $riders
+    dispatch_batch 0 "$branch" $riders
     for t in $absorbed; do
         b="$(ticket_field "$d/$t" branch)"
         if [ -n "$landed" ] && listed "$b" "$good"; then
@@ -1921,6 +2252,7 @@ land_absorbed() {
         fi
     done
     if [ -n "$landed" ] && listed "$branch" "$good"; then
+        verdict_ok=1
         echo "LANDED $landed — in a batch with: $good"
         exit 0
     fi
@@ -1975,6 +2307,7 @@ main() {
 
     if [ "$dry_run" -eq 1 ]; then
         echo "land: --dry-run — skipping the fast-forward"
+        verdict_ok=1
         echo "land: DRY RUN OK for $branch (would land as $(git -C "$branch_wt" rev-parse --short HEAD))"
         exit 0
     fi
@@ -1982,6 +2315,7 @@ main() {
     ff_log="$(log_of ff)"
     if try_ff > "$ff_log" 2>&1; then
         refresh_main_compiler "$branch_wt" "$main_wt"
+        verdict_ok=1
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
@@ -1995,6 +2329,7 @@ main() {
     ff_retry_log="$(log_of ff-retry)"
     if try_ff > "$ff_retry_log" 2>&1; then
         refresh_main_compiler "$branch_wt" "$main_wt"
+        verdict_ok=1
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi

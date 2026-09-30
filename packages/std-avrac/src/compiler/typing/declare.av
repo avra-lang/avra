@@ -184,7 +184,7 @@ impl TypeCx {
         }
         let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
-        if self.marks_identity(record) { self.identity_law(s, owner, names, types) }
+        if self.marks_identity(record) { self.identity_law(s, owner, record, names, types) }
         let lacking = self.view.decls.lacking(record)
         self.lacks_law(s, owner, names, lacking)
         let sig = StructSig {
@@ -199,11 +199,25 @@ impl TypeCx {
     /// AN IDENTITY'S TABLES ARE SHARED BY EVERY COPY: a field a
     /// writing path could open unique — anything but a `Cell`, or
     /// another `@identity` type — would fork them the moment one
-    /// copy's write stops reaching the other.
-    fn identity_law(s: StmtId, owner: string, names: List<Scoped>, types: List<TypeId>) {
+    /// copy's write stops reaching the other. A field is licensed
+    /// PLAIN either way: the name-keyed `identity_plain` table, or
+    /// `record`'s OWN `@plain_field` annotations — a transitional
+    /// bridge (avra-8sb5.57.113) that reads both, so a compiler built
+    /// from this source can still check source that predates the
+    /// annotation as well as source that has moved onto it.
+    fn identity_law(
+        s: StmtId,
+        owner: string,
+        record: DeclId,
+        names: List<Scoped>,
+        types: List<TypeId>,
+    ) {
+        let plain = self.identity_plain_fields(record)
         for j, ty in types {
             let field = names[j].of
-            if !self.identity_field_ok(ty) && !identity_licensed(owner, field) {
+            if !self.identity_field_ok(ty) &&
+                !identity_licensed(owner, field) &&
+                !plain.contains(field) {
                 self.non_identity_field(s, field, ty)
             }
         }
@@ -219,15 +233,26 @@ impl TypeCx {
         }
     }
 
-    /// Whether a declaration carries `@std/meta`'s `@identity` — by
-    /// declaration, never a bare compare of the word: a package's
-    /// own fn named `identity` answers false.
-    fn marks_identity(d: DeclId) -> bool {
+    /// `d`'s own annotations resolving to `@std/meta`'s `word` — by
+    /// declaration, never a bare compare of the word: a package's own
+    /// fn of the same name answers none.
+    fn meta_annotations(d: DeclId, word: string) -> List<AnnotationFact> {
         let decls = self.view.decls
         let file = decls.annotation_home(d)
-        decls
-            .annotations_of(d)
-            .any((a: AnnotationFact) -> decls.is_meta_annotation(a, file, "identity"))
+        [a for a in decls.annotations_of(d) if decls.is_meta_annotation(a, file, word)]
+    }
+
+    /// Whether a declaration carries `@std/meta`'s `@identity`.
+    fn marks_identity(d: DeclId) -> bool { !self.meta_annotations(d, "identity").is_empty() }
+
+    /// The field names `@std/meta`'s `@plain_field` licenses on `d` —
+    /// one annotation per field, beside `@identity`, each its own
+    /// arity-checked call (never a member MARK: "EVERY MARK OWES A
+    /// READER" governs those, and `@plain_field` is a call like
+    /// `@identity` itself, not a field mark that needs a `@derive`
+    /// trait to claim it).
+    fn identity_plain_fields(d: DeclId) -> List<string> {
+        [a.args[0] for a in self.meta_annotations(d, "plain_field") if a.args.length == 1]
     }
 
     /// A record lacks each field ONCE, and only a field it does not
@@ -286,7 +311,7 @@ impl TypeCx {
                     self.stmt_loc(s),
                     identity_field_law,
                     "field `${field}` is `${self.view.types.name_of(found)}`",
-                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `identity_plain` in compiler/typing/declare.av",
+                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `@plain_field(\"${field}\")` beside `@identity`, or `identity_plain` in compiler/typing/declare.av",
                 ),
             )
     }
@@ -1107,14 +1132,14 @@ type PlainField = { of: string, field: string, reason: string }
 
 const identity_plain: List<PlainField> = [
     PlainField {
-        of: "NodeStore",
+        of: "SyntaxArena",
         field: "file",
         reason: "the path this store parsed, set once at construction",
     },
     PlainField {
-        of: "SyntaxArena",
+        of: "NodeStore",
         field: "file",
-        reason: "the path this store parsed, set once at construction — licensed ahead of the NodeStore -> SyntaxArena rename (avra-8sb5.57.18.4) so the generation compiling that rename already knows the new name",
+        reason: "the path this store parsed, set once at construction — kept for a tree still built on the pre-rename name (avra-8sb5.57.18.4): the speed gate runs a candidate compiler over the base tree's own source, which lags the candidate's own rename until a landing refreshes it",
     },
     PlainField {
         of: "Decls",

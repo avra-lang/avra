@@ -14,7 +14,7 @@ use core.{
     DeclId,
     Arrow,
     Binding,
-    NodeStore,
+    SyntaxArena,
     SeatMark,
     is_literal,
     settled_mark,
@@ -399,7 +399,7 @@ impl LowerCx {
     /// The const at `s` in file `f`, read here: a literal as written,
     /// else what the evaluator settled.
     fn const_reg(e: ExprId, f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
-        let store: NodeStore = self.view.decls.store_of(f)
+        let store: SyntaxArena = self.view.decls.store_of(f)
         let written: Expr = store.expr(store.const_value(s)!)
         if is_literal(written) { return self.settled_reg(e, written) }
         self.settled_value_reg(f, s, ty, seats)
@@ -749,7 +749,7 @@ impl LowerCx {
 
 impl LowerCx {
     /// The three laws a settlement can break, each in its own words.
-    fn unsettled(store: NodeStore, path: string?, s: StmtId, why: Unsettled) {
+    fn unsettled(store: SyntaxArena, path: string?, s: StmtId, why: Unsettled) {
         let name = store.let_name(s) ?? "this const"
         // AT THE DECLARATION'S VALUE, not the use that asked — a const
         // that reached here has one

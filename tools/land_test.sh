@@ -30,6 +30,10 @@ scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
 # No fixture prunes the machine's real scratch root.
 export AVRA_LAND_SCRATCH_ROOT="$scratch/scratch-root"
+# No fixture takes a machine-wide build slot a live landing waits on.
+export AVRA_SLOTS_DIR="$scratch/slots"
+# No fixture probes a real Sprite: an empty answer keeps the pool's order.
+export AVRA_LAND_SPRITE_PROBE=true
 # Every process a fixture started names the scratch dir; none outlives the run.
 cleanup() {
     pkill -9 -f "$scratch" 2>/dev/null
@@ -72,11 +76,38 @@ tests_running() {
     echo "$n"
 }
 
+# A fixture runs under AVRA_LAND_TEST_FIXTURE_S seconds; past it the
+# fixture and everything it started are killed and it fails, naming
+# itself, so no fixture can hold the run.
+fixture_timed() {
+    limit="${AVRA_LAND_TEST_FIXTURE_S:-300}"
+    "$1" &
+    fpid=$!
+    waited=0
+    while kill -0 "$fpid" 2>/dev/null; do
+        if [ "$waited" -ge "$limit" ]; then
+            fixture_kill "$fpid"
+            wait "$fpid" 2>/dev/null
+            echo "FAIL  $1: timed out after ${limit}s"
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$fpid"
+}
+
+fixture_kill() {
+    for kid in $(pgrep -P "$1" 2>/dev/null); do fixture_kill "$kid"; done
+    kill -KILL "$1" 2>/dev/null
+    :
+}
+
 run_test() {
     name="$1"
     cap="${AVRA_LAND_TEST_JOBS:-8}"
     while [ "$(tests_running)" -ge "$cap" ]; do sleep 0.2; done
-    ( set +e; "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
+    ( set +e; fixture_timed "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
     echo "$! $name" >> "$scratch/test-jobs.list"
 }
 
@@ -156,40 +187,25 @@ test_ticket_scan_survives_an_arriving_waiter() {
 test_lock_fifo() {
     lockdir="$scratch/lock-fifo"
     rm -rf "$lockdir"
+    order="$scratch/lock-order"
+    : > "$order"
     sig_a="$scratch/sig-a"
     sig_c="$scratch/sig-c"
     rm -f "$sig_a" "$sig_c"
+    hold() { ( AVRA_LAND_LOCK="$lockdir" branch="$1" sh "$land" --call hold_lock_for "$2" "$order" ) > "$scratch/lock-$1.out" 2>&1 & }
+    # Each step waits for the EVENT it needs, never a window: the
+    # fixture's own timeout bounds a hang.
+    until_line() { while ! grep -q "$2" "$1" 2>/dev/null; do sleep 0.1; done; }
 
-    ( AVRA_LAND_LOCK="$lockdir" branch=A sh "$land" --call hold_lock_for "$sig_a" ) \
-        > "$scratch/lock-a.out" 2>&1 &
-    a_pid=$!
-    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 150; then
-        bad "lock-fifo: A (first arrival) never acquired ticket 1"
-    else
-        ok "lock-fifo: A, arriving first, acquires ticket 1 immediately"
-    fi
-
-    ( AVRA_LAND_LOCK="$lockdir" branch=B sh "$land" --call hold_lock_for "$scratch/sig-b-never" ) \
-        > "$scratch/lock-b.out" 2>&1 &
-    b_pid=$!
-    if wait_for_line "$scratch/lock-b.out" "^acquired" 10; then
-        bad "lock-fifo: B acquired while A still holds the lock"
-    else
-        ok "lock-fifo: B waits behind A, as arrival order demands"
-    fi
-
+    hold A "$sig_a"; a_pid=$!
+    until_line "$scratch/lock-A.out" "^acquired ticket 1$"
+    hold B "$scratch/sig-b-never"; b_pid=$!
+    until_line "$scratch/lock-B.out" "ticket 2 taken"
     # B dies WHILE WAITING — its ticket (2) is now nobody's.
     kill -9 "$b_pid" 2>/dev/null
     wait "$b_pid" 2>/dev/null
-
-    ( AVRA_LAND_LOCK="$lockdir" branch=C sh "$land" --call hold_lock_for "$sig_c" ) \
-        > "$scratch/lock-c.out" 2>&1 &
-    c_pid=$!
-    if wait_for_line "$scratch/lock-c.out" "^acquired" 10; then
-        bad "lock-fifo: C acquired before A released — order violated"
-    else
-        ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
-    fi
+    hold C "$sig_c"; c_pid=$!
+    until_line "$scratch/lock-C.out" "ticket 3 taken"
     # A deep queue, with SIGPIPE ignored as a harness's children inherit
     # it: a waiter's scan writes into no pipe, so its log stays a few
     # lines however long it waits.
@@ -198,9 +214,10 @@ test_lock_fifo() {
             > "$scratch/lock-$w.out" 2>&1 &
         eval "${w}_pid=\$!"
     done
+    for w in d e f; do until_line "$scratch/lock-$w.out" "taken"; done
     sleep 3
     grown=0
-    for w in c d e f; do
+    for w in C d e f; do
         [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
     done
     if [ "$grown" -eq 0 ]; then
@@ -211,20 +228,20 @@ test_lock_fifo() {
     for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 1800; then
-        bad "lock-fifo: C never acquired ticket 3 after A released"
+    until_line "$scratch/lock-C.out" "^acquired ticket 3$"
+    touch "$sig_c"
+    wait "$c_pid" 2>/dev/null
+    wait "$a_pid" 2>/dev/null
+    if [ "$(tr '\n' '|' < "$order")" = "acquired A 1|released A|acquired C 3|released C|" ]; then
+        ok "lock-fifo: the lock is held in arrival order — A, then C; B's dead ticket never held it"
     else
-        ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
+        bad "lock-fifo: the order was $(tr '\n' '|' < "$order")"
     fi
-    if grep -q "reclaiming a dead ticket" "$scratch/lock-c.out" 2>/dev/null; then
+    if grep -q "reclaiming a dead ticket" "$scratch/lock-C.out" 2>/dev/null; then
         ok "lock-fifo: B's dead ticket is named as reclaimed"
     else
         bad "lock-fifo: nothing said B's dead ticket was reclaimed"
     fi
-
-    touch "$sig_c"
-    wait "$c_pid" 2>/dev/null
-    wait "$a_pid" 2>/dev/null
     if [ -d "$lockdir/tickets" ] && [ -n "$(ls "$lockdir/tickets" 2>/dev/null)" ]; then
         bad "lock-fifo: a ticket was left behind after every holder released"
     else
@@ -1774,6 +1791,107 @@ test_linux_gate_runs_warm() {
     fi
 }
 
+# A remote leg that goes silent after its body starts is moved to the
+# next Sprite within its quiet window, and its remote run is stopped; one
+# that answers slowly but steadily is left to finish; one past the leg's
+# cap is moved too; every Sprite failing as a tool is a TOOL verdict.
+test_linux_watchdog() {
+    d="$(git_repo linux-watch)"
+    mkdir -p "$d/packages/pa/src"
+    commit_all "$d" "base"
+    probe="$scratch/watch-probe.sh"
+    printf '#!/bin/sh\ncase "$1" in first) echo "0.1 8 7000" ;; *) echo "0.2 8 7000" ;; esac\n' > "$probe"
+    chmod +x "$probe"
+    stops="$scratch/watch-stops"
+    : > "$stops"
+    stopper="$scratch/watch-stop.sh"
+    printf '#!/bin/sh\necho "$1 $2" >> "%s"\n' "$stops" > "$stopper"
+    chmod +x "$stopper"
+    stub="$scratch/watch-sprite.sh"
+    cat > "$stub" <<'STUB'
+#!/bin/sh
+mode="$(cat "$WATCH_MODES/$1" 2>/dev/null)"
+echo "land-linux: body started"
+case "$mode" in
+    silent) sleep 60 ;;
+    steady) for i in 1 2 3 4 5 6; do echo "land-linux: progress $i"; sleep 1; done ;;
+    endless) i=0; while :; do i=$((i + 1)); echo "land-linux: progress $i"; sleep 1; done ;;
+    *) : ;;
+esac
+exit 0
+STUB
+    chmod +x "$stub"
+    modes="$scratch/watch-modes"
+    mkdir -p "$modes"
+    run_leg() {
+        WATCH_MODES="$modes" AVRA_LAND_WATCH_POLL_S=1 AVRA_LAND_LINUX_QUIET_S=3 AVRA_LAND_LINUX_CAP_S="$1" \
+            AVRA_LAND_SPRITE="first second" AVRA_LAND_SPRITE_PROBE="$probe" AVRA_LAND_SPRITE_STOP="$stopper" \
+            AVRA_LAND_SCRATCH="$scratch/watch-run" AVRA_LAND_SPRITE_BUILD="$stub" branch=x sh "$land" --call linux_gate_step "$d" pa 2>&1
+    }
+    echo silent > "$modes/first"; echo ok > "$modes/second"
+    t0=$(date +%s); out="$(run_leg 60)"; st=$?; wall=$(( $(date +%s) - t0 ))
+    case "$out" in *"no progress on first"*"moved to second"*"ran on second"*) ok "watchdog: a silent Sprite is moved to the next" ;; *) bad "watchdog: silent leg not moved ($out)" ;; esac
+    [ "$st" -eq 0 ] && [ "$wall" -lt 20 ] && ok "watchdog: the move happens within the window (${wall}s)" || bad "watchdog: silent leg took ${wall}s, exit $st"
+    grep -q "^first linux-watch" "$stops" && ok "watchdog: the silent Sprite's remote run is stopped" || bad "watchdog: no remote stop ($(cat "$stops"))"
+    echo steady > "$modes/first"
+    out="$(run_leg 60)"; st=$?
+    case "$out" in *"ran on first"*) [ "$st" -eq 0 ] && ok "watchdog: a slow but steady Sprite is left to finish" || bad "watchdog: steady leg exit $st" ;; *) bad "watchdog: steady leg was moved ($out)" ;; esac
+    echo endless > "$modes/first"
+    out="$(run_leg 4)"
+    case "$out" in *"first ran past the leg's"*"moved to second"*"ran on second"*) ok "watchdog: a leg past its cap is moved" ;; *) bad "watchdog: capped leg not moved ($out)" ;; esac
+    echo silent > "$modes/first"; echo silent > "$modes/second"
+    rm -f "$scratch/watch-run/tool-failure"
+    out="$(run_leg 60)"; st=$?
+    if [ "$st" -ne 0 ] && grep -q "no Linux Sprite could run the suites" "$scratch/watch-run/tool-failure" 2>/dev/null; then ok "watchdog: every Sprite silent is a TOOL verdict"; else bad "watchdog: all-silent verdict exit $st, $(cat "$scratch/watch-run/tool-failure" 2>/dev/null)"; fi
+}
+
+# A local step past its hard cap is killed and names itself as a TOOL failure.
+test_step_cap() {
+    rm -f "$scratch/cap-run/tool-failure"
+    t0=$(date +%s)
+    AVRA_LAND_SCRATCH="$scratch/cap-run" AVRA_LAND_WATCH_POLL_S=1 AVRA_LAND_STEP_CAP_S=2 AVRA_LAND_PARALLEL_SLOT=1 sh "$land" --call heavy slowstep sleep 30 > /dev/null 2>&1
+    st=$?
+    wall=$(( $(date +%s) - t0 ))
+    if [ "$st" -ne 0 ] && [ "$wall" -lt 15 ] && grep -q "the step slowstep ran past its" "$scratch/cap-run/tool-failure" 2>/dev/null; then ok "step-cap: a step past its cap is a TOOL failure naming it (${wall}s)"; else bad "step-cap: exit $st after ${wall}s, $(cat "$scratch/cap-run/tool-failure" 2>/dev/null)"; fi
+}
+
+# A status is a verdict: 0 only where a verdict said so, a tool failure
+# 3 with NOT LANDED, a run that ended 0 with no verdict 3 too.
+test_exit_verdict() {
+    v() { out="$(sh "$land" --call exit_verdict "$1" "$2" "$3" 2>&1)"; echo "$?|$out"; }
+    [ "$(v 0 1 "")" = "0|" ] && ok "verdict: a landing exits 0" || bad "verdict: landing gave $(v 0 1 "")"
+    case "$(v 1 0 "no Linux Sprite could run the suites (tried: a b)")" in "3|NOT LANDED — tool failure: no Linux Sprite could run the suites (tried: a b)") ok "verdict: a tool failure exits 3 and says NOT LANDED" ;; *) bad "verdict: tool failure gave $(v 1 0 x)" ;; esac
+    case "$(v 0 0 "a Sprite failed")" in "3|NOT LANDED — tool failure:"*) ok "verdict: a tool failure that would exit 0 exits 3" ;; *) bad "verdict: exit-0 tool failure gave $(v 0 0 x)" ;; esac
+    case "$(v 0 0 "")" in "3|NOT LANDED — the run ended with no verdict") ok "verdict: exit 0 with no verdict is 3" ;; *) bad "verdict: no-verdict exit gave $(v 0 0 "")" ;; esac
+    [ "$(v 1 0 "")" = "1|" ] && ok "verdict: a branch's own failure keeps its status" || bad "verdict: branch failure gave $(v 1 0 "")"
+    [ "$(v 0 1 "leftover")" = "0|" ] && ok "verdict: a landing stands over a superseded tool note" || bad "verdict: landing with a note gave $(v 0 1 leftover)"
+}
+
+# The Linux leg's Sprites run idlest first: load per core, then free
+# memory, with a Sprite that did not answer last.
+test_sprites_by_load() {
+    probe="$scratch/sprite-probe.sh"
+    cat > "$probe" <<'PROBE'
+#!/bin/sh
+case "$1" in
+    busy) echo "12.0 8 2000" ;;
+    idle) echo "0.10 8 7000" ;;
+    small) echo "0.10 2 7000" ;;
+    roomy) echo "0.10 8 7500" ;;
+    *) exit 1 ;;
+esac
+PROBE
+    chmod +x "$probe"
+    got="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load busy gone idle 2>/dev/null)"
+    [ "$got" = "idle busy gone " ] && ok "sprite-load: idlest first, the unanswered last" || bad "sprite-load: ordered '$got'"
+    got="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load small idle 2>/dev/null)"
+    [ "$got" = "idle small " ] && ok "sprite-load: load is read per core" || bad "sprite-load: per-core order '$got'"
+    got="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load idle roomy 2>/dev/null)"
+    [ "$got" = "roomy idle " ] && ok "sprite-load: equal load breaks on free memory" || bad "sprite-load: memory tie-break '$got'"
+    err="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load busy gone 2>&1 >/dev/null)"
+    case "$err" in *"busy load 12.0 on 8 cores, 2000 MB free"*"gone did not answer"*) ok "sprite-load: every answer is printed" ;; *) bad "sprite-load: silent ($err)" ;; esac
+}
+
 # A failed Linux leg is re-run only when the landing re-emitted the seed
 # after the leg synced; a failure over an unmoved seed is the branch's.
 test_linux_rerun_after_reseed() {
@@ -1786,6 +1904,69 @@ test_linux_rerun_after_reseed() {
     printf 'new\n' > "$d/bootstrap/seed.ll"
     if sh "$land" --call linux_saw_old_seed "$d" 1; then ok "linux-seed: a failure after a re-emitted seed re-runs"; else bad "linux-seed: a failure after a re-emitted seed stood"; fi
     if sh "$land" --call linux_saw_old_seed "$d" 0; then bad "linux-seed: re-ran a passing leg"; else ok "linux-seed: a passing leg is never re-run"; fi
+}
+
+# The main guard refuses a bare update of main, allows one made under
+# tools/land.sh (by the flag or as an ancestor), and never touches a
+# branch that is not main.
+test_main_guard() {
+    hook="$(cd "$(dirname "$land")" && pwd)/hooks/reference-transaction"
+    z=0000000000000000000000000000000000000000
+    o=1111111111111111111111111111111111111111
+    upd() { printf '%s %s %s\n' "$o" "$z" "$1"; }
+    if upd refs/heads/main | sh "$hook" prepared > /dev/null 2>&1; then bad "main-guard: a bare update of main passed"; else ok "main-guard: a bare update of main is refused"; fi
+    if upd refs/heads/main | AVRA_LANDING=1 sh "$hook" prepared > /dev/null 2>&1; then ok "main-guard: land.sh's flag passes"; else bad "main-guard: the flag was refused"; fi
+    fake="$scratch/guard/tools"
+    mkdir -p "$fake"
+    printf '#!/bin/sh\nprintf "%%s %%s refs/heads/main\\n" "%s" "%s" | sh "%s" prepared\n' "$o" "$z" "$hook" > "$fake/land.sh"
+    if sh "$fake/land.sh" > /dev/null 2>&1; then ok "main-guard: an update made under tools/land.sh passes"; else bad "main-guard: an update under tools/land.sh was refused"; fi
+    if upd refs/heads/lane/x | sh "$hook" prepared > /dev/null 2>&1; then ok "main-guard: a branch that is not main is never refused"; else bad "main-guard: a branch update was refused"; fi
+}
+
+# MAIN MOVES WHOLE OR NOT AT ALL: a fast-forward refused after git has
+# written the files (a hook the incoming tree adds refuses the ref)
+# leaves main's checkout at HEAD again; a dirty file the landing changes
+# refuses first, by name; an unrelated dirty file survives a landing.
+test_main_ff_whole_or_not() {
+    d="$(git_repo main-ff)"
+    printf 'one\n' > "$d/a.txt"
+    printf 'mine\n' > "$d/local.txt"
+    commit_all "$d" "base"
+    git -C "$d" config core.hooksPath hooks
+    git -C "$d" checkout -q -b cand
+    mkdir -p "$d/hooks"
+    printf '#!/bin/sh\nexit 1\n' > "$d/hooks/reference-transaction"
+    chmod +x "$d/hooks/reference-transaction"
+    printf 'two\n' > "$d/a.txt"
+    printf 'new\n' > "$d/b.txt"
+    git -C "$d" add -A
+    git -C "$d" -c core.hooksPath=/dev/null commit -q -m cand
+    git -C "$d" -c core.hooksPath=/dev/null checkout -q main
+    head="$(git -C "$d" rev-parse HEAD)"
+    out="$(sh "$land" --call main_ff "$d" cand 2>&1)"; st=$?
+    if [ "$st" -ne 0 ] && [ "$(git -C "$d" rev-parse HEAD)" = "$head" ] && git -C "$d" diff --quiet HEAD && [ ! -e "$d/b.txt" ] && [ ! -e "$d/hooks/reference-transaction" ]; then
+        ok "main-ff: a fast-forward refused after writing files leaves main's checkout at HEAD"
+    else
+        bad "main-ff: half-applied checkout left behind (exit $st): $(git -C "$d" status --porcelain | tr '\n' ' ')"
+    fi
+    case "$out" in *"main's checkout restored to HEAD"*) ok "main-ff: the restore announces itself" ;; *) bad "main-ff: silent restore ($out)" ;; esac
+    git -C "$d" config --unset core.hooksPath
+    git -C "$d" -c core.hooksPath=/dev/null branch -q -f cand2 main
+    git -C "$d" -c core.hooksPath=/dev/null checkout -q cand2
+    printf 'three\n' > "$d/a.txt"
+    git -C "$d" commit -q -am cand2
+    git -C "$d" checkout -q main
+    printf 'edited\n' > "$d/a.txt"
+    out="$(sh "$land" --call main_ff "$d" cand2 2>&1)"; st=$?
+    case "$st|$out" in 0*) bad "main-ff: fast-forwarded over a dirty file it changes" ;; *"a.txt"*) ok "main-ff: a dirty file the landing changes refuses first, by name" ;; *) bad "main-ff: refusal did not name the file ($out)" ;; esac
+    [ "$(cat "$d/a.txt")" = edited ] && ok "main-ff: the refused landing left the local edit intact" || bad "main-ff: the local edit was lost"
+    git -C "$d" checkout -q -- a.txt
+    printf 'still mine\n' > "$d/local.txt"
+    if sh "$land" --call main_ff "$d" cand2 > /dev/null 2>&1 && [ "$(cat "$d/local.txt")" = "still mine" ] && [ "$(cat "$d/a.txt")" = three ]; then
+        ok "main-ff: an unrelated dirty file survives a landing"
+    else
+        bad "main-ff: the landing did not pass beside an unrelated edit"
+    fi
 }
 
 # A landing that reached the compiler leaves main's checkout holding the
@@ -2334,6 +2515,12 @@ run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
+run_test test_main_ff_whole_or_not
+run_test test_main_guard
+run_test test_exit_verdict
+run_test test_sprites_by_load
+run_test test_linux_watchdog
+run_test test_step_cap
 run_test test_linux_rerun_after_reseed
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
