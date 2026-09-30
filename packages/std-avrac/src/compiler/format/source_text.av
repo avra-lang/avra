@@ -4,7 +4,7 @@
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
 use core.{
-    NodeStore,
+    SyntaxArena,
     Remark,
     Trivia,
     Span,
@@ -72,13 +72,13 @@ type Window = { lo: int, hi: int }
 /// a number and never an error. So the guard is that these render with
 /// NO remarks, and generated code carries none because none were ever
 /// measured in it.
-fn source_text(store: NodeStore) -> SourceText {
+fn source_text(store: SyntaxArena) -> SourceText {
     SourceText { store: store, trivia: [], next: 0, text: null }
 }
 
 /// The renderer for a WHOLE FILE, its remarks placed. Only this entry
 /// point has a text the offsets belong to.
-fn source_text_of_file(store: NodeStore) -> SourceText {
+fn source_text_of_file(store: SyntaxArena) -> SourceText {
     SourceText { store: store, trivia: store.remarks.get(), next: 0, text: null }
 }
 
@@ -86,7 +86,7 @@ fn source_text_of_file(store: NodeStore) -> SourceText {
 /// the author wrote on ONE line keeps that form, and a construct
 /// with no written form of its own — call arguments, a parameter
 /// list, a chain — decides its OWN layout against `canonical_width`.
-fn source_text_of_text(store: NodeStore, text: string) -> SourceText {
+fn source_text_of_text(store: SyntaxArena, text: string) -> SourceText {
     SourceText { store: store, trivia: store.remarks.get(), next: 0, text: text }
 }
 
@@ -99,7 +99,7 @@ fn end_of(s: Span?) -> int { if s == null { -1 } else { s.hi } }
 
 /// Statements as canonical source, separated at the top level. With no
 /// text in hand there is no written form to keep, so every body expands.
-export fn render_source(store: NodeStore, stmts: List<StmtId>) -> string {
+export fn render_source(store: SyntaxArena, stmts: List<StmtId>) -> string {
     mut out = source_text_of_file(store)
     render_with(out, stmts)
 }
@@ -110,7 +110,7 @@ export fn render_source(store: NodeStore, stmts: List<StmtId>) -> string {
 /// arguments, a parameter list, a chain) and OVERRIDES the written
 /// form for one that has (a literal, `use`'s item list, a `match`'s
 /// arms) whenever no comment stands inside it.
-export fn render_source_of(store: NodeStore, stmts: List<StmtId>, text: string) -> string {
+export fn render_source_of(store: SyntaxArena, stmts: List<StmtId>, text: string) -> string {
     mut out = source_text_of_text(store, text)
     render_with(out, stmts)
 }
@@ -135,20 +135,20 @@ fn render_with(mut out: SourceText, stmts: List<StmtId>) -> string {
 }
 
 /// One statement as canonical source.
-export fn render_statement(store: NodeStore, stmt: StmtId) -> string {
+export fn render_statement(store: SyntaxArena, stmt: StmtId) -> string {
     mut out = source_text(store)
     joined(out.statement(stmt, 0), "\n")
 }
 
 /// One expression as canonical source.
-export fn render_expression(store: NodeStore, expr: ExprId) -> string {
+export fn render_expression(store: SyntaxArena, expr: ExprId) -> string {
     mut out = source_text(store)
     out.expression(expr, loosest_tier, 0)
 }
 
 /// `unbroken` counts the enclosing places a line break cannot stand in — an
 /// interpolation hole — where every group prints on one line.
-type SourceText = { store: NodeStore, trivia: List<Remark>, next: int, text: string?, unbroken: int = 0 }
+type SourceText = { store: SyntaxArena, trivia: List<Remark>, next: int, text: string?, unbroken: int = 0 }
 
 /// A postfix `.` chain's own root (the first subject that is not
 /// itself a `.Prop`/`.MethodCall`) and its links, outermost last —
