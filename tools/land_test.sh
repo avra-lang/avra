@@ -16,7 +16,7 @@ land="$here/land.sh"
 slot="$here/slot.sh"
 affected="$here/affected_packages.sh"
 
-# The Linux, speed and warm gates default ON for a real landing
+# The Linux, speed and warm gates and the train default ON for a real landing
 # (land.sh's own header) — a bare run_checks call in a fixture below must never
 # reach a live Sprite or run a real compiler. OFF here, by default;
 # the fixtures that exercise these two gates re-arm them locally
@@ -25,7 +25,8 @@ AVRA_LAND_LINUX=0
 AVRA_LAND_SPEED_GATE=0
 AVRA_LAND_WARM_GATE=0
 AVRA_LAND_REMOTE=0
-export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE AVRA_LAND_REMOTE
+AVRA_LAND_TRAIN=0
+export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE AVRA_LAND_REMOTE AVRA_LAND_TRAIN
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
