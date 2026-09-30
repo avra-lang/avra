@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, Reg, Ins, Type, TypeId}
-use features.{LowerCx, EnumSig, variant_defect, PropertyRow, property_of}
+use features.{LowerCx, EnumSig, variant_defect, PropertyRow, property_of, property_row}
 
 fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -53,9 +53,18 @@ fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
 /// A property read, by the subject's shape: a TYPE NAME builds a
 /// variant, a struct reads a slot at its declaration index, and
 /// only `length` otherwise survives typing.
+///
+/// IN THE TYPER'S ORDER (`member_type_of`): a receiver's own fields,
+/// then its OWN property, and only then the shape it stands over. A
+/// name over a record has no fields of its own and answers `of`; seen
+/// through first, it was a record with no `of` slot.
 fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     let sh: Type = cx.shape_at(s)
     if sh is .TypeName { return variant_reg(cx, e, name) }
+    if cx.fields_of(cx.type_at(s)) == null &&
+        property_row(cx.view.lang.properties, name, sh) != null {
+        return property_reg(cx, e, s, name)
+    }
     // A NAME IS TRANSPARENT AT A READ, and the register already IS
     // the shape's — so the SHAPE's layout decides, never the name's.
     let sty = cx.seen(cx.type_at(s))
