@@ -132,3 +132,36 @@ HTTP/2 except HTTP/2's own client.
   — the fibers and C-level campaigns as built; their leftovers are
   H7's tickets.
 - `ROADMAP.md` — the HTTP campaign section, opened 2026-09-06; history.
+
+## H7 numbers
+
+Reproduced by `sh tools/bench/public.sh` (`make libs` first; `CORES`,
+`ROUNDS`, `SECS`, `SERVERS`, `PORT` to vary it). Rounds interleave, so
+drift hits every column alike; each cell lists every round. `/json`
+serializes per request in Avra; nginx returns a fixed string and h2o
+serves a static file, so their json rows are a floor-shaped comparison,
+not a like-for-like one. `/db` is Avra only: one random row of a
+10,000-row in-memory SQLite table per request.
+
+Commit 0d3e1ad, 2026-09-30, Apple M1, 8 cores, macOS 26.6.2, load average at the end 70.42 73.60 59.59.
+Server on 1 core(s), wrk -t7 -c256, 5 s x 3 interleaved rounds (each cell: every round).
+
+| scenario | server | wrk req/s | p99 | server CPU/req | non-2xx | socket errors | oha req/s |
+|---|---|---|---|---|---|---|---|
+| plaintext | avra | 168464 / 121889 / 228861 | — / — / — | 2.04 µs / 1.58 µs / 2.13 µs | 0 / 0 / 0 | 0 / 0 / 0 | — / — / — |
+| plaintext | floor | 433620 / 425632 / 578082 | — / — / — | 0.57 µs / 0.64 µs / 0.61 µs | 0 / 0 / 0 | 0 / 0 / 0 | — / — / — |
+| plaintext | nginx | 49951 / 49659 / 67368 | — / — / — | 7.05 µs / 5.92 µs / 6.95 µs | 0 / 0 / 0 | 0 / 0 / 0 | — / — / — |
+| plaintext | h2o | 65038 / 92565 / 93529 | — / — / — | 5.10 µs / 5.27 µs / 5.20 µs | 0 / 0 / 0 | 0 / 0 / 0 | — / — / — |
+| json | avra | 19651 / 18944 / 28386 | 175.54ms / 154.39ms / 103.98ms | 13.33 µs / 10.56 µs / 13.46 µs | 0 / 0 / 0 | 0 / 0 / 0 | 21378 / 19437 / 27568 |
+| json | floor | 35303 / 30131 / 54386 | 107.67ms / 232.89ms / 90.21ms | 6.74 µs / 8.30 µs / 7.13 µs | 0 / 0 / 0 | 0 / 0 / 0 | 37987 / 36080 / 63763 |
+| json | nginx | 25989 / 28423 / 39677 | 162.57ms / 95.32ms / 104.99ms | 12.47 µs / 9.57 µs / 11.04 µs | 0 / 0 / 0 | 0 / 0 / 0 | 24829 / 22542 / 32979 |
+| json | h2o | 26505 / 38523 / 29937 | 211.71ms / 153.70ms / 146.78ms | 9.21 µs / 8.88 µs / 8.89 µs | 0 / 0 / 0 | 0 / 0 / 0 | 26577 / 43652 / 31361 |
+| db | avra | 19762 / 20672 / 22777 | 137.25ms / 139.32ms / 181.51ms | 17.61 µs / 13.45 µs / 15.28 µs | 0 / 0 / 0 | 0 / 0 / 0 | 16964 / 16030 / 18043 |
+
+Read the CPU column, not req/s: this Mac was shared with other lanes'
+compilers (load 30 to 70) and req/s moved 50% between rounds while CPU
+per request moved 20%. Pipelined, Avra spends 1.6 to 2.1 µs a request
+against the floor's 0.6 µs, about 3.2x; the definition of done asks
+for 2x. Keep-alive json costs 10.6 to 13.5 µs against 6.7 to 8.3 µs.
+The Linux Sprite rows above (`## Where it stands`) remain the
+reference; this table is the Mac's, same harness.
