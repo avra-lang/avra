@@ -20,6 +20,7 @@
 //! answers it is the server's.
 use hpack.{HeaderField, Decoder, Encoder, decoder, encoder, field, int_bound}
 use frame.{Limits, admits, is_tchar, is_vchar, is_target, no_bytes}
+use @std.text.{parse_int}
 
 // ── Codes ───────────────────────────────────────────────────────
 
@@ -273,6 +274,7 @@ export type H2Stream = {
     owed: Bytes,
     more: bool,
     deaf: bool,
+    declared: int?,
 }
 
 /// How a stream closed, which decides what a late frame on it means
@@ -540,7 +542,8 @@ impl H2Conn {
 
     /// DATA on a live stream: its window charged, its octets held for
     /// the body's reader — and padding, which nobody reads, given back
-    /// at once.
+    /// at once. A body is refused the moment it passes its declared
+    /// length, and at its end when short of it (§8.1.1).
     mut fn data_on(at: int, f: Frame, body: Bytes) -> H2Error? {
         let s = self.streams[at]
         if !receiving(s.state) { return self.stream_error(s.id, .StreamClosed) }
@@ -548,6 +551,7 @@ impl H2Conn {
         if n > s.recv { return self.stream_error(s.id, .FlowControl) }
         self.streams[at].recv = s.recv - n
         self.streams[at].received = s.received + body.length
+        if !within_declared(s.declared, s.received + body.length) { return self.stream_error(s.id, .Protocol) }
         if s.deaf { return null }
         self.streams[at].inbound = s.inbound.concat(body)
         self.granted(at)
@@ -583,7 +587,7 @@ impl H2Conn {
     /// answer.
     mut fn remote_ended(at: int) -> H2Error? {
         let s = self.streams[at]
-        if !length_kept(s.fields, s.received) { return self.stream_error(s.id, .Protocol) }
+        if short_of(s.declared, s.received) { return self.stream_error(s.id, .Protocol) }
         if !sending(s.state) {
             self.closed(s.id, .Ended)
             return null
@@ -693,6 +697,7 @@ impl H2Conn {
             owed: no_bytes,
             more: false,
             deaf: false,
+            declared: null,
         }
         self.streams = self.streams.concat([s])
         .Head
@@ -758,6 +763,7 @@ impl H2Conn {
         let at? = self.live_at(a.stream) else { return null }
         if !request_head_kept(fs) { return self.stream_error(a.stream, .Protocol) }
         self.streams[at].fields = fs
+        self.streams[at].declared = declared_length(fs)
         self.ready.push(Exchange { stream: a.stream, fields: fs })
         if !a.ended { return null }
         self.remote_ended(at)
@@ -1146,11 +1152,24 @@ fn edged(v: Bytes) -> bool { !v.is_empty() && (is_space(v.at(0)) || is_space(v.a
 
 fn is_space(c: int) -> bool { c == 32 || c == 9 }
 
-/// A declared `content-length` equals the body's length (§8.1.1); an
+/// The `content-length` a head declares, or absent — for none, or for
+/// one that is not a number, which the 1.1 framer refuses.
+export fn declared_length(fs: List<HeaderField>) -> int? {
+    let v? = value_named(fs, content_length_name) else { return null }
+    parse_int(v.text() ?? "")
+}
+
+/// Whether `n` octets are no more than a declared length; an
 /// undeclared one keeps nothing to break.
-export fn length_kept(fs: List<HeaderField>, n: int) -> bool {
-    let v? = value_named(fs, content_length_name) else { return true }
-    v == "${n}".bytes()
+fn within_declared(declared: int?, n: int) -> bool {
+    let d? = declared else { return true }
+    n <= d
+}
+
+/// Whether `n` octets fall short of a declared length.
+fn short_of(declared: int?, n: int) -> bool {
+    let d? = declared else { return false }
+    n < d
 }
 
 /// The first value of the field named `name`, or absent.

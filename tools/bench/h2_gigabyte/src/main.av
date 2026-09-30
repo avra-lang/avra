@@ -1,10 +1,7 @@
-//! proves: over HTTP/2, bodies stream both ways under flow control —
-//! a streamed answer is pulled only as fast as the client gives its
-//! windows back (the client stops giving them back mid-download and
-//! asks, on another stream, how far the server pulled), and a request
-//! body is read by its handler as it arrives, the stream's window given
-//! back only for what was read. So neither end ever holds more than a
-//! window and a piece, however large the body.
+//! A gigabyte down and a gigabyte up over ONE h2c connection, under
+//! flow control: the program test `h2_stream` at the size where a body
+//! that gathered would show. Run it with `AVRA_MEM_STATS=1` and read the
+//! peak — a window and a piece, never the body.
 use @std.net.{Conn, NetError, listen, connect}
 use @std.time.{secs, within}
 use @std.http.frame.{limits, no_bytes}
@@ -26,7 +23,7 @@ use @std.http.hpack.{field, encoder}
 
 type App = { pulled: Cell<int> }
 
-fn pieces() -> int { 64 }
+fn pieces() -> int { 16384 }
 fn piece_size() -> int { 65536 }
 fn total_size() -> int { pieces() * piece_size() }
 

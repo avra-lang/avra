@@ -196,7 +196,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: h2spec objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -706,6 +706,11 @@ native-check: $(COMPILER_OBJS)
 # The measured curve: the suites' wall time.
 bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
+
+# h2spec over std-http's HTTP/2 server, in the clear and over TLS;
+# skipped, with a word, when h2spec is not installed.
+h2spec: $(COMPILER_OBJS)
+	@sh tools/h2spec.sh
 
 # Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)
