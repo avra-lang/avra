@@ -75,6 +75,11 @@ fn diags_fingerprint(out: List<Diag>) -> int {
     fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
 }
 
+/// One expression of file `f` wanted as a program's entry.
+fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Wanted {
+    Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }
+}
+
 impl Workspace {
     /// The method-table clashes spoken in a file, asked as `Family.MethodDiags`
     /// so the file's `Analysis` depends on every type's method table
@@ -554,7 +559,7 @@ impl Workspace {
         let l = self
             .decls
             .settlement_until(
-                Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root },
+                entry_wanted(f, root, name, seats),
                 (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w)),
                 (b: Body) -> reaches_world(b, true),
             )
@@ -566,8 +571,7 @@ impl Workspace {
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
     fn standalone(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
-        self
-            .run_lowered_for(f, Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root })
+        self.run_lowered_for(f, entry_wanted(f, root, name, seats))
     }
 
     /// An annotation argument evaluated directly into the crossing
