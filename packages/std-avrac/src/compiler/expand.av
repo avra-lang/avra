@@ -791,7 +791,9 @@ impl Workspace {
                     answers: self.answer_kind(d),
                     doc: self.decl_doc_text(d),
                     annotations: self.decl_annotations(v, d),
+                    owner: self.crossed_owner(v, d),
                 },
+                self.decls.loaded_slots("Fn"),
                 heap,
             ),
             .Type -> meta_of_type(
@@ -868,6 +870,14 @@ impl Workspace {
     fn crossed_params(v: FileView, s: StmtId, d: DeclId) -> List<MetaParam> {
         let kinds = self.seat_kinds(d)
         [self.crossed_param(v, p, kind_at(kinds, j)) for j, p in v.store.declared_params(s)]
+    }
+
+    /// The type or trait a member belongs to, as its block spells it —
+    /// a store read, so it answers before the block is signed.
+    fn crossed_owner(v: FileView, d: DeclId) -> string? {
+        let parent? = self.decls.decl(d).parent else { return null }
+        let block = self.decls.decl(parent)
+        v.store.impl_parts(block.stmt)?.target ?? block.name
     }
 
     fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
