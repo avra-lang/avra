@@ -1,6 +1,7 @@
 // A JSON body in and out: the media type checked, the body parsed, a
 // record decoded under `@json`, and every refusal a response that says
 // why.
+use @std.http.body.{whole}
 use @std.http.http.{Request, Unrouted, Response, json_body}
 use @std.json.{Json, field, to_text}
 use @std.json.codec.{json}
@@ -17,7 +18,7 @@ fn json_posted(ct: string?, body: Bytes) -> Request<Unrouted> {
     let q = framed_from(
         "POST /v HTTP/1.1\r\nHost: h\r\n${typed}Content-Length: ${body.length}\r\n\r\n".bytes(),
     )!
-    q with { body: body }
+    q with { body: whole(body) }
 }
 
 /// What reading the body as JSON answered: the document, or the
@@ -55,9 +56,11 @@ spec "std/http — JSON bodies" {
         then "octets that are not UTF-8" { read_said(json_posted(json_type_word(), [123, 255, 125].bytes()!)) == "400 the body is not UTF-8" }
     }
     given "a record decoded" {
-        then "a whole vote" { vote_said(
+        then "a whole vote" {
+            vote_said(
                 json_posted(json_type_word(), "{\"idea\":7,\"up\":true,\"note\":\"yes\"}".bytes()),
-            ) == "vote 7 true yes" }
+            ) == "vote 7 true yes"
+        }
         then "an optional left out" { vote_said(json_posted(json_type_word(), "{\"idea\":7,\"up\":false}".bytes())) == "vote 7 false -" }
         then "a misfit is a 400 naming the field" { vote_said(json_posted(json_type_word(), "{\"idea\":\"7\",\"up\":true}".bytes())) == "400 `idea` wants an integer, found text" }
         then "a missing field is a 400 naming it" { vote_said(json_posted(json_type_word(), "{\"idea\":7}".bytes())) == "400 `up` wants `true` or `false`, found nothing" }

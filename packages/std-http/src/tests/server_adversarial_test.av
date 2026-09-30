@@ -10,7 +10,12 @@ use @std.http.server.{Server, Timing, served, timing}
 
 fn sized_echo(app: App, q: Request<Unrouted>) -> Response {
     let n = bumped(app)
-    text(200, "${q.target() ?? "?"} ${q.body.length} ${n}")
+    text(200, "${q.target() ?? "?"} ${gathered_length(q)} ${n}")
+}
+
+/// How long the request's body is, gathered whole — -1 when it could not be.
+fn gathered_length(q: Request<Unrouted>) -> int {
+    match q.body.gathered() { .Ok(b) -> b.length, .Err(_) -> -1 }
 }
 
 fn bed_under(lim: Limits, t: Timing) -> Result<Bed, NetError> { bed_with(sized_echo, lim, t) }
