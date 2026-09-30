@@ -1361,13 +1361,45 @@ export fn lex_source(src: string) -> LexResult {
     lex_with(src, line_boundary, true)
 }
 
-/// Language source under the file's imported words: a sublanguage's
-/// word before `{` opens a raw block, and a component's word opens
-/// an instance.
-export fn lex_blocks(src: string, words: List<string>, components: List<string>) -> LexResult {
+/// Language source under the file's words: a sublanguage's word
+/// before `{` opens a raw block, and a component's word opens an
+/// instance. A word the file's OWN module declares (`named`) opens one
+/// only where it names one — `word name {` or `word name` alone, at a
+/// statement's start — since everywhere else in that module the name
+/// is an ordinary one (a type, a literal's, a binding's).
+export fn lex_blocks(
+    src: string,
+    words: List<string>,
+    components: List<string>,
+    named: List<string> = [],
+    keywords: List<string> = [],
+) -> LexResult {
     let lexed = lex_words(src, line_boundary, true, words, false)
-    if components.is_empty() { return lexed }
-    lexed with { tokens: [if t.kind == TokenKind.Name && components.contains(t.text) { t with { kind: TokenKind.Component } } else { t } for t in lexed.tokens] }
+    if components.is_empty() && named.is_empty() { return lexed }
+    let ts = lexed.tokens
+    lexed with {
+        tokens: [if opens_instance(ts, i, components, named, keywords) { t with { kind: TokenKind.Component } } else { t } for i, t in ts],
+    }
+}
+
+/// Whether the token at `i` is a component's word opening an instance.
+fn opens_instance(ts: List<Token>, i: int, components: List<string>, named: List<string>, keywords: List<string>) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name { return false }
+    if components.contains(t.text) { return true }
+    named.contains(t.text) && starts_statement(ts, i) && names_instance(ts, i + 1, keywords)
+}
+
+/// Whether nothing of a statement stands before `i` on its line.
+fn starts_statement(ts: List<Token>, i: int) -> bool {
+    i == 0 || ts[i - 1].kind == TokenKind.Break || ts[i - 1].lit_matches("export") || ts[i - 1].lit_matches("{")
+}
+
+/// Whether `at` is an instance's name: a name no keyword spells, then
+/// its block or the statement's end.
+fn names_instance(ts: List<Token>, at: int, keywords: List<string>) -> bool {
+    if at >= ts.length || ts[at].kind != TokenKind.Name || keywords.contains(ts[at].text) { return false }
+    at + 1 >= ts.length || ts[at + 1].lit_matches("{") || ts[at + 1].kind == TokenKind.Break || ts[at + 1].kind == TokenKind.Eof
 }
 
 /// A block's body re-lexed for its sublanguage's grammar: every
