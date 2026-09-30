@@ -1,49 +1,31 @@
 // Every route answers a page: the shell, the screen's heading, and a
 // 404 that is a page too.
-use @std.http.frame.{framed, limits}
-use @std.http.http.{Request, Unrouted}
-use @std.http.route.{compiled, dispatch}
-use site.{site, not_found}
-
-fn asked(target: string) -> Request<Unrouted>? {
-    let raw = ("GET " + target + " HTTP/1.1\r\nHost: h\r\n\r\n").bytes()
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t", params: Unrouted {} },
-        .Partial or .Refused(_) -> null,
-    }
-}
-
-/// The status and the document the site answers for a target.
-fn answer(target: string) -> string {
-    let q? = asked(target) else { return "unframed" }
-    let routed = compiled(site.routes)
-    let r = not_found.wraps(q, (q2: Request<Unrouted>) -> dispatch(routed, q2))
-    "${r.status} ${r.body.text() ?? ""}"
-}
-
 spec "site" {
     given "the routes" {
         then "the home screen carries the thesis in its shell" {
-            let a = answer("/")
-            a.starts_with("200 <!doctype html>") &&
-                a.contains("<title>Avra</title>") &&
-                a.contains("compiles itself")
+            status_of("GET / HTTP/1.1") == 200 &&
+                document_at("/").contains("<title>Avra</title>") &&
+                document_at("/").contains("compiles itself")
         }
         then "why and principles answer their headings" {
-            answer("/why").contains(">Why Avra exists</h1>") &&
-                answer("/principles").contains("Collapse the paradox")
+            document_at("/why").contains(">Why Avra exists</h1>") &&
+                document_at("/principles").contains("Collapse the paradox")
         }
         then "the principles are a keyed list" {
-            answer("/principles").contains("<li data-key=\"Visible magic\">")
+            document_at("/principles").contains("<li data-key=\"Visible magic\">")
+        }
+        then "the navigation lists every screen, in order" {
+            let doc = document_at("/why")
+            doc.index_of("href=\"/\"") < doc.index_of("href=\"/why\"") &&
+                doc.index_of("href=\"/why\"") < doc.index_of("href=\"/principles\"")
         }
         then "an unknown address is a 404 page, in the shell" {
-            let a = answer("/nope")
-            a.starts_with("404 <!doctype html>") &&
-                a.contains(">Not found</h1>") &&
-                a.contains("href=\"/why\"")
+            status_of("GET /nope HTTP/1.1") == 404 &&
+                document_at("/nope").contains(">Not found</h1>") &&
+                document_at("/nope").contains("href=\"/why\"")
         }
         then "no page ships a script" {
-            !answer("/").contains("<script") && !answer("/nope").contains("<script")
+            !document_at("/").contains("<script") && !document_at("/nope").contains("<script")
         }
     }
 }

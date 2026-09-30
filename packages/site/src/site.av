@@ -1,26 +1,42 @@
-//! The Avra website. A screen is a fn answering a View; a route
-//! answers a `Screen`; the page is HTML with no script.
+//! The Avra website. A screen is a fn answering a View; the table of
+//! screens is the routes AND the navigation; the page is HTML with no
+//! script.
 //!
-//!     build/avra run packages/site       # http://127.0.0.1:8788
-use @std.ui.{View, column, row, section, heading, text, link, list, item}
-use @std.ui_web.{Screen, html_response}
-use @std.ui_html.{page}
-use @std.http.http.{Request, Unrouted, Response, Handler}
-use @std.http.route.{get}
+//!     build/avra build packages/site && packages/site/src/main    # http://127.0.0.1:8788
+use @std.ui.{View, Shows, column, row, section, heading, text, link, list, item, rows}
+use @std.ui_web.{Screen}
+use @std.http.http.{Request, Unrouted, Response, Handler, Respond}
+use @std.http.route.{Route, fixed}
+use @std.http.frame.{Method}
 use @std.http.server.{server, layer}
 
 export server site {
     port: 8788
     not_found
-    get "/" { _req -> Screen { title: "Avra", body: shell(home()) } }
-    get "/why" { _req -> Screen { title: "Why Avra", body: shell(why()) } }
-    get "/principles" { _req -> Screen { title: "Principles", body: shell(principles()) } }
+    routes: [route(s) for s in screens()]
 }
+
+/// One address, its title, and the fn that draws it.
+type Entry = { path: string, title: string, draw: fn() -> dyn View }
+
+/// The screens, in the order the navigation lists them.
+fn screens() -> List<Entry> {
+    [
+        Entry { path: "/", title: "Avra", draw: home },
+        Entry { path: "/why", title: "Why Avra", draw: why },
+        Entry { path: "/principles", title: "Principles", draw: principles },
+    ]
+}
+
+fn route(e: Entry) -> Route { fixed(Method.Get, e.path, (_q: Request<Unrouted>) -> screen(e.title, e.draw()).response()) }
+
+/// A screen in the site's chrome.
+fn screen(title: string, body: dyn View) -> Screen { Screen { title: title, body: shell(body) } }
 
 /// A route nobody declared answers a page, not an empty 404.
 export layer not_found { q, next ->
     let r = next(q)
-    if r.status == 404 { html_response(404, page("Not found", shell(missing()).node())) } else { r }
+    if r.status == 404 { (screen("Not found", missing()) with { status: 404 }).response() } else { r }
 }
 
 // ── Screens ─────────────────────────────────────────────────────
@@ -31,15 +47,6 @@ fn home() -> dyn View {
         heading "Avra is the language machines write software in, and the one compiler that knows the whole program."
         text "One program, one compiler, one binary. Infrastructure, docs, schemas, tests and agent tools are projections of one source of truth."
         proofs()
-        row {
-            gap: .M
-            link "Why Avra" {
-                to: "/why"
-            }
-            link "Principles" {
-                to: "/principles"
-            }
-        }
     }
 }
 
@@ -58,7 +65,7 @@ fn principles() -> dyn View {
         gap: .M
         heading "What Avra believes"
         list {
-            rows(beliefs())
+            rows([b for b in beliefs()])
         }
     }
 }
@@ -67,32 +74,27 @@ fn missing() -> dyn View {
     column {
         heading "Not found"
         text "No screen answers this address."
-        link "Home" {
-            to: "/"
-        }
     }
 }
 
 // ── Pieces ──────────────────────────────────────────────────────
 
-/// Every screen inside the site's chrome: a header of links, then the body.
+/// Every screen inside the site's chrome: the navigation, then the body.
 fn shell(body: dyn View) -> dyn View {
     column {
         gap: .L
         pad: .M
         row {
             gap: .M
-            link "Avra" {
-                to: "/"
-            }
-            link "Why" {
-                to: "/why"
-            }
-            link "Principles" {
-                to: "/principles"
-            }
+            [nav_link(e) for e in screens()]
         }
         body
+    }
+}
+
+fn nav_link(e: Entry) -> dyn View {
+    link e.title {
+        to: e.path
     }
 }
 
@@ -133,12 +135,12 @@ fn beliefs() -> List<Belief> {
     ]
 }
 
-/// The beliefs as list items, keyed by name.
-fn rows(bs: List<Belief>) -> List<dyn View> { [belief_row(b) for b in bs] }
-
-fn belief_row(b: Belief) -> dyn View {
-    item {
-        key: b.name
-        text "${b.name} — ${b.says}"
+/// A belief is a keyed list item wherever it is listed.
+impl Shows for Belief {
+    fn view() -> dyn View {
+        item {
+            key: self.name
+            text "${self.name} — ${self.says}"
+        }
     }
 }
