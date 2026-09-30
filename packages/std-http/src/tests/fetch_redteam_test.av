@@ -80,7 +80,7 @@ fn cr_head_of(fields: int) -> Bytes {
 
 /// Two requests to a slow server through a pool of one slot: the
 /// second while the first holds it, then a third once it is back.
-fn cr_one_slot() -> string {
+fn cr_one_slot(p: Pool) -> string {
     let l? = cr_listener() else { return "no listener" }
     let s = served(l, () -> CrApp {}, limits(), timing()) { _a, q ->
         if q.target() == "/slow" { sleep(ms(300)) }
@@ -88,7 +88,7 @@ fn cr_one_slot() -> string {
     }
     spawn s.run(1)
     defer s.stop()
-    let o = Options { pool: Pool { per_host: 1 } }
+    let o = Options { pool: p }
     defer o.pool.close_all()
     let base = "http://127.0.0.1:${l.port}"
     let first = Cell.new("")
@@ -168,8 +168,11 @@ spec "@std.http the client red team" {
         }
     }
     given "a pool whose last slot is lent" {
-        then "the next request is refused by name, and the slot comes back" {
-            cr_one_slot() == "200 /slow, http.exhausted, 200 /c"
+        then "with no wait the next request is refused by name, and the slot comes back" {
+            cr_one_slot(Pool { per_host: 1, wait: ms(0) }) == "200 /slow, http.exhausted, 200 /c"
+        }
+        then "by default the next request waits for the slot and is served over the connection given back" {
+            cr_one_slot(Pool { per_host: 1 }) == "200 /slow, 200 /b, 200 /c"
         }
         then "a request the peer dropped gives its slot back" { cr_failed_frees() == "http.closed, 200 ok" }
     }

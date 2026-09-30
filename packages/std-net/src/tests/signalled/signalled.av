@@ -1,0 +1,15 @@
+//! proves: a signal wakes every waiter at one wake, a wait nobody wakes
+//! ends at its timeout, and the descriptor waiters park on is closed
+//! behind the last — the same in both engines
+use @std.net.{Signal, signal}
+use @std.time.{ms, sleep}
+
+fn waited(s: Signal, limit: int) -> string { if s.wait(ms(limit)) { "woken" } else { "timed out" } }
+
+let s = signal()
+let waiters = [spawn waited(s, 2000) for i in 0..5]
+sleep(ms(20))
+let counted = s.wake()
+let said = [w.await for w in waiters]
+let lone = waited(s, 30)
+"${counted} ${said.join(" ")} | ${lone} | fd ${s.fd.get()}"

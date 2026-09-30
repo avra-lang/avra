@@ -32,6 +32,7 @@ All of it is in `src/net.av`, imported as `@std.net`.
 | `Address` | A resolved address: `family` (`V4`, `V6`) and its canonical `text`. |
 | `Admission` | Which resolved addresses a connect may dial: `Anywhere`, `Public`, or `Where(admits)`. |
 | `public(a)` | Whether the public internet routes to `a`; any non-canonical spelling is refused. |
+| `Signal`, `signal()` | A broadcast wake tasks park on. |
 | `listen(host, port)` | A listener on one named interface. Port 0 is the kernel's choice. |
 | `listen_all(port)` | A listener on every interface. |
 | `connect(host, port, timeout, admission)` | A connection made within `timeout`, across every resolved address `admission` admits (default `.Anywhere`). |
@@ -57,6 +58,8 @@ Methods:
 | `Poller.watch(fd, interest)` | Sets interest in `fd`; `.None` stops watching. |
 | `Poller.wait(timeout)` | The descriptors ready now; a null timeout waits until one is. |
 | `Poller.close()` | Closes the queue. |
+| `Signal.wait(timeout)` | Parks until a wake, the task's `within` or `timeout`; whether a wake came. |
+| `Signal.wake()` | Readies every waiting task; answers how many. |
 
 ## Laws
 
@@ -80,6 +83,12 @@ Methods:
   loopback, this network, private, shared, link-local (cloud metadata),
   unique local, multicast, documentation and reserved blocks, and judges
   a mapped, NAT64 or 6to4 v6 address as the v4 one it carries.
+- **A waiting task costs nothing until it is woken.** A `Signal` parks
+  its waiters on a descriptor the scheduler watches, opened by the first
+  waiter and closed behind the last, so an idle signal holds nothing. A
+  wake nobody waits for is kept by nobody: a waiter looks at what it
+  waits for BEFORE it waits, and no task runs between the look and the
+  park.
 - **One interface, or all, asked for by name.** `listen("")` is refused;
   the wildcard is `listen_all`.
 - **The NUL boundary.** A host crosses to the resolver as a C string, so a

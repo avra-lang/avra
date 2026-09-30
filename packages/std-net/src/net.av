@@ -16,7 +16,7 @@
 //! twins never wait: a read that finds nothing answers `.Pending`, a
 //! write that takes nothing answers 0, and a poller loop decides.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.time.{Duration, now_ms}
+use @std.time.{Duration, ms, now_ms, sleep}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
@@ -55,6 +55,10 @@ extern fn avra_net_errno_pipe() -> int
 extern fn avra_net_errno_closed() -> int
 extern fn avra_net_errno_denied() -> int
 extern fn avra_net_entropy32() -> int
+extern fn avra_net_signal_open() -> int
+extern fn avra_net_signal_ring(s: int) -> int
+extern fn avra_net_signal_drain(s: int) -> int
+extern fn avra_net_signal_close(s: int) -> int
 
 /// 32 bits the kernel drew from its entropy, as a non-negative word —
 /// unpredictable to any peer, as a WebSocket client's masking key
@@ -845,3 +849,83 @@ const mapped_v6: Block = Block { net: v6_words("0:0:0:0:0:ffff:0:0")!, bits: 96 
 const nat64_v6: Block = Block { net: v6_words("64:ff9b:0:0:0:0:0:0")!, bits: 96 }
 
 const six_to_four_v6: Block = Block { net: v6_words("2002:0:0:0:0:0:0:0")!, bits: 16 }
+
+// ── Signals ─────────────────────────────────────────────────────
+
+/// A WAKE TASKS PARK ON, broadcast: `wait` parks the calling task until
+/// the next `wake`, its `within` or its own timeout, and `wake` readies
+/// every task waiting, each to look again at what it waits for. A wake
+/// nobody waits for is kept by nobody, so a waiter looks BEFORE it
+/// waits — no task runs between its look and its park, so no wake falls
+/// between them. The descriptor it parks on exists only while someone
+/// waits: the first waiter opens it and the last to leave closes it, so
+/// an idle signal holds nothing and a fork inherits none.
+export type Signal = {
+    fd: Cell<int> = Cell.new(-1),
+    waiting: Cell<int> = Cell.new(0),
+    rung: Cell<bool> = Cell.new(false),
+}
+
+/// A signal nobody waits on yet.
+export fn signal() -> Signal { Signal {} }
+
+impl Signal {
+    /// Parked until a wake, the task's deadline or `timeout` — null is
+    /// no timeout of its own, and a negative one is spent — answering
+    /// whether a wake came.
+    fn wait(timeout: Duration?) -> bool {
+        let budget = timeout?.ms
+        if spent(budget) { return false }
+        let fd = self.opened()
+        if fd < 0 { return unsignalled(budget) }
+        self.waiting.set(self.waiting.get() + 1)
+        let woken = avra_fiber_park_fd(fd, 0, budget ?? -1) != 0
+        self.left(fd)
+        woken
+    }
+
+    /// Every waiting task woken; answers how many were waiting. A wake
+    /// already on its way rings nothing more.
+    fn wake() -> int {
+        let n = self.waiting.get()
+        if n == 0 || self.rung.get() { return n }
+        self.rung.set(true)
+        let _ = avra_net_signal_ring(self.fd.get())
+        n
+    }
+
+    /// The descriptor waiters park on, opened by the first; -errno when
+    /// none could be.
+    fn opened() -> int {
+        if self.fd.get() >= 0 { return self.fd.get() }
+        let fd = avra_net_signal_open()
+        if fd >= 0 { self.fd.set(fd) }
+        fd
+    }
+
+    /// A waiter gone: a ring it heard emptied, so the next wake is a
+    /// fresh edge, and the descriptor closed behind the last.
+    fn left(fd: int) {
+        let n = self.waiting.get() - 1
+        self.waiting.set(n)
+        if self.rung.get() {
+            let _ = avra_net_signal_drain(fd)
+            self.rung.set(false)
+        }
+        if n > 0 { return }
+        let _ = avra_net_signal_close(fd)
+        self.fd.set(-1)
+    }
+}
+
+/// A wait with no descriptor to park on — the process has none to give
+/// — pauses and answers no wake, never at once, so a waiting loop
+/// cannot spin; never past the budget it was given.
+fn unsignalled(budget: int?) -> bool {
+    let pause = unsignalled_pause().ms
+    let b = budget ?? pause
+    sleep(ms(if b < pause { b } else { pause }))
+    false
+}
+
+fn unsignalled_pause() -> Duration { ms(10) }

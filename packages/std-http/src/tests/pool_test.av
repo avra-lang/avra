@@ -1,6 +1,6 @@
 // The pool against a live server: a connection given back is lent
-// again, an origin never borrows another's, the per-host bound refuses
-// rather than dials past itself, an idle one expires, and a kept one
+// again, an origin never borrows another's, the per-host bound never
+// dials past itself, an idle one expires, and a kept one
 // the peer closed or wrote into is dropped at take, never lent.
 use @std.net.{NetError, listen, connect, Listener}
 use @std.time.{secs, ms}
@@ -68,7 +68,7 @@ fn pl_exhausted() -> Result<bool, ClientError> {
     let s = pl_server()?
     spawn s.run(cores: 1)
     defer s.stop()
-    let p = Pool { per_host: 1 }
+    let p = Pool { per_host: 1, wait: ms(0) }
     let o = origin_of("http", "127.0.0.1", s.listener.port)
     let dial = () -> pl_dial(s.listener.port)
     let first = pl_asked(p.take(o, dial)?)?
@@ -171,7 +171,7 @@ spec "@std.http pool" {
         then "no more are kept for an origin than `idle_per_host`" { pl_passes(pl_idle_bound()) }
     }
     given "the bounds" {
-        then "past `per_host` a take refuses by name, and a give frees the slot" { pl_passes(pl_exhausted()) }
+        then "past `per_host` with no wait a take refuses by name, and a give frees the slot" { pl_passes(pl_exhausted()) }
         then "a dial that fails frees its slot" { pl_passes(pl_dial_failed_frees()) }
         then "an idle connection past its time is closed by the reaper" { pl_passes(pl_expired()) }
     }

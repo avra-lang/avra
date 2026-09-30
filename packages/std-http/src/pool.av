@@ -12,11 +12,14 @@
 //! while idle — the peer closed it, or sent bytes nobody asked for — is
 //! closed at `take`, never lent.
 //!
-//! TWO BOUNDS, BOTH PER ORIGIN, BOTH REFUSALS RATHER THAN WAITS.
-//! `per_host` caps the connections lent out at once: the next `take`
-//! answers `.Exhausted` rather than dialing past it. `idle_per_host`
-//! caps how many are kept, and `idle` how long one is kept: an expired
-//! one is closed the next time the pool is touched, or by `reap`.
+//! TWO BOUNDS, BOTH PER ORIGIN. `per_host` caps the connections lent
+//! out at once: the next `take` never dials past it — it PARKS until a
+//! give or a drop frees a slot, for at most `wait` and never past the
+//! task's own deadline, and answers `.Exhausted` if none came. A task
+//! waiting costs nothing until a slot is freed: it parks on the pool's
+//! `freed` signal, woken by the give. `idle_per_host` caps how many are
+//! kept, and `idle` how long one is kept: an expired one is closed the
+//! next time the pool is touched, or by `reap`.
 //!
 //! A KEPT CONNECTION IS JUDGED AGAIN BEFORE IT IS LENT. A pool may be
 //! shared by requests under different admissions, so a connection one
@@ -28,8 +31,8 @@
 //! one request at a time. An HTTP/2 connection carries many at once and
 //! joins `Carrier` as a variant; every match over it then names what a
 //! multiplexed connection does at take, give and close.
-use @std.net.{Address, Admission}
-use @std.time.{Duration, now_ms, secs}
+use @std.net.{Address, Admission, Signal, signal}
+use @std.time.{Duration, ms, now_ms, secs}
 use client.{Client, ClientError}
 
 /// What a pool keeps per origin.
@@ -52,8 +55,10 @@ export type Pool = {
     per_host: int = 16,
     idle_per_host: int = 4,
     idle: Duration = secs(60),
+    wait: Duration = secs(10),
     kept: Cell<List<Idle>> = Cell.new([]),
     out: Cell<List<Lent>> = Cell.new([]),
+    freed: Signal = signal(),
 }
 
 /// A pool with the default bounds.
@@ -66,31 +71,34 @@ export fn origin_of(scheme: string, host: string, port: int) -> string { "${sche
 impl Pool {
     /// A carrier for `origin`: the most recently kept one still sound
     /// and connected to an address `admission` admits, or one `dial`
-    /// makes — refused when `per_host` are already out. The slot is
-    /// held before the dial parks, so tasks racing for the last one
-    /// cannot both win it.
+    /// makes — parked while `per_host` are out, until one comes back or
+    /// `wait` passes. The slot is held before the dial parks, so tasks
+    /// racing for the last one cannot both win it.
     fn take(origin: string, dial: Dialer, admission: Admission = .Anywhere) -> Result<
         Carrier,
         ClientError,
     > {
-        self.reap()
-        let reused? = self.reused(origin, admission) else { return self.dialed(origin, dial) }
-        self.lend(origin, 1)
-        .Ok(reused)
+        self.taken(origin, dial, admission, now_ms() + self.wait.ms)
     }
 
     /// A lent carrier handed back: kept when it may carry another
-    /// request and the origin has room, closed otherwise.
+    /// request and the origin has room, closed otherwise — and whoever
+    /// waits for a slot woken.
     fn give(origin: string, c: Carrier) {
         self.lend(origin, -1)
-        if !reusable(c) || self.kept_for(origin) >= self.idle_per_host { return closed(c) }
-        self.kept.push(Idle { origin: origin, carrier: c, since: now_ms() })
+        if !reusable(c) || self.kept_for(origin) >= self.idle_per_host {
+            closed(c)
+        } else {
+            self.kept.push(Idle { origin: origin, carrier: c, since: now_ms() })
+        }
+        let _ = self.freed.wake()
     }
 
     /// A lent carrier that failed, closed and its slot freed.
     fn drop(origin: string, c: Carrier) {
         self.lend(origin, -1)
         closed(c)
+        let _ = self.freed.wake()
     }
 
     /// Every kept carrier past its idle time, closed; answers how many.
@@ -141,8 +149,25 @@ impl Pool {
         self.reused(origin, admission)
     }
 
+    /// `take` until `until`: a kept carrier, a new one, or — every slot
+    /// out — the task parked until one is freed, and the pool looked at
+    /// again.
+    fn taken(origin: string, dial: Dialer, admission: Admission, until: int) -> Result<
+        Carrier,
+        ClientError,
+    > {
+        self.reap()
+        let reused? = self.reused(origin, admission) else {
+            if self.lent(origin) < self.per_host { return self.dialed(origin, dial) }
+            let left = until - now_ms()
+            if left <= 0 || !self.freed.wait(ms(left)) { return .Err(.Exhausted(origin, self.per_host)) }
+            return self.taken(origin, dial, admission, until)
+        }
+        self.lend(origin, 1)
+        .Ok(reused)
+    }
+
     fn dialed(origin: string, dial: Dialer) -> Result<Carrier, ClientError> {
-        if self.lent(origin) >= self.per_host { return .Err(.Exhausted(origin, self.per_host)) }
         self.lend(origin, 1)
         match dial() {
             .Ok(c) -> .Ok(c),
