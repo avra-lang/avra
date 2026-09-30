@@ -47,6 +47,7 @@ use @std.path.{dir_of, joined_path}
 use @std.relation.db.{Db as RelDb, new_db as new_error_sites_db}
 use features.components.{word_of, instanced, named_instances}
 use features.{
+    takes_receiver,
     Unsettled,
     Settled,
     Settlement,
@@ -87,7 +88,7 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{new_kernel, Key, Relation, Fixpoint, new_fixpoint}
+use query.{Kernel, new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -230,6 +231,8 @@ type Records = {
     /// pre-filter, asked once per file per build no matter how many
     /// `use` lines reach for the module it stands in.
     grammar_scanned: Cell<Map<string, bool>>,
+    /// Every file a record has met this build, by path — each met once.
+    met_files: Cell<Map<string, bool>>,
 }
 
 fn new_records() -> Records {
@@ -239,6 +242,7 @@ fn new_records() -> Records {
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
     let no_scanned: Map<string, bool> = {}
+    let no_met: Map<string, bool> = {}
     Records {
         loaded_records: Cell.new(no_loaded),
         record_texts: Cell.new(no_texts),
@@ -246,6 +250,7 @@ fn new_records() -> Records {
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
         grammar_scanned: Cell.new(no_scanned),
+        met_files: Cell.new(no_met),
     }
 }
 
@@ -716,9 +721,10 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
     built(host, dir, dir, lang, clock, false, true)
 }
 
-/// The declaration table with the language's own declarations in it.
-fn language_decls(lang: Language) -> Decls {
-    let decls = new_decls() with { rows: lang.rows.types.concat(scalar_types()) }
+/// The declaration table with the language's own declarations in it, its reads
+/// recording into `kernel`.
+fn language_decls(lang: Language, kernel: Kernel) -> Decls {
+    let decls = new_decls() with { record_kernel: kernel, rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -780,7 +786,7 @@ fn built(
         root: root,
         lang: lang,
         db: new_db(kernel),
-        decls: language_decls(lang),
+        decls: language_decls(lang, kernel),
         store: Cell.new(no_store),
         pack: Cell.new(no_pack),
         witness_hits: Cell.new(0),
@@ -852,7 +858,7 @@ fn built(
     ws.decls.arm_lifter(lift)
     ws
         .decls
-        .arm_recording(kernel, ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
+        .arm_recording(ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.arm_audit()
     ws.load_packages(src)
@@ -1510,15 +1516,16 @@ impl Workspace {
         // name asks the namespace of the file that wrote the quote.
         let elsewhere = self.elsewhere_of(f)
         // A generated body's statement stands in the arena, never in
-        // the parse tree — resolve it after the written bodies.
-        let generated = [self.decls.decl(d).stmt for d in made]
+        // the parse tree — resolve it after the written bodies, a
+        // member under its receiver.
         let resolved = resolve(
             self.lang.dispatch,
             self.lang.keywords,
             file_view(self.lang, p, self.decls, f),
             self.visible(f),
             elsewhere,
-            generated,
+            self.made_stmts(made, false),
+            self.made_stmts(made, true),
         )
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
@@ -1530,6 +1537,12 @@ impl Workspace {
                 .relation(Family.Resolved)
                 .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
         )
+    }
+
+    /// The statements of generated declarations that are members, or
+    /// that are not.
+    fn made_stmts(made: List<DeclId>, members: bool) -> List<StmtId> {
+        [self.decls.decl(d).stmt for d in made if takes_receiver(self.decls.decl(d).kind) == members]
     }
 
     /// A generated declaration's id by its NAME, or none — demanded

@@ -75,9 +75,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     // A declaration's NAME is source-known too: `@derive(Show)` must
     // reach the trait while the file's names are still being made.
     if declares &&
-        a
-            .args
-            .any((e: ExprId) -> !source_spelled(cx.view.store.expr(e)) && cx.bound_decl(e) == null) {
+        a.args.any((e: ExprId) -> !source_spelled(cx.view.store.expr(e)) && !names_a_decl(cx, e)) {
         computed_argument(cx, a)
         return
     }
@@ -104,6 +102,12 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
 /// generated code path, whatever effect produced them.
 fn speak_saids(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, xs: List<Diagnostic>) {
     for x in xs { if !x.warning { spoken_said(cx, a, d, s, x) } }
+}
+
+/// Whether an argument is a bare NAME bound to a declaration — never
+/// a call, whose callee binds and whose value is computed.
+fn names_a_decl(cx: TypeCx, e: ExprId) -> bool {
+    cx.view.store.ident_name(e) != null && cx.bound_decl(e) != null
 }
 
 /// The kind of declaration the annotation crosses, or null for a
