@@ -6,8 +6,10 @@
 //!
 //! `id` is `@dense`, so it names a slot in this process alone. `file`, `stmt`,
 //! `parent`, `root`, `lo` and `hi` are process-local (`@dense` ids, arena
-//! indexes, offsets) and `@local`, so none enters the stable hash; `name`
-//! keeps an `@index` so a reader can ask for a name's rows.
+//! indexes, offsets) and `@local`, so none enters the stable hash, and so is
+//! `key`, the process's own interning text. `name`, `word`, `marks` and `key`
+//! are indexed, each index numbered in field order: a lookup reads a bucket,
+//! never a hand-kept table.
 //!
 //! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `file`
 //! stops being `@local` (decision 10(a)) — owner: ERRORS. That tuple, not the
@@ -36,4 +38,10 @@ export type Decl = {
     @local root: ExprId?,
     @local lo: int,
     @local hi: int,
+    /// The component a declared instance instances; absent for every other kind.
+    @index word: string?,
+    /// Every `@name` the declaration wears, filed once per distinct name.
+    @index marks: List<string>,
+    /// The interning key `mint` files it under — one row per key.
+    @local @index key: string,
 }

@@ -15,6 +15,7 @@ use core.{
     Param,
     filled,
     same_decl,
+    list_eq,
     SpecParts,
     ImplParts,
     no_stmt,
@@ -402,10 +403,10 @@ impl Decls {
         if d.index < self.faces.get().length { self.face(d, f) }
     }
 
-    /// A declaration's facts land, and the seal index follows them: the
-    /// facts they replace leave their buckets first, so a held declaration
-    /// captured from a partial store and then corrected from its record
-    /// ends in exactly the buckets its record names.
+    /// A declaration's facts land, and the seal index and its row's collect
+    /// columns follow them: the facts they replace leave their buckets first,
+    /// so a held declaration captured from a partial store and then corrected
+    /// from its record ends in exactly the buckets its record names.
     fn face(d: DeclId, f: DeclFacts) {
         let old = self.faces.get()[d.index]
         for name in old?.mut_seats ?? [] {
@@ -413,6 +414,15 @@ impl Decls {
         }
         for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
         self.faces.set_at(d.index, f)
+        self.filed_under(d, f.word, [a.name for a in f.annotations])
+    }
+
+    /// A row's `word` and `marks` rewritten when its facts name others —
+    /// a row whose collect columns already agree is left as it stands.
+    fn filed_under(d: DeclId, word: string?, marks: List<string>) {
+        let row = self.raw_decl(d)
+        if row.word == word && list_eq(row.marks, marks, (x, y) -> x == y) { return }
+        self.set_decl(d.index, row with { word: word, marks: marks })
     }
 
     /// Whether a declaration's body has no receiver — the fact eight sites used to read
@@ -500,8 +510,8 @@ impl Decls {
 
     /// An id for a key: the existing one (its row refreshed), or the
     /// next; a member joins its parent's children. Every table here is a
-    /// Cell — `keys.put` writes the one shared map in place, so a captured
-    /// hook and a live reader see the same row with no clone either way.
+    /// Cell, so a captured hook and a live reader see the same row with no
+    /// clone either way.
     fn mint(
         key: string,
         f: FileId,
@@ -529,10 +539,12 @@ impl Decls {
             root: root,
             lo: 0,
             hi: 0,
+            word: null,
+            marks: [],
+            key: key,
         }
         if known == null {
             self.decls.push(d)
-            self.keys.put(key, id)
             self.sigs.push(null)
             self.seat_types.push(null)
             self.provenance.push(null)
@@ -565,9 +577,13 @@ impl Decls {
                     root: root,
                     lo: 0,
                     hi: 0,
+                    word: null,
+                    marks: [],
+                    key: key,
                 )
         } else {
-            self.set_decl(id.index, d)
+            let prior = self.raw_decl(id)
+            self.set_decl(id.index, d with { word: prior.word, marks: prior.marks })
         }
         // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
         // readers asked the store per pass; they ask this row now, and a held file's row
@@ -601,12 +617,13 @@ impl Decls {
 
     /// A DECLARATION BY ITS IDENTITY — the key `mint` files it under, so the loader finds
     /// it without an ordinal that depend on parse/expand order.
-    fn named_decl(path: string, word: string, name: string) -> DeclId? { self.keys.get().get("${path}::${word}::${name}") }
+    fn named_decl(path: string, word: string, name: string) -> DeclId? { self.known_id("${path}::${word}::${name}") }
 
-    /// The id a key already names.
+    /// The id a key already names, read unrecorded off its bucket.
     fn known_id(key: string) -> DeclId? {
-        let held: DeclId? = self.keys.get().get(key)
-        held
+        let rs = self.decl_row_rows.get()
+        let id? = rs.first_id(rs.bucket_of_text(key_index, key)) else { return null }
+        DeclId { index: id }
     }
 
     // ── generated source, parsed and admitted ──

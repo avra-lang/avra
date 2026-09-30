@@ -98,23 +98,13 @@ export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bo
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
-/// One `collect` INDEX row: a declaration under the word it answers.
-type IndexedWord = { word: string, id: DeclId }
-
-/// THE COLLECT INDEX's own state: every word's rows so far, and how
-/// far into `decls` it has read — `through` is the index's OWN
-/// cursor, never `decls.get().length` read twice at different times.
-/// TWO TABLES, never one: `by_word` is a `.Component`'s own name
-/// (at most one per declaration — `collect_word`), `by_mark` an
-/// `.Annotated` one's (zero or more per declaration — a decl may
-/// wear several `@name`s). Sharing one map would let a component
-/// named `rule` and an annotation `@rule` answer for each other.
-type CollectIndex = { by_word: Map<string, List<DeclId>>, by_mark: Map<string, List<DeclId>>, through: int }
-
-fn no_collect_index() -> CollectIndex {
-    let empty: Map<string, List<DeclId>> = {}
-    CollectIndex { by_word: empty, by_mark: empty, through: 0 }
-}
+/// `Decl`'s indexes, numbered in field order after `name`'s: a component
+/// instance's `word`, every `@name` it wears, and its interning key. `word`
+/// and `marks` are TWO INDEXES, never one — sharing a bucket would let a
+/// component named `rule` and an annotation `@rule` answer for each other.
+const word_index: int = 1
+const marks_index: int = 2
+const key_index: int = 3
 
 /// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
@@ -192,6 +182,9 @@ export type DeclFacts = {
     /// by its file's object. A reader in another file must know it without a parse the
     /// hold skips.
     instance: bool = false,
+    /// THE COMPONENT A DECLARED INSTANCE INSTANCES — the word `collect` gathers it
+    /// under, absent for every other declaration.
+    word: string? = null,
     /// THE DECLARATION'S OWN `///` LINES, absent where it wrote none — a fact every
     /// tool (`avra docs`, the formatter, `@std/meta`'s crossing) reads the same
     /// way, so a held file answers it without the parse the hold exists to skip.
@@ -221,6 +214,7 @@ impl DeclFacts {
             annotated: false,
             of: "",
             instance: false,
+            word: null,
             doc: null,
             annotations: [],
             mut_seats: [],
@@ -265,6 +259,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         annotated: readable && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
+        word: if x.kind is .Const { store.instance_of(x.stmt) } else { null },
         doc: if readable { store.doc_comment(x.stmt) } else { null },
         annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
@@ -336,8 +331,6 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `module_files`.
     file_decls: Cell<List<Cell<List<DeclId>>>>,
     decls: Cell<List<Decl>>,
-    /// THE COLLECT INDEX — see `indexed`/`collect_word`.
-    collect_index: Cell<CollectIndex>,
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
@@ -353,7 +346,6 @@ export type Decls = {
     /// a value: the words its settlement reached the world with, so a later
     /// ask answers the same `Unsettled.Reach` a fresh compile would.
     held_reaches: Cell<Map<string, string>>,
-    keys: Cell<Map<string, DeclId>>,
     sigs: Cell<List<DeclSig?>>,
     /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
     /// `sigs` carries, so this memo carries no self-recursion risk. Whichever
@@ -567,7 +559,6 @@ export fn new_decls() -> Decls {
     let no_origins: List<Origins> = []
     let no_decls: List<Decl> = []
     let no_faces: List<DeclFacts?> = []
-    let no_keys: Map<string, DeclId> = {}
     let no_sigs: List<DeclSig?> = []
     let no_seat_types: List<List<TypeId>?> = []
     let no_provenance: List<Provenance?> = []
@@ -613,13 +604,11 @@ export fn new_decls() -> Decls {
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
         decls: Cell.new(no_decls),
-        collect_index: Cell.new(no_collect_index()),
         held: map_cell(),
         held_items: map_cell(),
         faces: Cell.new(no_faces),
         held_values: map_cell(),
         held_reaches: map_cell(),
-        keys: Cell.new(no_keys),
         sigs: Cell.new(no_sigs),
         seat_types: Cell.new(no_seat_types),
         seat_ensure: Cell.new(no_ensure),
@@ -990,104 +979,23 @@ impl Decls {
         [d for d in self.all_decls() if d.kind == k && !self.file(d.file).test]
     }
 
-    /// THE COLLECT INDEX: every declaration `collect` can gather, by
-    /// the ONE WORD it answers to — `rule` for a declared `DeclKind`,
-    /// or a component's own name for a named instance. Extended past
-    /// everything minted since it was last read, O(new rows) never a
-    /// rescan — a row's word never changes once minted, so nothing
-    /// already indexed is revisited.
-    fn indexed(word: string) -> List<DeclId> {
-        self.grown_index()
-        self.collect_index.get().by_word.get(word) ?? []
+    /// Every declaration `collect` gathers under `word` — a declared instance
+    /// of that component — in id order.
+    fn indexed(word: string) -> List<Decl> { self.filed(word_index, word) }
+
+    /// Every declaration wearing `@name`, in id order.
+    fn indexed_by_mark(name: string) -> List<Decl> { self.filed(marks_index, name) }
+
+    /// The rows filed under `v` in `Decl`'s index `i`: the bucket read
+    /// unrecorded, each row read through `decl`, which records it.
+    fn filed(i: int, v: string) -> List<Decl> {
+        let rs = self.decl_row_rows.get()
+        [self.decl(x.id) for x in rs.members(rs.bucket_of_text(i, v))]
     }
 
-    /// THE MARK INDEX: every declaration under each `@name` it wears
-    /// — `indexed`'s twin, for `.Annotated` kinds. A declaration may
-    /// answer several names (several annotations) where a component
-    /// word answers at most one, which is why this is a second table
-    /// and not a second bucket in the same map.
-    fn indexed_by_mark(name: string) -> List<DeclId> {
-        self.grown_index()
-        self.collect_index.get().by_mark.get(name) ?? []
-    }
-
-    fn grown_index() {
-        let idx = self.collect_index.get()
-        let through = self.decl_count()
-        if idx.through >= through { return }
-        let by_word = self.folded_index(idx.by_word, self.collect_rows(idx.through, through))
-        let by_mark = self.folded_index(idx.by_mark, self.mark_rows(idx.through, through))
-        self
-            .collect_index
-            .set(CollectIndex { by_word: by_word, by_mark: by_mark, through: through })
-    }
-
-    /// `rows` folded onto `base` — one row per word, appended to
-    /// whichever declarations already answer it. Shared by the two
-    /// index tables `grown_index` extends.
-    fn folded_index(base: Map<string, List<DeclId>>, rows: List<IndexedWord>) -> Map<
-        string,
-        List<DeclId>,
-    > {
-        mut m = base
-        for row in rows { m.set(row.word, (m.get(row.word) ?? []).concat([row.id])) }
-        m
-    }
-
-    /// The new rows' own words, `[from, through)` read by index — a
-    /// row with none (most declarations: `collect` gathers by
-    /// invitation, never by default) contributes nothing. Reads each
-    /// row unrecorded, one at a time: never `all_decls()`, which would
-    /// rebuild the WHOLE table on every growth and turn an O(new rows)
-    /// extension into an O(total rows) rescan.
-    fn collect_rows(from: int, through: int) -> List<IndexedWord> {
-        flatten(
-            [some_list(self.indexed_word(self.raw_decl(DeclId { index: i }))) for i in from..through],
-        )
-    }
-
-    fn indexed_word(d: Decl) -> IndexedWord? {
-        let w? = self.collect_word(d) else { return null }
-        IndexedWord { word: w, id: d.id }
-    }
-
-    /// The word a declaration answers `collect` under: for a `Const`
-    /// (the ONLY kind a named instance promotes to,
-    /// `SyntaxArena.declared_instance`) the component its own statement
-    /// instances (`SyntaxArena.instance_of`, `rule` among them) —
-    /// absent for everything else, a `Builtin`'s sentinel file and
-    /// stmt among them, which no store carries.
-    fn collect_word(d: Decl) -> string? {
-        if !(d.kind is .Const) { return null }
-        self.store_of(d.file).instance_of(d.stmt)
-    }
-
-    /// Every `@name` row a declaration answers, `collect_word`'s
-    /// twin — every annotation it wears, of any DeclKind (a `type`,
-    /// a `fn`, a `record` may each carry one, unlike a component
-    /// instance's one word).
-    fn mark_rows(from: int, through: int) -> List<IndexedWord> {
-        flatten([self.marked_words(self.raw_decl(DeclId { index: i })) for i in from..through])
-    }
-
-    fn marked_words(d: Decl) -> List<IndexedWord> {
-        [IndexedWord { word: a.name, id: d.id } for a in self.annotations_of(d.id)]
-    }
-
-    /// Every indexed declaration of `word`, admitted so far —
-    /// `decls_of_kind`'s law here too: a fixture (`FileInfo.test`) is
-    /// not the program's own. Unscoped, so it answers alike for
-    /// every caller; `gathered`'s owner-scoped door is `collectible`,
-    /// not this.
-    fn decls_of_word(word: string) -> List<Decl> {
-        [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).test]
-    }
-
-    /// Every indexed declaration wearing `@name`, `decls_of_word`'s
-    /// mark twin.
-    fn decls_of_mark(name: string) -> List<Decl> {
-        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if !self.file(d.file).test]
-    }
+    /// Every declaration of `word` admitted so far, less a fixture
+    /// (`FileInfo.test`) — unscoped, so it answers alike for every caller.
+    fn decls_of_word(word: string) -> List<Decl> { [d for d in self.indexed(word) if !self.file(d.file).test] }
 
     /// The root package's manifest name, kept in the dotted spelling.
     fn name_root(name: string) { self.root_name.set(name.replace("/", ".")) }
@@ -1301,21 +1209,19 @@ impl Decls {
     /// nothing imports is gathered all the same; `closure` gathers what
     /// imports reach (docs/2026_09_22_COLLECTIONS.md §5: contributions
     /// merge exactly where imports merge); `self` the owner's own file.
-    /// Read through the collect index, so a second ask over the same
-    /// word rescans nothing new. Filtered through `collectible`, never `decls_of_word`:
-    /// that door excludes EVERY test-tree declaration, unconditionally,
-    /// which would hide a program test's own `collect` from its own
-    /// sibling declarations — the one caller that must see them.
+    /// Read through `Decl`'s `word` bucket, filtered through `collectible`,
+    /// which lets a program test's own `collect` see its sibling
+    /// declarations and no other file's fixtures.
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
         self.admit_scope(scope, owner)
-        [d for d in [self.decl(id) for id in self.indexed(word)] if self.collectible(d, scope, owner)]
+        [d for d in self.indexed(word) if self.collectible(d, scope, owner)]
     }
 
     /// `gathered`'s mark twin: every declaration wearing `@name`,
     /// filtered to `scope` the same way.
     fn gathered_by_mark(name: string, scope: CollectScope, owner: FileId) -> List<Decl> {
         self.admit_scope(scope, owner)
-        [d for d in [self.decl(id) for id in self.indexed_by_mark(name)] if self.collectible(d, scope, owner)]
+        [d for d in self.indexed_by_mark(name) if self.collectible(d, scope, owner)]
     }
 
     /// The files `scope` gathers from, admitted: a package's every file,
