@@ -1,19 +1,29 @@
-//! @std.tls — TLS 1.2 and 1.3, client and server, over memory.
+//! @std.tls — TLS 1.2 and 1.3, client and server.
 //!
-//! A `Config` is one side of a service: its trust anchors, its
-//! identities, whether it verifies its peer. A `Session` is one
-//! connection's protocol engine and touches no socket: ciphertext from
-//! the peer is `fed` in, `outgoing` ciphertext is drained out, and the
-//! caller moves both over whatever wire it holds — which is how a
-//! handshake parks wherever the wire's own reads and writes park.
+//! THE SEAM IS `TlsConn`, and it wears `Conn`'s verbs: `read(max)`
+//! answers bytes or null at the peer's close_notify, `write(bytes)`
+//! answers all of them, then `shutdown_write`, `close`, `peer` and
+//! `fd`. Each parks the calling task exactly where `Conn`'s own verb
+//! would, so a caller written for one transport reads the other.
+//! `handshake` makes one over a connected `Conn`; `dial` connects and
+//! shakes hands within one budget.
 //!
-//! VERIFICATION IS ON BY DEFAULT: a client config checks the peer's
-//! chain against its anchors and the host it named. `unverified` is the
-//! one way off, named for what it gives up.
+//! Under it, a `Config` is one side of a service — its trust anchors,
+//! its identities, whether it verifies — and a `Session` is one
+//! connection's engine, touching no socket: the peer's ciphertext is
+//! `fed` in and its own `outgoing` drained out.
+//!
+//! VERIFICATION IS ON BY DEFAULT: a client checks the peer's chain
+//! against its anchors and the host it named. `unverified` is the one
+//! way off, named for what it gives up. A peer that hangs up without
+//! close_notify is `.Cut`, never an ordinary end: the stream may have
+//! been truncated.
 //!
 //! The engine is mbedTLS 4.1 LTS, vendored (vendor/import.sh); the
 //! mechanisms compiled in are the two config headers in src/c.
 use @std.errors.{Error, ErrorInfo, info}
+use @std.net.{Conn, NetError, connect}
+use @std.time.{Duration, within}
 
 extern fn avra_tls_config(server: int) -> int
 extern fn avra_tls_config_roots(cfg: int, pem: Bytes, n: int) -> int
@@ -37,13 +47,39 @@ extern fn avra_tls_words(code: int) -> int
 extern fn avra_tls_words_at() -> ptr?
 extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 
-/// A verb that failed: which, on what, and the engine's code.
-export type TlsError = { verb: string, subject: string, code: int }
+/// Why a TLS verb failed: the engine refused it (the verb, its subject
+/// and the engine's code), the wire under it failed, or the peer hung
+/// up without close_notify.
+export enum TlsError {
+    Engine(verb: string, subject: string, code: int)
+    Net(e: NetError)
+    Cut(verb: string, subject: string)
+}
+
+impl TlsError {
+    /// Whether the wire's deadline passed — a `within` running out.
+    fn timed_out() -> bool {
+        match self { .Net(e) -> e.timed_out(), .Engine(_, _, _) or .Cut(_, _) -> false }
+    }
+}
 
 impl Error for TlsError {
     fn describe() -> ErrorInfo {
-        info("tls.${self.verb}", "${self.verb} ${self.subject}: ${words(self.code)}")
+        match self {
+            .Engine(verb, subject, code) -> info("tls.${verb}", "${verb} ${subject}: ${words(code)}"),
+            .Net(e) -> e.describe(),
+            .Cut(verb, subject) -> info("tls.cut", "${verb} ${subject}: the peer closed without close_notify"),
+        }
     }
+
+    fn cause() -> dyn Error? {
+        match self { .Net(e) -> e, .Engine(_, _, _) or .Cut(_, _) -> null }
+    }
+}
+
+/// A net result as TLS's: the failure wears `.Net`.
+fn wired<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
 }
 
 /// A code's words, as the engine states them.
@@ -54,7 +90,7 @@ fn words(code: int) -> string {
 
 /// An engine answer as a count, or the verb that failed on it.
 fn counted(code: int, verb: string, subject: string) -> Result<int, TlsError> {
-    if code < 0 { fail TlsError { verb: verb, subject: subject, code: code } }
+    if code < 0 { fail TlsError.Engine(verb, subject, code) }
     code
 }
 
@@ -62,7 +98,7 @@ fn counted(code: int, verb: string, subject: string) -> Result<int, TlsError> {
 export enum Side { Client, Server }
 
 /// One side of a service. The handle is the engine's; `free` returns
-/// it, after every session made from it has ended.
+/// it once every session made from it has ended.
 export type Config = { handle: int, side: Side }
 
 /// A client config: verifying, trusting nothing until anchors are
@@ -116,7 +152,8 @@ impl Config {
         self
     }
 
-    /// The config's handle returned to the engine.
+    /// The config's handle returned to the engine — refused while a
+    /// session made from it has not ended.
     fn free() -> Result<int, TlsError> {
         counted(avra_tls_config_free(self.handle), "free", side_name(self.side))
     }
@@ -157,7 +194,7 @@ impl Session {
         let rc = avra_tls_handshake(self.handle)
         if rc == 0 { return Step.Done }
         if rc == avra_tls_want_read() { return Step.Reading }
-        fail TlsError { verb: "handshake", subject: self.named(), code: rc }
+        fail TlsError.Engine("handshake", self.named(), rc)
     }
 
     /// Every byte of ciphertext owed to the peer, taken: empty when
@@ -193,7 +230,7 @@ impl Session {
     }
 
     /// The protocol settled: 0x0303 for TLS 1.2, 0x0304 for 1.3, 0
-    /// before the handshake settles it.
+    /// before the handshake settles it or once the session has ended.
     fn version() -> int { avra_tls_version(self.handle) }
 
     /// The engine's state returned; answers the handle.
@@ -203,5 +240,131 @@ impl Session {
 
     fn named() -> string {
         if self.host.is_empty() { "session ${self.handle}" } else { self.host }
+    }
+}
+
+// ── The connection ──────────────────────────────────────────────
+
+/// A TLS stream over a connection, wearing `Conn`'s verbs.
+export type TlsConn = { conn: Conn, session: Session, fd: int }
+
+/// A connection to host:port, dialled and its handshake done within
+/// `timeout` — `host` the name the server's certificate must carry.
+export fn dial(host: string, port: int, timeout: Duration, config: Config) -> Result<
+    TlsConn,
+    TlsError,
+> {
+    within timeout {
+        let c = wired(connect(host, port, timeout))?
+        handshake(c, config, host)
+    }
+}
+
+/// `conn` secured: the handshake run to completion, the calling task
+/// parked between flights. A client names the host it expects; a
+/// server passes "". A failed handshake closes `conn`, after the
+/// engine's alert is offered to the peer.
+export fn handshake(conn: Conn, config: Config, host: string) -> Result<TlsConn, TlsError> {
+    let s = session(config, host)?
+    let t = TlsConn { conn: conn, session: s, fd: conn.fd }
+    match t.shaken() {
+        .Ok(_) -> .Ok(t),
+        .Err(e) -> {
+            let _ = t.abandoned()
+            .Err(e)
+        },
+    }
+}
+
+/// How much ciphertext one wire read asks for: a whole record.
+fn record_size() -> int { 16384 + 256 }
+
+impl TlsConn {
+    /// Up to `max` bytes, the calling task parked until a record
+    /// arrives; null once the peer sent close_notify. A peer that
+    /// hangs up without it is `.Cut`.
+    fn read(max: int) -> Result<Bytes?, TlsError> {
+        let opened = self.session.opened(max)?
+        self.flushed()?
+        match opened {
+            .Data(b) -> .Ok(b),
+            .Closed -> .Ok(null),
+            .Reading -> {
+                self.heard("read")?
+                self.read(max)
+            },
+        }
+    }
+
+    /// All of `bytes`, sealed into records and written, the calling
+    /// task parked whenever the socket is full; answers how many.
+    fn write(bytes: Bytes) -> Result<int, TlsError> {
+        mut at = 0
+        while at < bytes.length { at = at + self.session.sealed(bytes, at)? }
+        self.flushed()?
+        bytes.length
+    }
+
+    /// close_notify sent and the write side shut: the peer reads the
+    /// end after what was sent.
+    fn shutdown_write() -> Result<int, TlsError> {
+        self.session.closing()?
+        self.flushed()?
+        wired(self.conn.shutdown_write())
+    }
+
+    /// Closed: close_notify offered without waiting, the engine's
+    /// state returned, the socket closed. Answers the descriptor. A
+    /// second close is refused before it reaches the socket, whose
+    /// number may by then be another connection's.
+    fn close() -> Result<int, TlsError> {
+        let _ = self.session.closing()
+        self.abandoned()
+    }
+
+    /// The peer as "ip:port", or "" once it is gone.
+    fn peer() -> string { self.conn.peer() }
+
+    /// The protocol the handshake settled: 0x0303 for TLS 1.2, 0x0304
+    /// for 1.3, 0 once closed.
+    fn version() -> int { self.session.version() }
+
+    /// The handshake stepped until it completes: every flight written,
+    /// every reply read.
+    fn shaken() -> Result<int, TlsError> {
+        let step = self.session.step()?
+        self.flushed()?
+        match step {
+            .Done -> .Ok(self.fd),
+            .Reading -> {
+                self.heard("handshake")?
+                self.shaken()
+            },
+        }
+    }
+
+    /// The next ciphertext from the wire fed to the engine, the task
+    /// parked until some arrives; a wire that ends here is `.Cut`.
+    fn heard(verb: string) -> Result<int, TlsError> {
+        let got? = wired(self.conn.read(record_size()))? else {
+            fail TlsError.Cut(verb, self.conn.named())
+        }
+        self.session.fed(got)
+    }
+
+    /// Everything the engine owes the peer, written.
+    fn flushed() -> Result<int, TlsError> {
+        let out = self.session.outgoing()?
+        if out.is_empty() { return 0 }
+        wired(self.conn.write(out))
+    }
+
+    /// What the engine still owes offered to the peer without waiting,
+    /// then the engine and the socket let go — the socket only while
+    /// the engine was still this connection's.
+    fn abandoned() -> Result<int, TlsError> {
+        let _ = self.conn.try_write(self.session.outgoing() catch "".bytes(), 0)
+        self.session.end()?
+        wired(self.conn.close())
     }
 }

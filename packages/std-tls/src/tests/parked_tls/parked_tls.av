@@ -1,0 +1,56 @@
+//! proves: TLS over loopback with every verb parked — a server task
+//! accepts, shakes hands and echoes while the main task dials,
+//! verifies the test authority's leaf for localhost, writes, shuts its
+//! write side with close_notify and reads the echo back to the
+//! server's own close_notify. One side's error ends the program with
+//! its words.
+use @std.net.{listen, Listener, NetError}
+use @std.time.{secs}
+use @std.tls.{TlsConn, TlsError, dial, handshake}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+fn lifted<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+fn echo(l: Listener) -> Result<int, TlsError> {
+    let c = handshake(lifted(l.accept())?, serving_localhost()?, "")?
+    mut total = 0
+    mut open = true
+    while open {
+        match c.read(64)? {
+            b? -> { total = total + c.write(b)? }
+            null -> { open = false }
+        }
+    }
+    c.shutdown_write()?
+    c.close()?
+    .Ok(total)
+}
+
+fn drained(c: TlsConn) -> Result<string, TlsError> {
+    mut got = ""
+    mut open = true
+    while open {
+        match c.read(5)? {
+            b? -> { got = got + (b.text() ?? "?") }
+            null -> { open = false }
+        }
+    }
+    .Ok(got)
+}
+
+fn run() -> Result<string, TlsError> {
+    let l = lifted(listen("127.0.0.1", 0))?
+    let server = spawn echo(l)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let sent = c.write("hello, secure world".bytes())?
+    c.shutdown_write()?
+    let back = drained(c)?
+    let echoed = server.await?
+    let v = c.version()
+    c.close()?
+    "${sent} ${echoed} ${back} ${v == 772} ${c.version()}"
+}
+
+run() catch e -> e.describe().message

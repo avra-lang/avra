@@ -56,6 +56,15 @@ fn a_reused_slot_is_not_the_old_handle() -> Result<bool, TlsError> {
     stale.ends_with("a TLS handle that names nothing live") && live && first.handle != second.handle
 }
 
+fn a_config_outlives_its_sessions() -> Result<bool, TlsError> {
+    let c = trusting_localhost()?
+    let live = session(c, "localhost")?
+    let busy = words(c.free())
+    live.end()?
+    let freed = c.free()? == c.handle
+    busy.ends_with("a config still serving sessions — end them first") && freed
+}
+
 fn freed_config_refuses_sessions() -> Result<bool, TlsError> {
     let c = trusting_localhost()?
     c.free()?
@@ -128,6 +137,7 @@ spec "std.tls engine boundary" {
     given "handles past their end" {
         then "a session ended twice, or stepped after, is refused by name" { passes(ended_twice()) }
         then "a freed config makes no session and frees once" { passes(freed_config_refuses_sessions()) }
+        then "a config is not freed under a live session" { passes(a_config_outlives_its_sessions()) }
         then "a slot reused by a new session is not reachable through the old handle" {
             passes(a_reused_slot_is_not_the_old_handle())
         }

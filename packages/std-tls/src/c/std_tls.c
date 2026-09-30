@@ -28,6 +28,7 @@ enum {
     TLS_ERR_HOST = -0x10007,   /* a host name holding a NUL */
     TLS_ERR_KEY = -0x10008,    /* PEM holding no private key */
     TLS_ERR_PAIR = -0x10009,   /* a key that is not its certificate's */
+    TLS_ERR_BUSY = -0x1000a,   /* a config freed under a live session */
 };
 
 /* Fed ciphertext is bounded: a peer that sends faster than records are
@@ -104,8 +105,8 @@ static void run_drop(Run* r, size_t n) {
 
 /* ── Configs ─────────────────────────────────────────────────────
    One per side of a service: its roots, its identities, whether it
-   verifies, the protocols it offers. Sessions borrow it, so a config
-   outlives every session made from it — the caller's contract.  */
+   verifies, the protocols it offers. Sessions borrow it, so it is
+   freed only once every session made from it has ended.  */
 
 typedef struct Identity {
     mbedtls_x509_crt chain;
@@ -119,6 +120,7 @@ typedef struct {
     Identity* identities;
     mbedtls_ssl_ticket_context tickets;
     int server;
+    int64_t sessions;
 } Config;
 
 static Table g_configs;
@@ -237,6 +239,7 @@ int64_t avra_tls_config_verify(int64_t cfg, int64_t required) {
 int64_t avra_tls_config_free(int64_t cfg) {
     Config* c = held(&g_configs, cfg);
     if (!c) return TLS_ERR_HANDLE;
+    if (c->sessions) return TLS_ERR_BUSY;
     released(&g_configs, cfg);
     for (Identity* id = c->identities; id;) {
         Identity* next = id->next;
@@ -259,6 +262,7 @@ int64_t avra_tls_config_free(int64_t cfg) {
 
 typedef struct {
     mbedtls_ssl_context ssl;
+    Config* config;
     Run in, out;
     unsigned char plain[TLS_PLAIN_CAP];
 } Session;
@@ -305,6 +309,8 @@ int64_t avra_tls_session(int64_t cfg, const unsigned char* host, int64_t n) {
         return h;
     }
     mbedtls_ssl_set_bio(&s->ssl, s, wire_send, wire_recv, NULL);
+    s->config = c;
+    c->sessions++;
     return h;
 }
 
@@ -402,10 +408,10 @@ int64_t avra_tls_close_notify(int64_t ses) {
 }
 
 /* The protocol the handshake settled: 0x0303 for TLS 1.2, 0x0304 for
-   1.3, 0 before it settles. */
+   1.3, 0 before it settles or once the session has ended. */
 int64_t avra_tls_version(int64_t ses) {
     Session* s = held(&g_sessions, ses);
-    if (!s) return TLS_ERR_HANDLE;
+    if (!s) return 0;
     return mbedtls_ssl_is_handshake_over(&s->ssl) ? (int64_t)mbedtls_ssl_get_version_number(&s->ssl) : 0;
 }
 
@@ -413,6 +419,7 @@ int64_t avra_tls_end(int64_t ses) {
     Session* s = held(&g_sessions, ses);
     if (!s) return TLS_ERR_HANDLE;
     released(&g_sessions, ses);
+    s->config->sessions--;
     mbedtls_ssl_free(&s->ssl);
     free(s->in.at);
     free(s->out.at);
@@ -443,6 +450,7 @@ int64_t avra_tls_words(int64_t code) {
     case TLS_ERR_HOST: ours = "a host name holding a NUL"; break;
     case TLS_ERR_KEY: ours = "PEM text holding no private key this build reads"; break;
     case TLS_ERR_PAIR: ours = "a private key that is not its certificate's"; break;
+    case TLS_ERR_BUSY: ours = "a config still serving sessions — end them first"; break;
     }
     if (ours) {
         strncpy(g_words, ours, sizeof g_words - 1);
