@@ -17,6 +17,22 @@
 # green (the train lands `good_branches`, `good_head`) or the tail is
 # empty (nothing left to land).
 #
+# ONE WATCHDOG, NEVER TWO: every remote step runs through land.sh's
+# OWN `watched()` (cap + no-progress quiet window, one poll loop) via
+# its `--call` seam — this file defines no timeout primitive of its
+# own. The Sprite POOL and its ORDERING are main's too:
+# `sh "$land" --call sprites_by_load $(pool_list)` ranks the pool by
+# load per core then free memory, and `pool_list` answers
+# `AVRA_LAND_SPRITE` when set, else land.sh's own `land_sprite_pool`
+# (`--call land_pool`) — the ONE list the Linux gate already uses, so
+# the train never reaches for a Sprite (avra-unions-* included) that
+# is not that pool's to claim. What THIS file adds beyond land.sh's
+# own primitives is the one thing a single `linux_gate_step` call
+# never needed: EXCLUSIVITY across several CONCURRENT candidates — a
+# wave dispatches many at once, and `sprite-build.sh` serialises
+# nothing on its own, so a lease (a lock directory per Sprite,
+# `claim_sprite`/`release_sprite`) is layered under the load-ordering.
+#
 # WHAT RUNS ON A SPRITE, PER CANDIDATE — the Linux-portable half of
 # what `land.sh` runs locally today: the compiler build itself
 # (`make bootstrap`/`objects`/`-o avra libs`, exactly `linux_gate_step`'s
@@ -37,32 +53,35 @@
 # where a real landing chains into it.
 #
 # NEVER TOUCHES REAL MAIN ON ITS OWN: every candidate lives in its own
-# throwaway worktree+branch under this run's scratch dir. The one
-# function that would move main (`train_core`, called FROM land.sh,
-# which already holds the FIFO lock) is exercised only by fixtures
-# and by land.sh's own opt-in hand-off — never by this file's own
-# `main()`, which always stops at printing the winning candidate.
+# throwaway worktree+branch under this run's scratch dir, named with
+# THIS run's own id so two overlapping trains never collide on the
+# same Sprite-side synced-tree slug. The one function that would move
+# main (`train_core`, called FROM land.sh, which already holds the
+# FIFO lock) is exercised only by fixtures and by land.sh's own opt-in
+# hand-off — never by this file's own `main()`, which always stops at
+# printing the winning candidate. An INT/TERM here frees every
+# candidate worktree, stops every in-flight remote run, and kills this
+# run's own local job tree before exiting — mirroring land.sh's own
+# trap shape (`train_interrupt`, below) so a killed train leaves
+# nothing running on a Sprite for nobody.
 set -eu
 
 self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 tools_dir="$(dirname "$self")"
 land="$tools_dir/land.sh"
 
-: "${AVRA_LAND_TRAIN_SPRITES:=avra-idioms-pay avra-comptime}"
-: "${AVRA_LAND_TRAIN_SPRITE_BUILD:=$tools_dir/sprite-build.sh}"
-: "${AVRA_TRAIN_STEP_TIMEOUT:=1200}"
-# sprite-build.sh is legitimately SILENT for minutes at a time before
-# the remote command's own first line ever reaches this log: waking a
-# sleeping Sprite (sprite_ready's own retry ceiling is 120s), then the
-# tree sync and file pushes, print nothing of their own. MEASURED
-# against a real Sprite (docs/2026_09_29_LAND_TRAIN.md's proof run):
-# 90s killed a healthy wake-and-sync outright. 420s clears a cold wake
-# plus a real sync with room left, while still catching a step that is
-# ACTUALLY wedged (which stays silent for the rest of the hard
-# timeout, never just a few extra minutes).
-: "${AVRA_TRAIN_HEARTBEAT:=420}"
+: "${AVRA_LAND_SPRITE_BUILD:=$tools_dir/sprite-build.sh}"
+# watched()'s own cap_s/quiet_s, named to match land.sh's
+# AVRA_LAND_LINUX_CAP_S/_QUIET_S convention. MEASURED against a real
+# Sprite (docs/2026_09_29_LAND_TRAIN.md's proof run): a 90s quiet
+# window killed a healthy cold wake-and-sync outright (sprite_ready's
+# own retry ceiling is 120s, before the tree sync or the first push
+# ever prints a byte); 420s clears that with room left, while still
+# catching a step that is ACTUALLY wedged (silent for the rest of the
+# cap, never just a few extra minutes).
+: "${AVRA_LAND_TRAIN_CAP_S:=1200}"
+: "${AVRA_LAND_TRAIN_QUIET_S:=420}"
 : "${AVRA_LAND_TRAIN_RETRIES:=2}"
-: "${AVRA_LAND_TRAIN_MIN_MEM_MB:=512}"
 
 run_id="$$-$(date +%s)"
 scratch_root="${AVRA_LAND_TRAIN_SCRATCH_ROOT:-/tmp/avra-land-train-scratch}"
@@ -104,57 +123,60 @@ resolve_main_wt() {
     fi
 }
 
-# ── THE SPRITE POOL — one lease per Sprite, mkdir as the atomic claim ─
-pool_list() { printf '%s' "$AVRA_LAND_TRAIN_SPRITES"; }
-
-# A Sprite's own health: MemAvailable in MB, or empty when unreachable.
-# Stubbed in tests via AVRA_LAND_TRAIN_MEM_CMD (prints "<sprite> <mb>"
-# lines) so a fixture never dials a real Sprite to answer this.
-sprite_mem_mb() {
-    if [ -n "${AVRA_LAND_TRAIN_MEM_CMD:-}" ]; then
-        # "$0" for the stub's own sh -c is the literal word `mem-check`,
-        # never the sprite name — the sprite is `$1` inside the stub,
-        # exactly as it is inside this function.
-        sh -c "$AVRA_LAND_TRAIN_MEM_CMD" mem-check "$1" 2>/dev/null | tail -1
-        return 0
+# ── THE SPRITE POOL — main's own list and load order, one lease each ─
+# `AVRA_LAND_SPRITE` overrides exactly as it already does for
+# `linux_gate_step`; unset, `land_pool` (a tiny land.sh accessor,
+# defined beside `land_sprite_pool`) answers the SAME pool the Linux
+# gate reads today, so this file names no Sprite of its own.
+pool_list() {
+    if [ -n "${AVRA_LAND_SPRITE:-}" ]; then
+        printf '%s' "$AVRA_LAND_SPRITE"
+    else
+        sh "$land" --call land_pool
     fi
-    timeout 15 sprite -s "$1" exec --no-port-forward -- \
-        awk '/^MemAvailable:/ { printf "%d", int($2/1024) }' /proc/meminfo 2>/dev/null || true
 }
 
-# Blocks until a Sprite in the pool is both FREE (no lease held) and
-# HEALTHY (answers, with enough memory) — a Sprite that never answers
-# is a TOOL failure for whoever asked, never grounds to wait forever,
-# so a caller passes its own deadline. `$2`, optional: Sprites this
+# Blocks until a Sprite in the pool is both FREE (no lease held here)
+# and ranked reachable by main's own `sprites_by_load` (an unreachable
+# one sorts last, never first) — a Sprite that never answers is what
+# `run_candidate`'s own retry-on-tool-failure exists for, so this
+# never waits past its OWN deadline. `$2`, optional: Sprites this
 # CANDIDATE already tried and failed on — a retry prefers any OTHER
-# Sprite first (a Sprite that just refused a candidate is the least
-# likely to take it next), and only falls back to one of them once
-# every other pool member is busy or unhealthy, so a small pool never
-# deadlocks waiting for a Sprite this candidate is told to avoid.
+# Sprite first, and only falls back to one of them once every other
+# pool member is busy, so a small pool never deadlocks avoiding one.
 claim_sprite() {
     deadline="$1"
     avoid="${2:-}"
+    # THE ORDER IS CACHED, NEVER RE-PROBED EVERY SECOND: a wave with
+    # several candidates all waiting on a busy pool would otherwise
+    # have EVERY ONE of them fork `sprites_by_load`'s own per-Sprite
+    # probes on EVERY 1s poll — a multiplier that gets WORSE exactly
+    # when the machine is already the most loaded (a real load spike
+    # measured writing this: 122+ while several waiters re-probed in
+    # lockstep). Refreshed only every AVRA_LAND_TRAIN_PROBE_INTERVAL_S
+    # seconds (default 10) — stale for at most that long, which only
+    # ever costs picking a slightly-less-idle Sprite, never a wrong
+    # answer about which ones are FREE (that check is the lease
+    # directory, read fresh every iteration, never cached).
+    probe_interval="${AVRA_LAND_TRAIN_PROBE_INTERVAL_S:-10}"
+    ordered=""
+    ordered_at=0
     while :; do
+        now="$(date +%s)"
+        if [ -z "$ordered" ] || [ $((now - ordered_at)) -ge "$probe_interval" ]; then
+            ordered="$(sh "$land" --call sprites_by_load $(pool_list) 2>/dev/null)"
+            ordered_at="$now"
+        fi
         for pass in fresh any; do
-            for s in $(pool_list); do
+            for s in $ordered; do
                 if [ "$pass" = fresh ]; then
                     case " $avoid " in *" $s "*) continue ;; esac
                 fi
                 [ -d "$scratch/lease-$s" ] && continue
-                mkdir "$scratch/lease-$s" 2>/dev/null || continue
-                mb="$(sprite_mem_mb "$s")"
-                case "$mb" in
-                    ''|*[!0-9]*) rmdir "$scratch/lease-$s" 2>/dev/null; continue ;;
-                esac
-                if [ "$mb" -lt "$AVRA_LAND_TRAIN_MIN_MEM_MB" ]; then
-                    rmdir "$scratch/lease-$s" 2>/dev/null
-                    continue
-                fi
-                echo "$s"
-                return 0
+                mkdir "$scratch/lease-$s" 2>/dev/null && { echo "$s"; return 0; }
             done
         done
-        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        [ "$now" -lt "$deadline" ] || return 1
         sleep 1
     done
 }
@@ -183,11 +205,18 @@ build_candidate_tree() {
 # exactly the five checks named in the file header, each timed and
 # named on its own line so a failure names the STEP, not just the
 # candidate. `land-train: body started` is the tool-failure boundary,
-# the same convention `linux_gate_step`'s `land-linux: body started` is.
+# the same convention `linux_gate_step`'s `land-linux: body started`
+# is; the heartbeat (every 30s, a byte count over every log this body
+# writes) is `train_progress`'s (tools/land.sh) own signal, read by
+# `watched()` exactly as `linux_progress` reads `linux_gate_step`'s.
 candidate_body() {
     pkgs="$*"
     cat <<BODY
 echo 'land-train: body started'
+d=\$(mktemp -d)
+( while sleep 30; do echo "land-train: progress \$(cat /tmp/land-train-*.log "\$d"/*.log 2>/dev/null | wc -c)"; done ) &
+hb=\$!
+trap 'pkill -P \$hb 2>/dev/null; kill \$hb 2>/dev/null' EXIT
 export LLVM_PREFIX=/usr/lib/llvm-22
 run_step() {
     n="\$1"; shift
@@ -209,7 +238,6 @@ run_step seed-check-1 make seed-check || { run_step seed-emit make seed; run_ste
 for p in $pkgs; do
     run_step "idioms-\$p" ./build/avra check "packages/\$p" --baseline tools/idioms.baseline
 done
-d=\$(mktemp -d)
 for p in $pkgs; do
     ( t=\$(date +%s); build/avra test "packages/\$p" > "\$d/\$p.log" 2>&1; echo \$? > "\$d/\$p.st"; \
       echo "land-train: test-\$p \$(( \$(date +%s) - t ))s" > "\$d/\$p.time" ) &
@@ -230,11 +258,16 @@ exit \$fail
 BODY
 }
 
-# ── ONE CANDIDATE, DISPATCHED, WITH RETRIES ON A TOOL FAILURE ────────
-# Writes `$3/status` (0/1) and `$3/log`; a Sprite that never printed
-# `land-train: body started` is a TOOL failure — retried on a
-# different Sprite, up to AVRA_LAND_TRAIN_RETRIES times, before the
-# CANDIDATE itself (never the branch alone) is marked a tool failure.
+# ── ONE CANDIDATE, DISPATCHED THROUGH land.sh's `watched()` ─────────
+# Writes `$3/status` (0/1) and `$3/log`. `watched`'s three outcomes,
+# in the SAME priority `linux_gate_step` reads them: 125 (no progress)
+# or 124 (past the cap) NEVER settle a verdict — the Sprite is told to
+# stop the remote run (`stop_remote`) and another is tried; only once
+# neither applies does a missing `body started` marker mean a TOOL
+# failure (retried, up to AVRA_LAND_TRAIN_RETRIES times, before the
+# CANDIDATE itself is marked unbuildable) and a present one hand back
+# the body's own real exit status — the branch's own concern from
+# there on.
 run_candidate() {
     tree="$1"
     label="$2"
@@ -243,30 +276,40 @@ run_candidate() {
     mkdir -p "$out_dir"
     tried=""
     attempt=0
+    cap_s="$AVRA_LAND_TRAIN_CAP_S"
+    quiet_s="$AVRA_LAND_TRAIN_QUIET_S"
     while :; do
         attempt=$((attempt + 1))
-        deadline=$(( $(date +%s) + AVRA_TRAIN_STEP_TIMEOUT ))
+        deadline=$(( $(date +%s) + cap_s ))
         sprite="$(claim_sprite "$deadline" "$tried")" || {
-            echo "no Sprite in the pool became free/healthy within ${AVRA_TRAIN_STEP_TIMEOUT}s" > "$out_dir/tool-failure"
+            echo "no Sprite in the pool became free within ${cap_s}s" > "$out_dir/tool-failure"
             echo 1 > "$out_dir/status"
             return 1
         }
         tried="$tried $sprite"
+        echo "$sprite" > "$scratch/inflight-$label"
         body_file="$scratch/body-$label.sh"
         candidate_body $pkgs > "$body_file"
         log="$out_dir/attempt-$attempt.log"
-        sprite_build="$AVRA_LAND_TRAIN_SPRITE_BUILD"
         st=0
-        watchdog_run "$log" "$deadline" \
-            sh "$sprite_build" "$sprite" "$tree" -- bash -lc "$(cat "$body_file")" || st=$?
+        train_out="$log" sh "$land" --call watched "$cap_s" "$quiet_s" train_progress \
+            sh "$AVRA_LAND_SPRITE_BUILD" "$sprite" "$tree" -- bash -lc "$(cat "$body_file")" > "$log" 2>&1 || st=$?
+        rm -f "$scratch/inflight-$label"
         release_sprite "$sprite"
-        if grep -q '^land-train: body started' "$log" 2>/dev/null; then
+        if [ "$st" -eq 125 ]; then
+            echo "land-train: [$label] no progress on $sprite for $((quiet_s / 60)) min — retrying" >&2
+            sh "$land" --call stop_remote "$sprite" "$label"
+        elif [ "$st" -eq 124 ]; then
+            echo "land-train: [$label] $sprite ran past the $((cap_s / 60)) min cap — retrying" >&2
+            sh "$land" --call stop_remote "$sprite" "$label"
+        elif grep -q '^land-train: body started' "$log" 2>/dev/null; then
             echo "$st" > "$out_dir/status"
             cp "$log" "$out_dir/log"
             echo "$sprite" > "$out_dir/sprite"
             return 0
+        else
+            echo "land-train: [$label] Sprite $sprite failed before the command ran (exit $st, attempt $attempt) — $log" >&2
         fi
-        echo "land-train: [$label] Sprite $sprite failed before the command ran (exit $st, attempt $attempt) — $log" >&2
         if [ "$attempt" -gt "$AVRA_LAND_TRAIN_RETRIES" ]; then
             echo "no Sprite could run candidate $label (tried:$tried)" > "$out_dir/tool-failure"
             echo 1 > "$out_dir/status"
@@ -275,56 +318,15 @@ run_candidate() {
     done
 }
 
-# A HARD TIMEOUT AND A NO-PROGRESS WATCHDOG, TOGETHER: the remote
-# command is killed (SIGTERM, then SIGKILL) the moment either the
-# absolute deadline passes OR the log stops growing for
-# AVRA_TRAIN_HEARTBEAT seconds past its own start — a stuck sync or a
-# wedged remote shell never hangs the whole train.
-# Owns `$log` outright — a caller must never ALSO redirect onto it
-# (two independent truncations of the same path would desync the
-# offset the child's own inherited fd is writing at).
-watchdog_run() {
-    log="$1"
-    deadline="$2"
-    shift 2
-    : > "$log"
-    ( "$@" ) >> "$log" 2>&1 &
-    cmd_pid=$!
-    last_size=-1
-    stable_since="$(date +%s)"
-    killed=0
-    while kill -0 "$cmd_pid" 2>/dev/null; do
-        now="$(date +%s)"
-        size="$(wc -c < "$log" 2>/dev/null || echo 0)"
-        if [ "$size" != "$last_size" ]; then
-            last_size="$size"
-            stable_since="$now"
-        fi
-        if [ "$now" -ge "$deadline" ]; then
-            echo "land-train: watchdog: hard timeout — killing" >> "$log"
-            killed=1
-        elif [ $((now - stable_since)) -ge "$AVRA_TRAIN_HEARTBEAT" ]; then
-            echo "land-train: watchdog: no progress for ${AVRA_TRAIN_HEARTBEAT}s — killing" >> "$log"
-            killed=1
-        fi
-        if [ "$killed" -eq 1 ]; then
-            kill -TERM "$cmd_pid" 2>/dev/null; sleep 2; kill -KILL "$cmd_pid" 2>/dev/null
-            break
-        fi
-        sleep 2
-    done
-    st=0
-    wait "$cmd_pid" 2>/dev/null || st=$?
-    [ "$killed" -eq 1 ] && [ "$st" -eq 0 ] && st=124
-    return "$st"
-}
-
 # ── ONE WAVE — every candidate for the given tail, launched together,
 # bounded only by the Sprite pool's own size (claim_sprite blocks a
 # launch until a lease is free). Prints, on stdout, the longest green
 # PREFIX of `tail` (space-separated branch names; empty when even the
 # first fails), and leaves per-candidate results under
-# `$scratch/wave-$id/C<k>/`.
+# `$scratch/wave-$id/C<k>/`. Every candidate's label carries THIS
+# run's own id, so its Sprite-side synced-tree slug (sprite-build.sh's
+# `basename` of the local worktree path) never collides with another
+# train's run of the same wave/candidate NUMBER.
 run_wave() {
     wave_id="$1"
     good_prefix="$2"
@@ -346,7 +348,7 @@ run_wave() {
         printf '%s\n' "$b" > "$cdir/added-branch"
         printf '%s' "$good_prefix$cum" > "$cdir/branches"
         (
-            label="wave$wave_id-C$k"
+            label="r$run_id-wave$wave_id-C$k"
             # A merge conflict here is an ORDINARY red, the same way
             # land.sh's own try_integration treats one — never a tool
             # failure. The branch that added the conflicting content
@@ -414,6 +416,42 @@ train_cleanup_candidates() {
     done
 }
 
+# ── INTERRUPT CLEANUP — mirrors land.sh's own trap shape (`finish_lock`
+# resumed-after-handler style; `release_lock_and_exit`'s signal-then-
+# exit). A killed train: (1) kills every in-flight candidate subshell's
+# WHOLE process tree, through land.sh's own `kill_tree`, so no local
+# `watched()`/`sprite-build.sh` call keeps polling for a run nobody is
+# waiting on; (2) tells every Sprite it currently has a lease on to
+# stop that candidate's remote run, through `stop_remote` — `run_candidate`
+# records the (sprite, label) pair for exactly this window, in
+# `$scratch/inflight-<label>`, removed the instant that candidate's own
+# call returns; (3) removes every candidate worktree. Set once, for
+# the whole process, wherever that process might be a train's own top
+# level (`main`) or the ladder itself (`train_ladder`, called directly
+# via `--call` from land.sh's `train_core`).
+train_interrupt() {
+    sig="$1"
+    for p in ${pids:-}; do
+        kill -0 "$p" 2>/dev/null && sh "$land" --call kill_tree "$p" 2>/dev/null
+    done
+    for f in "$scratch"/inflight-*; do
+        [ -f "$f" ] || continue
+        lbl="$(basename "$f")"
+        lbl="${lbl#inflight-}"
+        sp="$(cat "$f" 2>/dev/null)" || sp=""
+        [ -n "$sp" ] && sh "$land" --call stop_remote "$sp" "$lbl" 2>/dev/null
+    done
+    [ -n "${main_wt:-}" ] && train_cleanup_candidates 2>/dev/null
+    case "$sig" in
+        INT) exit 130 ;;
+        *) exit 143 ;;
+    esac
+}
+install_interrupt_trap() {
+    trap 'train_interrupt INT' INT
+    trap 'train_interrupt TERM' TERM
+}
+
 # ── THE FULL LADDER — repeat waves until the tail is empty or wholly
 # green. Prints the final winning branch list (space-separated, FIFO
 # order preserved) on stdout; every dropped branch is named
@@ -422,6 +460,7 @@ train_cleanup_candidates() {
 # candidate WORKTREE is cleaned up before this returns, whatever the
 # outcome — train_ladder_body never exits early without it.
 train_ladder() {
+    install_interrupt_trap
     st=0
     train_ladder_body "$@" || st=$?
     train_cleanup_candidates
@@ -468,6 +507,7 @@ train_ladder_body() {
 
 # ── STAGE 1 ENTRY POINT — dry run only, never moves main. ────────────
 main() {
+    install_interrupt_trap
     dry_run=1
     if [ "${1:-}" = "--dry-run" ]; then shift; fi
     [ "$#" -ge 1 ] || { usage >&2; exit 2; }

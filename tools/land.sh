@@ -948,6 +948,21 @@ linux_progress() {
     grep -c '' "$linux_out"
 }
 
+# The train's own leg, `linux_progress`'s twin over a `land-train:`
+# log — one `watched()` covers every remote step regardless of which
+# gate's own body it is running (docs/2026_09_29_LAND_TRAIN.md).
+train_progress() {
+    grep -q '^land-train: body started' "$train_out" 2>/dev/null || return 0
+    grep '^land-train: progress ' "$train_out" | tail -1 | awk '{ print $3 }'
+    grep -c '' "$train_out"
+}
+
+# The landing pool's own list — the ONE place tools/land_train.sh
+# reads it, so it never drifts from `linux_gate_step`'s own default
+# (`${AVRA_LAND_SPRITE:-$land_sprite_pool}`) and never names a Sprite
+# (avra-unions-* included) that is not this pool's to claim.
+land_pool() { printf '%s' "${AVRA_LAND_SPRITE:-$land_sprite_pool}"; }
+
 # The Sprite after `$1` in the rest of the list.
 next_after() {
     want="$1"
@@ -2097,7 +2112,13 @@ train_core() {
     if grep -q '^TOOLFAIL' "$ladder_log" 2>/dev/null || [ -f "$train_scratch/tool-failure" ]; then
         good=""
         culprits=""
+        reason="$(cat "$train_scratch/tool-failure" 2>/dev/null || grep -h '^TOOLFAIL' "$ladder_log" | head -1)"
         batch_note="land: TOOL FAILURE in the train, no branch judged — see $ladder_log"
+        # THE TOP-LEVEL SCRATCH, not the ladder's own nested one — this
+        # is what finish_lock's exit_verdict reads to answer exit 3
+        # ("NOT LANDED — tool failure") rather than the generic exit 1
+        # a plain batch_note alone would fall through to.
+        tool_failed "$reason"
         return 0
     fi
     if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then

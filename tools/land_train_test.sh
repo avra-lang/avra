@@ -1,11 +1,14 @@
 #!/bin/sh
 # FIXTURES FOR tools/land_train.sh — never a real Sprite, never the
 # real repo: every git repo here is thrown together fresh under a
-# scratch directory, and `AVRA_LAND_TRAIN_SPRITE_BUILD` stands in for
-# `tools/sprite-build.sh` so a candidate's verdict is decided by a
-# marker file in its own merged tree, never by an actual remote build
-# — the same seam `tools/land_test.sh` already uses for the Linux gate
-# (`sprite_stub_write`), applied to the train's own wider gate set.
+# scratch directory. `AVRA_LAND_SPRITE_BUILD` stands in for
+# `tools/sprite-build.sh` (a candidate's verdict is decided by a
+# marker file in its own merged tree, never by an actual remote
+# build) and `AVRA_LAND_SPRITE_PROBE` stands in for a real Sprite's
+# load probe — the SAME two seams `tools/land_test.sh` already uses
+# for `linux_gate_step` and `sprites_by_load`, since land_train.sh now
+# calls both of land.sh's own functions rather than carrying a second
+# copy of either.
 #
 # `sh tools/land_train_test.sh` runs every fixture and prints a
 # PASS/FAIL summary; a non-zero exit is a real failure.
@@ -89,16 +92,59 @@ STUB
     chmod +x "$1"
 }
 
+# A uniform-load probe: every sprite name answers the same load, cores
+# and free memory, so `sprites_by_load`'s own ordering never matters
+# to a fixture that is not specifically testing it (a tie-break stays
+# deterministic — sort is stable over equal keys).
+probe_stub() {
+    cat > "$1" <<'PROBE'
+#!/bin/sh
+echo "0.10 8 7000"
+PROBE
+    chmod +x "$1"
+}
+
+# A no-op remote-stop: `watched()`'s 124/125 paths call `stop_remote`,
+# which — unstubbed — reaches for the REAL `sprite` CLI against a
+# Sprite name that does not exist, costing a real ~60s network
+# timeout per call (found running this file for real: a "silent
+# Sprite" fixture took ~70s instead of a few, because its own
+# no-progress path correctly fired in a few seconds and then sat in
+# exactly that unstubbed call). Every fixture that can reach 124/125
+# must stub this, the same way `tools/land_test.sh`'s own
+# `test_linux_watchdog` stubs it (`stopper`).
+stop_stub() {
+    cat > "$1" <<'STOPSTUB'
+#!/bin/sh
+echo "$1 $2" >> "${STOP_LOG:-/dev/null}"
+STOPSTUB
+    chmod +x "$1"
+}
+
 train_env() {
     d="$1"
     stub="$2"
-    export AVRA_LAND_TRAIN_SPRITE_BUILD="$stub"
-    export AVRA_LAND_TRAIN_SPRITES="s1 s2 s3"
-    export AVRA_LAND_TRAIN_MEM_CMD='echo 4096'
+    probe="$scratch/$(basename "$d")-probe.sh"
+    probe_stub "$probe"
+    stopper="$scratch/$(basename "$d")-stop.sh"
+    stop_stub "$stopper"
+    export AVRA_LAND_SPRITE_BUILD="$stub"
+    export AVRA_LAND_SPRITE_PROBE="$probe"
+    export AVRA_LAND_SPRITE_STOP="$stopper"
+    export STOP_LOG="$scratch/$(basename "$d")-stops.log"
+    export AVRA_LAND_SPRITE="s1 s2 s3"
     export AVRA_LAND_TRAIN_SCRATCH="$scratch/train-run-$(basename "$d")"
-    export AVRA_TRAIN_STEP_TIMEOUT=30
-    export AVRA_TRAIN_HEARTBEAT=10
+    export AVRA_LAND_TRAIN_CAP_S=30
+    export AVRA_LAND_TRAIN_QUIET_S=10
     export AVRA_LAND_TRAIN_RETRIES=2
+    export AVRA_LAND_WATCH_POLL_S=1
+    export AVRA_LAND_TRAIN_PROBE_INTERVAL_S=2
+}
+unset_train_env() {
+    unset AVRA_LAND_SPRITE_BUILD AVRA_LAND_SPRITE_PROBE AVRA_LAND_SPRITE
+    unset AVRA_LAND_SPRITE_STOP STOP_LOG AVRA_LAND_TRAIN_PROBE_INTERVAL_S
+    unset AVRA_LAND_TRAIN_SCRATCH AVRA_LAND_TRAIN_CAP_S AVRA_LAND_TRAIN_QUIET_S
+    unset AVRA_LAND_TRAIN_RETRIES AVRA_LAND_WATCH_POLL_S
 }
 
 # ══ ORDERING: three good branches all pass — the whole ladder lands ═
@@ -115,7 +161,7 @@ test_train_all_green() {
     else
         bad "train: expected 'a b c', got '$good'" "$out"
     fi
-    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset_train_env
 }
 
 # ══ A MID-TRAIN FAILURE: b is dropped, a and c still land ═══════════
@@ -143,7 +189,8 @@ test_train_mid_failure_rebase() {
     else
         bad "train: no second wave ran after the drop" "$out"
     fi
-    unset CULPRIT_MARK AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset CULPRIT_MARK
+    unset_train_env
 }
 
 # ══ TWO FAILURES ACROSS TWO SEPARATE WAVES: the ladder keeps re-
@@ -192,7 +239,7 @@ STUB
     else
         bad "train: expected 2 waves, got $n_waves" "$out"
     fi
-    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset_train_env
 }
 
 # ══ THE FIRST CANDIDATE FAILS: it drops, and the tail BEHIND it still
@@ -214,7 +261,8 @@ test_train_first_fails() {
     else
         bad "train: expected 'b' to land with a named as culprit — got '$good'" "$out"
     fi
-    unset CULPRIT_MARK AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset CULPRIT_MARK
+    unset_train_env
 }
 
 # ══ A TOOL FAILURE RETRIES ON ANOTHER SPRITE, NEVER BLAMES THE BRANCH ═
@@ -237,7 +285,8 @@ test_train_tool_failure_retries() {
     else
         bad "train: did not report the bad Sprite by name" "$out"
     fi
-    unset BAD_SPRITE AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset BAD_SPRITE
+    unset_train_env
 }
 
 # ══ EVERY SPRITE IS BAD: a TOOL FAILURE, never a verdict on the branch ═
@@ -259,7 +308,64 @@ STUB
     else
         bad "train: expected a tool failure with no culprit named — got st=$st good='$good'" "$out"
     fi
-    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset_train_env
+}
+
+# ══ A SILENT SPRITE (watched()'s no-progress path) IS MOVED, NEVER
+# BLAMED ON THE BRANCH — the same primitive linux_gate_step already
+# proves, exercised here through run_candidate's own dispatch. ══════
+test_train_watchdog_moves_to_another_sprite() {
+    d="$(ladder_repo watchdog a)"
+    stub="$scratch/watchdog-sprite.sh"
+    cat > "$stub" <<'STUB'
+#!/bin/sh
+sprite="$1"
+echo "land-train: body started"
+if [ "$sprite" = "${SILENT_SPRITE:-}" ]; then
+    sleep 60
+else
+    echo "land-train: fake-check OK 0s"
+fi
+exit 0
+STUB
+    chmod +x "$stub"
+    train_env "$d" "$stub"
+    export SILENT_SPRITE=s1
+    export AVRA_LAND_TRAIN_QUIET_S=3
+    # THE CAP IS GENEROUS ON PURPOSE: this asserts the QUIET window
+    # cuts the wait short of the CAP, never a fixed wall-clock number
+    # — a `watched()` poll under real, shared-machine load (this
+    # session measured a 28-34 load average while writing this test)
+    # can slip several seconds late without being wrong, and a tight
+    # absolute bound would flake on exactly that, not on a real
+    # defect. What must hold is RELATIVE: well under the cap.
+    export AVRA_LAND_TRAIN_CAP_S=300
+    out="$scratch/watchdog.out"
+    t0="$(date +%s)"
+    good="$(cd "$d" && sh "$land_train" --call train_ladder a 2>"$out")"
+    wall=$(( $(date +%s) - t0 ))
+    if [ "$good" = "a" ]; then
+        ok "train: a candidate still lands after its first Sprite goes silent"
+    else
+        bad "train: expected 'a' to land past a silent Sprite — got '$good'" "$out"
+    fi
+    if grep -q "no progress on s1" "$out" && grep -q "retrying" "$out"; then
+        ok "train: watched()'s no-progress path is what moved it, named"
+    else
+        bad "train: no no-progress move was reported" "$out"
+    fi
+    if [ "$wall" -lt "$((AVRA_LAND_TRAIN_CAP_S / 2))" ]; then
+        ok "train: the move happens well short of the cap (${wall}s of a ${AVRA_LAND_TRAIN_CAP_S}s cap)"
+    else
+        bad "train: took ${wall}s of a ${AVRA_LAND_TRAIN_CAP_S}s cap — the no-progress path did not cut the wait short"
+    fi
+    if grep -q "^s1 " "$STOP_LOG" 2>/dev/null; then
+        ok "train: the silent Sprite's remote run is told to stop"
+    else
+        bad "train: no remote stop was recorded ($(cat "$STOP_LOG" 2>/dev/null))"
+    fi
+    unset SILENT_SPRITE
+    unset_train_env
 }
 
 # ══ dry-run main(): never touches real main, prints the winning head ═
@@ -283,14 +389,9 @@ test_train_dry_run_prints_head() {
     else
         bad "train: main moved during a dry run"
     fi
-    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+    unset_train_env
 }
 
-# A fixture runs DIRECTLY (never subshelled) so its own env exports
-# and unsets take effect for real — `ok`/`bad` write to this log, read
-# back afterward by SCANNING it (never by a shared counter a fixture's
-# own subshell would fork away from — the exact trap
-# `tools/land_test.sh`'s own header names).
 # ══ THE HAND-OFF INTO land.sh's OWN train_core ═══════════════════════
 # train_core (tools/land.sh) calls train_ladder for the Sprite half,
 # then land.sh's OWN try_integration/check_phase for the Mac-only
@@ -298,7 +399,7 @@ test_train_dry_run_prints_head() {
 # shape (a fake build/avra + Makefile, its CULPRIT_PKG convention) —
 # duplicated here rather than sourced, since land_test.sh runs its
 # whole suite as a side effect of being read — so this proves the
-# WIRING alone, never re-deriving what test_batch_mode already proves
+# WIRING, never re-deriving what test_batch_mode already proves
 # about try_integration itself.
 train_batch_repo() {
     d="$(git_repo "$1")"
@@ -368,9 +469,7 @@ test_train_core_lands_the_sprite_verified_prefix() {
     d="$(train_batch_repo core-wire)"
     stub="$scratch/core-wire-sprite.sh"
     sprite_stub "$stub"
-    export AVRA_LAND_TRAIN_SPRITE_BUILD="$stub"
-    export AVRA_LAND_TRAIN_SPRITES="s1 s2"
-    export AVRA_LAND_TRAIN_MEM_CMD='echo 4096'
+    train_env "$d" "$stub"
     export CULPRIT_MARK=b
     export AVRA_LAND_TRAIN=1 AVRA_LAND_SPEED_GATE=0 AVRA_LAND_WARM_GATE=0
     lockdir="$scratch/core-wire-lock"
@@ -407,9 +506,15 @@ test_train_core_lands_the_sprite_verified_prefix() {
     else
         bad "train_core: main's content does not match a,c-in, b-out" "$out"
     fi
-    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD CULPRIT_MARK
-    unset AVRA_LAND_TRAIN AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
+    unset CULPRIT_MARK AVRA_LAND_TRAIN AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
+    unset_train_env
 }
+
+# A fixture runs DIRECTLY (never subshelled) so its own env exports
+# and unsets take effect for real — `ok`/`bad` write to this log, read
+# back afterward by SCANNING it (never by a shared counter a fixture's
+# own subshell would fork away from — the exact trap
+# `tools/land_test.sh`'s own header names).
 run_test() {
     name="$1"
     log="$scratch/$name.run.log"
@@ -427,6 +532,7 @@ run_test test_train_two_failures_across_waves
 run_test test_train_first_fails
 run_test test_train_tool_failure_retries
 run_test test_train_all_sprites_bad_is_tool_failure
+run_test test_train_watchdog_moves_to_another_sprite
 run_test test_train_dry_run_prints_head
 run_test test_train_core_lands_the_sprite_verified_prefix
 
