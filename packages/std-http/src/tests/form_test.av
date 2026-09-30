@@ -154,9 +154,11 @@ spec "std/http — urlencoded forms" {
     }
     given "refusals" {
         then "another media type" { form_said(posted_as("text/plain", "a=1".bytes(), 99)) == "415 the body must be `application/x-www-form-urlencoded`" }
-        then "a charset parameter is fine" { form_said(
+        then "a charset parameter is fine" {
+            form_said(
                 posted_as("Application/X-WWW-Form-Urlencoded; charset=UTF-8", "a=1".bytes(), 99),
-            ) == "a=1" }
+            ) == "a=1"
+        }
         then "a malformed escape" { form_said(urlencoded("a=%zz")) == "400 a name or value in the form is not form-encoded text" }
         then "an escape that is not UTF-8" { form_said(urlencoded("a=%ff")) == "400 a name or value in the form is not form-encoded text" }
         then "a cut escape" { form_said(urlencoded("a=%4")) == "400 a name or value in the form is not form-encoded text" }
@@ -166,12 +168,14 @@ spec "std/http — urlencoded forms" {
 spec "std/http — multipart forms" {
     given "the empty cases, written first" {
         then "no parts at all" { multi(mp(), "--XyZ--\r\n", 99, FormLimits {}) == "  " }
-        then "an empty field" { multi(
+        then "an empty field" {
+            multi(
                 mp(),
                 "--XyZ\r\nContent-Disposition: form-data; name=\"e\"\r\n\r\n\r\n--XyZ--",
                 99,
                 FormLimits {},
-            ) == "e=  " }
+            ) == "e=  "
+        }
         then "an empty file" {
             multi(
                 mp(),
@@ -228,8 +232,10 @@ spec "std/http — multipart forms" {
     }
     given "malformed bodies" {
         then "another media type" { multi("text/plain", two_parts(), 99, FormLimits {}).starts_with("415 ") }
-        then "no boundary" { multi("multipart/form-data", two_parts(), 99, FormLimits {})
-                .starts_with("400 the multipart type names no boundary") }
+        then "no boundary" {
+            multi("multipart/form-data", two_parts(), 99, FormLimits {})
+                .starts_with("400 the multipart type names no boundary")
+        }
         then "a boundary of 71 characters" {
             multi(
                 "multipart/form-data; boundary=" + ["b" for _i in 0..71].join(""),
@@ -239,8 +245,10 @@ spec "std/http — multipart forms" {
             )
                 .starts_with("400 the multipart type names no boundary")
         }
-        then "a boundary with a character outside bchars" { multi("multipart/form-data; boundary=a<b", two_parts(), 99, FormLimits {})
-                .starts_with("400 the multipart type") }
+        then "a boundary with a character outside bchars" {
+            multi("multipart/form-data; boundary=a<b", two_parts(), 99, FormLimits {})
+                .starts_with("400 the multipart type")
+        }
         then "no closing delimiter" {
             multi(
                 mp(),
@@ -336,13 +344,17 @@ spec "std/http — multipart forms" {
 
 spec "std/http — a form read as a record" {
     given "the fields" {
-        then "every kind" { signed_up(
+        then "every kind" {
+            signed_up(
                 "email=a%40b.c&age=36&height=1.8&plan=pro&agree=on&tags=x&tags=y&scores=1&scores=2&scores=3",
-            ) == "a@b.c 36 1.8 pro true x,y 3" }
+            ) == "a@b.c 36 1.8 pro true x,y 3"
+        }
         then "what may be absent is" { signed_up("email=e&age=1") == "e 1 -1.0 - false  0" }
         then "an empty number is absent, an empty text is text" { signed_up("email=e&age=1&height=&plan=") == "e 1 -1.0  false  0" }
-        then "a checkbox's other spellings" { signed_up("email=e&age=1&agree=TRUE") == "e 1 -1.0 - true  0" &&
-                signed_up("email=e&age=1&agree=0") == "e 1 -1.0 - false  0" }
+        then "a checkbox's other spellings" {
+            signed_up("email=e&age=1&agree=TRUE") == "e 1 -1.0 - true  0" &&
+                signed_up("email=e&age=1&agree=0") == "e 1 -1.0 - false  0"
+        }
         then "a multipart body reads alike" {
             let body = "--XyZ\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nm\r\n--XyZ\r\nContent-Disposition: form-data; name=\"age\"\r\n\r\n9\r\n--XyZ--"
             match form_body(posted_as(mp(), body.bytes(), 5), (f) -> Signup.from_form(f)) {

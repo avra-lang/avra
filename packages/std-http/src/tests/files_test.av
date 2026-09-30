@@ -30,8 +30,10 @@ spec "std/http — static files" {
         then "an encoded parent" { got("/static/%2e%2e/files_outside.txt").status == 404 }
         then "an encoded slash around a parent" { got("/static/css%2F..%2F..%2Ffiles_outside.txt").status == 404 }
         then "a doubly encoded parent stays a name that is not there" { got("/static/%252e%252e/files_outside.txt").status == 404 }
-        then "a backslash" { got("/static/css\\..\\a.txt").status == 404 &&
-                got("/static/css%5C..%5Ca.txt").status == 404 }
+        then "a backslash" {
+            got("/static/css\\..\\a.txt").status == 404 &&
+                got("/static/css%5C..%5Ca.txt").status == 404
+        }
         then "an encoded NUL" { got("/static/a.txt%00.png").status == 404 }
         then "a malformed escape" { got("/static/a%2.txt").status == 404 }
         then "an empty segment" { got("/static//a.txt").status == 404 && got("/static/css//app.css").status == 404 }
@@ -48,8 +50,10 @@ spec "std/http — static files" {
             )
                 .status == 200
         }
-        then "a root that does not exist" { served_by(Files { root: "/definitely/not/here" }, "GET /static/a.txt HTTP/1.1", "")
-                .status == 404 }
+        then "a root that does not exist" {
+            served_by(Files { root: "/definitely/not/here" }, "GET /static/a.txt HTTP/1.1", "")
+                .status == 404
+        }
         then "a sibling of the prefix is not beneath it" { got("/staticx/a.txt").status == 404 }
     }
     given "a file" {
@@ -106,11 +110,13 @@ spec "std/http — static files" {
             field_of(r, "etag").starts_with("\"12-") &&
                 http_date_parsed(field_of(r, "last-modified")) != null
         }
-        then "the tag it sent answers 304" { got_with(
+        then "the tag it sent answers 304" {
+            got_with(
                 "/static/a.txt",
                 "If-None-Match: ${field_of(got("/static/a.txt"), "etag")}\r\n",
             )
-                .status == 304 }
+                .status == 304
+        }
         then "a weak form of it, in a list, answers 304" {
             got_with(
                 "/static/a.txt",
@@ -120,11 +126,13 @@ spec "std/http — static files" {
         }
         then "`*` answers 304" { got_with("/static/a.txt", "If-None-Match: *\r\n").status == 304 }
         then "another tag answers 200" { got_with("/static/a.txt", "If-None-Match: \"nope\"\r\n").status == 200 }
-        then "the date it sent answers 304" { got_with(
+        then "the date it sent answers 304" {
+            got_with(
                 "/static/a.txt",
                 "If-Modified-Since: ${field_of(got("/static/a.txt"), "last-modified")}\r\n",
             )
-                .status == 304 }
+                .status == 304
+        }
         then "an older date answers 200" { got_with("/static/a.txt", "If-Modified-Since: ${http_date(0)}\r\n").status == 200 }
         then "a tag that misses overrules a date that matches" {
             got_with(

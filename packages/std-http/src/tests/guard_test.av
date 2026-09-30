@@ -4,11 +4,13 @@
 use @std.http.http.{Request, Unrouted, Response, Handler, text}
 use @std.http.guard.{Cors, Hardening, cors, hardened, hardening}
 
-fn app() -> Cors { Cors {
+fn app() -> Cors {
+    Cors {
         origins: ["https://app.example"],
         headers: ["Content-Type", "X-Token"],
         exposed: ["X-Total"],
-    } }
+    }
+}
 
 /// `line` with `fields`, through `layer` to a handler answering "ok".
 fn through(layer: fn(Request<Unrouted>, Handler) -> Response, line: string, fields: string) -> Response {
@@ -27,10 +29,12 @@ spec "std/http — CORS" {
             let r = crossed(app(), "")
             field_said(r, "access-control-allow-origin") == "-" && field_said(r, "vary") == "origin"
         }
-        then "no origins listed grants nobody" { field_said(
+        then "no origins listed grants nobody" {
+            field_said(
                 crossed(Cors { origins: [] }, "Origin: https://app.example\r\n"),
                 "access-control-allow-origin",
-            ) == "-" }
+            ) == "-"
+        }
     }
     given "a simple request" {
         then "a listed origin is granted by name" {
@@ -39,14 +43,18 @@ spec "std/http — CORS" {
                 field_said(r, "access-control-expose-headers") == "X-Total" &&
                 field_said(r, "vary") == "origin"
         }
-        then "an unlisted origin is not" { field_said(
+        then "an unlisted origin is not" {
+            field_said(
                 crossed(app(), "Origin: https://evil.example\r\n"),
                 "access-control-allow-origin",
-            ) == "-" }
-        then "an origin differing in case is not listed" { field_said(
+            ) == "-"
+        }
+        then "an origin differing in case is not listed" {
+            field_said(
                 crossed(app(), "Origin: https://APP.example\r\n"),
                 "access-control-allow-origin",
-            ) == "-" }
+            ) == "-"
+        }
         then "star grants anyone as star, with no vary" {
             let r = crossed(Cors { origins: ["*"] }, "Origin: https://any.example\r\n")
             field_said(r, "access-control-allow-origin") == "*" && field_said(r, "vary") == "-"
@@ -91,13 +99,15 @@ spec "std/http — CORS" {
                 field_said(r, "access-control-max-age") == "600" &&
                 field_said(r, "vary") == "access-control-request-method, access-control-request-headers, origin"
         }
-        then "a method not listed" { field_said(
+        then "a method not listed" {
+            field_said(
                 preflight(
                     app(),
                     "Origin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\n",
                 ),
                 "access-control-allow-origin",
-            ) == "-" }
+            ) == "-"
+        }
         then "a header not listed" {
             field_said(
                 preflight(
@@ -107,22 +117,28 @@ spec "std/http — CORS" {
                 "access-control-allow-origin",
             ) == "-"
         }
-        then "an origin not listed" { field_said(
+        then "an origin not listed" {
+            field_said(
                 preflight(
                     app(),
                     "Origin: https://evil.example\r\nAccess-Control-Request-Method: GET\r\n",
                 ),
                 "access-control-allow-origin",
-            ) == "-" }
-        then "never reaches the route" { preflight(
+            ) == "-"
+        }
+        then "never reaches the route" {
+            preflight(
                 app(),
                 "Origin: https://app.example\r\nAccess-Control-Request-Method: GET\r\n",
             )
                 .body
-                .is_empty() }
-        then "a plain OPTIONS does" { through(cors(app()), "OPTIONS /x HTTP/1.1", "Origin: https://app.example\r\n")
+                .is_empty()
+        }
+        then "a plain OPTIONS does" {
+            through(cors(app()), "OPTIONS /x HTTP/1.1", "Origin: https://app.example\r\n")
                 .body
-                .text() == "ok" }
+                .text() == "ok"
+        }
         then "no max age when none is set" {
             field_said(
                 preflight(
@@ -138,14 +154,18 @@ spec "std/http — CORS" {
 spec "std/http — CORS, adversarial" {
     given "hostile origins and asks" {
         then "the null origin is nobody unless listed" { field_said(crossed(app(), "Origin: null\r\n"), "access-control-allow-origin") == "-" }
-        then "a listed origin with a path is another origin" { field_said(
+        then "a listed origin with a path is another origin" {
+            field_said(
                 crossed(app(), "Origin: https://app.example/x\r\n"),
                 "access-control-allow-origin",
-            ) == "-" }
-        then "a suffix of a listed origin is not it" { field_said(
+            ) == "-"
+        }
+        then "a suffix of a listed origin is not it" {
+            field_said(
                 crossed(app(), "Origin: https://evilapp.example\r\n"),
                 "access-control-allow-origin",
-            ) == "-" }
+            ) == "-"
+        }
         then "a method asked in another case is not listed" {
             field_said(
                 preflight(
@@ -212,14 +232,18 @@ spec "std/http — security headers" {
         }
     }
     given "loosened by saying so" {
-        then "no HSTS" { field_said(
+        then "no HSTS" {
+            field_said(
                 through(hardening(Hardening { hsts: null }), "GET / HTTP/1.1", ""),
                 "strict-transport-security",
-            ) == "-" }
-        then "HSTS without subdomains" { field_said(
+            ) == "-"
+        }
+        then "HSTS without subdomains" {
+            field_said(
                 through(hardening(Hardening { hsts_subdomains: false }), "GET / HTTP/1.1", ""),
                 "strict-transport-security",
-            ) == "max-age=31536000" }
+            ) == "max-age=31536000"
+        }
         then "a CSP per request" {
             let h = Hardening { csp: (q) -> "script-src 'nonce-${q.header("x-n") ?? "none"}'" }
             field_said(
@@ -227,9 +251,11 @@ spec "std/http — security headers" {
                 "content-security-policy",
             ) == "script-src 'nonce-abc'"
         }
-        then "no CSP" { field_said(
+        then "no CSP" {
+            field_said(
                 through(hardening(Hardening { csp: (_q) -> null }), "GET / HTTP/1.1", ""),
                 "content-security-policy",
-            ) == "-" }
+            ) == "-"
+        }
     }
 }
