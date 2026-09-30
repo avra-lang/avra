@@ -661,6 +661,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 gate: seed-check stems vocab fingerprints codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
+	@sh tools/memcap.sh --self-test
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
