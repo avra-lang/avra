@@ -1029,9 +1029,34 @@ fn merge_index(lit: Code) -> int? {
     for i in 1..arms.length {
         let a = arms[i - 1]
         let b = arms[i]
-        if a.guard == null && b.guard == null && a.value.text() == b.value.text() { return i }
+        if a.guard == null &&
+            b.guard == null &&
+            a.value.text() == b.value.text() &&
+            typed_alike(a.value, b.value) {
+            return i
+        }
     }
     null
+}
+
+/// Whether two same-text bodies read every node at one type — what an
+/// `or` arm needs, since a name it binds binds at one type: `.A(x) ->
+/// "${x}"` over an `int` and over a `string` spell one body and join
+/// nothing.
+fn typed_alike(a: Code, b: Code) -> bool {
+    let ka = a.kids()
+    let kb = b.kids()
+    one_type(a, b) &&
+        ka.length == kb.length &&
+        [i for i in 0..ka.length].all((i) -> typed_alike(ka[i], kb[i]))
+}
+
+/// Whether two nodes answer one type — both typeless (a statement, a
+/// pattern) included.
+fn one_type(a: Code, b: Code) -> bool {
+    let ta? = a.type() else { return b.type() == null }
+    let tb? = b.type() else { return false }
+    ta.same(tb)
 }
 
 /// The rewrite: every OTHER arm re-spliced as it already reads, the
