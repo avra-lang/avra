@@ -105,7 +105,7 @@ impl Files {
             .Span(from, to) -> spanned(o, fields, from, to),
             .Unsatisfiable -> Response {
                 status: 416,
-                headers: fields.concat([field("content-range", "bytes */${o.size}")]),
+                headers: fields.concat([header_pair("content-range", "bytes */${o.size}")]),
             },
         }
     }
@@ -120,15 +120,15 @@ impl Files {
 
     fn validators(o: Opened, tag: string, ct: string) -> List<Header> {
         let cache = match self.max_age {
-            s? -> [field("cache-control", "max-age=${s}")]
+            s? -> [header_pair("cache-control", "max-age=${s}")]
             null -> []
         }
         [
-            field("content-type", ct),
-            field("etag", tag),
-            field("last-modified", http_date(o.mtime)),
-            field("accept-ranges", "bytes"),
-            field("x-content-type-options", "nosniff"),
+            header_pair("content-type", ct),
+            header_pair("etag", tag),
+            header_pair("last-modified", http_date(o.mtime)),
+            header_pair("accept-ranges", "bytes"),
+            header_pair("x-content-type-options", "nosniff"),
         ]
             .concat(cache)
     }
@@ -138,7 +138,7 @@ fn spanned(o: Opened, fields: List<Header>, from: int, to: int) -> Response {
     match o.span(from, to - from + 1) {
         .Ok(body) -> Response {
             status: 206,
-            headers: fields.concat([field("content-range", "bytes ${from}-${to}/${o.size}")]),
+            headers: fields.concat([header_pair("content-range", "bytes ${from}-${to}/${o.size}")]),
             body: body,
         },
         .Err(_) -> status(500),
@@ -151,9 +151,7 @@ fn file_beneath(root: string, path: string) -> Opened? {
     match open_beneath(root, path) { .Ok(o) -> o, .Err(_) -> null }
 }
 
-fn field(name: string, value: string) -> Header { Header { name: name, value: value } }
-
-fn moved(to: string) -> Response { Response { status: 301, headers: [field("location", to)] } }
+fn moved(to: string) -> Response { Response { status: 301, headers: [header_pair("location", to)] } }
 
 // ── The path ────────────────────────────────────────────────────
 

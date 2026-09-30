@@ -31,6 +31,7 @@ use @std.http.http.{
     media_of,
     same_token,
     lists_token,
+    without_field,
 }
 use @std.http.body.{whole}
 
@@ -94,17 +95,13 @@ fn request_decoded(c: Compression, q: Request<Unrouted>) -> Result<Request<Unrou
     let f? = format_named(coding) else { fail unread_coding() }
     let packed = q.gathered()?
     let plain = if packed.is_empty() { packed } else { inflated(packed, f, c.inflated)? }
-    q with { head: q.head with { fields: q.head.fields.without(q.raw, content_encoding).without(q.raw, content_length) }, body: whole(plain) }
+    without_field(without_field(q, "content-encoding"), "content-length") with { body: whole(plain) }
 }
 
 /// `packed` decoded from `f` under `ceiling`, or the response refusing it.
 fn inflated(packed: Bytes, f: Format, ceiling: int) -> Result<Bytes, Response> {
     match decoded(packed, f, ceiling) { .Ok(b) -> b, .Err(e) -> { fail decode_refused(e) } }
 }
-
-const content_encoding: Bytes = "content-encoding".bytes()
-
-const content_length: Bytes = "content-length".bytes()
 
 // ── The response ────────────────────────────────────────────────
 

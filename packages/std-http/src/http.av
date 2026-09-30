@@ -50,9 +50,11 @@ use wire.{Transport}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body — READ as the handler asks for it, never before
-/// (`body.av`) — who sent it, and what its route read of the path —
-/// `Unrouted` until a route reads it.
-export type Request<P> = { raw: Bytes, head: Head, body: Body, peer: string, params: P }
+/// (`body.av`) — who sent it, what its route read of the path —
+/// `Unrouted` until a route reads it — and the fields a layer set in
+/// place of the head's own (`with_field`), which every header read
+/// answers first.
+export type Request<P> = { raw: Bytes, head: Head, body: Body, peer: string, params: P, set: List<Header> = [] }
 
 /// The params of a request no route has read.
 export type Unrouted = {}
@@ -188,6 +190,7 @@ impl Request {
     /// request carries none. Field values are ASCII by framing, so
     /// the text is total.
     fn header(name: string) -> string? {
+        if !self.set.is_empty() && self.set.any(it.named(name)) { return self.set.find(it.named(name))?.value }
         let i = self.head.fields.named(self.raw, name.bytes())
         if i < 0 { return null }
         let v = self.head.fields.value_at(i)
@@ -198,6 +201,7 @@ impl Request {
     /// field a sender may split across lines (`cookie` over HTTP/2)
     /// is read whole only this way.
     fn headers(name: string) -> List<string> {
+        if !self.set.is_empty() && self.set.any(it.named(name)) { return [h.value for h in self.set if h.named(name)] }
         let fs = self.head.fields
         let wanted = name.bytes()
         [self.raw.slice(fs.value_at(i).lo, fs.value_at(i).hi).text() ?? "" for i in 0..fs.count() if self.raw.ieq_at(fs.name_at(i).lo, fs.name_at(i).hi, wanted)]
@@ -224,6 +228,20 @@ impl Request {
     fn gathered() -> Result<Bytes, Response> {
         match self.body.gathered() { .Ok(b) -> b, .Err(e) -> { fail body_refused(e) } }
     }
+}
+
+/// `q` with `name: value` in place of any field of that name it
+/// carries. The head is not touched: every header read answers the
+/// set field first, so a layer hands its handler a request id or a
+/// trace context without copying a buffer.
+export fn with_field<P>(q: Request<P>, name: string, value: string) -> Request<P> {
+    q with { set: [h for h in q.set if !h.named(name)].concat([header_pair(name, value)]) }
+}
+
+/// `q` without any field named `name`, ASCII-folded.
+export fn without_field<P>(q: Request<P>, name: string) -> Request<P> {
+    if q.head.fields.named(q.raw, name.bytes()) < 0 { return q }
+    q with { head: q.head with { fields: q.head.fields.without(q.raw, name.bytes()) } }
 }
 
 /// The response refusing a body that could not be read: 413 past the
@@ -375,16 +393,21 @@ impl Response {
     fn varied(field: string) -> Response {
         if self
             .headers
-            .any(it.named("vary") && (lists_token(it.value, "*") || lists_token(it.value, field))) { return self }
+            .any(it.named("vary") && (lists_token(it.value, "*") || lists_token(it.value, field))) {
+            return self
+        }
         let first? = self.headers.find_index(it.named("vary")) else { return self.with_header("vary", field) }
         self with { headers: [if j == first { h with { value: h.value + ", " + field } } else { h } for j, h in self.headers] }
     }
 
     /// This response with `name: value` after its other headers.
     fn with_header(name: string, value: string) -> Response {
-        self with { headers: self.headers.concat([Header { name: name, value: value }]) }
+        self with { headers: self.headers.concat([header_pair(name, value)]) }
     }
 }
+
+/// A field of `name` and `value`.
+export fn header_pair(name: string, value: string) -> Header { Header { name: name, value: value } }
 
 impl Header {
     /// Whether this header is named `name`, ASCII-folded as field
