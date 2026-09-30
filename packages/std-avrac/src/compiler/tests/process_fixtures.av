@@ -1,0 +1,49 @@
+// Shared fixtures: a workspace standing in for one "process" over a
+// small package, and the file+name lookups its tests key by. Every
+// file below shares one namespace with this one.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace, Analysis}
+use compiler.host.{memory_host}
+use core.{DeclId}
+
+fn sig_ordinal() -> int { 6 }
+
+fn methods_ordinal() -> int { 7 }
+
+/// `a` declares `f`; `b` calls it, a real cross-file signature
+/// dependency (both root siblings — root's own `Namespace` depends on
+/// every root file's `Parsed`, since siblings resolve each other with
+/// no `use`). `c` lives in ITS OWN MODULE, unrelated to either and
+/// naming neither: a test of per-file reuse needs a file whose edit
+/// does not move its module's shared namespace fingerprint.
+fn package_files() -> Map<string, string> {
+    {
+        "/w/src/a.av": "export fn f() -> int {\n    1\n}\n",
+        "/w/src/b.av": "export fn g() -> int {\n    f() + 1\n}\n",
+        "/w/src/other/c.av": "export fn h() -> int {\n    2\n}\n",
+    }
+}
+
+fn package_names() -> List<string> { ["/w/src/a.av", "/w/src/b.av", "/w/src/other/c.av"] }
+
+/// A workspace over the given source and file list, every named file
+/// admitted (declare-only) up front, matching `analyze_all`'s own phase
+/// order so a cross-file signature dep always finds its callee's
+/// declaration already minted.
+fn a_process_over(files: Map<string, string>, names: List<string>) -> Workspace {
+    let ws = new_workspace(memory_host(files, names), "/w", avra())
+    for path in names { let _ = ws.items(ws.file_id(path)) }
+    ws
+}
+
+fn a_process(files: Map<string, string>) -> Workspace { a_process_over(files, package_names()) }
+
+/// One file, fully checked — `Family.Analysis`, the whole-file entry
+/// every derivation settles through.
+fn checked(ws: Workspace, path: string) -> Analysis { ws.analysis(ws.file_id(path)) }
+
+/// The declaration named `name` that `file` declares — every candidate
+/// this package's tests key a `Key{family, arg}` by.
+fn decl_in_file(ws: Workspace, file: string, name: string) -> DeclId {
+    [d.id for d in ws.decls.decls.get() if d.name == name && ws.decls.file(d.file).path == file][0]
+}

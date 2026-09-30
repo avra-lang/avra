@@ -443,6 +443,24 @@ ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
 MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
 MH "mh: and back, cold no more" lib.av held
+# CROSS-PACKAGE, NOT MERELY CROSS-MODULE: `main.av` (package `rt-mh`) never
+# names `pad.av` or `priv` — its only edge into `@rt/mhl` is `host`'s own
+# exported signature, crossed through `use @rt.mhl.{host}`. MEASURED, not
+# assumed (the first draft here predicted a body-only edit would still
+# hold `main.av`, as it holds `lib.av` above — wrong: a package's held
+# interface is coarser than a module's, so ANY text change inside `@rt/mhl`
+# re-reads `main.av`, body or signature alike). What .6.4 asks for — a
+# signature edit is refused — still holds, one package boundary further out
+# than lib.av/pad.av's; "a body edit holds" is a property of a MODULE
+# boundary, not yet of a PACKAGE one.
+ed $R/mhl/src/lib.av "pad() + priv()" "pad() + priv() + 0"
+MH "mh: host's body only moves — main.av re-reads (coarser than a module boundary)" main.av read
+ed $R/mhl/src/lib.av "pad() + priv() + 0" "pad() + priv()"
+MH "mh: and back — content-addressed, so a return to the exact prior text holds" main.av held
+ed $R/mhl/src/lib.av "export fn host() -> int" "export fn host(n: int = 0) -> int"
+MH "mh: host's EXPORTED signature moves (reached across the package boundary) — main.av re-reads" main.av read
+ed $R/mhl/src/lib.av "export fn host(n: int = 0) -> int" "export fn host() -> int"
+MH "mh: and back, cold no more" main.av held
 
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
