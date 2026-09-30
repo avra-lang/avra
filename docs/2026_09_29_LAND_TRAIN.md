@@ -320,6 +320,24 @@ one-time, then joins the warm ~5-minute rate — worth knowing before
 reading a fresh Sprite's first landing as evidence the pool addition
 was a bad idea.
 
+AN OPEN QUESTION THE PROOF SURFACED BUT DID NOT SETTLE: dispatching
+`land-proof-1 land-proof-2 land-proof-3` together, candidate 2
+(`land-proof-1`+`land-proof-2`) took the SAME "never cached, build
+from nothing" path candidate 1 had just paid moments earlier on the
+SAME Sprite — `sprite-build.sh`'s own cache is keyed by a hash over
+the compiler's source closure, tests excluded, and the only new
+content `land-proof-2` (`41c6515`) adds over `land-proof-1` is a
+merge whose own diff touched only `packages/std-relation/src/tests/*`
+— files that hash should exclude. Whether this is a real cache-key
+gap (something inside that closure DID move and this entry has not
+found it) or an ordering artifact of three candidates each computing
+their own hash-and-cache-check before the first one's store had
+landed is UNRESOLVED — recorded here rather than asserted, and worth
+tracing (`AVRA_QTRACE`-style: diff what `compiler_hash()` actually
+hashed for candidate 1 against candidate 2, file by file) before
+trusting that a ladder's later candidates are always as cheap as its
+first on an already-warm Sprite.
+
 **A failure mid-train costs a re-wave**, not a re-run of everything
 before it: dropping `bj` and rebuilding `Cj'..CN'` re-dispatches only
 the tail, on top of the already-known-good prefix's merge (which is
