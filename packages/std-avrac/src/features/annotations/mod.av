@@ -8,13 +8,16 @@
 //! `@word` or `@word(a, b)` before a declared MEMBER — a variant, a
 //! field — is a MARK, and A MARK IS DATA WHERE AN ANNOTATION IS A
 //! CALL. It is recorded on the member and handed to whoever reads it;
-//! nothing runs. That is why its arguments are WORDS and not
-//! expressions: a mark is read while the file's names are still
-//! resolving, so it can reach only what the parse holds — the same
-//! law that makes a Declares annotation's argument a literal, one
-//! notch stricter. The `mark` rule lives here because the `@` surface
-//! is one feature's; the members that may carry one are spelled by
-//! the features that declare them.
+//! nothing runs where it is written. Its arguments are expressions,
+//! kept two ways: as WORDS for a reader that only names things, and
+//! as the CALL `word(${value}, args)` — a template marked where the
+//! `@` stands, which a reader splices over the value it judges, so
+//! the call is typed where it lands and its refusals point here. An
+//! annotation on a record, an enum or a named type whose fn takes a
+//! VALUE rather than a declaration is the same kind of data: a RULE.
+//! The `mark` rule lives here because the `@` surface is one
+//! feature's; the members that may carry one are spelled by the
+//! features that declare them.
 use features.{LanguageFeature, BuilderRow}
 use diagnostics.{DiagCode}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
@@ -46,8 +49,8 @@ export fn annotations() -> LanguageFeature {
     }
     LanguageFeature annotations {
         gram: grammar {
-            stmt = a:PKG ( "(" ( e:expression ( "," e:expression )* ","? )? ")" )? BREAK? d:stmt -> annotated(a, e, d)
-            mark = m:PKG ( "(" ( g:NAME ( "," g:NAME )* ","? )? ")" )? -> mark(m, g)
+            stmt = a:PKG ( "(" ( e:argument ( "," e:argument )* ","? )? ")" )? BREAK? d:stmt -> annotated(a, e, d)
+            mark = m:PKG ( "(" ( g:argument ( "," g:argument )* ","? )? ")" @expect(")", "expected `)` to close the mark's arguments") )? -> mark(m, g)
         }
         diags: codes
         builders: rows

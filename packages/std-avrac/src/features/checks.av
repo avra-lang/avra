@@ -809,8 +809,9 @@ impl TypeCx {
     }
 
     /// THE SEAT LAW every call shape shares: exactly `wants.length`
-    /// arguments, each accepted by its seat — a wrong argument speaks
-    /// and the caller still answers; a wrong count absorbs.
+    /// arguments, each accepted by its seat. A wrong argument speaks,
+    /// every one of them, and a wrong count; either way the call's
+    /// answer is absorbed, so no seat it fills speaks of it again.
     mut fn seats_fit(e: ExprId, callee: string, args: List<ExprId>, wants: List<TypeId>) -> bool {
         if args.length != wants.length {
             let blocks = [a for a in args if self.view.store.is_trailing(a)]
@@ -822,10 +823,14 @@ impl TypeCx {
             }
             return false
         }
+        mut fit = true
         for j, a in args {
-            if !self.accepts(a, wants[j]) { self.wrong_argument(callee, j, wants[j], a) }
+            if !self.accepts(a, wants[j]) {
+                self.wrong_argument(callee, j, wants[j], a)
+                fit = false
+            }
         }
-        true
+        fit
     }
 
     /// THE PLACE LAW's structural half: every step of a target is a

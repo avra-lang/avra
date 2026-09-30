@@ -1,0 +1,74 @@
+// A RULE ANNOTATION is data a reader splices: `@long(3)` on a field is
+// the template `long(${value}, 3)`, filled with the value the reader
+// judges and typed where it lands — so a rule on the wrong type, or a
+// misspelled one, is refused at the annotation, and a rule may name
+// its arguments.
+use @std.avrac.testing.{refused_in, provided, answered}
+
+/// A derive that calls the first field's first annotation over the
+/// field — bound under a name no program spells, as a reader binds
+/// the value it judges — and claims every word it reads.
+fn checker() -> string {
+    "use @std.meta.{Type, Directive, applied, name}\n" +
+        "export trait Checks {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let f = t.fields[0]\n" +
+        "        let call = applied(f.annotations[0], name(\"v\\\$\"))!\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn checked() -> bool {\n let \${\"v\\\$\"} = self.\${f.name}\n \${call}\n } } } }]\n" +
+        "    }\n" +
+        "    static fn marks(t: Type) -> List<string> { [a.name for a in t.fields[0].annotations] }\n" +
+        "}\n"
+}
+
+/// A record whose one field wears `mark`, beside a rule `long`.
+fn record(mark: string, field: string) -> string {
+    "use @std.meta.{derive}\n" +
+        "use @x.c.{Checks}\n" +
+        "fn long(v: string, n: int = 0, most: int = 99) -> bool { v.length > n && v.length <= most }\n" +
+        "@derive(Checks)\n" +
+        "type R = { ${mark} ${field} }\n"
+}
+
+spec "features/annotations — rule annotations" {
+    given "a rule on a field" {
+        then "is called over the field's value" {
+            answered(
+                provided(record("@long(3)", "s: string") + "R { s: \"abcd\" }.checked()", checker()),
+            ) == "true"
+        }
+        then "takes its arguments as a call does, named ones too" {
+            answered(
+                provided(
+                    record("@long(most: 3)", "s: string") + "R { s: \"abcd\" }.checked()",
+                    checker(),
+                ),
+            ) == "false"
+        }
+        then "takes a literal list, which a word never could" {
+            answered(
+                provided(
+                    "use @std.meta.{derive}\nuse @x.c.{Checks}\nfn among(v: string, xs: List<string>) -> bool { xs.contains(v) }\n@derive(Checks)\ntype R = { @among([\"a\", \"b\"]) s: string }\nR { s: \"b\" }.checked()",
+                    checker(),
+                ),
+            ) == "true"
+        }
+    }
+    given "a rule the field cannot take" {
+        then "is refused at the annotation, once" {
+            let p = provided(record("@long(3)", "n: int") + "0", checker())
+            refused_in(p, "`int`") && p.report().contains("main.av:5:12]")
+        }
+        then "a bounded rule on a type outside its bound is refused at the annotation" {
+            let p = provided(
+                "use @std.meta.{derive}\nuse @x.c.{Checks}\ntrait Sized { fn size() -> int }\nimpl Sized for string { fn size() -> int { self.length } }\nfn fits<T: Sized>(v: T, most: int) -> bool { v.size() <= most }\n@derive(Checks)\ntype R = { @fits(3) n: int }\n0",
+                checker(),
+            )
+            refused_in(p, "`int` does not implement `Sized`") &&
+                p.report().contains("main.av:7:12]")
+        }
+        then "a misspelled rule is refused at the annotation" {
+            let p = provided(record("@lnog(3)", "s: string") + "0", checker())
+            refused_in(p, "no `fn lnog` is defined") && p.report().contains("main.av:5:12]")
+        }
+    }
+}

@@ -1,7 +1,7 @@
 //! Parse-time lowering: the annotation lands on the declaration it
 //! crosses, as a fact; the declaration itself is the node answered.
-use core.{Expr, Annotation, Mark, Scoped}
-use features.{LangNode, Builder}
+use core.{Expr, Stmt, ExprId, Span, Annotation, Mark, Scoped, BodyView}
+use features.{LangNode, Builder, arg_text}
 
 fn build_annotated(b: Builder) -> Result<LangNode, string> {
     let name = b.token(0)?
@@ -10,24 +10,48 @@ fn build_annotated(b: Builder) -> Result<LangNode, string> {
     // the token carries its `@`; the callee is the name behind it
     let word = name.text.substring(1, name.text.length)
     let callee = b.store.alloc_expr(Expr.Ident(Scoped(word)), name.span)
+    let at = b.span ?? name.span
+    applied(b, word, args, at)
     b.store.annotate_before(d, Annotation { name: word, callee: callee, args: args, span: b.span })
     .Ok(LangNode.NStmt(d))
 }
 
-/// A MARK on a declared member: the word behind the `@`, and the
-/// WORDS it was given. Nothing is allocated — a mark is data the
-/// member carries, and no pass walks one.
+/// A MARK on a declared member: the word behind the `@`, each
+/// argument's words, and the call a reader may splice. Nothing here
+/// is walked where it is written.
 fn build_mark(b: Builder) -> Result<LangNode, string> {
     let word = b.token(0)?
+    let args = b.exprs(1)?
     // the token carries its `@`; the mark is the word behind it
+    let name = word.text.substring(1, word.text.length)
+    let at = b.span ?? word.span
     .Ok(
         LangNode
             .NMark(
                 Mark {
-                    name: word.text.substring(1, word.text.length),
-                    args: [g.text for g in b.tokens(1)?],
-                    span: b.span ?? word.span,
+                    name: name,
+                    args: [arg_text(b.store, e) for e in args],
+                    span: at,
+                    call: applied(b, name, args, at),
                 },
             ),
     )
+}
+
+/// `@name(args)` as the TEMPLATE `quote { name(${0}, args) }`, marked
+/// where the `@` stands: a reader fills the hole with the value the
+/// annotation judges and splices the call where it reads it, so the
+/// call is typed there and its refusals point here.
+fn applied(b: Builder, name: string, args: List<ExprId>, at: Span) -> ExprId {
+    let value = b.store.alloc_expr(Expr.Ident(Scoped("value")), at)
+    let hole = b.store.alloc_expr(Expr.Ident(Scoped("\${0}")), at)
+    b.store.mark_hole(hole)
+    let call = b.store.alloc_expr(Expr.Call(Scoped(name), [], [hole].concat(args)), at)
+    // placeless, so no doc comment takes it for the declaration it wraps
+    let body = [b.store.alloc_stmt(Stmt.ExprStmt(call))]
+    let q = b
+        .store
+        .alloc_expr(Expr.Body("quote", ["${name}(", ")"], [value], BodyView.Verbatim(body, [])), at)
+    b.store.mark_quote_at(q)
+    q
 }

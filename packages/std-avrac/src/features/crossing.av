@@ -46,6 +46,7 @@ use @std.meta.{
     Kind,
     Seat as MetaSeatValue,
     Annotation as MetaAnnotation,
+    Code as MetaCode,
 }
 use features.{MetaVal, MetaHeap, Decls, Lifted}
 
@@ -73,11 +74,17 @@ fn meta_records() -> List<MetaShape> {
             recent: 1,
         },
         MetaShape { pkg: "@std.meta", name: "Mark", fields: ["name", "args", "at"] },
-        MetaShape { pkg: "@std.meta", name: "Annotation", fields: ["name", "args", "at"] },
+        MetaShape {
+            pkg: "@std.meta",
+            name: "Annotation",
+            fields: ["name", "args", "at", "call"],
+            recent: 1,
+        },
         MetaShape {
             pkg: "@std.meta",
             name: "Field",
-            fields: ["name", "ty", "at", "kind", "marks", "doc", "annotations"],
+            fields: ["name", "ty", "at", "kind", "marks", "doc", "annotations", "defaulted"],
+            recent: 1,
         },
         MetaShape {
             pkg: "@std.meta",
@@ -459,6 +466,7 @@ fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
             meta_of_marks(x.marks, heap),
             meta_of_opt_text(x.doc),
             meta_of_annotations(x.annotations, heap),
+            MetaVal.Bool(x.defaulted),
         ],
         heap,
     )
@@ -502,9 +510,19 @@ fn meta_of_annotations(xs: List<MetaAnnotation>, mut heap: MetaHeap) -> MetaVal 
 fn meta_of_annotation(x: MetaAnnotation, mut heap: MetaHeap) -> MetaVal {
     written(
         "Annotation",
-        [MetaVal.Text(x.name), meta_of_texts(x.args, heap), meta_of_loc(x.at, heap)],
+        [
+            MetaVal.Text(x.name),
+            meta_of_texts(x.args, heap),
+            meta_of_loc(x.at, heap),
+            meta_of_opt_code(x.call, heap),
+        ],
         heap,
     )
+}
+
+fn meta_of_opt_code(x: MetaCode?, mut heap: MetaHeap) -> MetaVal {
+    if x == null { return MetaVal.Absent }
+    meta_of_template(x!.node, heap)
 }
 
 // ── The type vocabulary, both ways ──────────────────────────────
@@ -696,7 +714,7 @@ export enum MetaSeat { Fn, Type, Named, Trait, Other }
 
 /// Whether a declaration of this kind fills a `Type` meta seat — every
 /// kind spelled, so a new one decides here rather than falling through.
-fn fills_type_seat(kind: DeclKind) -> bool {
+export fn fills_type_seat(kind: DeclKind) -> bool {
     match kind {
         .Record or .Enum or .CollectEnum or .Named -> true,
         .Builtin or .Fn or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
