@@ -818,13 +818,25 @@ watched() {
     return "$wst"
 }
 
-# A process and every descendant, children first.
+# A process and every descendant, children first. A TRAILING `:` ON
+# ITS OWN LINE GUARDS NOTHING BEFORE IT — `set -e` aborts the instant
+# the PRECEDING command fails, never waiting to see whether a later
+# line would have absorbed it. The KILL right above one is exactly
+# that command: it finds nothing to kill (ESRCH) in the ORDINARY case
+# where the TERM just above it already worked, so the trailing `:`
+# was a no-op every time this function was about to return cleanly —
+# `watched()`'s own two callers (the cap and the no-progress paths)
+# never reached their `return 124`/`return 125` at all, the whole
+# process dying with `kill -KILL`'s own exit status instead. Found
+# calling `watched()` directly (`sh land.sh --call watched …`, exactly
+# tools/land_train.sh's own calling convention) and confirmed with a
+# five-line reproduction before touching this function. Each kill now
+# guards ITSELF.
 kill_tree() {
     for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
-    kill -TERM "$1" 2>/dev/null
+    kill -TERM "$1" 2>/dev/null || :
     sleep 1
-    kill -KILL "$1" 2>/dev/null
-    :
+    kill -KILL "$1" 2>/dev/null || :
 }
 
 # THE IDLEST SPRITE FIRST: every Sprite in the pool is asked, in
