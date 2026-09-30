@@ -349,7 +349,9 @@ FORCE:
 # rule's own prerequisite is the `.c`, and the stamp normally hashes
 # it; an object whose behaviour changes with a HEADER names that
 # header too, so a stash-and-rebuild inside one second still rebuilds
-# it instead of trusting a mtime.
+# it instead of trusting a mtime. AN OBJECT'S FLAGS RIDE ITS STAMP TOO
+# (`CFLAGS_<stem>`), so a census build's -DAVRA_CENSUS object is rebuilt
+# the moment the flag is dropped, and never ships as the runtime.
 build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
 build/avra_hot.sha: SHA_SRC := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 build/avra_fiber.sha: SHA_SRC := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
@@ -358,7 +360,7 @@ build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 build/%.sha: %.c FORCE
 	@mkdir -p build
-	@shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<) | cut -d' ' -f1 > $@.tmp
+	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
@@ -687,6 +689,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 gate: seed-check stems vocab fingerprints codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
+	@sh tools/memcap.sh --self-test
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
