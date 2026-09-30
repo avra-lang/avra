@@ -40,6 +40,10 @@ export type SyntaxArena = {
     // an impl's own written type-parameter lists, by its statement —
     // printing only, absent on a plain (non-generic) impl
     impl_tparams: Cell<List<ImplTypeParams?>>,
+    // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
+    impl_trait_args: Cell<List<List<TypeRef>>>,
+    // a trait's own type parameters beside `Self`, by its statement
+    trait_tparams: Cell<List<List<string>>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     hoisted: Cell<List<StmtId>>,
@@ -129,6 +133,8 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         grammars: list_cell(),
         component_insts: list_cell(),
         impl_tparams: list_cell(),
+        impl_trait_args: list_cell(),
+        trait_tparams: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -720,6 +726,8 @@ impl SyntaxArena {
         self.grammars.push(null)
         self.component_insts.push(null)
         self.impl_tparams.push(null)
+        self.impl_trait_args.push([])
+        self.trait_tparams.push([])
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -906,6 +914,23 @@ impl SyntaxArena {
     fn impl_tparams_of(s: StmtId) -> ImplTypeParams? {
         self.impl_tparams.get()[s.index]
     }
+
+    /// The arguments a trait impl gives its trait — part of what the
+    /// impl declares.
+    fn mark_trait_args(s: StmtId, args: List<TypeRef>) {
+        self.impl_trait_args.set_at(s.index, args)
+        self.restamp_carrying(s, 153, [type_fp(a) for a in args])
+    }
+
+    fn trait_args_of(s: StmtId) -> List<TypeRef> { self.impl_trait_args.get()[s.index] }
+
+    /// A trait's own type parameters, beside `Self`.
+    fn mark_trait_tparams(s: StmtId, names: List<string>) {
+        self.trait_tparams.set_at(s.index, names)
+        self.restamp_carrying(s, 154, [fp_str(n) for n in names])
+    }
+
+    fn trait_tparams_of(s: StmtId) -> List<string> { self.trait_tparams.get()[s.index] }
 
     /// A declaration an instance minted, joining its file's top level.
     fn hoist(s: StmtId) {
