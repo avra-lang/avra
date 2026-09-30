@@ -1,0 +1,238 @@
+//! Server-sent events: the wire form of one event, a feed's cursors
+//! and retention, and a live stream — resumed, expired, kept alive,
+//! and ended when its observer leaves.
+use @std.net.{NetError}
+use @std.time.{Duration, ms, sleep}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.sse.{Event, Next, Source, Resume, Feed, encoded, feed, events, event_stream}
+use @std.http.server.{Timing, timing}
+
+fn sse_wire(e: Event) -> string { (encoded(e) ?? "<unsayable>".bytes()).text() ?? "<not text>" }
+
+// ── The wire ────────────────────────────────────────────────────
+
+fn event_words() -> bool {
+    sse_wire(Event { data: "hi" }) == "data: hi\n\n" &&
+        sse_wire(Event { data: "hi", event: "note", id: "7", retry: ms(3000) }) == "event: note\nid: 7\nretry: 3000\ndata: hi\n\n"
+}
+
+fn data_lines_split_at_every_line_end() -> bool {
+    sse_wire(Event { data: "a\nb" }) == "data: a\ndata: b\n\n" &&
+        sse_wire(Event { data: "a\r\nb\rc" }) == "data: a\ndata: b\ndata: c\n\n"
+}
+
+fn the_empty_cases() -> bool {
+    sse_wire(Event { data: "" }) == "data: \n\n" &&
+        sse_wire(Event { data: "a\n" }) == "data: a\ndata: \n\n"
+}
+
+fn data_cannot_end_its_event_early() -> bool {
+    let w = sse_wire(Event { data: "evil\n\nid: 99\n\ndata: forged" })
+    w.index_of("\n\n") == w.length - 2 && w.starts_with("data: evil\ndata: \ndata: id: 99\n")
+}
+
+fn unsayable_fields_are_refused() -> bool {
+    encoded(Event { data: "x", id: "1\nevent: forged" }) == null &&
+        encoded(Event { data: "x", event: "a\rb" }) == null &&
+        encoded(Event { data: "x", retry: ms(-1) }) == null &&
+        encoded(Event { data: "x", id: "a" + [0].bytes()!.text()! }) == null
+}
+
+// ── A feed ──────────────────────────────────────────────────────
+
+fn published(f: Feed, n: int) -> List<string> { [f.publish(Event { data: "e${i}" }) for i in 0..n] }
+
+/// Where a cursor resumes, as a word: the first event it would read, or
+/// `expired`.
+fn resumes_at(f: Feed, cursor: string?) -> string {
+    match f.resumed(cursor) { .From(s) -> first_of(s), .Expired(c, _) -> "expired ${c}" }
+}
+
+fn first_of(s: Source) -> string {
+    match s.next(ms(0)) {
+        .Event(e) -> "${e.id ?? "?"}:${e.data}",
+        .Quiet -> "quiet",
+        .End -> "end",
+        .Failed -> "failed",
+    }
+}
+
+fn ids_count_up() -> bool {
+    let f = feed(10)
+    published(f, 3).join(",") == "1,2,3"
+}
+
+fn cursors_resume_after_themselves() -> bool {
+    let f = feed(10)
+    let _ = published(f, 3)
+    resumes_at(f, "1") == "2:e1" &&
+        resumes_at(f, "0") == "1:e0" &&
+        resumes_at(f, null) == "quiet" &&
+        resumes_at(f, "3") == "quiet"
+}
+
+fn retention_expires_old_cursors() -> bool {
+    let f = feed(2)
+    let _ = published(f, 5)
+    resumes_at(f, "1") == "expired 1" &&
+        resumes_at(f, "3") == "4:e3" &&
+        resumes_at(f, "2") == "expired 2"
+}
+
+fn a_cursor_never_published_is_expired() -> bool {
+    let f = feed(2)
+    let _ = published(f, 2)
+    resumes_at(f, "99") == "expired 99" &&
+        resumes_at(f, "abc") == "expired abc" &&
+        resumes_at(f, "-5") == "expired -5"
+}
+
+fn two_observers_each_see_every_event() -> bool {
+    let f = feed(10)
+    let a = f.resumed("0").source()
+    let b = f.resumed("0").source()
+    let _ = published(f, 2)
+    [first_of(a), first_of(b), first_of(a), first_of(b)].join(" ") == "1:e0 1:e0 2:e1 2:e1"
+}
+
+fn an_overtaken_observer_fails() -> bool {
+    let f = feed(2)
+    let s = f.resumed("0").source()
+    let _ = published(f, 5)
+    first_of(s) == "failed"
+}
+
+// ── A live stream ───────────────────────────────────────────────
+
+/// Counts the ends of the sources it hands out.
+type Ends = { n: Cell<int> }
+
+fn counted_ends(e: Ends, r: Resume) -> Resume {
+    match r {
+        .From(s) -> .From(s with { ended: () -> e.n.set(e.n.get() + 1) }),
+        .Expired(c, s) -> .Expired(c, s with { ended: () -> e.n.set(e.n.get() + 1) }),
+    }
+}
+
+fn sse_bed(f: Feed, e: Ends, t: Timing) -> Result<Bed, NetError> {
+    let answer = (_app: App, q: Request<Unrouted>) -> events(
+        q,
+        ms(60),
+        (c: string?) -> counted_ends(e, f.resumed(c)),
+    )
+    bed_with(answer, limits(), t)
+}
+
+/// Read from `b` until `mark` has arrived, the peer ends, or patience
+/// runs out.
+fn read_until(b: Bed, sent: string, mark: string) -> Result<string, NetError> {
+    b.c.write(sent.bytes())?
+    mut got = ""
+    mut rounds = 0
+    while !got.contains(mark) && rounds < 50 {
+        got = got + ((exchanged(b.c, "", 1)?).text() ?? "")
+        rounds = rounds + 1
+    }
+    .Ok(got)
+}
+
+fn stream_line(cursor: string) -> string { "GET /events HTTP/1.1\r\nHost: a\r\nLast-Event-ID: ${cursor}\r\n\r\n" }
+
+fn resumed_live() -> Result<bool, NetError> {
+    let f = feed(10)
+    let _ = published(f, 3)
+    let b = sse_bed(f, Ends { n: Cell.new(0) }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = read_until(b, stream_line("1"), "e2")?
+    .Ok(
+        got.contains("content-type: text/event-stream\r\n") &&
+            got.contains("transfer-encoding: chunked\r\n") &&
+            got.contains("id: 2\ndata: e1\n\n") &&
+            got.contains("id: 3\ndata: e2\n\n") &&
+            !got.contains("data: e0"),
+    )
+}
+
+fn expired_is_told_first() -> Result<bool, NetError> {
+    let f = feed(1)
+    let _ = published(f, 3)
+    let b = sse_bed(f, Ends { n: Cell.new(0) }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = read_until(b, stream_line("1"), "keep-alive")?
+    .Ok(got.contains("event: cursor-expired\ndata: 1\n\n") && !got.contains("data: e"))
+}
+
+fn quiet_is_kept_alive() -> Result<bool, NetError> {
+    let f = feed(10)
+    let b = sse_bed(f, Ends { n: Cell.new(0) }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = read_until(b, "GET /events HTTP/1.1\r\nHost: a\r\n\r\n", "keep-alive")?
+    .Ok(got.contains(": keep-alive\n\n"))
+}
+
+fn published_while_watched() -> Result<bool, NetError> {
+    let f = feed(10)
+    let b = sse_bed(f, Ends { n: Cell.new(0) }, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let later = spawn published_after(f, ms(40))
+    let got = read_until(b, "GET /events HTTP/1.1\r\nHost: a\r\n\r\n", "late")?
+    let _ = later.await
+    .Ok(got.contains("id: 1\ndata: late\n\n"))
+}
+
+fn published_after(f: Feed, d: Duration) -> string {
+    sleep(d)
+    f.publish(Event { data: "late" })
+}
+
+fn a_leaving_observer_ends_its_source() -> Result<bool, NetError> {
+    let f = feed(10)
+    let e = Ends { n: Cell.new(0) }
+    let b = sse_bed(f, e, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = read_until(b, "GET /events HTTP/1.1\r\nHost: a\r\n\r\n", "keep-alive")?
+    let _ = b.c.close()
+    .Ok(settles_to(b.s, 0) && e.n.get() == 1)
+}
+
+fn a_head_request_pulls_nothing() -> Result<bool, NetError> {
+    let f = feed(10)
+    let e = Ends { n: Cell.new(0) }
+    let b = sse_bed(f, e, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = reply(b.c, "HEAD /events HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(got.ends_with("transfer-encoding: chunked\r\n\r\n") && e.n.get() == 1)
+}
+
+spec "std.http server-sent events" {
+    given "one event on the wire" {
+        then "its fields and data are written in order, then a blank line" { event_words() }
+        then "data is split at CRLF, CR and LF alike" { data_lines_split_at_every_line_end() }
+        then "empty data is one empty line, and a trailing line end is kept" { the_empty_cases() }
+        then "no data can end its event early or forge a field" { data_cannot_end_its_event_early() }
+        then "a name or id holding a line end, an id holding NUL, or a negative retry is refused" { unsayable_fields_are_refused() }
+    }
+    given "a feed" {
+        then "ids count up from 1" { ids_count_up() }
+        then "a cursor resumes after itself, and none reads from now" { cursors_resume_after_themselves() }
+        then "a cursor older than the retained events is expired" { retention_expires_old_cursors() }
+        then "a cursor the feed never published is expired" { a_cursor_never_published_is_expired() }
+        then "two observers each see every event" { two_observers_each_see_every_event() }
+        then "an observer overtaken by retention fails rather than skip" { an_overtaken_observer_fails() }
+    }
+    given "a live event stream" {
+        then "Last-Event-ID resumes after the cursor, chunked as text/event-stream" { passes(resumed_live()) }
+        then "an expired cursor is told first, and nothing it missed is sent" { passes(expired_is_told_first()) }
+        then "a quiet stream sends keep-alive comments" { passes(quiet_is_kept_alive()) }
+        then "an event published while an observer waits reaches it" { passes(published_while_watched()) }
+        then "an observer that leaves ends its source once" { passes(a_leaving_observer_ends_its_source()) }
+        then "a HEAD writes the head and ends the source unpulled" { passes(a_head_request_pulls_nothing()) }
+    }
+}
