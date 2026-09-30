@@ -8,7 +8,10 @@ use @std.http.http.{Request, Unrouted, Response, wire, text, ok, sendable}
 use @std.http.route.{Route, fixed}
 use @std.http.server.{timing}
 use @std.http.client.{request}
+use @std.http.fetch.{aimed}
 use @std.text.{parse_int}
+use @std.time.{wall_secs}
+use @std.http.date.{imf_date}
 
 // ── Fixtures ────────────────────────────────────────────────────
 
@@ -31,7 +34,7 @@ fn cf_reply_body(src: string, asked: Method) -> string {
 }
 
 /// The wire as text.
-fn cf_wire(r: Response) -> string { wire(r, true, 1).text() ?? "<not text>" }
+fn cf_wire(r: Response) -> string { undated(wire(r, true, 1).text() ?? "<not text>") }
 
 fn cf_get(_q: Request<Unrouted>) -> Response { text(200, "got") }
 fn cf_head(_q: Request<Unrouted>) -> Response { text(200, "headed") }
@@ -133,6 +136,24 @@ fn cf_continue_skipped() -> Result<bool, NetError> {
     )
 }
 
+/// Whether `r` goes out with one `date` field naming now, give or
+/// take the second that turned while it was written.
+fn cf_dated(r: Response) -> bool {
+    let before = wall_secs()
+    let t = wire(r, true, 1).text() ?? ""
+    let after = wall_secs()
+    let lines = t.split("\r\n")
+    let dates = [l for l in lines if l.starts_with("date: ")]
+    dates.length == 1 &&
+        [imf_date(s) ?? "" for s in before..after + 1].any(dates[0] == "date: " + it)
+}
+
+/// The request line's target and the `host` field a URL aims at, or
+/// the error's kind.
+fn cf_aim(url: string) -> string {
+    match aimed(url) { .Ok(a) -> "${a.target} ${a.field}", .Err(e) -> e.describe().kind }
+}
+
 /// A handler answering the status its `x-s` field names.
 fn cf_status_named(app: App, q: Request<Unrouted>) -> Response {
     let _ = bumped(app)
@@ -166,7 +187,11 @@ fn cf_no_content_persists() -> Result<bool, NetError> {
     defer b.done()
     let first = reply(b.c, "DELETE /x HTTP/1.1\r\nHost: a\r\n\r\n")?
     let second = reply(b.c, "DELETE /y HTTP/1.1\r\nHost: a\r\n\r\n")?
-    .Ok(first == "HTTP/1.1 204 No Content\r\n\r\n" && second == first && b.s.connections() == 1)
+    .Ok(
+        undated(first) == "HTTP/1.1 204 No Content\r\n\r\n" &&
+            undated(second) == undated(first) &&
+            b.s.connections() == 1,
+    )
 }
 
 spec "@std.http RFC 9110/9112 conformance" {
@@ -286,9 +311,21 @@ spec "@std.http RFC 9110/9112 conformance" {
             cf_wire(Response { status: 299 }).starts_with("HTTP/1.1 299 Success\r\n") &&
                 cf_wire(Response { status: 599 }).starts_with("HTTP/1.1 599 Server Error\r\n")
         }
-        then "KNOWN GAP avra-8sb5.1.30.4: no Date field is written (RFC 9110 §6.6.1) — flips when it lands" {
-            !cf_wire(ok("x")).contains("date:")
+        then "every response is dated, this second, in IMF-fixdate (RFC 9110 §6.6.1, §5.6.7)" {
+            [ok("x"), Response { status: 204 }, Response { status: 404 }, Response { status: 999 }]
+                .all(cf_dated(it))
         }
+    }
+    given "a client's target and host, from one URL (RFC 9112 §3.2, RFC 9110 §4.2.4, §7.2)" {
+        then "the path and query are the target, and the authority less userinfo the host" {
+            cf_aim("http://h:8080/a?b") == "/a?b h:8080"
+        }
+        then "an empty path is sent as /" { cf_aim("http://h") == "/ h" && cf_aim("http://h?q") == "/?q h" }
+        then "a fragment is never sent" { cf_aim("http://h/a#f") == "/a h" }
+        then "the scheme's own port is not written" { cf_aim("http://h:80/") == "/ h" && cf_aim("https://h:443/") == "/ h" }
+        then "an IPv6 host keeps its brackets" { cf_aim("http://[::1]:8080/") == "/ [::1]:8080" }
+        then "userinfo is never generated — a URL carrying it is refused" { cf_aim("http://u:p@h/") == "http.userinfo" }
+        then "a URL with no host aims nowhere" { cf_aim("http:///a") == "http.no_host" }
     }
     given "the methods every server supports (RFC 9110 §9.1)" {
         then "a HEAD no HEAD route answers is answered by the GET route" {
@@ -340,7 +377,7 @@ spec "@std.http RFC 9110/9112 conformance" {
                 answer_of([r_png()], "HEAD /img/a.png HTTP/1.1") == "200 png a"
         }
         then "a 204 to an HTTP/1.0 keep-alive says so and states no length" {
-            wire(Response { status: 204 }, true, 0).text() == "HTTP/1.1 204 No Content\r\nconnection: keep-alive\r\n\r\n"
+            undated(wire(Response { status: 204 }, true, 0).text() ?? "") == "HTTP/1.1 204 No Content\r\nconnection: keep-alive\r\n\r\n"
         }
         then "a CONNECT's 299 reply is a tunnel and its 300 is framed by its length" {
             cf_reply_body("HTTP/1.1 299 X\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "none" &&

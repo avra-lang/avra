@@ -22,6 +22,7 @@
 //!            over a pool, each stage on its own deadline,
 //!            redirects and retries by an explicit policy
 //! jar.av     COOKIES a server set, kept and sent back by RFC 6265
+//! date.av    DATES: the `date` field, formatted once a second
 //! auth.av    CREDENTIALS as the `authorization` field
 //! ```
 //!
@@ -29,6 +30,7 @@
 //! a `Request` keeps that buffer and slices a value only when asked.
 use frame.{Head, Field, Method, target_form, scheme_end, admits, is_target, is_tchar, is_vchar}
 use query.{Query, query_of}
+use date.{date_line}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body (owned, complete), who sent it, and what its
@@ -267,8 +269,8 @@ impl Respond for int {
     fn response() -> Response { status(self) }
 }
 
-/// The response on the wire: status line, the fields, the body's
-/// length, the connection's fate, then the body. The fate is spoken
+/// The response on the wire: status line, the fields, the date, the
+/// body's length, the connection's fate, then the body. The fate is spoken
 /// when the peer cannot assume it: `close` when the connection will
 /// not persist, and `keep-alive` when it will and the request was
 /// HTTP/1.0 — a 1.0 peer waits for the close otherwise (RFC 9112 §9.3).
@@ -302,6 +304,7 @@ fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
         w = w.concat(h.value.bytes())
         w = w.concat(crlf)
     }
+    w = w.concat(date_line())
     if measured(r.status) {
         w = w.concat(length_field)
         w = w.concat("${r.body.length}".bytes())
@@ -402,8 +405,9 @@ export const token_char: Bytes = admits(is_tchar)
 /// What octet a field VALUE may carry, as a class table.
 export const value_char: Bytes = admits(is_vchar)
 
-/// The framing fields `wire` writes from what it is sending.
-const reply_writes: List<Bytes> = [w.bytes() for w in ["content-length", "connection", "transfer-encoding"]]
+/// The fields `wire` writes itself: the framing, from what it is
+/// sending, and the date, from the server's clock.
+const reply_writes: List<Bytes> = [w.bytes() for w in ["content-length", "connection", "transfer-encoding", "date"]]
 
 /// The reason phrase — the registered ones, and the class's word for
 /// the rest.
