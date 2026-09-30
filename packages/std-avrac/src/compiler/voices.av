@@ -13,6 +13,7 @@ use core.{
     fp,
     fp_list,
     fp_str,
+    mix_final,
     joined,
     flatten,
     sorted_texts,
@@ -715,6 +716,27 @@ export fn name_facts_fp(n: NameFacts) -> int {
             n.settled_reads.folded(bool_fp),
             namespace_fp(n.names),
             voices_fp(n.voices),
+        ],
+    )
+}
+
+/// One declaration's slice of a file's names: each expression in
+/// [lo, hi) folded to ONE value over its four columns, avalanched
+/// before the order-sensitive fold, then the namespace a reader asks
+/// by name. What a foreign reader of the slice may read, and nothing
+/// else — never the file's voices, never a neighbour's cells.
+export fn name_slice_fp(n: NameFacts, lo: int, hi: int) -> int {
+    fp(181, [fp_list([mix_final(name_cell_fp(n, i)) for i in lo..hi]), namespace_fp(n.names)])
+}
+
+fn name_cell_fp(n: NameFacts, i: int) -> int {
+    fp(
+        182,
+        [
+            opt_binding_fp(n.bindings.get(i)),
+            opt_cap_fp(n.captures.get(i)),
+            bool_fp(n.mut_reads.get(i)),
+            bool_fp(n.settled_reads.get(i)),
         ],
     )
 }

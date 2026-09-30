@@ -73,7 +73,7 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use @std.meta.{Diagnostic, identity}
+use @std.meta.{Diagnostic, bracket, identity, plain_field}
 use core.{StmtId}
 use diagnostics.{
     SourceFile,
@@ -257,6 +257,12 @@ fn new_records() -> Records {
 /// type, so a copy of the workspace still reads and writes the same
 /// build.
 @identity
+@plain_field("host")
+@plain_field("root")
+@plain_field("lang")
+@plain_field("lone")
+@plain_field("per_file")
+@plain_field("clock")
 export type Workspace = {
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
@@ -515,6 +521,12 @@ enum Family {
     /// neighbour's reader — a query reading another declaration's
     /// nodes depends on this, never on the file's whole `Parsed`
     Syntax
+    /// a declaration's own slice of its file's names (COMPILER DB
+    /// townhall §6.11): the fold of the name columns over its expr
+    /// range and the namespace, keyed by DeclId — a foreign reader of
+    /// a body's bindings depends on this, never on the file's whole
+    /// `Resolved`
+    Names
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -568,6 +580,7 @@ fn ordinal(f: Family) -> int {
         .MethodDiags -> 23,
         .LiftLowered -> 24,
         .Syntax -> 25,
+        .Names -> 26,
     }
 }
 
@@ -601,6 +614,7 @@ fn family_word(f: Family) -> string {
         .MethodDiags -> "MethodDiags",
         .LiftLowered -> "LiftLowered",
         .Syntax -> "Syntax",
+        .Names -> "Names",
     }
 }
 
@@ -646,6 +660,7 @@ fn family_at(i: int) -> Family {
         23 -> Family.MethodDiags,
         24 -> Family.LiftLowered,
         25 -> Family.Syntax,
+        26 -> Family.Names,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
@@ -659,7 +674,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`
 /// and to `ordinal`; nothing below can notice the day only this
 /// number moves alone, or only stays still alone.
-const family_count: int = 26
+const family_count: int = 27
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -1069,6 +1084,7 @@ impl Workspace {
             .Raised -> touch(self.raised_by(decl_at_arg(arg))),
             .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
             .Syntax -> touch(self.syntax(decl_at_arg(arg))),
+            .Names -> touch(self.name_slice(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1661,6 +1677,7 @@ impl Workspace {
     /// body depends on exactly the impls it dispatches through. Asked
     /// again from inside one of those impls' own registration, it
     /// answers what stands.
+    @bracket("methods")
     fn methods(target: DeclId) -> List<DeclId> {
         // A GENERATED IMPL IS MINTED INTO THE TARGET'S OWN FILE, so the
         // table must not be read before that file's expansion has run —
@@ -1718,6 +1735,35 @@ impl Workspace {
         let h = syntax_hash(self.decls.store(d), x)
         self.db.settle(k, h)
         h
+    }
+
+    /// A declaration's own slice of its file's names, DECLARATION-GRAIN
+    /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
+    /// range. Recomputed with the file's `Resolved`, and cut off by
+    /// `settle` for every declaration whose slice folds the same.
+    fn name_slice(d: DeclId) -> int {
+        let k = key(Family.Names, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi)
+        self.db.settle(k, h)
+        h
+    }
+
+    /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
+    /// `Names`, then the file's table read unrecorded. The reader holds
+    /// the slice's contract — cells in `d`'s range and the namespace,
+    /// never the voices. The file's own passes ask `resolved`; so does
+    /// a reader inside that resolve, whose view is still in flight.
+    fn names_of(d: DeclId) -> NameFacts {
+        let f = self.decls.decl(d).file
+        if self.relation(Family.Resolved).open(f.index) { return self.resolved(f) }
+        touch(self.name_slice(d))
+        match self.relation(Family.Resolved).values.entry(f.index) {
+            .Present(r) -> resolved_of(r),
+            .Missing -> self.resolved(f),
+        }
     }
 
     /// Whether an impl block written under the target's NAME can mean

@@ -1,6 +1,6 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
-use @std.meta.{identity}
+use @std.meta.{identity, plain_field}
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
@@ -24,6 +24,7 @@ export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
+@plain_field("file")
 export type SyntaxArena = {
     exprs: Arena<Expr>,
     expr_fingerprints: Cell<List<int>>,
@@ -42,7 +43,8 @@ export type SyntaxArena = {
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     hoisted: Cell<List<StmtId>>,
-    // the path of the file this store parsed — "" for a fragment
+    // plain for its identity: the path of the file this store
+    // parsed, set once at construction — "" for a fragment
     file: string,
     // `@name(args)` marks per statement, in written order
     annotations: Cell<List<List<Annotation>>>,
@@ -475,6 +477,10 @@ impl SyntaxArena {
         if hole == null || !hole!.lone() { return null }
         hole!.holes[0]
     }
+
+    /// A lone hole standing as a statement with nothing written on it —
+    /// an annotated one is a declaration's seat.
+    fn bare_hole(s: StmtId) -> bool { self.hole_stmt(s) != null && self.annotations_of(s).is_empty() }
 
     /// Whether a statement DECLARES: a fn, a type, an enum, a trait,
     /// an impl, a top-level const.
