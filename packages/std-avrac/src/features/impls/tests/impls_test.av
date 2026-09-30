@@ -318,6 +318,35 @@ spec "features/impls" {
                 a.diagnostics.length == 1 &&
                 a.report().contains("`n` is a `mut` seat — `show` never writes through it")
         }
+        then "a static method's written seat is written — no receiver takes seat 0" {
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    static fn zero(mut xs: List<int>) { xs.push(0) }\n}\nmut v = [1]\nC.zero(v)\nv.length",
+            )
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
+        then "a static method's seat only read is warned" {
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    static fn size(mut xs: List<int>) -> int { xs.length }\n}\nmut v = [1]\nC.size(v)",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`xs` is a `mut` seat — `size` never writes through it")
+        }
+        then "a static method's unwritten FIRST seat is the one warned, not its written second" {
+            let a = analyze_source(
+                "type C = { n: int }\nimpl C {\n    static fn put(mut a: List<int>, mut b: List<int>) { b.push(1) }\n}\nmut x = [1]\nmut y = [1]\nC.put(x, y)\ny.length",
+            )
+            a.clean() &&
+                a.diagnostics.length == 1 &&
+                a.report().contains("`a` is a `mut` seat — `put` never writes through it") &&
+                a.ran() == "2"
+        }
+        then "a method's `mut` seat over a one-field record is written in place, never called elsewhere" {
+            let a = analyze_source(
+                "type Id = { index: int }\ntype Holder = {}\nimpl Holder {\n    fn bump(mut i: Id) { i.index = i.index + 1 }\n}\nmut id = Id { index: 1 }\nlet h = Holder {}\nh.bump(id)\nid.index",
+            )
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
         then "`mut fn` and a `mut` seat both unused — two warnings, one each" {
             let a = analyze_source(
                 "type C = { n: int }\nimpl C {\n    mut fn get(mut k: int) -> int { self.n + k }\n}\nmut c = C { n: 1 }\nmut k = 2\nc.get(k)",
