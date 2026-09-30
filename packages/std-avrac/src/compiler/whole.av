@@ -18,6 +18,7 @@ use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
+use compiler.host.{library_stem}
 
 impl Workspace {
 
@@ -118,6 +119,9 @@ impl Workspace {
     /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
     /// files holds forty-nine.
     fn hold_only(path: string) { self.decls.held.put(path, true) }
+
+    /// MEET FILES: each enters the table, so it is read unless it is held.
+    fn met_all(paths: List<string>) { for path in paths { let _ = self.file_id(path) } }
 
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
     /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
@@ -362,16 +366,6 @@ fn same_body(c: Case, body: ExprId) -> bool {
 /// that fill to nothing. A hole naming nothing asks for NO WORD:
 /// an empty one would be an argument the linker still counts, and a
 /// bare `-L` eats the word after it.
-/// A package's manifest name as a library stem: `@std/sqlite` becomes
-/// `std-sqlite` — ONE leading `@` dropped, every `/` a `-`. The rule
-/// is spelled twice, here and in `tools/libs.py`, and the halves must
-/// be copyable into each other: "strip one leading `@`" is,
-/// "strip every `@`" is not.
-fn library_stem(named: string) -> string {
-    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
-    stripped.replace("/", "-")
-}
-
 fn filled_words(words: List<string>) -> List<string> {
     [w for w in [expanded(x) for x in words] if !w.is_empty()]
 }

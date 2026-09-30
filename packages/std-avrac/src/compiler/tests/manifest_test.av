@@ -15,8 +15,16 @@ fn read(text: string) -> Manifest {
 }
 
 /// A manifest whose [package] carries these lines.
-fn packaged(rest: string) -> string {
-    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n${rest}"
+fn packaged(rest: string) -> string { scoped("app", rest) }
+
+/// A manifest for the package `name` carrying these lines.
+fn scoped(name: string, rest: string) -> string {
+    "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n${rest}"
+}
+
+/// A manifest for `name` whose `[lib]` calls itself `lib`.
+fn libbed(name: string, lib: string) -> string {
+    scoped(name, "\n[lib]\nname = \"${lib}\"\n")
 }
 
 /// ONE voice of this kind.
@@ -188,6 +196,28 @@ spec "compiler/manifest" {
             m.voices.length == 1 &&
                 m.voices[0].kind == "manifest.unknown_key" &&
                 m.voices[0].message.contains("`colour`")
+        }
+    }
+    given "[lib] name" {
+        then "the stem its package's name derives is accepted" { read(libbed("@std/ui_tui", "std-ui_tui")).voices.is_empty() }
+        then "a bare word's stem is the word" { read(libbed("app", "app")).voices.is_empty() }
+        then "an unwritten name is accepted" { read(scoped("@std/ui_tui", "\n[lib]\npath = \"src/tui.av\"\n")).voices.is_empty() }
+        then "a `-` where the package has `_` is refused" { speaks(libbed("@std/ui_tui", "std-ui-tui"), "manifest.lib_name") }
+        then "a `_` where the package has `-` is refused" { speaks(libbed("@std/ui-tui", "std-ui_tui"), "manifest.lib_name") }
+        then "the package's own spelling is refused" { speaks(libbed("@std/ui_tui", "@std/ui_tui"), "manifest.lib_name") }
+        then "a name that is not text is refused" { speaks(scoped("@std/ui_tui", "\n[lib]\nname = 3\n"), "manifest.lib_name") }
+        then "an unlawful package name speaks alone" {
+            let m = read(libbed("My App", "x"))
+            m.voices.length == 1 && m.voices[0].kind == "manifest.bad_name"
+        }
+        then "the refusal names both spellings and the fix" {
+            let text = libbed("@std/ui_tui", "std-ui-tui")
+            let shown = render(read(text).voices[0], new_source_file("avra.toml", text))
+            shown
+                    .starts_with(
+                        "error[manifest.lib_name]: a library is named for its package — `@std/ui_tui` is `std-ui_tui`, not `std-ui-tui`\n  ╭─[avra.toml:6:1]",
+                    ) &&
+                shown.contains("write `name = \"std-ui_tui\"`, or drop the key")
         }
     }
     given "rendered" {

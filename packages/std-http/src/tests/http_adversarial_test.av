@@ -8,7 +8,20 @@
 // asks the only question that matters — how many fields did the peer
 // get, and did a second reply appear inside the first.
 use @std.http.frame.{framed, framed_reply, limits, Method}
-use @std.http.http.{Request, Unrouted, Response, Header, wire, text, sendable, writable}
+use @std.http.http.{
+    Request,
+    Unrouted,
+    Response,
+    Header,
+    Upgrade,
+    wire,
+    text,
+    sendable,
+    writable,
+    switch_asked,
+}
+use @std.http.body.{Body}
+use @std.http.wire.{Transport}
 use @std.text.{from_codepoint}
 
 // ── Fixtures ────────────────────────────────────────────────────
@@ -30,6 +43,31 @@ fn ha_peer_reads(r: Response) -> string {
         .Partial -> "partial",
         .Refused(_) -> "refused",
     }
+}
+
+/// A response naming `protocols` in its `upgrade` field.
+fn ha_offering(status: int, protocols: string) -> Response {
+    Response { status: status, headers: [Header { name: "upgrade", value: protocols }] }
+}
+
+/// A 101 switching to `protocols`, its handover doing nothing.
+fn ha_switch(protocols: string) -> Response { ha_offering(101, protocols) with { upgrade: Upgrade { run: ha_unrun } } }
+
+fn ha_unrun(_c: dyn Transport, _early: Bytes) {}
+
+/// The request `head` frames, carrying nothing past its head.
+fn ha_request(head: string) -> Request<Unrouted>? {
+    let raw = head.bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> Request { raw: raw, head: h, body: Body.Empty, peer: "p", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// Whether the request `head` frames asked for the switch `r` makes.
+fn ha_asked(head: string, r: Response) -> bool {
+    let q? = ha_request(head) else { return false }
+    switch_asked(q, r)
 }
 
 /// The status line alone — the first line of the wire.
@@ -105,7 +143,79 @@ spec "@std.http http adversarial" {
         then "999 is three digits and goes out as it was chosen" {
             ha_wire_status_line(Response { status: 999 }) == "HTTP/1.1 999 Server Error"
         }
-        then "100 is the lowest a peer can frame" { ha_wire_status_line(Response { status: 100 }) == "HTTP/1.1 100 Continue" }
+        then "A 1xx IS INTERIM, NEVER AN ANSWER, so a handler's 100 is the server's 500" {
+            ha_wire_status_line(Response { status: 100 }) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "and so is 103, the highest interim status a peer registers" {
+            ha_wire_status_line(Response { status: 103 }) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "and 199, the last of the class" {
+            ha_wire_status_line(Response { status: 199 }) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "200 is the lowest final status" { ha_wire_status_line(Response { status: 200 }) == "HTTP/1.1 200 OK" }
+    }
+    given "a switch of protocols (RFC 9110 §7.8)" {
+        then "a 101 handing the connection over and naming its protocol is sendable" { sendable(ha_switch("websocket")) }
+        then "A 101 WITH NOTHING TO HAND OVER is the server's 500" {
+            ha_wire_status_line(ha_offering(101, "websocket")) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "A 101 NAMING NO PROTOCOL is refused, though it hands over" {
+            !sendable(Response { status: 101, upgrade: Upgrade { run: ha_unrun } })
+        }
+        then "and so is one whose upgrade field is blank" { !sendable(ha_switch(" ")) }
+        then "a handover under a final status is refused" {
+            !sendable(ha_switch("websocket") with { status: 200 })
+        }
+        then "a 101 carries no body" { !sendable(ha_switch("websocket") with { body: "x".bytes() }) }
+        then "A 426 NAMES WHAT IT WANTS, or it is the server's 500" {
+            ha_wire_status_line(Response { status: 426 }) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "and one that does lists `upgrade` in the connection field the writer owns" {
+            ha_wired(ha_offering(426, "websocket")) == "HTTP/1.1 426 Upgrade Required|upgrade: websocket|content-length: 0|connection: upgrade||"
+        }
+        then "the option rides beside the close a last answer speaks" {
+            (wire(ha_offering(200, "h2c"), false, 1).text() ?? "")
+                .contains("\r\nconnection: close, upgrade\r\n")
+        }
+        then "and beside the keep-alive a 1.0 peer is told" {
+            (wire(ha_offering(200, "h2c"), true, 0).text() ?? "")
+                .contains("\r\nconnection: keep-alive, upgrade\r\n")
+        }
+        then "the field is found whatever its case" {
+            ha_wired(
+                Response { status: 426, headers: [Header { name: "Upgrade", value: "websocket" }] },
+            )
+                .contains("|connection: upgrade|")
+        }
+        then "a response that offers nothing speaks no option" { !ha_wired(text(200, "hi")).contains("upgrade") }
+        then "a switch the request asked for is allowed" {
+            ha_asked(
+                "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\n\r\n",
+                ha_switch("websocket"),
+            )
+        }
+        then "a request's list is read by token, folded" {
+            ha_asked(
+                "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: h2c, WebSocket\r\n\r\n",
+                ha_switch("websocket"),
+            )
+        }
+        then "A SWITCH TO WHAT WAS NOT ASKED FOR is refused" {
+            !ha_asked("GET / HTTP/1.1\r\nHost: a\r\nUpgrade: h2c\r\n\r\n", ha_switch("websocket"))
+        }
+        then "and so is a switch to two protocols where one was asked for" {
+            !ha_asked(
+                "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\n\r\n",
+                ha_switch("websocket, h2c"),
+            )
+        }
+        then "and a switch nobody asked for at all" { !ha_asked("GET / HTTP/1.1\r\nHost: a\r\n\r\n", ha_switch("websocket")) }
+        then "AN HTTP/1.0 UPGRADE IS IGNORED, so it asked for nothing" {
+            !ha_asked("GET / HTTP/1.0\r\nUpgrade: websocket\r\n\r\n", ha_switch("websocket"))
+        }
+        then "an answer that switches nothing is never refused by the switch law" {
+            ha_asked("GET / HTTP/1.0\r\n\r\n", text(200, "hi"))
+        }
     }
     given "what the keeper ACCEPTS, which making it fail never tests" {
 

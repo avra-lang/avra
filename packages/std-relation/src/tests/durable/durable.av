@@ -1,0 +1,173 @@
+// proves: a `@query` answer outlives its Db where the owner keeps it — a
+// fresh Db (a later process) reads the record back instead of running;
+// a moved owner key, a record that does not read back, and a run that
+// wrote rows each run again — in both engines
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, Durable, durable_db, quiet_hooks}
+
+@relation
+type Note = { @key name: string }
+
+enum Mood {
+    Calm
+    Loud
+}
+
+type Pair = { a: int, b: int }
+
+/// The owner's disk: each record under the key it was kept at.
+once fn disk() -> Cell<Map<string, Bytes>> { Cell.new({}) }
+
+/// The owner's key for what the checked file is made of.
+once fn file_key() -> Cell<string> { Cell.new("f1") }
+
+/// Every key the owner kept a record at, in order.
+once fn kept_keys() -> Cell<List<string>> { Cell.new([]) }
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+fn counted() {
+    let c = computes()
+    c.set(c.get() + 1)
+}
+
+fn at(query: string, args: int) -> string { "${file_key().get()}\t${query}\t${args}" }
+
+fn read_record(query: string, args: int) -> Bytes? { disk().get().get(at(query, args)) }
+
+fn keep_record(query: string, args: int, record: Bytes) {
+    kept_keys().push(at(query, args))
+    disk().put(at(query, args), record)
+}
+
+/// A Db standing for a fresh process over the same disk.
+fn process() -> Db { durable_db(quiet_hooks(), Durable { answer: read_record, keep: keep_record }) }
+
+@query
+fn total(_db: Db, n: int) -> int {
+    counted()
+    n * 10
+}
+
+@query
+fn fixed(_db: Db) -> string {
+    counted()
+    "fixed"
+}
+
+@query
+fn absent(_db: Db, k: string) -> string? {
+    counted()
+    if k == "none" { null } else { k }
+}
+
+@query
+fn words(_db: Db) -> List<string> {
+    counted()
+    ["a", "", "c"]
+}
+
+@query
+fn mood(_db: Db, loud: bool) -> Mood {
+    counted()
+    if loud { Mood.Loud } else { Mood.Calm }
+}
+
+@query
+fn writes(db: Db) -> int {
+    counted()
+    let _ = Note.insert(db, name: "n")
+    1
+}
+
+@query
+fn paired(_db: Db) -> Pair {
+    counted()
+    Pair { a: 1, b: 2 }
+}
+
+/// Reads a relation it never writes.
+@query
+fn notes(db: Db) -> int {
+    counted()
+    Note.all(db).length
+}
+
+/// Seats named like the wrapper's own words.
+@query
+fn shadow(_db: Db, cell: int, args: int, m: int, held: int) -> int {
+    counted()
+    cell * 1000 + args * 100 + m * 10 + held
+}
+
+fn since(before: int) -> int { computes().get() - before }
+
+fn mood_word(m: Mood) -> string {
+    match m { .Calm -> "calm", .Loud -> "loud" }
+}
+
+/// cold, warm in a fresh Db, and a moved key.
+fn survives() -> string {
+    let before = computes().get()
+    let cold = total(process(), 4)
+    let warm = total(process(), 4)
+    let other = total(process(), 5)
+    let warm_runs = since(before)
+    file_key().set("f2")
+    let moved = total(process(), 4)
+    file_key().set("f1")
+    "${cold} ${warm} ${other} ${warm_runs} ${moved} ${since(before)}"
+}
+
+/// A query with no arguments, a null answer, a list with an empty text,
+/// and a tagged enum each read back as they were kept.
+fn shapes() -> string {
+    let _ = fixed(process())
+    let _ = absent(process(), "none")
+    let _ = absent(process(), "x")
+    let _ = words(process())
+    let _ = mood(process(), true)
+    let before = computes().get()
+    let f = fixed(process())
+    let a = absent(process(), "none") ?? "null"
+    let x = absent(process(), "x") ?? "null"
+    let w = words(process())
+    let m = mood_word(mood(process(), true))
+    "${f} ${a} ${x} ${w.length}:${w.join("|")} ${m} ${since(before)}"
+}
+
+/// A record that does not read back runs again; so does a run that
+/// wrote rows, and an answer with no codec.
+fn reruns() -> string {
+    let _ = total(process(), 9)
+    for k in kept_keys().get() { disk().put(k, [1, 2, 3].bytes()!) }
+    let before = computes().get()
+    let _ = total(process(), 9)
+    let _ = writes(process())
+    let _ = writes(process())
+    let _ = paired(process())
+    let _ = paired(process())
+    "${since(before)}"
+}
+
+/// A write in this process moves a restored answer, and the rerun it
+/// forces is never kept: the next process reads the first record.
+fn midway() -> string {
+    let before = computes().get()
+    let cold = notes(process())
+    let db = process()
+    let restored = notes(db)
+    let _ = Note.insert(db, name: "late")
+    let moved = notes(db)
+    let next = notes(process())
+    "${cold}${restored}${moved}${next} ${since(before)}"
+}
+
+/// Seats named like the wrapper's locals reach the body as written.
+fn shadowed() -> string {
+    let first = shadow(process(), 1, 2, 3, 4)
+    let again = shadow(process(), 1, 2, 3, 4)
+    "${first} ${again}"
+}
+
+"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()}"
