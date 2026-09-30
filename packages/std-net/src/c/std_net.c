@@ -240,6 +240,11 @@ static int64_t net_dialed_to(const struct addrinfo* ai) {
     return fd;
 }
 
+// The errnos a peer answers when it drops a connection under the
+// caller: a reset, and a write into a connection it closed.
+int64_t avra_net_errno_reset(void) { return ECONNRESET; }
+int64_t avra_net_errno_pipe(void) { return EPIPE; }
+
 // A dial's outcome once its descriptor is writable: 0 connected, or
 // the -errno the connect failed with.
 int64_t avra_net_dialed(int64_t fd) {

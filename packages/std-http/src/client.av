@@ -31,8 +31,9 @@ use http.{Header, read_size, every_octet, fields_writable, token_char}
 use wire.{Transport, WireError, plainly}
 
 /// What a fetch answers: the status, the fields as text, the body
-/// whole.
-export type Answer = { status: int, headers: List<Header>, body: Bytes }
+/// whole — and, by URL, every URL a redirect led away from, in order,
+/// and how many attempts the last request took.
+export type Answer = { status: int, headers: List<Header>, body: Bytes, via: List<string> = [], attempts: int = 1 }
 
 impl Answer {
     /// The first header of this name, ASCII-folded, or null.
@@ -65,6 +66,16 @@ export enum ClientError {
     Userinfo
     Unwritable
     Secure(e: dyn Error)
+    Redirect(why: Redirected)
+}
+
+/// Why a redirect was not followed.
+export enum Redirected {
+    TooMany(max: int)
+    Loop(url: string)
+    NoLocation(status: int)
+    BadLocation(e: UrlError)
+    Unreplayable(status: int)
 }
 
 /// What a deadline bounded: making the connection, securing it, the
@@ -91,6 +102,7 @@ impl Error for ClientError {
             ),
             .Unwritable -> info("http.unwritable", "a method, target, host or field the framer would not frame"),
             .Secure(e) -> e.describe(),
+            .Redirect(why) -> redirect_info(why),
         }
     }
 
@@ -98,8 +110,8 @@ impl Error for ClientError {
         match self {
             .Net(n) -> n,
             .Secure(t) -> t,
-            .Url(u) -> u,
-            .Refused(_) or .Closed or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoHost or .Userinfo or .Unwritable -> null,
+            .Url(u) or .Redirect(.BadLocation(u)) -> u,
+            .Refused(_) or .Closed or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoHost or .Userinfo or .Unwritable or .Redirect(.TooMany(_)) or .Redirect(.Loop(_)) or .Redirect(.NoLocation(_)) or .Redirect(.Unreplayable(_)) -> null,
         }
     }
 }
@@ -115,6 +127,19 @@ export type Client = {
     decoder: Chunker?,
     limits: Limits,
     persists: bool = false,
+}
+
+fn redirect_info(why: Redirected) -> ErrorInfo {
+    match why {
+        .TooMany(max) -> info("http.redirects", "more than ${max} redirects"),
+        .Loop(url) -> info("http.redirect_loop", "a redirect led back to ${url}"),
+        .NoLocation(status) -> info("http.redirect_location", "a ${status} named no `location` to follow"),
+        .BadLocation(e) -> info("http.redirect_location", "a redirect's `location` is no URL: ${e.describe().message}"),
+        .Unreplayable(status) -> info(
+            "http.redirect_replay",
+            "a ${status} asks for the body again, and a stream is sent once",
+        ),
+    }
 }
 
 fn stage_word(stage: Stage) -> string {

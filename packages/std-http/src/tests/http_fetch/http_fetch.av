@@ -1,12 +1,13 @@
 // proves: a request by URL, evaluated and native alike — a GET and a
 // POST over one pooled connection to a live server, a JSON body, a
-// deadline named by its stage, and a URL refused before a socket.
+// deadline named by its stage, a 307 followed with its body, and a URL
+// refused before a socket.
 use @std.net.{NetError, listen}
 use @std.time.{ms, sleep}
 use @std.json.{Json, field}
 use @std.errors.{Error}
 use @std.http.frame.{limits}
-use @std.http.http.{text}
+use @std.http.http.{Header, Request, Response, Unrouted, text}
 use @std.http.server.{served, timing}
 use @std.http.client.{Answer, ClientError, method_word}
 use @std.http.pool.{pool}
@@ -18,21 +19,29 @@ fn shown(r: Result<Answer, ClientError>) -> string {
     match r { .Ok(a) -> "${a.status} ${a.body.text() ?? "?"}", .Err(e) -> e.describe().message }
 }
 
+fn followed(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${shown(r)} via ${a.via.join(" ")}", .Err(_) -> shown(r) }
+}
+
+fn answered(h: Hits, q: Request<Unrouted>) -> Response {
+    if q.target() == "/go" { return Response { status: 307, headers: [Header { name: "location", value: "/b" }] } }
+    if q.target() == "/slow" { sleep(ms(200)) }
+    h.n.set(h.n.get() + 1)
+    text(
+        200,
+        "${method_word(q.method()) ?? "?"} ${q.target() ?? "?"} ${q.body.text() ?? ""} #${h.n.get()}",
+    )
+}
+
 fn run() -> Result<int, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, () -> Hits { n: Cell.new(0) }, limits(), timing()) { h, q ->
-        if q.target() == "/slow" { sleep(ms(200)) }
-        h.n.set(h.n.get() + 1)
-        text(
-            200,
-            "${method_word(q.method()) ?? "?"} ${q.target() ?? "?"} ${q.body.text() ?? ""} #${h.n.get()}",
-        )
-    }
+    let s = served(l, () -> Hits { n: Cell.new(0) }, limits(), timing()) { h, q -> answered(h, q) }
     spawn s.run(cores: 1)
     let base = "http://127.0.0.1:${l.port}"
     let o = Options { pool: pool() }
     println(shown(fetch(.Get, "${base}/a?x=1#f", .Empty, o)))
     println(shown(fetch(.Post, "${base}/b", .Json(.Obj([field("k", .Str("v"))])), o)))
+    println(followed(fetch(.Post, "${base}/go", .Text("again"), o)).replace(base, ""))
     println("kept ${o.pool.kept_for("http://127.0.0.1:${l.port}")}, connections ${s.connections()}")
     println(
         shown(
