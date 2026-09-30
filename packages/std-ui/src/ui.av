@@ -68,8 +68,9 @@ export trait Shows {
     fn view() -> dyn View
 }
 
-// ── Exemplars: a value head with settings, a bodiless control, two
-// containers. The rest of the vocabulary follows these shapes.
+// ── Components. A head says what a node is; the body its look and
+// children. A setting with no default is REQUIRED: the value cannot be
+// built without it.
 
 export component text(content: string) {
     tone: Tone = .Text
@@ -82,15 +83,63 @@ impl View for text {
     }
 }
 
+export component heading(content: string) {
+    rank: int = 1
+    tone: Tone = .Text
+}
+
+impl View for heading {
+    fn node() -> Node {
+        Node {
+            role: .Heading(self.content, self.rank),
+            look: [Setting.Color(self.tone), .Face(Font.Heading)],
+        }
+    }
+}
+
+export component image(src: string) {
+    alt: string
+}
+
+impl View for image {
+    fn node() -> Node { Node { role: .Image(self.src, self.alt) } }
+}
+
+export component link(label: string) {
+    to: string
+}
+
+impl View for link {
+    fn node() -> Node { Node { role: .Link(self.label, self.to) } }
+}
+
 export component button(label: string) {}
 
 impl View for button {
     fn node() -> Node { Node { role: .Button(self.label) } }
 }
 
+export component toggle(label: string) {
+    on: bool = false
+}
+
+impl View for toggle {
+    fn node() -> Node { Node { role: .Toggle(self.label, self.on) } }
+}
+
+export component field(label: string) {
+    value: string = ""
+}
+
+impl View for field {
+    fn node() -> Node { Node { role: .Field(self.label, self.value) } }
+}
+
 export component column {
     gap: Size = .None
     pad: Size = .None
+    fill: Tone = .Surface
+    radius: Size = .None
     items: List<dyn View> = []
 }
 
@@ -98,7 +147,7 @@ impl View for column {
     fn node() -> Node {
         Node {
             role: .Column,
-            look: [Setting.Gap(self.gap), .Pad(self.pad)],
+            look: frame(self.gap, self.pad, self.fill, self.radius),
             children: nodes(self.items),
         }
     }
@@ -107,6 +156,8 @@ impl View for column {
 export component row {
     gap: Size = .None
     pad: Size = .None
+    fill: Tone = .Surface
+    radius: Size = .None
     items: List<dyn View> = []
 }
 
@@ -114,11 +165,55 @@ impl View for row {
     fn node() -> Node {
         Node {
             role: .Row,
-            look: [Setting.Gap(self.gap), .Pad(self.pad)],
+            look: frame(self.gap, self.pad, self.fill, self.radius),
             children: nodes(self.items),
         }
     }
 }
+
+export component section(title: string) {
+    gap: Size = .None
+    pad: Size = .None
+    fill: Tone = .SurfaceRaised
+    radius: Size = .None
+    items: List<dyn View> = []
+}
+
+impl View for section {
+    fn node() -> Node {
+        Node {
+            role: .Section(self.title),
+            look: frame(self.gap, self.pad, self.fill, self.radius),
+            children: nodes(self.items),
+        }
+    }
+}
+
+export component list {
+    items: List<dyn View> = []
+}
+
+impl View for list {
+    fn node() -> Node { Node { role: .List, children: nodes(self.items) } }
+}
+
+export component item {
+    key: string
+    items: List<dyn View> = []
+}
+
+impl View for item {
+    fn node() -> Node { Node { role: .Item, children: nodes(self.items), key: self.key } }
+}
+
+/// The look every container shares.
+fn frame(gap: Size, pad: Size, fill: Tone, radius: Size) -> List<Setting> {
+    [Setting.Gap(gap), .Pad(pad), .Fill(fill), .Radius(radius)]
+}
+
+/// Values listed as views, each through its `Shows`: a child of a
+/// container spreads like a comprehension does.
+export fn rows(shown: List<dyn Shows>) -> List<dyn View> { [s.view() for s in shown] }
 
 /// The children of a container, as nodes.
 export fn nodes(views: List<dyn View>) -> List<Node> { [v.node() for v in views] }
