@@ -51,16 +51,12 @@ h.draw(Text { content: "hi" })          // the Realize<Text> impl, by the argume
 Each slice: program tests eval == native, a golden per voice, red team,
 review round, compiler suite on a Sprite.
 
-## Deadline (recorded, per CLAUDE.md's safety-property law)
+## The pre-typing passes read the shared contract
 
-The pre-typing passes (failures, receivers, structural types) resolve
-a dot-call by NAME and read the first same-named member. Sound while
-every member of one generic trait on one type agrees on its answer's
-type and its receiver contract — conformance already forces the
-receiver contract; the answer agrees while the trait member's answer
-does not mention the trait's own parameters. C2a.4 routes those passes
-through the chosen member, or refuses a generic trait member whose
-answer names `T` until it does.
+Failures, receivers and structural types resolve a dot-call by name.
+Where a generic trait gives a type several same-named members they
+read the TRAIT's member (`Decls.shared_member`) — the signature and
+receiver contract every impl agrees to — never the first impl found.
 
 ## Recorded, not landed
 

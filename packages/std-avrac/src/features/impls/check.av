@@ -152,6 +152,11 @@ fn chosen_member(
             no_member_fits(cx, e, target, name, [cx.view.decls.method_key(m) for m in many])
             return null
         }
+        let unmet = unrealized(cx, d, args)
+        if !unmet.is_empty() {
+            members_incomplete(cx, e, target, name, unmet)
+            return null
+        }
         cx.record_dispatch(e, d)
         return d.members[0]
     }
@@ -188,6 +193,27 @@ fn takes_dispatched(cx: TypeCx, s: FnSig, args: List<ExprId>, k: int, tr: DeclId
     s.params.length == args.length + 1 &&
         [j for j, a in args if j != k && cx.types_disagree(cx.type_at(a), s.params[j + 1])].is_empty() &&
         implements_at(cx, s.params[k + 1], tr)
+}
+
+/// THE COMPLETENESS LAW: every type in the program that implements the
+/// `dyn` argument's trait has a member here — so a value that reaches
+/// this call is one some member takes, and the run-time choice never
+/// misses. Answers the names of the types left without one.
+fn unrealized(cx: TypeCx, d: RunChoice, args: List<ExprId>) -> List<string> {
+    let tr = dyn_trait(cx, cx.type_at(args[d.seat]))!
+    let taken = [seat_decl(cx, m, d.seat) for m in d.members]
+    [cx.view.decls.decl(t).name for t in cx.view.decls.implementors_of(tr) if !taken.any((x) -> same_decl_as(t, x))]
+}
+
+/// The declaration of the type a member takes at a seat.
+fn seat_decl(cx: TypeCx, m: DeclId, seat: int) -> DeclId? {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return null }
+    cx.view.decls.implementor(sig.params[seat + 1])
+}
+
+fn same_decl_as(t: DeclId, d: DeclId?) -> bool {
+    // LICENSED structs.index_compared: DECLARATION identity
+    d != null && d!.index == t.index
 }
 
 fn implements_at(cx: TypeCx, ty: TypeId, tr: DeclId) -> bool {
@@ -623,6 +649,19 @@ fn members_ambiguous(mut cx: TypeCx, e: ExprId, target: string, name: string, ke
                 "`${target}.${name}` fits these arguments as ${keys.join(" and as ")}",
                 "called here",
                 "a call names one member — make an argument's type, or the answer's wanted type, say which",
+            ),
+        )
+}
+
+fn members_incomplete(mut cx: TypeCx, e: ExprId, target: string, name: string, unmet: List<string>) {
+    cx
+        .emit(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${target}.${name}` is chosen by a `dyn` argument's type, and no member takes ${unmet.join(", ")}",
+                "called here",
+                "every type that can reach this call needs a member — implement it for ${unmet.join(", ")}",
             ),
         )
 }
