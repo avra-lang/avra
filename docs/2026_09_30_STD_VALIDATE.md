@@ -9,8 +9,8 @@ CLI arguments, env vars, database rows, agent tool calls.
 ## 1. The shape
 
 Constraints are annotations on fields and types. An annotation is an
-ordinary function that answers a `Rule<T>`, so the set is open and the
-compiler type-checks every use.
+ordinary function over the value that answers a `Result`, so the set is
+open and the compiler type-checks every use.
 
 ```avra
 use @std.validate.{email, range, length, matches, one_of, pattern}
@@ -31,8 +31,8 @@ fn check(s: Signup) -> Issues {                 // cross-field rules, pure
 }
 ```
 
-- `@length` on an `int` field is a compile error: `length` answers
-  `Rule<string>`, and the field is not a string.
+- `@length` on an `int` field is a compile error: `length`'s value
+  parameter is a `string`, and the field is not.
 - An annotation on a named type (`Username`) travels with the type:
   every field of that type is checked, and a `Username` value is a
   proof that it passed. Parse, don't validate.
@@ -40,7 +40,20 @@ fn check(s: Signup) -> Issues {                 // cross-field rules, pure
   refused where it is written). Everything else is checked at the
   boundary that decodes it.
 - Messages are defaults with keys: `@range(13, 130, "you must be 13 or over")`.
-- A new rule is a function: `fn slug() -> Rule<string> { rule { it -> … } }`.
+- A new rule is a plain function: its first parameter is the value, its
+  answer `Result<T, string>` (or `Result<T, Issue>` for a message key or
+  a fix). It fails with `fail`, composes with `?`, and answers the value,
+  so a rule may NORMALISE (trim, lowercase) and the field receives what
+  it answered. The rule's name is the function's name. An annotation's
+  arguments are the function's parameters after the value:
+
+  ```avra
+  export fn divisible_by(v: int, n: int) -> Result<int, string> {
+      if v % n != 0 { fail "must be a multiple of ${n}" }
+      v
+  }
+  // @divisible_by(15) minutes: int
+  ```
 
 ## 2. One data model, every format
 
