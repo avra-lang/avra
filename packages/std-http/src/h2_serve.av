@@ -26,21 +26,27 @@ export fn head_text(fs: List<HeaderField>) -> Bytes {
         .concat(value_at(fs, if method == connect_word { p.authority } else { p.path }))
         .concat(version_line)
     if p.authority >= 0 && !fs.any(it.name == host_name) { w = field_onto(w, host_name, fs[p.authority].value) }
-    mut crumbs: Bytes? = null
-    for f in fs.slice(p.heads, fs.length) {
-        if f.name == cookie_name {
-            crumbs = crumbs?.concat(crumb_join.concat(f.value)) ?? f.value
-        } else {
-            w = field_onto(w, f.name, f.value)
-        }
-    }
-    let c? = crumbs else { return w.concat(crlf) }
-    field_onto(w, cookie_name, c).concat(crlf)
+    let regular = fs.slice(p.heads, fs.length)
+    for f in regular { if f.name != cookie_name { w = field_onto(w, f.name, f.value) } }
+    let crumbs = [f.value for f in regular if f.name == cookie_name]
+    if crumbs.is_empty() { return w.concat(crlf) }
+    field_onto(
+        w,
+        cookie_name,
+        [if i == 0 { c } else { crumb_join.concat(c) } for i, c in crumbs].bytes(),
+    )
+        .concat(crlf)
 }
 
 /// A field line appended to `w`.
 fn field_onto(w: Bytes, name: Bytes, value: Bytes) -> Bytes {
     w.concat(name).concat(colon).concat(value).concat(crlf)
+}
+
+/// A stream's `:scheme`, absent only from a CONNECT.
+export fn scheme_of(x: Exchange) -> Bytes? {
+    let at = pseudo_of(x.fields).scheme
+    if at < 0 { null } else { x.fields[at].value }
 }
 
 /// A stream's request, framed by the 1.1 framer from the head its fields
