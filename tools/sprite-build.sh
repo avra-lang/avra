@@ -320,7 +320,7 @@ sprite -s "$sprite" file push "$run_script" "$run_remote" >/dev/null
 cache_root=/home/sprite/avra-compilers
 holds() { timeout -k 1 8 sprite -s "$1" exec --no-port-forward -- test -x "$cache_root/$compiler_hash/avra" >/dev/null 2>&1; }
 donor() {
-    pool=${AVRA_SPRITES:-$(sprite list 2>/dev/null | grep -vx -e web-terminal -e avra-bench)}
+    pool=$(sh "$here/sp" --pool)
     found=$(mktemp -d -t avra-sp-donor.XXXXXX)
     pids=
     for s in $pool; do

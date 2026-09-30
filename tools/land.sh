@@ -1390,6 +1390,26 @@ report_parallel_failures() {
     done < "$scratch/jobs.result"
 }
 
+# THE REMOTE SUITES (AVRA_LAND_REMOTE, default on): every affected
+# package's tests and, when the diff touches `.av`, the idioms check,
+# each on its own Sprite through tools/sp -p. The first Sprite builds
+# the tree's compiler (both generations) and the rest copy it, so this
+# runs beside the local builds and replaces the Linux leg.
+remote_suites() {
+    wt="$1"
+    has_av="$2"
+    shift 2
+    idioms=true
+    n=$#
+    for p in "$@"; do
+        idioms="$idioms && build/avra check packages/$p --baseline tools/idioms.baseline"
+        set -- "$@" "build/avra test packages/$p"
+    done
+    shift "$n"
+    [ "$has_av" -eq 1 ] && set -- "$idioms" "$@"
+    AVRA_SP_TREE="$wt" sh "$tools_dir/sp" -p "$@"
+}
+
 # One package's idioms check — `--call`-invoked (never a bare function
 # name) because heavy() hands its command to memcap.sh, a SEPARATE
 # process that never sourced this script and knows no shell function.
@@ -1445,10 +1465,14 @@ run_checks() {
     # fmt-lossless 29s, everything else <=12s — the speed and Linux
     # gates run a full second build (or a whole Sprite) each, so they
     # slot in right after seed-check, ahead of cli.
-    if listed std-avrac "$affected"; then
+    if remote_on; then
+        echo "land: the package suites and idioms$suffix run on Sprites (tools/sp)" >&2
+    elif listed std-avrac "$affected"; then
         job_launch "test-std-avrac$suffix" heavy "test-std-avrac$suffix" sh -c "cd '$wt' && build/avra test packages/std-avrac"
     fi
-    if [ "$has_av" -eq 1 ]; then
+    if remote_on; then
+        :
+    elif [ "$has_av" -eq 1 ]; then
         job_launch "idioms$suffix" heavy "idioms$suffix" sh "$self" --call idioms_step "$wt" $affected
     else
         skipped "idioms and fmt-lossless$suffix" ".av file"
@@ -1461,12 +1485,13 @@ run_checks() {
     else
         echo "land: skipped the speed gate$suffix: AVRA_LAND_SPEED_GATE is off" >&2
     fi
-    if listed cli "$affected"; then
+    if ! remote_on && listed cli "$affected"; then
         job_launch "test-cli$suffix" heavy "test-cli$suffix" sh -c "cd '$wt' && build/avra test packages/cli"
     fi
 
     # Everything else, in any order.
     for pkg in $affected; do
+        remote_on && continue
         [ "$pkg" = "std-avrac" ] && continue
         [ "$pkg" = "cli" ] && continue
         job_launch "test-$pkg$suffix" heavy "test-$pkg$suffix" sh -c "cd '$wt' && build/avra test packages/$pkg"
@@ -1624,6 +1649,8 @@ check_phase() {
 # THE LINUX GATE RUNS REMOTELY, so it takes no local slot and starts
 # before the local builds: the Sprite builds its own compiler from the
 # merged tree while this machine builds ours.
+remote_on() { [ "${AVRA_LAND_REMOTE:-1}" = "1" ]; }
+
 linux_pid=""
 linux_launch() {
     linux_pid=""
@@ -1638,7 +1665,9 @@ linux_launch() {
     fi
     linux_suffix="$4"
     linux_wt="$1"
-    ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
+    linux_call="linux_gate_step $1"
+    remote_on && linux_call="remote_suites $1 $has_av"
+    ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call $linux_call $linux_pkgs ) &
     linux_pid=$!
 }
 
@@ -1661,12 +1690,13 @@ linux_collect() {
     fi
     lst=0
     wait "$linux_pid" || lst=$?
+    remote_on && sed -n '/^#   sprite/,$p' "$(log_of "linux$linux_suffix")" | sed 's/^/land: sp: /' >&2
     grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     if linux_saw_old_seed "$linux_wt" "$lst"; then
         echo "land: linux: the leg ran before the seed was re-emitted — once more, with the new seed" >&2
         rm -f "$scratch/tool-failure"
         lst=0
-        AVRA_LAND_PARALLEL_SLOT=1 heavy "linux-reseeded$linux_suffix" sh "$self" --call linux_gate_step "$linux_wt" $linux_pkgs || lst=$?
+        AVRA_LAND_PARALLEL_SLOT=1 heavy "linux-reseeded$linux_suffix" sh "$self" --call $linux_call $linux_pkgs || lst=$?
         grep -h '^land-linux: ' "$(log_of "linux-reseeded$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
     fi
     return "$lst"

@@ -21,9 +21,26 @@ jobs=${AVRA_SP_JOBS_PER_SPRITE:-2}
 slots=/tmp/avra-sp-slots
 llvm=/usr/lib/llvm-22
 
+# The pool: awake Sprites first, and a sleeping one only while the org's
+# cap of running Sprites (AVRA_SP_MAX_RUNNING, default 10) has room, since
+# waking one past it fails.
+pool() {
+    if [ -n "${AVRA_SPRITES:-}" ]; then echo "$AVRA_SPRITES"; return 0; fi
+    timeout -k 1 15 sprite api /sprites 2>/dev/null | python3 -c '
+import json, sys
+cap = int(sys.argv[1])
+rows = json.load(sys.stdin)["data"]
+up = [r["name"] for r in rows if r["status"] == "running"]
+mine = lambda n: n not in ("web-terminal", "avra-bench")
+names = [n for n in up if mine(n)]
+if len(up) < cap:
+    names += [r["name"] for r in rows if r["status"] != "running" and mine(r["name"])]
+print(" ".join(names))' "${AVRA_SP_MAX_RUNNING:-10}"
+}
+
 # The pool, idlest first; a Sprite that did not answer its probe is dropped.
 ranked() {
-    pool=${AVRA_SPRITES:-$(sprite list 2>/dev/null | grep -vx -e web-terminal -e avra-bench)}
+    pool=$(pool)
     probe_log=$(mktemp -t avra-sp-probe.XXXXXX)
     order=$(AVRA_SPRITE_PROBE_S=10 sh "$here/land.sh" --call sprites_by_load $pool 2>"$probe_log")
     dead=$(sed -n 's/^land-linux: \(.*\) did not answer its load probe$/\1/p' "$probe_log")
@@ -80,6 +97,7 @@ run_on() {
 }
 
 [ "$#" -gt 0 ] || { sed -n '2,14p' "$0" >&2; exit 2; }
+[ "$1" != --pool ] || { pool; exit 0; }
 sprites=$(ranked)
 [ -n "$sprites" ] || { echo "sp: no Sprite answered its probe" >&2; exit 3; }
 
