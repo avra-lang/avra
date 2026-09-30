@@ -1743,7 +1743,7 @@ seed_policy() {
     echo "land: seed-check passed after a fresh emit" >&2
 }
 
-try_ff() { git -C "$main_wt" merge --ff-only "$branch"; }
+try_ff() { AVRA_LANDING=1 git -C "$main_wt" merge --ff-only "$branch"; }
 
 # MAIN'S CHECKOUT RUNS WHAT MAIN SAYS: after a landing that reached the
 # compiler, the landing tree's fixed-point compiler and runtime library
@@ -2060,7 +2060,7 @@ batch_core() {
         return 0
     fi
     ff_log="$(log_of batch-ff)"
-    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
+    if AVRA_LANDING=1 git -C "$main_wt" merge --ff-only "$batch_branch" > "$ff_log" 2>&1; then
         landed="$(git -C "$main_wt" rev-parse HEAD)"
         refresh_main_compiler "$batch_wt" "$main_wt"
         return 0

@@ -15,7 +15,7 @@
 //! A WRITTEN TYPE NAMES A DECLARATION TOO: a param's, a field's, a
 //! `let`'s annotation, a bound, a return — none of them a nested
 //! EXPRESSION, so `expr_refs`'s walk never sees them on its own.
-//! `type_use_refs` reads `NodeStore.type_roots` (core/parts.av) and
+//! `type_use_refs` reads `SyntaxArena.type_roots` (core/parts.av) and
 //! resolves every name it reaches — arguments and `or` alternatives
 //! included — through the file's namespace, exactly as a written
 //! type resolves under typing (`declare.av`'s `named_type`/
@@ -36,7 +36,7 @@ use core.{
     ExprId,
     StmtId,
     At,
-    NodeStore,
+    SyntaxArena,
     Nominal,
     TypeRef,
     UseParts,
@@ -175,7 +175,7 @@ impl Workspace {
     /// nothing, is read here through this file's namespace, as a
     /// written type already is. A hole's fill is ordinary code, bound
     /// where it stands, and counted by the walk above.
-    fn template_refs(f: FileId, names: NameFacts, store: NodeStore) -> List<Ref> {
+    fn template_refs(f: FileId, names: NameFacts, store: SyntaxArena) -> List<Ref> {
         let quotes = flatten(
             [quote_span(store, ExprId { index: i }) for i in 0..store.exprs.count()],
         )
@@ -184,7 +184,7 @@ impl Workspace {
         flatten([some_list(self.template_name_ref(f, names, store, e)) for e in inside])
     }
 
-    fn template_name_ref(f: FileId, names: NameFacts, store: NodeStore, e: ExprId) -> Ref? {
+    fn template_name_ref(f: FileId, names: NameFacts, store: SyntaxArena, e: ExprId) -> Ref? {
         if bound_decl_of(names, e) != null { return null }
         let called: string? = store.callee_name(e)
         if called != null { return self.named_use(f, names, e, called!, UseKind.Call) }
@@ -225,7 +225,7 @@ impl Workspace {
     /// one row: a `Call`'s callee and a `MethodCall`'s method are
     /// NAME fields, not nested expressions, so one expression id
     /// never contributes twice.
-    fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: NodeStore, e: ExprId) -> List<
+    fn expr_refs(f: FileId, names: NameFacts, facts: TypeFacts, store: SyntaxArena, e: ExprId) -> List<
         Ref,
     > {
         match store.expr(e) {
@@ -256,7 +256,7 @@ impl Workspace {
     fn method_ref(
         f: FileId,
         facts: TypeFacts,
-        store: NodeStore,
+        store: SyntaxArena,
         e: ExprId,
         subject: ExprId,
         name: string,
@@ -294,7 +294,7 @@ impl Workspace {
     /// A statement's own assignment target, when its place is rooted
     /// in a declaration — rare (a declaration is almost never a
     /// writable place), kept for the relation's own symmetry.
-    fn write_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+    fn write_refs(f: FileId, names: NameFacts, store: SyntaxArena, s: StmtId) -> List<Ref> {
         let t? = store.assign_target(s) else { return [] }
         let root? = store.place_root(t) else { return [] }
         some_list(self.use_of(f, names, root, UseKind.Write))
@@ -303,7 +303,7 @@ impl Workspace {
     /// Every written type on this statement's own signature, one row
     /// per declaration it names — the statement is the site, since a
     /// type has no expression id of its own to point at.
-    fn type_use_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+    fn type_use_refs(f: FileId, names: NameFacts, store: SyntaxArena, s: StmtId) -> List<Ref> {
         let tparams = store.decl_tparams(s)
         flatten(
             [[Ref { decl: d, file: f, at: At.Stmt(s), kind: UseKind.TypeUse } for d in type_use_decls(names, tparams, t)] for t in store.type_roots(s)],
@@ -315,7 +315,7 @@ impl Workspace {
     /// having no expression id either. A mark is a free name: most
     /// match no fn at all and answer no row, exactly as a mark
     /// nothing claims still parses.
-    fn mark_refs(f: FileId, names: NameFacts, store: NodeStore, s: StmtId) -> List<Ref> {
+    fn mark_refs(f: FileId, names: NameFacts, store: SyntaxArena, s: StmtId) -> List<Ref> {
         flatten([some_list(self.mark_ref(f, names, s, m)) for m in store.marks_written(s)])
     }
 
@@ -402,7 +402,7 @@ fn use_kind_of_word(w: string) -> UseKind? {
 }
 
 /// A quote's own span, as written — none for any other expression.
-fn quote_span(store: NodeStore, e: ExprId) -> List<Span> {
+fn quote_span(store: SyntaxArena, e: ExprId) -> List<Span> {
     let body? = store.expr(e).body_of() else { return [] }
     match body.view {
         .Verbatim(_, _) -> some_list(store.expr_span(e)),
@@ -412,7 +412,7 @@ fn quote_span(store: NodeStore, e: ExprId) -> List<Span> {
 
 /// Whether an expression is written inside one of the quote spans —
 /// never the quote itself.
-fn spanned_in(store: NodeStore, e: ExprId, quotes: List<Span>) -> bool {
+fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
     let sp? = store.expr_span(e) else { return false }
     !store.spanned_elsewhere(e) && quotes.any((q: Span) -> q.lo < sp.lo && sp.hi <= q.hi)
 }
