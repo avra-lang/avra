@@ -2,11 +2,15 @@
 # every affected package's suite on its own runner at once. `test` is the
 # one required check. The machine is .github/ci/Dockerfile's image; a train
 # is at most ten entries over its base, so twenty commits of history reach it.
+# On main, only the compiler job runs: a cache made there is the one every PR
+# and every train can read.
 name: checks
 
 on:
   pull_request:
   merge_group:
+  push:
+    branches: [main]
 
 concurrency:
   group: checks-${{ github.ref }}
@@ -53,6 +57,7 @@ jobs:
 
   lint:
     needs: compiler
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -76,7 +81,7 @@ jobs:
 
   suite:
     needs: compiler
-    if: needs.compiler.outputs.packages != '[]'
+    if: github.event_name != 'push' && needs.compiler.outputs.packages != '[]'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
