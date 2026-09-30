@@ -246,7 +246,7 @@ export type ParamScope = { params: List<TypeId> }
 /// A dot-call whose member is chosen at RUN: argument `seat` is a
 /// `dyn` value, and its type's tag picks among `members`.
 @derive(Fingerprint)
-export type Dispatch = { seat: int, members: List<DeclId> }
+export type RunChoice = { seat: int, members: List<DeclId> }
 
 export type TypeFacts = {
     of_expr: SideTable<TypeId>,
@@ -299,7 +299,7 @@ export type TypeFacts = {
     // the method a dot-call chose among a generic trait's impls
     chosen: SideTable<DeclId?>,
     // the members a dot-call dispatches among at run, by one `dyn` argument
-    dispatches: SideTable<Dispatch?>,
+    dispatches: SideTable<RunChoice?>,
     voices: Voices,
 }
 
@@ -330,7 +330,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         spreads: side_table("spreads", lo, hi, false),
         null_tails: side_table("null_tails", lo, hi, false),
         chosen: side_table<DeclId?>("chosen", lo, hi, null),
-        dispatches: side_table<Dispatch?>("dispatches", lo, hi, null),
+        dispatches: side_table<RunChoice?>("dispatches", lo, hi, null),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
@@ -390,9 +390,9 @@ impl TypeFacts {
 
     fn chosen_at(e: ExprId) -> DeclId? { self.chosen.get(e.index) }
 
-    fn record_dispatch(e: ExprId, d: Dispatch) { self.dispatches.set(e.index, d) }
+    fn record_dispatch(e: ExprId, d: RunChoice) { self.dispatches.set(e.index, d) }
 
-    fn dispatch_at(e: ExprId) -> Dispatch? { self.dispatches.get(e.index) }
+    fn dispatch_at(e: ExprId) -> RunChoice? { self.dispatches.get(e.index) }
 
     fn set_want(e: ExprId, ty: TypeId) {
         self.wants.set(e.index, ty)
