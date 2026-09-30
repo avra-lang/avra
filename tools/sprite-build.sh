@@ -131,7 +131,32 @@ sprite_ready() {
 }
 sprite_ready || exit 3
 
-sprite -s "$sprite" file push "$provision_script" "/home/sprite/.avra-provision.sh" >/dev/null
+# A dropped connection is retried twice, each retry said in one line.
+retried() {
+    what=$1
+    shift
+    n=0
+    until "$@"; do
+        n=$((n + 1))
+        [ "$n" -le 2 ] || { echo "sprite-build: $what failed 3 times on $sprite" >&2; return 1; }
+        echo "sprite-build: $what failed on $sprite — retry $n of 2" >&2
+        sleep 2
+    done
+}
+
+# A pushed file counts only once the Sprite holds it.
+push() {
+    sprite -s "$sprite" file push "$1" "$2" >/dev/null &&
+        sprite -s "$sprite" exec --no-port-forward -- test -s "$2" >/dev/null 2>&1
+}
+
+sync_tree() {
+    rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
+        --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git \
+        $sync_paths "$sprite:$remote/"
+}
+
+retried "the provisioning push" push "$provision_script" "/home/sprite/.avra-provision.sh" || exit 3
 
 # RT1: what the persistent tree and the shared cache already hold, so
 # the push and the compiler restore can each be skipped when nothing
@@ -149,7 +174,7 @@ else
     printf 'CACHE:no\n'
 fi
 SCRIPT
-sprite -s "$sprite" file push "$info_script" "$info_remote" >/dev/null
+retried "the info push" push "$info_script" "$info_remote" || exit 3
 info=$(sprite -s "$sprite" exec --no-port-forward -- bash -lc "sh '$info_remote' '$remote' '$compiler_hash'" 2>/dev/null) || info=""
 build_marker=$(printf '%s\n' "$info" | sed -n 's/^BUILD://p')
 cache_flag=$(printf '%s\n' "$info" | sed -n 's/^CACHE://p')
@@ -166,9 +191,7 @@ sync_paths=$(cd "$worktree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOO
     backend runtime packages tools bootstrap corpus; do [ ! -e "$p" ] || printf "%s " "$p"; done)
 echo "sprite-build: $sprite: sync" >&2
 sync_t0=$(date +%s)
-changes=$(cd "$worktree" && rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
-    --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git \
-    $sync_paths "$sprite:$remote/") || { echo "sprite-build: rsync to $sprite failed" >&2; exit 3; }
+changes=$(cd "$worktree" && retried "the rsync" sync_tree) || exit 3
 sync_state=unchanged; [ -n "$changes" ] && sync_state=synced
 sync_s=$(( $(date +%s) - sync_t0 ))
 
@@ -313,7 +336,7 @@ fi
 
 exit "$status"
 SCRIPT
-sprite -s "$sprite" file push "$run_script" "$run_remote" >/dev/null
+retried "the run-script push" push "$run_script" "$run_remote" || exit 3
 
 # BUILD ONCE, COPY EVERYWHERE: a hash this Sprite lacks is copied from a
 # pool Sprite whose cache holds it, and built here only when none does.
