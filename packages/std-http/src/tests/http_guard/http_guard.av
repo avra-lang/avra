@@ -1,0 +1,42 @@
+// proves: the stock guards, evaluated and native alike — a CORS grant
+// by name, a preflight answered, a stranger refused, and the security
+// headers a response did not set itself.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{Body}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.guard.{Cors, cors, hardened}
+
+fn asked(line: string, fields: string) -> Request<Unrouted> {
+    let raw = "${line}\r\nHost: h\r\n${fields}\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: Body.Empty, peer: "t", params: Unrouted {} }
+}
+
+fn shown(r: Response) -> string { "${r.status} " + [h.name + "=" + h.value for h in r.headers].join("; ") }
+
+let shared = cors(Cors { origins: ["https://app.example"], credentials: true })
+println(
+    shown(
+        shared(asked("GET / HTTP/1.1", "Origin: https://app.example\r\n"), (_q) -> text(200, "ok")),
+    ),
+)
+println(
+    shown(
+        shared(
+            asked(
+                "OPTIONS / HTTP/1.1",
+                "Origin: https://app.example\r\nAccess-Control-Request-Method: POST\r\n",
+            ),
+            (_q) -> text(200, "ok"),
+        ),
+    ),
+)
+println(
+    shown(
+        shared(asked("GET / HTTP/1.1", "Origin: https://evil.example\r\n"), (_q) -> text(200, "ok")),
+    ),
+)
+shown(hardened(asked("GET / HTTP/1.1", ""), (_q) -> Response { status: 204 }))

@@ -369,6 +369,17 @@ impl Response {
     /// response carries none.
     fn header(name: string) -> string? { self.headers.find(it.named(name))?.value }
 
+    /// This response saying it varies on `field`: added to its first
+    /// `Vary`, or in a `Vary` of its own — unless one already names it,
+    /// or `*`.
+    fn varied(field: string) -> Response {
+        if self
+            .headers
+            .any(it.named("vary") && (lists_token(it.value, "*") || lists_token(it.value, field))) { return self }
+        let first? = self.headers.find_index(it.named("vary")) else { return self.with_header("vary", field) }
+        self with { headers: [if j == first { h with { value: h.value + ", " + field } } else { h } for j, h in self.headers] }
+    }
+
     /// This response with `name: value` after its other headers.
     fn with_header(name: string, value: string) -> Response {
         self with { headers: self.headers.concat([Header { name: name, value: value }]) }

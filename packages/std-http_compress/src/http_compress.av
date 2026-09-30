@@ -112,7 +112,7 @@ const content_length: Bytes = "content-length".bytes()
 /// whenever the choice depended on what `q` accepts.
 fn response_encoded(c: Compression, q: Request<Unrouted>, r: Response) -> Response {
     if !codable(c, r) { return r }
-    let varied = r with { headers: vary_added(r.headers) }
+    let varied = r.varied("accept-encoding")
     let f? = preferred(q.headers("accept-encoding")) else { return varied }
     match encoded(r.body, f, effort(c, f)) {
         .Ok(b) -> if b.length < r.body.length { coded_as(varied, f, b) } else { varied },
@@ -157,15 +157,6 @@ fn weakened(h: Header) -> Header {
     if !h.named("etag") || h.value.starts_with("W/") { return h }
     h with { value: "W/" + h.value }
 }
-
-/// `headers` with `accept-encoding` in their `Vary`, added to one that
-/// is there or as a new one — unless it is already named, or `*`.
-fn vary_added(headers: List<Header>) -> List<Header> {
-    if !headers.any(it.named("vary")) { return headers.concat([Header { name: "vary", value: "accept-encoding" }]) }
-    [if h.named("vary") && !varies_on_coding(h.value) { h with { value: h.value + ", accept-encoding" } } else { h } for h in headers]
-}
-
-fn varies_on_coding(value: string) -> bool { lists_token(value, "*") || lists_token(value, "accept-encoding") }
 
 // ── Media types ─────────────────────────────────────────────────
 

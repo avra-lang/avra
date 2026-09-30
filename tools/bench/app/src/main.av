@@ -8,6 +8,7 @@ use @std.http.http.{Request, Unrouted, Response, Header, Handler, text, json_bod
 use @std.http.route.{compiled, dispatch}
 use @std.http.files.{Files, directory}
 use @std.http.form.{Part, Sink}
+use @std.http.guard.{Cors, cors, hardened}
 use @std.http_compress.{compressed}
 use @std.json.{parse}
 use @std.json.codec.{json}
@@ -125,6 +126,18 @@ println(
         upload,
     ),
 )
+let shared = cors(Cors { origins: ["https://app.example"] })
+println(
+    timed(
+        "cors, a granted origin",
+        n,
+        get,
+        "Origin: https://app.example\r\n",
+        "".bytes(),
+        (q) -> shared(q, hello),
+    ),
+)
+println(timed("security headers", n, get, "", "".bytes(), (q) -> hardened(q, hello)))
 println(
     timed(
         "static file, whole",
