@@ -1,0 +1,44 @@
+// A seat is CONSUMED only when every path to an answer keeps it whole.
+// Kept on SOME paths, it stays borrowed and the keeping path takes its
+// own reference — so a cold keep never charges the hot path a count,
+// and the caller's argument outlives every call that only read it.
+type P = { n: int, items: List<int> }
+
+fn made(n: int) -> P { P { n: n, items: [n] } }
+
+/// The cold arm keeps `p`; the hot one only reads it.
+fn kept_when(p: P, cold: bool) -> List<P> {
+    if cold { return [p] }
+    []
+}
+
+/// Every arm keeps `p`.
+fn kept_by_both(p: P, twice: bool) -> List<P> {
+    if twice { [p, p] } else { [p] }
+}
+
+/// A guard answers early without `p`, then the tail reuses it.
+fn stepped(p: P) -> P {
+    if p.n <= 0 { return made(0) }
+    p with { n: p.n - 1 }
+}
+
+/// A short-circuited right side keeps `p` only sometimes.
+fn kept_if(p: P, go: bool) -> bool { go && [p].length == 1 }
+
+/// A lambda's capture is a copy, never this seat's keep.
+fn later(p: P) -> fn() -> int { () -> p.items.length + p.n }
+
+mut total = 0
+let base = made(5)
+for i in 0..4 {
+    total = total + kept_when(base, i == 3).length
+}
+let kept = kept_when(made(7), true)
+let dropped = kept_when(made(8), false)
+let both = kept_by_both(made(2), true)
+let s = stepped(base)
+let z = stepped(made(0))
+let k = kept_if(base, true) && !kept_if(made(1), false)
+let f = later(made(3))
+"${total} ${kept[0].n} ${dropped.length} ${both.length} ${s.n} ${z.n} ${k} ${f()} ${base.n} ${base.items.length}"
