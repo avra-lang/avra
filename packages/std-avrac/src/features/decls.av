@@ -704,7 +704,11 @@ impl Decls {
     /// recorder, below, so a second door recording the same edge would
     /// pay for it twice.
     fn decl(d: DeclId) -> Decl {
-        let x = self.decl_row_rows.get().row(d.index)!
+        let rows = self.decl_row_rows.get()
+        let x = match rows.row(d.index) {
+            r? -> r
+            null -> rows.row(d.index)!
+        }
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
         self.rows_read(x.file)
         x
@@ -713,17 +717,24 @@ impl Decls {
     /// The row as it stands, unrecorded — dep_audit's own reads (which
     /// must not themselves record an edge), and a whole-program pass
     /// walking the table by index as it grows.
-    fn raw_decl(d: DeclId) -> Decl { self.decl_row_rows.get().row(d.index)! }
+    fn raw_decl(d: DeclId) -> Decl {
+        let rows = self.decl_row_rows.get()
+        match rows.row(d.index) {
+            r? -> r
+            null -> rows.row(d.index)!
+        }
+    }
 
     /// How many declarations are minted, read unrecorded as `file_count` is.
     fn decl_count() -> int { self.decl_row_rows.get().count() }
 
-    /// Every declaration, unrecorded — the table's own whole-set read: the
-    /// old hand-table scan recorded nothing, so this does not either.
-    fn all_decls() -> List<Decl> { [self.raw_decl(DeclId { index: i }) for i in 0..self.decl_count()] }
+    /// Every declaration, unrecorded, as the dense list `set_decl` keeps in
+    /// step with the relation — a whole-table scan reads it in place, never a
+    /// copy of the rows.
+    fn all_decls() -> List<Decl> { self.decls.get() }
 
-    /// A declaration's row rewritten in place: the hand table (kept for
-    /// `.8.2`'s parity and, later, deletion) and the relation together, so
+    /// A declaration's row rewritten in place: the dense list and the
+    /// relation together, so
     /// a reader through either door sees the same fields. The row's
     /// `@local` columns (file, stmt, parent, root, lo, hi) carry no stable
     /// hash or index, so a write that only moves them takes `put`'s cheap
