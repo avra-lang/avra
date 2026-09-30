@@ -310,14 +310,22 @@ fn asterisk_form(method: Method) -> TargetForm {
     .Asterisk
 }
 
-/// Whether a scheme opens this target — `://` inside it and not at
-/// its very start — and a host follows it: an `http` URI with an
-/// empty host is invalid and its recipient rejects it (RFC 9110
-/// §4.2.1), and the scheme is not the axis here.
+/// Whether a scheme opens this target — a letter, then letters,
+/// digits, `+`, `-` or `.` up to `://` (RFC 3986 §3.1) — and a host
+/// follows it: an `http` URI with an empty host is invalid and its
+/// recipient rejects it (RFC 9110 §4.2.1), and the scheme is not the
+/// axis here.
 fn schemed(buf: Bytes, lo: int, hi: int) -> bool {
-    let at = buf.index_of(scheme_end, lo)
-    at > lo && at < hi && authority_named(buf, at + 3, hi)
+    let at = buf.run(lo, scheme_char)
+    at > lo &&
+        at + 3 <= hi &&
+        is_alpha(buf.at(lo)) &&
+        buf.eq_at(at, at + 3, scheme_end) &&
+        authority_named(buf, at + 3, hi)
 }
+
+const scheme_char: Bytes = admits((c) -> is_digit(c) || is_alpha(c) || one_of(scheme_marks, c))
+const scheme_marks: Bytes = "+-.".bytes()
 
 /// The authority from `at` names a host: userinfo dropped, then the
 /// one host law.

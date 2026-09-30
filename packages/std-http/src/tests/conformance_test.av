@@ -176,6 +176,15 @@ spec "@std.http RFC 9110/9112 conformance" {
                 refuses(req_line("GET http://:80/p HTTP/1.1"), Refusal.Target) &&
                 refuses(req_line("GET http://u@/p HTTP/1.1"), Refusal.Target)
         }
+        then "a scheme holding a `?` is no scheme, so the target is refused (fuzz: trap-272-75247)" {
+            cf_form(Method.Get, "http?://0/p?1") == TargetForm.Other &&
+                refuses(req_line("GET http?://0/p?1 HTTP/1.1"), Refusal.Target)
+        }
+        then "a scheme opens with a letter and holds letters, digits, `+`, `-` and `.`" {
+            cf_form(Method.Get, "a+b-c.9://h/p") == TargetForm.Absolute &&
+                cf_form(Method.Get, "9a://h/p") == TargetForm.Other &&
+                cf_form(Method.Get, "a_b://h/p") == TargetForm.Other
+        }
         then "absolute-form with userinfo before a host is still absolute-form" {
             cf_form(Method.Get, "http://u@h/p") == TargetForm.Absolute
         }

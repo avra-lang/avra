@@ -172,7 +172,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -692,6 +692,13 @@ bench: $(COMPILER_OBJS)
 # Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)
 	@sh tools/fuzz.sh
+
+# THE HTTP FRAMERS FUZZED in bounded time (FUZZ_HTTP_SECONDS, default
+# 180): the corpus and every kept finding replayed, libFuzzer over the
+# C rows, then the seeded mutation fuzzer — a trap bisected to its one
+# mutant and kept in packages/std-http/fuzz/crashes.
+fuzz-http: build/libavra_runtime.a
+	@sh tools/fuzz_http.sh
 
 # The scaffolder's templates must stay compilable: scaffold a
 # throwaway feature, run the suite with it in the tree, remove it.
