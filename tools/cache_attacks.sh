@@ -5,7 +5,7 @@
 # disagreement here. The fixtures are written fresh each run: the steps edit them.
 set -u
 cd "$(dirname "$0")/.."
-R=build/cache-attacks; fails=0; steps=0; holds=0
+R=build/cache-attacks; fails=0; steps=0; holds=0; ROOT=$PWD
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/inner $R/a/src $R/b/src $R/c/src
 cat > $R/lib/avra.toml <<'TOML'
 [package]
@@ -417,6 +417,17 @@ MH() { # MH <label> <path-substr> <want: held|read>
     case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
     if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
 }
+# `--time`'s own read list is no signal for AN ENTRY FILE: it names the entry
+# unconditionally whenever the build does any work at all — needing to run its
+# statements, never because ITS hold failed — so MH on an entry always answers
+# "read" the moment anything else in the build changes. `cache held <substr>`
+# has no such confound: it answers one file's own FileHold, entry or not.
+MHC() { # MHC <label> <path-substr> <want: held|read>
+    steps=$((steps+1))
+    out=$(cd $R/mh && "$ROOT/avra" cache held "$2" 2>&1)
+    case "$out" in *"— held"*) got=held ;; *"— read:"*) got=read ;; *) got=unknown ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | tr '\n' ' ')"; fi
+}
 mkdir -p $R/mhl/src $R/mh/src
 printf '[package]\nname = "@rt/mhl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mhl"\npath = "src/lib.av"\n' > $R/mhl/avra.toml
 cat > $R/mhl/src/pad.av <<'AV'
@@ -443,6 +454,31 @@ ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
 MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
 MH "mh: and back, cold no more" lib.av held
+# CROSS-PACKAGE, NOT MERELY CROSS-MODULE: `main.av` (package `rt-mh`) crosses
+# into `@rt/mhl` only through `use @rt.mhl.{host}`, never naming `pad.av` or
+# `priv` itself. Checked through `cache held`, not `--time` (MH's entry
+# confound, above): a body-only edit holds `main.av`, whichever file it
+# touches. A SIGNATURE edit re-reads it even for a declaration `main.av`
+# never calls — an importer keys on its package's whole exported surface, one
+# digest per package, not one per declaration it actually reaches.
+# `cache held` wants rule findings, and only `build --time` has run above
+# (a `.Binary` want, which never earns them) — one throwaway call warms
+# them, or the first real check below reads "none were kept" for every
+# file, not for the edit it is meant to isolate.
+(cd $R/mh && "$ROOT/avra" cache held >/dev/null 2>&1)
+ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
+MHC "mh: pad's body only moves — main.av stays held" main.av held
+ed $R/mhl/src/pad.av "{ 30 }" "{ 3 }"
+ed $R/mhl/src/lib.av "pad() + priv()" "pad() + priv() + 0"
+MHC "mh: host's body only moves — main.av stays held" main.av held
+ed $R/mhl/src/lib.av "pad() + priv() + 0" "pad() + priv()"
+ed $R/mhl/src/lib.av "export fn host() -> int" "export fn host(n: int = 0) -> int"
+MHC "mh: host's EXPORTED signature moves (main.av calls host directly) — re-reads" main.av read
+ed $R/mhl/src/lib.av "export fn host(n: int = 0) -> int" "export fn host() -> int"
+ed $R/mhl/src/pad.av "export fn pad() -> int { 3 }" "export fn pad(n: int = 0) -> int { 3 }"
+MHC "mh: pad's EXPORTED signature moves (main.av never calls pad) — re-reads too, today" main.av read
+ed $R/mhl/src/pad.av "export fn pad(n: int = 0) -> int { 3 }" "export fn pad() -> int { 3 }"
+MHC "mh: and back, cold no more" main.av held
 
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
