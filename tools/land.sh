@@ -83,6 +83,7 @@
 # the chore commit (commit_chore_if_moved) that carries the seed and
 # every moved baseline together — at most one per landing.
 set -eu
+verdict_ok=0
 
 LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
@@ -371,6 +372,7 @@ give_verdict() {
 absorbed_exit() {
     cat "$1/verdict"
     st="$(cat "$1/status" 2>/dev/null)"
+    [ "${st:-1}" = 0 ] && verdict_ok=1
     release_lock
     exit "${st:-1}"
 }
@@ -387,8 +389,29 @@ finish_lock() {
     release_absorbed
     release_lock
     echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
-    [ "$exit_st" -eq 0 ] || restore_generated "${branch_wt:-}"
-    clean_own_scratch "$exit_st"
+    tool_reason=""
+    [ -f "$scratch/tool-failure" ] && tool_reason="$(cat "$scratch/tool-failure")"
+    final_st=0
+    exit_verdict "$exit_st" "${verdict_ok:-0}" "$tool_reason" || final_st=$?
+    [ "$final_st" -eq 0 ] || restore_generated "${branch_wt:-}"
+    clean_own_scratch "$final_st"
+    exit "$final_st"
+}
+
+# A STATUS IS A VERDICT. 0 only where a verdict said so (a landing, a
+# dry run's OK); a tool failure is 3 and says NOT LANDED; a run that
+# ended 0 with no verdict is 3 too, never a silent success.
+exit_verdict() {
+    if [ "$2" -eq 1 ] && [ "$1" -eq 0 ]; then return 0; fi
+    if [ -n "$3" ]; then
+        echo "NOT LANDED — tool failure: $3"
+        return 3
+    fi
+    if [ "$1" -eq 0 ]; then
+        echo "NOT LANDED — the run ended with no verdict"
+        return 3
+    fi
+    return "$1"
 }
 
 # A failed run leaves the branch tree as it found it: the seed is
@@ -2031,9 +2054,10 @@ main_batch() {
     batch_core "$dry_run" "$@"
     if [ -n "$batch_note" ] && [ -z "$landed" ]; then
         echo "$batch_note" >&2
-        [ "$dry_run" -eq 1 ] && [ -n "$good" ] && [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && exit 0
+        [ "$dry_run" -eq 1 ] && [ -n "$good" ] && [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && { verdict_ok=1; exit 0; }
         exit 1
     fi
+    verdict_ok=1
     echo "LANDED $landed — $good"
     [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ]
 }
@@ -2057,6 +2081,7 @@ land_absorbed() {
         fi
     done
     if [ -n "$landed" ] && listed "$branch" "$good"; then
+        verdict_ok=1
         echo "LANDED $landed — in a batch with: $good"
         exit 0
     fi
@@ -2111,6 +2136,7 @@ main() {
 
     if [ "$dry_run" -eq 1 ]; then
         echo "land: --dry-run — skipping the fast-forward"
+        verdict_ok=1
         echo "land: DRY RUN OK for $branch (would land as $(git -C "$branch_wt" rev-parse --short HEAD))"
         exit 0
     fi
@@ -2118,6 +2144,7 @@ main() {
     ff_log="$(log_of ff)"
     if try_ff > "$ff_log" 2>&1; then
         refresh_main_compiler "$branch_wt" "$main_wt"
+        verdict_ok=1
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
@@ -2131,6 +2158,7 @@ main() {
     ff_retry_log="$(log_of ff-retry)"
     if try_ff > "$ff_retry_log" 2>&1; then
         refresh_main_compiler "$branch_wt" "$main_wt"
+        verdict_ok=1
         echo "LANDED $(git -C "$main_wt" rev-parse HEAD)"
         exit 0
     fi
