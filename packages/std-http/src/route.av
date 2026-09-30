@@ -434,18 +434,33 @@ once fn open_brace() -> Bytes { "{".bytes() }
 /// A TARGET WITH NO PATH IS THE SAME 404, and the table is not walked
 /// at all: `OPTIONS *` and CONNECT's authority name no resource, so
 /// there is nothing to match them against.
+///
+/// A HEAD NO HEAD ROUTE ANSWERS IS ITS GET (RFC 9110 §9.3.2): the GET
+/// route answers it, and the server writes that answer's head alone.
 export fn dispatch(t: Table, q: Request<Unrouted>) -> Response {
     let target? = q.path() else { return status(404) }
     let node = landed(t, target)
     if node < 0 { return status(404) }
+    served_by(t, node, q, target, q.head.method) ?? headed_by_get(t, node, q, target) ?? status(404)
+}
+
+/// The first answer a route of method `m` on `node` gives, or absent.
+fn served_by(t: Table, node: int, q: Request<Unrouted>, target: Bytes, m: Method) -> Response? {
     for i in t.nodes[node].rows {
         let r = t.routes[i]
-        if r.method == q.head.method {
+        if r.method == m {
             let answer: Response? = r.serve(q, target)
-            if answer != null { return answer! }
+            if answer != null { return answer }
         }
     }
-    status(404)
+    null
+}
+
+/// A HEAD's answer from the GET routes on `node`, or absent for any
+/// other method.
+fn headed_by_get(t: Table, node: int, q: Request<Unrouted>, target: Bytes) -> Response? {
+    if !(q.head.method is .Head) { return null }
+    served_by(t, node, q, target, Method.Get)
 }
 
 /// The node a target lands on, or -1 when the walk falls off the
