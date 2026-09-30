@@ -210,7 +210,7 @@ fn field_read(f: Field) -> Stmts {
         let ${f.name} = {
             let at = ${slot(f)}
             let got: ${inner(f.kind).spelled()}? = ${reader(inner(f.kind))}
-            ${[checked(a, tree_ruling) for a in f.annotations if !is_secret(a)]}
+            ${[checked(a, tree_ruling) for a in field_rules(f)]}
             got
         }
     }
@@ -470,15 +470,17 @@ fn settled(t: Type, f: Field, i: int) -> Stmts {
 /// A field's rules run where it is read: each up to the first that
 /// names a sibling, which must wait until every field is read.
 fn early(t: Type, f: Field) -> List<Annotation> {
-    let rules = [a for a in f.annotations if !is_secret(a)]
-    [a for j, a in rules if j < waits_from(t, rules)]
+    [a for j, a in field_rules(f) if j < waits_from(t, field_rules(f))]
 }
 
 /// The rest, run once every field is read.
 fn late(t: Type, f: Field) -> List<Annotation> {
-    let rules = [a for a in f.annotations if !is_secret(a)]
-    [a for j, a in rules if j >= waits_from(t, rules)]
+    [a for j, a in field_rules(f) if j >= waits_from(t, field_rules(f))]
 }
+
+/// A field's rules, in the order they run: every annotation it wears
+/// but `@secret`.
+fn field_rules(f: Field) -> List<Annotation> { [a for a in f.annotations if !is_secret(a)] }
 
 /// Where a field's rules first read a sibling: the index of the first
 /// rule an argument of which names a field of `t`.
@@ -574,7 +576,7 @@ fn json_element(k: Kind) -> Code? {
 fn keys(t: Type) -> List<Decls> {
     if names_a_shape(t) || !t.variants.is_empty() { return [] }
     let names = literal_list([literal(f.name) for f in t.fields])
-    mut chain = quote { d.key_index(at, end, ${name(t.name)}.field_names()) }
+    mut chain = escaped_key(t)
     for len in lengths(t) {
         chain = quote { if end - at - 2 == ${len} { ${keyed(t, len)} } else { ${chain} } }
     }
@@ -596,12 +598,16 @@ fn lengths(t: Type) -> List<int> {
 /// The fields of one name length, tried in turn; an escaped key of
 /// that length falls to its text.
 fn keyed(t: Type, len: int) -> Code {
-    mut chain = quote { d.key_index(at, end, ${name(t.name)}.field_names()) }
+    mut chain = escaped_key(t)
     for i in reversed([i for i, f in t.fields if f.name.length == len]) {
         chain = quote { if d.key_is(at, ${literal(t.fields[i].name)}) { ${i} } else { ${chain} } }
     }
     chain
 }
+
+/// A key its bytes matched to no field: read as text, since an escape
+/// may spell a field's name.
+fn escaped_key(t: Type) -> Code { quote { d.key_index(at, end, ${name(t.name)}.field_names()) } }
 
 fn reversed(xs: List<int>) -> List<int> { [xs[xs.length - 1 - i] for i in 0..xs.length] }
 

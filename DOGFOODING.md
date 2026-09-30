@@ -742,6 +742,19 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       while runs repeat, and a poller that read nothing is no witness.
       Not ratcheted: no grep tells a path others read from one nobody does.
 
+## A scan that ACCEPTS beside a parser that EXPLAINS
+
+A hot reader over a grammar answers a position, or -1 where the text
+is not the grammar, and never words a refusal: on -1 it steps aside
+and the ONE parser that explains says why. The two agree on which
+texts are accepted — a boolean a differential test pins over
+generated and mutated input — and never on messages, which would be
+a second copy of every voice. @std/json's scans (`skip`, `string_end`,
+`int_end`) beside `parse`; @std/validate's `T.from_json` beside the
+tree path (`from_json` then `T.decode`), which answers every refusal
+the direct reader meets. Smell: a fast path carrying its own error
+enum that mirrors the slow path's.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

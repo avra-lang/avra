@@ -528,6 +528,16 @@ Recorded as each decision landed on `lane/validate`.
   ```
 - **`@derive(Decode)` is written.** §1's type carries no derive; the
   derive is the visible door (P7), one line.
+- **JSON has a direct path, and the tree path explains it.**
+  `T.from_json(text)` walks the bytes into the record, one pass, no
+  tree; where the text is not JSON, a bound is passed or the coercion
+  is `Lax`, it steps aside and `T.decode(from_json(text)?)` answers —
+  so every refusal of malformed input is the tree's, word for word. A
+  differential test holds the two to the same answer over generated,
+  truncated and mutated payloads.
+- **A field's rules run where it is read**, up to the first that names
+  a sibling; that one, and the rules after it, run once every field is
+  read, so a sibling reads what its own rules answered.
 
 ## 15. Speed
 
@@ -537,20 +547,53 @@ is the receipt: §11's Signup (eight fields, a list of named strings, a
 nullable named field, a cross-field rule) read from the same two files
 by Avra, by Rust (serde_json straight into the struct, then garde) and
 by C (yyjson, then hand-written rules over views into its document —
-the floor, building no messages). Separate processes, interleaved
-round by round, median of five, ns per payload, on an M-series Mac
-under load.
+the floor, building no messages). Separate processes on one Sprite
+(x86_64 Linux), interleaved round by round, median of five, ns per
+payload. `instructions.sh` counts the same rows under callgrind — the
+number no neighbour's load moves, so it is the one to compare.
 
-**Before** (lane/validate 4adfe22):
+| row | Avra before | Avra after | Rust | C |
+|---|---|---|---|---|
+| decode + rules, valid (ns) | 10185 | 1494 – 2041 | 1689 – 1756 | 200 – 224 |
+| decode + rules, refused, every rule (ns) | 15294 | 5017 – 6674 | 2139 – 2561 | 197 – 215 |
+| decode + rules, valid (instructions) | — | 20404 | 20057 | 2999 |
+| decode + rules, refused (instructions) | — | 59161 | 23862 | 2990 |
+| parse only, valid (ns) | 3869 | 3869 | 600 | 154 |
+| tree path: `Value` + decode, valid (ns) | 10185 | 7821 | — | — |
 
-| row | Avra | Rust | C |
-|---|---|---|---|
-| parse only (valid) | 2865 | 733 | 144 |
-| to `Value` (valid) | 3290 | — | — |
-| decode + rules (valid) | 7615 | 1291 | 244 |
-| decode + rules (refused, every rule) | 12279 | 2060 | 259 |
+Two ranges are two Sprites' runs; the ratio to Rust moved between
+0.88x and 1.16x with the machine, while the instruction counts sat at
+parity. Rust's refused row reads a copy of the struct without
+`deny_unknown_fields`, so serde reaches garde and every rule's issue is
+built (the strict struct stops at the first shape error, ~850 ns, one
+issue); Avra reports all eight issues, each with its path, received
+value and did-you-mean fix.
 
-Rust's "every rule" row reads a copy of the struct without
-`deny_unknown_fields`: serde stops at the first shape error, so the
-strict struct never reaches garde (924 ns, one issue). Avra reports
-all eight issues in both modes.
+**What each lever bought** (instructions per accepted decode unless
+said):
+
+- *The derived direct decoder* (`T.from_json`, json.av): no `Json` and
+  no `Value` tree; keys matched by length then bytes; values read where
+  they stand. 10185 -> ~3700 ns.
+- *Allocation-free hot rules*: `codepoint_count` stopped allocating a
+  step per character (a `length` rule on a 21-character password was
+  938 ns alone), the email check became one class-table scan, a record
+  is built once instead of copied per present default. -> ~1900 ns.
+- *One scan per plain string* (`plain_end`) and no allocating sort
+  check: 20368 -> 15536 instructions without rules.
+- *The refusal*: rules run where a field is read (so a payload in
+  declaration order sorts nothing), paths held nearest-first and filed
+  in place, the root path static, a words-only refusal built as one
+  issue, bounded did-you-mean: 132470 -> 59161 instructions.
+
+**What blocks the rest.** The accepted path meets Rust. The refused
+path does not meet 1.5x (it is 2.9x): each issue costs ~5000
+instructions against garde's ~550, of which roughly a third is freeing
+what it allocated (105 boxes refused, 14 accepted) and the rest is
+boxes, reference counts and calls around small work — interpolating a
+message alone is ~1100. The asks that close it are filed under the
+survey epic: an arena per decode (freed in one step), the Bytes rows as
+inlined hot leaves with cross-file inlining for release builds, a text
+view that shares its parent's box, interpolation without a parts list,
+and one-word payload enums unboxed. The plain `parse` is its own
+follow-up: the scans it could stand on now exist.

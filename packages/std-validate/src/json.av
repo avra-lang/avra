@@ -55,10 +55,13 @@ impl Decoding {
     /// The direct reader stops here; the tree path answers.
     mut fn aside() { self.pos = -1 }
 
-    /// Whether the byte at the cursor is `c`.
-    fn at_byte(c: int) -> bool {
-        self.pos >= 0 && self.pos < self.bytes.length && self.bytes.at(self.pos) == c
+    /// The byte at the cursor, or -1 past the text or aside.
+    fn here() -> int {
+        if self.pos >= 0 && self.pos < self.bytes.length { self.bytes.at(self.pos) } else { -1 }
     }
+
+    /// Whether the byte at the cursor is `c`.
+    fn at_byte(c: int) -> bool { self.here() == c }
 
     /// Whether a container at `depth` is past a bound — the decoder's,
     /// which the tree path names as an issue, or the parser's, which it
@@ -114,7 +117,8 @@ impl Decoding {
 
     mut fn json_int(depth: int, required: bool, secret: bool) -> int? {
         let at = self.pos
-        if self.at_byte(45) || at >= 0 && at < self.bytes.length && is_digit(self.bytes.at(at)) {
+        let c = self.here()
+        if c == 45 || is_digit(c) {
             let end = int_end(self.bytes, at)
             if end >= 0 {
                 self.pos = end
@@ -127,9 +131,10 @@ impl Decoding {
 
     mut fn json_bool(depth: int, required: bool, secret: bool) -> bool? {
         let at = self.pos
-        if self.at_byte(116) || self.at_byte(102) {
+        let c = self.here()
+        if c == 116 || c == 102 {
             let end = skip(self.bytes, at, 0)
-            if end == at + 4 && self.bytes.at(at) == 116 || end == at + 5 {
+            if end == at + 4 && c == 116 || end == at + 5 {
                 self.pos = end
                 return end == at + 4
             }
@@ -142,7 +147,8 @@ impl Decoding {
     /// tree's to refuse, since a float seat takes only a float.
     mut fn json_float(depth: int, required: bool, secret: bool) -> float? {
         let at = self.pos
-        if self.at_byte(45) || at >= 0 && at < self.bytes.length && is_digit(self.bytes.at(at)) {
+        let c = self.here()
+        if c == 45 || is_digit(c) {
             let end = number_end(self.bytes, at)
             if end >= 0 && int_end(self.bytes, at) < 0 {
                 self.pos = end
@@ -267,7 +273,11 @@ impl Decoding {
     /// place `k` in its container's order.
     mut fn stepped(mark: int, k: int, s: Step) {
         for i in mark..self.count() {
-            if self.issues[i].path.up.is_empty() { self.issues[i].path = Path { up: [s] } } else { self.issues[i].path.up.push(s) }
+            if self.issues[i].path.up.is_empty() {
+                self.issues[i].path = Path { up: [s] }
+            } else {
+                self.issues[i].path.up.push(s)
+            }
             self.order.set(i, k)
         }
     }
