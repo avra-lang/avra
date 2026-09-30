@@ -369,11 +369,12 @@ export type Workspace = {
     // plain for its identity: the injected clock fn, set once at construction
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
-    /// One `ErrorSite` row per fail/propagate/catch site, filed by
-    /// `fail_summary` (failures.av). `avra-8sb5.57.9.1`.
-    error_sites_db: Cell<RelDb>,
-    /// The whole-program raised-error fixpoint, over `error_sites_db`
-    /// — `raised_by`'s own table.
+    /// The failures pass's relations (failures.av): one `ErrorSite` row
+    /// per fail/propagate/catch site, filed by `fail_summary`, and one
+    /// `Raised` row per inferring fn, owned by the fixpoint's solve.
+    failures_db: Cell<RelDb>,
+    /// The whole-program raised-error fixpoint over `ErrorSite` — its
+    /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
@@ -843,7 +844,7 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
-        error_sites_db: Cell.new(hooked_db(relation_hooks(kernel))),
+        failures_db: Cell.new(hooked_db(relation_hooks(kernel))),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
