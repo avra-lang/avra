@@ -165,3 +165,54 @@ against the floor's 0.6 µs, about 3.2x; the definition of done asks
 for 2x. Keep-alive json costs 10.6 to 13.5 µs against 6.7 to 8.3 µs.
 The Linux Sprite rows above (`## Where it stands`) remain the
 reference; this table is the Mac's, same harness.
+
+## H2 decision: TLS library
+
+**mbedTLS 4.1 LTS** (4.1.1, supported to March 2029), vendored in
+`packages/std-tls/vendor/` by `vendor/import.sh` from the release tarball
+(sha256 checked against the upstream release notes). Measured on macOS
+arm64, 2026-09-29, on a shared machine at load average 40 to 70, so the
+speed rows are best-of-three and read as ratios, not absolutes. Linux was
+not measured here.
+
+Every candidate completed a verified TLS 1.3 handshake between a client
+and a server over two memory buffers, then one record each way. So the
+non-blocking question is settled for all four. What separates them is the
+toolchain and the size.
+
+| | mbedTLS 4.1/4.2 | LibreSSL 4.3.2 | BoringSSL 0.20260929 | rustls-ffi 0.15.4 |
+|---|---|---|---|---|
+| toolchain | C99, no dependency | C plus a portability layer and a generated config | C++17; every program links libc++ | cargo, plus aws-lc's C and CMake |
+| fits `build/%.o: %.c` | yes, 66 units | no | no | no |
+| memory API | `mbedtls_ssl_set_bio` callbacks, WANT_READ | memory BIOs | memory BIOs | `read_tls`/`write_tls` callbacks |
+| stripped probe, both sides | 464 KB default config; 261 KB ours | 1.04 MB | 1.10 MB plus libc++ | 3.15 MB |
+| build | 29 s at -j4; ours 24 s serial | 45 s at -j4 | 150 s at -j4 | 81 s plus the crate fetch |
+| handshake, both sides | 4.0 ms | 1.8 ms | 0.5 ms | not measured |
+| AES-128-GCM bulk | 476 MB/s | 132 MB/s (it chose ChaCha20) | 2382 MB/s | not measured |
+| licence | Apache-2.0 or GPL-2.0+ | ISC and OpenSSL | Apache-2.0 and OpenSSL/ISC | Apache/MIT/ISC; aws-lc Apache/ISC |
+| support | LTS to March 2029 | OpenBSD's cadence | no API promise | 0.x |
+
+**Why mbedTLS.** It is the only candidate the package-C standard can
+build as it stands. Each upstream unit compiles through the one generic
+rule via a one-line wrapper, and the units are archived so a program
+carries only what its handshake reaches. The other three each bring a
+second toolchain into every program: C++ and libc++, or cargo. P14 says
+no runtime, and libc++ is one.
+
+**What it costs.** Speed. BoringSSL's hand-written assembly makes its
+handshake about 8x cheaper and its AES-GCM about 5x faster. With
+resumption tickets (ticket .4), a returning client skips the signature,
+which is most of the handshake. The rest is an H7 lever: mbedTLS takes
+accelerated crypto through its PSA driver interface, so faster
+primitives can land without changing the engine.
+
+**Why 4.1 and not 3.6 or 4.2.** 3.6 LTS ends in March 2027. 4.2 is a
+feature release. 4.1 is the LTS through March 2029.
+
+**The config is the mechanism list.** `src/c/std_tls_ssl_config.h` and
+`std_tls_crypto_config.h` name every protocol and primitive compiled in:
+TLS 1.2 and 1.3, ECDHE only, ECDSA and RSA certificates, AES-GCM and
+ChaCha20-Poly1305, SNI, ALPN and tickets. Renegotiation, DTLS, static
+RSA, PSK-only, CBC, SHA-1 and mbedTLS's own sockets are left out. Fork
+safety comes from mbedTLS's RNG, which reseeds when the pid changes, so
+one process per core is safe.
