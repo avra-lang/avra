@@ -22,8 +22,9 @@
 //! formats.av JSON and TOML, read into a Value
 //! issue.av   Path, Issue and Issues — where, what, and the report
 //! decode.av  Decoding: a Value read into a typed value, every rule run
+//! json.av    JSON text read straight into a typed value, no tree between
 //! ```
-use @std.text.{codepoint_count}
+use @std.text.{codepoint_count, admits}
 use issue.{Issue, Issues, root}
 use value.{Value, quoted}
 
@@ -133,30 +134,37 @@ export fn nearest(v: string, options: List<string>) -> string? {
 // ── the tests the rules share ───────────────────────────────────
 
 fn is_email(v: string) -> bool {
-    if v.length > 254 { return false }
-    match v { "{local}@{domain}" -> is_local(local) && is_domain(domain), _ -> false }
+    let b = v.bytes()
+    let at = b.run(0, local_char)
+    b.length <= 254 && at > 0 && at <= 64 && at < b.length && b.at(at) == 64 && is_domain(b, at + 1)
 }
 
-fn is_local(s: string) -> bool {
-    !s.is_empty() && s.length <= 64 && [s.char_code(i) for i in 0..s.length].all(local_char(it))
+/// Two or more dotted labels from `from` to the end.
+fn is_domain(b: Bytes, from: int) -> bool {
+    mut i = from
+    mut labels = 0
+    while true {
+        let end = b.run(i, label_char)
+        if !is_label(b, i, end) { return false }
+        labels = labels + 1
+        if end == b.length { return labels >= 2 }
+        if b.at(end) != 46 || end + 1 == b.length { return false }
+        i = end + 1
+    }
+    false
 }
 
-fn local_char(c: int) -> bool { c > 32 && c < 127 && c != 64 && c != 34 && c != 44 && c != 59 }
-
-fn is_domain(s: string) -> bool {
-    let labels = s.split(".")
-    labels.length >= 2 && !s.ends_with(".") && labels.all(is_label(it))
+fn is_label(b: Bytes, lo: int, hi: int) -> bool {
+    hi > lo && hi - lo <= 63 && b.at(lo) != 45 && b.at(hi - 1) != 45
 }
 
-fn is_label(s: string) -> bool {
-    !s.is_empty() &&
-        s.length <= 63 &&
-        !s.starts_with("-") &&
-        !s.ends_with("-") &&
-        [s.char_code(i) for i in 0..s.length].all(label_char(it))
-}
+/// What a mailbox's local part may hold, and a domain label.
+const local_char: Bytes = admits(is_local_char)
+const label_char: Bytes = admits(is_label_char)
 
-fn label_char(c: int) -> bool { is_alnum(c) || c == 45 || c >= 128 }
+fn is_local_char(c: int) -> bool { c > 32 && c < 127 && c != 64 && c != 34 && c != 44 && c != 59 }
+
+fn is_label_char(c: int) -> bool { is_alnum(c) || c == 45 || c >= 128 }
 
 fn is_alnum(c: int) -> bool { c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 }
 
@@ -168,26 +176,29 @@ fn suggested(v: string, options: List<string>) -> Value? {
 /// Within a few edits; lengths further apart than that are never
 /// measured, so a huge value costs nothing here.
 fn near(v: string, option: string) -> bool {
-    let most = if v.length < 6 { 1 } else { 2 }
-    let apart = v.length - option.length
-    apart <= most && apart >= 0 - most && edits(v, option) <= most
+    within(v.bytes(), option.bytes(), 0, 0, if v.length < 6 { 1 } else { 2 })
 }
 
-/// Levenshtein distance, one row at a time.
-fn edits(a: string, b: string) -> int {
-    mut prev = [j for j in 0..b.length + 1]
-    for i in 0..a.length {
-        mut row = [i + 1]
-        for j in 0..b.length {
-            let cost = if a.char_code(i) == b.char_code(j) { 0 } else { 1 }
-            row.push(least(least(prev[j + 1] + 1, row[j] + 1), prev[j] + cost))
-        }
-        prev = row
+/// Whether `a` from `i` becomes `b` from `j` in `k` edits or fewer —
+/// Levenshtein distance bounded by `k`: a common run is free, and past
+/// it each edit is one of three branches, `k` deep at most.
+fn within(a: Bytes, b: Bytes, i: int, j: int, k: int) -> bool {
+    mut x = i
+    mut y = j
+    while x < a.length && y < b.length && a.at(x) == b.at(y) {
+        x = x + 1
+        y = y + 1
     }
-    prev[b.length]
+    let left = a.length - x
+    let right = b.length - y
+    if left == 0 || right == 0 { return left + right <= k }
+    k > 0 &&
+        left - right <= k &&
+        right - left <= k &&
+        (within(a, b, x + 1, y + 1, k - 1) ||
+            within(a, b, x + 1, y, k - 1) ||
+            within(a, b, x, y + 1, k - 1))
 }
-
-fn least(a: int, b: int) -> int { if a < b { a } else { b } }
 
 // ── voices ──────────────────────────────────────────────────────
 

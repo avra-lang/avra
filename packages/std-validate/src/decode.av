@@ -64,21 +64,40 @@ impl Obj {
     }
 }
 
-/// A decode in flight: its policy, its bounds, every issue so far.
-export type Decoding = { coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}, issues: List<Issue> = [] }
+/// A decode in flight: its policy, its bounds, every issue so far,
+/// and — reading JSON text directly — the text and where it stands
+/// (`pos` is -1 once the direct reader steps aside). `order` files
+/// each issue in its record's order: a field's index, or past them
+/// for a key the record does not name.
+export type Decoding = {
+    coercion: Coercion = Coercion.Strict,
+    limits: Limits = Limits {},
+    issues: List<Issue> = [],
+    order: List<int> = [],
+    text: string = "",
+    bytes: Bytes = "".bytes(),
+    pos: int = -1,
+}
 
 /// A decoder: the typed value at a slot, or null with the reason
 /// recorded.
 export alias Decoder<T> = fn(mut Decoding, Slot) -> T?
 
 /// Read `v` with `dec`: the typed value, or every issue.
-export fn decode<T>(v: Value, dec: Decoder<T>, coercion: Coercion = Coercion.Strict) -> Result<
-    T,
-    Issues,
-> {
+export fn decode<T>(
+    v: Value,
+    dec: Decoder<T>,
+    coercion: Coercion = Coercion.Strict,
+    limits: Limits = Limits {},
+) -> Result<T, Issues> {
     // LICENSED let_stmt.unmutated_mut: `dec`'s `mut` seat writes through it
-    mut d = Decoding { coercion: coercion }
+    mut d = Decoding { coercion: coercion, limits: limits }
     let got = dec(d, Slot { value: v, at: root() })
+    answered(d, got)
+}
+
+/// A finished decoding's answer: its value, or every issue it found.
+export fn answered<T>(d: Decoding, got: T?) -> Result<T, Issues> {
     if !d.issues.is_empty() { fail Issues { all: d.issues } }
     let answer? = got else { fail Issues { all: [Issue { path: root(), rule: "decode", message: unanswered() }] } }
     answer
@@ -87,7 +106,14 @@ export fn decode<T>(v: Value, dec: Decoder<T>, coercion: Coercion = Coercion.Str
 impl Decoding {
     fn count() -> int { self.issues.length }
 
-    mut fn say(i: Issue) { self.issues.push(i) }
+    mut fn say(i: Issue) { self.noted(i, 0) }
+
+    /// An issue filed at `order` in its record: a field's index, or
+    /// past them for a key the record does not name.
+    mut fn noted(i: Issue, order: int) {
+        self.issues.push(i)
+        self.order.push(order)
+    }
 
     /// A rule's refusal at the slot it read: under the slot's path,
     /// named for the rule unless it named itself, and showing what
@@ -152,14 +178,25 @@ impl Decoding {
         for e in o.entries {
             let k = names.index_of(e.key)
             if k < 0 {
-                if self.coercion is .Strict { self.say(stray(o.at.field(e.key), e.key, names)) }
+                self.strayed(o.at.field(e.key), e.key, names, 0)
             } else if seen[k] {
-                self.say(Issue { path: o.at.field(e.key), rule: "repeated", message: twice() })
+                self.repeated(o.at.field(e.key), 0)
             } else {
                 seen.set(k, true)
             }
         }
         self.count() == o.before
+    }
+
+    /// A field the record does not name: an issue under `Strict`,
+    /// naming the field it may have meant; filed at `order`.
+    mut fn strayed(at: Path, key: string, names: List<string>, order: int) {
+        if self.coercion is .Strict { self.noted(stray(at, key, names), order) }
+    }
+
+    /// A field written twice; filed at `order`.
+    mut fn repeated(at: Path, order: int) {
+        self.noted(Issue { path: at, rule: "repeated", message: twice() }, order)
     }
 
     /// Deep enough to read; past the bound is one issue.

@@ -11,7 +11,13 @@
 //! A document nests at most `MAX_DEPTH` deep. `@json`, in the `codec`
 //! module, reads a record from a value and writes it back; a misfit is
 //! a `DecodeError` naming the path to it.
-use @std.text.{builder, repeat, from_codepoint, parse_int, parse_float}
+//!
+//! A typed reader walks the text itself through the SCANS (`space`,
+//! `plain_end`, `string_end`, `text_of`, `number_end`, `int_end`,
+//! `int_of`, `skip`, `value_at`): each answers the position past what
+//! it read, or -1 where the text is not JSON. They accept exactly the
+//! texts `parse` accepts, so a reader that meets -1 asks `parse` why.
+use @std.text.{builder, repeat, from_codepoint, parse_int, parse_float, admits}
 use @std.errors.{Error, ErrorInfo, info}
 
 // ── The value ───────────────────────────────────────────────────
@@ -449,8 +455,8 @@ fn simple_escape(e: int) -> string? {
         e == 34 -> "\""
         e == 92 -> "\\"
         e == 47 -> "/"
-        e == 98 -> "\\b"
-        e == 102 -> "\\f"
+        e == 98 -> from_codepoint(8)
+        e == 102 -> from_codepoint(12)
         e == 110 -> "\n"
         e == 114 -> "\r"
         e == 116 -> "\t"
@@ -539,6 +545,15 @@ fn digits_end(text: string, n: int, i: int) -> int {
     j
 }
 
+/// The value at `at` of text `parse` accepts — what a typed reader
+/// shows of a value it refused.
+export fn value_at(text: string, at: int) -> Json {
+    match scan_value(text, text.length, at, 0) {
+        .Value(j, _next) -> j,
+        .Refused(_e) -> Json.Null,
+    }
+}
+
 /// `true`, `false` or `null` — any other word is unexpected.
 fn scan_word(text: string, n: int, i: int) -> Scan {
     mut j = i
@@ -571,3 +586,151 @@ fn at(text: string, n: int, i: int, code: int) -> bool {
 fn is_space(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
 fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
 fn is_letter(c: int) -> bool { c >= 97 && c <= 122 }
+
+// ── Scanning ────────────────────────────────────────────────────
+
+/// A string's bytes that need no second look: not the quote, not a
+/// backslash, not a control character.
+fn is_plain(c: int) -> bool { c >= 32 && c != 34 && c != 92 }
+
+const plain: Bytes = admits(is_plain)
+const spaces: Bytes = admits(is_space)
+const digits: Bytes = admits(is_digit)
+const letters: Bytes = admits(is_letter)
+
+/// Past the whitespace at `i`.
+export fn space(b: Bytes, i: int) -> int { b.run(i, spaces) }
+
+/// Past the string whose quote is at `i` when it holds no escape —
+/// its text is then the bytes between the quotes; -1 otherwise.
+export fn plain_end(b: Bytes, i: int) -> int {
+    let j = b.run(i + 1, plain)
+    if j < b.length && b.at(j) == 34 { j + 1 } else { -1 }
+}
+
+/// Past the string whose quote is at `i`; -1 when it is not one.
+export fn string_end(b: Bytes, i: int) -> int {
+    mut j = i + 1
+    while j < b.length {
+        j = b.run(j, plain)
+        if j >= b.length { return -1 }
+        let c = b.at(j)
+        if c == 34 { return j + 1 }
+        if c < 32 { return -1 }
+        j = escape_end(b, j)
+        if j < 0 { return -1 }
+    }
+    -1
+}
+
+/// Past the escape whose backslash is at `j`; -1 when it names
+/// nothing.
+fn escape_end(b: Bytes, j: int) -> int {
+    if j + 1 >= b.length { return -1 }
+    let e = b.at(j + 1)
+    if e != 117 { return if simple_escape(e) == null { -1 } else { j + 2 } }
+    if j + 6 > b.length || b.run(j + 2, hex) < j + 6 { -1 } else { j + 6 }
+}
+
+const hex: Bytes = admits(is_hex)
+
+fn is_hex(c: int) -> bool { hex_value(c) != null }
+
+/// The text of the string from `i` to `end`, its escapes decoded.
+export fn text_of(text: string, b: Bytes, i: int, end: int) -> string {
+    if b.run(i + 1, plain) == end - 1 { return text.substring(i + 1, end - 1) }
+    match scan_string(text, b.length, i) { .Value(j, _next) -> j.text() ?? "", .Refused(_e) -> "" }
+}
+
+/// Past the number at `i` as `parse` reads it — `-`? an integer part
+/// with no leading zero, then a fraction and an exponent each
+/// optional — or -1 where there is none, or it is past what its kind
+/// holds.
+export fn number_end(b: Bytes, i: int) -> int {
+    let from = if i < b.length && b.at(i) == 45 { i + 1 } else { i }
+    let whole = b.run(from, digits)
+    if whole == from || b.at(from) == 48 && whole > from + 1 { return -1 }
+    let point = if whole < b.length && b.at(whole) == 46 { b.run(whole + 1, digits) } else { whole }
+    if point == whole + 1 { return -1 }
+    let e = if point < b.length && (b.at(point) == 101 || b.at(point) == 69) { point + 1 } else { point }
+    let signed = if e > point && e < b.length && (b.at(e) == 43 || b.at(e) == 45) { e + 1 } else { e }
+    let end = if e > point { b.run(signed, digits) } else { point }
+    if e > point && end == signed { return -1 }
+    if end == whole { return if whole - from < 19 || fits(b, i, end) { end } else { -1 } }
+    let t? = b.slice(i, end).text() else { return -1 }
+    if parse_float(t) == null { -1 } else { end }
+}
+
+/// Past the integer at `i` — a number with no fraction and no
+/// exponent; -1 for any other.
+export fn int_end(b: Bytes, i: int) -> int {
+    let end = number_end(b, i)
+    if end < 0 || b.run(if b.at(i) == 45 { i + 1 } else { i }, digits) != end { -1 } else { end }
+}
+
+/// Nineteen digits or more: whether they fit, as `parse_int` reads
+/// them.
+fn fits(b: Bytes, i: int, j: int) -> bool {
+    let t? = b.slice(i, j).text() else { return false }
+    parse_int(t) != null
+}
+
+/// The integer from `i` to `end`, which `int_end` passed.
+export fn int_of(text: string, b: Bytes, i: int, end: int) -> int {
+    let negative = b.at(i) == 45
+    let from = if negative { i + 1 } else { i }
+    if end - from >= 19 { return parse_int(text.substring(i, end)) ?? 0 }
+    mut v = 0
+    for k in from..end { v = v * 10 + b.at(k) - 48 }
+    if negative { 0 - v } else { v }
+}
+
+/// Past the one value at `i`, arrays and objects nested no deeper
+/// than `room` more levels — `MAX_DEPTH` less the depth `i` stands
+/// at; -1 where the text is not JSON.
+export fn skip(b: Bytes, i: int, room: int) -> int {
+    if i >= b.length { return -1 }
+    let c = b.at(i)
+    when {
+        c == 34 -> string_end(b, i)
+        c == 45 || is_digit(c) -> number_end(b, i)
+        c == 123 || c == 91 -> if room <= 0 { -1 } else { skip_items(b, i, room - 1) }
+        is_letter(c) -> word_end(b, i)
+        _ -> -1
+    }
+}
+
+/// Past `[` values `]` or `{` fields `}`, the opener at `i`.
+fn skip_items(b: Bytes, i: int, room: int) -> int {
+    let object = b.at(i) == 123
+    let close = if object { 125 } else { 93 }
+    mut j = space(b, i + 1)
+    if j < b.length && b.at(j) == close { return j + 1 }
+    while j >= 0 {
+        if object {
+            if j >= b.length || b.at(j) != 34 { return -1 }
+            let key_end = string_end(b, j)
+            if key_end < 0 { return -1 }
+            j = space(b, key_end)
+            if j >= b.length || b.at(j) != 58 { return -1 }
+            j = space(b, j + 1)
+        }
+        j = skip(b, j, room)
+        if j < 0 { return -1 }
+        j = space(b, j)
+        if j >= b.length { return -1 }
+        if b.at(j) == close { return j + 1 }
+        if b.at(j) != 44 { return -1 }
+        j = space(b, j + 1)
+    }
+    -1
+}
+
+/// Past `true`, `false` or `null` at `i`; -1 for any other word.
+fn word_end(b: Bytes, i: int) -> int {
+    let j = b.run(i, letters)
+    let known = b.eq_at(i, j, "true".bytes()) ||
+        b.eq_at(i, j, "false".bytes()) ||
+        b.eq_at(i, j, "null".bytes())
+    if known { j } else { -1 }
+}

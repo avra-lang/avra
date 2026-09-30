@@ -1,13 +1,15 @@
 //! WHAT VALIDATION COSTS BESIDE PARSING. §11's Signup, read from
 //! `payloads/` (the files the Rust and C references read), two hundred
 //! thousand times each way: `@std/json`'s parse alone, parse into a
-//! `Value`, parse and decode through `@derive(Decode)` with every
-//! rule, and the same over the payload that breaks eight rules — the
-//! refusal path, which builds every issue. Each line is nanoseconds
+//! `Value`, `Signup.from_json` straight from the text with every rule,
+//! and the same over the payload that breaks eight rules — the refusal
+//! path, which builds every issue — then both again the tree's way,
+//! parsed into a `Value` and decoded from it. Each line is nanoseconds
 //! per payload; `run.sh` interleaves the three and takes medians.
 use @std.meta.{derive}
 use @std.time.{now_ns}
 use @std.io.{read_text, env}
+use @std.text.{admits}
 use @std.json.{parse}
 use @std.validate.{
     Decode,
@@ -23,14 +25,13 @@ use @std.validate.{
     issue,
 }
 
-/// Lowercase letters, digits and inner hyphens.
+/// Lowercase letters, digits and inner hyphens — a class table, as the
+/// Rust side's `bytes().all(…)`.
 fn slug(s: string) -> bool {
-    !s.starts_with("-") &&
-        !s.ends_with("-") &&
-        [s.char_code(i) for i in 0..s.length].all(slug_char(it))
+    !s.starts_with("-") && !s.ends_with("-") && s.bytes().run(0, slug_char) == s.length
 }
 
-fn slug_char(c: int) -> bool { c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 45 }
+const slug_char: Bytes = admits((c) -> c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 45)
 
 @derive(Decode)
 @length(min: 3, max: 32)
@@ -73,6 +74,12 @@ fn to_value(text: string, n: int) -> int {
     ok
 }
 
+fn direct(text: string, n: int) -> int {
+    mut ok = 0
+    for _i in 0..n { if Signup.from_json(text) is .Ok { ok = ok + 1 } }
+    ok
+}
+
 fn full(text: string, n: int) -> int {
     mut ok = 0
     for _i in 0..n {
@@ -95,6 +102,8 @@ let good = read_text("${dir}/valid.json") catch ""
 let bad = read_text("${dir}/refused.json") catch ""
 let r1 = timed("parse only (valid)", 200000, (n) -> parse_only(good, n))
 let r2 = timed("to Value (valid)", 200000, (n) -> to_value(good, n))
-let r3 = timed("decode + rules (valid)", 200000, (n) -> full(good, n))
-let r4 = timed("decode + rules (refused, every rule)", 200000, (n) -> full(bad, n))
-"${r1 + r2 + r3 + r4}"
+let r3 = timed("decode + rules (valid)", 200000, (n) -> direct(good, n))
+let r4 = timed("decode + rules (refused, every rule)", 200000, (n) -> direct(bad, n))
+let r5 = timed("tree: Value + decode + rules (valid)", 200000, (n) -> full(good, n))
+let r6 = timed("tree: Value + decode + rules (refused)", 200000, (n) -> full(bad, n))
+"${r1 + r2 + r3 + r4 + r5 + r6}"
