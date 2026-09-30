@@ -20,6 +20,7 @@
 //! a `Request` keeps that buffer and slices a value only when asked.
 use frame.{Head, Field, Method, target_form, scheme_end, admits, is_target, is_tchar, is_vchar}
 use query.{Query, query_of}
+use @std.json.{Json, Decoder, parse, to_text}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body (owned, complete), who sent it, and what its
@@ -160,6 +161,46 @@ impl Request {
     }
 }
 
+impl Request {
+    /// THE BODY AS JSON, or the response that refuses it: 415 when the
+    /// request does not say `application/json` (or a `+json` type) — a
+    /// form can post any bytes as `text/plain` across origins, so the
+    /// media type is what a browser will not forge — 400 when the body
+    /// is not UTF-8 or not JSON, naming where.
+    fn json() -> Result<Json, Response> {
+        if !json_typed(self.header("content-type")) { fail text(415, "the body must be `application/json`") }
+        let body? = self.body.text() else { fail text(400, "the body is not UTF-8") }
+        match parse(body) {
+            .Ok(j) -> j,
+            .Err(e) -> { fail text(400, "the body is not JSON: ${e.describe().message}") },
+        }
+    }
+}
+
+/// The request's JSON body read by `decode` — a record's `from_json`
+/// under `@json` — or the response refusing it: `json`'s, or a 400
+/// naming the member that misfit.
+export fn json_body<P, T>(q: Request<P>, decode: Decoder<T>) -> Result<T, Response> {
+    let doc = q.json()?
+    match decode(doc) { .Ok(v) -> v, .Err(e) -> { fail text(400, e.describe().message) } }
+}
+
+/// Whether a `content-type` names JSON: `application/json`, or any
+/// `application/…+json`, parameters after `;` aside, case folded.
+fn json_typed(ct: string?) -> bool {
+    let full? = ct else { return false }
+    let m = (full.split(";").first() ?? "").trim().bytes()
+    let n = m.length
+    m.ieq_at(0, n, json_type) ||
+        n > 17 && m.ieq_at(0, 12, application) && m.ieq_at(n - 5, n, json_suffix)
+}
+
+const json_type: Bytes = "application/json".bytes()
+
+const application: Bytes = "application/".bytes()
+
+const json_suffix: Bytes = "+json".bytes()
+
 /// One outgoing field.
 export type Header = { name: string, value: string }
 
@@ -168,6 +209,16 @@ export type Header = { name: string, value: string }
 export type Response = { status: int = 200, headers: List<Header> = [], body: Bytes = nothing() }
 
 fn nothing() -> Bytes { "".bytes() }
+
+impl Response {
+    /// A 200 carrying `v` as JSON.
+    static fn json(v: Json) -> Response {
+        Response {
+            headers: [Header { name: "content-type", value: "application/json" }],
+            body: to_text(v).bytes(),
+        }
+    }
+}
 
 // ── Segments ────────────────────────────────────────────────────
 

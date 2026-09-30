@@ -1,0 +1,246 @@
+//! `@json` — a record type that reads itself from JSON and writes
+//! itself back. The declaration IS the schema: each field reads the
+//! member of its own name, by its own type.
+//!
+//!     use @std.json.codec.{json}
+//!
+//!     @json
+//!     type Idea = { title: string, votes: int, tags: List<string>, note: string? }
+//!
+//! gives `Idea.from_json(j)`, answering the record or a `DecodeError`
+//! naming the path that misfit (`tags[2]`), and `idea.to_json()`. A
+//! field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
+//! `null` both read as null), a `List<T>` of any of these, or another
+//! `@json` record. Anything else is refused at the declaration.
+//!
+//! Stands alone with `@std/meta` and the vocabulary it generates calls
+//! to, per the derive-isolation law.
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Directive,
+    Diagnostic,
+    Declared,
+    Code,
+    Decls,
+    literal,
+    name,
+    refuse_as_at,
+    type_named,
+}
+use @std.derive.{record_of, RECORD_WIDTH}
+use @std.json.{
+    Json,
+    DecodeError,
+    field,
+    present,
+    member_once,
+    want_int,
+    want_float,
+    want_text,
+    want_bool,
+    want_items,
+    want_object,
+    path_field,
+    path_item,
+}
+
+/// `@json` — a record's JSON reader and writer, and every way its
+/// shape refuses one, spoken at the declaration.
+export fn json(t: Type) -> Declared {
+    let problems = shape_problems(t)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    Declared { made: [Directive { twin: "", name: t.name, at: t.at, source: codec(t) }] }
+}
+
+fn codec(t: Type) -> Decls {
+    let reads = [member_read(f) for f in t.fields]
+    let body = record_of(t, reads)
+    let members = members_of(t)
+    quote {
+        impl ${t} {
+            /// This record read from a JSON document.
+            static fn from_json(j: Json) -> Result<${t}, DecodeError> {
+                ${name(t.name)}.decode_json(j, "")
+            }
+
+            /// This record read from the value at `at`, absent when the
+            /// member was missing.
+            static fn decode_json(v: Json?, at: string) -> Result<${t}, DecodeError> {
+                let o = want_object(v, at)?
+                ${body}
+            }
+
+            /// This record as a JSON object, its fields in declared order.
+            fn to_json() -> Json {
+                Json.Obj(${members})
+            }
+        }
+    }
+}
+
+// ── Reading ──────────────────────────────────────────────────────
+
+/// A field's reading: its member taken once from `o`, then read by
+/// the field's kind, refusing with its path.
+fn member_read(f: Field) -> Code {
+    let p = quote { path_field(at, ${literal(f.name)}) }
+    read(f.kind, quote { member_once(o, ${literal(f.name)}, ${p})? }, p, 0)
+}
+
+/// The code reading a field of `kind` from `v` (a `Json?`), refusing
+/// with the path `p`. `depth` keeps nested binders apart.
+fn read(kind: Kind, v: Code, p: Code, depth: int) -> Code {
+    match kind {
+        .Int -> quote { want_int(${v}, ${p})? },
+        .Float -> quote { want_float(${v}, ${p})? },
+        .Str -> quote { want_text(${v}, ${p})? },
+        .Bool -> quote { want_bool(${v}, ${p})? },
+        .Opt(inner) -> read_present(inner, v, p, depth),
+        .List(elem) -> read_items(elem, v, p, depth),
+        .Named(n, _) -> quote { ${name(n)}.decode_json(${v}, ${p})? },
+        rest -> quote { unreadable() },
+    }
+}
+
+fn read_present(inner: Kind, v: Code, p: Code, depth: int) -> Code {
+    let x = "x${depth}"
+    let got = read(inner, name(x), p, depth + 1)
+    quote {
+        match present(${v}) {
+            ${x}? -> ${got}
+            null -> null
+        }
+    }
+}
+
+fn read_items(elem: Kind, v: Code, p: Code, depth: int) -> Code {
+    let i = "i${depth}"
+    let e = "e${depth}"
+    let got = read(elem, name(e), quote { path_item(${p}, ${name(i)}) }, depth + 1)
+    quote { [${got} for ${i}, ${e} in want_items(${v}, ${p})?] }
+}
+
+// ── Writing ──────────────────────────────────────────────────────
+
+/// The object's members as one list, one `field` per record field,
+/// folded where the derive runs so the literal's length is fixed.
+fn members_of(t: Type) -> Code {
+    let fs = [quote { field(${literal(f.name)}, ${written(f.kind, quote { self.${f} }, 0)}) } for f in t.fields]
+    if fs.is_empty() { return quote { [] } }
+    mut all = quote { [${fs[0]}] }
+    for m in fs.slice(1, fs.length) {
+        let sofar = all
+        all = quote { ${sofar}.concat([${m}]) }
+    }
+    all
+}
+
+/// The code writing `v` of `kind` as a `Json`.
+fn written(kind: Kind, v: Code, depth: int) -> Code {
+    match kind {
+        .Int -> quote { Json.Int(${v}) },
+        .Float -> quote { Json.Float(${v}) },
+        .Str -> quote { Json.Str(${v}) },
+        .Bool -> quote { Json.Bool(${v}) },
+        .Opt(inner) -> written_present(inner, v, depth),
+        .List(elem) -> written_items(elem, v, depth),
+        .Named(_, _) -> quote { ${v}.to_json() },
+        rest -> quote { unwritable() },
+    }
+}
+
+fn written_present(inner: Kind, v: Code, depth: int) -> Code {
+    let x = "x${depth}"
+    let out = written(inner, name(x), depth + 1)
+    quote {
+        match ${v} {
+            ${x}? -> ${out}
+            null -> Json.Null
+        }
+    }
+}
+
+fn written_items(elem: Kind, v: Code, depth: int) -> Code {
+    let e = "e${depth}"
+    let out = written(elem, name(e), depth + 1)
+    quote { Json.Arr([${out} for ${e} in ${v}]) }
+}
+
+// ── The shape a codec reads ──────────────────────────────────────
+
+fn shape_problems(t: Type) -> List<Diagnostic> {
+    if !t.variants.is_empty() { return [an_enum(t)] }
+    if t.fields.length > RECORD_WIDTH { return [too_wide(t)] }
+    [unreadable_field(t, f) for f in t.fields if !readable(f.kind)]
+        .concat([unannotated(t, f, n) for f in t.fields for n in records_read(f.kind) if !coded(n)])
+}
+
+/// The records a field of this kind reads through — each must carry
+/// its own `@json`.
+fn records_read(k: Kind) -> List<string> {
+    match k {
+        .Named(n, _) -> [n],
+        .Opt(inner) -> records_read(inner),
+        .List(elem) -> records_read(elem),
+        rest -> [],
+    }
+}
+
+/// Whether the record named `n` wears `@json` — or is not one this
+/// program can see, which the typer then names.
+fn coded(n: string) -> bool {
+    let d? = type_named(n) else { return true }
+    d.annotations.any(it.name == "json")
+}
+
+/// Whether a field of this kind has a JSON reading. A REGISTRY: every
+/// kind answers.
+fn readable(k: Kind) -> bool {
+    match k {
+        .Int or .Float or .Bool or .Str -> true,
+        .Opt(inner) -> readable(inner),
+        .List(elem) -> readable(elem),
+        .Named(_, args) -> args.is_empty(),
+        .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+// ── Voices ───────────────────────────────────────────────────────
+
+fn an_enum(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "enum_record",
+        t.at,
+        "`@json` reads a record, and `${t.name}` is an enum",
+        "give each variant its own record, or write `from_json` by hand",
+    )
+}
+
+fn too_wide(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "too_wide",
+        t.at,
+        "`@json` reads a record of at most ${RECORD_WIDTH} fields, and `${t.name}` has ${t.fields.length}",
+        "group fields into a nested `@json` record",
+    )
+}
+
+fn unannotated(t: Type, f: Field, n: string) -> Diagnostic {
+    refuse_as_at(
+        "unannotated_record",
+        f.at,
+        "`${t.name}.${f.name}` reads `${n}`, which does not wear `@json`",
+        "write `@json` on `${n}` too",
+    )
+}
+
+fn unreadable_field(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unreadable_field",
+        f.at,
+        "`${t.name}.${f.name}` is `${f.ty}`, which has no JSON reading",
+        "a field reads int, float, bool, string, `T?`, `List<T>`, or another `@json` record",
+    )
+}

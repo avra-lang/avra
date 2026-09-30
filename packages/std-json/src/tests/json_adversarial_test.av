@@ -1,7 +1,7 @@
 // The red team's record for @std/json: the degenerate texts, every odd
 // token, deep nesting, and the escapes at their edges.
-use @std.json.{Json, field, parse, to_text, pretty}
-use @std.text.{from_codepoint}
+use @std.json.{Json, field, parse, to_text, pretty, MAX_DEPTH}
+use @std.text.{from_codepoint, repeat}
 
 fn a_round(text: string) -> string {
     match parse(text) { .Ok(j) -> to_text(j), .Err(e) -> e.describe().message }
@@ -58,6 +58,18 @@ spec "std/json — adversarial" {
     }
     given "nesting" {
         then "sixty levels deep reads and writes back" { a_round(deep(60)) == deep(60) }
+        then "the deepest nesting reads" { a_round(deep(MAX_DEPTH)) == deep(MAX_DEPTH) }
+        then "one level past it is refused, naming where" {
+            a_round(deep(MAX_DEPTH + 1)) == "the value at byte ${MAX_DEPTH} nests deeper than ${MAX_DEPTH} arrays and objects"
+        }
+        then "a hundred thousand levels is a refusal, not a blown stack" {
+            a_round(repeat("[", 100000) + repeat("]", 100000))
+                .starts_with("the value at byte 512 nests deeper")
+        }
+        then "objects count toward the same depth" {
+            a_round(repeat("{\"a\":", MAX_DEPTH + 1) + "1" + repeat("}", MAX_DEPTH + 1))
+                .contains("nests deeper")
+        }
         then "an object in an array in an object" { a_round("{\"a\":[{\"b\":[]}]}") == "{\"a\":[{\"b\":[]}]}" }
     }
     given "escapes at their edges" {

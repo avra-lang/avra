@@ -1,0 +1,114 @@
+// `@json` on a record: every field kind read and written back, and
+// every misfit refused with the path to it.
+use @std.json.{Json, parse, to_text}
+use @std.json.codec.{json}
+
+@json
+type Tag = { label: string, weight: float }
+
+@json
+type Idea = {
+    title: string,
+    votes: int,
+    open: bool,
+    tags: List<string>,
+    note: string?,
+    scores: List<int?>,
+    main: Tag,
+    extra: List<Tag>,
+    maybe: Tag?,
+}
+
+@json
+type Tree = { v: int, kids: List<Tree> }
+
+const full: string = "{\"title\":\"t\",\"votes\":3,\"open\":true,\"tags\":[\"a\",\"b\"],\"note\":\"n\",\"scores\":[1,null,3],\"main\":{\"label\":\"m\",\"weight\":0.5},\"extra\":[{\"label\":\"x\",\"weight\":2}],\"maybe\":null}"
+
+/// The document read as an `Idea` and written back, or the refusal.
+fn idea_round(text: string) -> string {
+    let doc = parse(text) catch Json.Null
+    match Idea.from_json(doc) { .Ok(i) -> to_text(i.to_json()), .Err(e) -> e.describe().message }
+}
+
+/// `full` with one member's value replaced.
+fn with_member(key: string, value: string) -> string {
+    let doc = parse(full) catch Json.Null
+    to_text(
+        Json
+            .Obj(
+                [if f.key == key { f with { value: parse(value) catch Json.Null } } else { f } for f in doc.fields()],
+            ),
+    )
+}
+
+spec "std/json — @json codec" {
+    given "the empty cases, written first" {
+        then "an empty object is missing every field" { idea_round("{}") == "`title` wants text, found nothing" }
+        then "a document that is not an object" { idea_round("[]") == "the document wants an object, found an array" }
+        then "null is not an object" { idea_round("null") == "the document wants an object, found null" }
+    }
+    given "a whole record" {
+        then "every kind reads and writes back" {
+            idea_round(full) == "{\"title\":\"t\",\"votes\":3,\"open\":true,\"tags\":[\"a\",\"b\"],\"note\":\"n\",\"scores\":[1,null,3],\"main\":{\"label\":\"m\",\"weight\":0.5},\"extra\":[{\"label\":\"x\",\"weight\":2.0}],\"maybe\":null}"
+        }
+        then "an integer reads into a float field" { idea_round(full).contains("\"weight\":2.0") }
+        then "an absent optional reads as null" {
+            idea_round(
+                to_text(
+                    Json.Obj([f for f in (parse(full) catch Json.Null).fields() if f.key != "note"]),
+                ),
+            )
+                .contains("\"note\":null")
+        }
+        then "a present nested optional reads" {
+            idea_round(with_member("maybe", "{\"label\":\"q\",\"weight\":1.5}"))
+                .contains("\"maybe\":{\"label\":\"q\",\"weight\":1.5}")
+        }
+        then "a member no field names is ignored" { idea_round(with_member("title", "\"t\"").replace("{\"title\"", "{\"zz\":1,\"title\""))
+                .starts_with("{\"title\":\"t\"") }
+    }
+    given "a misfit names its path" {
+        then "a wrong scalar" { idea_round(with_member("votes", "\"3\"")) == "`votes` wants an integer, found text" }
+        then "a float where an int is wanted" { idea_round(with_member("votes", "3.5")) == "`votes` wants an integer, found the number 3.5" }
+        then "a wrong bool" { idea_round(with_member("open", "1")) == "`open` wants `true` or `false`, found the number 1" }
+        then "an item in a list" { idea_round(with_member("tags", "[\"a\", 2]")) == "`tags[1]` wants text, found the number 2" }
+        then "a list that is not one" { idea_round(with_member("tags", "\"a\"")) == "`tags` wants an array, found text" }
+        then "a nullable item" { idea_round(with_member("scores", "[1, true]")) == "`scores[1]` wants an integer, found `true`" }
+        then "a nested record's field" { idea_round(with_member("main", "{\"label\":\"m\"}")) == "`main.weight` wants a number, found nothing" }
+        then "a record in a list" { idea_round(
+                with_member("extra", "[{\"label\":\"x\",\"weight\":1},{\"label\":7,\"weight\":1}]"),
+            ) == "`extra[1].label` wants text, found the number 7" }
+        then "a member named twice is refused, whichever reader would win" {
+            idea_round(full.replace("{\"title\":\"t\"", "{\"title\":\"t\",\"title\":\"u\"")) == "`title` wants one member, found 2"
+        }
+        then "a duplicate no field reads is left alone" {
+            idea_round(full.replace("{\"title\"", "{\"zz\":1,\"zz\":2,\"title\""))
+                .starts_with("{\"title\":\"t\"")
+        }
+        then "a required field given null" { idea_round(with_member("title", "null")) == "`title` wants text, found null" }
+    }
+    given "a record that holds itself" {
+        then "it reads and writes back" {
+            let text = "{\"v\":1,\"kids\":[{\"v\":2,\"kids\":[]},{\"v\":3,\"kids\":[{\"v\":4,\"kids\":[]}]}]}"
+            match Tree.from_json(parse(text) catch Json.Null) {
+                .Ok(t) -> to_text(t.to_json()) == text,
+                .Err(_) -> false,
+            }
+        }
+        then "a misfit deep inside names the whole path" {
+            match Tree
+                .from_json(
+                    parse("{\"v\":1,\"kids\":[{\"v\":2,\"kids\":[{\"v\":\"x\",\"kids\":[]}]}]}") catch Json
+                        .Null,
+                ) { .Ok(_) -> false, .Err(e) -> e.at == "kids[0].kids[0].v" }
+        }
+    }
+    given "the refusal is a value" {
+        then "its path and words are fields" {
+            match Idea.from_json(Json.Obj([])) {
+                .Ok(_) -> false,
+                .Err(e) -> e.at == "title" && e.wanted == "text" && e.found == "nothing",
+            }
+        }
+    }
+}
