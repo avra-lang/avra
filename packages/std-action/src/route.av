@@ -11,13 +11,19 @@
 //! The wire's own fields begin with `_` — `_next`, `_confirm`,
 //! `_idempotency` — and no action seat may (derive.av), so a seat's
 //! field and the protocol's never collide. A repeated `_idempotency`
-//! answers the first receipt again without calling the action.
+//! answers the first receipt again without calling the action. Receipts
+//! are kept in memory for the life of the route, one per identity.
 use @std.http.frame.{Method}
-use @std.http.http.{Request, Unrouted, Response, Header, Handler, text}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
 use @std.http.route.{Route, fixed}
 use @std.text.{codepoints, from_codepoints}
 use wire.{ActionInfo, ActionRefusal, line_of}
 use form.{form_fields}
+
+/// The protocol's own fields.
+const NEXT: string = "_next"
+const CONFIRM: string = "_confirm"
+const IDEMPOTENCY: string = "_idempotency"
 
 /// The action's route. `call` is the generated `<name>_from_text`.
 export fn action_route<R>(
@@ -47,7 +53,7 @@ fn submitted<R>(
 
 /// The submission's identity: its `_idempotency`, absent when it names none.
 fn identity(fields: Map<string, string>) -> string? {
-    let key? = fields.get("_idempotency") else { return null }
+    let key? = fields.get(IDEMPOTENCY) else { return null }
     if key == "" { null } else { key }
 }
 
@@ -75,7 +81,7 @@ fn performed<R>(
     fields: Map<string, string>,
 ) -> Response {
     match call(fields) {
-        .Ok(_) -> receipted(receipts, key, redirect(fields.get("_next"))),
+        .Ok(_) -> receipted(receipts, key, redirect(fields.get(NEXT))),
         .Err(refusals) -> text(422, [line_of(r) for r in refusals].join("\n")),
     }
 }
@@ -94,7 +100,7 @@ fn withheld(info: ActionInfo, fields: Map<string, string>) -> Response? {
     }
 }
 
-fn confirmed(fields: Map<string, string>) -> bool { fields.get("_confirm") == "yes" }
+fn confirmed(fields: Map<string, string>) -> bool { fields.get(CONFIRM) == "yes" }
 
 /// The receipt, remembered under the submission's identity when it has one.
 fn receipted(receipts: Cell<Map<string, Response>>, key: string?, r: Response) -> Response {
@@ -145,9 +151,9 @@ fn unsupported() -> string { "an action takes `application/x-www-form-urlencoded
 fn unreadable_body() -> string { "the form body is not valid urlencoded UTF-8" }
 
 fn beyond_a_form(info: ActionInfo) -> string {
-    "_confirm: `${info.name}` asks for more than a form can give — re-authentication or a typed phrase"
+    "${CONFIRM}: `${info.name}` asks for more than a form can give — re-authentication or a typed phrase"
 }
 
 fn confirmation(info: ActionInfo) -> string {
-    "_confirm: `${info.name}` cannot be taken back — send `_confirm=yes` to go ahead"
+    "${CONFIRM}: `${info.name}` cannot be taken back — send `${CONFIRM}=yes` to go ahead"
 }
