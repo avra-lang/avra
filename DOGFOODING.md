@@ -109,8 +109,8 @@ see. Licences live in `tools/cited.allow`, each with its reason.
 Ratcheted: `avra rules --json` answers every native rule the
 compiler carries, by its `<module>.<rule>` id — `avra rules
 --markdown` prints this section's own bullet shape, one line per
-DOCUMENTED rule, and `make dogfooding-rules` refuses the two
-disagreeing (paid off avra-8sb5.25.16's own follow-up). The block
+DOCUMENTED rule, and `make dogfooding-rules` (`avra rules
+--check-markdown DOGFOODING.md`) refuses the two disagreeing (paid off avra-8sb5.25.16's own follow-up). The block
 below is GENERATED: edit a rule's `///` doc and regenerate, never
 a bullet here.
 
