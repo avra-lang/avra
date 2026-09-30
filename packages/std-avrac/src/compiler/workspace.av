@@ -1765,14 +1765,15 @@ impl Workspace {
     }
 
     /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
-    /// `Names`, then the file's table read unrecorded. The reader holds
-    /// the slice's contract — cells in `d`'s range and the namespace,
-    /// never the voices. The file's own passes ask `resolved`; so does
-    /// a reader inside that resolve, whose view is still in flight.
+    /// `Names` (its cells) and one on the file's `Visible` (the
+    /// namespace), then the file's table read unrecorded — never the
+    /// voices. The file's own passes ask `resolved`; so does a reader
+    /// inside that resolve, whose view is still in flight.
     fn names_of(d: DeclId) -> NameFacts {
         let f = self.decls.decl(d).file
         if self.relation(Family.Resolved).open(f.index) { return self.resolved(f) }
         touch(self.name_slice(d))
+        touch(self.visible(f))
         match self.relation(Family.Resolved).values.entry(f.index) {
             .Present(r) -> resolved_of(r),
             .Missing -> self.resolved(f),
