@@ -11,6 +11,9 @@
 //!            as it arrives, or gathered whole under a bound
 //! sse.av     SERVER-SENT EVENTS: an event stream over a body stream,
 //!            resumed from an observer's cursor, and a retaining feed
+//! ws.av      WEBSOCKET: the upgrade both ways, the frame codec, and a
+//!            socket its connection's task owns
+//! codec.av   SHA-1 and base64, as the WebSocket handshake names them
 //! http.av    this file — the values a handler sees and answers, and
 //!            the STREAM a response's body is pulled from
 //! route.av   the ROUTER: a route is a grammar over the PATH, and
@@ -37,6 +40,7 @@ use frame.{
 }
 use query.{Query, query_of}
 use body.{Body}
+use @std.net.{Conn}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body — READ as the handler asks for it, never before
@@ -185,7 +189,23 @@ export type Header = { name: string, value: string }
 /// its `content-length` straight into the connection's one buffer — or
 /// a `stream` the connection pulls. Never both: a response carrying a
 /// stream beside a body is one no peer could read, and answers 500.
-export type Response = { status: int = 200, headers: List<Header> = [], body: Bytes = nothing(), stream: Stream? = null }
+///
+/// A `101` hands the connection over: its `upgrade` runs on the
+/// connection's own task once the head is written, holding the socket
+/// and whatever the peer sent past its request, and the connection
+/// ends when it returns. `101` and an upgrade come together or not at
+/// all.
+export type Response = {
+    status: int = 200,
+    headers: List<Header> = [],
+    body: Bytes = nothing(),
+    stream: Stream? = null,
+    upgrade: Upgrade? = null,
+}
+
+/// What a `101` hands the connection to: the socket, and the octets
+/// the peer sent past its request — already the new protocol's.
+export type Upgrade = { run: fn(Conn, Bytes) -> void }
 
 // ── The body stream ─────────────────────────────────────────────
 
@@ -363,15 +383,22 @@ fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// body follows it piece by piece; a whole one is appended to it.
 export fn head_of(r: Response, delim: ReplyBody, keep_alive: bool, minor: int) -> Bytes {
     mut w = reply_line(r.status)
-    for h in r.headers {
+    w = w.concat(fields_of(r.headers))
+    w = w.concat(delimiting(delim))
+    w = w.concat(fate(keep_alive, minor).bytes())
+    w = w.concat(crlf)
+    w
+}
+
+/// The field lines of `headers`, each `name: value` and a CRLF.
+fn fields_of(headers: List<Header>) -> Bytes {
+    mut w = nothing()
+    for h in headers {
         w = w.concat(h.name.bytes())
         w = w.concat(field_colon)
         w = w.concat(h.value.bytes())
         w = w.concat(crlf)
     }
-    w = w.concat(delimiting(delim))
-    w = w.concat(fate(keep_alive, minor).bytes())
-    w = w.concat(crlf)
     w
 }
 
@@ -480,8 +507,33 @@ fn fate(keep_alive: bool, minor: int) -> string {
 /// are not statuses — and every field a field the framer would frame.
 /// Public so a handler can ask before it answers.
 export fn sendable(r: Response) -> bool {
-    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes) && streamable(r)
+    r.status >= 100 &&
+        r.status <= 999 &&
+        fields_writable(r.headers, reply_writes) &&
+        streamable(r) &&
+        handed_over(r)
 }
+
+/// AN UPGRADE AND A 101 COME TOGETHER: a 101 with nothing to hand the
+/// connection to leaves a peer speaking a protocol nobody reads, and
+/// an upgrade under another status hands over a connection the peer
+/// still thinks is HTTP's. The handed-over connection carries no body.
+fn handed_over(r: Response) -> bool {
+    if r.upgrade == null { return r.status != 101 }
+    r.status == 101 && r.body.is_empty() && r.stream == null
+}
+
+/// A 101's head on the wire: the status line, its fields, and the
+/// `connection: upgrade` its writer owns.
+export fn upgrade_head(r: Response) -> Bytes {
+    mut w = reply_line(r.status)
+    w = w.concat(fields_of(r.headers))
+    w = w.concat(upgrade_line)
+    w = w.concat(crlf)
+    w
+}
+
+const upgrade_line: Bytes = "connection: upgrade\r\n".bytes()
 
 /// A STREAM STANDS ALONE: a response carrying one carries no whole
 /// body beside it, declares no negative length, and has a status that

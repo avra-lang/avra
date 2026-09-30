@@ -40,7 +40,9 @@
 //! its bytes; a connection silent past the deadline its state names is
 //! dropped; a streamed response is pulled one piece at a time, each
 //! written before the next is asked for, and a stream that breaks after
-//! its head ends the connection with no second status.
+//! its head ends the connection with no second status; a `101` hands
+//! the connection to its upgrade, on this same task, and no more of it
+//! is read as HTTP.
 use @std.net.{Listener, Conn, NetError, listen}
 use @std.time.{Duration, ms, secs, sleep, now_ms, within}
 use frame.{Head, Limits, ReplyBody, framed, status_of, limits}
@@ -50,6 +52,8 @@ use http.{
     Unrouted,
     Response,
     Stream,
+    Upgrade,
+    upgrade_head,
     wire,
     status,
     read_size,
@@ -435,11 +439,25 @@ impl Serving {
             !(delim is .UntilClose)
         l.buf = tail
         l.closing = !keep
+        if sent.upgrade != null { return self.handed(l, sent, sent.upgrade!) }
         match sent.stream {
             s? -> self.poured(l, head_of(sent, delim, keep, head.minor), s, delim, head)
             null -> { l.out = l.out.concat(wired(sent, delim, keep, head)) }
         }
         true
+    }
+
+    /// A 101 WRITTEN AND THE CONNECTION HANDED OVER: the head after
+    /// whatever this link owes, then `up` runs here, on this task, with
+    /// the socket and what the peer sent past its request. Nothing more
+    /// is read as HTTP; the connection ends when `up` returns.
+    fn handed(mut l: Link, sent: Response, up: Upgrade) -> bool {
+        let owed = l.out.concat(upgrade_head(sent))
+        l.out = "".bytes()
+        l.closing = true
+        if self.sent(l.conn, owed) { up.run(l.conn, l.buf) }
+        l.buf = "".bytes()
+        false
     }
 
     /// A STREAMED RESPONSE WRITTEN: its head after whatever this link
