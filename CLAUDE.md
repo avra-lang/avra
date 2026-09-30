@@ -1917,6 +1917,33 @@ Runtime facts, ours to ratify:
   and a value question is the crossing, the way `avra_map_has`/
   `avra_map_get` already do it.
 
+## How work lands
+
+- WORK IN A SIBLING WORKTREE (`git worktree add -b <branch> ../avra-<name>
+  refs/heads/main`), never in `avra/` itself and never nested under
+  `.claude/worktrees/` (a nested tree shares the outer cache). Start its
+  compiler from main's standing one (`cp ../avra/build/avra build/avra`
+  and `build/libavra_runtime.a`, then `make avra` twice), not a gen-1
+  bootstrap from the seed.
+- MAIN MOVES ONLY THROUGH `sh tools/land.sh <branch>`. A
+  reference-transaction hook refuses every other update of
+  `refs/heads/main` (a commit, merge, reset or update-ref, from any
+  worktree); a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`,
+  which is printed. A landing gates speed (+1% instructions, +10% peak
+  footprint, same input), warm reuse, a Linux leg on a Sprite, every
+  affected suite, idioms, fmt and seed-check. Exit 0 means LANDED; exit
+  3 is a tool failure, never the branch's.
+- A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
+  it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
+- HEAVY RUNS GO ON SPRITES (`sh tools/sprite-build.sh <sprite>
+  <worktree> -- bash -lc '…'`): bootstraps, whole suites, censuses. The
+  Mac keeps quick targeted checks and anything macOS-only. Each session
+  uses its own Sprites (avra-db-gantt/SPRITES.md); the landing pool is
+  land.sh's alone.
+- A CHANGE THE COMPILER CHECKS ABOUT ITS OWN SOURCE (a renamed type, a
+  new license form) lands as a BRIDGE first: main's compiler must build
+  the branch, because the speed gate and the seed both use it.
+
 ## Working discipline
 
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
