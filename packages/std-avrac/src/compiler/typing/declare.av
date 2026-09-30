@@ -192,28 +192,33 @@ impl TypeCx {
     /// written: R's names, its types under the written arguments, and
     /// R's OWN defaults, typed in R's scope.
     fn spread_into(s: StmtId, owner: string, own: StructSig, spreads: List<Spread>) -> StructSig {
-        let parts = [self.spread_fields(s, owner, x) for x in spreads]
-        let before = (k: int) -> [p for j, p in parts if spreads[j].at == k]
-        let rows = flatten(
-            [flatten(before(k)).concat([one_field(own, k)]) for k in 0..own.names.length],
+        let tables = [self.spread_table(s, owner, x) for x in spreads]
+        let placed = (k: int) -> [t for j, t in tables if spreads[j].at == k]
+        joined_tables(
+            flatten([placed(k).concat([one_field(own, k)]) for k in 0..own.names.length])
+                .concat(placed(own.names.length)),
         )
-            .concat(flatten(before(own.names.length)))
-        StructSig {
-            names: [r.names[0] for r in rows],
-            types: [r.types[0] for r in rows],
-            defaults: [r.defaults[0] for r in rows],
-        }
     }
 
-    /// One `..R`'s fields, each as a one-field table; a spread that
-    /// names no record, or reaches its own, is refused and adds none.
-    fn spread_fields(s: StmtId, owner: string, x: Spread) -> List<StructSig> {
+    /// The fields one `..R` places; none when it is refused.
+    fn spread_table(s: StmtId, owner: string, x: Spread) -> StructSig {
         let ty = self.full_type(self.stmt_loc(s), x.of)
-        if self.view.types.shape_of(ty) is .Error { return [] }
-        if self.names_record(ty, self.decl_of(s)) { return self.spread_own(s, owner) }
-        if self.record_unsigned(ty) { return self.spread_cycle(s, x.of) }
-        let fields? = self.view.decls.fields_of_type(ty) else { return self.spread_no_record(s, x.of) }
-        [one_field(fields, j) for j in 0..fields.names.length]
+        if self.view.types.shape_of(ty) is .Error { return no_fields() }
+        if self.names_record(ty, self.decl_of(s)) {
+            self.spread_own(s, owner)
+            return no_fields()
+        }
+        if self.record_unsigned(ty) {
+            self.spread_cycle(s, x.of)
+            return no_fields()
+        }
+        self.view.decls.fields_of_type(ty) ?? self.spread_refused(s, x.of)
+    }
+
+    /// A spread of what is not a record: refused, and it places nothing.
+    fn spread_refused(s: StmtId, of: TypeRef) -> StructSig {
+        self.spread_no_record(s, of)
+        no_fields()
     }
 
     /// Whether `ty` names a declaration whose signature cannot be
@@ -594,7 +599,7 @@ impl TypeCx {
             )
     }
 
-    fn spread_own(s: StmtId, owner: string) -> List<StructSig> {
+    fn spread_own(s: StmtId, owner: string) {
         self
             .emit(
                 refusal(
@@ -605,10 +610,9 @@ impl TypeCx {
                     "a spread places ANOTHER record's fields — a record cannot hold its own",
                 ),
             )
-        []
     }
 
-    fn spread_cycle(s: StmtId, of: TypeRef) -> List<StructSig> {
+    fn spread_cycle(s: StmtId, of: TypeRef) {
         self
             .emit(
                 refusal(
@@ -619,10 +623,9 @@ impl TypeCx {
                     "spreads cannot form a cycle — the fields would have no first owner",
                 ),
             )
-        []
     }
 
-    fn spread_no_record(s: StmtId, of: TypeRef) -> List<StructSig> {
+    fn spread_no_record(s: StmtId, of: TypeRef) {
         self
             .emit(
                 refusal(
@@ -633,7 +636,6 @@ impl TypeCx {
                     "a spread places a record's fields — `${spelled(of)}` is not a record with fields",
                 ),
             )
-        []
     }
 
     fn named_is_generic(s: StmtId, name: string) {
@@ -1243,3 +1245,14 @@ fn widthless_seats(ps: List<Param>) -> List<Param> {
 fn one_field(sig: StructSig, j: int) -> StructSig {
     StructSig { names: [sig.names[j]], types: [sig.types[j]], defaults: [sig.defaults[j]] }
 }
+
+/// Tables laid end to end, in order.
+fn joined_tables(ts: List<StructSig>) -> StructSig {
+    StructSig {
+        names: [n for t in ts for n in t.names],
+        types: [x for t in ts for x in t.types],
+        defaults: [d for t in ts for d in t.defaults],
+    }
+}
+
+fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [] } }
