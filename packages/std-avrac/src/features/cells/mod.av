@@ -1,7 +1,7 @@
 //! `Cell<T>` — one explicit shared slot. Copies of a cell share its
 //! referent; `get` copies the held value and `set` replaces it without
 //! requiring the cell binding itself to be `mut`.
-use core.{Type, TypeId, ExprId, Reg}
+use core.{Type, TypeId, ExprId, Reg, is_managed}
 use features.{
     LanguageFeature,
     MethodRow,
@@ -93,11 +93,18 @@ fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(void)
 }
 
+/// A new cell OWNS what it holds: a counted seed some binding still
+/// holds is copied into it here, so the cell's in-place writes (`push`,
+/// `set_at`, `put`) never reach the binding it was made from.
 fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if mc.args.length != 1 { return cx.lower_defect(mc.e, "a Cell.new without one value survived typing") }
     let value = cx.reg_of(mc.args[0])
     let size = cx.box_size(1)
-    cx.grown_box(cx.shape_at(mc.e), size, [value])
+    let cell = cx.grown_box(cx.shape_at(mc.e), size, [value])
+    if is_managed(cx.view.types, cx.type_at(mc.args[0])) {
+        let _ = cx.owned_slot_unique(cx.shape_at(mc.args[0]), cell, cx.const_int(0))
+    }
+    cell
 }
 
 fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
