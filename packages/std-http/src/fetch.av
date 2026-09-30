@@ -46,6 +46,7 @@ use client.{
     netted,
 }
 use wire.{Transport, Securing, plainly}
+use jar.{Jar}
 use pool.{Pool, Carrier, pool, origin_of}
 
 /// A request body, by kind.
@@ -71,9 +72,9 @@ export type Timeouts = {
 
 /// How a request is made: the pool its connection comes from, its
 /// deadlines, the bounds its reply is framed under, the headers every
-/// request carries, its redirect and retry policy, and how an `https`
+/// request carries, its redirect and retry policy, how an `https`
 /// connection is secured — none here, so a plain program links no TLS;
-/// `@std/https` fills it.
+/// `@std/https` fills it — and the jar its cookies are kept in, if any.
 export type Options = {
     pool: Pool = shared_pool(),
     timeouts: Timeouts = Timeouts {},
@@ -82,6 +83,7 @@ export type Options = {
     redirects: Redirects = .Follow(5),
     retry: Retry = Retry {},
     tls: Securing? = null,
+    jar: Jar? = null,
 }
 
 /// Whether a redirect is followed: `Stop` answers it as it came,
@@ -139,8 +141,9 @@ type Hop = { method: Method, url: string, body: Payload, via: List<string> }
 fn followed(q: Hop, o: Options, deadline: int) -> Fetched {
     let aim = aimed(q.url)?
     if aim.secure && o.tls == null { return .Err(.NoTls) }
-    let wire = wire_of(q.method, aim, q.body, o)?
+    let wire = wire_of(q.method, aim, q.body, o.headers.concat(jarred(o, aim)))?
     let a = retried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms })?
+    remembered(o, aim, a)
     let max? = following(o.redirects) else { return .Ok(a) }
     let next? = rewritten(a.status, q) else { return .Ok(a) }
     if next.body is .Stream { return .Err(.Redirect(.Unreplayable(a.status))) }
@@ -148,6 +151,23 @@ fn followed(q: Hop, o: Options, deadline: int) -> Fetched {
     let to = located(a, q.url)?
     if to == q.url || q.via.contains(to) { return .Err(.Redirect(.Loop(to))) }
     followed(next with { url: to, via: q.via.concat([q.url]) }, crossed(o, aim, to), deadline)
+}
+
+/// The path a cookie is matched against: the target before its query.
+fn path_of(target: string) -> string { target.split("?").first() ?? "/" }
+
+/// The jar's `cookie` field for `aim`, unless the caller wrote one.
+fn jarred(o: Options, aim: Aim) -> List<Header> {
+    let j? = o.jar else { return [] }
+    if o.headers.any(named(it, cookie_name)) { return [] }
+    let c? = j.sent(aim.host, path_of(aim.target), aim.secure) else { return [] }
+    [c]
+}
+
+/// The answer's cookies kept, when there is a jar.
+fn remembered(o: Options, aim: Aim, a: Answer) {
+    let j? = o.jar else { return }
+    j.heard(aim.host, path_of(aim.target), aim.secure, a)
 }
 
 fn following(r: Redirects) -> int? {
@@ -247,9 +267,12 @@ fn idempotent(m: Method) -> bool {
 /// The request as it goes on the wire — whole, or a stream's head — or
 /// the refusal of a word or field the framer would not frame, BEFORE
 /// any socket opens.
-fn wire_of(method: Method, aim: Aim, body: Payload, o: Options) -> Result<Bytes, ClientError> {
+fn wire_of(method: Method, aim: Aim, body: Payload, fields: List<Header>) -> Result<
+    Bytes,
+    ClientError,
+> {
     let word? = method_word(method) else { return .Err(.Unwritable) }
-    let headers = o.headers.concat(kind_of(body, o.headers))
+    let headers = fields.concat(kind_of(body, fields))
     let wire = match body {
         .Stream(_, _) -> chunked_request(word, aim.target, aim.field, headers),
         .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> request(word, aim.target, aim.field, headers, octets_of(body)),
@@ -451,4 +474,5 @@ fn content_type(body: Payload) -> string? {
 }
 
 const content_type_name: Bytes = "content-type".bytes()
+const cookie_name: Bytes = "cookie".bytes()
 const empty_octets: Bytes = "".bytes()

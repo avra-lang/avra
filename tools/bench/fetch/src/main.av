@@ -5,13 +5,17 @@
 use @std.net.{NetError, listen}
 use @std.time.{now_ns, secs}
 use @std.http.frame.{limits}
-use @std.http.http.{text}
+use @std.http.http.{Header, Response, text}
 use @std.http.server.{served, Timing}
 use @std.http.client.{ClientError, connected, request}
 use @std.http.pool.{pool}
 use @std.http.fetch.{Options, fetch}
+use @std.http.jar.{jar}
 
 type App = { name: string }
+
+/// The answer every request gets: a short text and one cookie.
+fn hello() -> Response { text(200, "hello") with { headers: [Header { name: "set-cookie", value: "s=1; Path=/" }] } }
 
 const n = 20000
 
@@ -33,6 +37,15 @@ fn by_url(port: int) -> Result<int, ClientError> {
     .Ok(bytes)
 }
 
+fn with_jar(port: int) -> Result<int, ClientError> {
+    let o = Options { pool: pool(), jar: jar() }
+    let url = "http://127.0.0.1:${port}/"
+    mut bytes = 0
+    for i in 0..n { bytes = bytes + (fetch(.Get, url, .Empty, o)?).body.length }
+    o.pool.close_all()
+    .Ok(bytes)
+}
+
 fn timed(what: string, run: fn() -> Result<int, ClientError>) -> string {
     let t0 = now_ns()
     match run() {
@@ -43,10 +56,14 @@ fn timed(what: string, run: fn() -> Result<int, ClientError>) -> string {
 
 fn benched() -> Result<string, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, () -> App { name: "bench" }, limits(), Timing { requests: 1000000000 }) { app, q -> text(200, "hello") }
+    let s = served(l, () -> App { name: "bench" }, limits(), Timing { requests: 1000000000 }) { app, q -> hello() }
     spawn s.run(cores: 1)
     let port = l.port
-    let lines = [timed("raw client", () -> raw(port)), timed("fetch by URL", () -> by_url(port))]
+    let lines = [
+        timed("raw client", () -> raw(port)),
+        timed("fetch by URL", () -> by_url(port)),
+        timed("fetch with a jar", () -> with_jar(port)),
+    ]
     s.stop()
     .Ok(lines.join("\n"))
 }

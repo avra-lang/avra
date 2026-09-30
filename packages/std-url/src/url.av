@@ -25,6 +25,7 @@
 //! `+` IS NOT A SPACE. That is a form body's encoding, never a URI's:
 //! `decoded` leaves it alone and `encoded` writes a space as `%20`.
 use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{ascii_lowered, ascii_folded}
 
 /// A URL: an absolute reference, its scheme required. A component
 /// never written is ABSENT and one written empty is EMPTY — `http://h?`
@@ -161,7 +162,7 @@ fn scheme_colon(b: Bytes, ask: int) -> Result<int?, UrlError> {
 
 fn scheme_named(b: Bytes, colon: int?) -> string? {
     let c? = colon else { return null }
-    lowered(b.slice(0, c)).text()
+    ascii_lowered(b.slice(0, c)).text()
 }
 
 /// The authority between `lo` and `hi`: userinfo to the FIRST `@`,
@@ -260,10 +261,6 @@ fn pieces(b: Bytes, mark: int) -> List<Bytes> {
     [b.slice(cuts[k] + 1, cuts[k + 1]) for k in 0..cuts.length - 1]
 }
 
-fn lowered(b: Bytes) -> Bytes { [folded(b.at(i)) for i in 0..b.length].bytes()! }
-
-fn folded(c: int) -> int { if c >= upper_a && c <= upper_z { c + 32 } else { c } }
-
 /// Whether a name's last label is a number — all digits, or `0x` and
 /// hex — which the resolver would read as an address. Judged decoded,
 /// since the resolver reads `%31` as `1`.
@@ -278,7 +275,7 @@ fn numeric(l: Bytes) -> bool {
     if l.run(0, digit_class) == l.length { return true }
     l.length >= 2 &&
         l.at(0) == zero_octet &&
-        folded(l.at(1)) == lower_x &&
+        ascii_folded(l.at(1)) == lower_x &&
         l.run(2, hex_class) == l.length
 }
 
@@ -377,7 +374,7 @@ fn escaped_value(b: Bytes, i: int) -> int { hex_value(b.at(i + 1)) * 16 + hex_va
 
 fn hex_value(c: int) -> int {
     if c <= nine_octet { return c - zero_octet }
-    folded(c) - lower_a + 10
+    ascii_folded(c) - lower_a + 10
 }
 
 /// Escapes in their canonical spelling: an unreserved octet's decoded,
@@ -568,9 +565,9 @@ impl Host {
 
     fn normalized() -> Host {
         match self {
-            .Name(n) -> .Name(escapes_normal(lowered(n))),
+            .Name(n) -> .Name(escapes_normal(ascii_lowered(n))),
             .V4(a) -> .V4(a),
-            .V6(a) -> .V6(lowered(a)),
+            .V6(a) -> .V6(ascii_lowered(a)),
         }
     }
 }
@@ -592,7 +589,7 @@ fn class_where(admits: fn(int) -> bool) -> Bytes { [if admits(i) { 1 } else { 0 
 
 fn is_alpha(c: int) -> bool { c >= upper_a && c <= upper_z || c >= lower_a && c <= lower_z }
 fn is_digit(c: int) -> bool { c >= zero_octet && c <= nine_octet }
-fn is_hex(c: int) -> bool { is_digit(c) || folded(c) >= lower_a && folded(c) <= lower_f }
+fn is_hex(c: int) -> bool { is_digit(c) || ascii_folded(c) >= lower_a && ascii_folded(c) <= lower_f }
 fn one_of(set: string, c: int) -> bool { set.bytes().index_of([c].bytes()!, 0) >= 0 }
 fn is_unreserved(c: int) -> bool { is_alpha(c) || is_digit(c) || one_of("-._~", c) }
 fn is_scheme(c: int) -> bool { is_alpha(c) || is_digit(c) || one_of("+-.", c) }

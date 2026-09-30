@@ -1,0 +1,26 @@
+// Base64 by RFC 4648's own vectors (§10), every padding length, every
+// octet value, and the empty input first.
+use @std.text.{base64, from_codepoints}
+
+/// Every octet, 0 through 255, in order.
+fn every_octet() -> Bytes { [i for i in 0..256].bytes()! }
+
+spec "@std.text base64" {
+    given "RFC 4648's vectors" {
+        then "the empty input is the empty text" { base64("".bytes()) == "" }
+        then "one octet pads twice" { base64("f".bytes()) == "Zg==" }
+        then "two octets pad once" { base64("fo".bytes()) == "Zm8=" }
+        then "three octets pad nothing" { base64("foo".bytes()) == "Zm9v" }
+        then "four" { base64("foob".bytes()) == "Zm9vYg==" }
+        then "five" { base64("fooba".bytes()) == "Zm9vYmE=" }
+        then "six" { base64("foobar".bytes()) == "Zm9vYmFy" }
+    }
+    given "octets text cannot spell" {
+        then "a NUL is a letter like any" { base64(from_codepoints([0]).bytes()) == "AA==" }
+        then "the high octets reach the alphabet's end" { base64([255, 255, 255].bytes()!) == "////" }
+        then "every octet encodes to its known length and tail" {
+            let e = base64(every_octet())
+            e.length == 344 && e.ends_with("/P3+/w==")
+        }
+    }
+}
