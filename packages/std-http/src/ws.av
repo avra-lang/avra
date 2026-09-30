@@ -390,14 +390,30 @@ impl Socket {
         }
     }
 
-    /// The connection ended: a server closes first (RFC 6455 §7.1.1);
-    /// a client's close is its write side, so the server's close ends it.
+    /// The connection ended: a server closes first (RFC 6455 §7.1.1); a
+    /// client shuts its write side and gives the server a moment to
+    /// close before it closes too.
     fn ended() {
         match self.side {
             .Server -> { let _ = self.conn.close() },
-            .Client -> { let _ = self.conn.shutdown_write() },
+            .Client -> {
+                let _ = self.conn.shutdown_write()
+                let _ = within secs(2) { drained(self.conn) }
+                let _ = self.conn.close()
+            },
         }
     }
+}
+
+/// `c` read to its end, the octets dropped; whether it ended.
+fn drained(c: Conn) -> bool {
+    while true {
+        match c.read(read_size()) {
+            .Ok(b) -> { if b == null { return true } },
+            .Err(_) -> { return false },
+        }
+    }
+    false
 }
 
 fn close_code(m: Message) -> int {
