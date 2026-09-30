@@ -853,7 +853,7 @@ static void hot_settled(void) {
 
 // Whether this process's objects carry the hot leaves inlined — a mode of
 // the codegen, so a key over what the compiler emits folds it in.
-int avra_llvm_inlines_runtime(void) {
+int64_t avra_llvm_inlines_runtime(void) {
     return !hot_off && avra_hot_bc_len != 0;
 }
 

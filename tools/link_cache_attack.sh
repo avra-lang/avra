@@ -24,12 +24,12 @@ version = "0.1.0"
 objects = ["value.o"]
 TOML
 cat > $R/app/src/main.av <<'AV'
-extern fn lca_value() -> int
+extern fn lca_value() -> i64
 println("v ${lca_value()}")
 AV
 mkdir -p $R/app/src/tests
 cat > $R/app/src/tests/value_test.av <<'AV'
-extern fn lca_value() -> int
+extern fn lca_value() -> i64
 spec "link cache attack" {
     given "the package object" {
         then "answers 2" { lca_value() == 2 }
