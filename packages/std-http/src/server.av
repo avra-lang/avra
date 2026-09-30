@@ -22,7 +22,9 @@
 //! a declaration's `tls` setting) opens every connection through it:
 //! the handshake runs on the connection's own task within
 //! `timing.handshake`, then the link is served exactly as a plain one
-//! is.
+//! is. A half-done handshake holds its engine's memory, so a core runs
+//! at most `timing.handshakes` at once: a connection arriving past them
+//! is closed before its opener runs — no byte read, no crypto begun.
 //!
 //! A connection's whole state is a `Link`: its transport, the bytes read
 //! and not yet consumed, how far the head scan reached, the output
@@ -92,12 +94,14 @@ extern fn avra_cores_result(g: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 
 /// The deadlines a server names: a TLS handshake must complete within
-/// `handshake` of the accept, a head within `head` of its last byte, a
-/// body must advance within `body` of its last byte, an idle keep-alive
-/// connection lives `idle` (and a peer that takes no output is given as
-/// long), and a connection serves at most `requests`.
+/// `handshake` of the accept, and at most `handshakes` run at once on a
+/// core; a head within `head` of its last byte, a body must advance
+/// within `body` of its last byte, an idle keep-alive connection lives
+/// `idle` (and a peer that takes no output is given as long), and a
+/// connection serves at most `requests`.
 export type Timing = {
     handshake: Duration = secs(10),
+    handshakes: int = 1024,
     head: Duration = secs(10),
     body: Duration = secs(60),
     idle: Duration = secs(75),
@@ -120,8 +124,9 @@ type Link = {
 
 /// The server: its listener, the maker each core builds its
 /// application with, the handler, and this process's own state — its
-/// open connections, whether it is stopping, and the group of cores it
-/// serves in (0 alone) with its place there (-1 for the supervisor).
+/// open connections, its handshakes in flight, whether it is stopping,
+/// and the group of cores it serves in (0 alone) with its place there
+/// (-1 for the supervisor).
 export type Server<A> = {
     listener: Listener,
     make: fn() -> A,
@@ -130,6 +135,7 @@ export type Server<A> = {
     timing: Timing,
     tls: Secure?,
     live: Cell<int>,
+    shaking: Cell<int>,
     stopping: Cell<bool>,
     group: Cell<int>,
     core: Cell<int>,
@@ -155,6 +161,7 @@ export fn served<A>(
         timing: timing,
         tls: null,
         live: Cell.new(0),
+        shaking: Cell.new(0),
         stopping: Cell.new(false),
         group: Cell.new(0),
         core: Cell.new(-1),
@@ -334,10 +341,17 @@ impl Server {
 
     /// The connection as it is spoken: plain, or TLS once a handshake
     /// completes within the deadline — null, the socket closed, when
-    /// one does not.
+    /// one does not, or when the core's handshakes are all in flight.
     fn transport(c: Conn) -> dyn Transport? {
         let opener? = self.tls else { return plainly(c) }
-        opener.open(c, self.timing.handshake)
+        if self.shaking.get() >= self.timing.handshakes {
+            let _ = c.close()
+            return null
+        }
+        self.shaking.set(self.shaking.get() + 1)
+        let opened = opener.open(c, self.timing.handshake)
+        self.shaking.set(self.shaking.get() - 1)
+        opened
     }
 
     /// This process's open connections moved by `by`, and published to
