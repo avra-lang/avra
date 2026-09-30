@@ -32,7 +32,7 @@ export enum Verdict {
 /// A cached query's bookkeeping: the deps it discovered, the
 /// revisions it last CHANGED and was last VERIFIED, and its answer's
 /// hash. The last-reader stamp `record_dep` dedupes against lives
-/// apart, in `KernelState.stamps` — a repeat read never touches this.
+/// apart, in `Kernel.stamps` — a repeat read never touches this.
 /// `value_hash` is NULL for a cell `settle_lazy` wrote whose fold was
 /// never asked — its OWN state, never a sentinel a real fold could
 /// equal (CLAUDE.md, "an encoding spends the empty value"): the
@@ -61,11 +61,6 @@ type KernelState = {
     /// the earlier flat, multiplied addressing did exactly that the
     /// moment a later family registered (avra-8sb5.57.81).
     cells: List<Cell<List<QueryCell?>>>,
-    // The last-reader stamps, one table per family exactly as `cells`
-    // is, held apart from it: a stamp is a bare int, so reading one
-    // never retains a `QueryCell` or its `deps` list, and a repeat
-    // read touches nothing but this array.
-    stamps: List<Cell<List<int>>>,
     verifiers: List<fn(int) -> int>,
     // One dependency list per open query, EACH IN ITS OWN CELL. A shared
     // `List` reaches a copy at every append, so a list routed through the
@@ -73,11 +68,6 @@ type KernelState = {
     // box, so `push` on it appends in place.
     pending: List<Cell<List<Key>>>,
     open: List<Key>,
-    // The open queries' own ids, parallel to `pending`/`open` — a
-    // repeat read's LAST-READER STAMP (in `stamps`) is compared
-    // against `reading.last()`, never against the key itself, so
-    // recognizing "I already recorded this" costs one int compare.
-    reading: List<int>,
     // One RESTORE LIST per open query, parallel to `pending` — null
     // until that frame's first STAMP OVERWRITE of a STILL-OPEN
     // ancestor's cell (most frames never nest into one, so most stay
@@ -92,12 +82,6 @@ type KernelState = {
     restore: List<Cell<List<Restore>>?>,
     next_reader: int,
 }
-
-/// No key has been read in a fresh frame yet. `state_slot` traps
-/// under a negative family, so this sentinel's family half names no
-/// real query and never matches one — the arg half rides along
-/// unchecked, since a match already needs the family half to agree.
-const no_frame_slot: int = -1
 
 /// A read that skipped `ask`, held for the outermost open query: which verb read
 /// which subject (both the reader's own dense numbers), and the queries open when it
@@ -134,16 +118,16 @@ export type Kernel = {
     /// never a copy of the state.
     hits: Cell<int>,
     misses: Cell<int>,
-    /// The open frames' own last-recorded key, FLAT: each frame's
-    /// family then arg, at `2*depth` and `2*depth+1` — an int write
-    /// mints nothing, where a `Key` record write boxes one.
-    /// Held apart from `state`: a repeat read of
-    /// the frame's own last key costs one `Cell.get`, two indexed
-    /// reads, two compares, never a `KernelState` snapshot. `begin`
-    /// pushes two sentinel ints, `settle` pops two — a nested frame's
-    /// pair sits above the outer's, so closing it exposes the outer's
-    /// own pair exactly as it stood before the nesting.
-    frame_last: Cell<List<int>>,
+    /// The open queries' own reader ids, innermost last, parallel to
+    /// the state's `pending`/`open`. Held apart from `state`, as
+    /// `stamps` is, so a repeat read never snapshots `KernelState`.
+    readers: Cell<List<int>>,
+    /// The LAST-READER STAMP of every key: one row per family, indexed
+    /// by `arg`, exactly as the state's `cells` — the reader id that
+    /// last recorded it, 0 (never minted) for none. A bare int, so a
+    /// repeat read is one indexed compare and never retains a
+    /// `QueryCell`; a row grows only when stamped.
+    stamps: Cell<List<Cell<List<int>>>>,
     audit: Audit,
 }
 
@@ -157,20 +141,18 @@ export fn new_kernel() -> Kernel {
     let state = KernelState {
         rev: 1,
         cells: [],
-        stamps: [],
         verifiers: [],
         pending: [],
         open: [],
-        reading: [],
         restore: [],
         next_reader: 0,
     }
-    let no_frame_reads: List<int> = []
     Kernel {
         state: Cell.new(state),
         hits: Cell.new(0),
         misses: Cell.new(0),
-        frame_last: Cell.new(no_frame_reads),
+        readers: list_cell(),
+        stamps: list_cell(),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -308,10 +290,10 @@ impl Kernel {
         s.verifiers.push(verify)
         let no_cells: List<QueryCell?> = []
         s.cells.push(Cell.new(no_cells))
-        let no_stamps: List<int> = []
-        s.stamps.push(Cell.new(no_stamps))
         let ordinal = s.verifiers.length - 1
         self.replace(s)
+        let no_stamps: Cell<List<int>> = list_cell()
+        self.stamps.push(no_stamps)
         ordinal
     }
 
@@ -390,7 +372,7 @@ impl Kernel {
     /// still running answers the SAME identity every time and two
     /// different frames never share one. -1 when nothing is open.
     fn reader() -> int {
-        self.snapshot().reading.last() ?? 0 - 1
+        self.readers.get().last() ?? 0 - 1
     }
 
     fn changed_at(key: Key) -> int {
@@ -428,10 +410,8 @@ impl Kernel {
         s.restore.push(no_restore)
         s.open.push(key)
         s.next_reader = s.next_reader + 1
-        s.reading.push(s.next_reader)
         self.replace(s)
-        self.frame_last.push(no_frame_slot)
-        self.frame_last.push(no_frame_slot)
+        self.readers.push(s.next_reader)
     }
 
     fn settle(key: Key, value_hash: int) {
@@ -474,12 +454,10 @@ impl Kernel {
         let deps: List<Key> = s.pending.pop().get()
         let restored: Cell<List<Restore>>? = s.restore.pop()
         let _ = s.open.pop()
-        let _ = s.reading.pop()
-        mut fl = self.frame_last.get()
-        let _ = fl.pop()
-        let _ = fl.pop()
-        self.frame_last.set(fl)
-        if restored != null { for r in restored!.get() { restore_one(s, r) } }
+        mut open_readers = self.readers.get()
+        let _ = open_readers.pop()
+        self.readers.set(open_readers)
+        if restored != null { for r in restored!.get() { self.stamped(r.key, r.previous) } }
         deps
     }
 
@@ -499,53 +477,49 @@ impl Kernel {
         if self.audit.on.get() { self.judged() }
     }
 
-    /// Two fast paths, cheapest first. THE FRAME PATH compares `key`
-    /// against the OPEN FRAME'S OWN last-recorded key (`frame_last`,
-    /// held apart from `state`, FLAT ints — see the field doc) — one
-    /// `Cell.get`, two indexed reads, two compares, no `KernelState`
-    /// snapshot at all — and answers most repeat reads, since a
-    /// query's reads of one key cluster together. A miss there (a
-    /// different key, or nothing recorded in this frame yet) falls to
-    /// THE STAMP PATH: one flat-array read and one int compare,
-    /// touching neither the cell table nor a `QueryCell`'s `deps`
-    /// list. A MISMATCH is not always "never read": a NESTED query
-    /// reading the same key overwrites the stamp with ITS OWN reader
-    /// id, so the outer query's next read of that key mismatches too,
-    /// though it already recorded the dep. The two are told apart by
-    /// asking whether the STAMP BEING OVERWRITTEN belongs to a
-    /// STILL-OPEN frame (`reading.contains`, a scan of the open stack
-    /// — a handful of ints deep, never the program's dep count): if
-    /// so, that frame will read this key again and must see its own
-    /// stamp restored, so the value is saved (`save_restore`, lazily
-    /// minting the frame's own restore list); if not — a genuinely
-    /// new dep, or a stamp some now-closed query left behind —
-    /// nothing will ever ask for it again, so nothing is saved.
-    /// Either way — stamp hit or genuinely new dep — `key` becomes
-    /// this frame's new last key, so its NEXT read takes the frame
-    /// path. ONE fn, not two: a split tried here paid a second
-    /// prologue on every miss (`record_dep_miss`, avra-8sb5.57.56)
-    /// for a hit-path saving smaller than that cost — kbench's altkey
-    /// and newdep modes both got slower, so the fn stayed whole.
+    /// A repeat read is one stamp compare: the key's last-reader stamp
+    /// against the innermost open reader, touching neither the state
+    /// nor a `QueryCell`. A MISMATCH is not always "never read": a
+    /// NESTED query reading the same key overwrites the stamp with ITS
+    /// OWN reader id, so the outer query's next read mismatches too,
+    /// though it already recorded the dep. `newly_read` tells the two
+    /// apart.
     fn record_dep(key: Key) {
-        let fl = self.frame_last.get()
-        if fl.is_empty() { return }
-        let fam_at = fl.length - 2
-        if fl[fam_at] == key.family && fl[fam_at + 1] == key.arg { return }
+        let reader? = self.readers.get().last() else { return }
+        let row = self.stamp_row(key.family)
+        let stamps = row.get()
+        let stamp = if key.arg >= 0 && key.arg < stamps.length { stamps[key.arg] } else { 0 }
+        if stamp == reader { return }
+        self.newly_read(key, stamp, reader)
+    }
+
+    /// Records `key` as a dep of the innermost open query. When the
+    /// stamp it overwrites belongs to a STILL-OPEN frame (a scan of
+    /// the open stack — a handful of ints deep), that frame will read
+    /// this key again and must see its own stamp restored, so the
+    /// value is saved (`save_restore`); a genuinely new dep, or a
+    /// stamp some now-closed query left behind, is never asked for
+    /// again, so nothing is saved.
+    fn newly_read(key: Key, stamp: int, reader: int) {
         mut s = self.snapshot()
-        let reader = s.reading.last() ?? 0
-        let stamp = state_stamp(s, key)
-        if stamp != reader {
-            if s.reading.contains(stamp) { self.save_restore(s, key, stamp) }
-            write_stamp(s, key, reader)
-            s.pending.last()!.push(key)
-            self.replace(s)
-        }
-        // Read afresh: an index held live across this branch's calls
-        // pins a register through all of them, which costs more than a
-        // second `Cell.get` here.
-        let end_at = self.frame_last.get().length - 2
-        self.frame_last.set_at(end_at, key.family)
-        self.frame_last.set_at(end_at + 1, key.arg)
+        if self.readers.get().contains(stamp) { self.save_restore(s, key, stamp) }
+        self.stamped(key, reader)
+        s.pending.last()!.push(key)
+        self.replace(s)
+    }
+
+    /// `family`'s stamp row; a family never registered is a defect.
+    fn stamp_row(family: int) -> Cell<List<int>> {
+        let rows = self.stamps.get()
+        if family < 0 || family >= rows.length { unregistered_family(family) }
+        rows[family]
+    }
+
+    /// Writes `key`'s stamp, growing its family's row to reach it.
+    fn stamped(key: Key, stamp: int) {
+        let row = self.stamp_row(key.family)
+        while row.get().length <= key.arg { row.push(0) }
+        row.set_at(key.arg, stamp)
     }
 
     /// Remembers a stamp `record_dep` is about to overwrite, so
@@ -609,17 +583,8 @@ fn state_revision(s: KernelState) -> int { s.rev }
 // discard it is the one cost this check must never carry — it runs
 // on every dep read, hit or miss.
 fn checked_family(s: KernelState, family: int) -> int {
-    if family < 0 || family >= s.cells.length {
-        avra_trap("defect: key names family ${family}, no such family is registered")
-    }
+    if family < 0 || family >= s.cells.length { unregistered_family(family) }
     family
-}
-
-/// Hands one overwritten stamp back to the key it came from. Stamps
-/// grow lazily to hold any key, so there is no missing-slot case to
-/// guard against, unlike a `QueryCell`.
-fn restore_one(mut s: KernelState, r: Restore) {
-    write_stamp(s, r.key, r.previous)
 }
 
 /// The revision a prior cell last changed at, when its hash matches —
@@ -642,23 +607,13 @@ fn write_cell(mut s: KernelState, key: Key, cell: QueryCell) {
     row.set_at(key.arg, cell)
 }
 
-/// The stamp at `key`'s slot, or 0 (never assigned — no reader id is
-/// ever minted as 0) when its row has not grown that far.
-fn state_stamp(s: KernelState, key: Key) -> int {
-    let fam = checked_family(s, key.family)
-    let row = s.stamps[fam].get()
-    if key.arg < 0 || key.arg >= row.length { return 0 }
-    row[key.arg]
-}
-
-fn write_stamp(mut s: KernelState, key: Key, stamp: int) {
-    let fam = checked_family(s, key.family)
-    let row = s.stamps[fam]
-    while row.get().length <= key.arg { row.push(0) }
-    row.set_at(key.arg, stamp)
-}
-
 extern fn avra_trap(message: string)
+
+// ── The voices ──
+
+fn unregistered_family(family: int) {
+    avra_trap("defect: key names family ${family}, no such family is registered")
+}
 
 fn never_verify(arg: int) -> int {
     avra_trap("defect: a disarmed query database was reused")
