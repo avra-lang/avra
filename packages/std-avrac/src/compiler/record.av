@@ -262,10 +262,11 @@ fn record_known(ws: Workspace, m: ModulePath, text: string) {
     ws.records.record_places.put(key, places_of(fields))
 }
 
-/// What OTHER modules' keys read of a record: its interface digest and its imports.
+/// What OTHER modules' keys read of a record: its interface digest, its imports and
+/// its references — the files an importer reaches through it.
 fn seen_part(text: string) -> string {
     joined(
-        [line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t")],
+        [line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t") || line.starts_with("ref\t")],
         "\n",
     )
 }
@@ -556,6 +557,8 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let no_view: Map<string, List<SeenPart>> = {}
         ws.keys.bytes_keys.set(no_bytes)
         ws.keys.view_parts.set(no_view)
+        let no_typed: Map<string, Map<string, List<string>>> = {}
+        ws.keys.typed_files.set(no_typed)
         let no_imports: Map<string, List<string>> = {}
         ws.import_lists.set(no_imports)
     }
@@ -993,11 +996,22 @@ export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
 fn sub_module_bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string? {
     if m.local().is_empty() || m.package() == null { return null }
-    let places = record_places(ws, store, module_path(m.segments.slice(0, 2)))
-    let ats = [places.get(f) for f in ws.module_files(m)]
-    if ats.is_empty() || ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
-    digest_of(joined(sorted_texts([at!.file[4] for at in ats]), "\n"))
+    files_iface(ws, store, module_path(m.segments.slice(0, 2)), ws.module_files(m))
 }
+
+/// SOME OF A MODULE'S FILES' INTERFACE, as one digest: each file's own interface
+/// digest from the module's record — every file of it is the record's own `iface`.
+/// Null when none is asked or the record places one nowhere.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a module and its files in, their interface digest out.
+fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>) -> string? {
+    let places = record_places(ws, store, m)
+    let ats = [places.get(f) for f in paths]
+    if ats.is_empty() || ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
+    ifaces_digest([at!.file[4] for at in ats])
+}
+
+/// Files' interface digests as one — in name order, so the order they were asked in is no part of it.
+fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts(ifaces), "\n")) }
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
 /// text, the texts its compile-time runs read, and the interfaces its bodies can see.
@@ -1041,12 +1055,62 @@ impl Workspace {
 
     /// The modules a module's files see, each with its interface key and file
     /// count — memoized for the build, since every file of a module sees the same ones.
+    /// Its own module is seen whole; another only through the files it reaches.
     fn view_parts(store: Store, m: ModulePath) -> List<SeenPart> {
         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
         if known != null { return known! }
-        let made = [self.seen_part_of(store, module_path(dep.split("."))) for dep in seen_modules(self, store, m)]
+        let reached = self.reached_files(store, m)
+        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, module_path(dep.split(".")), reached) } for dep in sorted_texts(distinct([m.text()].concat([self.module_of(f) for f in reached])))]
         self.keys.view_parts.put(m.text(), made)
         made
+    }
+
+    /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
+    /// files reference, and — since a type reaches a body through a signature the body
+    /// never names — each file a reached file's types name, closed. Never its own files.
+    fn reached_files(store: Store, m: ModulePath) -> List<string> {
+        let own = self.module_files(m)
+        // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
+        mut seen = distinct(
+            [t for p in record_fields(self, store, m) if is_ref_row(p) && !names_builtin(p) for t in [ref_target(p)] if !own.contains(t)],
+        )
+        mut at = 0
+        while at < seen.length {
+            for t in self.typed_index(store, self.module_path_of(seen[at])).get(seen[at]) ?? [] {
+                if !own.contains(t) && !seen.contains(t) { seen.push(t) }
+            }
+            at = at + 1
+        }
+        sorted_texts(seen)
+    }
+
+    /// Each file of a module's record with the files its types name — its type uses',
+    /// and its declarations' wires' — memoized for the build.
+    fn typed_index(store: Store, m: ModulePath) -> Map<string, List<string>> {
+        let known: Map<string, List<string>>? = self.keys.typed_files.get().get(m.text())
+        if known != null { return known! }
+        mut made: Map<string, List<string>> = {}
+        for p in record_fields(self, store, m) {
+            let named = when {
+                is_ref_row(p) && shapes_signature(p[3]) && !names_builtin(p) -> [ref_target(p)]
+                p.length > 13 && declares(p) -> wired_files(p)
+                _ -> []
+            }
+            if !named.is_empty() { made.set(p[1], (made.get(p[1]) ?? []).concat(named)) }
+        }
+        self.keys.typed_files.put(m.text(), made)
+        made
+    }
+
+    /// A module another reaches into, keyed on the reached files' interfaces alone —
+    /// the whole module's when its record places one of them nowhere.
+    fn reached_part(store: Store, dep: ModulePath, reached: List<string>) -> SeenPart {
+        let files = [f for f in reached if self.module_of(f) == dep.text()]
+        SeenPart {
+            module: dep.text(),
+            bytes_key: files_iface(self, store, dep, files) ?? bytes_key_cached(self, store, dep),
+            files: files.length,
+        }
     }
 
     fn seen_part_of(store: Store, m: ModulePath) -> SeenPart {
@@ -1224,6 +1288,31 @@ fn iface_of(record: string) -> string? {
 }
 
 fn seen_words(s: SeenPart) -> string { "bytes ${s.bytes_key}, ${s.files} file${if s.files == 1 { "" } else { "s" }}" }
+
+/// Whether a `ref` line names a builtin — the language's own, whose wire names
+/// whichever file minted the builtins, never a module an importer reaches.
+fn names_builtin(row: List<string>) -> bool {
+    let words = wire_fields(row[2], "~")
+    if words.length < 2 { return false }
+    let kind? = kind_of_word(words[1]) else { return false }
+    match kind {
+        .Builtin -> true,
+        .Fn or .Record or .Enum or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> false,
+    }
+}
+
+/// The files a declaration line's type wires name: the word after each declared
+/// type's tag (`S~<decl wire>` and its kin) opens that declaration's wire, its file.
+fn wired_files(row: List<string>) -> List<string> {
+    let words = [w for field in row.slice(13, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
+    [words[i + 1] for i, w in words if i + 1 < words.length && opens_decl_wire(w)]
+}
+
+/// Whether a type wire's word is a tag a declaration's wire follows.
+fn opens_decl_wire(word: string) -> bool {
+    ["S", "E", "D", "N", "R", "A"]
+        .contains(if word.starts_with("^") { word.substring(1, word.length) } else { word })
+}
 
 /// The interfaces a module's files see, as one digest.
 fn seen_digest(seen: List<SeenPart>) -> string { digest_of(joined([s.bytes_key for s in seen], "\n")) }

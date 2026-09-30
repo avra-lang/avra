@@ -121,12 +121,16 @@ impl Workspace {
     /// elsewhere (`record_complete`), so this is never the first place a
     /// moved name is caught.
     fn restored_refs(store: Store, f: FileId) -> List<Ref> {
-        let path = self.decls.file(f).path
-        let rows = [p for p in record_fields(self, store, self.module_path_of(path)) if p.length >= 4 && p[0] == "ref" && p[1] == path]
+        let rows = self.kept_ref_rows(store, self.decls.file(f).path)
         // a wire names its file, which answers only once its module's declarations
         // stand: each named module is stood up once, never once per row
-        for named in distinct([wire_fields(p[2], "~")[0] for p in rows]) { self.module_stands(self.module_path_of(named)) }
+        for named in distinct([ref_target(p) for p in rows]) { self.module_stands(self.module_path_of(named)) }
         flatten([some_list(self.resolved_ref(f, p)) for p in rows])
+    }
+
+    /// A file's `ref` lines, as its module's kept record holds them.
+    fn kept_ref_rows(store: Store, path: string) -> List<List<string>> {
+        [p for p in record_fields(self, store, self.module_path_of(path)) if is_ref_row(p) && p[1] == path]
     }
 
     /// Every file of `m` with its declarations standing.
@@ -395,6 +399,19 @@ fn use_kind_word(k: UseKind) -> string {
         .Import -> "I",
         .TypeUse -> "T",
     }
+}
+
+/// Whether a record's line is a `ref` line.
+fn is_ref_row(p: List<string>) -> bool { p.length >= 4 && p[0] == "ref" }
+
+/// The file a `ref` line's declaration wire names.
+fn ref_target(row: List<string>) -> string { wire_fields(row[2], "~")[0] }
+
+/// Whether a `ref` line's use can name a type a signature carries — the one use a
+/// reached file's importers inherit. A word no use spells might be one.
+fn shapes_signature(word: string) -> bool {
+    let k? = use_kind_of_word(word) else { return true }
+    match k { .TypeUse -> true, .Call or .MethodCall or .Read or .Write or .Import -> false }
 }
 
 /// The inverse, by the one character — an unrecognized word decodes
