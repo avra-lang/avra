@@ -95,49 +95,6 @@ use @std.relation.db.{Db as RelDb, new_db}
 /// matching the path.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bool }
 
-/// One declaration: where it lives, what it is, the expression its
-/// body IS (a fn's, a default's; absent for the rest), and the
-/// expression range [lo, hi) that body occupies in its file's arena
-/// — a method or a default also names the type it serves.
-export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?, lo: int, hi: int }
-
-/// `Decl` read back off its relation row — the two share every field
-/// by name, `decl_rows.av`'s own design.
-fn decl_of_row(r: DeclRow) -> Decl {
-    Decl {
-        id: r.id,
-        file: r.file,
-        stmt: r.stmt,
-        name: r.name,
-        kind: r.kind,
-        exported: r.exported,
-        owner: r.owner,
-        parent: r.parent,
-        nested: r.nested,
-        root: r.root,
-        lo: r.lo,
-        hi: r.hi,
-    }
-}
-
-/// `decl_of_row`'s mirror: a declaration reseated as its row.
-fn row_of_decl(d: Decl) -> DeclRow {
-    DeclRow {
-        id: d.id,
-        file: d.file,
-        stmt: d.stmt,
-        name: d.name,
-        kind: d.kind,
-        exported: d.exported,
-        owner: d.owner,
-        parent: d.parent,
-        nested: d.nested,
-        root: d.root,
-        lo: d.lo,
-        hi: d.hi,
-    }
-}
-
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
@@ -415,7 +372,7 @@ export type Decls = {
     /// `rows_state` is dense by FileId: 0 while the file's rows are being minted (the
     /// minter's own reads record nothing), 1 settled, 2 held.
     record_kernel: Cell<Kernel>,
-    /// THE DECLARATION TABLE'S OWN `Db`: every declaration is a `DeclRow` under it,
+    /// THE DECLARATION TABLE'S OWN `Db`: every declaration is a `Decl` row under it,
     /// inserted at mint and reseated at every later field write. A `Cell`, never a bare
     /// `Db`: `Decls` is copied somewhere in the pipeline, and a bare `Db` field forked
     /// on that copy — `family()`'s registration landed on one copy's own state while a
@@ -435,13 +392,13 @@ export type Decls = {
     /// this replaces recorded nothing either.
     file_rows: Cell<Rows<File>>,
     module_rows: Cell<Rows<Module>>,
-    /// THE DECLARATION TABLE'S REAL STORAGE — pinned the same way, `DeclRow`'s own row
+    /// THE DECLARATION TABLE'S REAL STORAGE — pinned the same way, `Decl`'s own row
     /// per DeclId, numerically the same index by construction. `decl(d)` reads it
     /// raw, through `row(d.index)`, never through the generated (recorded) `get`: the
     /// kernel is the one recorder (`rows_read`), so a second door recording again would
     /// pay for an edge the kernel already told. Reachable only inside `Decls` — every
     /// outside reader goes through `decl`/`raw_decl`/`all_decls`/`decl_count`.
-    decl_row_rows: Cell<Rows<DeclRow>>,
+    decl_row_rows: Cell<Rows<Decl>>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
     rows_state: Cell<List<int>>,
@@ -635,7 +592,7 @@ export fn new_decls() -> Decls {
         decl_rows: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
         module_rows: Cell.new(Module.rows_in(db)),
-        decl_row_rows: Cell.new(DeclRow.rows_in(db)),
+        decl_row_rows: Cell.new(Decl.rows_in(db)),
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         rows_state: list_cell(),
@@ -742,12 +699,12 @@ impl Decls {
     // ── files ──
 
     /// A declaration's row — THE ONE DOOR every pass reads it through.
-    /// Fetched raw off the pinned `Rows<DeclRow>` handle, `row(d.index)`,
+    /// Fetched raw off the pinned `Rows<Decl>` handle, `row(d.index)`,
     /// never the generated (recorded) `get`: the kernel is the one
     /// recorder, below, so a second door recording the same edge would
     /// pay for it twice.
     fn decl(d: DeclId) -> Decl {
-        let x = decl_of_row(self.decl_row_rows.get().row(d.index)!)
+        let x = self.decl_row_rows.get().row(d.index)!
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
         self.rows_read(x.file)
         x
@@ -756,14 +713,14 @@ impl Decls {
     /// The row as it stands, unrecorded — dep_audit's own reads (which
     /// must not themselves record an edge), and a whole-program pass
     /// walking the table by index as it grows.
-    fn raw_decl(d: DeclId) -> Decl { decl_of_row(self.decl_row_rows.get().row(d.index)!) }
+    fn raw_decl(d: DeclId) -> Decl { self.decl_row_rows.get().row(d.index)! }
 
     /// How many declarations are minted, read unrecorded as `file_count` is.
     fn decl_count() -> int { self.decl_row_rows.get().count() }
 
     /// Every declaration, unrecorded — the table's own whole-set read: the
     /// old hand-table scan recorded nothing, so this does not either.
-    fn all_decls() -> List<Decl> { [decl_of_row(r) for r in self.decl_row_rows.get().all()] }
+    fn all_decls() -> List<Decl> { [self.raw_decl(DeclId { index: i }) for i in 0..self.decl_count()] }
 
     /// A declaration's row rewritten in place: the hand table (kept for
     /// `.8.2`'s parity and, later, deletion) and the relation together, so
@@ -773,18 +730,10 @@ impl Decls {
     /// path — same hash, same keys, the stored value replaced in place.
     fn set_decl(idx: int, d: Decl) {
         self.decls.set_at(idx, d)
-        let row = row_of_decl(d)
         self
             .decl_row_rows
             .get()
-            .put_in(
-                self.decl_rows.get(),
-                DeclRow.relation_name(),
-                idx,
-                row,
-                row.stable_hash(),
-                row.index_keys(),
-            )
+            .put_in(self.decl_rows.get(), Decl.relation_name(), idx, d, d.stable_hash(), d.index_keys())
     }
 
     /// One audited read, told to the hook — which reads the tables itself, so the
