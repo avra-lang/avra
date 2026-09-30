@@ -19,6 +19,7 @@ use @std.http.h2.{
     padded,
     prioritised,
     frames_in,
+    value_named,
 }
 use @std.http.hpack.{HeaderField, field, encoder, decoder}
 use @std.http.frame.{limits, Limits, no_bytes}
@@ -80,7 +81,7 @@ spec "std.http h2 adversarial" {
             )
             reset_of(c, 201) == error_code(.RefusedStream) &&
                 goaway_of(c) == -1 &&
-                paths_ready(c2) == "/refused"
+                ready_path(c2, 203) == "/refused"
         }
         then "a block on a stream that depends on itself still moves the table" {
             let body = u32_bytes(1).concat([15].bytes()!).concat(keeping_block("/self"))
@@ -137,13 +138,13 @@ spec "std.http h2 adversarial" {
             goaway_of(conn_after([frame_bytes(.Headers, end_headers | padded, 1, no_bytes)])) == error_code(.Protocol)
         }
         then "a padded DATA of the pad-length octet alone is an empty body" {
-            let c = conn_after(
+            mut c = conn_after(
                 [
                     frame_bytes(.Headers, end_headers, 1, block_of(get_head("/"))),
                     frame_bytes(.Data, padded | end_stream, 1, [0].bytes()!),
                 ],
             )
-            c.ready.length == 1 && c.ready[0].body.is_empty()
+            c.ready.length == 1 && taken_text(c, 1) == " ended"
         }
     }
     given "every split of a session" {
@@ -205,7 +206,7 @@ spec "std.http h2 adversarial" {
             ) for i in 0..300]
             goaway_of(conn_after(bad)) == error_code(.EnhanceYourCalm)
         }
-        then "a flood of one-octet DATA earns one WINDOW_UPDATE per half window, not one per frame" {
+        then "a flood of one-octet DATA nobody reads earns one connection WINDOW_UPDATE per half window and none on the stream" {
             let head = frame_bytes(
                 .Headers,
                 end_headers,
@@ -215,23 +216,20 @@ spec "std.http h2 adversarial" {
             let c = conn_after(
                 [head].concat([frame_bytes(.Data, 0, 1, "x".bytes()) for i in 0..40000]),
             )
-            goaway_of(c) == -1 && frames_in(c.out).filter(it.kind is .WindowUpdate).length == 2
+            goaway_of(c) == -1 &&
+                frames_in(c.out).filter(it.kind is .WindowUpdate).length == 1 &&
+                stream_updates(c, 1) == 0
         }
-        then "the 413 refusal ignores the DATA the client had in flight" {
-            let l = Limits { body: 4 }
-            mut c = h2_server(l)
-            let head = [
-                field(":method", "POST"),
-                field(":scheme", "http"),
-                field(":path", "/"),
-                field(":authority", "a"),
-            ]
-            let frames = [
-                frame_bytes(.Headers, end_headers, 1, block_of(head)),
-                frame_bytes(.Data, 0, 1, "0123456789".bytes()),
-                frame_bytes(.Data, end_stream, 1, "more".bytes()),
-            ]
-            let _ = c.fed(hello_bytes().concat(frames.bytes()), 0)
+        then "a refusal sent while the body flows ignores the DATA the client had in flight" {
+            mut c = conn_after([frame_bytes(.Headers, end_headers, 1, block_of(post_head(14)))])
+            c.respond(1, [field(":status", "413")], no_bytes)
+            c.unheard(1)
+            let _ = c
+                .fed(
+                    frame_bytes(.Data, 0, 1, "0123456789".bytes())
+                        .concat(frame_bytes(.Data, end_stream, 1, "more".bytes())),
+                    0,
+                )
             goaway_of(c) == -1 && reset_of(c, 1) == error_code(.NoError) && c.streams.is_empty()
         }
     }
@@ -263,4 +261,10 @@ fn fuzz_run(seed: int) -> bool {
     let _ = c.fed(hello_bytes().concat(noise(seed, 40)), 0)
     let goaways = frames_in(c.out).filter(it.kind is .GoAway).length
     goaways == 0 && !c.closing || goaways == 1 && c.closing
+}
+
+/// The `:path` of stream `id`'s ready request, or `?`.
+fn ready_path(c: H2Conn, id: int) -> string {
+    let x? = c.ready.find(it.stream == id) else { return "?" }
+    value_named(x.fields, ":path".bytes())?.text() ?? "?"
 }

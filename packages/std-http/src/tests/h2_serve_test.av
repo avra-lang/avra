@@ -16,9 +16,9 @@ use @std.http.h2.{
     frames_in,
 }
 use @std.http.hpack.{HeaderField, Decoder, field, encoder, decoder}
-use @std.http.body.{Body}
+use @std.http.body.{Body, whole}
 use @std.http.frame.{limits, Method, no_bytes}
-use @std.http.http.{Response, Header, text}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
 
 fn fields_get(path: string) -> List<HeaderField> {
     [
@@ -31,11 +31,14 @@ fn fields_get(path: string) -> List<HeaderField> {
 
 fn head_of_fields(fs: List<HeaderField>) -> string { head_text(fs).text() ?? "?" }
 
-fn exchange(fs: List<HeaderField>, body: string) -> Exchange { Exchange { stream: 1, fields: fs, body: body.bytes() } }
+/// Stream 1's request from `fs`, its body `body` whole.
+fn request_from(fs: List<HeaderField>, body: string) -> Result<Request<Unrouted>, int> {
+    request_of(Exchange { stream: 1, fields: fs }, "p", limits(), (_k) -> whole(body.bytes()))
+}
 
 /// The status a stream's fields are refused with by the 1.1 framer, or 0.
 fn refused_status(fs: List<HeaderField>) -> int {
-    match request_of(exchange(fs, ""), "p", limits()) { .Ok(_) -> 0, .Err(code) -> code }
+    match request_from(fs, "") { .Ok(_) -> 0, .Err(code) -> code }
 }
 
 /// A live connection with stream 1 open, the client's GET taken.
@@ -90,11 +93,7 @@ spec "std.http h2 serve" {
     }
     given "the request the 1.1 framer reads from it" {
         then "a stream's request carries its path, fields and body" {
-            match request_of(
-                exchange(fields_get("/p").concat([field("x-who", "ana")]), "hi"),
-                "peer",
-                limits(),
-            ) {
+            match request_from(fields_get("/p").concat([field("x-who", "ana")]), "hi") {
                 .Ok(q) -> q.path()! == "/p".bytes() &&
                     q.header("X-Who") == "ana" &&
                     gathered_text(q.body) == "hi" &&
@@ -124,7 +123,7 @@ spec "std.http h2 serve" {
     given "the answer on the stream" {
         then "a text answer is :status, its fields lowercased, its length, then its body" {
             mut h = served_one()
-            answered_on(
+            let _ = answered_on(
                 h,
                 1,
                 Response {
@@ -138,12 +137,12 @@ spec "std.http h2 serve" {
         }
         then "HEAD's answer measures the body and sends none of it" {
             mut h = served_one()
-            answered_on(h, 1, text(200, "four"), Method.Head)
+            let _ = answered_on(h, 1, text(200, "four"), Method.Head)
             answer_text(h) == ":status: 200\ncontent-type: text/plain; charset=utf-8\ncontent-length: 4\nbody="
         }
         then "a connection-scoped field is dropped; one no wire could carry is the server's 500" {
             mut h = served_one()
-            answered_on(
+            let _ = answered_on(
                 h,
                 1,
                 Response {
@@ -153,7 +152,7 @@ spec "std.http h2 serve" {
                 Method.Get,
             )
             mut g = served_one()
-            answered_on(
+            let _ = answered_on(
                 g,
                 1,
                 Response { status: 200, headers: [Header { name: "x", value: "a\rb" }] },

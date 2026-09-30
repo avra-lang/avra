@@ -3,17 +3,26 @@
 //! so one set of laws judges both versions, and a handler, a route and a
 //! layer read the same `Request` whichever version it came on. A
 //! `Response` goes back as the stream's answer: `:status`, the fields
-//! lowercased, the body's length, and the body — none of it for HEAD.
+//! lowercased, the body's length when it is known, and the body — whole,
+//! or pulled piece by piece as the windows open — none of it for HEAD.
+//!
+//! A REQUEST'S BODY IS READ AS THE HANDLER ASKS, as a 1.1 body is: the
+//! same `Body`, over a transport that is the stream (`Inbound`) — a read
+//! frames what the link brings, answers what the connection owes, and
+//! gives the stream's window back for what it took. The connection lives
+//! in a `Cell` only while such a body is read (`H2Side`).
 //!
 //! The fields were already held to HTTP/2's own laws (h2.av, §8): what
 //! reaches this file is lowercase, pseudo-fields first, and free of the
 //! connection-specific fields, so the head spelled here is one the 1.1
 //! framer would have read off a wire.
-use frame.{Limits, Method, framed, status_of, no_bytes, admits}
+use frame.{Limits, Method, RequestBody, ReplyBody, framed, status_of, no_bytes, admits}
 use hpack.{HeaderField, field}
 use h2.{Exchange, H2Conn, pseudo_of, value_at, connect_word, connection_specific}
-use body.{whole}
-use http.{Request, Unrouted, Response, as_sent, status}
+use body.{Body, measured, until_close}
+use http.{Request, Unrouted, Response, Stream, sendable, released, delimited, status, read_size}
+use wire.{Transport, WireError}
+use @std.time.{Duration}
 
 /// The 1.1 head a request's fields mean: the method and target — the
 /// path, or CONNECT's authority — then `host` from `:authority` when no
@@ -51,32 +60,149 @@ export fn scheme_of(x: Exchange) -> Bytes? {
 }
 
 /// A stream's request, framed by the 1.1 framer from the head its fields
-/// mean — or the status that framer refuses it with.
-export fn request_of(x: Exchange, peer: string, limits: Limits) -> Result<Request<Unrouted>, int> {
+/// mean, its body what `bodied` makes of the body that head declares —
+/// or the status that framer refuses it with.
+export fn request_of(x: Exchange, peer: string, limits: Limits, bodied: fn(RequestBody) -> Body) -> Result<
+    Request<Unrouted>,
+    int,
+> {
     let raw = head_text(x.fields)
     match framed(raw, 0, 0, limits) {
-        .Complete(head) -> .Ok(Request { raw: raw, head: head, body: whole(x.body), peer: peer, params: Unrouted {} }),
+        .Complete(head) -> .Ok(
+            Request {
+                raw: raw,
+                head: head,
+                body: bodied(head.body),
+                peer: peer,
+                params: Unrouted {},
+            },
+        ),
         .Refused(why) -> .Err(status_of(why)),
         .Partial -> .Err(400),
     }
 }
 
-/// A response as stream `id`'s answer: what `as_sent` says is sendable,
-/// its fields lowercased — a connection-specific one dropped, since
-/// HTTP/2 has no connection to speak of — the body's length, and the
-/// body, which a HEAD's answer measures and never sends.
-export fn answered_on(mut h: H2Conn, id: int, r: Response, asked: Method) {
-    let sent = as_sent(r)
+/// A streamed answer in flight: its stream, the producer it pulls, how
+/// its length is bounded, and how many octets have gone.
+export type Pour = { id: int, stream: Stream, delim: ReplyBody, sent: int }
+
+/// A response as stream `id`'s answer: what HTTP/2 can send of it
+/// (`h2_sendable`), its fields lowercased — a connection-specific one
+/// dropped, since HTTP/2 has no connection to speak of — its length when
+/// known, and its body, which a HEAD's answer measures and never sends.
+/// A streamed body is the pour the server pulls; a whole one goes now.
+export fn answered_on(mut h: H2Conn, id: int, r: Response, asked: Method) -> Pour? {
+    let sent = h2_sendable(r)
+    let delim = delimited(sent, 1)
     let fields = [field(":status", "${sent.status}")]
         .concat(
             [HeaderField { name: folded(hd.name.bytes()), value: hd.value.bytes() } for hd in sent.headers if !scoped(hd.name)],
         )
-        .concat([field("content-length", "${sent.body.length}")])
-    h.respond(id, fields, if asked is .Head { no_bytes } else { sent.body })
+        .concat(length_fields(delim))
+    let s? = sent.stream else {
+        h.respond(id, fields, if asked is .Head { no_bytes } else { sent.body })
+        return null
+    }
+    if asked is .Head {
+        s.ended()
+        h.respond(id, fields, no_bytes)
+        return null
+    }
+    h.began(id, fields)
+    Pour { id: id, stream: s, delim: delim, sent: 0 }
+}
+
+/// A `content-length` for a body of known length; none for one that
+/// ends when its stream does.
+fn length_fields(delim: ReplyBody) -> List<HeaderField> {
+    match delim {
+        .Length(n) -> [field("content-length", "${n}")],
+        .Chunked or .UntilClose or .None -> [],
+    }
 }
 
 /// A stream answered with a bare status.
-export fn refused_on(mut h: H2Conn, id: int, code: int) { answered_on(h, id, status(code), Method.Get) }
+export fn refused_on(mut h: H2Conn, id: int, code: int) { let _ = answered_on(h, id, status(code), Method.Get) }
+
+/// `r` as HTTP/2 can send it: HTTP/2 has no upgrade and this server
+/// sends no interim answer (RFC 9113 §8.6, §8.1), so a response the 1.1
+/// writer would refuse, a `1xx` and an upgrade are each a 500 — the
+/// stream they carried released.
+fn h2_sendable(r: Response) -> Response {
+    if sendable(r) && r.status >= 200 && r.upgrade == null { return r }
+    released(r)
+    status(500)
+}
+
+// ── A request body over its stream ─────────────────────────────
+
+/// The connection while a stream's body is read through it: the
+/// connection value, and the octets read from the link and not yet
+/// framed.
+export type H2Side = { conn: H2Conn, buf: Bytes }
+
+/// Stream `id`'s body as it arrives over `link`, `first` already here:
+/// a declared length read to its end, anything else read until the
+/// stream ends — each read given `patience`.
+export fn stream_body(
+    side: Cell<H2Side>,
+    link: dyn Transport,
+    id: int,
+    first: Bytes,
+    kind: RequestBody,
+    patience: Duration,
+    lim: Limits,
+) -> Body {
+    let t: dyn Transport = Inbound { side: side, link: link, id: id }
+    match kind {
+        .Length(n) -> measured(t, first, 0, n, no_bytes, patience, lim),
+        .None or .Chunked -> until_close(t, first, 0, patience, lim),
+    }
+}
+
+/// One stream of a connection read as a transport: reads take the
+/// stream's body, and everything else the link says is still framed
+/// and answered on the way. A stream is not the link's to write to or
+/// close — its answer goes out through the connection.
+type Inbound = { side: Cell<H2Side>, link: dyn Transport, id: int }
+
+impl Transport for Inbound {
+    fn wire_read(_max: int) -> Result<Bytes?, WireError> {
+        mut s = self.side.get()
+        let got = taken_from(s, self.link, self.id)
+        self.side.set(s)
+        got
+    }
+    fn wire_write(_bytes: Bytes) -> Result<int, WireError> { .Ok(0) }
+    fn wire_shutdown() -> Result<int, WireError> { .Ok(0) }
+    fn wire_close() -> Result<int, WireError> { .Ok(self.link.wire_fd()) }
+    fn wire_peer() -> string { self.link.wire_peer() }
+    fn wire_fd() -> int { self.link.wire_fd() }
+    fn wire_secured() -> bool { self.link.wire_secured() }
+    fn wire_protocol() -> string? { self.link.wire_protocol() }
+}
+
+/// The next octets of stream `id`'s body — null at its end — the link
+/// read and framed until some arrive, what the connection owes written
+/// first each time. A stream reset, a connection that failed and a link
+/// that closed all cut the body short.
+fn taken_from(mut s: H2Side, link: dyn Transport, id: int) -> Result<Bytes?, WireError> {
+    while !s.conn.closing {
+        let a = s.conn.arrived(id)
+        let owed = s.conn.drained()
+        if !owed.is_empty() { link.wire_write(owed)? }
+        match a {
+            .Cut -> { return .Err(.Reset) },
+            .Whole(b) -> { return .Ok(if b.is_empty() { null } else { b }) },
+            .Flowing(b) -> { if !b.is_empty() { return .Ok(b) } },
+        }
+        let more? = link.wire_read(read_size())? else { return .Err(.Reset) }
+        s.buf = s.buf.concat(more)
+        let at = s.conn.fed(s.buf, 0)
+        s.buf = s.buf.slice(at, s.buf.length)
+    }
+    .Err(.Reset)
+}
 
 /// Whether a field names the connection, which HTTP/2 refuses (§8.2.2).
 fn scoped(name: string) -> bool { connection_specific.any(it == folded(name.bytes())) }

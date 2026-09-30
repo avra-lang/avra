@@ -3,17 +3,21 @@
 //! A connection is ONE VALUE the server holds and feeds: `fed` takes
 //! every whole frame a buffer holds, moves the streams, the windows and
 //! the HPACK tables, and leaves what it owes the peer in `out` and the
-//! requests it completed in `ready`. Nothing here touches a socket, so
-//! every law is a fixture over bytes.
+//! requests whose heads arrived in `ready`. Nothing here touches a
+//! socket, so every law is a fixture over bytes.
 //!
 //! A LAW BROKEN ON ONE STREAM RESETS THAT STREAM; a law broken on the
 //! connection ends it with GOAWAY. Which is which is the RFC's, arm by
 //! arm. A header block is decoded WHOLE even for a stream that will be
 //! refused, because the peer's HPACK table moved when it wrote it.
 //!
-//! A request is whole when its stream ends: its head decoded and held
-//! to §8's laws, its body gathered under the bound, its declared length
-//! kept. A stream IS a request; what answers it is the server's.
+//! A REQUEST IS READY ONCE ITS HEAD IS HERE, decoded and held to §8's
+//! laws; its body is TAKEN as it arrives (`arrived`), and a stream's
+//! window is given back only for octets taken — so the peer can never
+//! have more in flight than one window, however large the body. An
+//! answer's body is given whole (`respond`) or piece by piece (`began`,
+//! `piece`), each paced by both windows. A stream IS a request; what
+//! answers it is the server's.
 use hpack.{HeaderField, Decoder, Encoder, decoder, encoder, field, int_bound}
 use frame.{Limits, admits, is_tchar, is_vchar, is_target, no_bytes}
 
@@ -252,18 +256,23 @@ fn sending(st: StreamState) -> bool {
     match st { .Open or .HalfClosedRemote -> true, .HalfClosedLocal -> false }
 }
 
-/// A live stream: its state, both windows, the request's head and the
-/// body gathered so far, whether a response head has been written, and
-/// the response body still owed because a window is shut.
+/// A live stream: its state, both windows, the request's head, the
+/// body octets arrived and not yet taken and how many arrived in all,
+/// whether a response head has been written, the response body still
+/// owed because a window is shut, whether more of it is to come, and
+/// whether its request body is no longer heard.
 export type H2Stream = {
     id: int,
     state: StreamState,
     send: int,
     recv: int,
     fields: List<HeaderField>,
-    body: Bytes,
+    inbound: Bytes,
+    received: int,
     answered: bool,
     owed: Bytes,
+    more: bool,
+    deaf: bool,
 }
 
 /// How a stream closed, which decides what a late frame on it means
@@ -303,9 +312,19 @@ type Assembly = { stream: int, block: Bytes, ended: bool, purpose: Purpose, fram
 /// The most frames one header block may span.
 const block_frames: int = 64
 
-/// A request the connection completed: its stream, its head as decoded
-/// and checked, and its whole body.
-export type Exchange = { stream: int, fields: List<HeaderField>, body: Bytes }
+/// A request whose head arrived: its stream, and its head as decoded
+/// and checked. Its body is taken from the stream (`arrived`).
+export type Exchange = { stream: int, fields: List<HeaderField> }
+
+/// What a stream's body holds for its reader: the last of its octets,
+/// the stream ended; the octets so far, more to come; or — the stream
+/// reset or gone — nothing more, ever. Each take answers what arrived
+/// since the last.
+export enum Arrived {
+    Whole(b: Bytes)
+    Flowing(b: Bytes)
+    Cut
+}
 
 // ── The connection ──────────────────────────────────────────────
 
@@ -319,7 +338,9 @@ export type Exchange = { stream: int, fields: List<HeaderField>, body: Bytes }
 /// link ends when it is quiet. `churn` counts the streams that ended in
 /// a reset the peer provoked — by resetting one itself or by breaking a
 /// stream's law — and `answers` the streams this end answered: churn
-/// past its budget ends the connection (`churned`).
+/// past its budget ends the connection (`churned`). `delivered` counts
+/// the answer octets sent, so a stalled answer can be told from a slow
+/// one.
 export type H2Conn = {
     ours: Settings,
     theirs: Settings,
@@ -341,6 +362,7 @@ export type H2Conn = {
     parting: bool,
     churn: int,
     answers: int,
+    delivered: int,
 }
 
 /// A server connection awaiting the client's preface, its own SETTINGS
@@ -368,6 +390,7 @@ export fn h2_server(limits: Limits) -> H2Conn {
         parting: false,
         churn: 0,
         answers: 0,
+        delivered: 0,
     }
 }
 
@@ -507,7 +530,7 @@ impl H2Conn {
         let n = f.payload.length
         if n > self.recv { return .FlowControl }
         self.recv = self.recv - n
-        self.replenished(0, self.recv)
+        self.replenished(self.recv)
         match self.standing(f.stream) {
             .Idle or .Forgotten -> .Protocol,
             .Closed(how) -> self.late(f.stream, how),
@@ -515,51 +538,57 @@ impl H2Conn {
         }
     }
 
-    /// DATA on a live stream: its window charged, its body gathered,
-    /// the request completed when it ends.
+    /// DATA on a live stream: its window charged, its octets held for
+    /// the body's reader — and padding, which nobody reads, given back
+    /// at once.
     mut fn data_on(at: int, f: Frame, body: Bytes) -> H2Error? {
         let s = self.streams[at]
         if !receiving(s.state) { return self.stream_error(s.id, .StreamClosed) }
         let n = f.payload.length
         if n > s.recv { return self.stream_error(s.id, .FlowControl) }
-        if s.body.length + body.length > self.limits.body { return self.refused_with(s.id, 413) }
         self.streams[at].recv = s.recv - n
-        self.streams[at].body = s.body.concat(body)
-        if !flagged(f.flags, end_stream) {
-            self.replenished(s.id, s.recv - n)
-            return null
-        }
+        self.streams[at].received = s.received + body.length
+        if s.deaf { return null }
+        self.streams[at].inbound = s.inbound.concat(body)
+        self.granted(at)
+        if !flagged(f.flags, end_stream) { return null }
         self.remote_ended(at)
     }
 
-    /// A window that fell below half given back whole: a body is paced
-    /// by the bound on it, never by the window's size, and a flood of
-    /// one-octet DATA frames earns one WINDOW_UPDATE per half a window,
-    /// never one per frame.
-    mut fn replenished(stream: int, left: int) {
+    /// The connection's window given back once it falls below half: a
+    /// stream's own window is what bounds a body in flight, and a flood
+    /// of one-octet DATA frames earns one WINDOW_UPDATE per half a
+    /// window, never one per frame.
+    mut fn replenished(left: int) {
         let n = self.ours.window - left
         if left * 2 >= self.ours.window || n <= 0 { return }
-        self.owe(.WindowUpdate, 0, stream, u32_bytes(n))
-        if stream == 0 { self.recv = self.recv + n } else { self.refilled(stream, n) }
+        self.owe(.WindowUpdate, 0, 0, u32_bytes(n))
+        self.recv = self.recv + n
     }
 
-    mut fn refilled(stream: int, n: int) {
-        let at? = self.live_at(stream) else { return }
-        self.streams[at].recv = self.streams[at].recv + n
+    /// The stream at `at` given back what its window lacks beyond the
+    /// octets it holds untaken — once that is half a window or more, so
+    /// the peer never has more in flight than one window's worth of
+    /// what nobody has read.
+    mut fn granted(at: int) {
+        let s = self.streams[at]
+        let free = self.ours.window - s.recv - s.inbound.length
+        if free * 2 < self.ours.window || !receiving(s.state) || s.deaf { return }
+        self.owe(.WindowUpdate, 0, s.id, u32_bytes(free))
+        self.streams[at].recv = s.recv + free
     }
 
-    /// The peer ended the stream at `at`: the request is whole — its
-    /// declared length kept (§8.1.1) — and ready, unless this end has
-    /// already answered it, when the stream simply closes.
+    /// The peer ended the stream at `at`: its declared length kept
+    /// (§8.1.1) — and closed, when this end has already ended its
+    /// answer.
     mut fn remote_ended(at: int) -> H2Error? {
         let s = self.streams[at]
-        if !length_kept(s.fields, s.body.length) { return self.stream_error(s.id, .Protocol) }
+        if !length_kept(s.fields, s.received) { return self.stream_error(s.id, .Protocol) }
         if !sending(s.state) {
             self.closed(s.id, .Ended)
             return null
         }
         self.streams[at].state = .HalfClosedRemote
-        self.ready = self.ready.concat([Exchange { stream: s.id, fields: s.fields, body: s.body }])
         null
     }
 
@@ -658,9 +687,12 @@ impl H2Conn {
             send: self.theirs.window,
             recv: self.ours.window,
             fields: [],
-            body: no_bytes,
+            inbound: no_bytes,
+            received: 0,
             answered: false,
             owed: no_bytes,
+            more: false,
+            deaf: false,
         }
         self.streams = self.streams.concat([s])
         .Head
@@ -726,6 +758,7 @@ impl H2Conn {
         let at? = self.live_at(a.stream) else { return null }
         if !request_head_kept(fs) { return self.stream_error(a.stream, .Protocol) }
         self.streams[at].fields = fs
+        self.ready.push(Exchange { stream: a.stream, fields: fs })
         if !a.ended { return null }
         self.remote_ended(at)
     }
@@ -839,16 +872,55 @@ impl H2Conn {
     /// owed until a WINDOW_UPDATE opens them. A stream that is gone takes
     /// nothing.
     mut fn respond(id: int, fields: List<HeaderField>, body: Bytes) {
+        if body.is_empty() { return self.headed_answer(id, fields, true) }
+        self.began(id, fields)
+        self.piece(id, body, true)
+    }
+
+    /// A response on stream `id` whose body follows in pieces: its head
+    /// now, the stream left open for them.
+    mut fn began(id: int, fields: List<HeaderField>) { self.headed_answer(id, fields, false) }
+
+    /// The next piece of stream `id`'s answer, owed behind what is owed
+    /// already and sent as the windows allow — the last ends the stream,
+    /// an empty last one in a DATA of its own.
+    mut fn piece(id: int, b: Bytes, last: bool) {
+        let at? = self.live_at(id) else { return }
+        if !self.streams[at].answered || !self.streams[at].more { return }
+        self.streams[at].owed = self.streams[at].owed.concat(b)
+        self.streams[at].more = !last
+        if last && self.streams[at].owed.is_empty() {
+            self.owe(.Data, end_stream, id, no_bytes)
+            return self.local_ended(id)
+        }
+        self.flushed(id)
+    }
+
+    /// Stream `id`'s answer head written; `ends` when it carries no
+    /// body.
+    mut fn headed_answer(id: int, fields: List<HeaderField>, ends: bool) {
         let at? = self.live_at(id) else { return }
         if self.streams[at].answered { return }
         let block = self.encoder.encoded(fields)
-        self.out = header_frames(self.out, id, block, body.is_empty(), self.theirs.frame)
+        self.out = header_frames(self.out, id, block, ends, self.theirs.frame)
         self.streams[at].answered = true
+        self.streams[at].more = !ends
         self.answers = self.answers + 1
-        self.streams[at].owed = body
-        if body.is_empty() { return self.local_ended(id) }
-        self.flushed(id)
+        if ends { self.local_ended(id) }
     }
+
+    /// Whether stream `id`'s answer wants its next piece now: more is to
+    /// come, nothing is owed, and both windows are open — so a producer
+    /// is pulled only as fast as the peer reads, and a piece is the most
+    /// an answer ever holds.
+    fn hungry(id: int) -> bool {
+        let at? = self.live_at(id) else { return false }
+        let s = self.streams[at]
+        s.more && s.owed.is_empty() && self.send > 0 && s.send > 0
+    }
+
+    /// Whether stream `id` is still live.
+    fn live(id: int) -> bool { self.live_at(id) != null }
 
     /// Every stream's owed body sent as far as the windows allow.
     mut fn flushed_all() {
@@ -856,24 +928,54 @@ impl H2Conn {
     }
 
     /// Stream `id`'s owed body sent as far as both windows allow, in
-    /// frames no longer than the peer takes; the last ends the stream.
+    /// frames no longer than the peer takes; the frame that empties it
+    /// ends the stream when no more is to come.
     mut fn flushed(id: int) {
         let at? = self.live_at(id) else { return }
         let s = self.streams[at]
         if s.owed.is_empty() { return }
         let room = least(least(self.send, s.send), s.owed.length)
         if room <= 0 { return }
+        let ends = room == s.owed.length && !s.more
         mut sent = 0
         while sent < room {
             let n = least(room - sent, self.theirs.frame)
-            let last = sent + n == s.owed.length
-            self.owe(.Data, if last { end_stream } else { 0 }, id, s.owed.slice(sent, sent + n))
+            self
+                .owe(
+                    .Data,
+                    if ends && sent + n == room { end_stream } else { 0 },
+                    id,
+                    s.owed.slice(sent, sent + n),
+                )
             sent = sent + n
         }
         self.send = self.send - room
+        self.delivered = self.delivered + room
         self.streams[at].send = s.send - room
         self.streams[at].owed = s.owed.slice(room, s.owed.length)
-        if room == s.owed.length { self.local_ended(id) }
+        if ends { self.local_ended(id) }
+    }
+
+    /// The body octets stream `id` holds, taken — its window given back
+    /// for them.
+    mut fn arrived(id: int) -> Arrived {
+        let at? = self.live_at(id) else { return .Cut }
+        let s = self.streams[at]
+        self.streams[at].inbound = no_bytes
+        self.granted(at)
+        if receiving(s.state) { .Flowing(s.inbound) } else { .Whole(s.inbound) }
+    }
+
+    /// Stream `id`'s request body no longer heard: what arrives is
+    /// dropped and its window never given back, and once the answer has
+    /// ended a peer still sending is asked to stop — RST_STREAM NO_ERROR
+    /// (§8.1) — rather than waited for.
+    mut fn unheard(id: int) {
+        let at? = self.live_at(id) else { return }
+        if !receiving(self.streams[at].state) { return }
+        self.streams[at].deaf = true
+        self.streams[at].inbound = no_bytes
+        if !sending(self.streams[at].state) { self.reset(id, .NoError) }
     }
 
     /// This end ended stream `id`: it closes when the peer had ended it
@@ -881,6 +983,7 @@ impl H2Conn {
     mut fn local_ended(id: int) {
         let at? = self.live_at(id) else { return }
         if !receiving(self.streams[at].state) { return self.closed(id, .Ended) }
+        if self.streams[at].deaf { return self.reset(id, .NoError) }
         self.streams[at].state = .HalfClosedLocal
     }
 
@@ -907,7 +1010,7 @@ impl H2Conn {
 
     /// Whether every stream is answered and sent, so a closing link may
     /// part.
-    fn quiet() -> bool { self.streams.all(it.answered && it.owed.is_empty()) }
+    fn quiet() -> bool { self.streams.all(it.answered && it.owed.is_empty() && !it.more) }
 }
 
 fn least(a: int, b: int) -> int { if a < b { a } else { b } }

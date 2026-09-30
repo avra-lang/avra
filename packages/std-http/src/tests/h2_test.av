@@ -324,13 +324,13 @@ spec "std.http h2" {
     }
     given "DATA and the body (§6.1, §8.1.1)" {
         then "a POST's DATA is its body, charged to the connection's window" {
-            let c = conn_after(
+            mut c = conn_after(
                 [heads(1, post_head(5), 0), data_on(1, "hel", 0), data_on(1, "lo", end_stream)],
             )
             c.ready.length == 1 &&
-                c.ready[0].body == "hello".bytes() &&
                 kinds_owed(c, .WindowUpdate) == 0 &&
-                c.recv == 65530
+                c.recv == 65530 &&
+                taken_text(c, 1) == "hello ended"
         }
         then "DATA on stream 0 is a PROTOCOL_ERROR" { goaway_of(conn_after([data_on(0, "x", 0)])) == code(.Protocol) }
         then "DATA on an idle stream is a PROTOCOL_ERROR" { goaway_of(conn_after([data_on(1, "x", 0)])) == code(.Protocol) }
@@ -384,33 +384,60 @@ spec "std.http h2" {
             ) == code(.Protocol)
         }
         then "padded DATA is gathered without its padding" {
-            let c = conn_after(
+            mut c = conn_after(
                 [
                     heads(1, post_head(2), 0),
                     frame_bytes(.Data, padded | end_stream, 1, [2, 104, 105, 0, 0].bytes()!),
                 ],
             )
-            c.ready[0].body == "hi".bytes()
+            taken_text(c, 1) == "hi ended"
         }
         then "a body shorter or longer than its content-length resets the stream" {
             reset_of(conn_after([heads(1, post_head(5), 0), data_on(1, "abc", end_stream)]), 1) == code(.Protocol) &&
                 reset_of(conn_after([heads(1, post_head(1), 0), data_on(1, "abc", end_stream)]), 1) == code(.Protocol)
         }
-        then "a body past the bound is answered 413 and the stream reset with NO_ERROR" {
-            let l = Limits { body: 4 }
-            let c = conn_with(l, [heads(1, post_head(10), 0), data_on(1, "0123456789", end_stream)])
-            reset_of(c, 1) == code(.NoError) &&
-                kinds_owed(c, .Headers) == 1 &&
-                c.ready.is_empty() &&
-                alive(c)
+        then "the request is ready once its head is here, before any of its body" {
+            conn_after([heads(1, post_head(5), 0)]).ready.length == 1
         }
-        then "a window below half is given back whole, so a long body never shuts either one" {
+        then "octets nobody took hold the stream's window shut; taking them gives it back" {
+            let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
+            mut c = conn_after([heads(1, post_head(81920), 0)].concat([frame for i in 0..3]))
+            let before = stream_updates(c, 1)
+            let _ = c.drained()
+            let took = c.arrived(1)
+            before == 0 &&
+                stream_updates(c, 1) == 1 &&
+                took is .Flowing &&
+                c.streams[0].recv == 65535
+        }
+        then "a stream sent past the window nobody gave back is FLOW_CONTROL_ERROR on the stream" {
             let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
             let c = conn_after([heads(1, post_head(81920), 0)].concat([frame for i in 0..5]))
-            alive(c) &&
-                c.recv * 2 >= 65535 &&
-                c.streams[0].recv * 2 >= 65535 &&
-                kinds_owed(c, .WindowUpdate) == 4
+            reset_of(c, 1) == code(.FlowControl) && alive(c)
+        }
+        then "a long body read as it arrives never shuts either window" {
+            let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
+            mut c = conn_after([heads(1, post_head(163840), 0)])
+            mut taken = 0
+            for i in 0..10 {
+                let _ = c.fed(frame, 0)
+                taken = taken + taken_octets(c, 1)
+            }
+            alive(c) && taken == 163840 && c.recv * 2 >= 65535 && c.streams[0].recv * 2 >= 65535
+        }
+        then "a stream whose body is no longer heard drops what arrives and is reset once answered" {
+            mut c = conn_after([heads(1, post_head(10), 0), data_on(1, "01234", 0)])
+            c.unheard(1)
+            let _ = c.fed(data_on(1, "56789", 0), 0)
+            let held = c.streams[0].inbound.length
+            c.respond(1, [field(":status", "200")], no_bytes)
+            held == 0 && stream_updates(c, 1) == 0 && reset_of(c, 1) == code(.NoError) && alive(c)
+        }
+        then "a body taken from a stream the peer reset is cut" {
+            mut c = conn_after(
+                [heads(1, post_head(10), 0), frame_bytes(.Reset, 0, 1, u32_bytes(8))],
+            )
+            c.arrived(1) is .Cut
         }
     }
     given "RST_STREAM, PRIORITY, WINDOW_UPDATE (§6.3, §6.4, §6.9)" {
@@ -518,14 +545,14 @@ spec "std.http h2" {
             reset_of(c, 1) == code(.Protocol) && c.ready.is_empty() && alive(c)
         }
         then "trailers end the request and keep its head" {
-            let c = conn_after(
+            mut c = conn_after(
                 [
                     heads(1, post_head(2), 0),
                     data_on(1, "ok", 0),
                     heads(1, [field("x-sum", "1")], end_stream),
                 ],
             )
-            c.ready.length == 1 && c.ready[0].body == "ok".bytes()
+            c.ready.length == 1 && taken_text(c, 1) == "ok ended"
         }
         then "trailers that do not end the stream, or carry a pseudo-field, reset it" {
             reset_of(conn_after([heads(1, post_head(0), 0), heads(1, [field("x", "1")], 0)]), 1) == code(.Protocol) &&
@@ -634,3 +661,21 @@ spec "std.http h2" {
         }
     }
 }
+
+/// Stream `id`'s body octets taken, as text, and ` ended` when they are
+/// the last — or `cut`.
+fn taken_text(mut c: H2Conn, id: int) -> string {
+    match c.arrived(id) {
+        .Whole(b) -> "${b.text() ?? "?"} ended",
+        .Flowing(b) -> b.text() ?? "?",
+        .Cut -> "cut",
+    }
+}
+
+/// How many octets of stream `id`'s body a take found.
+fn taken_octets(mut c: H2Conn, id: int) -> int {
+    match c.arrived(id) { .Whole(b) or .Flowing(b) -> b.length, .Cut -> -1 }
+}
+
+/// How many WINDOW_UPDATEs on stream `id` are owed.
+fn stream_updates(c: H2Conn, id: int) -> int { frames_in(c.out).filter(it.kind is .WindowUpdate && it.stream == id).length }

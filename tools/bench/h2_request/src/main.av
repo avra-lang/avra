@@ -9,6 +9,7 @@ use @std.http.http.{text}
 use @std.http.hpack.{field, encoder}
 use @std.http.h2.{h2_server, frame_bytes, preface, end_headers, end_stream, u32_bytes}
 use @std.http.h2_serve.{request_of, answered_on}
+use @std.http.body.{whole}
 use @std.time.{now_ns}
 
 let head = [
@@ -33,7 +34,7 @@ let _ = h
         0,
     )
 let _ = h.taken()
-answered_on(h, 1, text(200, "hello"), Method.Get)
+let _ = answered_on(h, 1, text(200, "hello"), Method.Get)
 let _ = h.drained()
 let n = 1000000
 let t0 = now_ns()
@@ -42,8 +43,9 @@ for i in 0..n {
     let id = 2 * i + 3
     let _ = h.fed(frame_bytes(.Headers, end_headers | end_stream, id, block), 0)
     for x in h.taken() {
-        match request_of(x, "127.0.0.1:1", limits()) {
-            .Ok(q) -> answered_on(h, x.stream, text(200, "hello"), q.head.method),
+        let body = match h.arrived(x.stream) { .Whole(b) or .Flowing(b) -> b, .Cut -> "".bytes() }
+        match request_of(x, "127.0.0.1:1", limits(), (_k) -> whole(body)) {
+            .Ok(q) -> { let _ = answered_on(h, x.stream, text(200, "hello"), q.head.method) },
             .Err(_) -> { total = total - 1 },
         }
     }
