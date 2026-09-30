@@ -164,10 +164,12 @@ do_prebuild=0; [ -n "$prebuild" ] && do_prebuild=1
 # (tools/idioms.baseline, tools/cited.py). rsync is its own no-op check.
 sync_paths=$(cd "$worktree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
     backend runtime packages tools bootstrap corpus; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+sync_t0=$(date +%s)
 changes=$(cd "$worktree" && rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
     --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git \
     $sync_paths "$sprite:$remote/") || { echo "sprite-build: rsync to $sprite failed" >&2; exit 3; }
 sync_state=unchanged; [ -n "$changes" ] && sync_state=synced
+sync_s=$(( $(date +%s) - sync_t0 ))
 
 # RT2: sync (if needed), idempotent provisioning, compiler restore or
 # a verified store, then the caller's own command, timed. Nothing here
@@ -200,6 +202,7 @@ for stem in llvm_wrapper ffi std_io std_process; do
     objs="$objs build/$stem.o build/$stem.sha build/$stem.d"
 done
 
+compile_t0=$(date +%s)
 if [ "$do_restore" = 1 ]; then
     cache="/home/sprite/avra-compilers/$chash"
     if [ -d "$cache" ]; then
@@ -279,6 +282,8 @@ if [ "$do_prebuild" = 1 ]; then
     test -x build/avra || make avra
 fi
 
+compile_s=$(( $(date +%s) - compile_t0 ))
+
 # THE TIMED RUN: the caller's own command, isolated from our own
 # bookkeeping below — nothing past this point writes to its stdout or
 # stderr.
@@ -302,6 +307,7 @@ fi
 {
     printf 'WALL:%s\n' "$wall"
     printf 'STORE:%s\n' "$store_result"
+    printf 'COMPILE:%s\n' "$compile_s"
 } > build/.avra-run-info
 
 exit "$status"
@@ -317,6 +323,8 @@ sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sp
 run_info=$(sprite -s "$sprite" exec --no-port-forward -- bash -lc "cat '$remote/build/.avra-run-info' 2>/dev/null" 2>/dev/null) || run_info=""
 wall=$(printf '%s\n' "$run_info" | sed -n 's/^WALL://p')
 store_result=$(printf '%s\n' "$run_info" | sed -n 's/^STORE://p')
+compile_s=$(printf '%s\n' "$run_info" | sed -n 's/^COMPILE://p')
+[ -n "$compile_s" ] || compile_s="?"
 [ -n "$wall" ] || wall="?"
 [ -n "$store_result" ] || store_result=none
 
@@ -353,5 +361,5 @@ else
     compiler_state=cached
 fi
 
-echo "sprite-build: $slug@$compiler_hash tree=$sync_state compiler=$compiler_state cmd=${wall}s -> exit $status" >&2
+echo "sprite-build: $slug@$compiler_hash tree=$sync_state compiler=$compiler_state sync=${sync_s}s build=${compile_s}s cmd=${wall}s -> exit $status" >&2
 exit "$status"
