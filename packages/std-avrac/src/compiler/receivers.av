@@ -10,6 +10,7 @@
 //! by the kernel (ROADMAP: the inout receiver).
 use core.{
     DeclId,
+    Expr,
     ExprId,
     TypeId,
     Type,
@@ -24,6 +25,7 @@ use core.{
     same_decl,
 }
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
+use @std.meta.{bracket}
 
 /// One fn's own evidence: which of its seats the body writes
 /// directly, and the flows from its seats into other fns' seats —
@@ -68,6 +70,7 @@ fn seated(x: Decl) -> bool {
 impl Decls {
     /// A fn's written seats for the fingerprint — one digit per seat,
     /// in seat order, so no two states share a word.
+    @bracket("receivers")
     fn written_bits(d: DeclId) -> List<int> {
         [if self.seat_written_so_far(d, i) { 1 } else { 0 } for i in 0..self.seat_count(d)]
     }
@@ -88,6 +91,7 @@ impl Decls {
 
     /// One fn's seats settled against its summary — true when a bit
     /// moved.
+    @bracket("receivers")
     fn settle_one(d: DeclId, s: Summary) -> bool {
         mut moved = false
         for i, own in s.own {
@@ -131,7 +135,9 @@ impl Workspace {
             edges: [],
         }
         cx.assigns()
-        for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
+        for k in call_tags(cx.store) {
+            for e in cx.store.exprs_by_kind(x.lo, x.hi, k) { cx.site_evidence(e) }
+        }
         Summary { own: cx.own, edges: cx.edges }
     }
 }
@@ -362,4 +368,15 @@ impl Workspace {
         let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }
         [hop].concat(rest)
     }
+}
+
+/// The tags of every call `site_evidence` reads evidence from; each
+/// payload is a placeholder `tag_expr` never reads.
+fn call_tags(store: SyntaxArena) -> List<int> {
+    let at = ExprId { index: 0 }
+    [
+        store.tag_expr(Expr.MethodCall(at, "", [])),
+        store.tag_expr(Expr.Call("", [], [])),
+        store.tag_expr(Expr.CallValue(at, [])),
+    ]
 }

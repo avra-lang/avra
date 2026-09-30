@@ -1,0 +1,597 @@
+//! ws.av — WEBSOCKET (RFC 6455): the upgrade on both sides, the frame
+//! codec, and a `Socket` — a value its connection's task owns, whose
+//! `receive` and `send` park that task and no other.
+//!
+//! A server accepts in a handler: `accepted(q, session)` answers the
+//! `101` when the request is a well-formed opening handshake, and the
+//! connection's task then runs `session` with the socket (server.av's
+//! upgrade). A client dials with `dialed`. Either side then reads
+//! MESSAGES: fragments are joined, a ping is answered with its pong, a
+//! pong is dropped, and a close is echoed before `receive` answers it.
+//!
+//! EVERY PROTOCOL LAW IS A CLOSE CODE: a frame that breaks one is
+//! answered with a close frame carrying the code, the connection is
+//! ended, and `receive` answers the code as its error — the peer is
+//! told why, and the application sees the same word.
+//!
+//! A receive waits as long as its caller's `within` allows, and no
+//! longer: a socket carries no deadline of its own, so a session
+//! names how long a quiet peer lives.
+use @std.errors.{Error}
+use @std.net.{NetError, connect, entropy32}
+use wire.{Transport, WireError, plainly}
+use @std.time.{Duration, secs, within}
+use frame.{Limits, Method, Reply, framed_reply, limits}
+use http.{Request, Response, Header, Upgrade, text, read_size, lists_token}
+use @std.text.{base64}
+use codec.{sha1, base64_of_length}
+use client.{request}
+
+// ── Messages and failures ───────────────────────────────────────
+
+/// A whole message: text, octets, or the peer's close with its code
+/// (1005 when it named none) and reason.
+export enum Message {
+    Text(s: string)
+    Binary(b: Bytes)
+    Close(code: int, reason: string)
+}
+
+/// Why a socket could not go on: a protocol law broken (the close code
+/// it earned, already sent), the connection ended without a close, the
+/// caller's deadline, the network, the secure layer, or — dialing — a
+/// peer that answered the handshake with `status`, or answered it
+/// wrongly — or a client the kernel gave no entropy to mask with, or an
+/// opening whose target or authority no request line can carry.
+export enum WsError {
+    Protocol(code: int)
+    Closed
+    TimedOut
+    Net(e: NetError)
+    Secure(e: dyn Error)
+    Rejected(status: int)
+    Unverified
+    NoEntropy
+    Unsendable
+}
+
+/// Which end of the connection a socket is: a client masks what it
+/// sends and a server what it receives is masked by.
+export enum Side {
+    Server
+    Client
+}
+
+/// The bounds a socket keeps: the largest message it will gather,
+/// fragments and all (a larger one is refused with 1009).
+export type WsLimits = { message: int = 16777216 }
+
+/// The default bounds.
+export fn ws_limits() -> WsLimits { WsLimits {} }
+
+// ── The frame (RFC 6455 §5.2) ───────────────────────────────────
+
+/// One frame: whether it ends its message, its opcode, and its payload
+/// already unmasked.
+export type WsFrame = { fin: bool, op: int, payload: Bytes }
+
+/// A frame's head: the frame's fields, its mask when masked, where its
+/// payload begins, and how long it is.
+type FrameHead = { fin: bool, op: int, key: List<int>?, at: int, length: int }
+
+/// What a buffer holds: not yet a whole frame head, a head, or the close
+/// code the frame earned.
+enum Headed {
+    Partial
+    Complete(h: FrameHead)
+    Refused(code: int)
+}
+
+export fn op_continue() -> int { 0 }
+export fn op_text() -> int { 1 }
+export fn op_binary() -> int { 2 }
+export fn op_close() -> int { 8 }
+export fn op_ping() -> int { 9 }
+export fn op_pong() -> int { 10 }
+
+/// The head of the frame at `at` in `b`, as a receiver on `side` must
+/// judge it: no reserved bit set (no extension is negotiated), a known
+/// opcode, a control frame whole and short, the mask as the side
+/// demands, a 64-bit length's top bit clear, and no payload past `max`.
+fn head_at(b: Bytes, at: int, side: Side, max: int) -> Headed {
+    if b.length - at < 2 { return .Partial }
+    let b0 = b.at(at)
+    let b1 = b.at(at + 1)
+    let op = b0 & 15
+    let masked = b1 & 128 == 128
+    when {
+        b0 & 112 != 0 -> Headed.Refused(protocol_error())
+        !known_op(op) -> Headed.Refused(protocol_error())
+        op >= 8 && b0 & 128 == 0 -> Headed.Refused(protocol_error())
+        masked != (side is .Server) -> Headed.Refused(protocol_error())
+        _ -> sized_head(b, at, b0 & 128 == 128, op, masked, b1 & 127, max)
+    }
+}
+
+fn known_op(op: int) -> bool { op <= 2 || op >= 8 && op <= 10 }
+
+/// The head's length and mask read, and judged.
+fn sized_head(b: Bytes, at: int, fin: bool, op: int, masked: bool, short: int, max: int) -> Headed {
+    let extra = if short == 126 { 2 } else if short == 127 { 8 } else { 0 }
+    let key_len = if masked { 4 } else { 0 }
+    if b.length - at < 2 + extra + key_len { return .Partial }
+    if short == 127 && b.at(at + 2) >= 128 { return .Refused(protocol_error()) }
+    let length = if extra == 0 { short } else { big_endian(b, at + 2, extra) }
+    if op >= 8 && length > 125 { return .Refused(protocol_error()) }
+    if length > max { return .Refused(too_big()) }
+    let key: List<int>? = if masked { [b.at(at + 2 + extra + i) for i in 0..4] } else { null }
+    .Complete(
+        FrameHead { fin: fin, op: op, key: key, at: at + 2 + extra + key_len, length: length },
+    )
+}
+
+fn big_endian(b: Bytes, at: int, n: int) -> int {
+    mut v = 0
+    for i in 0..n { v = (v << 8) | b.at(at + i) }
+    v
+}
+
+/// `b` XORed with the four-octet `key`, the same both ways.
+export fn masked(b: Bytes, key: List<int>) -> Bytes { [b.at(i) ^ key[i & 3] for i in 0..b.length].bytes()! }
+
+/// A frame on the wire: its head — the length in the shortest form
+/// that holds it — then the payload, masked by `key` when a client
+/// sends it.
+export fn frame_bytes(fin: bool, op: int, payload: Bytes, key: List<int>?) -> Bytes {
+    let n = payload.length
+    let first = if fin { 128 } else { 0 } | op
+    let mark = if key == null { 0 } else { 128 }
+    let sized: List<int> = when {
+        n < 126 -> [first, mark | n]
+        n < 65536 -> [first, mark | 126, n >> 8, n & 255]
+        _ -> [first, mark | 127].concat([(n >> 56 - 8 * i) & 255 for i in 0..8])
+    }
+    let k? = key else {
+        mut w = sized.bytes()!
+        w = w.concat(payload)
+        return w
+    }
+    mut w = sized.concat(k).bytes()!
+    w = w.concat(masked(payload, k))
+    w
+}
+
+// ── Close codes (RFC 6455 §7.4) ─────────────────────────────────
+
+fn protocol_error() -> int { 1002 }
+fn not_text() -> int { 1007 }
+fn too_big() -> int { 1009 }
+fn no_code() -> int { 1005 }
+
+/// Whether a peer may SEND `code` in a close frame: the registered
+/// codes an endpoint may speak, and the ranges left to libraries and
+/// applications. 1005 and 1006 name an absence and never travel.
+export fn sendable_code(code: int) -> bool {
+    code >= 1000 && code <= 1003 || code >= 1007 && code <= 1014 || code >= 3000 && code <= 4999
+}
+
+/// A close frame's payload: the code in two octets, then the reason.
+fn close_payload(code: int, reason: string) -> Bytes {
+    mut w = [code >> 8, code & 255].bytes()!
+    w = w.concat(reason.bytes())
+    w
+}
+
+/// What a close frame's payload says, or the code breaking it earns: an
+/// empty one names no code; one octet is no code at all; the code must
+/// be one a peer may send and the reason UTF-8.
+fn close_read(p: Bytes) -> Message? {
+    if p.is_empty() { return Message.Close(no_code(), "") }
+    if p.length == 1 { return null }
+    let code = big_endian(p, 0, 2)
+    let reason? = p.slice(2, p.length).text() else { return null }
+    if !sendable_code(code) { return null }
+    Message.Close(code, reason)
+}
+
+/// Why a close payload was refused: a reason that is not text is 1007,
+/// anything else 1002.
+fn close_fault(p: Bytes) -> int {
+    if p.length > 2 && p.slice(2, p.length).text() == null { return not_text() }
+    protocol_error()
+}
+
+// ── The socket ──────────────────────────────────────────────────
+
+/// A message in pieces: the opcode it began with and its fragments.
+type Pending = { op: int, parts: List<Bytes>, length: int }
+
+/// What a socket knows between calls: the octets read and not framed,
+/// a fragmented message in progress, which closes have gone, and
+/// whether the connection has ended.
+type WsState = { buf: Bytes, pending: Pending?, sent_close: bool, got_close: bool, done: bool }
+
+/// An open WebSocket: its connection, which end it is, its bounds, and
+/// its state — shared by every copy, since a copy is the same socket.
+///
+/// A SOCKET ENDED TOUCHES ITS CONNECTION NO MORE: once the close
+/// handshake or a broken law ends it, every call answers `Closed`. A
+/// closed descriptor's number is the next accepted connection's, so a
+/// late send would land in a stranger's stream.
+export type Socket = { conn: dyn Transport, side: Side, limits: WsLimits, state: Cell<WsState> }
+
+/// A socket over `c`, the peer's first octets `early` already read.
+export fn socket_on(c: dyn Transport, early: Bytes, side: Side, lim: WsLimits) -> Socket {
+    Socket {
+        conn: c,
+        side: side,
+        limits: lim,
+        state: Cell
+            .new(
+                WsState {
+                    buf: early,
+                    pending: null,
+                    sent_close: false,
+                    got_close: false,
+                    done: false,
+                },
+            ),
+    }
+}
+
+impl Socket {
+    /// The next whole message, the task parked until it arrives. Pings
+    /// are answered and pongs dropped on the way; a close is echoed and
+    /// the connection ended before it is answered. A frame that breaks a
+    /// law is answered with its close code, and the code is the error.
+    fn receive() -> Result<Message, WsError> {
+        while true {
+            let m: Message? = self.taken(self.frame()?)?
+            if m != null { return .Ok(m!) }
+        }
+        .Err(.Closed)
+    }
+
+    /// `s` sent as one text message.
+    fn send_text(s: string) -> Result<int, WsError> { self.sent_frame(true, op_text(), s.bytes()) }
+
+    /// `b` sent as one binary message.
+    fn send_binary(b: Bytes) -> Result<int, WsError> { self.sent_frame(true, op_binary(), b) }
+
+    /// A ping carrying `b` — at most 125 octets, as every control frame.
+    fn ping(b: Bytes) -> Result<int, WsError> {
+        if b.length > 125 { return .Err(.Protocol(protocol_error())) }
+        self.sent_frame(true, op_ping(), b)
+    }
+
+    /// The close handshake: `code` and `reason` sent, the peer's close
+    /// awaited within `patience`, then the connection ended. Answers the
+    /// code the peer closed with.
+    fn close(code: int, reason: string, patience: Duration) -> Result<int, WsError> {
+        let _ = self.live()?
+        if !sendable_code(code) || reason.bytes().length > 123 { return .Err(.Protocol(protocol_error())) }
+        let _ = self.said_close(code, reason)
+        let answer = within patience { self.awaited_close() }
+        self.ended()
+        answer
+    }
+
+    /// The next frame from the connection, read as far as it needs: its
+    /// head from what is buffered, its payload gathered in as many reads
+    /// as it spans.
+    fn frame() -> Result<WsFrame, WsError> {
+        while true {
+            let st = self.live()?
+            match head_at(st.buf, 0, self.side, self.limits.message) {
+                .Partial -> { self.state.set(st with { buf: st.buf.concat(read_some(self.conn)?) }) },
+                .Refused(code) -> { return .Err(self.broken(code)) },
+                .Complete(h) -> { return self.payload(st, h) },
+            }
+        }
+        .Err(.Closed)
+    }
+
+    /// The payload `h` announces: the buffered octets and as many reads
+    /// as it still wants, joined once; what follows it stays buffered.
+    fn payload(st: WsState, h: FrameHead) -> Result<WsFrame, WsError> {
+        mut parts = [st.buf.slice(h.at, st.buf.length)]
+        mut have = st.buf.length - h.at
+        while have < h.length {
+            let got = read_some(self.conn)?
+            have = have + got.length
+            parts.push(got)
+        }
+        let all = parts.bytes()
+        self.state.set(st with { buf: all.slice(h.length, all.length) })
+        let body = all.slice(0, h.length)
+        let k? = h.key else { return .Ok(WsFrame { fin: h.fin, op: h.op, payload: body }) }
+        .Ok(WsFrame { fin: h.fin, op: h.op, payload: masked(body, k) })
+    }
+
+    /// What a frame makes of the message in progress: a whole message,
+    /// or nothing yet — a control frame answered, a fragment kept.
+    fn taken(f: WsFrame) -> Result<Message?, WsError> {
+        when {
+            f.op == op_ping() -> self.ponged(f.payload)
+            f.op == op_pong() -> .Ok(null)
+            f.op == op_close() -> self.closed_by_peer(f.payload)
+            f.op == op_continue() -> self.continued(f)
+            _ -> self.begun(f)
+        }
+    }
+
+    fn ponged(b: Bytes) -> Result<Message?, WsError> {
+        self.sent_frame(true, op_pong(), b)?
+        .Ok(null)
+    }
+
+    /// A data frame that begins a message: whole when it ends it, else
+    /// kept. A message already in progress refuses it.
+    fn begun(f: WsFrame) -> Result<Message?, WsError> {
+        let st = self.state.get()
+        if st.pending != null { return .Err(self.broken(protocol_error())) }
+        if f.fin { return self.whole(f.op, f.payload) }
+        self
+            .state
+            .set(
+                st with { pending: Pending { op: f.op, parts: [f.payload], length: f.payload.length } },
+            )
+        .Ok(null)
+    }
+
+    /// A continuation: joined to the message in progress — none is a
+    /// law broken, and one grown past the bound is too.
+    fn continued(f: WsFrame) -> Result<Message?, WsError> {
+        let st = self.state.get()
+        let p? = st.pending else { return .Err(self.broken(protocol_error())) }
+        let length = p.length + f.payload.length
+        if length > self.limits.message { return .Err(self.broken(too_big())) }
+        let grown = p with { parts: p.parts.concat([f.payload]), length: length }
+        if !f.fin {
+            self.state.set(st with { pending: grown })
+            return .Ok(null)
+        }
+        self.state.set(st with { pending: null })
+        self.whole(grown.op, grown.parts.bytes())
+    }
+
+    /// A whole message of opcode `op`: text must be UTF-8 (1007 if not).
+    fn whole(op: int, b: Bytes) -> Result<Message?, WsError> {
+        if op == op_binary() { return .Ok(Message.Binary(b)) }
+        let s? = b.text() else { return .Err(self.broken(not_text())) }
+        .Ok(Message.Text(s))
+    }
+
+    /// The peer's close: echoed with its code — none echoes none — and
+    /// the connection ended; a malformed one earns its own close code.
+    fn closed_by_peer(p: Bytes) -> Result<Message?, WsError> {
+        let m? = close_read(p) else { return .Err(self.broken(close_fault(p))) }
+        self.state.set(self.state.get() with { got_close: true })
+        let echo = if p.is_empty() { p } else { p.slice(0, 2) }
+        let _ = self.sent_close_payload(echo)
+        self.ended()
+        .Ok(m)
+    }
+
+    /// A law broken: its close code sent, the connection ended, and the
+    /// code as the error.
+    fn broken(code: int) -> WsError {
+        let _ = self.said_close(code, "")
+        self.ended()
+        .Protocol(code)
+    }
+
+    fn said_close(code: int, reason: string) -> Result<int, WsError> { self.sent_close_payload(close_payload(code, reason)) }
+
+    /// A close frame sent — once in the socket's life.
+    fn sent_close_payload(p: Bytes) -> Result<int, WsError> {
+        let st = self.state.get()
+        if st.sent_close { return .Ok(0) }
+        self.state.set(st with { sent_close: true })
+        self.sent_frame(true, op_close(), p)
+    }
+
+    /// Frames read until the peer's close; its code.
+    fn awaited_close() -> Result<int, WsError> {
+        while !self.state.get().got_close {
+            let f = self.frame()?
+            if f.op == op_close() {
+                self.state.set(self.state.get() with { got_close: true })
+                let m? = close_read(f.payload) else { return .Err(.Protocol(close_fault(f.payload))) }
+                return .Ok(close_code(m))
+            }
+        }
+        .Ok(no_code())
+    }
+
+    /// One frame written whole, masked when a client sends it.
+    fn sent_frame(fin: bool, op: int, payload: Bytes) -> Result<int, WsError> {
+        let _ = self.live()?
+        let key: List<int>? = match self.side { .Client -> mask_key()?, .Server -> null }
+        match self.conn.wire_write(frame_bytes(fin, op, payload, key)) {
+            .Ok(n) -> .Ok(n),
+            .Err(e) -> .Err(socket_error(e)),
+        }
+    }
+
+    /// The socket's state while its connection is open; `Closed` once
+    /// it has ended.
+    fn live() -> Result<WsState, WsError> {
+        let st = self.state.get()
+        if st.done { return .Err(.Closed) }
+        .Ok(st)
+    }
+
+    /// The connection ended, once: a server closes first (RFC 6455
+    /// §7.1.1) — its write side shut here, the socket closed by the
+    /// server when the session returns, which owns the descriptor; a
+    /// client shuts its write side and gives the server a moment to
+    /// close before it closes too.
+    fn ended() {
+        let st = self.state.get()
+        if st.done { return }
+        self.state.set(st with { done: true })
+        match self.side {
+            .Server -> { let _ = self.conn.wire_shutdown() },
+            .Client -> {
+                let _ = self.conn.wire_shutdown()
+                let _ = within secs(2) { drained(self.conn) }
+                let _ = self.conn.wire_close()
+            },
+        }
+    }
+}
+
+/// `c` read to its end, the octets dropped; whether it ended.
+fn drained(c: dyn Transport) -> bool {
+    while true {
+        match c.wire_read(read_size()) {
+            .Ok(b) -> { if b == null { return true } },
+            .Err(_) -> { return false },
+        }
+    }
+    false
+}
+
+fn close_code(m: Message) -> int {
+    match m { .Close(code, _) -> code, .Text(_) or .Binary(_) -> no_code() }
+}
+
+/// A transport's failure as a socket's: a deadline passing is `TimedOut`.
+export fn socket_error(e: WireError) -> WsError {
+    match e {
+        .Net(n) -> if n.timed_out() { WsError.TimedOut } else { WsError.Net(n) },
+        .Secure(s) -> WsError.Secure(s),
+    }
+}
+
+/// Four octets no peer can predict, one mask per frame (RFC 6455 §5.3)
+/// — never a guessable stand-in when the kernel has none to give.
+fn mask_key() -> Result<List<int>, WsError> {
+    let w? = entropy32() else { return .Err(.NoEntropy) }
+    .Ok([(w >> 24) & 255, (w >> 16) & 255, (w >> 8) & 255, w & 255])
+}
+
+// ── The opening handshake (RFC 6455 §4) ─────────────────────────
+
+const accept_guid: string = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+/// The `sec-websocket-accept` a `key` earns.
+export fn accept_of(key: string) -> string { base64(sha1((key + accept_guid).bytes())) }
+
+/// `q` answered as a WebSocket: the `101`, the connection then handed
+/// to `session` — or, when `q` is not a well-formed opening handshake,
+/// the status that says why: 426 naming version 13 for another
+/// version, 400 for the rest.
+export fn accepted<P>(q: Request<P>, lim: WsLimits, session: fn(Socket) -> void) -> Response {
+    let key = q.header("sec-websocket-key") ?? ""
+    if !opening(q) || !base64_of_length(key, 16) { return text(400, "not a WebSocket opening handshake") }
+    if q.header("sec-websocket-version") != "13" {
+        return Response { status: 426, headers: [websocket_upgrade, websocket_version] }
+    }
+    Response {
+        status: 101,
+        headers: [websocket_upgrade, Header { name: "sec-websocket-accept", value: accept_of(key) }],
+        upgrade: Upgrade {
+            run: (c: dyn Transport, early: Bytes) -> session(socket_on(c, early, Side.Server, lim)),
+        },
+    }
+}
+
+/// The `upgrade` field every answer to an opening names.
+const websocket_upgrade: Header = Header { name: "upgrade", value: "websocket" }
+
+/// The protocol version both ends of an opening name (RFC 6455 §4.1).
+const websocket_version: Header = Header { name: "sec-websocket-version", value: "13" }
+
+/// Whether `q` asks to open a WebSocket: a GET of HTTP/1.1 asking to
+/// upgrade to `websocket` through its `connection` field.
+fn opening<P>(q: Request<P>) -> bool {
+    q.head.method == Method.Get &&
+        q.head.minor == 1 &&
+        lists_token(q.header("upgrade") ?? "", "websocket") &&
+        lists_token(q.header("connection") ?? "", "upgrade")
+}
+
+/// A client socket: `host:port` dialed within `timeout`, then opened
+/// over the plain connection as `opened_over` opens one.
+export fn dialed(host: string, port: int, target: string, timeout: Duration, lim: WsLimits) -> Result<
+    Socket,
+    WsError,
+> {
+    let c = match connect(host, port, timeout) {
+        .Ok(c) -> c,
+        .Err(e) -> { return .Err(socket_error(.Net(e))) },
+    }
+    opened_over(plainly(c), "${host}:${port}", target, timeout, lim)
+}
+
+/// A client socket over `w`, any transport already connected — a TLS
+/// one from `@std/https` makes it `wss` — `target` asked of `authority`
+/// to upgrade with a fresh key, and the `101` verified within `timeout`:
+/// the status, the upgrade, and the accept the key earns.
+export fn opened_over(
+    w: dyn Transport,
+    authority: string,
+    target: string,
+    timeout: Duration,
+    lim: WsLimits,
+) -> Result<Socket, WsError> {
+    let key = base64(
+        (mask_key()?).concat(mask_key()?).concat(mask_key()?).concat(mask_key()?).bytes()!,
+    )
+    let asked? = request("GET", target, authority, opening_fields(key), "".bytes()) else { return .Err(.Unsendable) }
+    match within timeout { w.wire_write(asked) } {
+        .Ok(_) -> {},
+        .Err(e) -> { return .Err(socket_error(e)) },
+    }
+    let early = within timeout { upgraded_reply(w, key) }?
+    .Ok(socket_on(w, early, Side.Client, lim))
+}
+
+/// The fields a client's opening handshake carries beside its host.
+fn opening_fields(key: string) -> List<Header> {
+    [
+        websocket_upgrade,
+        Header { name: "connection", value: "Upgrade" },
+        Header { name: "sec-websocket-key", value: key },
+        websocket_version,
+    ]
+}
+
+/// The server's answer to the opening handshake read and judged; the
+/// octets past it, which are already frames.
+fn upgraded_reply(c: dyn Transport, key: string) -> Result<Bytes, WsError> {
+    mut buf = "".bytes()
+    while true {
+        match framed_reply(buf, 0, 0, limits(), Method.Get) {
+            .Partial -> { buf = buf.concat(read_some(c)?) },
+            .Refused(_) -> { return .Err(.Unverified) },
+            .Complete(r) -> {
+                if r.status != 101 { return .Err(.Rejected(r.status)) }
+                if !verified(buf, r, key) { return .Err(.Unverified) }
+                return .Ok(buf.slice(r.end, buf.length))
+            },
+        }
+    }
+    .Err(.Closed)
+}
+
+/// One read of `c`; its end is `Closed`.
+fn read_some(c: dyn Transport) -> Result<Bytes, WsError> {
+    match c.wire_read(read_size()) {
+        .Ok(b) -> if b == null { .Err(.Closed) } else { .Ok(b!) },
+        .Err(e) -> .Err(socket_error(e)),
+    }
+}
+
+/// Whether a 101 upgrades to `websocket` and accepts `key`.
+fn verified(buf: Bytes, r: Reply, key: string) -> bool {
+    let up = r.fields.named(buf, "upgrade".bytes())
+    let acc = r.fields.named(buf, "sec-websocket-accept".bytes())
+    if up < 0 || acc < 0 { return false }
+    let u = r.fields.value_at(up)
+    let a = r.fields.value_at(acc)
+    lists_token(buf.slice(u.lo, u.hi).text() ?? "", "websocket") &&
+        buf.slice(a.lo, a.hi).text() == accept_of(key)
+}

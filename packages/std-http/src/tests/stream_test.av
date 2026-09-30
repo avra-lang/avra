@@ -1,0 +1,332 @@
+//! A streamed response: pulled by the connection one piece at a time,
+//! framed by its length or in chunks, and ended ONCE however the
+//! pulling stops. Every exchange is exact bytes.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, sleep}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response, Header, Stream, Pulled, stream_of, text}
+use @std.http.server.{Timing, timing}
+
+/// What a producer lived through: how often it was pulled, and how
+/// often it was told the pulling had stopped.
+type Tally = { pulls: Cell<int>, ends: Cell<int> }
+
+fn tally() -> Tally { Tally { pulls: Cell.new(0), ends: Cell.new(0) } }
+
+impl Tally {
+    /// `s` with each pull and each end counted here.
+    fn watched(s: Stream) -> Stream {
+        s with { pull: () -> self.pulled(s), ended: () -> self.ended(s) }
+    }
+
+    fn pulled(s: Stream) -> Pulled {
+        self.pulls.set(self.pulls.get() + 1)
+        s.pull()
+    }
+
+    fn ended(s: Stream) {
+        self.ends.set(self.ends.get() + 1)
+        s.ended()
+    }
+}
+
+/// A producer that answers `steps` in order, then its end.
+fn scripted(steps: List<Pulled>) -> Stream {
+    let next = Cell.new(0)
+    Stream { pull: () -> step_at(steps, next) }
+}
+
+fn step_at(steps: List<Pulled>, next: Cell<int>) -> Pulled {
+    let i = next.get()
+    if i == steps.length { return .End }
+    next.set(i + 1)
+    steps[i]
+}
+
+/// A producer that never ends: `piece` on every pull.
+fn endless(piece: Bytes) -> Stream { Stream { pull: () -> Pulled.Data(piece) } }
+
+fn octets(s: string) -> Bytes { s.bytes() }
+
+/// A server answering every request with `answer`, counted by `t`.
+fn streaming_bed(t: Tally, answer: Response, lim: Timing) -> Result<Bed, NetError> {
+    bed_with((_app: App, _q: Request<Unrouted>) -> counted(t, answer), limits(), lim)
+}
+
+/// `answer` with its stream, when it has one, counted by `t`.
+fn counted(t: Tally, answer: Response) -> Response {
+    let s? = answer.stream else { return answer }
+    answer with { stream: t.watched(s) }
+}
+
+/// `sent` answered, read to the peer's end or `expected` bytes.
+fn streamed(t: Tally, answer: Response, sent: string, expected: int) -> Result<string, NetError> {
+    let b = streaming_bed(t, answer, timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, sent, expected)?
+    .Ok(got.text() ?? "<not text>")
+}
+
+/// Whether `sent` is answered with exactly `want` — read to its
+/// length, so a reply split across reads is still read whole.
+fn answers(t: Tally, answer: Response, sent: string, want: string) -> Result<bool, NetError> {
+    .Ok(streamed(t, answer, sent, want.length)? == want)
+}
+
+fn get_line() -> string { "GET /s HTTP/1.1\r\nHost: a\r\n\r\n" }
+
+fn chunked_whole() -> Result<bool, NetError> {
+    let t = tally()
+    let want = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n"
+    let exact = answers(
+        t,
+        Response { stream: stream_of([octets("hel"), octets("lo")]) },
+        get_line(),
+        want,
+    )?
+    .Ok(exact && t.ends.get() == 1)
+}
+
+fn by_length() -> Result<bool, NetError> {
+    let t = tally()
+    let s = stream_of([octets("hel"), octets("lo")]) with { length: 5 }
+    let exact = answers(
+        t,
+        Response { stream: s },
+        get_line(),
+        "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello",
+    )?
+    .Ok(exact && t.ends.get() == 1)
+}
+
+fn empty_pieces_are_nothing() -> Result<bool, NetError> {
+    let t = tally()
+    let s = stream_of([octets(""), octets("a"), octets("")])
+    let want = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\n"
+    .Ok(answers(t, Response { stream: s }, get_line(), want)? && t.pulls.get() == 4)
+}
+
+fn old_peer_reads_to_the_close() -> Result<bool, NetError> {
+    let t = tally()
+    let got = streamed(
+        t,
+        Response { stream: stream_of([octets("ab"), octets("c")]) },
+        "GET /s HTTP/1.0\r\n\r\n",
+        1000,
+    )?
+    .Ok(got == "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\nabc" && t.ends.get() == 1)
+}
+
+fn head_pulls_nothing() -> Result<bool, NetError> {
+    let t = tally()
+    let want = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"
+    let r = Response { stream: stream_of([octets("abc")]) }
+    .Ok(
+        answers(t, r, "HEAD /s HTTP/1.1\r\nHost: a\r\n\r\n", want)? &&
+            t.pulls.get() == 0 &&
+            t.ends.get() == 1,
+    )
+}
+
+fn failure_ends_without_a_last_chunk() -> Result<bool, NetError> {
+    let t = tally()
+    let s = scripted([Pulled.Data(octets("a")), Pulled.Failed, Pulled.Data(octets("never"))])
+    let got = streamed(t, Response { stream: s }, get_line(), 1000)?
+    .Ok(
+        got == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n" &&
+            t.pulls.get() == 2 &&
+            t.ends.get() == 1,
+    )
+}
+
+fn overrun_is_cut_at_the_length() -> Result<bool, NetError> {
+    let t = tally()
+    let s = stream_of([octets("ab"), octets("cd")]) with { length: 3 }
+    let got = streamed(t, Response { stream: s }, get_line(), 1000)?
+    .Ok(got == "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nab" && t.ends.get() == 1)
+}
+
+fn short_of_the_length_closes() -> Result<bool, NetError> {
+    let t = tally()
+    let s = stream_of([octets("ab")]) with { length: 5 }
+    let got = streamed(t, Response { stream: s }, get_line(), 1000)?
+    .Ok(got == "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nab" && t.ends.get() == 1)
+}
+
+fn two_bodies_answer_500() -> Result<bool, NetError> {
+    let t = tally()
+    let r = Response { body: octets("whole"), stream: stream_of([octets("s")]) }
+    let got = streamed(t, r, get_line(), 38)?
+    .Ok(got.starts_with("HTTP/1.1 500 ") && t.pulls.get() == 0 && t.ends.get() == 1)
+}
+
+fn bodiless_status_answers_500() -> Result<bool, NetError> {
+    let t = tally()
+    let got = streamed(
+        t,
+        Response { status: 204, stream: stream_of([octets("s")]) },
+        get_line(),
+        38,
+    )?
+    .Ok(got.starts_with("HTTP/1.1 500 ") && t.pulls.get() == 0 && t.ends.get() == 1)
+}
+
+fn negative_length_answers_500() -> Result<bool, NetError> {
+    let t = tally()
+    let s = stream_of([octets("s")]) with { length: -1 }
+    let got = streamed(t, Response { stream: s }, get_line(), 38)?
+    .Ok(got.starts_with("HTTP/1.1 500 ") && t.ends.get() == 1)
+}
+
+/// A handler answering a stream at `/s` and text elsewhere.
+fn mixed(t: Tally, q: Request<Unrouted>) -> Response {
+    if q.target() == "/s" { return counted(t, Response { stream: stream_of([octets("mid")]) }) }
+    text(200, q.target() ?? "?")
+}
+
+fn pipelined_in_order() -> Result<bool, NetError> {
+    let t = tally()
+    let b = bed_with((_app: App, q: Request<Unrouted>) -> mixed(t, q), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let sent = "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /s HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n"
+    let got = (exchanged(b.c, sent, 1000)?).text() ?? ""
+    let a = got.index_of("/a")
+    let s = got.index_of("3\r\nmid\r\n0\r\n\r\n")
+    let z = got.index_of("\r\n\r\n/b")
+    .Ok(a > 0 && s > a && z > s && b.s.connections() == 1)
+}
+
+fn keeps_alive_after_a_stream() -> Result<bool, NetError> {
+    let t = tally()
+    let b = bed_with((_app: App, q: Request<Unrouted>) -> mixed(t, q), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = (exchanged(b.c, get_line(), 60)?).text() ?? ""
+    let second = reply(b.c, "GET /next HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(first.ends_with("3\r\nmid\r\n0\r\n\r\n") && second.ends_with("/next") && t.ends.get() == 1)
+}
+
+/// BACKPRESSURE: a peer that reads nothing stops the pulling — the
+/// count holds still while it waits — and a peer that leaves ends the
+/// stream once, and the connection with it.
+fn slow_peer_stops_the_pulls() -> Result<bool, NetError> {
+    let t = tally()
+    let b = streaming_bed(
+        t,
+        Response { stream: endless(piece_of(65536)) },
+        Timing { idle: ms(400) },
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    b.c.write(get_line().bytes())?
+    sleep(ms(300))
+    let early = t.pulls.get()
+    sleep(ms(200))
+    let late = t.pulls.get()
+    let _ = b.c.close()
+    .Ok(early > 0 && early == late && settles_to(b.s, 0) && t.ends.get() == 1)
+}
+
+fn piece_of(n: int) -> Bytes { [120 for _i in 0..n].bytes()! }
+
+/// A producer whose source never speaks: each pull parks on a read
+/// of a connection nobody writes to.
+fn silent_source(c: Conn) -> Stream { Stream { pull: () -> read_piece(c) } }
+
+fn read_piece(c: Conn) -> Pulled {
+    match c.read(16) {
+        .Ok(b) -> if b == null { Pulled.End } else { Pulled.Data(b!) },
+        .Err(_) -> Pulled.Failed,
+    }
+}
+
+/// A PULL IS GIVEN THE IDLE DEADLINE: a producer parked on a quiet
+/// source fails its own wait, the stream ends with no last chunk, and
+/// the connection closes rather than living past an idle one's life.
+fn quiet_source_is_cut() -> Result<bool, NetError> {
+    let t = tally()
+    let l = listen("127.0.0.1", 0)?
+    let quiet = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = quiet.close() }
+    let b = streaming_bed(t, Response { stream: silent_source(quiet) }, Timing { idle: ms(150) })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, get_line(), 1000)?).text() ?? ""
+    .Ok(
+        got == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n" &&
+            settles_to(b.s, 0) &&
+            t.ends.get() == 1,
+    )
+}
+
+fn framing_field_beside_a_stream() -> Result<bool, NetError> {
+    let t = tally()
+    let r = Response {
+        headers: [Header { name: "Transfer-Encoding", value: "chunked" }],
+        stream: stream_of([octets("s")]),
+    }
+    let got = streamed(t, r, get_line(), 38)?
+    .Ok(got.starts_with("HTTP/1.1 500 ") && t.pulls.get() == 0 && t.ends.get() == 1)
+}
+
+/// A handler answering an endless stream of EMPTY pieces at `/spin`
+/// and text elsewhere — a producer that never parks.
+fn spinning(t: Tally, q: Request<Unrouted>) -> Response {
+    if q.target() == "/spin" { return counted(t, Response { stream: endless(octets("")) }) }
+    text(200, q.target() ?? "?")
+}
+
+/// A PRODUCER THAT NEVER PARKS STILL LEAVES THE CORE ITS TURNS: a
+/// second client is answered while it spins, and its quiet is cut by
+/// the idle deadline as a silent producer's is.
+fn spinner_starves_nobody() -> Result<bool, NetError> {
+    let t = tally()
+    let b = bed_with(
+        (_app: App, q: Request<Unrouted>) -> spinning(t, q),
+        limits(),
+        Timing { idle: ms(300) },
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    b.c.write("GET /spin HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
+    sleep(ms(20))
+    let other = connect("127.0.0.1", b.s.listener.port, secs(2))?
+    defer { let _ = other.close() }
+    let answered = reply(other, "GET /other HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let while_spinning = t.ends.get() == 0
+    let spun = (exchanged(b.c, "", 1000)?).text() ?? ""
+    .Ok(
+        answered.ends_with("/other") &&
+            while_spinning &&
+            spun == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n" &&
+            t.ends.get() == 1,
+    )
+}
+
+spec "std.http streamed responses" {
+    given "a stream the connection pulls" {
+        then "an unmeasured stream goes out in chunks, then the last chunk" { passes(chunked_whole()) }
+        then "a measured stream goes out by its length" { passes(by_length()) }
+        then "an empty piece writes nothing and never ends the body" { passes(empty_pieces_are_nothing()) }
+        then "a 1.0 peer reads an unmeasured stream to the close" { passes(old_peer_reads_to_the_close()) }
+        then "a HEAD's answer writes the head, pulls nothing, and ends the stream" { passes(head_pulls_nothing()) }
+    }
+    given "a stream that breaks its word" {
+        then "a failure after the head ends the stream with no last chunk" { passes(failure_ends_without_a_last_chunk()) }
+        then "a piece past the length is never written" { passes(overrun_is_cut_at_the_length()) }
+        then "an end short of the length closes the connection" { passes(short_of_the_length_closes()) }
+        then "a stream beside a whole body answers 500, unpulled" { passes(two_bodies_answer_500()) }
+        then "a stream on a 204 answers 500, unpulled" { passes(bodiless_status_answers_500()) }
+        then "a negative length answers 500" { passes(negative_length_answers_500()) }
+        then "a handler's own framing field beside a stream answers 500, unpulled" { passes(framing_field_beside_a_stream()) }
+    }
+    given "a stream on a live connection" {
+        then "pipelined requests around a stream are answered in order" { passes(pipelined_in_order()) }
+        then "the connection serves the next request after a whole stream" { passes(keeps_alive_after_a_stream()) }
+        then "a peer that reads nothing stops the pulls, and its leaving ends the stream once" { passes(slow_peer_stops_the_pulls()) }
+        then "a producer parked on a quiet source is cut at the idle deadline" { passes(quiet_source_is_cut()) }
+        then "a producer that never parks leaves other connections their turn, and is cut when quiet" { passes(spinner_starves_nobody()) }
+    }
+}

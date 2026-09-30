@@ -36,6 +36,7 @@
 #endif
 #ifdef __linux__
 #include <sys/epoll.h>
+#include <sys/random.h>
 #endif
 
 #include <pthread.h>
@@ -704,4 +705,19 @@ int64_t avra_net_dial_address(const char* address, int64_t port) {
         return -EINVAL;
     }
     return net_dialed_to(&ai);
+}
+
+// 32 bits of the kernel's entropy, unpredictable to any peer: what a
+// WebSocket client masks its frames and keys its handshake with (RFC
+// 6455 §5.3, §4.1). Negative errno when the kernel has none to give.
+int64_t avra_net_entropy32(void) {
+#ifdef __APPLE__
+    return (int64_t)arc4random();
+#else
+    uint32_t w;
+    ssize_t n;
+    do { n = getrandom(&w, sizeof w, 0); } while (n < 0 && errno == EINTR);
+    if (n != (ssize_t)sizeof w) return n < 0 ? -errno : -EIO;
+    return (int64_t)w;
+#endif
 }

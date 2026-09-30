@@ -181,6 +181,7 @@ export enum DbKind {
     Canon
     Licenses
     Findings
+    Answer
 }
 
 impl DbKind {
@@ -209,6 +210,7 @@ impl DbKind {
             .Canon -> "Canon",
             .Licenses -> "Licenses",
             .Findings -> "Findings",
+            .Answer -> "Answer",
         }
     }
 }
@@ -315,6 +317,10 @@ export enum DbRow {
     /// ratchet's question without rebuilding the Program `findings_of`
     /// would otherwise need.
     Findings(name: string, text: string)
+    /// A `@query` answer computed while checking a file, its record in
+    /// hex, under that file's key parts (answers.av) — a moved part names
+    /// another key, so the row holds unconditionally.
+    Answer(name: string, text: string)
 }
 
 impl DbRow {
@@ -343,6 +349,7 @@ impl DbRow {
             .Canon(_, _) -> DbKind.Canon,
             .Licenses(_, _) -> DbKind.Licenses,
             .Findings(_, _) -> DbKind.Findings,
+            .Answer(_, _) -> DbKind.Answer,
         }
     }
 
@@ -351,7 +358,7 @@ impl DbRow {
     /// this — it addresses by `arg: int`, not by name).
     fn key() -> string {
         match self {
-            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) or .Licenses(name, _) or .Findings(name, _) -> name,
+            .Decl(name, _) or .Sig(name, _) or .Warn(name, _) or .Scan(name, _) or .Canon(name, _) or .Licenses(name, _) or .Findings(name, _) or .Answer(name, _) -> name,
             rest -> {
                 avra_trap("defect: DbRow.key() asked of a dense (non-durable) variant")
                 ""
@@ -647,7 +654,7 @@ fn still_valid(row: DbRow) -> bool {
     match row {
         .Decl(_, facts) -> facts.listing_digest == current_listing_digest(facts.root) &&
             facts.files.all((w: FileWitness) -> current_file_digest(w.path) == w.digest),
-        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) or .Licenses(_, _) or .Findings(_, _) -> true,
+        .Sig(_, _) or .Warn(_, _) or .Scan(_, _) or .Canon(_, _) or .Licenses(_, _) or .Findings(_, _) or .Answer(_, _) -> true,
         rest -> {
             avra_trap("defect: still_valid asked of a non-durable DbRow")
             false
@@ -689,7 +696,7 @@ export fn current_file_digest(path: string) -> string {
 fn encoded(row: DbRow) -> string {
     match row {
         .Decl(_, facts) -> encoded_docfacts(facts),
-        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) or .Licenses(_, text) or .Findings(_, text) -> text,
+        .Sig(_, text) or .Warn(_, text) or .Scan(_, text) or .Canon(_, text) or .Licenses(_, text) or .Findings(_, text) or .Answer(_, text) -> text,
         rest -> {
             avra_trap("defect: encoded asked of a non-durable DbRow")
             ""
@@ -709,6 +716,7 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
         .Canon -> DbRow.Canon(name, text),
         .Licenses -> DbRow.Licenses(name, text),
         .Findings -> DbRow.Findings(name, text),
+        .Answer -> DbRow.Answer(name, text),
         rest -> {
             avra_trap("defect: decoded asked of a non-durable DbKind")
             null

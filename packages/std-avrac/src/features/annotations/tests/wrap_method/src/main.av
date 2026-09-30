@@ -1,0 +1,24 @@
+// proves: a WRAP directive on a METHOD splices its wrapper as a
+// method of the same owner — a static one called through the type,
+// an instance one through a value — and a self-call inside the body
+// re-enters through the wrapper: `P.doubled(5)` answers 11,
+// `P.fact(3)` 16, and `p.scaled(4)` over `k: 3` answers 13.
+use @test.counter.{counted, counted_static}
+
+type P = { k: int }
+
+impl P {
+    @counted_static
+    static fn doubled(n: int) -> int { n * 2 }
+
+    @counted_static
+    static fn fact(n: int) -> int {
+        if n <= 1 { 1 } else { n * P.fact(n - 1) }
+    }
+
+    @counted
+    fn scaled(n: int) -> int { self.k * n }
+}
+
+let p = P { k: 3 }
+"${P.doubled(5)} ${P.fact(3)} ${p.scaled(4)}"

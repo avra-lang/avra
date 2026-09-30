@@ -85,7 +85,7 @@ use features.{
     Namespace,
     no_names,
 }
-use @std.meta.{Diagnostic, derive, identity, plain_field}
+use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb, new_db}
 
@@ -376,8 +376,10 @@ export type Decls = {
     /// file settled below records that file's `Items` cell (a held file's module
     /// record) in the open query — once per query, by the Kernel's own stamp.
     /// `rows_state` is dense by FileId: 0 while the file's rows are being minted (the
-    /// minter's own reads record nothing), 1 settled, 2 held.
-    record_kernel: Cell<Kernel>,
+    /// minter's own reads record nothing), 1 settled, 2 held. The kernel is the
+    /// workspace's own, fixed at construction: never a `Cell`, so no callee can
+    /// replace what a read of it holds across `record_dep`.
+    record_kernel: Kernel,
     /// S6 STEP (a): a shadow `DeclRow` for every WRITTEN declaration, inserted once
     /// at its first mint. Read by nothing; proves the derive before anything depends on
     /// it. Keyless, so its own dense id grows in lockstep with `decls`' length —
@@ -385,8 +387,7 @@ export type Decls = {
     /// A `Cell`, never a bare `Db`: `Decls` is copied somewhere in the pipeline, and a
     /// bare `Db` field forked on that copy — `family()`'s registration landed on one
     /// copy's own state while a later read reached another's, "index 21 is out of
-    /// bounds (length 0)" in the whole-package suite. `record_kernel` above already
-    /// pays this; `decl_rows` pays it the same way.
+    /// bounds (length 0)" in the whole-package suite.
     decl_rows: Cell<Db>,
     /// `File`/`Module`'s own rows, pinned once at construction — a
     /// `Cell`, `decl_rows`'s own reason: `Rows<T>` is not itself
@@ -589,7 +590,7 @@ export fn new_decls() -> Decls {
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
-        record_kernel: Cell.new(new_kernel()),
+        record_kernel: new_kernel(),
         decl_rows: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
         module_rows: Cell.new(Module.rows_in(db)),
@@ -727,19 +728,15 @@ impl Decls {
         let state = self.rows_state.get()
         if f.index >= state.length { return }
         if state[f.index] == 1 {
-            self
-                .record_kernel
-                .get()
-                .record_dep(Key { family: self.record_items.get(), arg: f.index })
+            self.record_kernel.record_dep(Key { family: self.record_items.get(), arg: f.index })
         } else if state[f.index] == 2 {
             (self.held_rows.get())(f)
         }
     }
 
-    /// The workspace arms the recording once: the kernel the reads record into, the
-    /// family a file's rows settle under, and what a held file's rows read instead.
-    fn arm_recording(kernel: Kernel, items: int, methods: int, held: fn(FileId) -> void) {
-        self.record_kernel.set(kernel)
+    /// The workspace arms the recording once: the family a file's rows settle under,
+    /// and what a held file's rows read instead.
+    fn arm_recording(items: int, methods: int, held: fn(FileId) -> void) {
         self.record_items.set(items)
         self.record_methods.set(methods)
         self.held_rows.set(held)
@@ -1210,7 +1207,6 @@ impl Decls {
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
         self.auditing.set(false)
-        self.record_kernel.set(new_kernel())
         self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
@@ -1628,6 +1624,7 @@ impl Decls {
 
     /// Whether seat `i` is written, declared or found: a method's
     /// receiver by its word, any seat by the pass.
+    @bracket("receivers")
     fn seat_writes_so_far(d: DeclId, i: int) -> bool {
         i == 0 && self.declared_writes.get()[d.index] || self.seat_written_so_far(d, i)
     }
@@ -1655,6 +1652,7 @@ impl Decls {
     }
 
     /// One contribution recorded, unless already present.
+    @bracket("fail_summary")
     fn record_inferred_error(d: DeclId, ty: TypeId) {
         let cur = self.inferred_errors_so_far(d)
         if !cur.any(same_type(it, ty)) { self.inferred_errs.keep(d.index, cur.concat([ty])) }
@@ -1686,6 +1684,7 @@ impl Decls {
     /// A `_`-declared fn's SETTLED error set — asking IS the query:
     /// the hook runs the whole-program fixpoint once, and this table
     /// holds every fn's answer after.
+    @bracket("fail_summary")
     fn inferred_errors(d: DeclId) -> List<TypeId> {
         (self.ensure_failures.get())()
         self.inferred_errors_so_far(d)
@@ -1695,6 +1694,7 @@ impl Decls {
     /// Asking IS the query: the hook runs the pass and records the dependency. Where the
     /// pass cannot run (inside a resolve) the hook answers false and only what was
     /// declared is read, so every answer is a function of what is recorded.
+    @bracket("receivers")
     fn writes_receiver(d: DeclId) -> bool {
         let answered = (self.ensure_writes.get())(d)
         self.declared_writes.get()[d.index] || answered && self.seat_written_so_far(d, 0)
@@ -1702,6 +1702,7 @@ impl Decls {
 
     /// The receiver's bit as the receivers pass found it, or null where the pass could
     /// not be asked: an absence of a finding is no finding of absence.
+    @bracket("receivers")
     fn written_found(d: DeclId) -> bool? {
         if !(self.ensure_writes.get())(d) { return null }
         self.seat_written_so_far(d, 0)
@@ -1709,6 +1710,7 @@ impl Decls {
 
     /// Whether the body writes through seat `i` as the pass found it, false where the
     /// pass could not be asked; the declared `mut` is what the caller's law reads.
+    @bracket("receivers")
     fn seat_written(d: DeclId, i: int) -> bool {
         let answered = (self.ensure_writes.get())(d)
         answered && self.seat_written_so_far(d, i)
@@ -2056,6 +2058,16 @@ impl Decls {
             .find((c) -> self.decl(c).kind is .Default && self.decl(c).name == field)
     }
 
+    /// What a record leaves out on purpose: its `@lacks(field, why)`s.
+    fn lacking(record: DeclId) -> List<Lacked> {
+        let file = self.annotation_home(record)
+        [Lacked { field: a.args[0], why: a.args[1] } for a in self.annotations_of(record) if self.lacks_mark(a, file)]
+    }
+
+    fn lacks_mark(a: AnnotationFact, file: FileId) -> bool {
+        a.args.length == 2 && self.is_meta_annotation(a, file, "lacks")
+    }
+
     /// Each written seat's default body, in seat order — null where
     /// the seat has none.
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
@@ -2178,6 +2190,7 @@ impl Decls {
     }
 
     /// The table as it stands — the registering side's own read.
+    @bracket("methods")
     fn held_method(target: DeclId, name: string) -> DeclId? {
         for m in self.registered_methods(target) {
             if self.decl(m).name == name { return m }
@@ -2185,15 +2198,15 @@ impl Decls {
         null
     }
 
-    /// A type's registered methods, as they stand — the hook-free read of a reader
-    /// that is not making the table. Records the type's `Methods` cell in the open
-    /// query, so a reader depends on the impls it dispatches through.
+    /// A type's registered methods, RECORDED: the door for a reader
+    /// that is not making the table, which records the type's
+    /// `Methods` cell in the open query so it depends on the impls it
+    /// dispatches through, then reads through the table's own raw
+    /// cell.
+    @bracket("methods")
     fn methods_of(target: DeclId) -> List<DeclId> {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
-        self
-            .record_kernel
-            .get()
-            .record_dep(Key { family: self.record_methods.get(), arg: target.index })
+        self.record_kernel.record_dep(Key { family: self.record_methods.get(), arg: target.index })
         self.registered_methods(target)
     }
 
@@ -2201,6 +2214,7 @@ impl Decls {
     /// still registering, an impl's file resolving): the table as it stands, and it
     /// records nothing. The table's computation waits on the reader, so an edge to it
     /// would be a cycle.
+    @bracket("methods")
     fn registered_methods(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
 
     /// Every method a type declares, its table filled first: a CONSUMER read, and
@@ -2217,6 +2231,7 @@ impl Decls {
 
     /// A method registered under its type — the same declaration
     /// again (a recomputed sig) is the same entry.
+    @bracket("methods")
     fn declare_method(target: DeclId, m: DeclId) {
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }

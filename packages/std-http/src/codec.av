@@ -1,0 +1,89 @@
+//! codec.av — what a WebSocket handshake names (RFC 6455 §4.2.2):
+//! SHA-1 over the key, and base64 over the digest — @std/text's, with
+//! the canonical-length check its key needs here. SHA-1 here
+//! is a PROTOCOL CHECKSUM and nothing else — broken as a signature,
+//! and never to be used as one.
+
+/// The SHA-1 digest of `msg` (FIPS 180-4), twenty octets.
+export fn sha1(msg: Bytes) -> Bytes {
+    let padded = sha1_padded(msg)
+    mut h = [1732584193, 4023233417, 2562383102, 271733878, 3285377520]
+    for block in 0..padded.length / 64 { h = sha1_block(h, padded, block * 64) }
+    [(h[i / 4] >> 24 - 8 * (i % 4)) & 255 for i in 0..20].bytes()!
+}
+
+/// `msg`, a 1 bit, zeros to 56 mod 64 octets, and its length in bits
+/// as 64 big-endian bits.
+fn sha1_padded(msg: Bytes) -> Bytes {
+    let zeros = (119 - msg.length % 64) % 64
+    let bits = msg.length * 8
+    let tail = [128]
+        .concat([0 for _i in 0..zeros])
+        .concat([(bits >> 56 - 8 * i) & 255 for i in 0..8])
+    msg.concat(tail.bytes()!)
+}
+
+/// One 64-octet block at `at` folded into the running state `h`.
+fn sha1_block(h: List<int>, b: Bytes, at: int) -> List<int> {
+    mut w = [word_at(b, at + 4 * i) for i in 0..16]
+    for i in 16..80 { w.push(rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)) }
+    mut a = h[0]
+    mut bb = h[1]
+    mut c = h[2]
+    mut d = h[3]
+    mut e = h[4]
+    for i in 0..80 {
+        let t = rotl(a, 5) + round_f(i, bb, c, d) + e + round_k(i) + w[i] & word_mask
+        e = d
+        d = c
+        c = rotl(bb, 30)
+        bb = a
+        a = t
+    }
+    [
+        h[0] + a & word_mask,
+        h[1] + bb & word_mask,
+        h[2] + c & word_mask,
+        h[3] + d & word_mask,
+        h[4] + e & word_mask,
+    ]
+}
+
+fn word_at(b: Bytes, at: int) -> int { (b.at(at) << 24) | (b.at(at + 1) << 16) | (b.at(at + 2) << 8) | b.at(at + 3) }
+
+fn rotl(x: int, n: int) -> int { ((x << n) | (x >> 32 - n)) & word_mask }
+
+/// The round's mixing function, by the round's quarter.
+fn round_f(i: int, b: int, c: int, d: int) -> int {
+    when {
+        i < 20 -> (b & c) | ((b ^ word_mask) & d)
+        i < 40 -> b ^ c ^ d
+        i < 60 -> (b & c) | (b & d) | (c & d)
+        _ -> b ^ c ^ d
+    }
+}
+
+fn round_k(i: int) -> int {
+    when {
+        i < 20 -> 1518500249
+        i < 40 -> 1859775393
+        i < 60 -> 2400959708
+        _ -> 3395469782
+    }
+}
+
+const word_mask: int = 4294967295
+
+const alphabet: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+/// Whether `s` is base64 of exactly `n` octets, canonically padded.
+export fn base64_of_length(s: string, n: int) -> bool {
+    let chars = (n + 2) / 3 * 4
+    let pads = (3 - n % 3) % 3
+    let b = s.bytes()
+    b.length == chars &&
+        b.run(0, base64_char) == chars - pads &&
+        b.slice(chars - pads, chars) == ["=" for _i in 0..pads].join("").bytes()
+}
+
+const base64_char: Bytes = admits((c) -> alphabet.bytes().index_of([c].bytes()!, 0) >= 0)
