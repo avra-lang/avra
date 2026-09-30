@@ -2104,7 +2104,7 @@ static const char* float_text(double d) {
         snprintf(sci, sizeof sci, "%.*e", prec - 1, d);
         if (strtod(sci, NULL) == d) break;
     }
-    char digits[20];
+    char digits[20] = {0};
     size_t n = 0;
     const char* c = sci;
     int negative = *c == '-';
