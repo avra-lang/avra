@@ -34,8 +34,15 @@
 //! none of it has arrived; a HEAD carries the body's length and none of
 //! its bytes; a connection silent past the deadline its state names is
 //! dropped.
+//!
+//! A STOP DRAINS. The listener closes and no connection reads another
+//! request: one waiting between requests is closed at once, and one
+//! mid-request is served to the end of its response and then closed.
+//! Every read — one parked when the stop came included — ends by
+//! `drain` from the stop, and so does every write begun after it. A
+//! handler's own work is not a wait the drain can end.
 use @std.net.{Listener, Conn, NetError, listen}
-use @std.time.{Duration, ms, secs, within}
+use @std.time.{Duration, ms, secs, within, now_ms}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
 use route.{Route, compiled, dispatch}
@@ -57,9 +64,15 @@ extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 /// The deadlines a server names: a head must complete within `head`
 /// of its last byte, a body must advance within `body` of its last
 /// byte, an idle keep-alive connection lives `idle` (and a peer that
-/// takes no output is given as long), and a connection serves at most
-/// `requests`.
-export type Timing = { head: Duration = secs(10), body: Duration = secs(60), idle: Duration = secs(75), requests: int = 1000 }
+/// takes no output is given as long), a connection serves at most
+/// `requests`, and a stop ends every wait within `drain`.
+export type Timing = {
+    head: Duration = secs(10),
+    body: Duration = secs(60),
+    idle: Duration = secs(75),
+    requests: int = 1000,
+    drain: Duration = secs(30),
+}
 
 /// The default deadlines.
 export fn timing() -> Timing { Timing {} }
@@ -79,8 +92,8 @@ type Link = {
 
 /// The server: its listener, the maker each core builds its
 /// application with, the handler, and this process's own state — its
-/// open connections, whether it is stopping, and the group of cores it
-/// serves in (0 alone) with its place there (-1 for the supervisor).
+/// open connections, its drain, and the group of cores it serves in (0
+/// alone) with its place there (-1 for the supervisor).
 export type Server<A> = {
     listener: Listener,
     make: fn() -> A,
@@ -88,9 +101,20 @@ export type Server<A> = {
     limits: Limits,
     timing: Timing,
     live: Cell<int>,
-    stopping: Cell<bool>,
+    drain: Drain,
     group: Cell<int>,
     core: Cell<int>,
+}
+
+/// What a stop tells this process's connections: that it was asked,
+/// the clock reading every wait ends by, and which connections are
+/// parked reading — by descriptor, so the stop can wake them.
+type Drain = { asked: Cell<bool>, ends: Cell<int>, reading: Cell<List<bool>> }
+
+/// A drain no stop has asked for.
+fn undrained() -> Drain {
+    let reading: Cell<List<bool>> = Cell.new([])
+    Drain { asked: Cell.new(false), ends: Cell.new(0), reading: reading }
 }
 
 /// A server on `l`, each core's application made by `make` — isolated,
@@ -112,7 +136,7 @@ export fn served<A>(
         limits: limits,
         timing: timing,
         live: Cell.new(0),
-        stopping: Cell.new(false),
+        drain: undrained(),
         group: Cell.new(0),
         core: Cell.new(-1),
     }
@@ -175,12 +199,12 @@ once fn continue_line() -> Bytes { "HTTP/1.1 100 Continue\r\n\r\n".bytes() }
 impl Server {
     /// Accepts until `stop` on `cores` processes that share nothing
     /// but the listener; answers how many connections they accepted.
-    /// A connection still open when it stops is served to its end
-    /// before this answers. One core serves on the calling task, with
+    /// A connection still open when it stops is drained before this
+    /// answers. One core serves on the calling task, with
     /// no process of its own.
     fn run(cores: int = every_core()) -> Result<int, NetError> {
         // a stopped listener's number may be another descriptor's now
-        if self.stopping.get() { return .Ok(0) }
+        if self.drain.asked.get() { return .Ok(0) }
         if cores == 1 { return self.accepting(self.make()) }
         let g = avra_cores_group(cores)
         if g < 0 { return .Err(NetError { verb: "run", subject: "on ${cores} cores", errno: 0 - g }) }
@@ -191,11 +215,14 @@ impl Server {
     }
 
     /// No more connections accepted: the listener closes, every core
-    /// is told to stop, and `run` answers once the open connections
-    /// end.
+    /// is told to stop, every connection parked reading wakes to the
+    /// drain, and `run` answers once each has answered what it was
+    /// asked — within `drain` of the first stop.
     fn stop() {
-        self.stopping.set(true)
+        if !self.drain.asked.get() { self.drain.ends.set(now_ms() + self.timing.drain.ms) }
+        self.drain.asked.set(true)
         let _ = self.listener.close()
+        for fd, parked in self.drain.reading.get() { if parked { Conn { fd: fd }.interrupt() } }
         if self.group.get() != 0 { avra_cores_stop(self.group.get()) }
     }
 
@@ -216,7 +243,7 @@ impl Server {
         mut accepted = 0
         while true {
             let next = self.listener.accept()
-            if self.stopping.get() { return .Ok(accepted) }
+            if self.drain.asked.get() { return .Ok(accepted) }
             let c = next?
             conns.push(spawn self.connection(c, app))
             accepted = accepted + 1
@@ -251,7 +278,7 @@ impl Server {
     fn supervised(g: int, cores: int) -> Result<int, NetError> {
         self.group.set(g)
         let _ = watched(g, cores)
-        if !self.stopping.get() { self.stop() }
+        if !self.drain.asked.get() { self.stop() }
         self.group.set(0)
         let r = avra_cores_result(g)
         if r < 0 { return .Err(NetError { verb: "accept", subject: "on a core", errno: 0 - r }) }
@@ -268,6 +295,7 @@ impl Server {
             handle: self.handle,
             limits: self.limits,
             timing: self.timing,
+            drain: self.drain,
         }
         let fd = serving.conversed(c)
         self.opened(-1)
@@ -297,12 +325,14 @@ fn core_ended(g: int, core: int) -> int {
 }
 
 /// The server as one connection sees it: that connection's own
-/// application, and the handler, bounds and deadlines it answers by.
+/// application, the handler, bounds and deadlines it answers by, and
+/// the drain a stop starts.
 type Serving<A> = {
     app: A,
     handle: fn(mut A, Request<Unrouted>) -> Response,
     limits: Limits,
     timing: Timing,
+    drain: Drain,
 }
 
 impl Serving {
@@ -328,10 +358,13 @@ impl Serving {
             self.advanced(l)
             if !self.flushed(l) { return self.dropped(l) }
             l.out = "".bytes()
-            if l.closing { return self.parted(l) }
-            match within ms(self.deadline(l)) { l.conn.read(read_size()) } {
+            if l.closing || self.drain.asked.get() && idle(l) { return self.parted(l) }
+            self.reading(l.conn, true)
+            let read = within ms(self.deadline(l)) { l.conn.read(read_size()) }
+            self.reading(l.conn, false)
+            match read {
                 .Ok(b) -> heard(l, b),
-                .Err(_) -> { return self.dropped(l) },
+                .Err(_) -> { if !self.draining() { return self.dropped(l) } },
             }
         }
         l.conn.fd
@@ -408,7 +441,7 @@ impl Serving {
         let q = Request { raw: l.buf, head: head, body: body, peer: l.peer, params: Unrouted {} }
         let r = self.handle(self.app, q)
         l.served = l.served + 1
-        let keep = head.keep_alive && l.served < self.timing.requests
+        let keep = head.keep_alive && l.served < self.timing.requests && !self.drain.asked.get()
         l.out = l.out.concat(wired(r, keep, head))
         l.buf = l.buf.slice(end, l.buf.length)
         l.scanned = 0
@@ -421,7 +454,10 @@ impl Serving {
     /// none of it within the idle deadline, or the socket fails.
     fn flushed(l: Link) -> bool {
         if l.out.is_empty() { return true }
-        match within self.timing.idle { l.conn.write(l.out) } { .Ok(_) -> true, .Err(_) -> false }
+        match within ms(self.clipped(self.timing.idle.ms)) { l.conn.write(l.out) } {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
     }
 
     /// The write side shut after the last byte, the socket closed.
@@ -440,13 +476,42 @@ impl Serving {
     /// owed the body deadline, a head half-arrived the head's, an idle
     /// keep-alive connection the idle one.
     fn deadline(l: Link) -> int {
+        self
+            .clipped(
+                when {
+                    l.head != null -> self.timing.body.ms
+                    l.buf.length > 0 -> self.timing.head.ms
+                    _ -> self.timing.idle.ms
+                },
+            )
+    }
+
+    /// A wait of `wait` ms, ended by the drain once a stop was asked.
+    fn clipped(wait: int) -> int {
+        if !self.drain.asked.get() { return wait }
+        let left = self.drain.ends.get() - now_ms()
         when {
-            l.head != null -> self.timing.body.ms
-            l.buf.length > 0 -> self.timing.head.ms
-            _ -> self.timing.idle.ms
+            left < 0 -> 0
+            left < wait -> left
+            _ -> wait
         }
     }
+
+    /// Whether a stop's drain still has time: a read it cut short is
+    /// read again, under what is left.
+    fn draining() -> bool { self.drain.asked.get() && self.drain.ends.get() > now_ms() }
+
+    /// Whether this connection is parked reading, filed by its
+    /// descriptor for a stop to wake.
+    fn reading(c: Conn, parked: bool) {
+        while self.drain.reading.get().length <= c.fd { self.drain.reading.push(false) }
+        self.drain.reading.set_at(c.fd, parked)
+    }
 }
+
+/// Whether a link waits between requests: nothing of the next one has
+/// arrived.
+fn idle(l: Link) -> bool { l.head == null && l.buf.is_empty() }
 
 fn nothing_stepped() {}
 

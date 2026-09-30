@@ -25,6 +25,7 @@ extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 extern fn avra_net_close(fd: int) -> int
 extern fn avra_net_shutdown(fd: int, how: int) -> int
+extern fn avra_net_interrupt(fd: int) -> int
 extern fn avra_net_poll_new() -> int
 extern fn avra_net_watch(pfd: int, fd: int, interest: int) -> int
 extern fn avra_net_wait(pfd: int, timeout_ms: int) -> int
@@ -280,6 +281,11 @@ impl Conn {
         if r < 0 { return failed("shutdown", self.named(), r) }
         .Ok(self.fd)
     }
+
+    /// Every task parked reading this socket answers timed out, as if
+    /// its `within` ran out; the socket stays open and nothing it holds
+    /// is lost.
+    fn interrupt() { let _ = avra_net_interrupt(self.fd) }
 
     /// Closed; answers the descriptor it held.
     fn close() -> Result<int, NetError> {
