@@ -13,6 +13,7 @@
 #include <llvm-c/Error.h>
 #include <llvm-c/BitReader.h>
 #include <llvm-c/Linker.h>
+#include <llvm-c/Comdat.h>
 #include <stdlib.h>
 #include <string.h>
 void avra_trap(const char* msg);
@@ -918,6 +919,74 @@ static void hot_linked(LLVMModuleRef m) {
     LLVMLinkModules2(m, hot);
 }
 
+// WHETHER THE LINKER DROPS UNREACHED CODE BY ATOM (Mach-O, every symbol a
+// subsection) or BY SECTION (ELF). The one predicate the link option and
+// the emitted sections both read.
+int64_t avra_llvm_drops_by_atom(void) {
+#ifdef __APPLE__
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Whether a constant's value holds an address — a relocation the loader
+// writes, which keeps a datum out of a read-only section.
+static int holds_address(LLVMValueRef c) {
+    if (LLVMIsAGlobalValue(c) || LLVMIsABlockAddress(c)) return 1;
+    int n = LLVMGetNumOperands(c);
+    for (int i = 0; i < n; i++) {
+        LLVMValueRef op = LLVMGetOperand(c, (unsigned)i);
+        if (op && holds_address(op)) return 1;
+    }
+    return 0;
+}
+
+// The section a LOCAL datum stands in, by what the loader does with it:
+// written, zeroed, relocated then frozen, or read only. A mergeable
+// constant (an unnamed-address one with no address in it) stays where
+// the module put it, merged with its equals.
+static const char* local_section_kind(LLVMValueRef g) {
+    LLVMValueRef init = LLVMGetInitializer(g);
+    if (!init || LLVMIsThreadLocal(g)) return NULL;
+    if (!LLVMIsGlobalConstant(g)) return LLVMIsNull(init) ? ".bss" : ".data";
+    if (holds_address(init)) return ".data.rel.ro";
+    return LLVMGetUnnamedAddress(g) == LLVMNoUnnamedAddr ? ".rodata" : NULL;
+}
+
+// ELF DROPS BY SECTION, so every definition stands in a section of its
+// own and the link's --gc-sections drops the ones nothing reaches — what
+// clang's -ffunction-sections -fdata-sections ask of a target, which the
+// C API cannot. A named definition takes a group keyed by its own name
+// (a comdat), which gets it a section of the right kind and gathers a
+// fn's jump tables beside it; the group never deduplicates, so two
+// definitions of one name stay a link error. A local one takes a section
+// named for its kind and numbered within its module.
+static void sectioned(LLVMModuleRef m, LLVMValueRef g, int is_fn, int* nth) {
+    const char* held = LLVMGetSection(g);
+    if (LLVMIsDeclaration(g) || LLVMGetComdat(g) || (held && *held)) return;
+    LLVMLinkage l = LLVMGetLinkage(g);
+    if (l == LLVMAvailableExternallyLinkage) return;
+    if (l != LLVMInternalLinkage && l != LLVMPrivateLinkage) {
+        LLVMComdatRef group = LLVMGetOrInsertComdat(m, LLVMGetValueName(g));
+        LLVMSetComdatSelectionKind(group, LLVMNoDeduplicateComdatSelectionKind);
+        LLVMSetComdat(g, group);
+        return;
+    }
+    const char* kind = is_fn ? ".text" : local_section_kind(g);
+    if (!kind) return;
+    char section[48];
+    snprintf(section, sizeof(section), "%s.avra.local.%d", kind, (*nth)++);
+    LLVMSetSection(g, section);
+}
+
+static void sectioned_by_definition(LLVMModuleRef m) {
+    if (avra_llvm_drops_by_atom()) return;
+    int nth = 0;
+    for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) sectioned(m, f, 1, &nth);
+    for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) sectioned(m, g, 0, &nth);
+}
+
 // A MODULE AS AN OBJECT: the `default<O1>`-style pipeline clang runs on
 // bitcode, then the native target's code generator, at clang's level 0..3.
 // Atomic as the writers above — a temp, then rename. Answers 0, or 1 with the
@@ -960,6 +1029,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
             failed = 1;
         }
     }
+    if (!failed) sectioned_by_definition(m);
     if (!failed && LLVMTargetMachineEmitToFile(tm, m, tmp, LLVMObjectFile, &error)) {
         fprintf(stderr, "avra: no object for %s — %s\n", path, error ? error : "");
         if (error) LLVMDisposeMessage(error);

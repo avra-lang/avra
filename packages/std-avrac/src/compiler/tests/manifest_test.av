@@ -156,6 +156,15 @@ spec "compiler/manifest" {
         then "a `-`-leading token in objects is refused" {
             speaks(packaged("[link]\nobjects = [\"-Wl,--wrap=malloc\"]\n"), "manifest.link_option")
         }
+        then "dynamic_symbols reads true when written true, false when absent" {
+            read(packaged("[link]\ndynamic_symbols = true\n")).dynamic_symbols &&
+                !read(packaged("[link]\ndynamic_symbols = false\n")).dynamic_symbols &&
+                !read(packaged("[link]\nlibs = [\"m\"]\n")).dynamic_symbols
+        }
+        then "dynamic_symbols written as anything but a bool is refused and read false" {
+            let text = packaged("[link]\ndynamic_symbols = \"yes\"\n")
+            speaks(text, "manifest.link_flag") && !read(text).dynamic_symbols
+        }
         then "`flags` is no longer a [link] key" {
             speaks(packaged("[link]\nflags = [\"-lm\"]\n"), "manifest.unknown_key")
         }
@@ -188,6 +197,13 @@ spec "compiler/manifest" {
             render(m.voices[0], new_source_file("avra.toml", text))
                 .starts_with(
                     "error[manifest.link_option]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]",
+                )
+        }
+        then "a `[link]` flag that is not a bool renders with its code and remedy" {
+            let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\ndynamic_symbols = 1\n"
+            render(read(text).voices[0], new_source_file("avra.toml", text))
+                .starts_with(
+                    "error[manifest.link_flag]: `dynamic_symbols` under `[link]` is `true` or `false`\n  ╭─[avra.toml:6:1]",
                 )
         }
         then "a refusal points at its line in the manifest" {
