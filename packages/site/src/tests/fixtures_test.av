@@ -1,0 +1,34 @@
+// THE FIXTURES THE SUITES SHARE: a request as the server frames one,
+// and the site's whole answer to it — through its layers and routes.
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.body.{Body}
+use @std.http.route.{compiled, dispatch}
+use site.{site, not_found}
+
+/// A request framed from its line, with the Host a 1.1 request owes.
+fn requested(line: string) -> Request<Unrouted>? {
+    let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// The site's whole answer to a request line; status 0 for one the
+/// framer refused.
+fn replied(line: string) -> Response {
+    let q? = requested(line) else { return Response { status: 0 } }
+    let routed = compiled(site.routes)
+    not_found.wraps(q, (q2: Request<Unrouted>) -> dispatch(routed, q2))
+}
+
+fn status_of(line: string) -> int { replied(line).status }
+
+/// The document a GET of this target answers.
+fn document_at(target: string) -> string { replied("GET " + target + " HTTP/1.1").body.text() ?? "" }
+
+fn is_html_page(r: Response) -> bool {
+    r.headers.any(it.value == "text/html; charset=utf-8") &&
+        (r.body.text() ?? "").starts_with("<!doctype html>")
+}

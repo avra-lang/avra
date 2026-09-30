@@ -7,6 +7,7 @@ use @std.time.{ms, secs, sleep, within}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, Header, Upgrade, text}
 use @std.http.server.{served, timing}
+use @std.http.wire.{Transport}
 use @std.http.ws.{
     Socket,
     Message,
@@ -47,6 +48,7 @@ fn ws_word(e: WsError) -> string {
         .Closed -> "closed",
         .TimedOut -> "timed-out",
         .Net(_) -> "net",
+        .Secure(_) -> "secure",
         .Rejected(s) -> "rejected ${s}",
         .Unverified -> "unverified",
         .NoEntropy -> "no-entropy",
@@ -122,7 +124,7 @@ fn blind_switch(ran: Cell<int>) -> Response {
     Response {
         status: 101,
         headers: [Header { name: "upgrade", value: "websocket" }],
-        upgrade: Upgrade { run: (_c: Conn, _early: Bytes) -> ran.set(ran.get() + 1) },
+        upgrade: Upgrade { run: (_c: dyn Transport, _early: Bytes) -> ran.set(ran.get() + 1) },
     }
 }
 

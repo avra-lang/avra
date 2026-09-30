@@ -40,7 +40,7 @@ use frame.{
 }
 use query.{Query, query_of}
 use body.{Body}
-use @std.net.{Conn}
+use wire.{Transport}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body — READ as the handler asks for it, never before
@@ -132,6 +132,13 @@ impl Request {
         self.raw.slice(from, stop)
     }
 
+    /// An absolute-form target's scheme, as written; null for every
+    /// other form.
+    fn scheme() -> Bytes? {
+        if !(self.form() is .Absolute) { return null }
+        self.raw.slice(self.head.target.lo, self.authority_from() - 3)
+    }
+
     /// Where an absolute-form target's authority begins: past `://`.
     fn authority_from() -> int { self.raw.index_of(scheme_end, self.head.target.lo) + 3 }
 
@@ -203,9 +210,9 @@ export type Response = {
     upgrade: Upgrade? = null,
 }
 
-/// What a `101` hands the connection to: the socket, and the octets
+/// What a `101` hands the connection to: its transport, and the octets
 /// the peer sent past its request — already the new protocol's.
-export type Upgrade = { run: fn(Conn, Bytes) -> void }
+export type Upgrade = { run: fn(dyn Transport, Bytes) -> void }
 
 // ── The body stream ─────────────────────────────────────────────
 
@@ -523,7 +530,7 @@ export fn sendable(r: Response) -> bool {
     r.status >= 100 &&
         r.status <= 999 &&
         fields_writable(r.headers, reply_writes) &&
-        (plain(r) || streamable(r) && handed_over(r)) &&
+        (whole_answer(r) || streamable(r) && handed_over(r)) &&
         (r.status != 426 || offered(r) != null)
 }
 
@@ -579,7 +586,7 @@ export fn upgrade_head(r: Response) -> Bytes { laid_out(r, .None, switching(), n
 
 /// A response with a whole body and nothing to hand over: the common
 /// one, judged without asking the stream and upgrade laws.
-fn plain(r: Response) -> bool { r.stream == null && r.upgrade == null && r.status >= 200 }
+fn whole_answer(r: Response) -> bool { r.stream == null && r.upgrade == null && r.status >= 200 }
 
 /// A STREAM STANDS ALONE: a response carrying one carries no whole
 /// body beside it, declares no negative length, and has a status that
@@ -668,6 +675,7 @@ export fn reason(status: int) -> string {
         414 -> "URI Too Long",
         415 -> "Unsupported Media Type",
         417 -> "Expectation Failed",
+        421 -> "Misdirected Request",
         422 -> "Unprocessable Content",
         426 -> "Upgrade Required",
         429 -> "Too Many Requests",

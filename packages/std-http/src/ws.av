@@ -17,7 +17,9 @@
 //! A receive waits as long as its caller's `within` allows, and no
 //! longer: a socket carries no deadline of its own, so a session
 //! names how long a quiet peer lives.
-use @std.net.{Conn, NetError, connect, entropy32}
+use @std.errors.{Error}
+use @std.net.{NetError, connect, entropy32}
+use wire.{Transport, WireError, plainly}
 use @std.time.{Duration, secs, within}
 use frame.{Limits, Method, Reply, framed_reply, limits}
 use http.{Request, Response, Header, Upgrade, text, read_size, lists_token}
@@ -35,14 +37,15 @@ export enum Message {
 
 /// Why a socket could not go on: a protocol law broken (the close code
 /// it earned, already sent), the connection ended without a close, the
-/// caller's deadline, the network, or — dialing — a peer that answered
-/// the handshake with `status`, or answered it wrongly — or a client
-/// the kernel gave no entropy to mask with.
+/// caller's deadline, the network, the secure layer, or — dialing — a
+/// peer that answered the handshake with `status`, or answered it
+/// wrongly — or a client the kernel gave no entropy to mask with.
 export enum WsError {
     Protocol(code: int)
     Closed
     TimedOut
     Net(e: NetError)
+    Secure(e: dyn Error)
     Rejected(status: int)
     Unverified
     NoEntropy
@@ -205,10 +208,10 @@ type WsState = { buf: Bytes, pending: Pending?, sent_close: bool, got_close: boo
 
 /// An open WebSocket: its connection, which end it is, its bounds, and
 /// its state — shared by every copy, since a copy is the same socket.
-export type Socket = { conn: Conn, side: Side, limits: WsLimits, state: Cell<WsState> }
+export type Socket = { conn: dyn Transport, side: Side, limits: WsLimits, state: Cell<WsState> }
 
 /// A socket over `c`, the peer's first octets `early` already read.
-export fn socket_on(c: Conn, early: Bytes, side: Side, lim: WsLimits) -> Socket {
+export fn socket_on(c: dyn Transport, early: Bytes, side: Side, lim: WsLimits) -> Socket {
     Socket {
         conn: c,
         side: side,
@@ -384,9 +387,9 @@ impl Socket {
     /// One frame written whole, masked when a client sends it.
     fn sent_frame(fin: bool, op: int, payload: Bytes) -> Result<int, WsError> {
         let key: List<int>? = match self.side { .Client -> mask_key()?, .Server -> null }
-        match self.conn.write(frame_bytes(fin, op, payload, key)) {
+        match self.conn.wire_write(frame_bytes(fin, op, payload, key)) {
             .Ok(n) -> .Ok(n),
-            .Err(e) -> .Err(ws_net(e)),
+            .Err(e) -> .Err(socket_error(e)),
         }
     }
 
@@ -395,20 +398,20 @@ impl Socket {
     /// close before it closes too.
     fn ended() {
         match self.side {
-            .Server -> { let _ = self.conn.close() },
+            .Server -> { let _ = self.conn.wire_close() },
             .Client -> {
-                let _ = self.conn.shutdown_write()
+                let _ = self.conn.wire_shutdown()
                 let _ = within secs(2) { drained(self.conn) }
-                let _ = self.conn.close()
+                let _ = self.conn.wire_close()
             },
         }
     }
 }
 
 /// `c` read to its end, the octets dropped; whether it ended.
-fn drained(c: Conn) -> bool {
+fn drained(c: dyn Transport) -> bool {
     while true {
-        match c.read(read_size()) {
+        match c.wire_read(read_size()) {
             .Ok(b) -> { if b == null { return true } },
             .Err(_) -> { return false },
         }
@@ -420,9 +423,12 @@ fn close_code(m: Message) -> int {
     match m { .Close(code, _) -> code, .Text(_) or .Binary(_) -> no_code() }
 }
 
-fn ws_net(e: NetError) -> WsError {
-    if e.timed_out() { return .TimedOut }
-    .Net(e)
+/// A transport's failure as a socket's: a deadline passing is `TimedOut`.
+export fn socket_error(e: WireError) -> WsError {
+    match e {
+        .Net(n) -> if n.timed_out() { WsError.TimedOut } else { WsError.Net(n) },
+        .Secure(s) -> WsError.Secure(s),
+    }
 }
 
 /// Four octets no peer can predict, one mask per frame (RFC 6455 §5.3)
@@ -449,21 +455,20 @@ export fn accepted<P>(q: Request<P>, lim: WsLimits, session: fn(Socket) -> void)
     if q.header("sec-websocket-version") != "13" {
         return Response {
             status: 426,
-            headers: [
-                Header { name: "upgrade", value: "websocket" },
-                Header { name: "sec-websocket-version", value: "13" },
-            ],
+            headers: [websocket_upgrade, Header { name: "sec-websocket-version", value: "13" }],
         }
     }
     Response {
         status: 101,
-        headers: [
-            Header { name: "upgrade", value: "websocket" },
-            Header { name: "sec-websocket-accept", value: accept_of(key) },
-        ],
-        upgrade: Upgrade { run: (c: Conn, early: Bytes) -> session(socket_on(c, early, Side.Server, lim)) },
+        headers: [websocket_upgrade, Header { name: "sec-websocket-accept", value: accept_of(key) }],
+        upgrade: Upgrade {
+            run: (c: dyn Transport, early: Bytes) -> session(socket_on(c, early, Side.Server, lim)),
+        },
     }
 }
+
+/// The `upgrade` field every answer to an opening names.
+const websocket_upgrade: Header = Header { name: "upgrade", value: "websocket" }
 
 /// Whether `q` asks to open a WebSocket: a GET of HTTP/1.1 asking to
 /// upgrade to `websocket` through its `connection` field.
@@ -474,32 +479,45 @@ fn opening<P>(q: Request<P>) -> bool {
         lists_token(q.header("connection") ?? "", "upgrade")
 }
 
-/// A client socket: `host:port` dialed within `timeout`, `target`
-/// asked to upgrade with a fresh key, and the `101` verified — the
-/// status, the upgrade, and the accept the key earns.
+/// A client socket: `host:port` dialed within `timeout`, then opened
+/// over the plain connection as `opened_over` opens one.
 export fn dialed(host: string, port: int, target: string, timeout: Duration, lim: WsLimits) -> Result<
     Socket,
     WsError,
 > {
     let c = match connect(host, port, timeout) {
         .Ok(c) -> c,
-        .Err(e) -> { return .Err(ws_net(e)) },
+        .Err(e) -> { return .Err(socket_error(.Net(e))) },
     }
+    opened_over(plainly(c), "${host}:${port}", target, timeout, lim)
+}
+
+/// A client socket over `w`, any transport already connected — a TLS
+/// one from `@std/https` makes it `wss` — `target` asked of `authority`
+/// to upgrade with a fresh key, and the `101` verified within `timeout`:
+/// the status, the upgrade, and the accept the key earns.
+export fn opened_over(
+    w: dyn Transport,
+    authority: string,
+    target: string,
+    timeout: Duration,
+    lim: WsLimits,
+) -> Result<Socket, WsError> {
     let key = base64(
         (mask_key()?).concat(mask_key()?).concat(mask_key()?).concat(mask_key()?).bytes()!,
     )
-    let asked = "GET ${target} HTTP/1.1\r\nhost: ${host}:${port}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: ${key}\r\nsec-websocket-version: 13\r\n\r\n"
-    match within timeout { c.write(asked.bytes()) } {
+    let asked = "GET ${target} HTTP/1.1\r\nhost: ${authority}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: ${key}\r\nsec-websocket-version: 13\r\n\r\n"
+    match within timeout { w.wire_write(asked.bytes()) } {
         .Ok(_) -> {},
-        .Err(e) -> { return .Err(ws_net(e)) },
+        .Err(e) -> { return .Err(socket_error(e)) },
     }
-    let early = within timeout { upgraded_reply(c, key) }?
-    .Ok(socket_on(c, early, Side.Client, lim))
+    let early = within timeout { upgraded_reply(w, key) }?
+    .Ok(socket_on(w, early, Side.Client, lim))
 }
 
 /// The server's answer to the opening handshake read and judged; the
 /// octets past it, which are already frames.
-fn upgraded_reply(c: Conn, key: string) -> Result<Bytes, WsError> {
+fn upgraded_reply(c: dyn Transport, key: string) -> Result<Bytes, WsError> {
     mut buf = "".bytes()
     while true {
         match framed_reply(buf, 0, 0, limits(), Method.Get) {
@@ -516,10 +534,10 @@ fn upgraded_reply(c: Conn, key: string) -> Result<Bytes, WsError> {
 }
 
 /// One read of `c`; its end is `Closed`.
-fn read_some(c: Conn) -> Result<Bytes, WsError> {
-    match c.read(read_size()) {
+fn read_some(c: dyn Transport) -> Result<Bytes, WsError> {
+    match c.wire_read(read_size()) {
         .Ok(b) -> if b == null { .Err(.Closed) } else { .Ok(b!) },
-        .Err(e) -> .Err(ws_net(e)),
+        .Err(e) -> .Err(socket_error(e)),
     }
 }
 

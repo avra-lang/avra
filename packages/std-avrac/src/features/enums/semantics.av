@@ -4,7 +4,7 @@
 //! the type namespace, so its own passes do nothing. A match is
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
-use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, NodeStore, Binder}
+use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder}
 use features.{NodeSemantics, StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 use features.enums.{bind_types, pat_reg, bind_regs}
 
@@ -73,7 +73,7 @@ fn resolve_arms(mut cx: ResolveCx, arms: List<Arm>) {
 
 /// Whether every pattern is irrefutable — spelled as a scan: a
 /// method call on a captured store inside `all` mistypes the pronoun.
-export fn all_irrefutable(store: NodeStore, ids: List<PatId>) -> bool {
+export fn all_irrefutable(store: SyntaxArena, ids: List<PatId>) -> bool {
     for p in ids {
         if !store.irrefutable(p) { return false }
     }
@@ -81,7 +81,7 @@ export fn all_irrefutable(store: NodeStore, ids: List<PatId>) -> bool {
 }
 
 /// The first irrefutable pattern among these, when one is.
-export fn hole_of(store: NodeStore, ids: List<PatId>) -> PatId? {
+export fn hole_of(store: SyntaxArena, ids: List<PatId>) -> PatId? {
     for p in ids {
         if store.irrefutable(p) { return p }
     }
@@ -89,7 +89,7 @@ export fn hole_of(store: NodeStore, ids: List<PatId>) -> PatId? {
 }
 
 /// The names an arm binds: its first pattern's, in pre-order.
-export fn arm_binds(store: NodeStore, a: Arm) -> List<Binder> {
+export fn arm_binds(store: SyntaxArena, a: Arm) -> List<Binder> {
     let first? = a.pats.first() else { return [] }
     store.pattern_binds(first)
 }

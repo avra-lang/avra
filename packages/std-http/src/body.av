@@ -15,19 +15,22 @@
 //! every later read, and the server reads it after the handler answers,
 //! so a handler that never looked still cannot answer over a broken
 //! body.
-use @std.net.{Conn, NetError}
+use @std.errors.{Error}
+use @std.net.{NetError}
 use @std.time.{Duration, within}
+use wire.{Transport, WireError}
 use frame.{Chunker, Limits, Refusal, Decoded, chunker, unchunked, limits}
 
 /// Why a body could not be read on: it holds more than the reader may
 /// gather, it breaks a framing law, the peer ended it short or went
-/// silent past its deadline, or the socket failed.
+/// silent past its deadline, or the socket or the secure layer failed.
 export enum BodyError {
     TooLarge
     Malformed(why: Refusal)
     Closed
     TimedOut
     Net(e: NetError)
+    Secure(e: dyn Error)
 }
 
 /// How much of a body is still to come: a length, chunks, everything
@@ -46,7 +49,7 @@ enum Left {
 /// wait, the bounds, how much was handed out, and the failure, once
 /// there is one.
 type Inflow = {
-    conn: Conn?,
+    conn: dyn Transport?,
     buf: Bytes,
     at: int,
     left: Left,
@@ -74,7 +77,7 @@ export fn whole(b: Bytes) -> Body {
 /// with `owed` written first — each read given `patience`, or the
 /// caller's own deadline when absent.
 export fn measured(
-    conn: Conn,
+    conn: dyn Transport,
     buf: Bytes,
     at: int,
     n: int,
@@ -88,7 +91,7 @@ export fn measured(
 
 /// A chunked body from `at` in `buf`, the rest read from `conn`.
 export fn chunked_from(
-    conn: Conn,
+    conn: dyn Transport,
     buf: Bytes,
     at: int,
     owed: Bytes,
@@ -105,11 +108,11 @@ export fn chunked_from(
 }
 
 /// A body that runs until the peer closes, from `at` in `buf`.
-export fn until_close(conn: Conn, buf: Bytes, at: int, patience: Duration?, lim: Limits) -> Body {
+export fn until_close(conn: dyn Transport, buf: Bytes, at: int, patience: Duration?, lim: Limits) -> Body {
     Body.Flowing(Cell.new(inflow(conn, buf, at, Left.UntilClose, lim, patience)))
 }
 
-fn inflow(conn: Conn?, buf: Bytes, at: int, left: Left, lim: Limits, patience: Duration?) -> Inflow {
+fn inflow(conn: dyn Transport?, buf: Bytes, at: int, left: Left, lim: Limits, patience: Duration?) -> Inflow {
     Inflow {
         conn: conn,
         buf: buf,
@@ -298,15 +301,15 @@ fn refill(f: Inflow) -> Inflow {
 }
 
 /// One read, given `patience` — or the caller's own deadline when absent.
-fn listened(c: Conn, patience: Duration?) -> Result<Bytes?, NetError> {
-    let d? = patience else { return c.read(read_size()) }
-    within d { c.read(read_size()) }
+fn listened(c: dyn Transport, patience: Duration?) -> Result<Bytes?, WireError> {
+    let d? = patience else { return c.wire_read(read_size()) }
+    within d { c.wire_read(read_size()) }
 }
 
 /// `b` written whole, given `patience` — or the caller's own deadline.
-fn wrote(c: Conn, b: Bytes, patience: Duration?) -> Result<int, NetError> {
-    let d? = patience else { return c.write(b) }
-    within d { c.write(b) }
+fn wrote(c: dyn Transport, b: Bytes, patience: Duration?) -> Result<int, WireError> {
+    let d? = patience else { return c.wire_write(b) }
+    within d { c.wire_write(b) }
 }
 
 /// What reaches the peer's end: a body read to the close is done, any
@@ -335,9 +338,12 @@ fn unread_from(f: Inflow) -> int {
     match f.left { .Chunked(c) -> c.at, .Length(_) or .UntilClose or .Done -> f.at }
 }
 
-fn net_error(e: NetError) -> BodyError {
-    if e.timed_out() { return .TimedOut }
-    .Net(e)
+/// A transport's failure as a body's: a deadline passing is `TimedOut`.
+fn net_error(e: WireError) -> BodyError {
+    match e {
+        .Net(n) -> if n.timed_out() { BodyError.TimedOut } else { BodyError.Net(n) },
+        .Secure(s) -> BodyError.Secure(s),
+    }
 }
 
 // ── Gathering, skipping, the tail ───────────────────────────────
