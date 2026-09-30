@@ -1095,6 +1095,54 @@ test_auto_batch() {
     fi
 }
 
+# A landing past its wall cap stops, frees the lock, and tells every
+# rider it timed out.
+test_wall_cap() {
+    d="$(batch_repo wall-cap)"
+    wt_a="$scratch/wall-cap-a"
+    git -C "$d" worktree add -q "$wt_a" a > /dev/null 2>&1
+    lockdir="$scratch/wall-cap-lock"
+    hold="$scratch/wall-cap-hold"
+    export AVRA_LAND_LOCK="$lockdir" AVRA_LAND_BATCH_WT="$scratch/wall-cap-integration-wt" AVRA_SLOTS_DIR="$scratch/wall-cap-slots" \
+        AVRA_LAND_ABSORB=1 SLOW_BUILD=30 AVRA_LAND_WALL_CAP_S=4
+    ( branch=holder exec sh "$land" --call hold_lock_for "$hold" ) > "$scratch/wall-cap-holder.out" 2>&1 &
+    wait_for_line "$scratch/wall-cap-holder.out" "^acquired ticket 1$" 150 > /dev/null
+    ( cd "$wt_a" && exec sh "$land" a ) > "$scratch/wall-cap-a.out" 2>&1 &
+    a_pid=$!
+    wait_for_line "$scratch/wall-cap-a.out" "waiting behind" 150 > /dev/null
+    ( cd "$d" && exec sh "$land" b ) > "$scratch/wall-cap-b.out" 2>&1 &
+    b_pid=$!
+    wait_for_line "$scratch/wall-cap-b.out" "waiting behind" 150 > /dev/null
+    touch "$hold"
+    start="$(date +%s)"
+    n=0
+    while kill -0 "$a_pid" 2>/dev/null && [ "$n" -lt 60 ]; do sleep 1; n=$((n + 1)); done
+    a_st=0; kill -0 "$a_pid" 2>/dev/null && a_st=running || { wait "$a_pid" || a_st=$?; }
+    took=$(( $(date +%s) - start ))
+    n=0
+    while kill -0 "$b_pid" 2>/dev/null && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
+    b_st=0; kill -0 "$b_pid" 2>/dev/null && b_st=running || { wait "$b_pid" || b_st=$?; }
+    unset AVRA_LAND_LOCK AVRA_LAND_BATCH_WT AVRA_SLOTS_DIR AVRA_LAND_ABSORB SLOW_BUILD AVRA_LAND_WALL_CAP_S
+    if [ "$a_st" != running ] && [ "$a_st" -ne 0 ] && [ "$took" -lt 25 ] && grep -q "wall cap" "$scratch/wall-cap-a.out"; then
+        ok "wall-cap: the landing stops at its cap and says so"
+    else
+        bad "wall-cap: a ($a_st, ${took}s) did not stop at its cap"
+        cat "$scratch/wall-cap-a.out"
+    fi
+    if [ "$b_st" != running ] && [ "$b_st" -ne 0 ] && grep -q "timed out — land again" "$scratch/wall-cap-b.out"; then
+        ok "wall-cap: a rider is told it timed out and to land again"
+    else
+        bad "wall-cap: b ($b_st) was not told it timed out"
+        cat "$scratch/wall-cap-b.out"
+    fi
+    if [ -z "$(ls "$lockdir/tickets" 2>/dev/null)" ]; then
+        ok "wall-cap: the lock is free afterwards"
+    else
+        bad "wall-cap: tickets remain: $(ls "$lockdir/tickets")"
+    fi
+    kill "$a_pid" "$b_pid" 2>/dev/null
+}
+
 test_auto_batch_holder_stopped() {
     d="$(batch_repo auto-stop)"
     wt_a="$scratch/auto-stop-a"
@@ -2643,6 +2691,7 @@ run_test test_run_checks_launch_order
 run_test test_remote_suites
 run_test test_batch_conflict_drops_at_once
 run_test test_warm_gate_floor_is_relative
+run_test test_wall_cap
 run_test test_tools_only_gate_script_runs_its_step
 run_test test_tools_only_several_gate_scripts_run_all_steps
 

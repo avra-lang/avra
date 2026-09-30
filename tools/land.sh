@@ -383,14 +383,67 @@ absorbed_exit() {
 # A holder leaving before it answered strands no waiter.
 release_absorbed() {
     d="$(tickets_dir)"
+    why="the batch that absorbed this branch stopped before a verdict — land again"
+    [ -f "$scratch/wall-cap" ] && why="the landing that absorbed this branch ran past its wall cap — timed out — land again"
     for t in $absorbed; do
-        [ -f "$d/$t/verdict" ] || give_verdict "$d/$t" 1 "land: the batch that absorbed this branch stopped before a verdict — land again"
+        [ ! -d "$d/$t" ] || [ -f "$d/$t/verdict" ] || give_verdict "$d/$t" 1 "land: $why"
     done
+}
+
+# THE WALL CAP: a landing holding the lock past AVRA_LAND_WALL_CAP_S
+# (default 1800; 0 is none) stops. A shell runs its TERM trap only once
+# its foreground child ends, so the watchdog ends every child first;
+# the trap then frees the lock and answers every rider.
+wall_pid=""
+start_wall_cap() {
+    cap="${AVRA_LAND_WALL_CAP_S:-1800}"
+    [ "$cap" -gt 0 ] || return 0
+    holder=$$
+    (
+        sleep "$cap"
+        me="$(exec sh -c 'echo $PPID')"
+        echo "$cap" > "$scratch/wall-cap"
+        echo "the landing ran past its ${cap}s wall cap — timed out — land again" > "$scratch/tool-failure"
+        # A stopped process cannot fork, so the tree is frozen until a
+        # fresh look finds nothing new, then killed whole.
+        tree=""
+        n=0
+        while [ "$n" -lt 20 ]; do
+            now="$(tree_below "$holder" "$me")"
+            [ "$now" = "$tree" ] && break
+            tree="$now"
+            kill -STOP $tree 2>/dev/null
+            n=$((n + 1))
+        done
+        kill -KILL $tree 2>/dev/null
+        kill -TERM "$holder"
+    ) &
+    wall_pid=$!
+}
+# Every process below `$1` but outside `$2`'s own subtree, from one ps snapshot.
+tree_below() {
+    ps -eo pid=,ppid= | awk -v root="$1" -v skip="$2" '
+        { kids[$2] = kids[$2] " " $1 }
+        END {
+            n = split(kids[root], q, " ")
+            for (i = 1; i <= n; i++) {
+                if (q[i] == skip) continue
+                out = out " " q[i]
+                m = split(kids[q[i]], more, " ")
+                for (j = 1; j <= m; j++) q[++n] = more[j]
+            }
+            print substr(out, 2)
+        }'
+}
+stop_wall_cap() {
+    [ -n "$wall_pid" ] || return 0
+    kill $(tree_below "$wall_pid" "") "$wall_pid" 2>/dev/null || :
 }
 finish_lock() {
     exit_st="${1:-$?}"
     release_absorbed
     release_lock
+    [ -f "$scratch/wall-cap" ] || stop_wall_cap
     echo "land: timeline: total wall=$(($(date +%s) - t0))s" >&2
     tool_reason=""
     [ -f "$scratch/tool-failure" ] && tool_reason="$(cat "$scratch/tool-failure")"
@@ -2264,6 +2317,7 @@ main_batch() {
     trap 'release_lock_and_exit INT' INT
     trap 'release_lock_and_exit TERM' TERM
     acquire_lock
+    start_wall_cap
 
     main_wt="$(worktree_for_branch main)"
     if [ -z "$main_wt" ]; then
@@ -2337,6 +2391,7 @@ main() {
     trap 'release_lock_and_exit INT' INT
     trap 'release_lock_and_exit TERM' TERM
     acquire_lock
+    start_wall_cap
 
     main_wt="$(worktree_for_branch main)"
     if [ -z "$main_wt" ]; then
