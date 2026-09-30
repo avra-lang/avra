@@ -31,6 +31,7 @@ use features.{
     TypeCx,
     FnSig,
     StructSig,
+    Lacked,
     EnumSig,
     NamedSig,
     DeclSig,
@@ -112,6 +113,7 @@ impl TypeCx {
     /// An enum's variant table — the index IS the runtime tag, and
     /// the payloads ride slots 1.. of the value, in order.
     fn declare_enum_sig(s: StmtId, variants: List<Variant>) {
+        if !self.view.decls.lacking(self.decl_of(s)).is_empty() { self.enum_lacks(s) }
         let sig = EnumSig {
             names: [v.name.of for v in variants],
             payloads: [self.payload_types(s, v) for v in variants],
@@ -182,11 +184,14 @@ impl TypeCx {
         }
         let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
-        if self.marks_identity(record) { self.identity_law(s, owner, names, types) }
+        if self.marks_identity(record) { self.identity_law(s, record, names, types) }
+        let lacking = self.view.decls.lacking(record)
+        self.lacks_law(s, owner, names, lacking)
         let sig = StructSig {
             names: [t.of for t in names],
             types: types,
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
+            lacking: lacking,
         }
         self.declare(s, DeclSig.Record(sig))
     }
@@ -194,11 +199,14 @@ impl TypeCx {
     /// AN IDENTITY'S TABLES ARE SHARED BY EVERY COPY: a field a
     /// writing path could open unique — anything but a `Cell`, or
     /// another `@identity` type — would fork them the moment one
-    /// copy's write stops reaching the other.
-    fn identity_law(s: StmtId, owner: string, names: List<Scoped>, types: List<TypeId>) {
+    /// copy's write stops reaching the other. A field licensed PLAIN
+    /// is read off `record`'s OWN `@plain_field` annotations, so the
+    /// license travels with the declaration through any rename.
+    fn identity_law(s: StmtId, record: DeclId, names: List<Scoped>, types: List<TypeId>) {
+        let plain = self.identity_plain_fields(record)
         for j, ty in types {
             let field = names[j].of
-            if !self.identity_field_ok(ty) && !identity_licensed(owner, field) {
+            if !self.identity_field_ok(ty) && !plain.contains(field) {
                 self.non_identity_field(s, field, ty)
             }
         }
@@ -214,15 +222,74 @@ impl TypeCx {
         }
     }
 
-    /// Whether a declaration carries `@std/meta`'s `@identity` — by
-    /// declaration, never a bare compare of the word: a package's
-    /// own fn named `identity` answers false.
-    fn marks_identity(d: DeclId) -> bool {
+    /// `d`'s own annotations resolving to `@std/meta`'s `word` — by
+    /// declaration, never a bare compare of the word: a package's own
+    /// fn of the same name answers none.
+    fn meta_annotations(d: DeclId, word: string) -> List<AnnotationFact> {
         let decls = self.view.decls
         let file = decls.annotation_home(d)
-        decls
-            .annotations_of(d)
-            .any((a: AnnotationFact) -> decls.is_meta_annotation(a, file, "identity"))
+        [a for a in decls.annotations_of(d) if decls.is_meta_annotation(a, file, word)]
+    }
+
+    /// Whether a declaration carries `@std/meta`'s `@identity`.
+    fn marks_identity(d: DeclId) -> bool { !self.meta_annotations(d, "identity").is_empty() }
+
+    /// The field names `@std/meta`'s `@plain_field` licenses on `d` —
+    /// one annotation per field, beside `@identity`, each its own
+    /// arity-checked call (never a member MARK: "EVERY MARK OWES A
+    /// READER" governs those, and `@plain_field` is a call like
+    /// `@identity` itself, not a field mark that needs a `@derive`
+    /// trait to claim it).
+    fn identity_plain_fields(d: DeclId) -> List<string> {
+        [a.args[0] for a in self.meta_annotations(d, "plain_field") if a.args.length == 1]
+    }
+
+    /// A record lacks each field ONCE, and only a field it does not
+    /// declare — a second reason, or a declared field, contradicts it.
+    fn lacks_law(s: StmtId, owner: string, names: List<Scoped>, lacking: List<Lacked>) {
+        for j, l in lacking {
+            if names.any(it.of == l.field) { self.lacks_declared(s, owner, l.field) }
+            if lacking.slice(0, j).any(it.field == l.field) { self.lacks_twice(s, owner, l.field) }
+        }
+    }
+
+    fn enum_lacks(s: StmtId) {
+        self
+            .emit(
+                refusal(
+                    "type.lacks",
+                    self.stmt_loc(s),
+                    "an enum has no fields to lack",
+                    "`@lacks` on an enum",
+                    "`@lacks` marks a record",
+                ),
+            )
+    }
+
+    fn lacks_twice(s: StmtId, owner: string, field: string) {
+        self
+            .emit(
+                refusal(
+                    "type.lacks",
+                    self.stmt_loc(s),
+                    "`${owner}` lacks `${field}` twice",
+                    "a second `@lacks(\"${field}\", …)` here",
+                    "keep one reason",
+                ),
+            )
+    }
+
+    fn lacks_declared(s: StmtId, owner: string, field: string) {
+        self
+            .emit(
+                refusal(
+                    "type.lacks",
+                    self.stmt_loc(s),
+                    "`${owner}` cannot lack `${field}` — it declares it",
+                    "`@lacks(\"${field}\", …)` here",
+                    "drop the field, or the `@lacks`",
+                ),
+            )
     }
 
     fn non_identity_field(s: StmtId, field: string, found: TypeId) {
@@ -233,7 +300,7 @@ impl TypeCx {
                     self.stmt_loc(s),
                     identity_field_law,
                     "field `${field}` is `${self.view.types.name_of(found)}`",
-                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `identity_plain` in compiler/typing/declare.av",
+                    "wrap it in `Cell<…>`, mark its own type `@identity`, or license it — `@plain_field(\"${field}\")` beside `@identity`",
                 ),
             )
     }
@@ -1036,90 +1103,6 @@ impl TypeCx {
 }
 
 const identity_field_law: string = "an identity's tables are shared by every copy — its fields are `Cell`s"
-
-/// A field an `@identity` type carries plain, reviewed here rather
-/// than wrapped: a scalar or a fn value set once at construction and
-/// never reassigned, so no writing path ever reaches it to fork it.
-/// THE ONE SPELLING: no field carries its own license comment — this
-/// table is the license, and its `reason` is the review. A `@plain`
-/// FIELD MARK would say the same thing at the site, but "EVERY MARK
-/// OWES A READER" (compiler/expand.av's `hold_marks_to_a_reader`)
-/// claims a mark only through a `@derive` trait's `marks()`, run over
-/// a declaration that ANSWERS `@std/meta`'s `Derived`/`Declared`
-/// shape — `@identity` generates nothing and derives nothing, so no
-/// trait stands behind it to claim one. Inventing a trait solely to
-/// open that door would be machinery built to argue a decision
-/// already made, not a real derive; the table stays the one license.
-type PlainField = { of: string, field: string, reason: string }
-
-const identity_plain: List<PlainField> = [
-    PlainField {
-        of: "NodeStore",
-        field: "file",
-        reason: "the path this store parsed, set once at construction",
-    },
-    PlainField {
-        of: "SyntaxArena",
-        field: "file",
-        reason: "the path this store parsed, set once at construction — licensed ahead of the NodeStore -> SyntaxArena rename (avra-8sb5.57.18.4) so the generation compiling that rename already knows the new name",
-    },
-    PlainField {
-        of: "Decls",
-        field: "rows",
-        reason: "the language's own builtin rows, built once at workspace construction and never written after",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "host",
-        reason: "the host capability table, set once at construction and never reassigned",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "root",
-        reason: "the tree's root path, set once at construction",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "lang",
-        reason: "the assembled grammar and features, set once at construction and never reassigned",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "lone",
-        reason: "a build-wide config flag, set once at construction",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "per_file",
-        reason: "a directory of programs, every file its own module — set once at construction",
-    },
-    PlainField {
-        of: "Workspace",
-        field: "clock",
-        reason: "the injected clock fn, set once at construction",
-    },
-    PlainField {
-        of: "Fixpoint",
-        field: "family",
-        reason: "registered once at the family's construction, then read only",
-    },
-    PlainField { of: "Fixpoint", field: "bottom", reason: "the lattice's floor, registered once" },
-    PlainField { of: "Fixpoint", field: "join", reason: "the lattice's join fn, registered once" },
-    PlainField {
-        of: "Fixpoint",
-        field: "fp",
-        reason: "the lattice's fingerprint fn, registered once",
-    },
-    PlainField {
-        of: "Fixpoint",
-        field: "turn_cap",
-        reason: "set at registration, `with` swaps in a fresh value rather than writing through a path",
-    },
-]
-
-fn identity_licensed(owner: string, field: string) -> bool {
-    identity_plain.any((p: PlainField) -> p.of == owner && p.field == field)
-}
 
 /// The remedy for a type parameter whose name is taken.
 fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }

@@ -4,7 +4,7 @@
 // waits on them. `base_b` (decl_rows_test.av) declares `Box` and its impl.
 use core.{DeclId}
 use query.{Key}
-use compiler.{Workspace, analyze_source, nearest_fix, methods_cell_outside}
+use compiler.{Workspace}
 
 fn references_ordinal() -> int { 19 }
 
@@ -55,45 +55,8 @@ spec "compiler/methods — a method table is read at its own cell" {
     }
 }
 
-/// Whether the keeper fires anywhere in the first statement of `text`.
-fn keeper_fires(text: string) -> bool {
-    let a = analyze_source(text)
-    match a.view.stmts.first() {
-        s? -> nearest_fix(methods_cell_outside.run, a.code_at(.Stmt(s))) != null
-        null -> false
-    }
-}
-
-spec "compiler/methods — the raw cell has a keeper" {
-    then "a raw read of the cell is refused, even with no wrapper called" {
-        keeper_fires(
-            "fn peek(d: Decls, t: DeclId) {\n    let held = d.methods.get()[t.index].get()\n}",
-        )
-    }
-    then "the table's own maker may read the cell" {
-        !keeper_fires(
-            "fn methods(d: Decls, t: DeclId) {\n    let held = d.methods.get()[t.index].get()\n}",
-        )
-    }
-    then "the registration inside the bracket may read the cell" {
-        !keeper_fires(
-            "fn declare_method(d: Decls, t: DeclId) {\n    let held = d.methods.get()[t.index].get()\n}",
-        )
-    }
-    then "the unrecorded door may read the cell" {
-        !keeper_fires(
-            "fn registered_methods(d: Decls, t: DeclId) {\n    d.methods.get()[t.index].get()\n}",
-        )
-    }
-    then "the recorded door may read the cell" {
-        !keeper_fires("fn methods_of(d: Decls, t: DeclId) {\n    d.methods.get()[t.index].get()\n}")
-    }
-    then "the declared-methods door may read the cell" {
-        !keeper_fires(
-            "fn declared_methods(d: Decls, t: DeclId) {\n    d.methods.get()[t.index].get()\n}",
-        )
-    }
-    then "the recorded read itself is no business of the keeper" {
-        !keeper_fires("fn peek(d: Decls, t: DeclId) {\n    let held = d.methods_of(t)\n}")
-    }
-}
+// The raw cell's own keeper — `compiler.bypass_outside_bracket`'s
+// `.methods.get()` arm — is proved in compiler/tests/
+// bypass_outside_bracket_test.av, over a real package: an annotation
+// needs `@std/meta` resolved, which a lone `analyze_source` string
+// cannot give it.
